@@ -7,8 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-
-from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
@@ -34,6 +33,7 @@ from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
 from miles.utils.object_store_config import compute_mooncake_init_kwargs_vanilla
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
+from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
@@ -928,6 +928,25 @@ _RAY_RPC_ARGS = ["--cluster-backend", "ray", "--worker-comm-backend", "rpc"]
 
 _RAY_ACTOR_ARGS = ["--cluster-backend", "ray", "--worker-comm-backend", "ray"]
 
+_INFERENCE_ARGS = [
+    "--deploy-component",
+    "inference",
+    "--deploy-instance-id",
+    "dc1",
+    "--inference-controller-addr",
+    "controller:8000",
+]
+
+
+def _parse_deploy_args(extra, *, use_critic: bool = False):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--cluster-backend", "kubernetes", *extra, *REQUIRED_ARGS, "--num-rollout", "1"])
+    args.ft_components = []
+    args.mini_ft_controller_enable = False
+    args.use_critic = use_critic
+    return args
+
 
 def _parse_deploy_args(extra: list[str], *, resolve_fault_tolerance: bool = False) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -946,13 +965,7 @@ def _parse_deploy_args(extra: list[str], *, resolve_fault_tolerance: bool = Fals
 
 class TestDeployComponent:
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        args = parser.parse_args(["--cluster-backend", "kubernetes", *extra, *REQUIRED_ARGS, "--num-rollout", "1"])
-        args.ft_components = []
-        args.mini_ft_controller_enable = False
-        args.use_critic = False
-        return args
+        return _parse_deploy_args(extra)
 
     def _parse_validated(self, extra):
         return _parse_deploy_args(extra, resolve_fault_tolerance=True)
@@ -961,10 +974,15 @@ class TestDeployComponent:
         """A run that does not mention the flag is one deployment, exactly as before the flag existed."""
         assert self._parse([]).deploy_component == "all"
 
-    def test_rejects_a_component_that_is_not_one_of_the_four(self):
-        """The four values partition the run, so a fifth name would deploy an undefined subset."""
+    def test_rejects_a_component_that_names_no_part_of_a_run(self):
+        """The values partition the run, so an unknown name would deploy an undefined subset."""
         with pytest.raises(SystemExit):
             self._parse(["--deploy-component", "rollout"])
+
+    def test_rejects_an_instance_of_a_component_a_run_has_exactly_one_of(self):
+        """Two primaries would be two orchestration scripts driving one run against each other."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(self._parse(["--deploy-component", "primary", "--deploy-instance-id", "west"]))
 
     def test_an_unsplit_run_is_validated_exactly_as_it_was_before_the_flag(self):
         """`all` must stay free of every split-only requirement, or it would break every existing launch."""
@@ -974,16 +992,9 @@ class TestDeployComponent:
         """It calls nobody: the orchestration script calls it, so it has nothing to be told."""
         _validate_deploy_component(self._parse(["--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
 
-    def test_an_inference_deployment_needs_no_addresses_either(self):
-        """It serves the engines the run calls into, so nothing addresses anything from here."""
-        _validate_deploy_component(self._parse(["--deploy-component", "inference", *_SHARED_STORE_ARGS]))
-
-    def test_an_inference_deployment_has_to_share_an_object_store_too(self):
-        """Its engines write rollout data the orchestration script of another deployment reads."""
-        with pytest.raises(AssertionError, match="--object-store-backend"):
-            _validate_deploy_component(
-                self._parse(["--deploy-component", "inference", "--object-store-backend", "ray"])
-            )
+    def test_an_inference_deployment_needs_no_shared_object_store(self):
+        """Its engines are called over http and redeem no reference of the run, so nothing crosses stores."""
+        _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--object-store-backend", "ray"]))
 
     def test_a_trainer_deployment_has_to_share_an_object_store(self):
         """A ray reference is redeemable only inside the deployment that made it, and the data crosses deployments."""
@@ -1062,11 +1073,22 @@ class TestDeployComponent:
                 )
             )
 
-    def test_a_split_run_keeps_the_api_server_of_the_half_that_drives_it(self):
-        """Its api server answers for the cells it deploys, which is a smaller set, not an empty one."""
+    def test_refuses_a_split_primary_that_keeps_an_api_server_for_cells_it_does_not_deploy(self):
+        """It watches cells another release owns, so an api server here would answer for nothing it can act on."""
         args = self._parse_validated([*_PRIMARY_ARGS, "--use-fault-tolerance", *_SHARED_STORE_ARGS])
 
         assert args.api_server_port
+        with pytest.raises(AssertionError, match="--api-server-port 0"):
+            _validate_deploy_component(args)
+
+    def test_a_split_primary_that_turned_its_api_server_off_validates(self):
+        """Passing 0 is what says the cells it watches are served by the deployments that own them."""
+        args = self._parse_validated(
+            [*_PRIMARY_ARGS, "--use-fault-tolerance", "--api-server-port", "0", *_SHARED_STORE_ARGS]
+        )
+
+        assert args.api_server_port == 0
+        _validate_deploy_component(args)
 
     def test_a_trainer_deployment_keeps_the_fault_tolerance_of_its_own_cells(self):
         """Its controller watches its own ranks, and it serves them from an api server of its own."""
@@ -1129,6 +1151,173 @@ class TestDeployComponent:
                         "primary",
                         "--trainer-controller-addrs",
                         "actor=10.0.0.1",
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+    def test_rejects_an_instance_of_a_component_a_run_has_one_of(self):
+        """Two primaries would be two orchestration scripts driving one run against each other."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(
+                _parse_deploy_args(["--deploy-component", "primary", "--deploy-instance-id", "west"])
+            )
+
+    def test_rejects_an_instance_of_the_selector_for_all_components(self):
+        """`all` is not a component, so there is no instance of it to deploy."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(_parse_deploy_args(["--deploy-instance-id", "west"]))
+
+    def test_rejects_an_engine_group_name_that_cannot_name_a_release(self):
+        """It names the release and the pool ids of its engines, and helm and kubernetes both refuse that name."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--deploy-instance-id", "DC 1"]))
+
+    def test_rejects_an_engine_group_name_too_long_to_sit_inside_a_pool_id(self):
+        """Every engine pool id of this deployment carries it, and kubernetes bounds those names."""
+        with pytest.raises(AssertionError, match="characters"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    [*_INFERENCE_ARGS, "--deploy-instance-id", "a" * (DEPLOY_INSTANCE_ID_MAX_LENGTH + 1)]
+                )
+            )
+
+    def test_takes_an_engine_group_name_that_can(self):
+        """The lowercase dashed form is what the chart and the pool ids it namespaces both accept."""
+        _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--deploy-instance-id", "dc-1"]))
+
+    def test_a_named_trainer_deployment_is_validated_as_a_trainer_deployment(self):
+        """The instance names the release; nothing about the rules of a trainer deployment changes with it."""
+        _validate_deploy_component(
+            self._parse(["--deploy-component", "trainer", "--deploy-instance-id", "actor", *_SHARED_STORE_ARGS])
+        )
+
+    def test_rejects_a_trainer_deployment_whose_arguments_describe_several_trainers(self):
+        """It carries one trainer, and arguments naming more mean it was handed the whole run's config."""
+        with pytest.raises(AssertionError, match="describe 2"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        "trainer",
+                        "--megatron-config",
+                        encode_megatron_config("a", "b"),
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+    def test_rejects_a_trainer_deployment_that_grows_itself_a_critic(self):
+        """--use-critic appends a second trainer, and this release carries exactly the one its config declares."""
+        with pytest.raises(AssertionError, match="describe 2"):
+            _validate_deploy_component(
+                _parse_deploy_args(["--deploy-component", "trainer", *_SHARED_STORE_ARGS], use_critic=True)
+            )
+
+    def test_rejects_a_trainer_deployment_whose_config_declares_the_critic(self, tmp_path):
+        """A run synthesizes its critic from --use-critic, so no deployment can be handed one to carry."""
+        with pytest.raises(AssertionError, match="declares a critic"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        "trainer",
+                        "--megatron-config",
+                        write_megatron_config_trainers(tmp_path, [{"model_id": "a", "role": "critic"}]),
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+    def test_rejects_an_instance_that_is_not_the_trainer_its_config_declares(self):
+        """The run reaches a trainer by the id its config declares, so a release named otherwise is unreachable."""
+        with pytest.raises(AssertionError, match="actro"):
+            _validate_deploy_component(
+                self._parse(["--deploy-component", "trainer", "--deploy-instance-id", "actro", *_SHARED_STORE_ARGS])
+            )
+
+    def test_refuses_a_ray_trainer_deployment_that_debugs_the_rollout_alone(self):
+        """It sizes the placement group for an inference side this deployment does not deploy."""
+        with pytest.raises(AssertionError, match="--debug-rollout-only"):
+            _validate_deploy_component(
+                self._parse(
+                    [*_RAY_RPC_ARGS, "--deploy-component", "trainer", "--debug-rollout-only", *_SHARED_STORE_ARGS]
+                )
+            )
+
+    def test_a_ray_trainer_deployment_that_trains_normally_still_validates(self):
+        """The refusal is about that one flag, and the split trainer itself is unchanged."""
+        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
+
+    def test_a_kubernetes_trainer_deployment_is_not_refused_the_flag(self):
+        """The empty layout is a ray placement group, which this backend builds none of."""
+        _validate_deploy_component(
+            self._parse(["--deploy-component", "trainer", "--debug-rollout-only", *_SHARED_STORE_ARGS])
+        )
+
+    def test_an_unsplit_ray_run_may_still_debug_the_rollout_alone(self):
+        """It deploys the inference side itself, so the layout it sizes has the bundles it asks for."""
+        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, "--debug-rollout-only"]))
+
+
+class TestEngineRegistrationArguments:
+    def test_a_fully_told_engine_deployment_validates(self):
+        """The controller address is all it needs; it redeems no object store reference of the run."""
+        _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS]))
+
+    def test_an_engine_deployment_has_to_be_given_an_instance_id(self):
+        """It names the engine pools this deployment reports, and two unnamed ones would report the same pools."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(
+                _parse_deploy_args(["--deploy-component", "inference", "--inference-controller-addr", "c:8000"])
+            )
+
+    def test_an_engine_deployment_has_to_be_told_which_controller_to_register_into(self):
+        """It holds no controller, so an unnamed one leaves its engines announcing themselves to nobody."""
+        with pytest.raises(AssertionError, match="--inference-controller-addr"):
+            _validate_deploy_component(
+                _parse_deploy_args(["--deploy-component", "inference", "--deploy-instance-id", "dc1"])
+            )
+
+    def _parse_with_controller_addr(self, addr):
+        return _parse_deploy_args(
+            ["--deploy-component", "inference", "--deploy-instance-id", "dc1", "--inference-controller-addr", addr]
+        )
+
+    def test_refuses_a_controller_address_that_names_no_port(self):
+        """The reporter parses it inside the pods, so an unparseable one costs a whole installed release."""
+        with pytest.raises(AssertionError, match="host:port"):
+            _validate_deploy_component(self._parse_with_controller_addr("controller"))
+
+    def test_refuses_a_controller_address_that_names_no_host(self):
+        """A port on its own is dialable from nowhere, and the engines would register into nothing."""
+        with pytest.raises(AssertionError, match="no host"):
+            _validate_deploy_component(self._parse_with_controller_addr(":8000"))
+
+    def test_refuses_a_bare_ipv6_controller_address(self):
+        """Its own colons cannot be told from the port separator, which the reporter finds out too late."""
+        with pytest.raises(AssertionError, match="ipv6"):
+            _validate_deploy_component(self._parse_with_controller_addr("fd00::1:8000"))
+
+    def test_takes_a_bracketed_ipv6_controller_address(self):
+        """That is the spelling the reporter reads, and an engine deployment may well be given one."""
+        _validate_deploy_component(self._parse_with_controller_addr("[fd00::1]:8000"))
+
+    def test_takes_an_ordinary_host_and_port(self):
+        """The check has to leave the addresses that already work exactly as they were."""
+        _validate_deploy_component(self._parse_with_controller_addr("controller:8000"))
+
+    @pytest.mark.parametrize("component", ["all", "primary", "trainer"])
+    def test_only_an_engine_deployment_is_told_where_the_controller_is(self, component):
+        """Every other component holds that controller in its own process, so an address contradicts it."""
+        with pytest.raises(AssertionError, match="--inference-controller-addr"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    [
+                        "--deploy-component",
+                        component,
+                        "--inference-controller-addr",
+                        "controller:8000",
                         *_SHARED_STORE_ARGS,
                     ]
                 )
