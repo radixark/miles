@@ -7,13 +7,16 @@ from tests.e2e.conftest_multi_policy import execute
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=2400, suite="stage-c-4-gpu-h200", labels=["short", "multi-policy", "fully-async"])
+register_cuda_ci(est_time=3000, suite="stage-c-4-gpu-h200", labels=["short", "multi-policy", "fully-async"])
 
-NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "3"))
+NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "5"))
+SAVE_INTERVAL = 2
 
 
 if __name__ == "__main__":
-    args = dataclasses.replace(command_utils.default_config(ScriptArgs), num_rollout=NUM_ROLLOUT)
+    args = dataclasses.replace(
+        command_utils.default_config(ScriptArgs), num_rollout=NUM_ROLLOUT, save_interval=SAVE_INTERVAL
+    )
     prepare(args)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)

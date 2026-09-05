@@ -96,7 +96,7 @@ def execute():
         f"{misc_args} "
     )
 
-    debug_data_path = "test_rollout_data_megatron_fsdp_align.pt"
+    debug_data_path = "test_rollout_data_megatron_fsdp_align_{rollout_id}.pt"
     grad_norm_path = "grad_norm_fsdp.pt"
 
     fsdp_args = (
@@ -157,8 +157,9 @@ def execute():
     finally:
         if os.path.exists(grad_norm_path):
             os.remove(grad_norm_path)
-        if os.path.exists(debug_data_path):
-            os.remove(debug_data_path)
+        debug_data_file = debug_data_path.format(rollout_id=0)
+        if os.path.exists(debug_data_file):
+            os.remove(debug_data_file)
 
 
 if __name__ == "__main__":
