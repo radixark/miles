@@ -329,6 +329,7 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
         ans.save_hf = compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
 
+    # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
     if args.megatron_config is not None:
         resolve_args_checkpoint_load(ans)
 
@@ -351,6 +352,9 @@ def compute_trainer_checkpoint_dir(*, base_dir: str | None, trainer_id: str) -> 
 
 
 def resolve_args_checkpoint_load(args: Namespace) -> None:
+    # TODO: refactor
+    args.requested_load = args.load
+
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
