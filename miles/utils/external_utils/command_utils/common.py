@@ -11,9 +11,13 @@ import shlex
 import socket
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
+
+if TYPE_CHECKING:
+    from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 
 logger = logging.getLogger(__name__)
 
