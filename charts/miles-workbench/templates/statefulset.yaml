@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "miles-workbench.fullname" . | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-workbench.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "miles-workbench.fullname" . | quote }}
+  selector:
+    matchLabels:
+      {{- include "miles-workbench.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "miles-workbench.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "miles-workbench.serviceAccountName" . | quote }}
+      automountServiceAccountToken: true
+      {{- with include "miles-common.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      {{- with include "miles-common.scheduling" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      containers:
+        - name: workbench
+          image: {{ include "miles-common.image" . }}
+          imagePullPolicy: {{ .Values.infra.image.pullPolicy | quote }}
+          command: ["sleep", "infinity"]
+          {{- with include "miles-common.env" . }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with include "miles-common.sharedStorageVolumeMount" . }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
+      {{- with include "miles-common.sharedStorageVolume" . }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
