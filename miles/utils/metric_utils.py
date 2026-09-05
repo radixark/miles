@@ -7,6 +7,12 @@ import numpy as np
 
 REPETITION_WINDOW_SIZE_CHARS = 10_000
 REPETITION_WINDOW_STRIDE_CHARS = 5_000
+# has_repetition runs synchronously on the rollout executor's event loop, so
+# the scan must stay bounded however long a response grows: past ~165k chars
+# the stride widens to keep at most this many windows. Adjacent windows still
+# overlap (stride <= window size) up to ~320k chars, so coverage stays
+# gap-free for any realistic response length.
+REPETITION_MAX_WINDOWS = 32
 REPETITION_COMPRESSION_RATIO_THRESHOLD = 10.0
 
 
@@ -119,8 +125,9 @@ def _repetition_windows(text: str) -> Iterator[str]:
         return
 
     final_start = len(text) - REPETITION_WINDOW_SIZE_CHARS
+    stride = max(REPETITION_WINDOW_STRIDE_CHARS, math.ceil(final_start / (REPETITION_MAX_WINDOWS - 1)))
     last_start = -1
-    for start in range(0, final_start + 1, REPETITION_WINDOW_STRIDE_CHARS):
+    for start in range(0, final_start + 1, stride):
         yield text[start : start + REPETITION_WINDOW_SIZE_CHARS]
         last_start = start
 
