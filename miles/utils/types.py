@@ -7,7 +7,6 @@ import torch
 
 from miles.utils.sampling_mask import RolloutSamplingMask
 
-
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
 
 
@@ -120,7 +119,12 @@ class Sample:
 
     metadata: dict = field(default_factory=dict)
     generate_function_path: str | None = None
-    # metadata used during training, e.g., what loss to use for this sample.
+    opd_candidate_ids: list | torch.Tensor | None = None
+    opd_candidate_old_log_probs: list | torch.Tensor | None = None
+    opd_candidate_teacher_log_probs: list | torch.Tensor | None = None
+    opd_loss_weights: list | torch.Tensor | None = None
+
+    # Metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
     # MultiLoRA: which adapter this sample trains/infers with
@@ -267,6 +271,15 @@ class Sample:
             assert (
                 len(self.opd_reverse_kl) == self.response_length
             ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
+        for name in (
+            "opd_candidate_ids",
+            "opd_candidate_old_log_probs",
+            "opd_candidate_teacher_log_probs",
+            "opd_loss_weights",
+        ):
+            value = getattr(self, name)
+            if value is not None and len(value) != self.response_length:
+                raise ValueError(f"{name} must match response_length")
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
@@ -307,6 +320,15 @@ class Sample:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
         if self.opd_reverse_kl is not None:
             self.opd_reverse_kl = self.opd_reverse_kl[:-n]
+        for name in (
+            "opd_candidate_ids",
+            "opd_candidate_old_log_probs",
+            "opd_candidate_teacher_log_probs",
+            "opd_loss_weights",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(self, name, value[:-n])
         if self.metadata and "opd_student_top_logprobs" in self.metadata:
             self.metadata["opd_student_top_logprobs"] = self.metadata["opd_student_top_logprobs"][:-n]
         if self.loss_mask is not None:
@@ -347,6 +369,14 @@ class Sample:
         self.prefix_cache_info = Sample.PrefixCacheInfo()
         self.remove_sample = False
         self.train_metadata = None
+        self.teacher_log_probs = None
+        self.opd_reverse_kl = None
+        self.opd_candidate_ids = None
+        self.opd_candidate_old_log_probs = None
+        self.opd_candidate_teacher_log_probs = None
+        self.opd_loss_weights = None
+        if self.metadata:
+            self.metadata.pop("opd_student_top_logprobs", None)
 
     @property
     def all_weight_version_spans(self) -> list[WeightVersionSpan]:

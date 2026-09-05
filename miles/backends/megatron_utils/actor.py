@@ -405,6 +405,13 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_id=rollout_id,
                 store_prefix=store_prefix,
                 fp32_output=False,
+                extra_batch_keys=(
+                    ("opd_candidate_ids",)
+                    if not store_prefix
+                    and getattr(self.args, "opd_loss_mode", "legacy") == "topk-candidate"
+                    and not self.args.use_rollout_logprobs
+                    else ()
+                ),
             )
 
     @with_logs

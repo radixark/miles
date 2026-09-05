@@ -108,7 +108,7 @@ def compute_advantages_and_returns(
     )
 
     # Apply on-policy distillation KL penalty to advantages (orthogonal to advantage estimator)
-    if args.use_opd:
+    if args.use_opd and getattr(args, "opd_loss_mode", "legacy") != "topk-candidate":
         apply_opd_kl_to_advantages(
             args=args,
             rollout_data=rollout_data,

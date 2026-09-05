@@ -2,8 +2,10 @@ import math
 from argparse import Namespace
 
 import pytest
+import torch
 from tests.ci.ci_register import register_cpu_ci
 
+from miles.rollout import on_policy_distillation
 from miles.rollout.on_policy_distillation import (
     _compute_topk_reverse_kl,
     _per_position_ids,
@@ -205,3 +207,49 @@ def test_routing_missing_name_without_default_raises():
     args = _routing_args(urls=["math=http://h1/generate"])
     with pytest.raises(ValueError, match="missing teacher key"):
         _teacher_url_for_sample(args, _tagged_sample({}))
+
+
+def test_candidate_scores_follow_student_order_and_reject_missing_teacher_ids():
+    from miles.rollout.on_policy_distillation import _store_candidate_scores
+
+    args = Namespace(opd_log_prob_top_k=2)
+    sample = _sample()
+    _store_candidate_scores(args, sample, _teacher_payload())
+    assert sample.opd_candidate_ids.tolist() == [[1, 2], [4, 5]]
+    assert sample.opd_candidate_teacher_log_probs.tolist()[0] == pytest.approx([math.log(0.3), math.log(0.7)])
+    payload = _teacher_payload()
+    payload["teacher"]["meta_info"]["input_token_ids_logprobs"][1] = [_entry(0.3, 1)]
+    with pytest.raises(ValueError, match="Missing teacher"):
+        _store_candidate_scores(args, sample, payload)
+
+
+def test_candidate_data_does_not_survive_sample_retry():
+    from miles.rollout.on_policy_distillation import _store_candidate_scores
+
+    sample = _sample()
+    _store_candidate_scores(Namespace(opd_log_prob_top_k=2), sample, _teacher_payload())
+    sample.reset_for_retry()
+    assert sample.opd_candidate_ids is None
+    assert sample.opd_candidate_old_log_probs is None
+    assert sample.opd_candidate_teacher_log_probs is None
+    assert "opd_student_top_logprobs" not in sample.metadata
+
+
+def test_legacy_topk_honors_static_domain_weights(monkeypatch):
+    args = Namespace(
+        opd_loss_mode="legacy",
+        opd_log_prob_top_k=2,
+        reward_key=None,
+        opd_domain_balance="static",
+        opd_domain_targets=["a=0.5", "b=0.5"],
+        calculate_per_token_loss=False,
+    )
+    samples = [Sample(response_length=2, metadata={"domain": domain}, reward=0.0) for domain in ["a", "a", "b"]]
+    monkeypatch.setattr(
+        on_policy_distillation,
+        "_compute_topk_reverse_kl",
+        lambda *a: torch.tensor([0.1, 0.2]),
+    )
+    on_policy_distillation.post_process_rewards(args, samples)
+    weights = [s.opd_loss_weights[0].item() for s in samples]
+    assert weights == pytest.approx([0.75, 0.75, 1.5])

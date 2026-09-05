@@ -1,11 +1,13 @@
+import json
 import math
 from argparse import Namespace
 from collections.abc import Iterable
 from typing import Any
 
-import aiohttp
 import torch
 
+from miles.rollout.opd_balance import set_domain_weights
+from miles.utils.http_utils import post_bytes_no_retry
 from miles.utils.types import Sample
 
 TopLogprobs = list[list[Any]]
@@ -140,11 +142,8 @@ def _student_score_url(args: Namespace) -> str:
 
 
 async def _post_json(url: str, payload: dict[str, Any], timeout_secs: int | float | None = None) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=timeout_secs)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, json=payload) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+    body = await post_bytes_no_retry(url, payload, timeout=timeout_secs)
+    return json.loads(body)
 
 
 def _top_entry_token_id(entry: list[Any]) -> int:
@@ -400,22 +399,49 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
     return reward_payload
 
 
+def _store_candidate_scores(args: Namespace, sample: Sample, reward: dict[str, Any]) -> None:
+    rows = _student_top_logprobs(sample, sample.response_length)
+    teacher = _input_logprob_maps(reward["teacher"], "input_token_ids_logprobs", sample.response_length)
+    k = _get_opd_top_k(args)
+    ids, old_scores, teacher_scores = [], [], []
+    for entries, teacher_row in zip(rows, teacher, strict=True):
+        candidate_ids = [_top_entry_token_id(entry) for entry in entries]
+        if len(candidate_ids) != k or len(set(candidate_ids)) != k or any(i < 0 for i in candidate_ids):
+            raise ValueError("Each response position must contain K distinct valid student candidates")
+        old_row = [_top_entry_logprob(entry) for entry in entries]
+        teacher_row_values = [_lookup_logprob(i, teacher_row, None, source="teacher") for i in candidate_ids]
+        if not all(math.isfinite(v) and v <= 1e-5 for v in old_row + teacher_row_values):
+            raise ValueError("Candidate scores must be finite, full-vocabulary log-probabilities")
+        ids.append(candidate_ids)
+        old_scores.append(old_row)
+        teacher_scores.append(teacher_row_values)
+    shape = (sample.response_length, k)
+    sample.opd_candidate_ids = torch.tensor(ids, dtype=torch.long).reshape(shape)
+    sample.opd_candidate_old_log_probs = torch.tensor(old_scores, dtype=torch.float32).reshape(shape)
+    sample.opd_candidate_teacher_log_probs = torch.tensor(teacher_scores, dtype=torch.float32).reshape(shape)
+
+
 def post_process_rewards(args: Namespace, samples: list[Sample], **kwargs: Any) -> tuple[list[float], list[float]]:
-    """Extract OPD signals from teacher responses.
+    """Cache candidate distributions, legacy scalar top-k rewards, or sampled scores.
 
-    ``--opd-log-prob-top-k=0`` preserves the original sampled-token OPD path:
-    store teacher log-probs and let training compute ``student_logp - teacher_logp``.
-
-    ``--opd-log-prob-top-k>0`` follows the practical recipe from
-    "Rethinking On-Policy Distillation" by forming a top-k token set per
-    response position and storing a precomputed weighted reverse-KL estimate.
+    Candidate mode keeps teacher and old-policy scores fixed across learner
+    updates; optional reward refresh uses the learner's current forward pass.
     """
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     response_lengths = [sample.response_length for sample in samples]
 
+    if getattr(args, "opd_loss_mode", "legacy") == "topk-candidate":
+        for sample, reward in zip(samples, raw_rewards, strict=True):
+            _store_candidate_scores(args, sample, reward)
+        set_domain_weights(args, samples)
+        scalar_rewards = [0.0] * len(samples)
+        return scalar_rewards, scalar_rewards
+
     if _get_opd_top_k(args) > 0:
         for sample, reward in zip(samples, raw_rewards, strict=True):
             sample.opd_reverse_kl = _compute_topk_reverse_kl(args, sample, reward)
+        if getattr(args, "opd_domain_balance", "none") != "none":
+            set_domain_weights(args, samples)
         scalar_rewards = [0.0] * len(samples)
         return scalar_rewards, scalar_rewards
 
@@ -425,12 +451,13 @@ def post_process_rewards(args: Namespace, samples: list[Sample], **kwargs: Any) 
     ]
 
     for sample, t_log_probs in zip(samples, teacher_log_probs, strict=True):
+        if len(t_log_probs) != sample.response_length or not torch.isfinite(t_log_probs).all():
+            raise ValueError("Teacher sampled log-probabilities must be finite and match the response length")
         sample.teacher_log_probs = t_log_probs
+    if getattr(args, "opd_domain_balance", "none") != "none":
+        set_domain_weights(args, samples)
 
-    # Return scalar rewards for GRPO/PPO advantage estimator.
-    # For pure on-policy distillation, we use 0.0 as the task reward.
-    # The learning signal comes entirely from the OPD KL penalty.
-    # If you have task rewards, you can add them here.
+    # Pure OPD has no scalar task reward; its learning signal comes from distillation.
     scalar_rewards = [0.0] * len(samples)
 
     return scalar_rewards, scalar_rewards

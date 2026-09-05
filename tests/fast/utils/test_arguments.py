@@ -1448,3 +1448,35 @@ class TestSessionServerArguments:
 
         assert args.session_server_workers == 32
         assert args.session_server_port is None
+
+
+class TestCandidateOPDConfiguration:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(
+            [
+                "--num-rollout",
+                "1",
+                "--rollout-batch-size",
+                "64",
+                "--use-opd",
+                "--opd-type",
+                "sglang",
+                "--opd-loss-mode",
+                "topk-candidate",
+                "--opd-log-prob-top-k",
+                "16",
+                *extra,
+            ]
+        )
+
+    @pytest.mark.parametrize("temperature", ["0", "0.7", "2", "nan"])
+    def test_rejects_unmatched_scoring_temperature(self, temperature):
+        with pytest.raises(ValueError, match="rollout-temperature 1"):
+            miles_validate_args(self._parse(["--rollout-temperature", temperature]))
+
+    @pytest.mark.parametrize("extra", [["--use-tis"], ["--use-opsm"], ["--advantage-estimator", "gspo"]])
+    def test_rejects_ignored_policy_corrections(self, extra):
+        with pytest.raises(ValueError, match="per-candidate PPO"):
+            miles_validate_args(self._parse(extra))
