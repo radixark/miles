@@ -36,13 +36,20 @@ PAIRING = "myrun-miles-run-colocate-pairing"
 ORCHESTRATOR_ROLE = "myrun-miles-run-orchestrator"
 
 
-def layout(*, num_inference_cells: int, num_pods_per_inference_cell: int, gpu_offset: int) -> dict[str, int]:
+def layout(
+    *,
+    num_inference_cells: int,
+    num_pods_per_inference_cell: int,
+    gpu_offset: int,
+    num_gpus_per_inference_pod: int = 8,
+) -> dict[str, int]:
     return {
         "num_inference_cells": num_inference_cells,
         "num_trainer_cells": 3,
         "num_pods_per_inference_cell": num_pods_per_inference_cell,
         "num_pods_per_trainer_cell": 2,
         "num_gpus_per_node": 8,
+        "num_gpus_per_inference_pod": num_gpus_per_inference_pod,
         "gpu_offset": gpu_offset,
     }
 
