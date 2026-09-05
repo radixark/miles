@@ -83,9 +83,65 @@ POLICY_FIELDS = {
     "failure_behavior",
 }
 
+SAFE_ERROR_TYPE_NAMES = {
+    "AnalysisConfigError",
+    "APIConnectionError",
+    "APIError",
+    "APIStatusError",
+    "APITimeoutError",
+    "AuthenticationError",
+    "BadRequestError",
+    "ConnectError",
+    "ConnectTimeout",
+    "GitHubOIDCProviderError",
+    "HTTPError",
+    "InternalServerError",
+    "JSONDecodeError",
+    "KeyError",
+    "LocalProtocolError",
+    "NetworkError",
+    "OAuthError",
+    "OpenAIError",
+    "PermissionDeniedError",
+    "PoolTimeout",
+    "RateLimitError",
+    "ReadError",
+    "ReadTimeout",
+    "RemoteProtocolError",
+    "RuntimeError",
+    "TimeoutError",
+    "TransportError",
+    "URLError",
+    "ValueError",
+    "WriteError",
+    "WriteTimeout",
+}
+OPENAI_WIF_TOKEN_ENDPOINT = ("https", "auth.openai.com", "/oauth/token")
+TRANSPORT_ERROR_TYPE_NAMES = {
+    "APIConnectionError",
+    "APITimeoutError",
+    "ConnectError",
+    "ConnectTimeout",
+    "LocalProtocolError",
+    "NetworkError",
+    "PoolTimeout",
+    "ReadError",
+    "ReadTimeout",
+    "RemoteProtocolError",
+    "TimeoutError",
+    "TransportError",
+    "URLError",
+    "WriteError",
+    "WriteTimeout",
+}
+
 
 class AnalysisConfigError(ValueError):
     """A safe-to-report configuration error."""
+
+
+class GitHubOIDCProviderError(RuntimeError):
+    """Stable marker for failures while obtaining the GitHub Actions subject token."""
 
 
 @dataclass(frozen=True)
@@ -387,30 +443,34 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _github_actions_oidc_provider(audience: str) -> dict[str, Any]:
-    request_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-    request_token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
-
     def get_token() -> str:
-        parsed = urllib.parse.urlparse(request_url)
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != "pipelines.actions.githubusercontent.com"
-            or parsed.username
-            or parsed.password
-            or parsed.fragment
-        ):
-            raise RuntimeError("GitHub OIDC request URL is not an approved endpoint")
-        query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
-        query["audience"] = audience
-        url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
-        request = urllib.request.Request(url, headers={"Authorization": f"bearer {request_token}"})
-        opener = urllib.request.build_opener(_NoRedirect())
-        with opener.open(request, timeout=15) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        token = payload.get("value")
-        if not isinstance(token, str) or not token:
-            raise RuntimeError("GitHub OIDC token response did not include a value")
-        return token
+        try:
+            request_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+            request_token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+            parsed = urllib.parse.urlparse(request_url)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != "pipelines.actions.githubusercontent.com"
+                or parsed.username
+                or parsed.password
+                or parsed.fragment
+            ):
+                raise RuntimeError("GitHub OIDC request URL is not an approved endpoint")
+            query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+            query["audience"] = audience
+            url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+            request = urllib.request.Request(url, headers={"Authorization": f"bearer {request_token}"})
+            opener = urllib.request.build_opener(_NoRedirect())
+            with opener.open(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            token = payload.get("value")
+            if not isinstance(token, str) or not token:
+                raise RuntimeError("GitHub OIDC token response did not include a value")
+            return token
+        except GitHubOIDCProviderError:
+            raise
+        except Exception as exc:
+            raise GitHubOIDCProviderError("GitHub Actions OIDC provider failed") from exc
 
     return {"token_type": "jwt", "get_token": get_token}
 
@@ -500,6 +560,53 @@ def _usage_dict(response: Any) -> dict[str, Any] | None:
 
 def _audit(base: dict[str, Any], emit: Callable[[str], None]) -> None:
     emit("ci_failure_analysis_audit=" + json.dumps(base, sort_keys=True, separators=(",", ":")))
+
+
+def _exception_chain(exc: BaseException, limit: int = 8) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and len(chain) < limit and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _safe_error_type(exc: BaseException) -> str:
+    name = type(exc).__name__
+    return name if name in SAFE_ERROR_TYPE_NAMES else "OtherError"
+
+
+def _targets_openai_wif_exchange(exc: BaseException) -> bool:
+    request = getattr(exc, "request", None)
+    url = getattr(request, "url", None)
+    if url is None:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(str(url))
+    except Exception:
+        return False
+    return (parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.path) == OPENAI_WIF_TOKEN_ENDPOINT
+
+
+def _analysis_error_audit(exc: BaseException) -> dict[str, str]:
+    chain = _exception_chain(exc)
+    names = [_safe_error_type(item) for item in chain]
+    if "GitHubOIDCProviderError" in names:
+        stage = "github_oidc"
+    elif "OAuthError" in names or any(_targets_openai_wif_exchange(item) for item in chain):
+        stage = "openai_wif_exchange"
+    elif any(name in TRANSPORT_ERROR_TYPE_NAMES for name in names):
+        stage = "openai_api_transport"
+    elif any(name in {"JSONDecodeError", "ValueError"} for name in names):
+        stage = "response_validation"
+    else:
+        stage = "openai_api"
+    result = {"stage": stage, "error_type": names[0]}
+    if len(names) > 1:
+        result["cause_type"] = names[1]
+    return result
 
 
 def _collect_evidence(
@@ -642,7 +749,10 @@ def analyze_failures(
         schema = load_schema(schema_path)
         _validate_repository(run, repo)
     except Exception as exc:
-        _audit({"stage": "configuration", "validation": "error", "error_type": type(exc).__name__}, emit)
+        _audit(
+            {"stage": "configuration", "validation": "error", "error_type": _safe_error_type(exc)},
+            emit,
+        )
         return AnalysisOutcome(enabled=True, reasons={}, unavailable=True)
 
     selected = jobs[: policy.max_jobs]
@@ -688,7 +798,7 @@ def analyze_failures(
         audit.update(validation="valid", usage=_usage_dict(response), latency_ms=latency_ms)
         unavailable = False
     except Exception as exc:
-        audit.update(validation="error", error_type=type(exc).__name__)
+        audit.update(validation="error", **_analysis_error_audit(exc))
         reasons = {}
         unavailable = True
     _audit(audit, emit)

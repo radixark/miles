@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -101,6 +102,23 @@ class FakeResponses:
 class FakeClient:
     def __init__(self, response=None, error=None):
         self.responses = FakeResponses(response, error)
+
+
+class APIConnectionError(Exception):
+    def __init__(self, message, request_url):
+        super().__init__(message)
+        self.request = SimpleNamespace(url=request_url)
+
+
+class ConnectError(Exception):
+    def __init__(self, message, request_url):
+        super().__init__(message)
+        self.request = SimpleNamespace(url=request_url)
+
+
+def with_cause(error, cause):
+    error.__cause__ = cause
+    return error
 
 
 def valid_response(kwargs):
@@ -400,5 +418,116 @@ def test_oidc_provider_rejects_unapproved_host_before_sending_token(monkeypatch)
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://evil.invalid/oidc")
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
     provider = ANALYZER._github_actions_oidc_provider("openai-audience")
-    with pytest.raises(RuntimeError, match="not an approved endpoint"):
+    with pytest.raises(ANALYZER.GitHubOIDCProviderError) as caught:
         provider["get_token"]()
+    assert type(caught.value.__cause__).__name__ == "RuntimeError"
+    assert "evil.invalid" not in str(caught.value)
+    assert "sensitive-request-token" not in str(caught.value)
+
+
+def test_oidc_callback_transport_failure_has_stable_safe_classification(monkeypatch):
+    secret = "oidc-provider-secret-message"
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://pipelines.actions.githubusercontent.com/oidc?request_data=sensitive-query",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
+
+    class FailingOpener:
+        def open(self, request, timeout):
+            raise urllib.error.URLError(secret)
+
+    monkeypatch.setattr(ANALYZER.urllib.request, "build_opener", lambda *args: FailingOpener())
+    provider = ANALYZER._github_actions_oidc_provider("openai-audience")
+    with pytest.raises(ANALYZER.GitHubOIDCProviderError) as caught:
+        provider["get_token"]()
+
+    assert type(caught.value.__cause__).__name__ == "URLError"
+    assert ANALYZER._analysis_error_audit(caught.value) == {
+        "stage": "github_oidc",
+        "error_type": "GitHubOIDCProviderError",
+        "cause_type": "URLError",
+    }
+    assert secret not in json.dumps(ANALYZER._analysis_error_audit(caught.value))
+
+
+def test_wrapped_oidc_callback_failure_is_identified_without_emitting_messages(tmp_path):
+    provider_error = with_cause(
+        ANALYZER.GitHubOIDCProviderError("provider-secret-message"),
+        urllib.error.URLError("oidc-cause-secret-message"),
+    )
+    error = with_cause(
+        APIConnectionError("outer-secret-message", "https://api.openai.com/v1/responses?secret=query-secret"),
+        provider_error,
+    )
+    outcome, emitted = analyze(
+        tmp_path,
+        [job()],
+        FakeGitHub(logs={10: "AssertionError: fail"}),
+        FakeClient(error=error),
+    )
+
+    audit = json.loads(emitted[0].split("=", 1)[1])
+    assert outcome.unavailable and outcome.reasons == {}
+    assert audit["stage"] == "github_oidc"
+    assert audit["error_type"] == "APIConnectionError"
+    assert audit["cause_type"] == "GitHubOIDCProviderError"
+    assert not any(
+        secret in emitted[0]
+        for secret in (
+            "provider-secret-message",
+            "oidc-cause-secret-message",
+            "outer-secret-message",
+            "query-secret",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("cause_url", "expected_stage"),
+    [
+        ("https://auth.openai.com/oauth/token?secret=wif-query-secret", "openai_wif_exchange"),
+        ("https://api.openai.com/v1/responses?secret=api-query-secret", "openai_api_transport"),
+    ],
+)
+def test_downstream_api_connection_error_classifies_cause_without_emitting_details(
+    tmp_path, cause_url, expected_stage
+):
+    error = with_cause(
+        APIConnectionError("outer-transport-secret", "https://api.openai.com/v1/responses"),
+        ConnectError("cause-transport-secret", cause_url),
+    )
+    outcome, emitted = analyze(
+        tmp_path,
+        [job()],
+        FakeGitHub(logs={10: "AssertionError: fail"}),
+        FakeClient(error=error),
+    )
+
+    audit = json.loads(emitted[0].split("=", 1)[1])
+    assert outcome.unavailable and outcome.reasons == {}
+    assert audit["stage"] == expected_stage
+    assert audit["error_type"] == "APIConnectionError"
+    assert audit["cause_type"] == "ConnectError"
+    assert "outer-transport-secret" not in emitted[0]
+    assert "cause-transport-secret" not in emitted[0]
+    assert "wif-query-secret" not in emitted[0]
+    assert "api-query-secret" not in emitted[0]
+
+
+def test_unknown_exception_class_and_message_are_not_emitted(tmp_path):
+    class ArbitrarySecretFailure(Exception):
+        pass
+
+    outcome, emitted = analyze(
+        tmp_path,
+        [job()],
+        FakeGitHub(logs={10: "AssertionError: fail"}),
+        FakeClient(error=ArbitrarySecretFailure("arbitrary-secret-message")),
+    )
+    audit = json.loads(emitted[0].split("=", 1)[1])
+    assert outcome.unavailable
+    assert audit["stage"] == "openai_api"
+    assert audit["error_type"] == "OtherError"
+    assert "ArbitrarySecretFailure" not in emitted[0]
+    assert "arbitrary-secret-message" not in emitted[0]
