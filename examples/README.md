@@ -26,6 +26,7 @@ data and weights around.
 - **[low_precision](./infra_features/low_precision)**: Examples of FP8 training and inference, plus INT4 QAT, for improved throughput and stability.
 - **[p2p_weight_transfer](./infra_features/p2p_weight_transfer)**: Point-to-point weight transfer between training and rollout engines.
 - **[random_async](./infra_features/random_async)**: Dataset-free stress test of the async rollout ↔ trainer loop.
+- **[split_deployment](./infra_features/split_deployment)**: Installs one run as several helm releases — trainer, engines and orchestration script apart.
 - **[train_infer_mismatch_helper](./infra_features/train_infer_mismatch_helper)**: Algorithmic methods for rollout correction (e.g., TIS, MIS).
 - **[true_on_policy](./infra_features/true_on_policy)**: Ensures strictly equal log probabilities between inference (SGLang) and training engines.
 
