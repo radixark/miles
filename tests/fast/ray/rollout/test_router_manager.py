@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from argparse import Namespace
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -46,6 +47,39 @@ _ROUTER_PROVIDERS = [object()]
 
 
 class TestResolveRouterAddrs:
+    async def test_all_model_routers_are_waited_concurrently(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """All model router waits start before either router becomes ready."""
+        args = _make_two_model_args(tmp_path)
+        started = [asyncio.Event(), asyncio.Event()]
+        released = [asyncio.Event(), asyncio.Event()]
+        probed: list[tuple[str, int]] = []
+
+        class _FakeProvider:
+            def __init__(self, model_idx: int) -> None:
+                self.model_idx = model_idx
+
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                started[self.model_idx].set()
+                await released[self.model_idx].wait()
+                return {"primary": HostAndPort(host="10.0.0.9", port=30000 + self.model_idx)}
+
+        async def _probe(host: str, port: int, *, timeout: float) -> None:
+            probed.append((host, port))
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready_async", _probe)
+        task = asyncio.create_task(resolve_router_addrs(args, router_providers=[_FakeProvider(0), _FakeProvider(1)]))
+
+        try:
+            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), timeout=1.0)
+        finally:
+            for event in released:
+                event.set()
+            await task
+
+        assert probed == [("10.0.0.9", 30000), ("10.0.0.9", 30001)]
+
     async def test_records_every_models_router_on_args(self, monkeypatch):
         """The driver-visible router contract (primary ip/port, per-model map) is written exactly once, here."""
         args = make_args(sglang_router_ip=None, sglang_router_port=None, sglang_model_routers=None)
@@ -184,6 +218,45 @@ class TestWaitRouterReady:
 
 
 class TestWaitSessionServerReady:
+    async def test_session_server_address_resolution_and_readiness_are_concurrent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All address lookups and then all readiness probes start concurrently."""
+        lookup_started = [asyncio.Event(), asyncio.Event()]
+        lookups_released = asyncio.Event()
+        probe_started = [asyncio.Event(), asyncio.Event()]
+        probes_released = asyncio.Event()
+
+        class _FakeProvider:
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                index = int(worker_name.split("-")[2])
+                lookup_started[index].set()
+                await lookups_released.wait()
+                return {"primary": HostAndPort(host="10.0.0.9", port=5005 + index)}
+
+        async def _probe(host: str, port: int, *, timeout: float) -> None:
+            index = port - 5005
+            probe_started[index].set()
+            await probes_released.wait()
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready_async", _probe)
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            session_server_workers=2,
+            run_uuid="00112233445566aa",
+        )
+        task = asyncio.create_task(wait_session_server_ready(args, provider=_FakeProvider()))
+
+        try:
+            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in lookup_started)), timeout=1.0)
+            lookups_released.set()
+            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in probe_started)), timeout=1.0)
+        finally:
+            lookups_released.set()
+            probes_released.set()
+            await task
+
     async def test_disabled_session_server_does_not_create_a_provider_or_publish_addresses(self, monkeypatch):
         """Disabling the session server publishes no addr / instance-id fields and resolves no addrs."""
 
