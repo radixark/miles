@@ -4,6 +4,7 @@ import asyncio
 import shlex
 import sys
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
@@ -419,6 +420,31 @@ class TestSessionServerRouterPoolLookup:
 
 
 class TestInferenceEngineEnvVars:
+    def test_an_enabled_dumper_resolves_the_sglang_environment(self, monkeypatch) -> None:
+        """Enabling inference dumping must load the dumper integration and render its startup environment."""
+        args = make_args(dumper_inference=["enable=true", "non_intrusive_mode=all"])
+        get_sglang_env_calls: list[Namespace] = []
+
+        def get_sglang_env(call_args: Namespace) -> dict[str, str]:
+            get_sglang_env_calls.append(call_args)
+            return {"DUMPER_SERVER_PORT": "reuse", "DUMPER_NON_INTRUSIVE_MODE": "all"}
+
+        fake_dumper_utils = SimpleNamespace(get_sglang_env=get_sglang_env)
+        import miles.utils as miles_utils
+
+        monkeypatch.setattr(miles_utils, "dumper_utils", fake_dumper_utils, raising=False)
+        monkeypatch.setitem(
+            sys.modules,
+            "miles.utils.dumper_utils",
+            fake_dumper_utils,
+        )
+
+        envs = compute_inference_engine_env_vars(args)
+
+        assert get_sglang_env_calls == [args]
+        assert envs["DUMPER_SERVER_PORT"] == "reuse"
+        assert envs["DUMPER_NON_INTRUSIVE_MODE"] == "all"
+
     def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
         """The launcher's environment is how operators retune sglang per cluster, so defaults must not overwrite it."""
         monkeypatch.setenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "true")
@@ -1291,6 +1317,9 @@ class _RecordingStaticProvider:
     def __init__(self, *, args) -> None:
         self.args = args
 
+    def get_handle(self, worker_name: str) -> tuple[str, str]:
+        return ("controller-handle", worker_name)
+
 
 def _fake_engine_provider_factory(args, *, capability):
     return ("custom-provider", args, capability)
@@ -1325,6 +1354,23 @@ class TestRegistrationWiring:
         kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
 
         assert not isinstance(kwargs["engine_provider"], RegistrationHub)
+
+    def test_the_reporter_carries_this_deployments_identity_hub_and_engine_provider(self, tmp_path) -> None:
+        """The reporter joins this deployment's engines to the addressed run under its deployment identity."""
+        args = self._args(tmp_path, deploy_component="inference", deploy_instance_id="west", run_uuid="run-west")
+        engine_provider = object()
+        controller_provider = _RecordingStaticProvider(args=args)
+        capability = FakeBackendCapability(cells_provider=engine_provider, static_provider=controller_provider)
+
+        (spec,) = specs_inference_registration_reporter(args)
+        kwargs = spec.ctor_kwargs(self._ctor_context(capability))
+
+        reporter = kwargs["reporter"]
+        assert kwargs["args"] is args
+        assert reporter.run_uuid == "run-west"
+        assert reporter.reporter_id == "west"
+        assert reporter.hub_endpoint == ("controller-handle", inference_controller_worker_name())
+        assert reporter.worker_provider is engine_provider
 
     def test_a_run_that_deploys_no_engines_of_its_own_serves_from_the_registered_ones(self, tmp_path):
         """The rest of the run must not know which deployment launched an engine it generates from."""
