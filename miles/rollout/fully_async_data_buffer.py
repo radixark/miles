@@ -158,6 +158,7 @@ class DefaultDataBuffer(DataBuffer):
             self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group)
             return
+        self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
         filter_output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not filter_output.keep:
             # Dropped, not recycled: no usable gradient signal.
