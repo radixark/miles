@@ -14,6 +14,7 @@ from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import (
     CommandWorkerSpec,
     LaunchCommandContext,
@@ -45,9 +46,17 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
         ctor_kwargs=lambda ctx: dict(
             args=args,
             engine_provider=ctx.capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args)),
-            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
+            router_providers=compute_router_providers(args, capability=ctx.capability),
         ),
     )
+
+
+def compute_router_providers(args, *, capability: BackendCapability) -> list[BaseWorkerProvider]:
+    config = resolve_sglang_config(args)
+    return [
+        capability.static_worker_provider(pool_id=compute_router_pool_id(model_idx))
+        for model_idx in range(len(config.models))
+    ]
 
 
 def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
@@ -138,13 +147,14 @@ def spec_session_server(args) -> CommandWorkerSpec:
     interpreter_prefix = python_argv_prefix()
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
+        (router_addrs,) = ctx.pool_addrs[compute_router_pool_id(0)]
         config = compute_session_server_config(
             args,
             host=args.session_server_ip or ctx.self_addrs["primary"].host,
             port=ctx.self_addrs["primary"].port,
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
-            backend_url=ctx.pool_addrs[compute_router_pool_id(0)][0]["primary"].addr,
+            backend_url=router_addrs["primary"].addr,
         )
         launch_argv = [*interpreter_prefix, "-m", "miles.rollout.session.server", *config_to_argv(config)]
         return shlex.join(launch_argv)

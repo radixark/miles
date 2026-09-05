@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,11 +48,11 @@ class InferenceController:
         args,
         *,
         engine_provider: BaseWorkerProvider,
-        router_provider: BaseWorkerProvider,
+        router_providers: Sequence[BaseWorkerProvider],
     ) -> None:
         self.args = args
         self._engine_provider = engine_provider
-        self._router_provider = router_provider
+        self._router_providers = router_providers
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
         self.eval_fleet: EvalFleet | None = None
@@ -66,7 +67,7 @@ class InferenceController:
         if self.args.debug_train_only:
             return
 
-        router_addrs = await resolve_router_addrs(self.args, provider=self._router_provider)
+        router_addrs = await resolve_router_addrs(self.args, router_providers=self._router_providers)
         self.servers = await create_rollout_servers(
             self.args,
             context_lock=self.context_lock,
