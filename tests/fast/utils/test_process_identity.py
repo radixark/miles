@@ -4,19 +4,19 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from miles.utils.audit_utils.process_identity import (
-    MainProcessIdentity,
     ProcessIdentity,
-    RolloutExecutorProcessIdentity,
+    SimpleProcessIdentity,
+    TrainerControllerProcessIdentity,
     TrainProcessIdentity,
 )
 
 
 class TestProcessIdentityToName:
     def test_main(self) -> None:
-        assert MainProcessIdentity().to_name() == "main"
+        assert SimpleProcessIdentity(component="main").to_name() == "main"
 
     def test_rollout_executor(self) -> None:
-        assert RolloutExecutorProcessIdentity().to_name() == "rollout_executor"
+        assert SimpleProcessIdentity(component="rollout_executor").to_name() == "rollout_executor"
 
     def test_actor(self) -> None:
         source = TrainProcessIdentity(component="actor", cell_index=1, rank_within_cell=3)
@@ -25,6 +25,30 @@ class TestProcessIdentityToName:
     def test_critic(self) -> None:
         source = TrainProcessIdentity(component="critic", cell_index=0, rank_within_cell=2)
         assert source.to_name() == "critic_cell0_rank2"
+
+    def test_trainer_controller(self) -> None:
+        assert TrainerControllerProcessIdentity(role="actor").to_name() == "trainer_controller_actor"
+
+    def test_inference_controller(self) -> None:
+        assert SimpleProcessIdentity(component="inference_controller").to_name() == "inference_controller"
+
+    def test_multi_lora_controller(self) -> None:
+        assert SimpleProcessIdentity(component="multi_lora_controller").to_name() == "multi_lora_controller"
+
+    def test_worker_manager(self) -> None:
+        assert SimpleProcessIdentity(component="worker_manager").to_name() == "worker_manager"
+
+    def test_an_unknown_component_is_rejected(self) -> None:
+        """A simple identity only names the components that exist."""
+        with pytest.raises(ValidationError):
+            SimpleProcessIdentity(component="nope")
+
+
+class TestControllerIdentityRoundtrip:
+    def test_trainer_controller_keeps_its_role(self) -> None:
+        """Two trainer controllers share a component, so only the role tells their events apart."""
+        source = TrainerControllerProcessIdentity(role="critic")
+        assert TrainerControllerProcessIdentity.model_validate_json(source.model_dump_json()) == source
 
 
 class TestTrainProcessIdentityValidation:

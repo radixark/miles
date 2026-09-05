@@ -26,7 +26,7 @@ from miles.rollout.inference_rollout.compatibility import call_rollout_function,
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
-from miles.utils.audit_utils.process_identity import RolloutExecutorProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_complete_hf_export
@@ -56,7 +56,7 @@ class RolloutExecutor:
         session_server_provider: BaseWorkerProvider | None,
     ):
         event_logger_checkpoint.restore(args)
-        configure_logger(args, source=RolloutExecutorProcessIdentity())
+        configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
         self.args = args
         # set by the training actor after each weight update
