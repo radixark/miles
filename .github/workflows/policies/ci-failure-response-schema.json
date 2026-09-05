@@ -1,0 +1,47 @@
+{
+  "$id": "ci-failure-response-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "analyses"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1"
+    },
+    "analyses": {
+      "type": "array",
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["job_id", "reason", "category", "confidence", "evidence_refs"],
+        "properties": {
+          "job_id": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 280
+          },
+          "category": {
+            "type": "string",
+            "enum": ["test_failure", "build", "infra", "timeout", "unknown"]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}
