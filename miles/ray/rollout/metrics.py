@@ -239,6 +239,10 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     if args.advantage_estimator == "ppo":
         return {}
 
+    # OPD reward payloads contain token distributions rather than scalar rewards.
+    if any(not isinstance(sample.get_reward_value(args), Number) for sample in all_samples):
+        return {}
+
     def _is_zero_std(samples: list[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)

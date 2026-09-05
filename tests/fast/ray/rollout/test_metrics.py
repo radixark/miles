@@ -399,3 +399,8 @@ def _make_versioned_sample(versions: list[str], *, index: int) -> Sample:
         WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
     ]
     return sample
+
+
+def test_zero_std_metrics_skip_token_distribution_rewards():
+    samples = [make_sample(group_index=0, reward={"teacher": {"meta_info": {"scores": [1, 2]}}})]
+    assert _compute_zero_std_metrics(make_args(advantage_estimator="grpo"), samples) == {}

@@ -1665,6 +1665,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Enable on-policy distillation (OPD). Must specify --opd-type when enabled.",
             )
             parser.add_argument(
+                "--opd-loss-mode",
+                choices=["legacy", "topk-candidate"],
+                default="legacy",
+                help="Use candidate-token PPO instead of the legacy sampled-token advantage penalty.",
+            )
+            parser.add_argument(
+                "--opd-reward-refresh",
+                action="store_true",
+                help="Refresh the detached OPD reward from each learner forward while keeping old policy scores fixed.",
+            )
+            parser.add_argument(
+                "--opd-domain-balance",
+                choices=["none", "static", "gap"],
+                default="none",
+                help="Weight domains on the finalized rollout before data-parallel partitioning.",
+            )
+            parser.add_argument("--opd-domain-targets", nargs="+", default=None, metavar="DOMAIN=WEIGHT")
+            parser.add_argument("--opd-gap-alpha", type=float, default=1.0)
+            parser.add_argument(
                 "--opd-type",
                 type=str,
                 choices=["sglang", "megatron"],
@@ -3072,6 +3091,48 @@ def miles_validate_args(args):
             )
 
     # Validate on-policy distillation (OPD) arguments
+    candidate_opd = getattr(args, "opd_loss_mode", "legacy") == "topk-candidate"
+    opd_refresh = getattr(args, "opd_reward_refresh", False)
+    opd_balance = getattr(args, "opd_domain_balance", "none")
+    if (candidate_opd or opd_refresh or opd_balance != "none") and not args.use_opd:
+        raise ValueError("Candidate OPD, reward refresh, and domain balancing require --use-opd")
+    if candidate_opd:
+        if args.skip_actor_forward_only and not args.use_rollout_logprobs:
+            raise ValueError("Candidate OPD requires an old learner forward or explicit --use-rollout-logprobs")
+        if args.opd_type != "sglang" or args.opd_log_prob_top_k <= 0:
+            raise ValueError("Candidate OPD requires --opd-type sglang and positive --opd-log-prob-top-k")
+        if args.opd_top_k_strategy != "only-student" or args.opd_reward_weight_mode != "student_p":
+            raise ValueError("Candidate OPD currently supports only-student support with student_p weighting")
+        if args.rollout_temperature != 1:
+            raise ValueError(
+                "Candidate OPD currently requires --rollout-temperature 1 to match stored scoring distributions"
+            )
+        if args.train_backend != "megatron" or args.loss_type != "policy_loss":
+            raise ValueError("Candidate OPD requires the Megatron policy loss")
+        if args.true_on_policy_mode or args.allgather_cp:
+            raise ValueError("Candidate OPD requires the standard zigzag CP/logit path")
+        if args.normalize_advantages or args.entropy_coef != 0 or args.kl_loss_coef != 0 or args.kl_coef != 0:
+            raise ValueError("Candidate OPD requires unnormalized advantages, zero entropy and zero reference KL")
+        if args.use_tis or args.use_opsm or args.advantage_estimator != "grpo":
+            raise ValueError(
+                "Candidate OPD uses its own per-candidate PPO objective; TIS, OPSM and other estimators are unsupported"
+            )
+    if opd_refresh and not candidate_opd and args.opd_log_prob_top_k != 0:
+        raise ValueError("Legacy top-k scalar OPD cannot refresh candidate rewards; use topk-candidate")
+    if opd_refresh and not candidate_opd and (args.normalize_advantages or args.skip_actor_forward_only):
+        raise ValueError("Sampled OPD refresh requires unnormalized advantages and fixed old learner scores")
+    if opd_balance != "none":
+        from miles.rollout.opd_balance import parse_domain_targets
+
+        if not parse_domain_targets(args.opd_domain_targets):
+            raise ValueError("Domain balancing requires --opd-domain-targets")
+        if opd_balance == "gap" and not candidate_opd:
+            raise ValueError("Gap balancing requires candidate OPD")
+        if args.opd_gap_alpha < 0 or not float(args.opd_gap_alpha) < float("inf"):
+            raise ValueError("--opd-gap-alpha must be finite and non-negative")
+        if args.n_samples_per_prompt != 1:
+            raise ValueError("OPD domain balancing currently requires one sample per prompt")
+
     if args.use_opd:
         if args.opd_type is None:
             raise ValueError("--opd-type must be specified when --use-opd is enabled. Choose 'sglang' or 'megatron'.")

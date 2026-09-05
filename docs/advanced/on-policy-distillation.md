@@ -111,6 +111,47 @@ when the routing map is set):
 > an sglang router) at replicas; `--opd-teacher-urls` is for *different*
 > teachers, not load balancing.
 
+### Candidate-token OPD
+
+`--opd-loss-mode topk-candidate` retains the rollout top-k candidate IDs and
+individual old-student/teacher scores through the learner. PPO clipping applies
+to each candidate before summing. The default `legacy` mode preserves existing
+sampled-token and scalar top-k behavior.
+
+Candidate mode currently requires Megatron policy loss, SGLang teachers, rollout
+v1, temperature 1, positive `--opd-log-prob-top-k`, `only-student` support, and
+`student_p` weighting. Entropy/reference KL, advantage whitening, TIS, OPSM,
+other advantage estimators, and the all-gather CP path are rejected. It is a
+pure distillation objective; task verifier rewards are used for evaluation.
+
+- `--opd-reward-refresh` recomputes the current-student part of the detached
+  candidate advantage during the learner forward. Candidate support, teacher
+  scores, and PPO's old-policy denominator remain fixed. Sampled-token OPD also
+  supports refresh; legacy scalar top-k OPD does not.
+- `--opd-domain-balance static --opd-domain-targets math=0.5 code=0.5` corrects
+  each domain's actual mass in the finalized rollout. The default sample-mean
+  reduction counts active samples; token-mean reduction counts active tokens.
+  Each configured domain must be present, and balancing currently requires one
+  response per prompt. Domain labels come from `metadata.domain`.
+- `--opd-domain-balance gap` additionally scales domain weights by the average
+  absolute distillation gap, with exponent `--opd-gap-alpha` and bounded scaling.
+- By default, the old learner scores the fixed candidate support once before
+  optimization. The cached denominator remains fixed across all inner updates.
+  `--use-rollout-logprobs` skips this forward and uses SGLang rollout scores
+  instead. This faster option requires checking rollout/learner score drift:
+  low-probability candidate mismatches caused large ratios in the Qwen3.6 run.
+- Candidate log ratios are bounded to [-20, 20] before exponentiation.
+  `--eps-clip-c` enables the existing optional negative-advantage dual clip;
+  the puzzle launcher uses 3.0. Core candidate mode leaves it optional.
+- `--opd-topk-per-position` requires SGLang's accompanying per-position scoring
+  extension. Without it, existing dense requested-ID scoring remains supported.
+
+The [short-puzzle example](../examples/mopd-puzzles.md) includes a Qwen3.6
+launcher, strict local verifiers, and score/gradient validation. In the current
+Qwen3.6 runtime, small chunked scoring prefills showed replica-dependent scores;
+use the example's validated teacher configuration and scoring checks before
+starting a learning comparison.
+
 ### Megatron Mode (`--opd-type megatron`)
 
 The teacher model is loaded directly into Megatron via `--opd-teacher-load`. Teacher log-probs are computed during the training forward pass.

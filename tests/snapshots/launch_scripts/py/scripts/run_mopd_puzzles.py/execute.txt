@@ -1,0 +1,124 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "MILES_USE_LEGACY_ROLLOUT_V1": "1", "WANDB_DISABLE_CODE": "true", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 16
+  --num-query-groups 2
+  --kv-channels 256
+  --num-layers 40
+  --hidden-size 2048
+  --ffn-hidden-size 512
+  --normalization RMSNorm
+  --apply-layernorm-1p
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --rotary-percent 0.25
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 248320
+  --rotary-base 10000000
+  --moe-ffn-hidden-size 512
+  --moe-shared-expert-intermediate-size 512
+  --moe-router-score-function softmax
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --num-experts 256
+  --moe-grouped-gemm
+  --moe-token-drop-policy probs
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --attention-output-gate
+  --moe-shared-expert-gate
+  --mtp-num-layers 1
+  --hf-checkpoint /root/models/Qwen3.6-35B-A3B
+  --ref-load /root/models/Qwen3.6-35B-A3B_torch_dist
+  --prompt-data /root/datasets/mopd_puzzles/countdown4-train.jsonl
+  --input-key prompt
+  --label-key label
+  --metadata-key metadata
+  --apply-chat-template
+  --apply-chat-template-kwargs '{"enable_thinking":false}'
+  --rollout-skip-special-tokens
+  --rollout-shuffle
+  --rollout-function-path examples.mopd_puzzles.rollout.generate_rollout
+  --num-rollout 50
+  --rollout-batch-size 64
+  --n-samples-per-prompt 8
+  --global-batch-size 512
+  --rollout-max-response-len 256
+  --rollout-temperature 1
+  --rollout-top-p 1
+  --advantage-estimator grpo
+  --eps-clip 0.2
+  --eps-clip-high 0.2
+  --entropy-coef 0
+  --kl-loss-coef 0
+  --optimizer adam
+  --lr-decay-style constant
+  --lr 1e-06
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --use-precision-aware-optimizer
+  --tensor-model-parallel-size 1
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 4096
+  --balance-data
+  --attention-dropout 0
+  --hidden-dropout 0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --moe-token-dispatcher-type alltoall
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --rollout-num-gpus-per-engine 8
+  --sglang-ep-size 8
+  --sglang-mem-fraction-static 0.65
+  --sglang-max-running-requests 256
+  --sglang-context-length 2048
+  --sglang-mamba-scheduler-strategy extra_buffer
+  --router-disable-circuit-breaker
+  --mtp-loss-scaling-factor 0
+  --eval-interval 10
+  --eval-prompt-data countdown /root/datasets/mopd_puzzles/countdown4-dev.jsonl graph_color /root/datasets/mopd_puzzles/graph12-dev.jsonl
+  --n-samples-per-eval-prompt 1
+  --eval-max-response-len 256
+  --eval-temperature 0
+  --eval-function-path examples.mopd_puzzles.evaluate.generate_rollout
+  --rollout-stop '</answer>'
+  --colocate
+  --save /root/checkpoints/mopd_puzzles/teacher-countdown-260101-000000-000
+  --save-interval 50
+  --no-save-optim
+  --no-save-rng
+  --custom-rm-path examples.mopd_puzzles.tasks.reward_func 

@@ -200,6 +200,9 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "rollout_indexer_topk",
                 "rollout_sampling_mask_ids",
                 "rollout_sampling_mask_offsets",
+                "opd_candidate_ids",
+                "opd_candidate_old_log_probs",
+                "opd_candidate_teacher_log_probs",
                 "max_seq_lens",
                 "dynamic_global_batch_size",
                 "witness_ids",
@@ -233,6 +236,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         "values",
                         "teacher_log_probs",
                         "opd_reverse_kl",
+                        "opd_loss_weights",
                         "entropy",
                     ]:
                         sum_of_sample_mean = get_sum_of_sample_mean(
