@@ -14,4 +14,5 @@ class RegisteredCellInfo(FrozenStrictBaseModel):
 
 class RegistrationSnapshot(FrozenStrictBaseModel):
     reporter_id: str
+    sequence_number: int
     cells: list[RegisteredCellInfo]
