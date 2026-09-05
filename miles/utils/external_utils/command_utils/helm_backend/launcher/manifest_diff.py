@@ -12,7 +12,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_typ
 )
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
-_SCALABLE_API_KINDS = frozenset({("leaderworkerset.x-k8s.io/v1", LEADER_WORKER_SET_KIND)})
+_SCALABLE_API_KINDS = frozenset({("leaderworkerset.x-k8s.io", LEADER_WORKER_SET_KIND)})
 _REPLICAS_PATH = ("spec", "replicas")
 
 
@@ -39,6 +39,11 @@ class ManifestDiffs(FrozenStrictBaseModel):
     @property
     def is_allowed(self) -> bool:
         return not (self.disallowed_changed or self.additions or self.removals)
+
+    def rebuilds(self, *, key: ManifestObjectKey) -> bool:
+        if any(identity.key == key for identity in (*self.additions, *self.removals)):
+            return True
+        return any(change.identity.key == key and change.allowed_by != "scaling" for change in self.changes)
 
     def summarize_allowed_changes(self) -> str:
         return "\n".join(f"  {entry}" for entry in self.allowed_changed) or "  (nothing to change)"
@@ -120,7 +125,7 @@ def _compute_allowed_by(
 
 
 def _is_scaling(old: ManifestObject, new: ManifestObject, *, identity: ObjectIdentity, path: tuple[str, ...]) -> bool:
-    if (identity.api_version, identity.kind) not in _SCALABLE_API_KINDS or path != _REPLICAS_PATH:
+    if (identity.api_group, identity.kind) not in _SCALABLE_API_KINDS or path != _REPLICAS_PATH:
         return False
     return _replicas(old) is not None and _replicas(new) is not None
 
