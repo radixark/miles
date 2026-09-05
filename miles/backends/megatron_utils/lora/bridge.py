@@ -15,7 +15,7 @@ from megatron.core.utils import get_attr_wrapped_model
 from miles.utils.hf_config import load_hf_config
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
-from .lora_utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
+from .utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def _make_value_model_hook(hidden_size: int):
     """Create a pre-wrap hook that replaces the output layer with a value head."""
     from megatron.core import parallel_state
 
-    from .model_provider import LinearForLastLayer
+    from ..model_provider import LinearForLastLayer
 
     def hook(model):
         model_post_process = []
@@ -168,11 +168,11 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if is_multi_lora_enabled(args):
         _validate_multi_lora_moe_support(args, provider)
 
-        from miles.backends.megatron_utils.multi_lora_utils import create_multi_lora_instance
+        from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
 
         lora = create_multi_lora_instance(args)
     else:
-        from .lora_utils import create_lora_instance
+        from .utils import create_lora_instance
 
         lora = create_lora_instance(args)
 

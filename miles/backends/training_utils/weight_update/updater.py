@@ -29,7 +29,7 @@ from miles.backends.training_utils.weight_update.session import (
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
-from miles.utils.multi_lora import is_multi_lora_enabled, slot_lora_name
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.timer import timer
 
 logger = logging.getLogger(__name__)
@@ -70,8 +70,6 @@ class WeightUpdater:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
-        # Set by the actor before each update_weights call (loaded map at reconcile).
-        self.multi_lora_adapters = None
 
     def connect_rollout_engines(
         self,
@@ -152,9 +150,8 @@ class WeightUpdater:
         if not self.is_lora:
             return []
         if is_multi_lora_enabled(self.args):
-            adapters = self.multi_lora_adapters
-            assert adapters is not None, "actor must set multi_lora_adapters before update_weights"
-            return [(slot_lora_name(adapters[name].slot), adapters[name]) for name in sorted(adapters)]
+            # multi-LoRA adapters ship via explicit push_adapter commands, never with the base sync
+            return []
         return [(LORA_ADAPTER_NAME, None)]
 
     def _register_new_lora_adapters(self, rollout_engines, adapters: list[tuple[str, object]]) -> None:
@@ -165,6 +162,6 @@ class WeightUpdater:
                 continue
             config = self._lora_sync_config
             if adapter is not None:
-                config = config | {"r": adapter.config.rank, "lora_alpha": adapter.config.alpha}
+                config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
             register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
             self._registered_adapters.add(lora_name)
