@@ -448,7 +448,14 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
-            return result
+        # Release this phase's cached allocator blocks. Without --offload-train the
+        # actor and critic are separate processes on the same GPUs, and one process
+        # cannot reclaim another's reservation: a critic that keeps its peak working
+        # set cached (~65 GB on a 27B model at 49k tokens) leaves the actor's phase
+        # to OOM on the free remainder even though both live sets fit.
+        del rollout_data
+        clear_memory()
+        return result
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutput:
