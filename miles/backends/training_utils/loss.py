@@ -157,7 +157,10 @@ def loss_function(
           "values" (1D tensor: [count, metric1, metric2, ...]).
     """
     parallel_state = get_parallel_state()
-    num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
+    # Fully masked samples must contribute neither numerator nor denominator.
+    # Clamping each sample to one silently shrinks per-token gradients as the
+    # masked-sample fraction grows.
+    num_tokens = sum(loss_mask.sum() for loss_mask in batch["loss_masks"])
     num_samples = len(batch["response_lengths"])
 
     sum_of_sample_mean = get_sum_of_sample_mean(
