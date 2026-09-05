@@ -40,4 +40,6 @@ class BaseWorkerProvider(abc.ABC):
         (infos,) = self.get_worker_infos(cell_ids=[cell_id])
         matches = [info for info in infos if info.name == worker_name]
         assert len(matches) == 1, f"{worker_name=} matched {[info.name for info in matches]}"
-        return matches[0].handle
+        handle = matches[0].handle
+        assert handle is not None, f"pool {pool_id} has no worker class, so its rpc methods are unknown"
+        return handle
