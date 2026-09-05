@@ -26,6 +26,7 @@ class Parker:
             self._event.set()
 
     async def maybe_park_follower(self) -> None:
+        await asyncio.sleep(0)
         self._num_ready += 1
         await self._event.wait()
         self._num_ready -= 1
