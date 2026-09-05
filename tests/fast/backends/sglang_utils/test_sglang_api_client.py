@@ -793,3 +793,62 @@ class TestStartProfile:
 
 async def _noop_sleep(seconds):
     return None
+
+
+class TestHealth:
+    async def test_liveness_forwards_timeout_and_endpoint(self, client, monkeypatch):
+        rec = _Recorder()
+        rec.install(monkeypatch, responses=[_FakeResponse()])
+        assert await client.health(timeout=1.5) is True
+        assert rec.calls == [("get", f"{SERVER_URL}/health", {"timeout": 1.5})]
+
+    async def test_unhealthy_liveness_still_raises(self, client, monkeypatch):
+        _Recorder().install(monkeypatch, responses=[_FakeResponse(status_code=503)])
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.health()
+
+    async def test_full_rollout_slots_do_not_block_liveness(self, monkeypatch):
+        # Keep every simulated rollout slot occupied while probing the real API client.
+        entered = 0
+        all_entered = asyncio.Event()
+        release = asyncio.Event()
+        generation_probes = 0
+
+        async def serve(request):
+            nonlocal entered, generation_probes
+            if request.url.path == "/generate":
+                entered += 1
+                if entered == 16:
+                    all_entered.set()
+                await release.wait()
+                return httpx.Response(200, json={"ok": True})
+            if request.url.path == "/health_generate":
+                generation_probes += 1
+                return httpx.Response(503)
+            assert request.url.path == "/health"
+            return httpx.Response(200)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as http:
+            monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: http)
+            tasks = [asyncio.create_task(http.post(f"{SERVER_URL}/generate")) for _ in range(16)]
+            try:
+                await asyncio.wait_for(all_entered.wait(), timeout=1)
+                client = SGLangApiClient(server_url=SERVER_URL)
+                with pytest.raises(httpx.HTTPStatusError):
+                    await client.health_generate()
+                assert await asyncio.gather(*(client.health() for _ in range(64))) == [True] * 64
+                assert generation_probes == 1
+                assert all(not task.done() for task in tasks)
+            finally:
+                release.set()
+                await asyncio.gather(*tasks)
+
+    async def test_liveness_timeout_is_not_hidden(self, client, monkeypatch):
+        async def fail(*args, **kwargs):
+            raise httpx.ReadTimeout("unresponsive server")
+
+        rec = _Recorder()
+        rec.install(monkeypatch)
+        monkeypatch.setattr(rec, "get", fail)
+        with pytest.raises(httpx.ReadTimeout):
+            await client.health()

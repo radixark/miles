@@ -974,6 +974,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="FT components to enable (requires --use-fault-tolerance). "
                 "Choices: rollout, train. Default when omitted: rollout.",
             )
+            parser.add_argument(
+                "--rollout-health-check-endpoint",
+                choices=("health", "health_generate"),
+                default="health_generate",
+                help="Endpoint for periodic cell health checks. Use health with "
+                "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0 on the engine to avoid "
+                "competing with rollouts for generation slots. Startup still tests generation.",
+            )
             SimpleHealthCheckerConfig.add_arguments(
                 parser,
                 prefix="rollout-health-check",

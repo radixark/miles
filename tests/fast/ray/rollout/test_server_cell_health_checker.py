@@ -65,6 +65,10 @@ class _RecordingApiClient:
     def __init__(self, server_url: str) -> None:
         self.server_url = server_url
 
+    async def health(self, timeout: float = 5.0) -> bool:
+        _ENDPOINT_CALLS.append(("health", self.server_url))
+        return True
+
     async def health_generate(self, timeout: float = 5.0) -> bool:
         _ENDPOINT_CALLS.append(("health_generate", self.server_url))
         return True
@@ -157,6 +161,17 @@ class TestRolloutCellHealthCheckerProbeEndpoint:
         await cell._health_checker._check_fn()
 
         assert _ENDPOINT_CALLS == [("health_generate", "http://10.0.0.1:30000")]
+
+
+    async def test_liveness_endpoint_does_not_probe_generation(self, monkeypatch):
+        _ENDPOINT_CALLS.clear()
+        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _RecordingApiClient)
+        cell = _make_cell(ft_components=["rollout"], rollout_health_check_endpoint="health")
+        cell._state = StateServing(addr_info=_addr_info())
+
+        await cell._health_checker._check_fn()
+
+        assert _ENDPOINT_CALLS == [("health", "http://10.0.0.1:30000")]
 
 
 class TestRolloutCellHealthCheckerPause:

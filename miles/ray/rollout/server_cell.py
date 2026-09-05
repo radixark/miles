@@ -290,8 +290,12 @@ def create_rollout_cell_health_checker(
 
     config = SimpleHealthCheckerConfig.from_args(args, prefix="rollout_health_check")
 
+    endpoint = getattr(args, "rollout_health_check_endpoint", "health_generate")
+    if endpoint not in ("health", "health_generate"):
+        raise ValueError(f"Unsupported rollout health check endpoint: {endpoint}")
+
     async def _check() -> None:
-        await get_api_client().health_generate(timeout=config.timeout)
+        await getattr(get_api_client(), endpoint)(timeout=config.timeout)
 
     return SimpleHealthChecker(name=name, check_fn=_check, get_activeness=get_activeness, config=config)
 

@@ -79,6 +79,20 @@ class SGLangApiClient:
             raise
         return response.json()
 
+    async def health(self, timeout: float = 5.0) -> bool:
+        """Check HTTP liveness without scheduling generation when supported by the server.
+
+        SGLang must set SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0 for this
+        endpoint to avoid using a generation slot. HTTP failures still propagate.
+        This does not establish model execution readiness.
+        """
+        response = await GeneralHttpClientProvider.client().get(
+            f"{self.server_url}/health",
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return True
+
     async def health_generate(self, timeout: float = 5.0) -> bool:
         """Run /health_generate on the underlying SGLang HTTP server.
 
