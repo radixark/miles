@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.rollout.session.test_samples import _make_record
 
-from miles.rollout.session.core import SessionCore
+from miles.rollout.session.core import SessionCore, prepare_chat_request
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
@@ -75,6 +75,31 @@ def _build_core(config=None, use_addition_r3: bool = False) -> SessionCore:
     )
     registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer)
     return SessionCore(_UnusedBackend(), registry, config, config.instance_id, use_addition_r3=use_addition_r3)
+
+
+def test_session_request_uses_native_sampling_replay_without_overwriting_filters():
+    config = _make_config(rollout_top_p=0.95, rollout_top_k=32, rollout_temperature=0.7)
+    tokenizer = type("Tokenizer", (), {"chat_template_kwargs": {}})()
+    body = json.dumps({"top_p": 0.8, "custom_params": {"caller_option": "kept"}}).encode()
+
+    request, _, _ = prepare_chat_request(body, config, tokenizer)
+
+    assert request["return_sampling_mask"] is True
+    assert request["temperature"] == 0.7
+    assert request["top_p"] == 0.8
+    assert request["top_k"] == 32
+    assert request["custom_params"] == {"caller_option": "kept"}
+
+
+def test_session_request_can_disable_sampling_replay_for_evaluation():
+    config = _make_config(rollout_top_p=0.95, rollout_top_k=32)
+    tokenizer = type("Tokenizer", (), {"chat_template_kwargs": {}})()
+
+    request, _, _ = prepare_chat_request(json.dumps({"return_sampling_mask": False}).encode(), config, tokenizer)
+
+    assert request["return_sampling_mask"] is False
+    assert "top_p" not in request
+    assert "top_k" not in request
 
 
 @pytest.fixture(scope="module")

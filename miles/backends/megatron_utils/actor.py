@@ -31,6 +31,7 @@ from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
+from miles.utils.sampling_mask import top_p_sampling_replay_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
@@ -405,6 +406,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_id=rollout_id,
                 store_prefix=store_prefix,
                 fp32_output=False,
+                use_rollout_sampling_mask=store_prefix == "" and top_p_sampling_replay_enabled(self.args),
             )
 
     @with_logs

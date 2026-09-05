@@ -6,8 +6,26 @@ import torch
 from miles.backends.training_utils import cp_utils
 from miles.backends.training_utils.loss_hub import logit_processors
 from miles.backends.training_utils.loss_hub.math_utils import _calculate_log_probs_and_entropy_true_on_policy
-from miles.backends.training_utils.sampling_mask import build_local_sampling_mask
+from miles.backends.training_utils.sampling_mask import build_local_sampling_mask, get_rollout_sampling_masks
 from miles.utils.sampling_mask import RolloutSamplingMask
+
+
+def test_get_rollout_sampling_masks_reconstructs_transport_batch():
+    masks = get_rollout_sampling_masks(
+        {
+            "rollout_sampling_mask_ids": [torch.tensor([1, 4, 2], dtype=torch.int32)],
+            "rollout_sampling_mask_offsets": [torch.tensor([0, 2, 3], dtype=torch.int64)],
+        }
+    )
+
+    ids, offsets = masks[0]._as_tensors()
+    assert ids.tolist() == [1, 4, 2]
+    assert offsets.tolist() == [0, 2, 3]
+
+
+def test_get_rollout_sampling_masks_requires_complete_transport_batch():
+    with pytest.raises(ValueError, match="requires both sampling-mask wire fields"):
+        get_rollout_sampling_masks({"rollout_sampling_mask_ids": [torch.tensor([1])]})
 
 
 def test_build_local_sampling_mask_selects_original_response_rows_and_tp_shard():

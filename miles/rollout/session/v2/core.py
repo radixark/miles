@@ -16,7 +16,7 @@ from miles.rollout.session.core import (
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
-from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
+from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
@@ -26,6 +26,7 @@ from miles.rollout.session.v2.session_state import (
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
 from miles.utils.function_registry import load_function
+from miles.utils.sampling_mask import top_p_sampling_replay_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ class SessionCoreV2(SessionCore):
         self, backend, registry: SessionRegistryV2, config, session_server_instance_id=None, *, use_addition_r3=False
     ):
         super().__init__(backend, registry, config, session_server_instance_id, use_addition_r3=use_addition_r3)
+        self.samples_wire_fields = COMPUTED_FIELDS_V2
+        if top_p_sampling_replay_enabled(config):
+            self.samples_wire_fields += ROLLOUT_SAMPLING_MASK_FIELDS
         # Import-path only in production: function_registry is process-local.
         self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
         self.sample_postprocessor = load_function(config.session_sample_postprocessor_path, sync_required=True)
@@ -84,7 +88,7 @@ class SessionCoreV2(SessionCore):
             metadata["agent"] = agent_metadata
         if not session.tree.nodes:
             return _samples_response(
-                encode_samples([], metadata, empty_reason="no_records", fields=COMPUTED_FIELDS_V2)
+                encode_samples([], metadata, empty_reason="no_records", fields=self.samples_wire_fields)
             )
 
         try:
@@ -100,7 +104,7 @@ class SessionCoreV2(SessionCore):
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
         if not material:
             return _samples_response(
-                encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)
+                encode_samples([], metadata, empty_reason="all_truncated", fields=self.samples_wire_fields)
             )
 
         # Hook lane: a policy bug is a deterministic 422 carrying the hook's
@@ -122,9 +126,9 @@ class SessionCoreV2(SessionCore):
             return Response(content=body.encode(), status_code=422, media_type="text/plain")
         if not samples:
             return _samples_response(
-                encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)
+                encode_samples([], metadata, empty_reason="all_truncated", fields=self.samples_wire_fields)
             )
-        return _samples_response(encode_samples(samples, metadata, fields=COMPUTED_FIELDS_V2))
+        return _samples_response(encode_samples(samples, metadata, fields=self.samples_wire_fields))
 
     async def chat_completions(
         self, session_id: str, *, method: str, query: str, headers: dict, body: bytes

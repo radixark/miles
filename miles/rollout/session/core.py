@@ -2,7 +2,8 @@
 
 HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each request into primitives and calls these methods. Owns one ``SessionRegistry`` (per-session TITO/trajectory state) and one proxy ``backend``.
 
-- ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
+- ``chat_completions`` strips training-only replay payloads from the client reply copy-on-write; the
+  ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
 - ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.sampling_mask import should_return_sampling_mask
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
     MessageValidationError,
@@ -24,7 +26,7 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.samples.codec import encode_samples
+from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.samples.merge import (
     compute_samples_from_openai_records,
     merge_samples_with_addition_r3,
@@ -32,6 +34,7 @@ from miles.rollout.session.samples.merge import (
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.sampling_mask import top_p_sampling_replay_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +75,13 @@ def _samples_response(payload: bytes) -> Response:
     return Response(content=payload, status_code=200, media_type="application/octet-stream")
 
 
-_CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
+_CLIENT_STRIPPED_META_KEYS = (
+    "routed_experts",
+    "indexer_topk",
+    "output_token_sampling_mask",
+    "output_token_sampling_logprobs",
+    "output_token_sampling_mask_length",
+)
 
 
 def _strip_replay_payloads(response: dict) -> dict:
@@ -180,6 +189,26 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     # setdefault) so agent-side overrides cannot break token accumulation.
     request_body["logprobs"] = True
     request_body["return_meta_info"] = True
+    sampling_mask_requested = request_body.get("return_sampling_mask")
+    if sampling_mask_requested is False:
+        return_sampling_mask = False
+    else:
+        if top_p_sampling_replay_enabled(args):
+            for name, value in (
+                ("top_p", args.rollout_top_p),
+                ("top_k", args.rollout_top_k),
+                ("temperature", args.rollout_temperature),
+            ):
+                if request_body.get(name) is None:
+                    request_body[name] = value
+        try:
+            return_sampling_mask = should_return_sampling_mask(args, request_body)
+        except ValueError as exc:
+            raise MessageValidationError(str(exc)) from exc
+    if sampling_mask_requested is True and not return_sampling_mask:
+        raise MessageValidationError("return_sampling_mask requires --rollout-top-p < 1")
+    if return_sampling_mask:
+        request_body["return_sampling_mask"] = True
     if getattr(args, "use_rollout_routing_replay", False):
         request_body["return_routed_experts"] = True
     if getattr(args, "use_rollout_indexer_replay", False):
@@ -261,6 +290,9 @@ class SessionCore:
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
+        self.samples_wire_fields = COMPUTED_FIELDS
+        if top_p_sampling_replay_enabled(config):
+            self.samples_wire_fields += ROLLOUT_SAMPLING_MASK_FIELDS
 
     def _maybe_request_addition_r3(
         self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
@@ -324,7 +356,9 @@ class SessionCore:
         metadata = self._session_metadata(session_id, session)
         tokenizer = self.registry.tokenizer
         if not session.records:
-            return _samples_response(encode_samples([], metadata, empty_reason="no_records"))
+            return _samples_response(
+                encode_samples([], metadata, empty_reason="no_records", fields=self.samples_wire_fields)
+            )
         try:
             samples = compute_samples_from_openai_records(
                 self.config,
@@ -337,14 +371,16 @@ class SessionCore:
             if max_seq_len is not None:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
             if not samples:
-                return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
+                return _samples_response(
+                    encode_samples([], metadata, empty_reason="all_truncated", fields=self.samples_wire_fields)
+                )
             if self.use_addition_r3:
                 samples = [merge_samples_with_addition_r3(self.config, samples, session.records, tokenizer)]
             else:
                 samples = [merge_samples(samples, tokenizer)]
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
-        return _samples_response(encode_samples(samples, metadata))
+        return _samples_response(encode_samples(samples, metadata, fields=self.samples_wire_fields))
 
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)

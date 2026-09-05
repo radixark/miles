@@ -73,6 +73,35 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_evaluation_explicitly_disables_session_sampling_replay(monkeypatch):
+    sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    seen_request_kwargs = None
+
+    async def fake_create(args):
+        return tracer
+
+    async def fake_agent(**kwargs):
+        nonlocal seen_request_kwargs
+        seen_request_kwargs = kwargs["request_kwargs"]
+        return None
+
+    monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: fake_agent)
+    training_input = _generate_input(rollout_top_p=0.95, rollout_top_k=32, rollout_temperature=1.0)
+    generate_input = GenerateFnInput(
+        state=training_input.state,
+        sample=training_input.sample,
+        sampling_params=training_input.sampling_params,
+        evaluation=True,
+    )
+
+    await agentic_tool_call.generate(generate_input)
+
+    assert seen_request_kwargs["return_sampling_mask"] is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("input_rollout_id", "expected_rollout_id"), [(None, 7), (11, 11)])
 async def test_success_assigns_shared_rollout_id_to_v2_leaves(monkeypatch, input_rollout_id, expected_rollout_id):
     leaves = [

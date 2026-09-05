@@ -29,11 +29,13 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.sampling_mask import top_p_sampling_replay_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -266,6 +268,7 @@ def forward_only(
     rollout_id: int,
     store_prefix: str = "",
     fp32_output: bool = True,
+    use_rollout_sampling_mask: bool = False,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -281,6 +284,8 @@ def forward_only(
         rollout_id: Rollout identifier (selects the per-rollout dump subdirectory).
         store_prefix: Prefix to prepend to stored output keys.
         fp32_output: Whether Megatron should upcast the complete model output to FP32.
+        use_rollout_sampling_mask: Whether to score over each rollout token's
+            captured sampling support.
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
@@ -315,17 +320,20 @@ def forward_only(
         assert not return_schedule_plan, "forward_only step should never return schedule plan"
 
         # Get the batch.
+        forward_only_keys = [
+            "tokens",
+            "loss_masks",
+            "multimodal_train_inputs",
+            "total_lengths",
+            "response_lengths",
+            "max_seq_lens",
+            "witness_ids",
+        ]
+        if use_rollout_sampling_mask:
+            forward_only_keys.extend(["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"])
         batch = get_batch(
             data_iterator,
-            [
-                "tokens",
-                "loss_masks",
-                "multimodal_train_inputs",
-                "total_lengths",
-                "response_lengths",
-                "max_seq_lens",
-                "witness_ids",
-            ],
+            forward_only_keys,
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
@@ -335,6 +343,7 @@ def forward_only(
         packed_seq_params = get_packed_seq_params(batch, args)
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
+        rollout_sampling_mask = get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None
 
         if "adapter_token_counts" in batch:
             from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
@@ -361,6 +370,7 @@ def forward_only(
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
+            rollout_sampling_mask=rollout_sampling_mask,
         )
 
     # Turn on evaluation mode which disables dropout.
@@ -471,6 +481,12 @@ def train_one_step(
         custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
         custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
 
+    sampling_mask_keys = (
+        ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
+        if top_p_sampling_replay_enabled(args) and args.loss_type == "policy_loss"
+        else ()
+    )
+
     @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
         torch.Tensor,
@@ -508,6 +524,7 @@ def train_one_step(
                 "witness_ids",
                 "opd_reverse_kl",
                 "rollout_mask_sums",
+                *sampling_mask_keys,
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
