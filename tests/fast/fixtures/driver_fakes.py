@@ -1,6 +1,7 @@
 import asyncio
 from collections import defaultdict
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 from miles.utils.object_store import BaseObjectStore, ObjectStoreGetResult, StoreObjectRef, ValueSpec
@@ -12,6 +13,20 @@ class FakeRemoteMethod:
 
     def remote(self, *args: Any, **kwargs: Any) -> Any:
         return self._fn(*args, **kwargs)
+
+
+class FakeWorkerManager:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.killed: list[object] = []
+        self.shutdown = SimpleNamespace(remote=self._shutdown)
+
+    async def _shutdown(self) -> None:
+        self.events.append("manager_shutdown")
+
+    def kill(self, handle: object) -> None:
+        self.killed.append(handle)
+        self.events.append("manager_kill")
 
 
 class FakeRolloutExecutor:
