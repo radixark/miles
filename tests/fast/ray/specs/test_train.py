@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.ray.specs import train as train_specs
@@ -48,7 +49,31 @@ def _make_args(**overrides) -> SimpleNamespace:
         offload_train_disk_dir="/tmp/offload",
         offload_train_disk_chunk_mb=64,
         megatron_config=None,
+        trainer_model_id=None,
+        advantage_estimator="grpo",
+        lr=1e-6,
+        optimizer="adam",
+        use_distributed_optimizer=True,
+        debug_disable_optimizer=False,
+        save=None,
+        load=None,
+        megatron_to_hf_mode="core",
+        ref_load=None,
+        no_load_optim=False,
+        no_load_rng=False,
+        finetune=False,
+        ref_ckpt_step=None,
+        ckpt_step=None,
+        start_rollout_id=None,
+        lr_warmup_iters=None,
+        eps_clip=0.2,
+        disable_param_buffers_cpu_backup=False,
+        critic_load=None,
+        critic_save=None,
+        critic_lr=None,
+        critic_lr_warmup_iters=None,
     )
+    args = SimpleNamespace(**{**parser_defaults(), **vars(args)})
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
