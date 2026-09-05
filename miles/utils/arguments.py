@@ -128,8 +128,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=tuple(backend.value for backend in ClusterBackend),
                 help=(
                     "Which backend provides the worker processes: "
-                    "`ray` launches them from the driver, `kubernetes` expects them to already exist. "
-                    "`kubernetes` is refused until a later milestone provisions those workers."
+                    "`ray` launches them from the driver, `kubernetes` expects the platform to have "
+                    "created them already and observes them by their pod labels."
                 ),
             )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
@@ -3588,10 +3588,22 @@ def miles_validate_args(args):
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
 
-    assert args.cluster_backend == ClusterBackend.RAY.value, (
-        f"--cluster-backend {args.cluster_backend} is not usable yet: "
-        f"only {ClusterBackend.RAY.value} provisions workers today"
-    )
+    if ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
+        assert (
+            not args.use_miles_dashboard
+        ), "--use-miles-dashboard creates a Ray actor, which --cluster-backend kubernetes has no Ray cluster for"
+        assert (
+            not args.use_distributed_post
+        ), "--use-distributed-post reads ray.nodes(), which --cluster-backend kubernetes has no Ray cluster for"
+        assert (
+            args.multi_lora_n_adapters == 0
+        ), "--multi-lora-n-adapters drives RayWorkerManager, which --cluster-backend kubernetes does not use"
+        if ObjectStoreBackend(args.object_store_backend) != ObjectStoreBackend.MOONCAKE:
+            logger.info(
+                f"Overriding --object-store-backend {args.object_store_backend} with "
+                f"{ObjectStoreBackend.MOONCAKE.value} under --cluster-backend {ClusterBackend.KUBERNETES.value}."
+            )
+            args.object_store_backend = ObjectStoreBackend.MOONCAKE.value
 
     args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 
