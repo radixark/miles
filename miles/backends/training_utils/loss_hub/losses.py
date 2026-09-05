@@ -333,6 +333,17 @@ def policy_loss_function(
         if args.kl_loss_coef != 0:
             loss = loss + args.kl_loss_coef * kl_loss
 
+    opd_forward_kl = None
+    opd_forward_kl_clipfrac = None
+    opd_teacher_coverage = None
+    if args.use_opd and getattr(args, "opd_divergence", "reverse_kl") == "forward_kl":
+        from miles.backends.training_utils.loss_hub.opd import forward_kl_loss
+
+        opd_forward_kl, opd_forward_kl_clipfrac, opd_teacher_coverage = forward_kl_loss(
+            args, batch, logits, sum_of_sample_mean
+        )
+        loss = loss + args.opd_kl_coef * opd_forward_kl
+
     # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
     if log_probs.numel() == 0:
         loss += 0 * logits.sum(dtype=torch.float32)
@@ -392,6 +403,13 @@ def policy_loss_function(
     if batch.get("opd_reverse_kl") is not None:
         opd_reverse_kl = torch.cat(batch["opd_reverse_kl"], dim=0)
         reported_loss["opd_reverse_kl"] = sum_of_sample_mean(opd_reverse_kl).clone().detach()
+    if batch.get("opd_kl_clipfrac") is not None:
+        opd_kl_clipfrac = torch.cat(batch["opd_kl_clipfrac"], dim=0)
+        reported_loss["opd_kl_clipfrac"] = sum_of_sample_mean(opd_kl_clipfrac).clone().detach()
+    if opd_forward_kl is not None:
+        reported_loss["opd_forward_kl"] = opd_forward_kl.clone().detach()
+        reported_loss["opd_kl_clipfrac"] = opd_forward_kl_clipfrac.clone().detach()
+        reported_loss["opd_teacher_coverage"] = opd_teacher_coverage.clone().detach()
 
     return loss, reported_loss
 

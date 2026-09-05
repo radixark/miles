@@ -105,6 +105,10 @@ class Sample:
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
     opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
+    # Teacher top-k support for full-distribution OPD, flattened to response_length * k so
+    # it stays a 1-D ragged field like the others; the loss reshapes it back to [R, k].
+    teacher_top_ids: list[int] | None = None
+    teacher_top_logprobs: list[float] | None = None
 
     class Status(Enum):
         PENDING = "pending"
@@ -267,6 +271,18 @@ class Sample:
             assert (
                 len(self.opd_reverse_kl) == self.response_length
             ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
+        for name in ("teacher_top_ids", "teacher_top_logprobs"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            assert self.response_length > 0 and len(value) % self.response_length == 0, (
+                f"{name} length ({len(value)}) is not a whole number of entries per response token "
+                f"(response_length={self.response_length})"
+            )
+        if self.teacher_top_ids is not None and self.teacher_top_logprobs is not None:
+            assert len(self.teacher_top_ids) == len(
+                self.teacher_top_logprobs
+            ), "teacher_top_ids and teacher_top_logprobs must describe the same support"
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
@@ -307,6 +323,12 @@ class Sample:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
         if self.opd_reverse_kl is not None:
             self.opd_reverse_kl = self.opd_reverse_kl[:-n]
+        for name in ("teacher_top_ids", "teacher_top_logprobs"):
+            value = getattr(self, name)
+            if value is not None:
+                # Flattened k-per-token, so strip whole tokens' worth of entries.
+                per_token = len(value) // (self.response_length + n)
+                setattr(self, name, value[: -n * per_token] if per_token else value)
         if self.metadata and "opd_student_top_logprobs" in self.metadata:
             self.metadata["opd_student_top_logprobs"] = self.metadata["opd_student_top_logprobs"][:-n]
         if self.loss_mask is not None:

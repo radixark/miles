@@ -21,6 +21,8 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "rollout_sampling_mask_offsets": "int64",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
+    "teacher_top_ids": "int32",
+    "teacher_top_logprobs": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
 }
@@ -150,6 +152,10 @@ def convert_samples_to_train_data(
 
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
+
+    if samples[0].teacher_top_ids is not None:
+        train_data["teacher_top_ids"] = [sample.teacher_top_ids for sample in samples]
+        train_data["teacher_top_logprobs"] = [sample.teacher_top_logprobs for sample in samples]
 
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
@@ -394,6 +400,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            "teacher_top_ids",
+            "teacher_top_logprobs",
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",

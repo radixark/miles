@@ -507,6 +507,8 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                "teacher_top_ids",
+                "teacher_top_logprobs",
                 "rollout_mask_sums",
             ],
             args.data_pad_size_multiplier,
