@@ -1,5 +1,4 @@
 from argparse import Namespace
-from types import SimpleNamespace
 
 import pytest
 
@@ -45,13 +44,11 @@ class _RecordingRolloutExecutor:
     def __init__(self):
         self.train_parallel_config = None
         self.loaded_rollout_id = None
-        self.set_train_parallel_config = SimpleNamespace(remote=self._set_train_parallel_config)
-        self.load = SimpleNamespace(remote=self._load)
 
-    async def _set_train_parallel_config(self, config):
+    async def set_train_parallel_config(self, config):
         self.train_parallel_config = config
 
-    async def _load(self, rollout_id):
+    async def load(self, rollout_id):
         self.loaded_rollout_id = rollout_id
 
 
