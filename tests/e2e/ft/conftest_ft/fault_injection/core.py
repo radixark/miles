@@ -4,6 +4,7 @@ import logging
 import random
 import threading
 import time
+from collections.abc import Callable
 import requests
 
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TYPE, BaseFaultForm, CellFaultForms
@@ -35,6 +36,7 @@ def run_fault_injection_loop(
     stop_event: threading.Event,
     event_log: EventLog,
     cell_fault_forms: CellFaultForms,
+    get_virtual_cells: Callable[[], list[dict]] | None = None,
     injection_enabled: Callable[[], bool] | None = None,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
     quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
@@ -54,6 +56,8 @@ def run_fault_injection_loop(
         cells = list_cells(base_url=base_url, cell_types=set(mean_interval_seconds_of_cell_type))
         if cells is None:
             continue
+        if get_virtual_cells is not None:
+            cells.extend(get_virtual_cells())
 
         # Record every poll so the post-run witnesses see the same stream the injector saw.
         event_log.observe(cells)

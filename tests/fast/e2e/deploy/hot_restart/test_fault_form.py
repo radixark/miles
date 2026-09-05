@@ -39,6 +39,7 @@ def _form(launch, **overrides: Any) -> HotRestartFaultForm:
         config=CONFIG,
         checkpoint_dir=Path("/dumps/checkpoints"),
         events_dir=Path("/dumps/events"),
+        max_allowed_rollout_id=234,
         poll_interval_seconds=0.0,
         timeout_seconds=5.0,
     )
@@ -113,6 +114,18 @@ class TestWhatCountsAsATakeOverThatLanded:
 
 
 class TestInject:
+    def test_a_draw_before_the_closing_window_is_eligible(self, monkeypatch):
+        """The scheduler keeps seeing this form while the run remains before its closing window."""
+        _install_run(monkeypatch, finished=233)
+
+        assert _form(lambda _config: None).is_within_injection_window()
+
+    def test_a_draw_at_the_closing_window_is_ineligible(self, monkeypatch):
+        """Completing the configured boundary prevents the scheduler from starting another take-over."""
+        _install_run(monkeypatch, finished=234)
+
+        assert not _form(lambda _config: None).is_within_injection_window()
+
     def test_every_draw_relaunches_the_release_that_is_already_up(self, monkeypatch):
         """A relaunch under another release would leave the trainers this run is watching behind."""
         launched: list[ExecuteTrainConfig] = []
