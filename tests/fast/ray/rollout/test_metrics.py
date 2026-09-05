@@ -9,6 +9,7 @@ from miles.ray.rollout.metrics import (
     _compute_passrate_from_samples,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
+    log_eval_rollout_data,
     log_rollout_data,
 )
 from miles.utils.types import AdapterRef, Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -399,3 +400,38 @@ def _make_versioned_sample(versions: list[str], *, index: int) -> Sample:
         WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
     ]
     return sample
+
+
+class TestLogRolloutData:
+    def test_the_model_id_comes_from_the_caller_not_from_the_args(self, monkeypatch):
+        """One rollout executor serves every policy, so the id must travel with the call, not with the run."""
+        calls: list[tuple[dict, str]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, payload, step_key: calls.append((payload, step_key)),
+        )
+        args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False, trainer_model_id=None)
+
+        log_rollout_data(0, args, make_samples_grouped(1, 4), None, 1.0, trainer_model_id="alpha")
+
+        [(payload, step_key)] = calls
+        assert step_key == "alpha/rollout/step"
+        assert all(key.startswith("alpha/") for key in payload)
+
+
+class TestEvalMetrics:
+    def test_eval_metrics_are_not_namespaced_by_policy(self, monkeypatch):
+        """Pinning the status quo: a run training several policies is refused an eval, so eval keeps one step axis."""
+        calls: list[tuple[dict, str]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, payload, step_key: calls.append((payload, step_key)),
+        )
+        args = make_args(log_passrate=False, trainer_model_id="alpha")
+
+        log_eval_rollout_data(0, args, {"gsm8k": {"rewards": [1.0, 0.0]}})
+
+        [(payload, step_key)] = calls
+        assert step_key == "eval/step"
+        assert payload["eval/gsm8k"] == 0.5
+        assert not any(key.startswith("alpha/") for key in payload)
