@@ -58,6 +58,7 @@ async def wait_server_healthy(server_url, api_key):
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
+    api_key: str | None = None
 
     async def _make_request(self, endpoint: str, payload: dict | None = None):
         """Make a POST request to the specified endpoint with the given payload.
@@ -147,6 +148,7 @@ class SGLangApiClient:
     async def get_server_info(self):
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/server_info",
+            headers=_compute_headers(self.api_key),
             timeout=5.0,
         )
         response.raise_for_status()
