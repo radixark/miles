@@ -194,7 +194,10 @@
           },
           "propertyNames": {
             "not": {
-              "const": "PYTHONPATH"
+              "enum": [
+                "PYTHONPATH",
+                "MILES_SCRIPT_ENV_REPORT"
+              ]
             },
             "pattern": "^[ -<>-~]+$"
           },
@@ -426,6 +429,15 @@
           "additionalProperties": {
             "type": "string"
           },
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "PYTHONPATH",
+                "MILES_SCRIPT_ENV_REPORT"
+              ]
+            },
+            "pattern": "^[ -<>-~]+$"
+          },
           "type": "object"
         },
         "meta": {
@@ -515,6 +527,11 @@
           "pattern": "^/",
           "type": "string"
         },
+        "launchRecord": {
+          "minLength": 1,
+          "pattern": "^/",
+          "type": "string"
+        },
         "objectNames": {
           "$ref": "#/definitions/ObjectNames"
         },
@@ -545,7 +562,10 @@
           },
           "propertyNames": {
             "not": {
-              "const": "PYTHONPATH"
+              "enum": [
+                "PYTHONPATH",
+                "MILES_SCRIPT_ENV_REPORT"
+              ]
             },
             "pattern": "^[ -<>-~]+$"
           },
