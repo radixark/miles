@@ -5,7 +5,7 @@ import typer
 
 import miles.utils.external_utils.command_utils as U
 
-# in_place + broadcast
+# retract + broadcast
 # python run_qwen3_30b_a3b_fully_async.py
 
 # retract + p2p
@@ -25,7 +25,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
-    pause_generation_mode: Literal["in_place", "retract"] = "in_place"
+    pause_generation_mode: Literal["in_place", "retract"] = "retract"
     update_weight_transfer_mode: Literal["broadcast", "p2p"] = "broadcast"
     extra_args: str = ""
 

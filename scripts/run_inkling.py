@@ -228,7 +228,7 @@ def _train(args: ScriptArgs):
 
     rollout_args = ""
     if args.fully_async:
-        rollout_args += "--fully-async " "--pause-generation-mode in_place "
+        rollout_args += "--fully-async " "--pause-generation-mode retract "
     rollout_args += (
         "--input-key prompt "
         "--label-key label "
