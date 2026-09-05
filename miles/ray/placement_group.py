@@ -210,8 +210,8 @@ async def create_rollout_components(args) -> RolloutComponents:
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
 
-    if (eval_fleet := inference_controller.eval_fleet) is not None:
-        await rollout_executor.set_eval_fleet(eval_fleet)
+    if (eval_fleet_info := await inference_controller.get_eval_fleet_info()) is not None:
+        await rollout_executor.set_eval_fleet_info(eval_fleet_info)
 
     return RolloutComponents(
         inference_controller=inference_controller,
