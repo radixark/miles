@@ -448,6 +448,18 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
+        # Record this phase's peak before releasing anything: the peak allocated
+        # (live tensors) is the number a topology has to fit, and the peak reserved
+        # is what a co-resident process actually loses to it.
+        if torch.cuda.is_available() and dist.is_initialized():
+            peak_alloc_gb = torch.cuda.max_memory_allocated() / 1024**3
+            peak_reserved_gb = torch.cuda.max_memory_reserved() / 1024**3
+            logger.info(
+                f"[Rank {dist.get_rank()}] {self.role} train phase peak memory: "
+                f"allocated {peak_alloc_gb:.2f} GB, reserved {peak_reserved_gb:.2f} GB"
+            )
+            torch.cuda.reset_peak_memory_stats()
+
         # Release this phase's cached allocator blocks. Without --offload-train the
         # actor and critic are separate processes on the same GPUs, and one process
         # cannot reclaim another's reservation: a critic that keeps its peak working
