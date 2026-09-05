@@ -2124,8 +2124,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Whether to only run the training without sglang servers. "
-                    "This is useful for debugging the rollout generation function."
+                    "Whether to run training without rollout generation. "
+                    "Rollout servers are skipped, but snapshot-eval servers may still "
+                    "start when configured. "
+                    "This is useful for debugging training."
                 ),
             )
             parser.add_argument(
@@ -3522,9 +3524,16 @@ def miles_validate_args(args):
             "or --save-hf (reuse periodic HF checkpoints)."
         )
         assert not args.colocate, "Snapshot eval is not supported with --colocate."
-        assert (
-            not args.debug_train_only and not args.debug_rollout_only
-        ), "Snapshot eval is not supported with debug_train_only/debug_rollout_only."
+        assert not args.debug_rollout_only, "Snapshot eval is not supported with debug_rollout_only."
+        assert args.load_debug_rollout_data is None, (
+            "Snapshot eval is not supported with --load-debug-rollout-data: the replay "
+            "path loads no rollout functions, so there is nothing to run the eval with."
+        )
+        if args.debug_train_only:
+            assert args.eval_function_path != args.rollout_function_path, (
+                "Snapshot eval during --debug-train-only requires an explicit "
+                "--eval-function-path; the SFT rollout function cannot evaluate snapshots."
+            )
         if args.eval_hf_dir is None:
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "

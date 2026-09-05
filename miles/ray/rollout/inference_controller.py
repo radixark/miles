@@ -52,7 +52,11 @@ class InferenceController:
 
     @lock_exempt
     async def init(self) -> None:
-        if self.args.debug_train_only:
+        if self.args.debug_train_only and self.args.eval_num_gpus <= 0:
+            # Pure SFT starts no engines at all; with a dedicated snapshot-eval
+            # fleet configured, the eval model (the only one _compute_raw_sglang_config
+            # builds in this mode) still starts below, and the session server —
+            # whose router is then the eval router — starts with it.
             return
 
         self.servers = await create_rollout_servers(
