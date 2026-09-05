@@ -1319,7 +1319,7 @@ class TestGetWorkerInfos:
         assert [info.generation for info in infos] == [1, 1]
         assert [info.gpu_ids for info in infos] == [[4, 5], [6, 7]]
         assert [info.self_addrs for info in infos] == manager.get_addrs()["engine"][2:]
-        assert [info.handle._actor_handle for info in infos] == fake_ray_cluster.handles[2:]
+        assert [manager.get_actor_handle(info.name) for info in infos] == fake_ray_cluster.handles[2:]
 
     async def test_a_stopped_cell_reports_no_workers_instead_of_raising(self, fake_ray_cluster: FakeRayCluster):
         """A cell stopped between snapshot and round-trip must report an empty worker list, not crash."""

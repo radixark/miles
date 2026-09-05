@@ -23,9 +23,7 @@ class StaticWorkerProvider(BaseWorkerProvider):
             self._spec, ServeWorkerSpec
         ), f"pool {self._spec.name} is launched as a command rather than served, so its rpc methods are unknown"
         return build_rpc_handle(
-            worker_class=load_function(self._spec.worker_class),
-            addrs=self._addrs_of_worker(worker_name),
-            pool_id=self._spec.name,
+            worker_class=load_function(self._spec.worker_class), addrs=self._addrs_of_worker(worker_name)
         )
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
