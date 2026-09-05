@@ -46,7 +46,7 @@ spec:
       {{- end }}
     spec:
       {{- include "miles-run.podDefaults" . | nindent 6 }}
-      serviceAccountName: {{ $name | quote }}
+      serviceAccountName: {{ .Values.run.objectNames.platformReadDelete | quote }}
       restartPolicy: Always
       containers:
         - name: orchestrator
