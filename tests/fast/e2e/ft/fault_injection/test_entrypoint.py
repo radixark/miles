@@ -3,16 +3,16 @@ import threading
 from unittest.mock import patch
 
 import pytest
-
 from tests.e2e.ft.conftest_ft.fault_injection import core, entrypoint, views
 from tests.fast.e2e.ft.fault_injection.utils import (
+    SERVING,
+    StubFaultForm,
     api_server_fault_forms,
     fixed_fault_forms,
-    StubFaultForm,
-    typed_cell,
-    SERVING,
+    intervals,
     mock_response,
     staged,
+    typed_cell,
 )
 
 
@@ -21,8 +21,7 @@ def test_stop_and_join_takes_one_last_snapshot_before_the_log_is_read() -> None:
     handle = entrypoint.FaultInjectorHandle(
         base_url="http://control",
         seed=0,
-        mean_interval_seconds=1e9,
-        cell_type="rollout",
+        mean_interval_seconds_of_cell_type=intervals(("rollout",), 1e9),
         cell_fault_forms=api_server_fault_forms(),
     )
 
@@ -75,8 +74,7 @@ def test_an_injector_that_outlives_the_join_fails_instead_of_racing_the_log() ->
     handle = entrypoint.FaultInjectorHandle(
         base_url="http://control",
         seed=0,
-        mean_interval_seconds=1e-12,
-        cell_type=None,
+        mean_interval_seconds_of_cell_type=intervals(("actor",), 1e-12),
         cell_fault_forms=fixed_fault_forms([StubFaultForm("slow", slow_inject)]),
         poll_interval_seconds=0,
         quiescent_polls_required=1,
