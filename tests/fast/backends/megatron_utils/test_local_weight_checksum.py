@@ -206,15 +206,150 @@ class TestFailFastAssertions:
         with pytest.raises(AssertionError, match="No sub-optimizers found"):
             _compute_weight_checksum_state(model=model, optimizer=optimizer)
 
-    def test_assert_param_without_main_param_fails(self) -> None:
+    def test_assert_non_fp32_param_without_main_param_fails(self) -> None:
         from miles.backends.megatron_utils.local_weight_checksum import _build_name_by_tensor_id
 
         chunk = MagicMock()
-        param = torch.randn(2, 2)
+        param = torch.randn(2, 2, dtype=torch.bfloat16)
         chunk.named_parameters.return_value = [("weight", param)]
 
         with pytest.raises(AssertionError, match="main_param is None"):
             _build_name_by_tensor_id([chunk])
+
+    def test_native_fp32_param_uses_distributed_optimizer_shard(self) -> None:
+        from miles.backends.megatron_utils.local_weight_checksum import (
+            _MainParamId,
+            _build_name_by_tensor_id,
+        )
+
+        model_param = torch.nn.Parameter(torch.randn(2, 2, dtype=torch.float32))
+        optimizer_shard = torch.nn.Parameter(model_param.detach().view(-1)[:2])
+        chunk = MagicMock()
+        chunk.named_parameters.return_value = [(
+            "module.layers.0.native_fp32_weight",
+            model_param,
+        )]
+
+        inner = MagicMock(spec=torch.optim.Adam)
+        inner.param_groups = [{"params": [optimizer_shard]}]
+        sub_optimizer = MagicMock(spec=["optimizer", "model_param_group_index_map"])
+        sub_optimizer.optimizer = inner
+        sub_optimizer.model_param_group_index_map = {model_param: (0, 0)}
+
+        name_map = _build_name_by_tensor_id([chunk], optimizer=sub_optimizer)
+
+        assert name_map[_MainParamId.from_tensor(optimizer_shard)] == (
+            "pp0.module.layers.0.native_fp32_weight"
+        )
+
+    def test_mixed_precision_param_still_uses_main_param(self) -> None:
+        from miles.backends.megatron_utils.local_weight_checksum import (
+            _MainParamId,
+            _build_name_by_tensor_id,
+        )
+
+        model_param = torch.nn.Parameter(torch.randn(2, 2, dtype=torch.bfloat16))
+        main_param = torch.nn.Parameter(model_param.detach().float())
+        model_param.main_param = main_param
+        chunk = MagicMock()
+        chunk.named_parameters.return_value = [("weight", model_param)]
+
+        inner = MagicMock(spec=torch.optim.Adam)
+        inner.param_groups = [{"params": [main_param]}]
+        sub_optimizer = MagicMock(spec=["optimizer", "model_param_group_index_map"])
+        sub_optimizer.optimizer = inner
+        sub_optimizer.model_param_group_index_map = {model_param: (0, 0)}
+
+        name_map = _build_name_by_tensor_id([chunk], optimizer=sub_optimizer)
+
+        assert name_map[_MainParamId.from_tensor(main_param)] == "pp0.weight"
+
+    def test_precision_aware_param_uses_distributed_optimizer_shard(self) -> None:
+        from miles.backends.megatron_utils.local_weight_checksum import (
+            _MainParamId,
+            _build_name_by_tensor_id,
+        )
+
+        model_param = torch.nn.Parameter(torch.randn(2, 2, dtype=torch.bfloat16))
+        model_param.main_param = None
+        model_param.main_param_sharded = True
+        optimizer_shard = model_param.detach().view(-1)
+        chunk = MagicMock()
+        chunk.named_parameters.return_value = [("module.layers.0.weight", model_param)]
+
+        inner = MagicMock(spec=torch.optim.Adam)
+        inner.param_groups = [{"params": [optimizer_shard]}]
+        sub_optimizer = MagicMock(spec=["optimizer", "model_param_group_index_map"])
+        sub_optimizer.optimizer = inner
+        sub_optimizer.model_param_group_index_map = {model_param: (0, 0)}
+
+        name_map = _build_name_by_tensor_id([chunk], optimizer=sub_optimizer)
+
+        assert name_map[_MainParamId.from_tensor(optimizer_shard)] == "pp0.module.layers.0.weight"
+
+    def test_unowned_distributed_shard_is_still_skipped(self) -> None:
+        from miles.backends.megatron_utils.local_weight_checksum import _build_name_by_tensor_id
+
+        model_param = torch.nn.Parameter(torch.randn(2, 2, dtype=torch.bfloat16))
+        model_param.main_param = None
+        model_param.main_param_sharded = True
+        chunk = MagicMock()
+        chunk.named_parameters.return_value = [("weight", model_param)]
+
+        assert _build_name_by_tensor_id([chunk]) == {}
+
+    def test_native_fp32_params_map_per_chained_optimizer(self) -> None:
+        from miles.backends.megatron_utils.local_weight_checksum import _collect_optimizer_hashes
+
+        first_param = torch.nn.Parameter(torch.randn(2, 2, dtype=torch.float32))
+        second_param = torch.nn.Parameter(torch.randn(2, 2, dtype=torch.float32))
+        first_shard = torch.nn.Parameter(first_param.detach().view(-1)[:2])
+        second_shard = torch.nn.Parameter(second_param.detach().view(-1)[:2])
+        chunk = MagicMock()
+        chunk.named_parameters.return_value = [
+            ("first", first_param),
+            ("second", second_param),
+        ]
+
+        def make_sub_optimizer(
+            model_param: torch.nn.Parameter,
+            optimizer_shard: torch.nn.Parameter,
+        ) -> MagicMock:
+            inner = MagicMock(spec=torch.optim.Adam)
+            inner.param_groups = [{"params": [optimizer_shard]}]
+            inner.state_dict.return_value = {
+                "state": {},
+                "param_groups": [{"params": [0]}],
+            }
+            sub_optimizer = MagicMock(spec=["optimizer", "model_param_group_index_map"])
+            sub_optimizer.optimizer = inner
+            sub_optimizer.model_param_group_index_map = {model_param: (0, 0)}
+            return sub_optimizer
+
+        optimizer = MagicMock(spec=["chained_optimizers"])
+        optimizer.chained_optimizers = [
+            make_sub_optimizer(first_param, first_shard),
+            make_sub_optimizer(second_param, second_shard),
+        ]
+
+        first_info, second_info = _collect_optimizer_hashes([chunk], optimizer)
+
+        assert first_info.param_names == {0: "pp0.first"}
+        assert second_info.param_names == {0: "pp0.second"}
+
+    def test_native_fp32_param_uses_original_tensor_for_non_distributed_optimizer(self) -> None:
+        from miles.backends.megatron_utils.local_weight_checksum import (
+            _MainParamId,
+            _build_name_by_tensor_id,
+        )
+
+        model_param = torch.nn.Parameter(torch.randn(2, 2, dtype=torch.float32))
+        chunk = MagicMock()
+        chunk.named_parameters.return_value = [("weight", model_param)]
+
+        name_map = _build_name_by_tensor_id([chunk])
+
+        assert name_map[_MainParamId.from_tensor(model_param)] == "pp0.weight"
 
     def test_assert_unmapped_fp32_param_fails(self) -> None:
         from miles.backends.megatron_utils.local_weight_checksum import _build_param_names_for_optimizer
