@@ -7,7 +7,9 @@ touches torchtitan internals.
 
 import logging
 from argparse import Namespace
+from contextlib import contextmanager
 
+import torch
 import torch.distributed as dist
 
 from miles.backends.torchtitan_utils import routing_replay
@@ -116,18 +118,36 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         return self.trainer.step_runner()
 
     def _build_ref_runner(self, args: Namespace):
-        """A frozen, CPU-offloaded second trainer for reference log probs."""
+        """A frozen second trainer for reference log probs, parked on the host between passes.
+
+        Built on the device like the actor: torchtitan's fused-QKV save hooks run DTensor
+        collectives inside ``state_dict()``, which the checkpointer calls at construction, and
+        the meshes have no CPU backend, so ``enable_cpu_offload`` cannot be used here.
+        """
         if not args.ref_load:
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
-        ref_config.training.enable_cpu_offload = True
         ref_trainer = TitanTrainer(ref_config)
         ref_trainer.checkpointer.load()
         for part in ref_trainer.model_parts:
             part.eval()
             part.requires_grad_(False)
-        logger.info(f"Built a CPU-offloaded torchtitan reference trainer from {args.ref_load}")
+            part.cpu()
+        torch.cuda.empty_cache()
+        self._ref_parts = ref_trainer.model_parts
+        logger.info(f"Built a torchtitan reference trainer from {args.ref_load}; it lives on the host between passes")
         return ref_trainer.step_runner()
+
+    @contextmanager
+    def ref_context(self):
+        for part in self._ref_parts:
+            part.cuda()
+        try:
+            yield
+        finally:
+            for part in self._ref_parts:
+                part.cpu()
+            torch.cuda.empty_cache()
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only or self.args.save is None:
