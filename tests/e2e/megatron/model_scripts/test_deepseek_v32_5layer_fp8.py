@@ -26,7 +26,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         model_org="Pinaster",
         model_name="DeepSeek-V3.2-5layer",
         megatron_model_type="deepseek-v32-5layer",

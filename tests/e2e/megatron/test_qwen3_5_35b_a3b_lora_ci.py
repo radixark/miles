@@ -23,7 +23,7 @@ _CONFIGS = [
 
 
 def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         model_name="Qwen3.5-35B-A3B",
         num_nodes=1,
         num_gpus_per_node=8,

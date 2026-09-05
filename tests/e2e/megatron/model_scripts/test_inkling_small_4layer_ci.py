@@ -30,7 +30,7 @@ _MODEL_ORG = "CharyZeng"
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         model_name="Inkling-Small-4layer",
         train_mode="full",
         task="dapo_math",

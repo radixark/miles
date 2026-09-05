@@ -20,7 +20,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         hardware="H200",
         model_name="Kimi-K2.5-2layer",
         num_nodes=1,
