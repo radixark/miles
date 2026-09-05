@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import socket
 from typing import NamedTuple
@@ -18,6 +19,7 @@ from miles.ray.specs.rollout import create_rollout_executor_handle
 from miles.ray.specs.train import (
     ACTOR_ROLE,
     CRITIC_ROLE,
+    TRAINER_CONTROLLER_ADDRS_FLAG,
     compute_trainer_configs,
     compute_trainer_ids,
     create_trainer_controller_handle,
@@ -28,6 +30,7 @@ from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_chec
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.ft_utils.api_server.server import start_api_server
+from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
 
@@ -109,11 +112,12 @@ def _create_placement_group(num_gpus) -> PlacementGroupInfo:
 
 
 def _get_placement_group_layout(args) -> tuple[int, int]:
-    trainer_num_gpus = _compute_trainer_num_gpus(args)
-    rollout_num_gpus = args.rollout_num_gpus + args.eval_num_gpus
-
+    selector = DeployComponent(args.deploy_component)
+    trainer_num_gpus = _compute_trainer_num_gpus(args) if selector.selects(DeployComponent.TRAINER) else 0
     if args.debug_train_only:
         return trainer_num_gpus, trainer_num_gpus
+
+    rollout_num_gpus = args.rollout_num_gpus + args.eval_num_gpus if selector.selects(DeployComponent.INFERENCE) else 0
     if args.rollout_external:
         return (0, 0) if args.debug_rollout_only else (trainer_num_gpus, trainer_num_gpus)
     if args.debug_rollout_only:
@@ -202,13 +206,37 @@ async def create_training_models(
 
 # TODO: move (when reorganizing files)
 async def wait_external_trainers(args) -> None:
-    """Wait for every trainer controller another launch deployed, which this run reaches by address."""
+    """Wait for every independently deployed trainer controller, and refuse one that another run deployed."""
     if args.trainer_controller_addrs is None:
         return
 
-    addrs = external_trainer_controller_addrs(args, trainer_ids=compute_trainer_ids(args))
+    trainer_ids = compute_trainer_ids(args)
+    addrs = external_trainer_controller_addrs(args, trainer_ids=trainer_ids)
     logger.info(f"Waiting for the independently deployed trainer controllers at {addrs}")
     await wait_static_addrs_ready(addrs.values())
+
+    capability = get_backend_capability(args)
+    handles = [
+        create_trainer_controller_handle(args, capability=capability, trainer_id=trainer_id)
+        for trainer_id in trainer_ids
+    ]
+    identities = await asyncio.gather(*[handle.get_deployment_identity() for handle in handles])
+    for identity in identities:
+        _assert_external_trainer_in_run(identity, args=args)
+
+
+def _assert_external_trainer_in_run(identity: DeploymentIdentity, *, args) -> None:
+    assert identity.run_uuid == args.run_uuid, (
+        f"{TRAINER_CONTROLLER_ADDRS_FLAG} names the {identity.deploy_component} deployment of run "
+        f"{identity.run_uuid}, but this launch drives run {args.run_uuid}: every deployment a split run reaches has "
+        f"to be a deployment of that same run, or its weight updates and its rollout samples belong to different runs"
+    )
+    assert identity.deploy_component == DeployComponent.TRAINER.value, (
+        f"{TRAINER_CONTROLLER_ADDRS_FLAG} names the {identity.deploy_component} deployment of run "
+        f"{identity.run_uuid}, and only a deployment that carries nothing but the trainer is reached by address: "
+        f"an {DeployComponent.ALL.value} release of this run runs an orchestration script of its own, so both "
+        f"scripts would drive the same trainer"
+    )
 
 
 # TODO: move (when reorganizing files)
