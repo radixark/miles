@@ -6,7 +6,8 @@ python tools/convert_hf_to_nvfp4.py [-h] [--model-dir MODEL_DIR] [--save-dir SAV
                                    [--extra-high-precision-layers-hf ...]
 
 Convert a BF16/FP16/FP32 HF safetensors checkpoint to NVFP4 (E2M1) for MoE
-expert GEMMs only. Dense linear layers are left unmodified.
+routed-expert GEMMs only. Shared experts and dense linear layers are left
+unmodified.
 Use --extra-high-precision-layers-hf to keep additional HF weight-name
 substrings unquantized.
 
@@ -41,11 +42,15 @@ EXPERT_WEIGHT_SUFFIXES = (
     ".gate_up_proj.weight",
 )
 
-EXPERT_NAME_MARKERS = (
+ROUTED_EXPERT_NAME_MARKERS = (
     ".experts.",
-    ".shared_experts.",
     "block_sparse_moe.experts.",
     ".moe.experts.",
+)
+
+SHARED_EXPERT_NAME_MARKERS = (
+    ".shared_expert.",
+    ".shared_experts.",
 )
 
 FUSED_QKV_SUFFIXES = (".q_proj", ".k_proj", ".v_proj")
@@ -57,10 +62,12 @@ GATED_PAIR_SUFFIXES = {
 }
 
 
-def _is_moe_expert_weight_name(name: str) -> bool:
+def _is_routed_expert_weight_name(name: str) -> bool:
     if not name.endswith(".weight"):
         return False
-    if not any(marker in name for marker in EXPERT_NAME_MARKERS):
+    if any(marker in name for marker in SHARED_EXPERT_NAME_MARKERS):
+        return False
+    if not any(marker in name for marker in ROUTED_EXPERT_NAME_MARKERS):
         return False
     return any(name.endswith(suffix) for suffix in EXPERT_WEIGHT_SUFFIXES)
 
@@ -87,7 +94,7 @@ def should_quantize(
 ) -> bool:
     if any(substr in name for substr in skip_weight_substrings):
         return False
-    if not _is_moe_expert_weight_name(name):
+    if not _is_routed_expert_weight_name(name):
         return False
     if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         return False
