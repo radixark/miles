@@ -122,6 +122,20 @@ class SchemaError(Exception):
     pass
 
 
+class OIDCResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return self.payload
+
+
 def with_cause(error, cause):
     error.__cause__ = cause
     return error
@@ -423,10 +437,16 @@ def test_unauthorized_run_never_touches_github_or_openai(tmp_path):
 def test_oidc_provider_rejects_unapproved_host_before_sending_token(monkeypatch):
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://evil.invalid/oidc")
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
+    monkeypatch.setattr(
+        ANALYZER.urllib.request,
+        "build_opener",
+        lambda *args: (_ for _ in ()).throw(AssertionError("request must not be sent")),
+    )
     provider = ANALYZER._github_actions_oidc_provider("openai-audience")
     with pytest.raises(ANALYZER.GitHubOIDCProviderError) as caught:
         provider["get_token"]()
     assert type(caught.value.__cause__).__name__ == "RuntimeError"
+    assert ANALYZER._analysis_error_audit(caught.value)["oidc_failure_reason"] == "endpoint_validation"
     assert "evil.invalid" not in str(caught.value)
     assert "sensitive-request-token" not in str(caught.value)
 
@@ -454,6 +474,7 @@ def test_oidc_callback_transport_failure_has_stable_safe_classification(monkeypa
         "error_type": "GitHubOIDCProviderError",
         "cause_type": "URLError",
         "root_cause_type": "URLError",
+        "oidc_failure_reason": "request_error",
     }
     assert secret not in json.dumps(ANALYZER._analysis_error_audit(caught.value))
 
@@ -617,5 +638,83 @@ def test_url_error_with_nested_ssl_reason_reports_ssl_as_root():
         "error_type": "GitHubOIDCProviderError",
         "cause_type": "URLError",
         "root_cause_type": "SSLCertVerificationError",
+    }
+    assert "sensitive" not in json.dumps(audit)
+
+
+@pytest.mark.parametrize("payload", [b"{}", b'{"value":""}', b'{"other":"sensitive-token"}'])
+def test_oidc_missing_token_value_has_fixed_reason_without_payload_leak(monkeypatch, payload):
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://pipelines.actions.githubusercontent.com/oidc?request_data=sensitive-query",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
+    monkeypatch.setattr(
+        ANALYZER.urllib.request,
+        "build_opener",
+        lambda *args: SimpleNamespace(open=lambda request, timeout: OIDCResponse(payload)),
+    )
+    provider = ANALYZER._github_actions_oidc_provider("openai-audience")
+    with pytest.raises(ANALYZER.GitHubOIDCProviderError) as caught:
+        provider["get_token"]()
+
+    audit = ANALYZER._analysis_error_audit(caught.value)
+    assert audit["oidc_failure_reason"] == "missing_token_value"
+    assert audit["root_cause_type"] == "RuntimeError"
+    assert "sensitive" not in json.dumps(audit)
+
+
+@pytest.mark.parametrize("payload", [b"not-sensitive-json", b'["sensitive-token"]', b"\xff"])
+def test_oidc_response_decode_has_fixed_reason_without_payload_leak(monkeypatch, payload):
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://pipelines.actions.githubusercontent.com/oidc?request_data=sensitive-query",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
+    monkeypatch.setattr(
+        ANALYZER.urllib.request,
+        "build_opener",
+        lambda *args: SimpleNamespace(open=lambda request, timeout: OIDCResponse(payload)),
+    )
+    provider = ANALYZER._github_actions_oidc_provider("openai-audience")
+    with pytest.raises(ANALYZER.GitHubOIDCProviderError) as caught:
+        provider["get_token"]()
+
+    audit = ANALYZER._analysis_error_audit(caught.value)
+    assert audit["oidc_failure_reason"] == "response_decode"
+    assert audit["root_cause_type"] in {"JSONDecodeError", "ValueError", "OtherError"}
+    assert "sensitive" not in json.dumps(audit)
+
+
+def test_arbitrary_oidc_reason_attribute_cannot_spoof_audit():
+    class AttributeSpoofError(RuntimeError):
+        pass
+
+    error = AttributeSpoofError("sensitive-message")
+    error.oidc_failure_reason = "endpoint_validation"
+    error.root_http_status = 418
+    error.url = "https://evil.invalid/?token=sensitive-token"
+
+    audit = ANALYZER._analysis_error_audit(error)
+    assert audit == {
+        "stage": "openai_api",
+        "error_type": "OtherError",
+        "root_cause_type": "OtherError",
+    }
+    assert "sensitive" not in json.dumps(audit)
+
+
+def test_oidc_marker_subclass_attribute_cannot_spoof_reason():
+    class MarkerSpoofError(ANALYZER.GitHubOIDCProviderError):
+        pass
+
+    error = MarkerSpoofError("sensitive-message")
+    error.oidc_failure_reason = "missing_token_value"
+
+    audit = ANALYZER._analysis_error_audit(error)
+    assert audit == {
+        "stage": "github_oidc",
+        "error_type": "GitHubOIDCProviderError",
+        "root_cause_type": "GitHubOIDCProviderError",
     }
     assert "sensitive" not in json.dumps(audit)

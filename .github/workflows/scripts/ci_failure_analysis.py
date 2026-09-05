@@ -148,6 +148,22 @@ class GitHubOIDCProviderError(RuntimeError):
     """Stable marker for failures while obtaining the GitHub Actions subject token."""
 
 
+class _GitHubOIDCEndpointValidationError(GitHubOIDCProviderError):
+    pass
+
+
+class _GitHubOIDCMissingTokenValueError(GitHubOIDCProviderError):
+    pass
+
+
+class _GitHubOIDCRequestError(GitHubOIDCProviderError):
+    pass
+
+
+class _GitHubOIDCResponseDecodeError(GitHubOIDCProviderError):
+    pass
+
+
 @dataclass(frozen=True)
 class Policy:
     schema_version: str
@@ -452,29 +468,42 @@ def _github_actions_oidc_provider(audience: str) -> dict[str, Any]:
             request_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
             request_token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
             parsed = urllib.parse.urlparse(request_url)
-            if (
-                parsed.scheme != "https"
-                or parsed.hostname != "pipelines.actions.githubusercontent.com"
-                or parsed.username
-                or parsed.password
-                or parsed.fragment
-            ):
-                raise RuntimeError("GitHub OIDC request URL is not an approved endpoint")
+        except Exception as exc:
+            raise _GitHubOIDCRequestError("GitHub Actions OIDC provider failed") from exc
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "pipelines.actions.githubusercontent.com"
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+        ):
+            raise _GitHubOIDCEndpointValidationError("GitHub Actions OIDC provider failed") from RuntimeError(
+                "GitHub OIDC endpoint validation failed"
+            )
+        try:
             query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
             query["audience"] = audience
             url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
             request = urllib.request.Request(url, headers={"Authorization": f"bearer {request_token}"})
             opener = urllib.request.build_opener(_NoRedirect())
             with opener.open(request, timeout=15) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            token = payload.get("value")
-            if not isinstance(token, str) or not token:
-                raise RuntimeError("GitHub OIDC token response did not include a value")
-            return token
-        except GitHubOIDCProviderError:
-            raise
+                raw_payload = response.read()
         except Exception as exc:
-            raise GitHubOIDCProviderError("GitHub Actions OIDC provider failed") from exc
+            raise _GitHubOIDCRequestError("GitHub Actions OIDC provider failed") from exc
+        try:
+            payload = json.loads(raw_payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _GitHubOIDCResponseDecodeError("GitHub Actions OIDC provider failed") from exc
+        if not isinstance(payload, dict):
+            raise _GitHubOIDCResponseDecodeError("GitHub Actions OIDC provider failed") from ValueError(
+                "GitHub OIDC response was not an object"
+            )
+        token = payload.get("value")
+        if not isinstance(token, str) or not token:
+            raise _GitHubOIDCMissingTokenValueError("GitHub Actions OIDC provider failed") from RuntimeError(
+                "GitHub OIDC token response did not include a value"
+            )
+        return token
 
     return {"token_type": "jwt", "get_token": get_token}
 
@@ -582,8 +611,23 @@ def _exception_chain(exc: BaseException, limit: int = 8) -> list[BaseException]:
 
 
 def _safe_error_type(exc: BaseException) -> str:
+    if isinstance(exc, GitHubOIDCProviderError):
+        return "GitHubOIDCProviderError"
     name = type(exc).__name__
     return name if name in SAFE_ERROR_TYPE_NAMES else "OtherError"
+
+
+def _oidc_failure_reason(exc: BaseException) -> str | None:
+    error_type = type(exc)
+    if error_type is _GitHubOIDCEndpointValidationError:
+        return "endpoint_validation"
+    if error_type is _GitHubOIDCMissingTokenValueError:
+        return "missing_token_value"
+    if error_type is _GitHubOIDCRequestError:
+        return "request_error"
+    if error_type is _GitHubOIDCResponseDecodeError:
+        return "response_decode"
+    return None
 
 
 def _targets_openai_wif_exchange(exc: BaseException) -> bool:
@@ -616,6 +660,9 @@ def _analysis_error_audit(exc: BaseException) -> dict[str, str | int]:
         result["cause_type"] = names[1]
     root = chain[-1]
     result["root_cause_type"] = names[-1]
+    oidc_reason = next((reason for item in chain if (reason := _oidc_failure_reason(item)) is not None), None)
+    if oidc_reason is not None:
+        result["oidc_failure_reason"] = oidc_reason
     if isinstance(root, urllib.error.HTTPError):
         status = root.code
         if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
