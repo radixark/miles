@@ -577,7 +577,19 @@ def test_checked_in_policy_exposes_exact_labels_and_access_groups():
     }
     assert loaded["groups"]["add_label_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
-        "user_ids": frozenset({82826991, 59716405, 101526713, 106564213}),
+        "user_ids": frozenset(
+            {
+                82826991,
+                59716405,
+                101526713,
+                106564213,
+                185285563,
+                295988875,
+                258897383,
+                109944218,
+                214322989,
+            }
+        ),
         "author_associations": frozenset(),
     }
     assert loaded["groups"]["repo_write_access"] == {
