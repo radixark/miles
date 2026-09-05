@@ -26,6 +26,9 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "_speculative_draft_quantization_explicitly_set": (
         "Derived inside __post_init__ and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
+    "grpc_worker_threads": (
+        "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
     "cuda_graph_config": (
         "The CLI parses a validated per-phase JSON object while ServerArgs holds a CudaGraphConfig "
         "instance, so no generically rendered token parses back to the same value."
@@ -67,9 +70,13 @@ def _server_args(
 
 
 def _assert_roundtrips(server_args_dict: dict) -> None:
-    """Every field the launched process ends up with matches what miles asked for."""
+    """Every field the launched process ends up with matches what miles asked for.
+
+    ``device`` is the one field miles fills in before rendering, so an unset input is
+    compared against the accelerator the argv carries."""
     parsed = parse_server_args_argv(server_args_to_argv(server_args_dict))
-    wanted = ServerArgs(**server_args_dict)
+    device = server_args_dict.get("device") or parsed.device
+    wanted = ServerArgs(**{**server_args_dict, "device": device})
     differing = [
         field.name
         for field in dataclasses.fields(wanted)
@@ -93,7 +100,7 @@ class TestServerArgsToArgv:
 
     def test_an_unspecified_device_renders_the_auto_detected_accelerator(self, monkeypatch):
         """An unset device renders the accelerator chosen by ServerArgs instead of the text None."""
-        monkeypatch.setattr("sglang.srt.server_args.get_device", lambda: "cuda")
+        monkeypatch.setattr("miles.backends.sglang_utils.server_args_utils.get_device", lambda: "cuda")
         server_args = _server_args(sglang_overrides={"device": None})
         argv = server_args_to_argv(server_args)
 
@@ -130,8 +137,9 @@ class TestServerArgsToArgv:
         assert server_args["dtype"] == "float16"
         _assert_roundtrips(server_args)
 
-    def test_dp_attention_defaults_are_normalized_exactly_once(self):
-        """Raw DP inputs are compared before ServerArgs applies interacting defaults."""
+    def test_dp_attention_inputs_are_passed_through_raw(self):
+        """sglang applies the interacting DP-attention defaults when the engine resolves its
+        arguments, so the boundary carries the raw inputs unchanged."""
         server_args = _server_args(
             args=_args(
                 rollout_num_gpus_per_engine=2,
@@ -148,8 +156,8 @@ class TestServerArgsToArgv:
 
         assert "--schedule-conservativeness" not in argv
         assert argv[argv.index("--chunked-prefill-size") + 1] == "4096"
-        assert parsed.schedule_conservativeness == expected.schedule_conservativeness == 0.3
-        assert parsed.chunked_prefill_size == expected.chunked_prefill_size == 2048
+        assert parsed.schedule_conservativeness == expected.schedule_conservativeness == 1.0
+        assert parsed.chunked_prefill_size == expected.chunked_prefill_size == 4096
         _assert_roundtrips(server_args)
 
     def test_sglang_overrides_roundtrip(self):
