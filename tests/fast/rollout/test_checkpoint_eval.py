@@ -168,7 +168,7 @@ async def test_eval_checkpoint_logs_metrics_when_debug_dump_fails(controller_env
     def fail_debug_dump(*args, **kwargs):
         raise OSError("debug volume unavailable")
 
-    monkeypatch.setattr(rollout_manager_mod, "save_debug_rollout_data", fail_debug_dump)
+    monkeypatch.setattr(rollout_executor_mod, "save_debug_rollout_data", fail_debug_dump)
     fn = CheckpointFnStub()
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
     mgr = make_manager(args, eval_fn=fn)

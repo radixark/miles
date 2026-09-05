@@ -47,16 +47,9 @@ def _iter_response_chunk_parts(
         assert logits.dtype in (torch.float32, torch.bfloat16, torch.float16), f"{logits.dtype}"
     assert len(logits.shape) == 3, f"{logits.shape}"
 
-    if qkv_format == "thd":
-        assert logits.size(0) == 1, f"{logits.shape}"
-        logits = logits.squeeze(0)
-    else:
-        assert max_seq_lens is not None
-        logits = logits.view(-1, logits.size(-1))
-
+    if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+        logits = logits.div(args.rollout_temperature)
     if args.true_on_policy_mode:
-        if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
-            logits = logits.div(args.rollout_temperature)
         if getattr(args, "bf16", False):
             logits = logits.to(torch.bfloat16)
         elif getattr(args, "fp16", False):
