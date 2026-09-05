@@ -5,6 +5,7 @@ from pathlib import Path
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.ray.placement_group import create_rollout_components, maybe_start_api_server, update_weights
+from miles.ray.specs.train import compute_trainer_configs
 from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
@@ -47,7 +48,10 @@ async def train_multi_policy(args) -> None:
 
     maybe_start_api_server(
         args,
-        actor_model=trainers[megatron_config.leader_model_id].handle,
+        trainer_models={
+            trainer_config.trainer_id: trainers[trainer_config.model_id].handle
+            for trainer_config in compute_trainer_configs(args)
+        },
         inference_controller=inference_controller,
     )
 
