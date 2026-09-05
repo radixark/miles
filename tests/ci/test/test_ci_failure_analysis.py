@@ -1,6 +1,8 @@
 import hashlib
 import importlib.util
+import io
 import json
+import ssl
 import sys
 import urllib.error
 from pathlib import Path
@@ -114,6 +116,10 @@ class ConnectError(Exception):
     def __init__(self, message, request_url):
         super().__init__(message)
         self.request = SimpleNamespace(url=request_url)
+
+
+class SchemaError(Exception):
+    pass
 
 
 def with_cause(error, cause):
@@ -447,6 +453,7 @@ def test_oidc_callback_transport_failure_has_stable_safe_classification(monkeypa
         "stage": "github_oidc",
         "error_type": "GitHubOIDCProviderError",
         "cause_type": "URLError",
+        "root_cause_type": "URLError",
     }
     assert secret not in json.dumps(ANALYZER._analysis_error_audit(caught.value))
 
@@ -472,6 +479,7 @@ def test_wrapped_oidc_callback_failure_is_identified_without_emitting_messages(t
     assert audit["stage"] == "github_oidc"
     assert audit["error_type"] == "APIConnectionError"
     assert audit["cause_type"] == "GitHubOIDCProviderError"
+    assert audit["root_cause_type"] == "URLError"
     assert not any(
         secret in emitted[0]
         for secret in (
@@ -509,6 +517,7 @@ def test_downstream_api_connection_error_classifies_cause_without_emitting_detai
     assert audit["stage"] == expected_stage
     assert audit["error_type"] == "APIConnectionError"
     assert audit["cause_type"] == "ConnectError"
+    assert audit["root_cause_type"] == "ConnectError"
     assert "outer-transport-secret" not in emitted[0]
     assert "cause-transport-secret" not in emitted[0]
     assert "wif-query-secret" not in emitted[0]
@@ -529,5 +538,84 @@ def test_unknown_exception_class_and_message_are_not_emitted(tmp_path):
     assert outcome.unavailable
     assert audit["stage"] == "openai_api"
     assert audit["error_type"] == "OtherError"
+    assert audit["root_cause_type"] == "OtherError"
     assert "ArbitrarySecretFailure" not in emitted[0]
     assert "arbitrary-secret-message" not in emitted[0]
+
+
+def test_nested_oidc_http_error_reports_only_allowlisted_root_and_integer_status():
+    root = urllib.error.HTTPError(
+        "https://pipelines.actions.githubusercontent.com/oidc?jwt=secret-jwt",
+        403,
+        "sensitive-http-reason",
+        {"Authorization": "Bearer sensitive-header-token"},
+        io.BytesIO(b"sensitive-response-body"),
+    )
+    error = with_cause(
+        APIConnectionError("outer-sensitive-message", "https://api.openai.com/v1/responses"),
+        with_cause(ANALYZER.GitHubOIDCProviderError("provider-sensitive-message"), root),
+    )
+    emitted = []
+    ANALYZER._audit(ANALYZER._analysis_error_audit(error), emitted.append)
+
+    audit = json.loads(emitted[0].split("=", 1)[1])
+    assert audit == {
+        "stage": "github_oidc",
+        "error_type": "APIConnectionError",
+        "cause_type": "GitHubOIDCProviderError",
+        "root_cause_type": "HTTPError",
+        "root_http_status": 403,
+    }
+    assert isinstance(audit["root_http_status"], int)
+    assert not any(
+        secret in emitted[0]
+        for secret in (
+            "secret-jwt",
+            "sensitive-http-reason",
+            "sensitive-header-token",
+            "sensitive-response-body",
+            "outer-sensitive-message",
+            "provider-sensitive-message",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("root", "expected_type"),
+    [
+        (urllib.error.URLError("sensitive-url-error"), "URLError"),
+        (ssl.SSLError("sensitive-ssl-error"), "SSLError"),
+        (json.JSONDecodeError("sensitive-json-error", "sensitive-json-document", 0), "JSONDecodeError"),
+        (SchemaError("sensitive-schema-error"), "SchemaError"),
+        (RuntimeError("sensitive-runtime-error"), "RuntimeError"),
+    ],
+)
+def test_nested_root_types_are_allowlisted_without_messages(root, expected_type):
+    error = with_cause(
+        APIConnectionError("sensitive-outer-error", "https://api.openai.com/v1/responses?token=sensitive"),
+        with_cause(ANALYZER.GitHubOIDCProviderError("sensitive-provider-error"), root),
+    )
+    audit = ANALYZER._analysis_error_audit(error)
+    serialized = json.dumps(audit)
+
+    assert audit["stage"] == "github_oidc"
+    assert audit["error_type"] == "APIConnectionError"
+    assert audit["cause_type"] == "GitHubOIDCProviderError"
+    assert audit["root_cause_type"] == expected_type
+    assert "root_http_status" not in audit
+    assert "sensitive" not in serialized
+
+
+def test_url_error_with_nested_ssl_reason_reports_ssl_as_root():
+    ssl_error = ssl.SSLCertVerificationError("sensitive-certificate-message")
+    url_error = urllib.error.URLError(ssl_error)
+    error = with_cause(ANALYZER.GitHubOIDCProviderError("sensitive-provider-message"), url_error)
+
+    audit = ANALYZER._analysis_error_audit(error)
+    assert audit == {
+        "stage": "github_oidc",
+        "error_type": "GitHubOIDCProviderError",
+        "cause_type": "URLError",
+        "root_cause_type": "SSLCertVerificationError",
+    }
+    assert "sensitive" not in json.dumps(audit)

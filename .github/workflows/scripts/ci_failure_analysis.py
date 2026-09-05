@@ -7,6 +7,7 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -109,6 +110,9 @@ SAFE_ERROR_TYPE_NAMES = {
     "ReadTimeout",
     "RemoteProtocolError",
     "RuntimeError",
+    "SSLCertVerificationError",
+    "SSLError",
+    "SchemaError",
     "TimeoutError",
     "TransportError",
     "URLError",
@@ -569,7 +573,11 @@ def _exception_chain(exc: BaseException, limit: int = 8) -> list[BaseException]:
     while current is not None and len(chain) < limit and id(current) not in seen:
         seen.add(id(current))
         chain.append(current)
-        current = current.__cause__ or current.__context__
+        nested = current.__cause__ or current.__context__
+        if nested is None and isinstance(current, urllib.error.URLError):
+            reason = current.reason
+            nested = reason if isinstance(reason, BaseException) else None
+        current = nested
     return chain
 
 
@@ -590,7 +598,7 @@ def _targets_openai_wif_exchange(exc: BaseException) -> bool:
     return (parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.path) == OPENAI_WIF_TOKEN_ENDPOINT
 
 
-def _analysis_error_audit(exc: BaseException) -> dict[str, str]:
+def _analysis_error_audit(exc: BaseException) -> dict[str, str | int]:
     chain = _exception_chain(exc)
     names = [_safe_error_type(item) for item in chain]
     if "GitHubOIDCProviderError" in names:
@@ -606,6 +614,12 @@ def _analysis_error_audit(exc: BaseException) -> dict[str, str]:
     result = {"stage": stage, "error_type": names[0]}
     if len(names) > 1:
         result["cause_type"] = names[1]
+    root = chain[-1]
+    result["root_cause_type"] = names[-1]
+    if isinstance(root, urllib.error.HTTPError):
+        status = root.code
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            result["root_http_status"] = status
     return result
 
 
