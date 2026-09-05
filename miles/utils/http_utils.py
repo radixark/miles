@@ -165,7 +165,7 @@ def get_host_info():
     return hostname, local_ip or final_fallback
 
 
-def _wrap_ipv6(host):
+def wrap_ipv6(host):
     """Wrap IPv6 address in [] if needed."""
     try:
         ipaddress.IPv6Address(host.strip("[]"))
