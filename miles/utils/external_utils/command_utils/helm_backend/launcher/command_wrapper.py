@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import TypeVar
@@ -8,6 +9,7 @@ import yaml
 from pydantic import BaseModel
 
 from miles.utils.external_utils.command_utils.common import run_process
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LABEL
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -27,6 +29,32 @@ class Helm:
         values_files: list[str | Path],
     ) -> None:
         _run(Helm.upgrade_command(release, namespace, chart, values_files), capture_output=False)
+
+    @staticmethod
+    def render_upgrade(*, release: str, namespace: str, chart: str | Path, values_files: list[str | Path]) -> Manifest:
+        rendered = _run(
+            [
+                *Helm.upgrade_command(release, namespace, chart, values_files, ci_run=False),
+                "--dry-run",
+                "--output",
+                "json",
+            ],
+            capture_output=True,
+        )
+        return Manifest.parse(json.loads(rendered.stdout)["manifest"])
+
+    @staticmethod
+    def get_manifest(release: str, namespace: str) -> Manifest | None:
+        listed = run_process(
+            ["helm", "get", "manifest", release, "--namespace", namespace], capture_output=True, check=False
+        )
+        if listed.returncode == 0:
+            return Manifest.parse(listed.stdout)
+        if "not found" in (listed.stderr + listed.stdout).lower():
+            return None
+        raise RuntimeError(
+            f"Cannot tell whether release {release} exists: {listed.stderr.strip() or listed.stdout.strip()}"
+        )
 
     @staticmethod
     def build_dependencies(chart: str | Path) -> None:
