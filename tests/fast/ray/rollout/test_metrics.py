@@ -196,6 +196,11 @@ class TestComputeZeroStdMetrics:
         assert out["zero_std/all_zero_percentage"] == 0.0
         assert out["zero_std/all_one_percentage"] == 0.0
 
+    def test_reward_less_samples_yield_no_zero_std_metrics(self):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = make_samples_grouped(2, 4, rewards=[1.0] * 4 + [None] * 4)
+        assert _compute_zero_std_metrics(args, samples) == {}
+
     def test_empty_samples_does_not_crash(self):
         args = make_args(advantage_estimator="grpo", reward_key=None)
         out = _compute_zero_std_metrics(args, [])
