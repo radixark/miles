@@ -9,9 +9,8 @@ from pathlib import Path
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.ray.placement_group import create_rollout_components, maybe_start_api_server, update_weights
 from miles.ray.specs.train import compute_trainer_configs
-from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.arguments import parse_args
-from miles.utils.async_utils import wait_cancelling_pending_on_first_completion
+from miles.utils.async_utils import Disposer, wait_cancelling_pending_on_first_completion, with_disposer
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.misc import should_run_periodic_action
@@ -25,21 +24,24 @@ from miles.utils.multi_policy.utils import (
     validate_multi_policy_args,
 )
 from miles.utils.orchestration_utils import init_orchestration_script
-from miles.utils.tracking_utils.tracking import finish_tracking
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
 
 
-async def train_multi_policy(args) -> None:
+async def train_multi_policy(args, *, disposer: Disposer) -> None:
     megatron_config = resolve_megatron_config(args)
     validate_multi_policy_args(args, megatron_config=megatron_config)
-    worker_manager = init_orchestration_script(args)
+    _worker_manager = init_orchestration_script(args, disposer=disposer)
+
     define_policy_metric_groups(megatron_config)
 
     inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+    disposer.add(inference_controller, rollout_executor)
 
     trainers = await create_trainers(args, rollout_executor=rollout_executor)
+    for trainer in trainers.values():
+        disposer.add(trainer.handle)
     assert_consistent_restore(args, trainers=trainers, leader_model_id=megatron_config.leader_model_id)
 
     maybe_start_api_server(
@@ -97,12 +99,6 @@ async def train_multi_policy(args) -> None:
         for trainer in trainers.values()
     ]
     await wait_cancelling_pending_on_first_completion(tasks, on_first_completion=run_ended.set)
-
-    await rollout_executor.dispose()
-    await inference_controller.dispose()
-    for trainer in trainers.values():
-        await trainer.handle.dispose()
-    await shutdown_worker_manager(worker_manager)
 
 
 def _startup_args(args, *, trainer: TrainerInfo) -> Namespace:
@@ -214,7 +210,4 @@ async def _maybe_save_globally(
 
 if __name__ == "__main__":
     args = parse_args()
-    try:
-        asyncio.run(train_multi_policy(args))
-    finally:
-        finish_tracking()
+    asyncio.run(with_disposer(train_multi_policy, args))
