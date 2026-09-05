@@ -30,8 +30,9 @@ import shutil
 import tempfile
 from typing import Any, Literal
 
-import miles.utils.external_utils.command_utils as U
 from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
+from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ def _ensure_prompt_data() -> str:
     return PROMPT_DATA_PATH
 
 
-def _ensure_model_downloaded(hf_checkpoint: str) -> str:
+def _ensure_model_downloaded(hf_checkpoint: str, *, backend: BaseCommandBackend) -> str:
     """Return a local model path, downloading HF repos when needed.
 
     Lets callers pass either a HuggingFace repo id (downloaded under
@@ -124,7 +125,7 @@ def _ensure_model_downloaded(hf_checkpoint: str) -> str:
     short = hf_checkpoint.split("/")[-1]
     local_dir = os.path.join(LOCAL_MODELS_ROOT, short)
     os.makedirs(LOCAL_MODELS_ROOT, exist_ok=True)
-    U.exec_command_cpu(f"hf download {hf_checkpoint} --local-dir {local_dir}")
+    backend.exec_command_cpu(f"hf download {hf_checkpoint} --local-dir {local_dir}")
     return local_dir
 
 
@@ -245,12 +246,13 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     if wire_format not in ("openai", "anthropic"):
         raise ValueError(f"unsupported session verification wire format: {wire_format}")
 
+    backend = command_utils.default_config().create_backend()
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
     )
     _ensure_prompt_data()
     _clear_proxy_env()
-    args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint)
+    args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint, backend=backend)
 
     train_args = namespace_to_train_args(args)
 
@@ -261,7 +263,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     os.close(metrics_fd)
 
     try:
-        U.execute_train(
+        backend.execute_train(
             train_args=train_args,
             num_gpus_per_node=args.actor_num_gpus_per_node,
             megatron_model_type=None,

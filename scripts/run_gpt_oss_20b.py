@@ -31,12 +31,12 @@ from dataclasses import dataclass
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     num_gpus_per_node: int = 8
     save: bool = False
     num_rollout: int = 1000
@@ -48,6 +48,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def execute(args: ScriptArgs):
     # Bridge mode loads the HF weights directly, hence no --ref-load / --load here.
+    U = args.create_backend()
     ckpt_args = f"--hf-checkpoint {args.model_dir}/gpt-oss-20b " "--megatron-to-hf-mode bridge "
     if args.save:
         ckpt_args += f"--save {args.model_dir}/gpt-oss-20b-BF16 " "--save-interval 50 "
@@ -132,7 +133,7 @@ def execute(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{misc_args} "
@@ -141,14 +142,13 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="gpt-oss-20b",
         megatron_path=args.megatron_path,
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     execute(args)
 
