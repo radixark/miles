@@ -132,6 +132,12 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     if args.debug_train_only:
         return []
 
+    if args.rollout_external:
+        # Engines are launched outside the miles Ray job; the InferenceController
+        # synthesizes their cells from --rollout-external-engine-addrs instead of
+        # scheduling any rollout workers here.
+        return []
+
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     return [

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
@@ -60,11 +61,16 @@ class InferenceController:
             context_lock=self.context_lock,
             global_health_checker_activeness=self._health_checker_activeness.get,
         )
-        # TODO: may change to InferenceController.init(engine_provider, ...) later
-        provider: BaseWorkerProvider = RayWorkerProvider.create(
-            pool_ids=compute_engine_pool_ids(self.args)
-        )  # TODO inject instance
-        self._watcher_disposers.append(await provider.watch_cells(self._reconcile))
+        if self.args.rollout_external:
+            # Engines live outside the Ray job, so there are no cells for the
+            # reconcile watcher to observe: adopt each supplied address directly.
+            await self._add_external_cells()
+        else:
+            # TODO: may change to InferenceController.init(engine_provider, ...) later
+            provider: BaseWorkerProvider = RayWorkerProvider.create(
+                pool_ids=compute_engine_pool_ids(self.args)
+            )  # TODO inject instance
+            self._watcher_disposers.append(await provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
         dashboard_hooks.register_router(self.args)
@@ -74,6 +80,19 @@ class InferenceController:
 
         if self.args.eval_num_gpus > 0:
             self.eval_fleet = await self._build_eval_fleet(srv=self.servers["eval"])
+
+    @with_lock
+    async def _add_external_cells(self) -> None:
+        srv = self._get_updatable_server()
+        assert srv is not None, "--rollout-external requires exactly one weight-updating model"
+        addrs = self.args.rollout_external_engine_addrs
+        assert addrs, "--rollout-external requires --rollout-external-engine-addrs"
+        assert len(addrs) == srv.expected_num_cells, (
+            f"--rollout-external-engine-addrs lists {len(addrs)} engine(s) but the rollout config expects "
+            f"{srv.expected_num_cells} (rollout_num_gpus / rollout_num_gpus_per_engine)"
+        )
+        for index, addr in enumerate(addrs):
+            await srv.add_cell(_compute_external_server_cell_meta(self.args, srv, index=index, addr=addr))
 
     @with_lock
     async def _build_eval_fleet(self, *, srv: RolloutServer) -> EvalFleet:
@@ -334,3 +353,31 @@ def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
         update_weights=info.meta["update_weights"],
         workers_hash=info.workers_hash,
     )
+
+
+def _compute_external_server_cell_meta(args, srv: RolloutServer, *, index: int, addr: str) -> ServerCellMetadata:
+    """Synthesize a cell for an engine miles neither launched nor placed."""
+    host, port = _parse_engine_addr(addr)
+    cell_id = f"external-engine-{index}"
+    return ServerCellMetadata(
+        model_id=srv.model_name,
+        worker_type="regular",
+        cell_id=cell_id,
+        num_gpus_per_engine=args.rollout_num_gpus_per_engine,
+        # No local GPUs are held; the offset only orders cells deterministically.
+        gpu_offset=index,
+        sglang_api_key=args.sglang_api_key,
+        worker_name=cell_id,
+        # miles never shares GPUs with an external engine, so it never offloads it.
+        needs_offload=False,
+        update_weights=srv.update_weights,
+        workers_hash=f"external-{index}",
+        external_server_url=build_server_url(host=host, port=port),
+    )
+
+
+def _parse_engine_addr(addr: str) -> tuple[str, int]:
+    raw = addr.split("://", 1)[-1]
+    host, sep, port = raw.rpartition(":")
+    assert sep and host and port, f"--rollout-external-engine-addrs entry {addr!r} must be host:port"
+    return host, int(port)

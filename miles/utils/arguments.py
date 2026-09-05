@@ -3606,6 +3606,17 @@ def miles_validate_args(args):
         getattr(args, "sglang_config", None) is not None and args.rollout_external
     ), "sglang_config cannot be set when rollout_external is set."
 
+    if args.rollout_external:
+        assert args.rollout_external_engine_addrs, (
+            "--rollout-external requires --rollout-external-engine-addrs to list the host:port of each engine."
+        )
+        assert not args.colocate, (
+            "--rollout-external cannot be combined with --colocate: external engines run on their own hosts."
+        )
+        assert args.eval_num_gpus == 0, (
+            "--rollout-external does not manage a separate eval fleet; set --eval-num-gpus 0."
+        )
+
     assert not (
         getattr(args, "sglang_config", None) is not None and getattr(args, "prefill_num_servers", None) is not None
     ), "sglang_config and prefill_num_servers are mutually exclusive. Use server_groups in the YAML config instead."

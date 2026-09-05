@@ -50,6 +50,10 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     needs_offload: bool
     update_weights: bool
     workers_hash: str
+    # Set for engines launched and owned outside the miles Ray job
+    # (``--rollout-external``). When present, the cell adopts this url instead of
+    # resolving a Ray worker address and never opens a launch gate.
+    external_server_url: str | None = None
 
 
 @dataclass
@@ -149,16 +153,24 @@ class ServerCell:
         return SGLangApiClient(server_url=self.server_url)
 
     async def init(self) -> None:
-        if self.args.rollout_external:
-            raise NotImplementedError(
-                "external rollout address allocation was removed and a new implementation is coming"
-            )
-
-        addr_info = await self._compute_addr_info()
-        await activate_launch_gate(gate_url=addr_info.gate_url)
+        if self.meta.external_server_url is not None:
+            # The engine is launched and owned outside miles, so there is no Ray
+            # worker address to resolve and no launch gate to open: adopt the
+            # supplied url directly and let the tick loop probe it for readiness.
+            addr_info = self._external_addr_info()
+        else:
+            addr_info = await self._compute_addr_info()
+            await activate_launch_gate(gate_url=addr_info.gate_url)
         self._change_state(
             "init", StateUninitialized, StateInitializing(addr_info=addr_info, start_time=time.monotonic())
         )
+
+    def _external_addr_info(self) -> CellAddrInfo:
+        server_url = self.meta.external_server_url
+        assert server_url is not None
+        # An external engine has no miles-owned bootstrap or gate port; the
+        # gate_url is unused because init() never activates a gate for it.
+        return CellAddrInfo(server_url=server_url, bootstrap_port=None, gate_url=server_url)
 
     async def tick(self) -> None:
         if isinstance(self._state, StateInitializing):

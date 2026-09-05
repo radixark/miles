@@ -1,13 +1,8 @@
-import multiprocessing
-import time
-
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 2
-SGLANG_ROUTER_IP = "127.0.0.1"
-SGLANG_ROUTER_PORT = 31000
 SGLANG_ENGINE_IP = "127.0.0.1"
 SGLANG_ENGINE_PORT = 32000
 
@@ -78,7 +73,11 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 " "--sglang-mem-fraction-static 0.6 "
+    sglang_args = (
+        "--rollout-num-gpus 2 "
+        "--rollout-num-gpus-per-engine 2 "
+        "--sglang-mem-fraction-static 0.6 "
+    )
 
     ci_args = (
         "--ci-test "
@@ -98,14 +97,16 @@ def execute():
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node 2 "
-        # TODO support non-colocate (e.g. remove rollout engine resource occupation)
-        "--colocate "
-        # isolated-rollout related
+        # External engines run on their own hosts, so the trainer stays disaggregated
+        # (no --colocate) and miles starts and owns its own router.
         "--rollout-external "
         # TODO test multi-engine
         f"--rollout-external-engine-addrs {SGLANG_ENGINE_IP}:{SGLANG_ENGINE_PORT} "
-        f"--sglang-router-ip {SGLANG_ROUTER_IP} "
-        f"--sglang-router-port {SGLANG_ROUTER_PORT} "
+        # Weights cross the trainer/rollout boundary over shared storage, the only
+        # path that does not assume a shared NCCL fabric with the external engine.
+        "--update-weight-transfer-mode disk-delta "
+        "--update-weight-disk-dir /root/miles_weight_updates "
+        "--update-weight-local-checkpoint-dir /root/miles_rollout_checkpoint "
     )
 
     train_args = (
@@ -130,35 +131,13 @@ def execute():
 
 
 def _launch_background():
-    # Here we use infra in miles, but real users will use their own infra
-    _launch_sglang_router()
+    # Stand up the engine miles will attach to. Real users launch this on their
+    # own infra (here, a private Trainium SGLang build); miles starts and owns the
+    # router itself and registers this engine with it, so the harness does not.
     _launch_sglang_engine()
 
 
-def _launch_sglang_router():
-    from sglang_router.launch_router import RouterArgs
-
-    from miles.utils.http_utils import run_router
-
-    print("launch_sglang_router", flush=True)
-    router_args = RouterArgs(
-        host=SGLANG_ROUTER_IP,
-        port=SGLANG_ROUTER_PORT,
-        balance_abs_threshold=0,
-        log_level="warn",
-    )
-    proc_router = multiprocessing.Process(
-        target=run_router,
-        args=(router_args,),
-    )
-    proc_router.daemon = True
-    proc_router.start()
-    time.sleep(3)
-    assert proc_router.is_alive()
-
-
 def _launch_sglang_engine():
-    import requests
     from sglang.srt.server_args import ServerArgs
 
     from miles.backends.sglang_utils.sglang_engine import launch_server_process
@@ -173,10 +152,6 @@ def _launch_sglang_engine():
             port=SGLANG_ENGINE_PORT,
             tp_size=2,
         )
-    )
-
-    requests.post(
-        f"http://{SGLANG_ROUTER_IP}:{SGLANG_ROUTER_PORT}/add_worker?url=http://{SGLANG_ENGINE_IP}:{SGLANG_ENGINE_PORT}"
     )
 
 
