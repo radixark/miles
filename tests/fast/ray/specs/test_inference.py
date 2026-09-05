@@ -998,6 +998,19 @@ class TestEngineCellChunking:
         spec = self._spec_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (2, 2)
 
+    def test_a_multi_node_engine_gets_one_pod_per_node(self, tmp_path):
+        """The chart turns this into the pods of a leaderworkerset, so a wrong count mis-sizes every group."""
+        spec = self._spec_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+
+        assert spec.scheduling.num_gpus_per_node == 8
+        assert (spec.scheduling.pods_per_cell(), spec.scheduling.workers_per_pod()) == (2, 1)
+
+    def test_an_engine_inside_one_node_stays_in_one_pod(self, tmp_path):
+        """A cell that fits a node must not be split, or its ranks would talk over the network for nothing."""
+        spec = self._spec_for(tmp_path, num_gpus=8, num_gpus_per_engine=4)
+
+        assert (spec.scheduling.pods_per_cell(), spec.scheduling.workers_per_pod()) == (1, 1)
+
     def test_single_gpu_cells_carry_contiguous_gpu_offsets(self, tmp_path):
         """Every cell must claim its own gpu span, otherwise two engines share the same devices."""
         spec = self._spec_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
