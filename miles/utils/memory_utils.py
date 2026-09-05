@@ -1,10 +1,35 @@
+import contextlib
 import gc
 import logging
+import os
 
 import torch
 import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
+
+_EXPANDABLE_DURING_TRAIN = os.environ.get("MILES_EXPANDABLE_SEGMENTS_DURING_TRAIN", "0") == "1"
+
+
+def _set_expandable_segments(enabled: bool) -> None:
+    setting = f"expandable_segments:{'True' if enabled else 'False'}"
+    try:
+        torch._C._accelerator_setAllocatorSettings(setting)
+    except AttributeError:
+        torch.cuda.memory._set_allocator_settings(setting)
+
+
+@contextlib.contextmanager
+def expandable_segments_during_training():
+    if not _EXPANDABLE_DURING_TRAIN:
+        yield
+        return
+    _set_expandable_segments(True)
+    try:
+        yield
+    finally:
+        clear_memory()
+        _set_expandable_segments(False)
 
 
 def clear_memory(clear_host_memory: bool = False):
