@@ -283,6 +283,65 @@ def test_validate_response_accepts_exact_job_and_evidence_contract():
     assert ANALYZER.validate_response(json.dumps(raw), jobs, 280)[10].startswith("The assertion")
 
 
+def test_strict_response_schema_uses_only_supported_structured_output_keywords():
+    schema = ANALYZER.load_schema(SCHEMA_PATH)
+    supported = {
+        "$id",
+        "additionalProperties",
+        "const",
+        "enum",
+        "items",
+        "maxItems",
+        "maxLength",
+        "minItems",
+        "minLength",
+        "properties",
+        "required",
+        "type",
+    }
+
+    def schema_keywords(node):
+        if not isinstance(node, dict):
+            return set()
+        result = set(node)
+        for key, value in node.items():
+            if key == "properties":
+                for child in value.values():
+                    result.update(schema_keywords(child))
+            elif key == "items":
+                result.update(schema_keywords(value))
+        return result
+
+    keywords = schema_keywords(schema)
+    assert keywords <= supported
+    assert "uniqueItems" not in keywords
+
+
+@pytest.mark.parametrize(
+    "refs",
+    [
+        [],
+        ["job:10:log:1-2", "job:10:log:1-2"],
+        ["job:other:log:1-2"],
+        ["job:10:log:1-2", 123],
+    ],
+)
+def test_local_validation_rejects_duplicate_empty_or_invalid_evidence_refs(refs):
+    item = {
+        "job_id": 10,
+        "reason": "The assertion failed because the result was empty.",
+        "category": "test_failure",
+        "confidence": "high",
+        "evidence_refs": refs,
+    }
+    with pytest.raises(ValueError):
+        ANALYZER.validate_response(
+            json.dumps({"schema_version": "1", "analyses": [item]}),
+            [{"job_id": 10, "evidence_refs": ["job:10:log:1-2"]}],
+            280,
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
