@@ -511,6 +511,59 @@ def save_lora_checkpoint(
     return str(save_path)
 
 
+def _validate_native_adapter_state(
+    model: Sequence[torch.nn.Module],
+    state_dict: dict[str, torch.Tensor],
+    native_path: Path,
+) -> dict[str, torch.nn.Parameter]:
+    # Virtual pipeline chunks number their layers from zero independently, so a name-keyed
+    # shard keeps only the last chunk and validates clean: the model side collapses too.
+    if len(model) > 1:
+        raise RuntimeError(
+            f"Cannot load {native_path.name}: native adapter shards are keyed by parameter name, "
+            f"which is ambiguous across the {len(model)} virtual pipeline chunks on this rank"
+        )
+
+    expected = {
+        name: param
+        for model_chunk in model
+        for name, param in model_chunk.named_parameters()
+        if _is_adapter_param_name(name)
+    }
+    if not expected:
+        # Otherwise an empty shard matches an empty model and the load reports success.
+        raise RuntimeError(f"Cannot load {native_path.name}: the model exposes no LoRA adapter parameters")
+
+    mismatched: list[str] = []
+    non_finite: list[str] = []
+    for name in expected.keys() & state_dict.keys():
+        tensor = state_dict[name]
+        if (
+            not isinstance(tensor, torch.Tensor)
+            or tensor.shape != expected[name].shape
+            or tensor.dtype != expected[name].dtype
+        ):
+            mismatched.append(name)
+        elif (tensor.is_floating_point() or tensor.is_complex()) and not torch.isfinite(tensor).all():
+            non_finite.append(name)
+
+    problems = [
+        f"{label} {len(names)}"
+        for label, names in (
+            ("missing", expected.keys() - state_dict.keys()),
+            ("unexpected", state_dict.keys() - expected.keys()),
+            ("dtype/shape mismatch", mismatched),
+            ("non-finite", non_finite),
+        )
+        if names
+    ]
+    if problems:
+        raise RuntimeError(
+            f"Native LoRA checkpoint {native_path.name} does not match the model: {', '.join(problems)}"
+        )
+    return expected
+
+
 def load_lora_adapter(
     model: Sequence[torch.nn.Module],
     adapter_path: str,
@@ -557,13 +610,10 @@ def load_lora_adapter(
             native_path = legacy
     if native_path.exists():
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
-        loaded = 0
-        for model_chunk in model:
-            for name, param in model_chunk.named_parameters():
-                if name in state_dict:
-                    param.data.copy_(state_dict[name].to(device=param.device))
-                    loaded += 1
-        logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
+        adapter_params = _validate_native_adapter_state(model, state_dict, native_path)
+        for name, param in adapter_params.items():
+            param.data.copy_(state_dict[name].to(device=param.device))
+        logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
         return True, iteration

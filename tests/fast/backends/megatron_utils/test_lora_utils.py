@@ -8,7 +8,9 @@ from argparse import Namespace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
+import miles.backends.megatron_utils.lora_utils as lora_utils
 from miles.backends.megatron_utils.lora_utils import (
     _get_lora_class_name,
     _is_adapter_param_name,
@@ -345,6 +347,97 @@ class TestBuildLoraSyncConfig:
         config = build_lora_sync_config(args)
         assert config["target_modules"] == ["q_proj", "k_proj"]
         assert config["r"] == 8
+
+
+# ---------------------------------------------------------------------------
+# Native adapter checkpoint validation
+# ---------------------------------------------------------------------------
+
+
+class TestNativeAdapterCheckpointValidation:
+    adapter_name = "module.decoder.layers.0.self_attention.linear_qkv.lora_A.weight"
+
+    @classmethod
+    def _model(cls):
+        param = torch.nn.Parameter(torch.ones(2, 2))
+        model = MagicMock()
+        model.named_parameters.return_value = [(cls.adapter_name, param)]
+        return model, param
+
+    @staticmethod
+    def _patch_parallel_state(monkeypatch):
+        parallel_state = MagicMock()
+        parallel_state.tp.rank = 0
+        parallel_state.pp.rank = 0
+        monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: parallel_state)
+
+    def test_exact_native_shard_loads(self, tmp_path, monkeypatch):
+        self._patch_parallel_state(monkeypatch)
+        model, param = self._model()
+        expected = torch.full((2, 2), 3.0)
+        torch.save({self.adapter_name: expected}, tmp_path / "adapter_megatron_rank0.pt")
+
+        loaded, iteration = lora_utils.load_lora_adapter([model], str(tmp_path))
+
+        assert loaded
+        assert iteration is None
+        assert torch.equal(param, expected)
+
+    @pytest.mark.parametrize(
+        ("failure", "problem"),
+        [
+            ("missing", "missing 1"),
+            ("unexpected", "unexpected 1"),
+            ("shape", "dtype/shape mismatch 1"),
+            ("dtype", "dtype/shape mismatch 1"),
+            ("non_finite", "non-finite 1"),
+        ],
+    )
+    def test_invalid_native_shard_stops_before_weights_or_training_state(
+        self, failure, problem, tmp_path, monkeypatch
+    ):
+        self._patch_parallel_state(monkeypatch)
+        model, param = self._model()
+        state_dict = {self.adapter_name: torch.full((2, 2), 3.0)}
+        if failure == "missing":
+            state_dict.clear()
+        elif failure == "unexpected":
+            state_dict["unexpected.lora_A.weight"] = torch.ones(1)
+        elif failure == "shape":
+            state_dict[self.adapter_name] = torch.ones(3, 2)
+        elif failure == "dtype":
+            state_dict[self.adapter_name] = torch.ones(2, 2, dtype=torch.float16)
+        else:
+            state_dict[self.adapter_name] = torch.full((2, 2), float("nan"))
+        torch.save(state_dict, tmp_path / "adapter_megatron_rank0.pt")
+        torch.save({"optimizer": {}, "iteration": 7}, tmp_path / "training_state_rank0.pt")
+        optimizer = MagicMock()
+
+        with pytest.raises(RuntimeError, match=problem):
+            lora_utils.load_lora_adapter([model], str(tmp_path), optimizer=optimizer)
+
+        assert torch.equal(param, torch.ones(2, 2))
+        optimizer.load_state_dict.assert_not_called()
+
+    def test_model_without_adapter_parameters_is_not_a_successful_load(self, tmp_path, monkeypatch):
+        # An empty shard matches an empty model on every other check.
+        self._patch_parallel_state(monkeypatch)
+        model = MagicMock()
+        model.named_parameters.return_value = []
+        torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
+
+        with pytest.raises(RuntimeError, match="exposes no LoRA adapter parameters"):
+            lora_utils.load_lora_adapter([model], str(tmp_path))
+
+    def test_virtual_pipeline_chunks_are_rejected(self, tmp_path, monkeypatch):
+        # Both chunks name their layers from zero, so every other check passes on half the adapter.
+        self._patch_parallel_state(monkeypatch)
+        first, _ = self._model()
+        second, _ = self._model()
+        torch.save({self.adapter_name: torch.full((2, 2), 3.0)}, tmp_path / "adapter_megatron_rank0.pt")
+
+        with pytest.raises(RuntimeError, match="ambiguous across the 2 virtual pipeline chunks"):
+            lora_utils.load_lora_adapter([first, second], str(tmp_path))
 
 
 # ---------------------------------------------------------------------------
