@@ -21,6 +21,14 @@ def _parse_sglang_args(argv: list[str]) -> argparse.Namespace:
     return add_sglang_arguments(argparse.ArgumentParser()).parse_args(argv)
 
 
+class TestSglangModelRoutersDefault:
+    def test_parsing_without_model_routers_sets_none(self):
+        """Parsing without multi-policy routers exposes a safe None default."""
+        args = _parse_sglang_args([])
+
+        assert args.sglang_model_routers is None
+
+
 class TestAllocatorOwnedServerArgs:
     def test_the_launch_gate_port_is_not_exposed_on_the_cli(self):
         """The gate port comes from the addr allocator, so a flag for it could only point the engine elsewhere."""

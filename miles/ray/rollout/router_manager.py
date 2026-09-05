@@ -1,5 +1,6 @@
 import logging
 
+from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.specs.inference import compute_router_pool_id, compute_session_server_instance_id
 from miles.utils.http_utils import wait_tcp_ready_async
 from miles.utils.workers.naming import compute_worker_name
@@ -15,8 +16,35 @@ logger = logging.getLogger(__name__)
 _SERVER_READY_TIMEOUT_SECS = 120
 
 
+async def resolve_router_addrs(args) -> dict[str, HostAndPort]:
+    """Wait for every model's router and record its address on ``args``, keyed by model name.
+
+    A second call in the same process answers from the record, so the driver and an
+    in-process controller may both resolve the same ``args``.
+    """
+    if args.sglang_router_ip is not None:
+        assert args.sglang_model_routers is not None, (
+            "external router mode was removed: miles always resolves its own routers "
+            "(a pre-set router address without the per-model map means a misconfigured run)"
+        )
+        return {name: HostAndPort(host=host, port=port) for name, (host, port) in args.sglang_model_routers.items()}
+
+    config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    router_addrs = {
+        model_cfg.name: await wait_router_ready(model_idx=model_idx)
+        for model_idx, model_cfg in enumerate(config.models)
+    }
+
+    primary = router_addrs[config.models[0].name]
+    args.sglang_router_ip = primary.host
+    args.sglang_router_port = primary.port
+    args.sglang_model_routers = {name: (addr.host, addr.port) for name, addr in router_addrs.items()}
+
+    return router_addrs
+
+
 async def wait_router_ready(model_idx: int) -> HostAndPort:
-    """Wait until the model's router, launched by the RayWorkerManager, is reachable and return its address."""
+    """Wait until the model's router, launched by the platform, is reachable and return its address."""
     provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
     worker_name = compute_worker_name(pool_id=compute_router_pool_id(model_idx))
     router_addr = (await provider.get_addrs(worker_name=worker_name))["primary"]
