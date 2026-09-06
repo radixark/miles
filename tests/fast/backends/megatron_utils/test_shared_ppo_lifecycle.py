@@ -727,7 +727,8 @@ def test_switch_model_restores_different_weights_once(
     worker = _weight_update_worker(actor_module, monkeypatch)
     monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
     worker._active_model_tag = active_tag
-    worker.weights_backuper = Mock(backup_tags={target_tag})
+    # A value-copy backuper: the second, already-active switch must be skipped.
+    worker.weights_backuper = Mock(backup_tags={target_tag}, restore_required_when_active=Mock(return_value=False))
 
     worker._switch_model(target_tag)
     worker._switch_model(target_tag)
