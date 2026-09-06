@@ -214,9 +214,47 @@ def test_file_content_accepts_github_line_wrapped_base64(monkeypatch):
     assert gh.file_content("tests/example.py", "a" * 40, 100) == "line one\nline two\n"
 
 
-def test_job_log_redirect_drops_app_token_and_bounds_the_download(monkeypatch):
+class FakeBlob:
+    """A redirect target that serves body, honouring an explicit byte range like Azure blob storage."""
+
+    def __init__(self, body, *, honour_range=True, announce_length=True):
+        self.body = body
+        self.honour_range = honour_range
+        self.announce_length = announce_length
+        self.requests = []
+
+    def open(self, target, timeout):
+        url = target if isinstance(target, str) else target.full_url
+        header = None if isinstance(target, str) else target.get_header("Range")
+        self.requests.append((url, header))
+        served = self.body
+        if header and self.honour_range:
+            start, end = header.removeprefix("bytes=").split("-")
+            served = self.body[int(start) : int(end) + 1]
+        headers = {"Content-Length": str(len(self.body))} if self.announce_length else {}
+        return FakeBlobResponse(served, headers)
+
+
+class FakeBlobResponse:
+    def __init__(self, body, headers):
+        self.body = body
+        self.headers = headers
+        self.offset = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *unused):
+        return False
+
+    def read(self, size):
+        chunk = self.body[self.offset : self.offset + size]
+        self.offset += len(chunk)
+        return chunk
+
+
+def redirecting_github(monkeypatch, blob, token="dedicated-app-token"):
     first_requests = []
-    redirected = []
 
     class Opener:
         def open(self, request, timeout):
@@ -229,27 +267,56 @@ def test_job_log_redirect_drops_app_token_and_bounds_the_download(monkeypatch):
                 None,
             )
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *unused):
-            return False
-
-        def read(self, size):
-            assert size == 11
-            return b"0123456789extra"
-
     monkeypatch.setattr(HANDLER.urllib.request, "build_opener", lambda *unused: Opener())
-    monkeypatch.setattr(
-        HANDLER.urllib.request,
-        "urlopen",
-        lambda target, timeout: redirected.append(target) or Response(),
-    )
-    gh = HANDLER.GitHub("dedicated-app-token", "radixark/miles")
-    assert gh.job_log(10, 10) == "0123456789"
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", blob.open)
+    return HANDLER.GitHub(token, "radixark/miles"), first_requests
+
+
+def test_job_log_redirect_drops_app_token_and_bounds_the_download(monkeypatch):
+    blob = FakeBlob(b"0123456789extra")
+    gh, first_requests = redirecting_github(monkeypatch, blob)
+    assert gh.job_log(10, 10) == "56789extra"
     assert first_requests[0].get_header("Authorization") == "Bearer dedicated-app-token"
-    assert redirected == ["https://ci-results.blob.core.windows.net/job/10"]
+    assert [url for url, _ in blob.requests] == ["https://ci-results.blob.core.windows.net/job/10"] * 2
+    assert blob.requests[1][1] == "bytes=5-14"
+    assert all("Authorization" not in str(url) for url, _ in blob.requests)
+
+
+def test_job_log_keeps_the_failure_at_the_end_of_an_oversized_log(monkeypatch):
+    body = b"setup noise\n" * 4000 + b"##[error]Process completed with exit code 1.\n"
+    gh, _ = redirecting_github(monkeypatch, FakeBlob(body))
+    assert "##[error]Process completed with exit code 1." in gh.job_log(10, 200)
+
+
+def test_job_log_keeps_the_tail_when_the_backend_ignores_the_range(monkeypatch):
+    body = b"noise\n" * 100 + b"final line\n"
+    blob = FakeBlob(body, honour_range=False)
+    gh, _ = redirecting_github(monkeypatch, blob)
+    assert gh.job_log(10, 11).endswith("final line\n")
+
+
+def test_job_log_streams_the_tail_when_the_backend_reports_no_length(monkeypatch):
+    body = b"noise\n" * 100 + b"final line\n"
+    blob = FakeBlob(body, announce_length=False)
+    gh, _ = redirecting_github(monkeypatch, blob)
+    assert gh.job_log(10, 11) == "final line\n"
+    assert len(blob.requests) == 1
+
+
+def test_job_log_download_is_bounded_when_the_body_never_ends(monkeypatch):
+    class EndlessResponse(FakeBlobResponse):
+        def read(self, size):
+            return b"x" * size
+
+    class EndlessBlob(FakeBlob):
+        def open(self, target, timeout):
+            self.requests.append(target)
+            return EndlessResponse(b"", {})
+
+    blob = EndlessBlob(b"")
+    monkeypatch.setattr(HANDLER, "MAX_LOG_STREAM_BYTES", 1 << 20)
+    gh, _ = redirecting_github(monkeypatch, blob)
+    assert gh.job_log(10, 32) == "x" * 32
 
 
 def test_notifier_workflow_has_pinned_read_only_identity_boundaries():

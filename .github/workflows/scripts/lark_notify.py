@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -36,6 +37,8 @@ FAILED_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "action_require
 # Aggregator jobs fail whenever any other job fails; listing them is noise.
 AGGREGATOR_JOB_RE = re.compile(r"^(check-all-jobs|pr-test-finish)$")
 MAX_LISTED_JOBS = 15
+# Bounds the transfer when the storage backend reports no length and ignores the range.
+MAX_LOG_STREAM_BYTES = 64 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------
@@ -115,7 +118,7 @@ class GitHub:
                 break
         return items
 
-    def _download_bytes(self, path: str, max_bytes: int, retries: int | None = None) -> bytes:
+    def _download_tail(self, path: str, max_bytes: int, retries: int | None = None) -> bytes:
         retries = self.retries if retries is None else retries
         if max_bytes <= 0:
             return b""
@@ -132,7 +135,7 @@ class GitHub:
             try:
                 opener = urllib.request.build_opener(_NoRedirect())
                 with opener.open(request, timeout=self.timeout) as response:
-                    return response.read(max_bytes + 1)[:max_bytes]
+                    return _read_tail(response, max_bytes)
             except urllib.error.HTTPError as exc:
                 if exc.code in (301, 302, 303, 307, 308):
                     location = exc.headers.get("Location")
@@ -143,8 +146,7 @@ class GitHub:
                     if target.scheme != "https" or not hostname.endswith(SAFE_GITHUB_DOWNLOAD_HOSTS):
                         raise RuntimeError(f"GET {url} -> unsafe redirect") from exc
                     try:
-                        with urllib.request.urlopen(location, timeout=self.timeout) as response:
-                            return response.read(max_bytes + 1)[:max_bytes]
+                        return self._download_tail_from(location, max_bytes)
                     except (urllib.error.HTTPError, urllib.error.URLError) as redirect_exc:
                         if attempt == retries - 1:
                             raise RuntimeError(f"GET {url} redirected download failed") from redirect_exc
@@ -156,10 +158,21 @@ class GitHub:
             time.sleep(2**attempt)
         raise RuntimeError("unreachable")
 
+    def _download_tail_from(self, location: str, max_bytes: int) -> bytes:
+        # The log storage backend ignores suffix ranges, so the tail needs an explicit offset.
+        with urllib.request.urlopen(location, timeout=self.timeout) as response:
+            length = response.headers.get("Content-Length")
+            total = int(length) if length is not None and length.isdigit() else 0
+            if total <= max_bytes:
+                return _read_tail(response, max_bytes)
+        ranged = urllib.request.Request(location, headers={"Range": f"bytes={total - max_bytes}-{total - 1}"})
+        with urllib.request.urlopen(ranged, timeout=self.timeout) as response:
+            return _read_tail(response, max_bytes)
+
     def job_log(self, job_id: int, max_bytes: int) -> str:
         if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
             raise ValueError("job_id must be a positive integer")
-        return self._download_bytes(f"repos/{self.repo}/actions/jobs/{job_id}/logs", max_bytes).decode(
+        return self._download_tail(f"repos/{self.repo}/actions/jobs/{job_id}/logs", max_bytes).decode(
             "utf-8", errors="replace"
         )
 
@@ -189,6 +202,23 @@ class GitHub:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def _read_tail(response: Any, max_bytes: int) -> bytes:
+    """Keep the last max_bytes of the body; failures are reported at the end of a job log."""
+    chunks: deque[bytes] = deque()
+    held = 0
+    streamed = 0
+    while streamed < MAX_LOG_STREAM_BYTES:
+        chunk = response.read(min(65_536, MAX_LOG_STREAM_BYTES - streamed))
+        if not chunk:
+            break
+        streamed += len(chunk)
+        chunks.append(chunk)
+        held += len(chunk)
+        while chunks and held - len(chunks[0]) >= max_bytes:
+            held -= len(chunks.popleft())
+    return b"".join(chunks)[-max_bytes:]
 
 
 # --------------------------------------------------------------------------
