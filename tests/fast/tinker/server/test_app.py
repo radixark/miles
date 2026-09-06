@@ -136,3 +136,62 @@ async def test_capabilities_and_telemetry_shapes(client):
     capabilities = (await client.get("/api/v1/get_server_capabilities")).json()
     assert capabilities["supported_models"][0]["model_name"] == "base"
     assert (await client.post("/api/v1/telemetry", json={})).json() == {"status": "accepted"}
+
+
+@pytest.mark.parametrize("route", ["get_info", "retrieve_future", "cancel_future", "optim_step"])
+async def test_sdk_api_keys_isolate_models_and_promises(client, route):
+    created = (
+        await client.post("/api/v1/create_model", json={"base_model": "base"}, headers={"X-API-Key": "tenant-a"})
+    ).json()
+    payload = {
+        "model_id": created["model_id"],
+        "request_id": created["request_id"],
+        "seq_id": 1,
+        "adam_params": dict(ADAM),
+    }
+    response = await client.post(f"/api/v1/{route}", json=payload, headers={"X-API-Key": "tenant-b"})
+    assert response.status_code == 403
+
+
+async def test_sdk_and_bearer_credentials_identify_the_same_tenant(client):
+    created = (
+        await client.post("/api/v1/create_model", json={"base_model": "base"}, headers={"X-API-Key": "tenant-a"})
+    ).json()
+    response = await client.post("/api/v1/get_info", json={"model_id": created["model_id"]}, headers=_headers())
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("bearer_tenant, status", [("tenant-a", 200), ("tenant-b", 400)])
+async def test_dual_credentials_must_agree(client, bearer_tenant, status):
+    response = await client.post(
+        "/api/v1/create_session",
+        json={},
+        headers={"X-API-Key": "tenant-a", **_headers(bearer_tenant)},
+    )
+    assert response.status_code == status
+    if status == 200:
+        assert client.service.sessions[response.json()["session_id"]]["tenant"] == "tenant-a"
+
+
+@pytest.mark.parametrize("header_name", ["X-API-Key", "Authorization"])
+async def test_heartbeat_enforces_session_ownership(client, header_name):
+    def headers(tenant):
+        return {header_name: f"Bearer {tenant}" if header_name == "Authorization" else tenant}
+
+    response = await client.post("/api/v1/create_session", json={}, headers=headers("tenant-a"))
+    session_id = response.json()["session_id"]
+    session = client.service.sessions[session_id]
+    session["last_heartbeat"] -= 1
+    previous = session["last_heartbeat"]
+
+    foreign = await client.post(
+        "/api/v1/session_heartbeat", json={"session_id": session_id}, headers=headers("tenant-b")
+    )
+    assert foreign.status_code == 403
+    assert session["last_heartbeat"] == previous
+
+    owner = await client.post(
+        "/api/v1/session_heartbeat", json={"session_id": session_id}, headers=headers("tenant-a")
+    )
+    assert owner.status_code == 200
+    assert session["last_heartbeat"] > previous

@@ -230,7 +230,7 @@ async def test_a_fresh_heartbeat_keeps_the_model(service):
     session_id = service.create_session("tenant", {})
     model_id = await created_model(service)
 
-    service.heartbeat(session_id)
+    service.heartbeat("tenant", session_id)
     await service._sweep_once()
 
     assert model_id in service.models

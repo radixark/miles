@@ -8,9 +8,12 @@ see a single totally ordered unit stream.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
 import uuid
+from pathlib import Path
 
 from miles.tinker.core.planner import BarrierUnit, Planner, WorkUnit
 from miles.tinker.core.promise import PENDING, Promise, PromiseStore
@@ -79,9 +82,11 @@ class TinkerService:
         self.sessions[session_id] = {"tenant": tenant, "last_heartbeat": time.monotonic(), "payload": payload}
         return session_id
 
-    def heartbeat(self, session_id: str) -> None:
+    def heartbeat(self, tenant: str, session_id: str) -> None:
         session = self.sessions.get(session_id)
         if session is not None:
+            if session["tenant"] != tenant:
+                raise OwnershipError("session belongs to another tenant")
             session["last_heartbeat"] = time.monotonic()
 
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
@@ -376,18 +381,15 @@ class TinkerService:
         payload = pending.command.payload
         if unit.kind == "save_state":
             name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
-            await self.backend.save_slot(record.slot, self._checkpoint_dir(record.model_id, "weights", name))
+            await self._save_checkpoint(record, "weights", name)
             return [{"kind": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}]
         if unit.kind == "load_state":
-            source_id, kind, name = _parse_tinker_path(payload["path"])
-            source = self.models.get(source_id)
-            if source is None or source.tenant != record.tenant:
-                raise OwnershipError(f"checkpoint {payload['path']} does not belong to this tenant")
+            path = self._owned_checkpoint_dir(record, payload["path"])
             await self.backend.load_slot(
                 record.slot,
                 record.lora_rank,
                 record.lora_alpha,
-                ckpt_path=self._checkpoint_dir(source_id, kind, name),
+                ckpt_path=path,
                 load_optimizer=payload["optimizer"],
             )
             return [{"kind": "load_state"}]
@@ -395,8 +397,7 @@ class TinkerService:
             candidate = record.next_sampler_version
             record.next_sampler_version += 1
             version = str(candidate)
-            path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
-            await self.backend.save_slot(record.slot, path)
+            await self._save_checkpoint(record, "sampler_weights", version)
             await self.backend.push_slot(
                 record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha
             )
@@ -411,7 +412,54 @@ class TinkerService:
         raise UserInputError(f"unknown barrier kind {unit.kind!r}")
 
     def _checkpoint_dir(self, model_id: str, kind: str, name: str) -> str:
-        return f"{self.config.checkpoint_root}/{model_id}/{kind}/{name}"
+        for component in (model_id, kind, name):
+            if not component or component in (".", "..") or any(char in component for char in ("/", "\\", "\x00")):
+                raise UserInputError("checkpoint path components must be nonempty file names")
+        if kind not in ("weights", "sampler_weights"):
+            raise UserInputError(f"unknown checkpoint kind {kind!r}")
+        root = Path(self.config.checkpoint_root).resolve()
+        path = (root / model_id / kind / name).resolve()
+        if not path.is_relative_to(root):
+            raise UserInputError("checkpoint path escapes the checkpoint root")
+        return str(path)
+
+    async def _save_checkpoint(self, record: ModelRecord, kind: str, name: str) -> None:
+        path = Path(self._checkpoint_dir(record.model_id, kind, name))
+        await self.backend.save_slot(record.slot, str(path))
+        metadata = {
+            "version": 1,
+            "tenant_sha256": hashlib.sha256(record.tenant.encode()).hexdigest(),
+            "base_model": record.base_model,
+            "lora_rank": record.lora_rank,
+            "lora_alpha": record.lora_alpha,
+        }
+        path.mkdir(parents=True, exist_ok=True)
+        temporary = path / ".tinker.json.tmp"
+        temporary.write_text(json.dumps(metadata) + "\n")
+        temporary.replace(path / "tinker.json")
+
+    def _owned_checkpoint_dir(self, record: ModelRecord, model_path: str) -> str:
+        source_id, kind, name = _parse_tinker_path(model_path)
+        path = self._checkpoint_dir(source_id, kind, name)
+        metadata_path = Path(path) / "tinker.json"
+        if not metadata_path.exists():
+            # Legacy checkpoints can only be authorized while their source model is live.
+            source = self.models.get(source_id)
+            if source is None or source.tenant != record.tenant:
+                raise OwnershipError(f"checkpoint {model_path} does not belong to this tenant")
+            return path
+        try:
+            metadata = json.loads(metadata_path.read_text())
+        except (OSError, ValueError) as error:
+            raise UserInputError("cannot read checkpoint ownership metadata") from error
+        if not isinstance(metadata, dict) or metadata.get("version") != 1:
+            raise UserInputError("unsupported checkpoint ownership metadata")
+        if metadata.get("tenant_sha256") != hashlib.sha256(record.tenant.encode()).hexdigest():
+            raise OwnershipError(f"checkpoint {model_path} does not belong to this tenant")
+        expected = {"base_model": record.base_model, "lora_rank": record.lora_rank, "lora_alpha": record.lora_alpha}
+        if any(metadata.get(key) != value for key, value in expected.items()):
+            raise UserInputError("checkpoint model and LoRA configuration do not match the target model")
+        return path
 
 
 def _parse_tinker_path(path: str) -> tuple[str, str, str]:
