@@ -44,6 +44,17 @@ TITO compaction siblings share this penalty so the rollout keeps one reward.
 Groups containing aborted or infrastructure-error games are rejected and
 resampled rather than trained as chess failures.
 
+Invalid or empty move attempts retain their exact generated tokens in the retry
+context, but cannot inherit positive policy advantage from a successful game.
+The harness reports their response IDs; the `non_positive_attempts` session
+postprocessor resolves them to server-recorded token spans. After advantage
+normalization, the trainer caps positive advantages at zero within those spans,
+including stop tokens. Negative advantages, valid attempts, rewards, value
+targets, loss masks, and separate KL/entropy regularization are unchanged.
+This is a credit-assignment guard, not a guarantee against model collapse.
+Use the pinned harness revision with this recipe: missing attempt metadata or
+response IDs fail explicitly rather than silently disabling the guard.
+
 ## Launch
 
 Use a current Miles checkout and provide a reproducible run ID:

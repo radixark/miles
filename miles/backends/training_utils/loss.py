@@ -4,6 +4,7 @@ from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
+from miles.backends.training_utils.loss_hub.credit_assignment import constrain_positive_advantages
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
@@ -118,6 +119,14 @@ def compute_advantages_and_returns(
 
     if args.normalize_advantages:
         advantages = normalize_advantages(args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens)
+
+    # Apply semantic credit constraints last: whitening must not turn a failed
+    # attempt's zero/negative policy credit positive again. Keep returns and
+    # loss masks intact so value targets and separate KL losses are unchanged.
+    if (credit_spans := rollout_data.get("non_positive_advantage_spans")) is not None:
+        advantages = constrain_positive_advantages(
+            advantages, credit_spans, total_lengths, response_lengths, args.qkv_format, max_seq_lens
+        )
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns

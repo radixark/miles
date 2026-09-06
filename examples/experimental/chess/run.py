@@ -49,7 +49,7 @@ import miles.utils.external_utils.command_utils as U
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _RADIX_RAFT_REPOSITORY = "https://github.com/radixark/radix_raft.git"
-_RADIX_RAFT_REVISION = "8508578026d975668c7c78b99e9625b035bdc0ce"
+_RADIX_RAFT_REVISION = "fe36f815ad1cc4db5293841bee4cd8acc86673ec"
 
 
 @dataclass
@@ -363,7 +363,7 @@ def _sglang_args(args: ScriptArgs) -> str:
 
 
 def _agent_args(args: ScriptArgs) -> str:
-    return f"--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate --custom-agent-function-path chess_agent.run --dynamic-sampling-filter-path chess_filter.check_chess_group --tito-model qwen38small --use-session-server v2 --session-server-port {args.session_server_port} "
+    return f"--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate --custom-agent-function-path chess_agent.run --dynamic-sampling-filter-path chess_filter.check_chess_group --tito-model qwen38small --use-session-server v2 --session-server-port {args.session_server_port} --session-sample-postprocessor-path miles.rollout.session.v2.postprocessor_hub.non_positive_attempts.non_positive_attempts "
 
 
 def _observability_args(args: ScriptArgs) -> str:

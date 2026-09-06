@@ -2,6 +2,7 @@ import pytest
 
 from run import (
     ScriptArgs,
+    _agent_args,
     _checkpoint_args,
     _extra_env_vars,
     _grpo_args,
@@ -11,6 +12,14 @@ from run import (
     _rollout_args,
     _sglang_args,
 )
+
+
+def test_agent_args_enable_attempt_credit_constraint() -> None:
+    args = ScriptArgs(hardware="H200", num_gpus_per_node=8)
+    assert (
+        "--session-sample-postprocessor-path "
+        "miles.rollout.session.v2.postprocessor_hub.non_positive_attempts.non_positive_attempts "
+    ) in _agent_args(args)
 
 
 def test_extra_env_vars_forward_nonempty_ld_library_path(
