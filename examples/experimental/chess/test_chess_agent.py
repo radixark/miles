@@ -16,8 +16,9 @@ def test_training_recipe_uses_native_qwen38_tito() -> None:
     assert "--tito-model qwen35" not in agent_args
 
 
+@pytest.mark.parametrize("penalty", [0.0, 0.5])
 def test_stockfish_game_limiter_caps_complete_rollouts(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, penalty: float,
 ) -> None:
     active = 0
     maximum_active = 0
@@ -36,7 +37,7 @@ def test_stockfish_game_limiter_caps_complete_rollouts(
             chess_agent.run(
                 base_url="http://session-server/sessions/test",
                 prompt="play",
-                metadata={"chess": {"stockfish_max_concurrent_games": 3}},
+                metadata={"chess": {"stockfish_max_concurrent_games": 3, "repetition_reward_penalty": penalty}},
             )
             for _ in range(12)
         ]
@@ -45,7 +46,7 @@ def test_stockfish_game_limiter_caps_complete_rollouts(
     monkeypatch.setattr(chess_agent, "run_chess", fake_run_chess)
     results = asyncio.run(exercise())
 
-    assert results == [{"ok": True}] * 12
+    assert results == [{"ok": True, "repetition_reward_penalty": penalty}] * 12
     assert maximum_active == 3
 
 

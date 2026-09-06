@@ -37,12 +37,38 @@ stays fixed for the complete game, including retries and context compaction.
   artifact is wanted.
 
 The base reward is `1.0` for a win or a positive final Stockfish score at the
-turn cap, and `0.0` otherwise. By default, Miles subtracts `0.1` once from any
+turn cap, and `0.0` otherwise. Training defaults to `--max-llm-retries-per-move 0`:
+there is one initial answer attempt, and an empty, malformed, illegal, or
+output-limit answer ends the game immediately. These trajectories receive exactly
+`0.0`, remain in the training batch, and are not treated as infrastructure errors.
+For evaluation, the harness can allow three or five retries after the initial
+attempt. Provider/API errors use a separate retry budget.
+
+For other games, the chess sample postprocessor subtracts the configured
+`--repetition-reward-penalty` (default `0.1`) once from any
 rollout whose training samples contain a repetitive 10,000-character window.
 Windows overlap with a 5,000-character stride, and the final suffix is checked.
 TITO compaction siblings share this penalty so the rollout keeps one reward.
+Invalid-move termination takes precedence over repetition shaping. The launcher
+passes the penalty through chess metadata and disables Miles' second, global
+application (`--repetition-reward-penalty 0` in the generated trainer command),
+so penalties are not applied twice. The configured chess penalty is recorded in
+the recipe configuration, prompt metadata, and saved sample metadata.
 Groups containing aborted or infrastructure-error games are rejected and
 resampled rather than trained as chess failures.
+
+The harness reports `chess_result.invalid_move_termination` on every trajectory.
+The custom rollout logger adds the following metrics to the standard Miles
+tracking stream (including W&B and the dashboard):
+
+- `rollout/chess/invalid_move_termination_rate`: fraction of retained training
+  trajectories that ended because the model exhausted its answer budget.
+- `rollout/chess/invalid_move_termination_count`: number of those trajectories.
+- `rollout/chess/trajectory_count`: the denominator, counting each original game
+  once even if compaction produced several training samples.
+
+Zero is logged when no games failed. These hooks use the ordinary Miles loss and
+advantage calculation; no token-level credit constraint is enabled.
 
 ## Launch
 
