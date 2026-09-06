@@ -12,6 +12,12 @@ semantics. For Qwen3.6-35B-A3B, select the model and its matching tokenizer with
 `--model-name Qwen3.6-35B-A3B --megatron-model-type qwen3.6-35B-A3B --tito-model qwen36`.
 The harness, reward policy, and observability hooks are shared by both models.
 
+For asynchronous runs with one trainer node, pass
+`--extra-args "--actor-preferred-node-ip 192.0.2.10"` to put the trainer first on
+a particular allocated node, for example one with sufficient checkpoint space.
+Use the actual Ray node IP. The default numeric-IP ordering is unchanged when
+this option is absent, and an unallocated requested node is rejected.
+
 Set `--system-prompt-variant random` to select one of the chess harness's five
 UCI-only system prompts independently for every rollout. The selected prompt
 stays fixed for the complete game, including retries and context compaction.
