@@ -291,25 +291,47 @@ def redact_and_normalize(text: str) -> str:
     return normalized
 
 
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _render_ranges(lines: list[str], ranges: list[tuple[int, int]]) -> str:
+    return "\n\n".join(f"[lines {start + 1}-{end}]\n" + "\n".join(lines[start:end]) for start, end in ranges)
+
+
+def _grow_ranges(lines: list[str], ranges: list[tuple[int, int]], char_limit: int) -> list[tuple[int, int]]:
+    """Spend the remaining budget on context, trailing first: a failure's detail follows its marker."""
+    for grow_end in (True, False):
+        while True:
+            widened = _merge_ranges(
+                [(start, min(len(lines), end + 1)) if grow_end else (max(0, start - 1), end) for start, end in ranges]
+            )
+            if widened == ranges or len(_render_ranges(lines, widened)) > char_limit:
+                break
+            ranges = widened
+    return ranges
+
+
 def extract_log_evidence(text: str, job_id: int, char_limit: int) -> dict[str, Any] | None:
     sanitized = redact_and_normalize(text)
     if not sanitized.strip() or char_limit <= 0:
         return None
     lines = sanitized.splitlines()
     markers = [index for index, line in enumerate(lines) if FAILURE_MARKER_RE.search(line)]
-    ranges: list[tuple[int, int]] = []
-    for index in markers[-4:]:
-        start, end = max(0, index - 8), min(len(lines), index + 13)
-        if ranges and start <= ranges[-1][1]:
-            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
-        else:
-            ranges.append((start, end))
-    if not ranges:
-        ranges = [(max(0, len(lines) - 40), len(lines))]
-    chunks = [f"[lines {start + 1}-{end}]\n" + "\n".join(lines[start:end]) for start, end in ranges]
-    excerpt = "\n\n".join(chunks)
+    seeds = [(max(0, index - 8), min(len(lines), index + 13)) for index in markers[-4:]]
+    ranges = _merge_ranges(seeds) if seeds else [(max(0, len(lines) - 40), len(lines))]
+    excerpt = _render_ranges(lines, ranges)
     if len(excerpt) > char_limit:
         excerpt = excerpt[-char_limit:]
+    else:
+        ranges = _grow_ranges(lines, ranges, char_limit)
+        excerpt = _render_ranges(lines, ranges)
     if not excerpt.strip():
         return None
     start_line = ranges[0][0] + 1

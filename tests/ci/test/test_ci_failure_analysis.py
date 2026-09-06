@@ -255,6 +255,47 @@ def test_log_windows_are_deterministic_and_unicode_safe():
     first["text"].encode("utf-8")
 
 
+def pytest_collection_log(noise_lines=22):
+    """A pytest import failure: the decisive line trails its marker by a long importlib traceback."""
+    return "\n".join(
+        [
+            *(f"setup line {index}" for index in range(60)),
+            "_ ERROR collecting tests/fast/ray/test_layout.py _",
+            "ImportError while importing test module '/w/tests/fast/ray/test_layout.py'.",
+            "Traceback:",
+            *("<frozen importlib._bootstrap>:1204: in _gcd_import" for _ in range(noise_lines)),
+            "E   ModuleNotFoundError: No module named 'miles.backends.update_weight'",
+            *(f"warning {index}" for index in range(40)),
+            "=================== 1 error in 4.35s ===================",
+            "##[error]Process completed with exit code 1.",
+        ]
+    )
+
+
+def test_evidence_reaches_the_decisive_line_past_a_long_traceback():
+    evidence = ANALYZER.extract_log_evidence(pytest_collection_log(), 10, 8400)
+    assert "E   ModuleNotFoundError: No module named 'miles.backends.update_weight'" in evidence["text"]
+
+
+def test_evidence_spends_the_budget_it_is_given():
+    text = pytest_collection_log()
+    small = ANALYZER.extract_log_evidence(text, 10, 900)
+    large = ANALYZER.extract_log_evidence(text, 10, 8400)
+    assert len(small["text"]) <= 900 < len(large["text"]) <= 8400
+    assert large["text"].count("\n") > small["text"].count("\n")
+
+
+def test_evidence_never_exceeds_a_budget_smaller_than_the_seed_window():
+    evidence = ANALYZER.extract_log_evidence(pytest_collection_log(), 10, 300)
+    assert len(evidence["text"]) <= 300
+
+
+def test_evidence_stops_growing_at_the_edges_of_a_short_log():
+    text = "\n".join(["AssertionError: boom", "second line"])
+    evidence = ANALYZER.extract_log_evidence(text, 10, 8400)
+    assert evidence["text"].splitlines()[1:] == ["AssertionError: boom", "second line"]
+
+
 def test_source_locations_keep_only_safe_repository_paths():
     text = (
         'File "/home/runner/work/miles/miles/tests/ci/test/test_gate.py", line 41\n'
