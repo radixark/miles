@@ -90,6 +90,7 @@ class TestSendBucketUnderTheEngineLock:
             _model_update_groups=MagicMock(name="nccl_group"),
             rollout_engines=[MagicMock(name="engine")],
             _selector="all",
+            weight_update_session_id=None,
         )
 
     @staticmethod
@@ -125,6 +126,7 @@ class TestSendBucketUnderTheEngineLock:
             fake_self.rollout_engines,
             bucket,
             selector="all",
+            session_id=None,
         )
         wait_futures.assert_called_once_with(broadcast.return_value)
         assert bucket == []

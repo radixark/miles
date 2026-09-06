@@ -12,6 +12,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState, get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
@@ -77,8 +78,9 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.rollout_engines,
                 bucket,
                 selector=self._selector,
+                session_id=self.weight_update_session_id,
             )
-            async_utils.wait_futures(futures)
+            check_weight_sync_results(async_utils.wait_futures(futures), is_lora=False)
             bucket.clear()
 
 
@@ -148,10 +150,12 @@ def update_weights_from_distributed(
     rollout_engines: Sequence[SGLangApiClient],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
     selector: str = "all",
+    session_id: str | None = None,
 ) -> list[Future]:
     """
     Send metadata (HTTP), broadcast tensors (NCCL rank 0 → engines).
     """
+    session_kwargs = {"session_id": session_id} if session_id is not None else {}
     futures = [
         async_utils.submit(
             client.update_weights_from_distributed(
@@ -160,6 +164,7 @@ def update_weights_from_distributed(
                 shapes=[param.shape for _, param in converted_named_tensors],
                 selector=selector,
                 group_name=group_name,
+                **session_kwargs,
             )
         )
         for client in rollout_engines

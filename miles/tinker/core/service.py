@@ -253,7 +253,8 @@ class TinkerService:
         record = self.get_model(tenant, model_id)
         if kind != "sampler_weights":
             raise UserInputError(f"cannot sample from {model_path!r}: not a sampler_weights path")
-        assert int(name) <= record.sampler_version, f"unknown sampler version {name} for {model_id}"
+        if not name.isdecimal() or int(name) not in record.published_sampler_versions:
+            raise UserInputError(f"unknown sampler version {name} for {model_id}")
         return f"{model_id}@{name}"
 
     async def sweep_leases(self) -> None:
@@ -391,13 +392,16 @@ class TinkerService:
             )
             return [{"kind": "load_state"}]
         if unit.kind == "save_weights_for_sampler":
-            record.sampler_version += 1
-            version = str(record.sampler_version)
+            candidate = record.next_sampler_version
+            record.next_sampler_version += 1
+            version = str(candidate)
             path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
             await self.backend.save_slot(record.slot, path)
             await self.backend.push_slot(
                 record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha
             )
+            record.sampler_version = candidate
+            record.published_sampler_versions.add(candidate)
             return [
                 {
                     "kind": "save_weights_for_sampler",

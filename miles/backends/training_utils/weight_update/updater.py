@@ -108,26 +108,52 @@ class WeightUpdater:
         """Push one adapter under an explicit engine-side name. The base weights
         and the weight version stay put: versioning lives in the name, so
         in-flight sampling against an older name is never disturbed."""
-        self._sync([(lora_name, adapter)], sync_base=False, weight_version=None)
+        new_version = [lora_name not in self._registered_adapters]
+        dist.broadcast_object_list(new_version, src=0, group=get_gloo_group())
+        self._sync(
+            [(lora_name, adapter)],
+            sync_base=False,
+            weight_version=None,
+            new_version=new_version[0],
+        )
 
-    def _sync(self, adapters: list, *, sync_base: bool, weight_version: int | None) -> None:
+    def _sync(self, adapters: list, *, sync_base: bool, weight_version: int | None, new_version: bool = False) -> None:
+        session_id = adapters[0][0] if new_version else None
+        self.protocol.weight_update_session_id = session_id
+        self._new_lora_session_started = False
+        try:
+            self._run_sync(adapters, sync_base=sync_base, weight_version=weight_version, session_id=session_id)
+        except Exception:
+            if self._new_lora_session_started and dist.get_rank() == 0:
+                try:
+                    end_weight_update(self.protocol.rollout_engines, session_id=session_id, abort=True)
+                except Exception:
+                    logger.exception("Failed to discard the unpublished adapter session")
+            raise
+        finally:
+            self.protocol.weight_update_session_id = None
+            self._new_lora_session_started = False
+
+    def _run_sync(
+        self, adapters: list, *, sync_base: bool, weight_version: int | None, session_id: str | None
+    ) -> None:
         protocol = self.protocol
         driver = dist.get_rank() == 0
-        if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
-            self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(
-                protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-            )
-        dist.barrier(group=get_gloo_group())
-
-        checksums = {name: {} for name, _ in adapters} if adapters and self.args.check_lora_weight_equal else None
+        checksums = (
+            {name: {} for name, _ in adapters}
+            if adapters and (self.args.check_lora_weight_equal or session_id is not None)
+            else None
+        )
         if checksums is not None:
             assert (
                 self._hf_weight_iterator.placement.gather_pp
             ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
+        if protocol.use_weight_update_session:
+            self._run_driver_phase(lambda: self._prepare_sync(adapters, sync_base=sync_base, session_id=session_id))
+        dist.barrier(group=get_gloo_group())
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
+            stream_error = None
             for bucket in self._hf_weight_iterator.iter_hf_weights(
                 self.weights_getter() if sync_base else None,
                 include_base=sync_base,
@@ -137,19 +163,66 @@ class WeightUpdater:
                 if protocol.is_sender:
                     if driver and checksums is not None:
                         record_lora_checksums(bucket, checksums)
-                    protocol.send_bucket(bucket)
+                    try:
+                        protocol.send_bucket(bucket)
+                    except Exception as exc:
+                        if session_id is None:
+                            raise
+                        # Finish the iterator and its collectives on every rank.
+                        # No engine may commit after any sender lost a bucket.
+                        stream_error = stream_error or str(exc)
                     pbar.update(1)
+            if session_id is not None:
+                errors = [None] * dist.get_world_size()
+                dist.all_gather_object(errors, stream_error, group=get_gloo_group())
+                if any(error is not None for error in errors):
+                    raise RuntimeError(f"Adapter stream failed: {errors}")
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
-            if protocol.use_weight_update_session and driver:
-                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                if weight_version is not None:
-                    set_weight_version(protocol.rollout_engines, weight_version)
-                resume_engines(protocol.rollout_engines)
+            if protocol.use_weight_update_session:
+                self._run_driver_phase(
+                    lambda: self._finish_sync(checksums, weight_version=weight_version, session_id=session_id)
+                )
             dist.barrier(group=get_gloo_group())
+
+    def _run_driver_phase(self, operation: Callable[[], None]) -> None:
+        """A rejected engine RPC must fail every training rank, not strand a barrier."""
+        error = [None]
+        if dist.get_rank() == 0:
+            try:
+                operation()
+            except Exception as exc:
+                error[0] = str(exc)
+        dist.broadcast_object_list(error, src=0, group=get_gloo_group())
+        if error[0] is not None:
+            raise RuntimeError(error[0])
+
+    def _prepare_sync(self, adapters: list, *, sync_base: bool, session_id: str | None) -> None:
+        engines = self.protocol.rollout_engines
+        if session_id is None:
+            pause_engines(self.args, engines)
+        self._register_new_lora_adapters(engines, adapters, defer_publish=session_id is not None)
+        session_kwargs = (
+            {"new_lora_names": [name for name, _ in adapters], "session_id": session_id}
+            if session_id is not None
+            else {}
+        )
+        self._new_lora_session_started = session_id is not None
+        begin_weight_update(
+            engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base, **session_kwargs
+        )
+
+    def _finish_sync(self, checksums: dict | None, *, weight_version: int | None, session_id: str | None) -> None:
+        engines = self.protocol.rollout_engines
+        session_kwargs = {"session_id": session_id} if session_id is not None else {}
+        end_weight_update(engines, expected_lora_checksums=checksums, **session_kwargs)
+        if weight_version is not None:
+            set_weight_version(engines, weight_version)
+        if session_id is None:
+            resume_engines(engines)
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
@@ -164,7 +237,9 @@ class WeightUpdater:
             return []
         return [(LORA_ADAPTER_NAME, None)]
 
-    def _register_new_lora_adapters(self, rollout_engines, adapters: list[tuple[str, object]]) -> None:
+    def _register_new_lora_adapters(
+        self, rollout_engines, adapters: list[tuple[str, object]], *, defer_publish: bool = False
+    ) -> None:
         """Register adapters the current engine set has not seen, with their
         per-adapter config; eager so the engine validates rank before any bytes move."""
         for lora_name, adapter in adapters:
@@ -173,5 +248,6 @@ class WeightUpdater:
             config = self._lora_sync_config
             if adapter is not None:
                 config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-            register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
+            publish_kwargs = {"defer_publish": True} if defer_publish else {}
+            register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config, **publish_kwargs)
             self._registered_adapters.add(lora_name)

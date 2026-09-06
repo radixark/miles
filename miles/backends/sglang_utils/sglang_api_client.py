@@ -105,6 +105,7 @@ class SGLangApiClient:
         flush_cache: bool = False,
         weight_version: str | None = None,
         selector: str = "all",
+        session_id: str | None = None,
     ):
         """
         Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
@@ -120,6 +121,8 @@ class SGLangApiClient:
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
+        if session_id is not None:
+            payload["session_id"] = session_id
         return await self._make_request(
             "update_weights_from_tensor",
             payload,
@@ -251,12 +254,14 @@ class SGLangApiClient:
                 return response.json()["weight_version"]
         response.raise_for_status()
 
-    async def register_lora_adapter(self, lora_name: str, config_dict: dict, pinned: bool = False):
+    async def register_lora_adapter(
+        self, lora_name: str, config_dict: dict, pinned: bool = False, *, defer_publish: bool = False
+    ):
         """Create-or-refresh a LoRA adapter's identity and config (weights zeroed)."""
-        return await self._make_request(
-            "register_lora_adapter",
-            {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
-        )
+        payload = {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned}
+        if defer_publish:
+            payload["defer_publish"] = True
+        return await self._make_request("register_lora_adapter", payload)
 
     async def unload_lora_adapter(self, lora_name: str):
         """Remove a served LoRA adapter by name."""
@@ -354,6 +359,7 @@ class SGLangApiClient:
         flush_cache=False,
         weight_version: str | None = None,
         selector: str = "all",
+        session_id: str | None = None,
     ):
         payload = {
             "names": names,
@@ -365,6 +371,8 @@ class SGLangApiClient:
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
+        if session_id is not None:
+            payload["session_id"] = session_id
         return await self._make_request(
             "update_weights_from_distributed",
             payload,
@@ -383,15 +391,27 @@ class SGLangApiClient:
         response.raise_for_status()
         return response
 
-    async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
+    async def begin_weight_update(
+        self, selector: str = "all", sync_base: bool = True, *, new_lora_names=None, session_id: str | None = None
+    ):
         """Open a weight-update session on the engine. sync_base=False declares an
         adapter-only session (no quant unpack; base tensors rejected)."""
-        return await self._make_request("begin_weight_update", {"selector": selector, "sync_base": sync_base})
+        payload = {"selector": selector, "sync_base": sync_base}
+        if new_lora_names is not None:
+            payload.update(new_lora_names=new_lora_names, session_id=session_id)
+        return await self._make_request("begin_weight_update", payload)
 
-    async def end_weight_update(self, expected_lora_checksums=None):
+    async def end_weight_update(
+        self, expected_lora_checksums=None, *, session_id: str | None = None, abort: bool = False
+    ):
         """Close the weight-update session: re-finalize base weights (sync_base
         sessions) and apply the streamed LoRA stash."""
-        return await self._make_request("end_weight_update", {"expected_lora_checksums": expected_lora_checksums})
+        payload = {"expected_lora_checksums": expected_lora_checksums}
+        if session_id is not None:
+            payload["session_id"] = session_id
+        if abort:
+            payload["abort"] = True
+        return await self._make_request("end_weight_update", payload)
 
     async def update_weight_version(self, weight_version: str, abort_all_requests: bool = False):
         return await self._make_request(

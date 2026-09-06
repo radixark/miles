@@ -165,6 +165,50 @@ async def test_sampling_resolves_against_the_pushed_version(service):
     assert service.backend.named("sample")[0]["lora_name"] == f"{model_id}@1"
 
 
+async def test_sampler_is_not_admitted_until_push_completes(service, monkeypatch):
+    model_id = await created_model(service)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    original = service.backend.push_slot
+
+    async def gated_push(*args):
+        entered.set()
+        await finish.wait()
+        await original(*args)
+
+    monkeypatch.setattr(service.backend, "push_slot", gated_push)
+    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = f"tinker://{model_id}/sampler_weights/1"
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert service.models[model_id].sampler_version == 0
+        with pytest.raises(UserInputError, match="unknown sampler version"):
+            service._resolve_sampler("tenant", path)
+    finally:
+        finish.set()
+    assert (await await_settled(service, "tenant", request_id)).state == DONE
+    assert service._resolve_sampler("tenant", path) == f"{model_id}@1"
+
+
+async def test_failed_sampler_version_is_not_reused_or_admitted_by_later_success(service, monkeypatch):
+    model_id = await created_model(service)
+    original = service.backend.push_slot
+
+    async def failed_push(*args):
+        raise RuntimeError("one engine rejected the publication")
+
+    monkeypatch.setattr(service.backend, "push_slot", failed_push)
+    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    assert (await await_settled(service, "tenant", request_id)).state == FAILED
+    assert service.models[model_id].sampler_version == 0
+    monkeypatch.setattr(service.backend, "push_slot", original)
+    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
+    assert (await await_settled(service, "tenant", request_id)).result["path"].endswith("/2")
+    assert service._resolve_sampler("tenant", f"tinker://{model_id}/sampler_weights/2") == f"{model_id}@2"
+    for version in ("0", "1", "3", "bad"):
+        with pytest.raises(UserInputError, match="unknown sampler version"):
+            service._resolve_sampler("tenant", f"tinker://{model_id}/sampler_weights/{version}")
+
+
 async def test_lease_expiry_reclaims_the_tenant(service):
     session_id = service.create_session("tenant", {})
     model_id = await created_model(service)

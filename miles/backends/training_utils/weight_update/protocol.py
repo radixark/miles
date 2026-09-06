@@ -32,6 +32,7 @@ class WeightTransferProtocol(ABC):
         self.is_sender: bool | None = None
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
+        self.weight_update_session_id: str | None = None
 
     @abstractmethod
     def connect(

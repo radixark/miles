@@ -174,6 +174,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
             selector=self._selector,
+            session_id=self.weight_update_session_id,
         )
         if self.use_distribute and self._is_distributed_src_rank:
             futures_distributed = update_weights_from_distributed(
@@ -182,6 +183,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
                 self.distributed_rollout_engines,
                 bucket,
                 selector=self._selector,
+                session_id=self.weight_update_session_id,
             )
             if futures_distributed:
                 futures = (futures or []) + futures_distributed
@@ -196,6 +198,7 @@ def _send_to_colocated_engine(
     ipc_gather_src,
     ipc_gather_group,
     selector: str = "all",
+    session_id: str | None = None,
 ) -> tuple[list[Future], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -243,6 +246,8 @@ def _send_to_colocated_engine(
                 "load_format": "flattened_bucket",
                 "selector": selector,
             }
+            if session_id is not None:
+                kwargs["session_id"] = session_id
             futures.append(async_utils.submit(_update_weights_from_tensor_gated(ipc_gate, ipc_engine, kwargs)))
 
     return futures, long_live_tensors

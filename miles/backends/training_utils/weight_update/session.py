@@ -28,26 +28,40 @@ def resume_engines(rollout_engines: Sequence[SGLangApiClient]) -> None:
 
 
 def begin_weight_update(
-    rollout_engines: Sequence[SGLangApiClient], selector: str = "all", *, sync_base: bool = True
+    rollout_engines: Sequence[SGLangApiClient],
+    selector: str = "all",
+    *,
+    sync_base: bool = True,
+    new_lora_names: list[str] | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Open a weight-update session on the selected engines. ``sync_base=False``
     declares an adapter-only session: no quant unpack, base tensors rejected."""
-    async_utils.wait_futures(
+    session_kwargs = {"new_lora_names": new_lora_names, "session_id": session_id} if new_lora_names is not None else {}
+    results = async_utils.wait_futures(
         [
-            async_utils.submit(client.begin_weight_update(selector=selector, sync_base=sync_base))
+            async_utils.submit(client.begin_weight_update(selector=selector, sync_base=sync_base, **session_kwargs))
             for client in rollout_engines
         ]
     )
+    check_weight_sync_results(results, is_lora=new_lora_names is not None)
 
 
 def end_weight_update(
-    rollout_engines: Sequence[SGLangApiClient], *, expected_lora_checksums: Mapping | None = None
+    rollout_engines: Sequence[SGLangApiClient],
+    *,
+    expected_lora_checksums: Mapping | None = None,
+    session_id: str | None = None,
+    abort: bool = False,
 ) -> None:
     """Close the session: re-finalize base weights (sync_base sessions) and apply
     the streamed LoRA stash (optionally verified against a sha256 manifest)."""
+    session_kwargs = {"session_id": session_id, "abort": abort} if session_id is not None else {}
     results = async_utils.wait_futures(
         [
-            async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums))
+            async_utils.submit(
+                client.end_weight_update(expected_lora_checksums=expected_lora_checksums, **session_kwargs)
+            )
             for client in rollout_engines
         ]
     )
@@ -57,17 +71,30 @@ def end_weight_update(
 
 
 def register_lora_adapter(
-    rollout_engines: Sequence[SGLangApiClient], *, lora_name: str, lora_config: Mapping, pinned: bool = False
+    rollout_engines: Sequence[SGLangApiClient],
+    *,
+    lora_name: str,
+    lora_config: Mapping,
+    pinned: bool = False,
+    defer_publish: bool = False,
 ) -> None:
     """Create-or-refresh an adapter's identity and config on every engine
     (weights zeroed; the bytes follow in the update stream)."""
+    publish_kwargs = {"defer_publish": True} if defer_publish else {}
     futures = [
         async_utils.submit(
-            client.register_lora_adapter(lora_name=lora_name, config_dict=dict(lora_config), pinned=pinned)
+            client.register_lora_adapter(
+                lora_name=lora_name, config_dict=dict(lora_config), pinned=pinned, **publish_kwargs
+            )
         )
         for client in rollout_engines
     ]
-    check_weight_sync_results(async_utils.wait_futures(futures), is_lora=True)
+    results = async_utils.wait_futures(futures)
+    check_weight_sync_results(results, is_lora=True)
+    if defer_publish and any(
+        not isinstance(result, Mapping) or result.get("pending") is not True for result in results
+    ):
+        raise RuntimeError("SGLang must support deferred LoRA publication before overlap can be enabled")
 
 
 def set_weight_version(rollout_engines: Sequence[SGLangApiClient], weight_version: int) -> None:
@@ -85,7 +112,7 @@ def check_weight_sync_results(results: list, *, is_lora: bool) -> None:
     for result in results:
         if isinstance(result, Mapping):
             success = result.get("success")
-            error_msg = result.get("error_message") or result.get("error") or "unknown error"
+            error_msg = result.get("error_message") or result.get("message") or result.get("error") or "unknown error"
         elif hasattr(result, "success"):
             success = result.success
             error_msg = getattr(result, "error_message", "unknown error")

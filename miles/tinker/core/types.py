@@ -49,4 +49,6 @@ class ModelRecord:
     lora_alpha: float
     session_id: str
     sampler_version: int = 0
+    next_sampler_version: int = 1
+    published_sampler_versions: set[int] = field(default_factory=set)
     user_metadata: dict = field(default_factory=dict)
