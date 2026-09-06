@@ -2,6 +2,7 @@ import pytest
 
 from run import (
     ScriptArgs,
+    _agent_args,
     _checkpoint_args,
     _extra_env_vars,
     _grpo_args,
@@ -36,6 +37,20 @@ def test_prompt_rows_pass_system_prompt_selection_to_chess_harness() -> None:
         "random",
         "random",
     ]
+    assert all(row["metadata"]["chess"]["max_llm_retries_per_move"] == 0 for row in rows)
+    assert "--custom-rollout-log-function-path chess_training.log_rollout_metrics " in _agent_args(args)
+
+
+@pytest.mark.parametrize("retries", [3, 5])
+def test_prompt_rows_forward_configured_retry_budget(retries: int) -> None:
+    args = ScriptArgs(hardware="H200", num_gpus_per_node=8, max_llm_retries_per_move=retries)
+    assert _prompt_rows(args)[0]["metadata"]["chess"]["max_llm_retries_per_move"] == retries
+
+
+@pytest.mark.parametrize("retries", [-1, True, 1.5])
+def test_prompt_rows_reject_invalid_retry_budget(retries: object) -> None:
+    with pytest.raises(ValueError, match="max_llm_retries_per_move"):
+        ScriptArgs(hardware="H200", num_gpus_per_node=8, max_llm_retries_per_move=retries)
 
 
 def test_grpo_args_uses_configured_kl_loss_coefficient() -> None:
@@ -64,7 +79,9 @@ def test_grpo_args_uses_configured_repetition_reward_penalty() -> None:
         repetition_reward_penalty=0.1,
     )
 
-    assert "--repetition-reward-penalty 0.1 " in _grpo_args(args)
+    assert "--repetition-reward-penalty 0 " in _grpo_args(args)
+    assert _prompt_rows(args)[0]["metadata"]["chess"]["repetition_reward_penalty"] == 0.1
+    assert "--session-sample-postprocessor-path chess_training.postprocess_samples " in _agent_args(args)
 
 
 def test_script_args_rejects_negative_repetition_reward_penalty() -> None:

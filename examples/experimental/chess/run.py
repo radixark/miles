@@ -13,6 +13,7 @@ Args:
     learning_rate: Constant Adam learning rate used for policy updates.
     kl_loss_coef: Coefficient for the low-variance KL regularization loss.
     repetition_reward_penalty: Reward subtracted once from repetitive rollouts.
+    max_llm_retries_per_move: Retries after an invalid answer; training defaults to zero.
     fully_async: Run rollout generation continuously on disaggregated nodes.
     train_num_nodes: Number of nodes reserved for policy training in async mode.
     load_checkpoint_path: Optional full training checkpoint to resume.
@@ -49,7 +50,7 @@ import miles.utils.external_utils.command_utils as U
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _RADIX_RAFT_REPOSITORY = "https://github.com/radixark/radix_raft.git"
-_RADIX_RAFT_REVISION = "8508578026d975668c7c78b99e9625b035bdc0ce"
+_RADIX_RAFT_REVISION = "95eb7e0aa855baaea2ae8c219ebec8c6278c6007"
 
 
 @dataclass
@@ -85,6 +86,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     stockfish_elo: int = 1320
     max_model_turns: int = 8
+    max_llm_retries_per_move: int = 0
     system_prompt_variant: Literal[
         "grandmaster",
         "position_analyst",
@@ -132,6 +134,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("stockfish_startup_timeout_seconds must be positive")
         if self.stockfish_max_concurrent_games < 1:
             raise ValueError("stockfish_max_concurrent_games must be at least 1")
+        if type(self.max_llm_retries_per_move) is not int or self.max_llm_retries_per_move < 0:
+            raise ValueError("max_llm_retries_per_move must be a non-negative integer")
         if self.kl_loss_coef < 0:
             raise ValueError("kl_loss_coef must be nonnegative")
         if self.repetition_reward_penalty < 0:
@@ -236,6 +240,8 @@ def _prompt_rows(args: ScriptArgs) -> list[dict[str, object]]:
                     "chess": {
                         "llm_side": llm_side,
                         "max_model_turns": args.max_model_turns,
+                        "max_llm_retries_per_move": args.max_llm_retries_per_move,
+                        "repetition_reward_penalty": args.repetition_reward_penalty,
                         "system_prompt_variant": args.system_prompt_variant,
                         "max_plies": args.max_plies,
                         "stockfish_elo": args.stockfish_elo,
@@ -341,7 +347,8 @@ def _performance_args(args: ScriptArgs) -> str:
 
 def _grpo_args(args: ScriptArgs) -> str:
     tis_args = "--use-tis " if args.fully_async else ""
-    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty {args.repetition_reward_penalty} {tis_args}"
+    # The chess postprocessor owns shaping so invalid-move trajectories stay at zero.
+    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty 0 {tis_args}"
 
 
 def _optimizer_args(args: ScriptArgs) -> str:
@@ -363,7 +370,14 @@ def _sglang_args(args: ScriptArgs) -> str:
 
 
 def _agent_args(args: ScriptArgs) -> str:
-    return f"--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate --custom-agent-function-path chess_agent.run --dynamic-sampling-filter-path chess_filter.check_chess_group --tito-model qwen38small --use-session-server v2 --session-server-port {args.session_server_port} "
+    return (
+        "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
+        "--custom-agent-function-path chess_agent.run "
+        "--dynamic-sampling-filter-path chess_filter.check_chess_group "
+        "--session-sample-postprocessor-path chess_training.postprocess_samples "
+        "--custom-rollout-log-function-path chess_training.log_rollout_metrics "
+        f"--tito-model qwen38small --use-session-server v2 --session-server-port {args.session_server_port} "
+    )
 
 
 def _observability_args(args: ScriptArgs) -> str:
