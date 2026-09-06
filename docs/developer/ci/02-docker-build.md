@@ -88,7 +88,7 @@ This workflow owns the rolling `dev` and `latest` image families. It has two job
 - **Automatic** (no human) — the **schedule** (cron 00:00 / 12:00 UTC, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the `rocm7xx-mi3xx` images have **no automatic path** (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
-`docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/ci/04-release) treats them as manual preflight cases.
+`docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/developer/ci/04-release) treats them as manual preflight cases.
 
 
 | Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
@@ -148,8 +148,8 @@ Pushes use a Docker Hub credential, not your identity:
 
 ## Versioned release build (`release-docker.yml`)
 
-`release-docker.yml` checks out the supplied release ref, requires its committed `release-lock.json`, and passes the locked SGLang and Megatron-LM commits plus the checked-out Miles SHA as final `--build-arg` overrides. Rolling `docker-build.yml` keeps the branch defaults. Published tags and the guarded dispatch and retry procedure are documented in [Release a Version](/ci/04-release).
+`release-docker.yml` checks out the supplied release ref, requires its committed `release-lock.json`, and passes the locked SGLang and Megatron-LM commits plus the checked-out Miles SHA as final `--build-arg` overrides. Rolling `docker-build.yml` keeps the branch defaults. Published tags and the guarded dispatch and retry procedure are documented in [Release a Version](/developer/ci/04-release).
 
 ## Image retention (open)
 
-`docker-build.yml` prunes `dev-<timestamp>` and `dev-cu12-<timestamp>` as separate series, keeping the newest 20 of each; `dev` / `latest` and `dev-cu12` / `latest-cu12` move forward. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut instead retags the newest timestamped `dev` image, or mutable `dev` when none exists, as prune-exempt `release-vX.Y.Z-ci` and records that tag in `release-lock.json`. The guarded preflight is documented in [Release a Version](/ci/04-release).
+`docker-build.yml` prunes `dev-<timestamp>` and `dev-cu12-<timestamp>` as separate series, keeping the newest 20 of each; `dev` / `latest` and `dev-cu12` / `latest-cu12` move forward. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut instead retags the newest timestamped `dev` image, or mutable `dev` when none exists, as prune-exempt `release-vX.Y.Z-ci` and records that tag in `release-lock.json`. The guarded preflight is documented in [Release a Version](/developer/ci/04-release).

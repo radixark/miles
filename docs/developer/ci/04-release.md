@@ -3,7 +3,7 @@ title: Release a Version
 description: Cut a versioned Miles release branch, run release CI, tag an exact release, and publish the official Docker images.
 ---
 
-This runbook is for maintainers publishing an official Miles version from `radixark/miles`. It covers the supported path from a base-version bump through the two published Docker tags. The version vocabulary and pin ownership live in [Versions and Images](/developer/versions); CI selection details live in [Stage](/ci/00-stage) and [Labels](/ci/01-label).
+This runbook is for maintainers publishing an official Miles version from `radixark/miles`. It covers the supported path from a base-version bump through the two published Docker tags. The version vocabulary and pin ownership live in [Versions and Images](/developer/versions); CI selection details live in [Stage](/developer/ci/00-stage) and [Labels](/developer/ci/01-label).
 
 ## Before you start
 
@@ -36,7 +36,7 @@ The workflow opens a PR against `main`. A PR created with `GITHUB_TOKEN` does no
 
 ## 2. Cut the release branch and run release CI
 
-Before dispatching, follow the image-affecting-change guidance in [Docker build](/ci/02-docker-build) and confirm that the latest successful timestamped CUDA 13 development image contains every required image-layer change. If a required build has not run, dispatch it and wait for success:
+Before dispatching, follow the image-affecting-change guidance in [Docker build](/developer/ci/02-docker-build) and confirm that the latest successful timestamped CUDA 13 development image contains every required image-layer change. If a required build has not run, dispatch it and wait for success:
 
 ```bash
 gh workflow run docker-build.yml -f variant=cu13 -f image_tag=dev
@@ -52,7 +52,7 @@ gh workflow run release-branch-cut.yml -f branch_name="${RELEASE_BRANCH}"
 
 Add `-f commit_sha=FULL_MAIN_SHA` to cut from a specific commit already on `main`; otherwise the workflow uses the checked-out `main` tip. On the first dispatch, it creates `release/vX.Y.Z`, records the SGLang and Megatron-LM commits in `release-lock.json`, retags the preflighted development image as `release-vX.Y.Z-ci`, and commits the lockfile on the release branch. Re-dispatching an existing branch preserves its lockfile and tests its current tip.
 
-While this run is active, do not push or cherry-pick anything onto the release branch. The workflow runs full-scope CUDA, CPU, and ROCm jobs with `cadence=release`, then records a `release-ci` commit status. [Stage](/ci/00-stage) and [Labels](/ci/01-label) own the cadence details; ROCm is a smoke signal because its dependencies remain baked into the image.
+While this run is active, do not push or cherry-pick anything onto the release branch. The workflow runs full-scope CUDA, CPU, and ROCm jobs with `cadence=release`, then records a `release-ci` commit status. [Stage](/developer/ci/00-stage) and [Labels](/developer/ci/01-label) own the cadence details; ROCm is a smoke signal because its dependencies remain baked into the image.
 
 After the run is green, resolve the branch tip and copy the first column as `RELEASE_SHA`:
 

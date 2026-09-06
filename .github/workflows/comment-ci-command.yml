@@ -60,7 +60,7 @@ jobs:
           steps.authorize.outputs.capability == 'issues' &&
           vars.CI_COMMAND_APP_ENABLED != 'true'
         run: |
-          echo "::error::label commands need the command App (CI_COMMAND_APP_ENABLED; see docs/ci/01-label.md); /rerun-test and /rerun-failed-ci work without it"
+          echo "::error::label commands need the command App (CI_COMMAND_APP_ENABLED; see docs/developer/ci/01-label.md); /rerun-test and /rerun-failed-ci work without it"
           exit 1
 
       - name: Mint the issues-scoped App token

@@ -1,7 +1,7 @@
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 # Build via docker/build.py (single source of truth for variant defaults,
 # platforms, tags, and build-arg ordering); callers may append explicit
-# build-arg overrides. See docs/ci/02-docker-build.md. Examples:
+# build-arg overrides. See docs/developer/ci/02-docker-build.md. Examples:
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
 #       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
 #       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
