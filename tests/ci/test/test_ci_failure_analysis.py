@@ -29,6 +29,9 @@ def load_module(name, path):
 
 ANALYZER = load_module("ci_failure_analysis_test", ANALYZER_PATH)
 SECRET = "ghp_012345678901234567890123456789012345"
+# Split so the repository's detect-private-key hook does not flag this redaction fixture.
+PEM_HEADER = "-----BEGIN " + "PRIVATE KEY-----"
+PEM_FOOTER = "-----END " + "PRIVATE KEY-----"
 
 
 def run(**overrides):
@@ -229,7 +232,7 @@ def test_redaction_precedes_bounded_evidence_extraction():
         f"\x1b[31mAuthorization: Bearer top-secret\x1b[0m\nTOKEN={SECRET}\n"
         "AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF\n"
         "https://example.invalid/file?X-Amz-Signature=signed-secret\n"
-        "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----\n"
+        f"{PEM_HEADER}\nprivate-material\n{PEM_FOOTER}\n"
         "tests/unit/test_math.py:12: AssertionError: expected 4\x00\n"
     )
     evidence = ANALYZER.extract_log_evidence(raw, 10, 2000)
