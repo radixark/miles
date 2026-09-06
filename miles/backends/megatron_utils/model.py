@@ -362,16 +362,18 @@ def forward_only(
             fp32_output=fp32_output,
         )
 
-        return output_tensor, partial(
-            f,
+        callback_kwargs = dict(
             args=args,
             unconcat_tokens=unconcat_tokens,
             total_lengths=total_lengths,
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
-            rollout_sampling_mask=rollout_sampling_mask,
         )
+        if use_rollout_sampling_mask:
+            callback_kwargs["rollout_sampling_mask"] = rollout_sampling_mask
+
+        return output_tensor, partial(f, **callback_kwargs)
 
     # Turn on evaluation mode which disables dropout.
     for model_module in model:
