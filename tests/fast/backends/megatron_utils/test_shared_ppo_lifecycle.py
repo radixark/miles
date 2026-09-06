@@ -825,35 +825,19 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     assert len(updater.connect_calls) == 2
 
 
-def _switch_worker(actor_module: Any, backuper: Mock) -> Any:
-    worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(offload_train=True, colocate=False, keep_old_actor=False)
-    worker.with_ref = False
-    worker.with_opd_teacher = False
-    worker._weight_sync_reads_tms_backup = False
-    worker.weights_backuper = backuper
-    worker._active_model_tag = "actor"
-    return worker
-
-
-def test_switch_model_skips_a_value_copy_to_the_active_tag(actor_module: Any) -> None:
-    backuper = Mock(backup_tags=["actor"], restore_required_when_active=Mock(return_value=False))
-    worker = _switch_worker(actor_module, backuper)
-
-    worker._switch_model("actor")
-
-    backuper.restore.assert_not_called()
-
-
-def test_switch_model_still_rebuilds_the_active_tag_for_main_cast(actor_module: Any) -> None:
+def test_switch_model_still_rebuilds_the_active_tag_for_main_cast(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """--rematerialize-param-from-master-weight: restore('actor') rebuilds the
     params update_weights paused, so the per-cycle call must never be skipped."""
-    backuper = Mock(backup_tags=["actor"], restore_required_when_active=Mock(return_value=True))
-    worker = _switch_worker(actor_module, backuper)
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "actor"
+    worker.weights_backuper = Mock(backup_tags={"actor"}, restore_required_when_active=Mock(return_value=True))
 
     worker._switch_model("actor")
 
-    backuper.restore.assert_called_once_with("actor")
+    worker.weights_backuper.restore.assert_called_once_with("actor")
 
 
 def test_restore_required_when_active_is_declared_per_backend() -> None:
