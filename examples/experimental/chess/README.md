@@ -9,6 +9,12 @@ telemetry, and session cleanup.
 The recipe uses Miles' native `qwen38small` TITO family so the fixed Qwen 3.8
 template retains reasoning and applies the correct message-boundary semantics.
 
+For asynchronous runs with one trainer node, pass
+`--extra-args "--actor-preferred-node-ip 192.0.2.10"` to put the trainer first on
+a particular allocated node, for example one with sufficient checkpoint space.
+Use the actual Ray node IP. The default numeric-IP ordering is unchanged when
+this option is absent, and an unallocated requested node is rejected.
+
 Set `--system-prompt-variant random` to select one of the chess harness's five
 UCI-only system prompts independently for every rollout. The selected prompt
 stays fixed for the complete game, including retries and context compaction.
