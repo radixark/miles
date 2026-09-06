@@ -708,7 +708,8 @@ def test_switch_model_skips_already_active_weights(
     worker = _weight_update_worker(actor_module, monkeypatch)
     monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
     worker._active_model_tag = active_tag
-    worker.weights_backuper = Mock(backup_tags={active_tag})
+    # A value-copy backuper: restoring the active tag would be a no-op.
+    worker.weights_backuper = Mock(backup_tags={active_tag}, restore_required_when_active=Mock(return_value=False))
 
     worker._switch_model(active_tag)
 
