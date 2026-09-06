@@ -73,10 +73,14 @@ async def run(
     metadata_values = dict(metadata or {})
     limit = _stockfish_max_concurrent_games(metadata_values)
     async with _game_limiter(limit):
-        return await run_chess(
+        result = await run_chess(
             base_url=base_url,
             prompt=prompt,
             request_kwargs=_request_with_thinking(request_kwargs),
             metadata=metadata_values,
             **kwargs,
         )
+    return {
+        **result,
+        "repetition_reward_penalty": metadata_values.get("chess", {}).get("repetition_reward_penalty", 0.0),
+    }
