@@ -14,6 +14,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
+from miles.utils.tensor_backper import MainCastContext, TensorBackuper
 
 
 @pytest.fixture(scope="module")
@@ -820,3 +821,52 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
 
     assert len(updater.connect_calls) == 2
+
+
+def _switch_worker(actor_module: Any, backuper: Mock) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(offload_train=True, colocate=False, keep_old_actor=False)
+    worker.with_ref = False
+    worker.with_opd_teacher = False
+    worker._weight_sync_reads_tms_backup = False
+    worker.weights_backuper = backuper
+    worker._active_model_tag = "actor"
+    return worker
+
+
+def test_switch_model_skips_a_value_copy_to_the_active_tag(actor_module: Any) -> None:
+    backuper = Mock(backup_tags=["actor"], restore_required_when_active=Mock(return_value=False))
+    worker = _switch_worker(actor_module, backuper)
+
+    worker._switch_model("actor")
+
+    backuper.restore.assert_not_called()
+
+
+def test_switch_model_still_rebuilds_the_active_tag_for_main_cast(actor_module: Any) -> None:
+    """--rematerialize-param-from-master-weight: restore('actor') rebuilds the
+    params update_weights paused, so the per-cycle call must never be skipped."""
+    backuper = Mock(backup_tags=["actor"], restore_required_when_active=Mock(return_value=True))
+    worker = _switch_worker(actor_module, backuper)
+
+    worker._switch_model("actor")
+
+    backuper.restore.assert_called_once_with("actor")
+
+
+def test_restore_required_when_active_is_declared_per_backend() -> None:
+    normal = TensorBackuper.create(lambda: iter(()))
+    main_cast = TensorBackuper.create(
+        lambda: iter(()),
+        MainCastContext(
+            cast_main_to_params=Mock(),
+            model_chunks=[],
+            extras_getter=lambda: iter(()),
+            rematerializable_ids=set(),
+            check=False,
+        ),
+    )
+
+    assert normal.restore_required_when_active("actor") is False
+    assert main_cast.restore_required_when_active("actor") is True
+    assert main_cast.restore_required_when_active("ref") is False
