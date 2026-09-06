@@ -25,6 +25,9 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     resolve_placement,
 )
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
+from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
+    iter_checkpoint_tower_units,
+)
 
 
 class TitanHfWeightIterator(HfWeightIteratorBase):
@@ -40,6 +43,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]
+        yield from iter_checkpoint_tower_units(self.args.hf_checkpoint, materialize=materialize)
 
     def _to_engine_dtype(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
         """Cast a master weight to the dtype the checkpoint holds for that tensor."""
