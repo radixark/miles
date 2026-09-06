@@ -385,6 +385,8 @@ class MegatronTrainRayActor(TrainRayActor):
             return
         if target_tag not in self.weights_backuper.backup_tags:
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
+        if target_tag == self._active_model_tag:
+            return
         self.weights_backuper.restore(target_tag)
         self._active_model_tag = target_tag
 

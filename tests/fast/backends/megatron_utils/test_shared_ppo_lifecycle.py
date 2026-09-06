@@ -700,6 +700,54 @@ def test_offloading_keeps_weight_backup_without_reference_model(
     assert worker._enable_weight_backup is offload_train
 
 
+@pytest.mark.parametrize("active_tag", ["actor", "ref", "teacher", "old_actor"])
+def test_switch_model_skips_already_active_weights(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = active_tag
+    worker.weights_backuper = Mock(backup_tags={active_tag})
+
+    worker._switch_model(active_tag)
+
+    worker.weights_backuper.restore.assert_not_called()
+    assert worker._active_model_tag == active_tag
+
+
+@pytest.mark.parametrize(
+    ("active_tag", "target_tag"),
+    [(None, "actor"), ("ref", "actor"), ("teacher", "actor"), ("old_actor", "actor"), ("actor", "ref")],
+)
+def test_switch_model_restores_different_weights_once(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str | None, target_tag: str
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = active_tag
+    worker.weights_backuper = Mock(backup_tags={target_tag})
+
+    worker._switch_model(target_tag)
+    worker._switch_model(target_tag)
+
+    worker.weights_backuper.restore.assert_called_once_with(target_tag)
+    assert worker._active_model_tag == target_tag
+
+
+def test_switch_model_rejects_unknown_tag_even_when_marked_active(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "missing"
+    worker.weights_backuper = Mock(backup_tags={"actor"})
+
+    with pytest.raises(ValueError, match="Cannot switch to unknown model tag: missing"):
+        worker._switch_model("missing")
+
+    worker.weights_backuper.restore.assert_not_called()
+
+
 def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int) -> Any:
     from miles.ray.rollout.inference_controller import UpdatableEngines
 
