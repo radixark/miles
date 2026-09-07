@@ -2,19 +2,29 @@ import threading
 
 import pytest
 
+from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
+
 _REGISTRY = {"layer.0": (0x1000, 4, 2), "layer.1": (0x2000, 8, 2)}
 _NAMES = ["layer.0", "layer.1"]
 
 
 class _RecordingTransferEngine:
-    def __init__(self, failing_sessions: set[str] | None = None, gate: threading.Event | None = None):
+    def __init__(
+        self,
+        failing_sessions: set[str] | None = None,
+        gate: threading.Event | None = None,
+        started: threading.Event | None = None,
+    ) -> None:
         self.writes: list[tuple[str, list[int], list[int], list[int]]] = []
         self._failing_sessions = failing_sessions if failing_sessions is not None else set()
         self._gate = gate
+        self._started = started
 
     def batch_transfer_sync_write(
         self, session_id: str, source_ptrs: list[int], target_ptrs: list[int], source_lens: list[int]
     ) -> int:
+        if self._started is not None:
+            self._started.set()
         if self._gate is not None:
             assert self._gate.wait(timeout=30.0)
         self.writes.append((session_id, list(source_ptrs), list(target_ptrs), list(source_lens)))
@@ -31,11 +41,14 @@ def _remote_weight_info(utils, session_id: str, base_address: int, names: list[s
     )
 
 
-def _cell_updater(module, manager, engine, *, cell_id: str, targets: dict[int, object]):
+def _cell_updater(module, manager, engine, *, cell_id: str, targets: dict[int, object], health=None):
+    if health is None:
+        health = InferenceCellHealth([cell_id])
     return module.P2PInferenceCellUpdater(
         cell_id=cell_id,
         transfer_engine=engine,
         transfer_manager=manager,
+        health=health,
         targets_by_engine_rank=targets,
     )
 
@@ -231,3 +244,150 @@ class TestSubmissionSemantics:
 
         with pytest.raises(AssertionError, match="run past the target buffer"):
             future.result(timeout=30.0)
+
+
+class TestErrorState:
+    """An errored cell stops receiving work while its neighbours keep being written to."""
+
+    def test_an_errored_cell_submits_nothing(self, p2p_inference_cell_updater, p2p_transfer_utils, manager) -> None:
+        """Writing on after the first failure keeps a doomed engine busy and delays the healthy cells."""
+        engine = _RecordingTransferEngine()
+        updater = _cell_updater(
+            p2p_inference_cell_updater,
+            manager,
+            engine,
+            cell_id="cell-0",
+            targets={0: _remote_weight_info(p2p_transfer_utils, "cell-0-rank-0", 0xA000)},
+        )
+        updater.mark_errored(RuntimeError("boom"))
+
+        assert updater.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY) is None
+
+        manager.wait_transfers()
+
+        assert engine.writes == []
+        assert manager.transfer_futures == []
+
+    def test_only_the_errored_cell_stops_being_written(
+        self, p2p_inference_cell_updater, p2p_transfer_utils, manager
+    ) -> None:
+        """Isolating a failed target is the whole point: the other cells must still get the full bucket."""
+        engine = _RecordingTransferEngine()
+        health = InferenceCellHealth(["cell-0", "cell-1"])
+        first = _cell_updater(
+            p2p_inference_cell_updater,
+            manager,
+            engine,
+            cell_id="cell-0",
+            targets={0: _remote_weight_info(p2p_transfer_utils, "cell-0-rank-0", 0xA000)},
+            health=health,
+        )
+        second = _cell_updater(
+            p2p_inference_cell_updater,
+            manager,
+            engine,
+            cell_id="cell-1",
+            targets={0: _remote_weight_info(p2p_transfer_utils, "cell-1-rank-0", 0xB000)},
+            health=health,
+        )
+        first.mark_errored(RuntimeError("boom"))
+
+        first.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY)
+        second.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY)
+        manager.wait_transfers()
+
+        assert [session_id for session_id, _s, _t, _l in engine.writes] == ["cell-1-rank-0"]
+        assert second.is_errored is False
+        assert health.errored_cell_ids == ["cell-0"]
+
+    def test_the_first_failure_of_a_cell_is_the_one_reported(
+        self, p2p_inference_cell_updater, p2p_transfer_utils, manager
+    ) -> None:
+        """Later failures are consequences of the first one, which is the evidence worth keeping."""
+        first_error = RuntimeError("the transfer engine rejected the write")
+        health = InferenceCellHealth(["cell-0"])
+        updater = _cell_updater(
+            p2p_inference_cell_updater,
+            manager,
+            _RecordingTransferEngine(),
+            cell_id="cell-0",
+            targets={0: _remote_weight_info(p2p_transfer_utils, "cell-0-rank-0", 0xA000)},
+            health=health,
+        )
+
+        updater.mark_errored(first_error)
+        updater.mark_errored(RuntimeError("resume also failed"))
+
+        assert updater.is_errored is True
+        assert health.error_of("cell-0") is first_error
+
+
+class TestStickyRefusal:
+    """A cell that was errored or disposed must not write, not even from work queued before that."""
+
+    def test_a_queued_write_is_skipped_once_the_cell_has_failed(
+        self, p2p_inference_cell_updater, p2p_transfer_utils
+    ) -> None:
+        """The queued write runs only when the stuck one returns, long after the cell was given up on."""
+        started = threading.Event()
+        release = threading.Event()
+        manager = p2p_transfer_utils.P2PTransferManager(num_workers=1, transfer_timeout=30.0)
+        engine = _RecordingTransferEngine(gate=release, started=started)
+        updater = _cell_updater(
+            p2p_inference_cell_updater,
+            manager,
+            engine,
+            cell_id="cell-0",
+            targets={
+                0: _remote_weight_info(p2p_transfer_utils, "cell-0-rank-0", 0xA000),
+                1: _remote_weight_info(p2p_transfer_utils, "cell-0-rank-1", 0xC000),
+            },
+        )
+
+        try:
+            updater.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY)
+            assert started.wait(timeout=30.0)
+            queued = updater.submit_write(engine_rank=1, names=_NAMES, weight_memory_registry=_REGISTRY)
+            updater.mark_errored(RuntimeError("the cell was given up on while the first write was stuck"))
+            release.set()
+            queued.result(timeout=30.0)
+
+            assert [session_id for session_id, _s, _t, _l in engine.writes] == ["cell-0-rank-0"]
+        finally:
+            release.set()
+            if manager.executor is not None:
+                manager.executor.shutdown(wait=True)
+
+    def test_a_queued_write_is_skipped_once_the_cell_was_disposed(
+        self, p2p_inference_cell_updater, p2p_transfer_utils
+    ) -> None:
+        """The engine of a disposed incarnation was replaced, so its session id addresses somebody else's memory."""
+        started = threading.Event()
+        release = threading.Event()
+        manager = p2p_transfer_utils.P2PTransferManager(num_workers=1, transfer_timeout=30.0)
+        engine = _RecordingTransferEngine(gate=release, started=started)
+        updater = _cell_updater(
+            p2p_inference_cell_updater,
+            manager,
+            engine,
+            cell_id="cell-0",
+            targets={
+                0: _remote_weight_info(p2p_transfer_utils, "cell-0-rank-0", 0xA000),
+                1: _remote_weight_info(p2p_transfer_utils, "cell-0-rank-1", 0xC000),
+            },
+        )
+
+        try:
+            updater.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY)
+            assert started.wait(timeout=30.0)
+            queued = updater.submit_write(engine_rank=1, names=_NAMES, weight_memory_registry=_REGISTRY)
+            updater.dispose()
+            release.set()
+            queued.result(timeout=30.0)
+
+            assert [session_id for session_id, _s, _t, _l in engine.writes] == ["cell-0-rank-0"]
+            assert updater.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY) is None
+        finally:
+            release.set()
+            if manager.executor is not None:
+                manager.executor.shutdown(wait=True)

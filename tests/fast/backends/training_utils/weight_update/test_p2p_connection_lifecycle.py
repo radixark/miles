@@ -60,6 +60,7 @@ def _connect(
     session_prefix: str = "a",
     layout_of=lambda pair: {"tp_rank": pair[1]},
     quant_profile: str | None = None,
+    engine_count: int | None = None,
 ) -> None:
     protocol.transfer_plan.plan_p2p.return_value = [
         SimpleNamespace(engine_ind=engine_ind, engine_rank=engine_rank) for engine_ind, engine_rank in pairs
@@ -70,7 +71,8 @@ def _connect(
         targets_to_session_id,
         {targets_to_session_id[pair]: SimpleNamespace(rl_quant_profile=quant_profile) for pair in pairs},
     )
-    engine_count = 1 + max((engine_ind for engine_ind, _rank in pairs), default=-1)
+    if engine_count is None:
+        engine_count = 1 + max((engine_ind for engine_ind, _rank in pairs), default=-1)
     protocol.connect(
         [object()] * engine_count,
         None,
@@ -389,3 +391,111 @@ class TestOneReplicaPerEngineRank:
         assert len(factory.calls) == 1
         assert len(_cell_updaters(protocol)) == 2
         assert sorted(_target_session_ids(protocol)) == ["a-0-0", "a-1-0"]
+
+
+class TestInferenceCellState:
+    """Every cell handed to this rank gets failure state, whether or not the rank writes to it."""
+
+    def test_a_rank_without_any_target_still_tracks_every_supplied_cell(self, p2p_protocol) -> None:
+        """Cross-rank failure aggregation names cells, so a rank that sends nothing must still know them."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[], engine_count=3)
+
+        assert protocol.is_sender is False
+        assert protocol.inference_cell_health.cell_ids == ("cell-0", "cell-1", "cell-2")
+        assert sorted(protocol._cell_updaters_by_cell_id) == ["cell-0", "cell-1", "cell-2"]
+        assert protocol.inference_cell_health.healthy_cell_ids == ["cell-0", "cell-1", "cell-2"]
+
+    def test_a_sender_tracks_the_cells_it_holds_no_target_for(self, p2p_protocol) -> None:
+        """The driver rank drives the session of every assigned cell, not only of the shards it sends."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)], engine_count=2)
+
+        assert protocol.is_sender is True
+        assert sorted(protocol._cell_updaters_by_cell_id) == ["cell-0", "cell-1"]
+        assert protocol._cell_updaters_by_cell_id["cell-1"]._target_by_engine_rank == {}
+        assert protocol.inference_cell_health.healthy_cell_ids == ["cell-0", "cell-1"]
+
+    def test_a_reconnection_starts_a_new_verdict_for_the_new_engine_set(self, p2p_protocol) -> None:
+        """The cells of a new connection are freshly assigned, so an old verdict must not disable them."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)])
+            old_health = protocol.inference_cell_health
+            old_health.mark_errored("cell-0", RuntimeError("boom"))
+            _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+
+        assert protocol.inference_cell_health is not old_health
+        assert protocol.inference_cell_health.errored_cell_ids == []
+        assert protocol._cell_updaters_by_cell_id["cell-0"].is_errored is False
+        assert old_health.errored_cell_ids == ["cell-0"]
+
+    def test_the_cell_updater_of_the_previous_connection_stays_errored(self, p2p_protocol) -> None:
+        """A worker still running for an old incarnation must never see itself become healthy again."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)])
+            old_cell_updater = protocol._cell_updaters_by_cell_id["cell-0"]
+            old_cell_updater.mark_errored(RuntimeError("boom"))
+            _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+
+        assert old_cell_updater.is_errored is True
+        assert old_cell_updater.is_disposed is True
+        assert protocol._cell_updaters_by_cell_id["cell-0"].is_errored is False
+
+    def test_a_late_failure_of_an_old_cell_does_not_reach_the_new_one(self, p2p_protocol) -> None:
+        """The old worker reports under the same cell id, and its verdict would condemn a healthy new engine."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)])
+            old_cell_updater = protocol._cell_updaters_by_cell_id["cell-0"]
+            _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+            new_cell_updater = protocol._cell_updaters_by_cell_id["cell-0"]
+
+            old_cell_updater.mark_errored(RuntimeError("the write of the previous incarnation failed"))
+
+        assert protocol.inference_cell_health.errored_cell_ids == []
+        assert new_cell_updater.is_errored is False
+        assert old_cell_updater.is_errored is True
+
+    def test_a_disposed_cell_updater_submits_no_further_write(self, p2p_protocol) -> None:
+        """An old target endpoint addresses an engine that was replaced, so writing to it corrupts nothing but wastes."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)])
+            old_cell_updater = protocol._cell_updaters_by_cell_id["cell-0"]
+            _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+
+        assert old_cell_updater.accepts_writes is False
+        assert old_cell_updater.submit_write(engine_rank=0, names=["w"], weight_memory_registry={}) is None
+
+    def test_a_disconnect_leaves_no_cell_to_report_on(self, p2p_protocol) -> None:
+        """A disconnected rank has no assignment left, so it must not keep answering for the old cells."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)])
+            old_health = protocol.inference_cell_health
+            old_health.mark_errored("cell-0", RuntimeError("boom"))
+            protocol.disconnect()
+
+        assert protocol.inference_cell_health is not old_health
+        assert protocol.inference_cell_health.cell_ids == ()
+        assert protocol.inference_cell_health.errored_cell_ids == []
+        assert protocol._cell_updaters_by_cell_id == {}
+        assert old_health.errored_cell_ids == ["cell-0"]

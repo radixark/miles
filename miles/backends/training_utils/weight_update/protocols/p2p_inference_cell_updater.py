@@ -4,6 +4,7 @@ from typing import Any, NamedTuple
 
 import torch
 
+from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
 from miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils import (
     P2PTransferManager,
     RemoteWeightInfo,
@@ -18,23 +19,56 @@ class P2PInferenceCellUpdater:
         cell_id: str,
         transfer_engine: Any,
         transfer_manager: P2PTransferManager,
+        health: InferenceCellHealth,
         targets_by_engine_rank: dict[int, RemoteWeightInfo],
     ) -> None:
         self.cell_id = cell_id
         self._transfer_engine = transfer_engine
         self._transfer_manager = transfer_manager
+        self._health = health
+        self._disposed = False
         self._target_by_engine_rank = targets_by_engine_rank
+
+    @property
+    def is_errored(self) -> bool:
+        return self._health.is_errored(self.cell_id)
+
+    @property
+    def is_disposed(self) -> bool:
+        return self._disposed
+
+    @property
+    def accepts_writes(self) -> bool:
+        return not self._disposed and not self.is_errored
+
+    def mark_errored(self, error: BaseException) -> None:
+        self._health.mark_errored(self.cell_id, error)
+
+    def dispose(self) -> None:
+        self._disposed = True
 
     def submit_write(
         self, engine_rank: int, names: list[str], weight_memory_registry: dict[str, tuple[int, int, int]]
-    ) -> Future:
+    ) -> Future | None:
+        if not self.accepts_writes:
+            return None
         return self._transfer_manager.submit(
-            _write_one_target,
-            self._transfer_engine,
+            self._write_if_active,
             self._target_by_engine_rank[engine_rank],
             names,
             weight_memory_registry,
         )
+
+    def _write_if_active(
+        self,
+        target: RemoteWeightInfo,
+        names: list[str],
+        weight_memory_registry: dict[str, tuple[int, int, int]],
+    ) -> None:
+        if not self.accepts_writes:
+            logger.warning(f"[P2P-Shared] skipping a queued write to cell {self.cell_id}")
+            return
+        _write_one_target(self._transfer_engine, target, names, weight_memory_registry)
 
 
 class TransferEngineMeta(NamedTuple):
