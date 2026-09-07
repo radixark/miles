@@ -1,6 +1,7 @@
 """Exercise chess hooks through the default Miles postprocessor and metric logger."""
 
 from copy import deepcopy
+import hashlib
 from typing import Any
 from unittest.mock import Mock
 
@@ -12,12 +13,11 @@ from chess_filter import check_chess_group
 from miles.ray.rollout.metrics import log_rollout_data
 from miles.ray.rollout.repetition import apply_repetition_reward_penalty
 from miles.ray.rollout.train_data_conversion import _post_process_rewards
+from miles.utils.metric_utils import compression_ratio
 from miles.utils.types import Sample
 
 
-def _postprocess_game(
-    *, invalid: bool, reward: float, texts: list[str], rollout_id: int = 0
-) -> list[Sample]:
+def _postprocess_game(*, invalid: bool, reward: float, texts: list[str], rollout_id: int = 0, penalty: float = 0.5) -> list[Sample]:
     samples = [
         make_sample(
             index=rollout_id,
@@ -33,7 +33,7 @@ def _postprocess_game(
         "tree": {"nodes": [{"id": i, "completion_span": [0, 2]} for i in range(len(samples))]},
         "agent": {
             "reward": reward,
-            "repetition_reward_penalty": 0.5,
+            "repetition_reward_penalty": penalty,
             "chess_result": {
                 "invalid_move_termination": invalid,
                 "outcome": "loss" if invalid else "win",
@@ -48,26 +48,68 @@ def _postprocess_game(
     return result
 
 
-@pytest.mark.parametrize("text", ["", "thinking without an answer", "!" * 15000])
-def test_invalid_move_reward_remains_exactly_zero_in_training(text: str) -> None:
+@pytest.mark.parametrize(
+    ("text", "expected_reward"),
+    [("", 0.0), ("thinking without an answer", 0.0), ("!" * 15000, -0.5)],
+)
+def test_invalid_move_base_reward_gets_repetition_penalty_in_training(text: str, expected_reward: float) -> None:
     failed = _postprocess_game(invalid=True, reward=0.0, texts=[text])
     successful = _postprocess_game(invalid=False, reward=1.0, texts=["<move>e2e4</move>"], rollout_id=1)
     samples = failed + successful
     args = make_args(n_samples_per_prompt=2, rollout_batch_size=1, repetition_reward_penalty=0)
     apply_repetition_reward_penalty(args, samples)
     raw, normalized = _post_process_rewards(args, samples, None)
-    assert raw == [0.0, 1.0]
+    assert raw == [expected_reward, 1.0]
     assert normalized[0] < 0 < normalized[1]
-    assert samples[0].metadata["raw_reward"] == 0.0
-    assert samples[0].metadata["repetition_reward_penalty_applied"] == 0.0
+    assert samples[0].metadata["raw_reward"] == expected_reward
+    assert samples[0].metadata["reward_before_repetition_penalty"] == 0.0
+    assert samples[0].metadata["repetition_reward_penalty_applied"] == -expected_reward
+    assert check_chess_group(args, samples).keep is True
+
+
+def test_repetition_has_negative_advantage_among_unsuccessful_games() -> None:
+    samples = _postprocess_game(invalid=True, reward=0.0, texts=["!" * 15000])
+    for rollout_id in range(1, 8):
+        samples += _postprocess_game(invalid=False, reward=0.0, texts=["<move>e2e4</move>"], rollout_id=rollout_id)
+    args = make_args(n_samples_per_prompt=8, rollout_batch_size=1, repetition_reward_penalty=0)
+    apply_repetition_reward_penalty(args, samples)
+    raw, normalized = _post_process_rewards(args, samples, None)
+    assert raw == [-0.5] + [0.0] * 7
+    assert normalized[0] < 0
+    assert all(advantage > 0 for advantage in normalized[1:])
     assert check_chess_group(args, samples).keep is True
 
 
 @pytest.mark.parametrize("base_reward", [0.0, 1.0])
+def test_invalid_game_penalty_is_shared_once_across_compaction(base_reward: float) -> None:
+    samples = _postprocess_game(invalid=True, reward=base_reward, texts=["!" * 15000, "bad answer", "!" * 15000])
+    assert [s.reward for s in samples] == [-0.5] * 3
+    assert [s.metadata["reward_before_repetition_penalty"] for s in samples] == [0.0] * 3
+    assert [s.metadata["has_repetition"] for s in samples] == [True, False, True]
+    assert [s.metadata["repetition_reward_penalty_applied"] for s in samples] == [0.5] * 3
+    apply_repetition_reward_penalty(make_args(repetition_reward_penalty=0.5), samples)
+    assert [s.reward for s in samples] == [-0.5] * 3
+
+
+def test_zero_penalty_preserves_zero_invalid_reward() -> None:
+    samples = _postprocess_game(invalid=True, reward=1.0, texts=["!" * 15000], penalty=0.0)
+    assert samples[0].reward == 0.0
+    assert samples[0].metadata["has_repetition"] is True
+    assert samples[0].metadata["repetition_reward_penalty_applied"] == 0.0
+
+
+def test_middle_repetition_is_penalized_despite_non_repetitive_suffix() -> None:
+    filler = "".join(hashlib.sha256(str(index).encode()).hexdigest() for index in range(400))
+    text = filler + "!" * 15000 + filler
+    assert compression_ratio(text[-10000:])[0] < 10
+    samples = _postprocess_game(invalid=True, reward=0.0, texts=[text])
+    assert samples[0].metadata["has_repetition"] is True
+    assert samples[0].reward == -0.5
+
+
+@pytest.mark.parametrize("base_reward", [0.0, 1.0])
 def test_non_error_games_keep_repetition_penalty_across_compaction(base_reward: float) -> None:
-    samples = _postprocess_game(
-        invalid=False, reward=base_reward, texts=["!" * 15000, "<move>e2e4</move>"]
-    )
+    samples = _postprocess_game(invalid=False, reward=base_reward, texts=["!" * 15000, "<move>e2e4</move>"])
     assert [s.reward for s in samples] == [base_reward - 0.5] * 2
     assert [s.metadata["has_repetition"] for s in samples] == [True, False]
     assert [s.metadata["repetition_reward_penalty_applied"] for s in samples] == [0.5, 0.5]
