@@ -121,6 +121,7 @@ class WeightUpdater:
         if protocol.use_weight_update_session and driver:
             self._open_engine_session(adapters, sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
+        self._sync_cell_failures()
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
         if checksums is not None:
@@ -142,13 +143,23 @@ class WeightUpdater:
                     pbar.update(1)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
+            self._sync_cell_failures()
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(weight_version)
             if protocol.use_weight_update_session and driver:
-                self._close_engine_session(checksums, weight_version)
+                self._publish_weight_version(checksums, weight_version)
+            self._sync_cell_failures()
+            if protocol.use_weight_update_session and driver:
+                self._resume_engines()
+            self._sync_cell_failures()
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
+
+    def _sync_cell_failures(self) -> None:
+        if not self.protocol.cell_updaters:
+            return
+        self.protocol.synchronize_cell_errors()
 
     def _open_engine_session(self, adapters: list[tuple[str, object]], *, sync_base: bool) -> None:
         protocol = self.protocol
@@ -164,17 +175,23 @@ class WeightUpdater:
         self._register_new_lora_adapters(protocol.rollout_engines, adapters)
         begin_weight_update(protocol.rollout_engines, selector, sync_base=sync_base)
 
-    def _close_engine_session(self, checksums: dict | None, weight_version: int) -> None:
+    def _publish_weight_version(self, checksums: dict | None, weight_version: int) -> None:
         protocol = self.protocol
         if protocol.cell_updaters:
             self._on_every_cell(lambda cell_updater: cell_updater.submit_end())
             self._on_every_cell(lambda cell_updater: cell_updater.submit_set_weight_version(weight_version))
-            if not driver_owns_generation_pause(self.args):
-                self._on_every_cell(lambda cell_updater: cell_updater.submit_resume())
             return
 
         end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
         set_weight_version(protocol.rollout_engines, weight_version)
+
+    def _resume_engines(self) -> None:
+        protocol = self.protocol
+        if protocol.cell_updaters:
+            if not driver_owns_generation_pause(self.args):
+                self._on_every_cell(lambda cell_updater: cell_updater.submit_resume())
+            return
+
         maybe_resume_engines(self.args, protocol.rollout_engines)
 
     def _on_every_cell(self, submit: Callable[["_P2PRolloutCellUpdater"], Future[Any] | None]) -> None:

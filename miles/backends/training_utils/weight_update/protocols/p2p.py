@@ -229,6 +229,18 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
         self.is_sender = bool(self._rollout_engine_rank_infos)
 
+    def synchronize_cell_errors(self) -> None:
+        group = get_gloo_group()
+        reported: list = [None] * dist.get_world_size(group=group)
+        dist.all_gather_object(reported, [u.cell_id for u in self.cell_updaters if u.is_errored], group=group)
+
+        errored_cell_ids = {cell_id for cell_ids in reported for cell_id in cell_ids}
+        for cell_updater in self.cell_updaters:
+            if cell_updater.cell_id in errored_cell_ids and not cell_updater.is_errored:
+                cell_updater.mark_errored(
+                    RuntimeError(f"another trainer rank failed to update cell {cell_updater.cell_id}")
+                )
+
     def disconnect(self) -> None:
         self._drain_pending_writes()
         self.cell_updaters = []
