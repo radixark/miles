@@ -81,7 +81,12 @@ def _make_updater(engines: list[_RecordingApiClient], protocol: _FakeCellIsolati
     iterator = MagicMock()
     iterator.iter_hf_weights.return_value = iter([])
     iterator.weight_update_selector = "all"
-    args = Namespace(pause_generation_mode="retract", check_lora_weight_equal=False, update_weight_transfer_mode="p2p")
+    args = Namespace(
+        pause_generation_mode="retract",
+        check_lora_weight_equal=False,
+        update_weight_transfer_mode="p2p",
+        update_weight_engine_request_timeout=30.0,
+    )
 
     with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
         updater = WeightUpdater(

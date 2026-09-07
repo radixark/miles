@@ -1,6 +1,8 @@
 import logging
+import time
 from argparse import Namespace
 from collections.abc import Callable, Coroutine, Mapping
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
@@ -19,6 +21,7 @@ class _PerCellEngineSession:
         self.args = args
         self._clients_by_cell_id = dict(clients_by_cell_id)
         self._health = health
+        self._request_timeout = args.update_weight_engine_request_timeout
 
     def pause(self) -> None:
         mode = self.args.pause_generation_mode
@@ -45,6 +48,7 @@ class _PerCellEngineSession:
         self._call("continue_generation", lambda client: client.continue_generation())
 
     def _call(self, op: str, make_request: Callable[[SGLangApiClient], Coroutine]) -> None:
+        deadline = time.monotonic() + self._request_timeout
         futures = {
             cell_id: async_utils.submit(make_request(self._clients_by_cell_id[cell_id]))
             for cell_id in self._health.healthy_cell_ids
@@ -52,7 +56,11 @@ class _PerCellEngineSession:
 
         for cell_id, future in futures.items():
             try:
-                _raise_if_unsuccessful(op, future.result())
+                _raise_if_unsuccessful(op, future.result(timeout=max(0.0, deadline - time.monotonic())))
+            except FutureTimeoutError as error:
+                future.cancel()
+                logger.error(f"[weight-update] {op} on inference cell {cell_id} outlived its deadline")
+                self._health.mark_errored(cell_id, error)
             except Exception as error:
                 logger.exception(f"[weight-update] {op} failed on inference cell {cell_id}")
                 self._health.mark_errored(cell_id, error)

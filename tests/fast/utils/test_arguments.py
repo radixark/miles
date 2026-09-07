@@ -2669,3 +2669,38 @@ class TestUpdateWeightsTimeoutArgument:
 
         with pytest.raises(AssertionError, match="update-weights-timeout"):
             miles_validate_args(args)
+
+
+class TestUpdateWeightEngineRequestTimeoutArgument:
+    """The deadline that turns an unresponsive rollout engine into one failed inference cell."""
+
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        parser.set_defaults(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            context_parallel_size=1,
+            world_size=1,
+        )
+        return parser.parse_args([*extra, *REQUIRED_ARGS, "--num-rollout", "1"])
+
+    def test_the_default_covers_an_engine_reloading_its_weights(self) -> None:
+        """A deadline shorter than end_weight_update would drop every engine on the slowest normal call."""
+        args = self._parse([])
+
+        assert args.update_weight_engine_request_timeout >= 60.0
+
+    def test_a_non_positive_deadline_is_rejected(self) -> None:
+        """A deadline of zero would drop every inference cell before it is asked anything."""
+        args = self._parse(["--update-weight-engine-request-timeout", "0"])
+
+        with pytest.raises(AssertionError, match="update-weight-engine-request-timeout"):
+            miles_validate_args(args)
+
+    def test_an_infinite_deadline_is_rejected(self) -> None:
+        """An unbounded engine call is the hang this deadline exists to end."""
+        args = self._parse(["--update-weight-engine-request-timeout", "inf"])
+
+        with pytest.raises(AssertionError, match="update-weight-engine-request-timeout"):
+            miles_validate_args(args)

@@ -36,7 +36,7 @@ def _make_protocol(p2p, *, gathered_dp_rank: int = 0):
         patch.object(p2p, "get_gloo_group"),
     ):
         dist_mock.get_rank.return_value = 0
-        protocol = p2p.UpdateWeightP2P(Namespace(hf_checkpoint="/ckpt"))
+        protocol = p2p.UpdateWeightP2P(Namespace(hf_checkpoint="/ckpt", update_weight_engine_request_timeout=30.0))
     protocol.transfer_plan._gathered_dp_rank = gathered_dp_rank
     return protocol
 
