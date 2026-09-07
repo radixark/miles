@@ -8,7 +8,8 @@ from typing import Any
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils import async_utils
 
-from .p2p_transfer_utils import P2PTransferManager, RemoteWeightInfo
+from .p2p_cell_executor import _CellWriteExecutor
+from .p2p_transfer_utils import RemoteWeightInfo
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +22,16 @@ class _P2PRolloutCellUpdater:
         cell_id: str,
         api_client: SGLangApiClient,
         transfer_engine: Any,
-        transfer_manager: P2PTransferManager,
         targets_by_rollout_engine_rank: dict[int, RemoteWeightInfo],
+        transfer_timeout: float,
     ) -> None:
         self.cell_id = cell_id
         self.error: BaseException | None = None
         self._args = args
         self._api_client = api_client
         self._transfer_engine = transfer_engine
-        self._transfer_manager = transfer_manager
+        self._transfer_timeout = transfer_timeout
+        self._executor = _CellWriteExecutor(cell_id)
         self._disposed = False
         self._target_by_rollout_engine_rank = targets_by_rollout_engine_rank
         self._pending_op = ""
@@ -99,8 +101,9 @@ class _P2PRolloutCellUpdater:
         self.error = error
         logger.error(f"inference cell {self.cell_id} can no longer be updated", exc_info=error)
 
-    def dispose(self) -> None:
+    def dispose(self) -> _CellWriteExecutor | None:
         self._disposed = True
+        return None if self._executor.close() else self._executor
 
     def submit_write(
         self, rollout_engine_rank: int, names: list[str], weight_memory_registry: dict[str, tuple[int, int, int]]
@@ -108,7 +111,7 @@ class _P2PRolloutCellUpdater:
         if not self.accepts_writes:
             return
         self._pending_writes.append(
-            self._transfer_manager.submit(
+            self._executor.submit(
                 self._write_if_active,
                 self._target_by_rollout_engine_rank[rollout_engine_rank],
                 names,
@@ -126,7 +129,7 @@ class _P2PRolloutCellUpdater:
 
     def _collect_write(self, future: Future) -> None:
         try:
-            future.result(timeout=0.0 if self.is_errored else self._transfer_manager.transfer_timeout)
+            future.result(timeout=0.0 if self.is_errored else self._transfer_timeout)
         except FutureTimeoutError as error:
             self._abandon_write(future, error)
             return
@@ -192,7 +195,7 @@ def _do_p2p_write_one_session(
     """P2P write from shared CPU pinned buffers to a single remote session.
 
     Used by the parallelized submission path where each session within an
-    rollout engine rank is submitted as a separate task to P2PTransferManager.
+    rollout engine rank is submitted as a separate task to this cell's write executor.
     """
     source_ptrs, source_lens = [], []
     valid_names = []
