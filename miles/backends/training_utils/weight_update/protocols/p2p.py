@@ -61,7 +61,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
-        self._cell_updaters_of_rollout_engine_ind: dict[int, _P2PRolloutCellUpdater] = {}
+        self._cell_updaters_of_cell_id: dict[str, _P2PRolloutCellUpdater] = {}
         self.transfer_manager = P2PTransferManager(
             num_workers=getattr(args, "p2p_transfer_num_workers", 4),
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
@@ -158,15 +158,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
         self.disconnect()
         self.rollout_engines = rollout_engines
-        self._cell_updaters_of_rollout_engine_ind = {
+        self._cell_updaters_of_cell_id = {
             cell_id: _P2PRolloutCellUpdater(cell_id=cell_id) for cell_id in engine_cell_ids
         }
 
-        self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
+        targets = self.transfer_plan.plan_p2p(engine_gpu_counts)
+        self.is_sender = bool(targets)
 
         if self.is_sender:
             self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
-            targets = self.transfer_plan.plan_p2p()
             (
                 self.remote_weight_infos_by_session_id,
                 targets_to_session_id,
@@ -182,7 +182,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self._transfer_engine = create_transfer_engine()
 
             _assign_p2p_targets(
-                self._cell_updaters_of_rollout_engine_ind,
+                self._cell_updaters_of_cell_id,
                 targets=targets,
                 targets_to_session_id=targets_to_session_id,
                 remote_weight_infos_by_session_id=self.remote_weight_infos_by_session_id,
@@ -190,15 +190,17 @@ class UpdateWeightP2P(WeightTransferProtocol):
             )
 
             for rollout_engine_rank, rank_targets in targets_grouped_by_rollout_engine_rank.items():
-                first_target = rank_targets[0]
-                session_id = targets_to_session_id[(first_target.rollout_engine_ind, first_target.rollout_engine_rank)]
+                rank_session_ids = [
+                    targets_to_session_id[(t.rollout_engine_ind, t.rollout_engine_rank)] for t in rank_targets
+                ]
                 model_replica = self._cpu_replicas.get_or_create_replica(
-                    parallelism_info=self.remote_weight_infos_by_session_id[session_id][1],
-                    server_args=self.session_id_to_server_args[session_id],
+                    parallelism_info=self.remote_weight_infos_by_session_id[rank_session_ids[0]][1],
+                    server_args=self.session_id_to_server_args[rank_session_ids[0]],
                 )
 
                 rank_cell_updaters = [
-                    self._cell_updaters_of_rollout_engine_ind[target.rollout_engine_ind] for target in rank_targets
+                    self._cell_updaters_of_cell_id[engine_cell_ids[target.rollout_engine_ind]]
+                    for target in rank_targets
                 ]
 
                 self._rollout_engine_rank_infos.append(

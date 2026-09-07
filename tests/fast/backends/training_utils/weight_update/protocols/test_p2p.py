@@ -169,7 +169,7 @@ class TestConnectReusesOneShotResources:
         """A restarted engine gets new sessions, so a leftover mapping would write into memory it released."""
         protocol = p2p_sender.make_protocol()
         p2p_sender.connect(
-            protocol, [make_rollout_api("cell-a", gpu_count=2), make_rollout_api("cell-b", gpu_count=2)]
+            protocol, [make_rollout_api("cell-a", gpu_count=2), make_rollout_api("cell-b", gpu_count=1)]
         )
         restarted = make_rollout_api("cell-a", gpu_count=2, generation=2)
 
@@ -182,7 +182,7 @@ class TestConnectReusesOneShotResources:
             restarted.session_id(0),
             restarted.session_id(1),
         ]
-        assert list(protocol._cell_updaters_of_rollout_engine_ind) == ["cell-a"]
+        assert list(protocol._cell_updaters_of_cell_id) == ["cell-a"]
 
     def test_a_round_without_reachable_peers_cuts_off_the_old_peers_and_keeps_the_resources(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
