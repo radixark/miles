@@ -24,6 +24,7 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocols.p2p_cell_executor import _CellWriteExecutor
 from miles.backends.training_utils.weight_update.protocols.p2p_inference_cell_updater import (
     P2PInferenceCellUpdater,
     TransferEngineMeta,
@@ -32,7 +33,6 @@ from miles.backends.training_utils.weight_update.utils import ModelParamStager
 from miles.utils.distributed_utils import get_gloo_group
 
 from .p2p_transfer_utils import (
-    P2PTransferManager,
     RemoteTransferPlan,
     RemoteWeightInfo,
     create_transfer_engine,
@@ -43,6 +43,8 @@ from .p2p_transfer_utils import (
 logger = logging.getLogger(__name__)
 
 _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
+
+_MAX_STALLED_WRITE_THREADS = 8
 
 
 class UpdateWeightP2P(WeightTransferProtocol):
@@ -62,10 +64,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
-        self.transfer_manager = P2PTransferManager(
-            num_workers=getattr(args, "p2p_transfer_num_workers", 4),
-            transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
-        )
+        self._transfer_timeout = args.p2p_transfer_timeout
         self._transfer_engine: Any | None = None
         self._shared_params_dict: dict[str, torch.Tensor] = {}
         self._shared_param_mapper: ParameterMapper | None = None
@@ -74,6 +73,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.inference_cell_health = InferenceCellHealth()
         self._cell_updaters_by_cell_id: dict[str, P2PInferenceCellUpdater] = {}
         self._unfinished_writes: list[Future] = []
+        self._stalled_executors: list[_CellWriteExecutor] = []
         self.remote_weight_infos_by_session_id: dict[str, tuple] = {}
         self.session_id_to_server_args: dict[str, ServerArgs] = {}
         # in self._transfer_engine_meta_list: tuple of
@@ -204,7 +204,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             cell_id: P2PInferenceCellUpdater(
                 cell_id=cell_id,
                 transfer_engine=self._transfer_engine,
-                transfer_manager=self.transfer_manager,
+                transfer_timeout=self._transfer_timeout,
                 health=self.inference_cell_health,
                 targets_by_engine_rank=targets_by_cell_id[cell_id],
             )
@@ -245,13 +245,21 @@ class UpdateWeightP2P(WeightTransferProtocol):
     def _drain_pending_writes(self) -> None:
         for cell_updater in self._cell_updaters_by_cell_id.values():
             cell_updater.wait_for_pending_writes()
-            cell_updater.dispose()
             self._unfinished_writes += cell_updater.take_unfinished_writes()
+            if (stalled := cell_updater.dispose()) is not None:
+                self._stalled_executors.append(stalled)
+
+        self._unfinished_writes = [future for future in self._unfinished_writes if not future.done()]
+        self._stalled_executors = [executor for executor in self._stalled_executors if executor.is_running]
         if self._unfinished_writes:
             logger.error(
                 f"[P2P-Shared] {len(self._unfinished_writes)} p2p writes of this trainer rank never finished; "
                 f"their source buffers stay registered for the lifetime of this actor"
             )
+        assert len(self._stalled_executors) <= _MAX_STALLED_WRITE_THREADS, (
+            f"[P2P-Shared] {len(self._stalled_executors)} p2p write threads of this trainer rank are stuck inside a "
+            f"native transfer, so its transfer engine is no longer usable and the cell must be replaced"
+        )
 
     def _assert_one_weight_representation(self, engine_rank: int, session_ids: list[str]) -> None:
         keys_by_session = {

@@ -3,8 +3,7 @@ import logging
 import time
 from argparse import Namespace
 from collections import defaultdict
-from collections.abc import Callable, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import NamedTuple
 
@@ -145,30 +144,6 @@ class RemoteWeightInfo:
     weights_info: dict[str, RemoteWeightLocation]  # name -> (remote_address, numel, element_size)
 
 
-class P2PTransferManager:
-    """Generic async task manager for P2P writes.
-
-    Accepts arbitrary callables via submit() and runs them in a thread pool. The
-    futures belong to the inference cell updater that submitted them, which is
-    the only place that knows whose failure a broken write is.
-    """
-
-    def __init__(self, num_workers: int = 8, transfer_timeout: float = 30.0):
-        self.num_workers = num_workers
-        self.transfer_timeout = transfer_timeout
-        self.executor: ThreadPoolExecutor | None = None
-
-    def ensure_started(self) -> None:
-        if self.executor is None:
-            # NOTE: RDMA ops won't be affected by the python GIL
-            self.executor = ThreadPoolExecutor(max_workers=self.num_workers)
-
-    def submit(self, fn: Callable, *args) -> Future:
-        """Submit a callable to the thread pool and return its future."""
-        self.ensure_started()
-        return self.executor.submit(fn, *args)
-
-
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
     valid_fields = {f.name for f in dataclasses.fields(ServerArgs)}
     filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
@@ -230,7 +205,7 @@ async def _query_one_target(client: SGLangApiClient, engine_ind: int, engine_ran
 
 def query_remote_weight_infos(
     rollout_engines: Sequence[SGLangApiClient],
-    targets,
+    targets: Sequence[TransferTaskP2PMeta],
     *,
     request_timeout: float,
 ) -> RemoteWeightQuery:
