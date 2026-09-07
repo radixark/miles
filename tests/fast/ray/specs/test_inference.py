@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import socket
 import sys
 from argparse import Namespace
 from types import SimpleNamespace
@@ -77,18 +78,24 @@ def _make_model_cfg(*worker_types: str) -> ModelConfig:
     return ModelConfig(name="default", model_path=None, server_groups=groups, update_weights=True)
 
 
-def _make_router_ctx(*, port: int = 20000, prometheus_port: int = 4001) -> LaunchCommandContext:
+def _make_router_ctx(
+    *, host: str = "127.0.0.1", port: int = 20000, prometheus_port: int = 4001
+) -> LaunchCommandContext:
     return LaunchCommandContext(
         cell_index=0,
         worker_in_cell_index=0,
         self_addrs=dict(
-            primary=HostAndPort(host="127.0.0.1", port=port),
-            prometheus=HostAndPort(host="127.0.0.1", port=prometheus_port),
+            primary=HostAndPort(host=host, port=port),
+            prometheus=HostAndPort(host=host, port=prometheus_port),
         ),
         pool_addrs={},
         gpu_ids=[],
         local_gpu_ids=[],
     )
+
+
+def _refuse_lookup(*_args, **_kwargs):
+    raise AssertionError("a name lookup ran for a host that needs none")
 
 
 class TestRouterPortPinning:
@@ -172,6 +179,40 @@ class TestComputeSpecRouterLaunchCommand:
         assert argv[1:3] == ["-m", "sglang_router.launch_router"]
         assert argv[argv.index("--port") + 1] == "20000"
         assert argv[argv.index("--prometheus-port") + 1] == "4001"
+
+    def test_sgl_router_binds_the_ip_a_placed_hostname_resolves_to(self, monkeypatch):
+        """The sgl router parses --host as a socket address, so a ray node named by hostname must reach it as an ip."""
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda host, *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.7", 0))],
+        )
+        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        argv = shlex.split(spec.launch_command(_make_router_ctx(host="node1234")))
+
+        assert parse_router_args_argv(argv[3:]).host == "10.0.0.7"
+
+    def test_sgl_router_keeps_a_wildcard_bind_host(self, monkeypatch):
+        """Kubernetes places every command worker on 0.0.0.0, which must pass through without a lookup."""
+        monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
+        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        argv = shlex.split(spec.launch_command(_make_router_ctx(host="0.0.0.0")))
+
+        assert parse_router_args_argv(argv[3:]).host == "0.0.0.0"
+
+    def test_miles_router_keeps_the_placed_hostname(self, monkeypatch):
+        """The miles router binds through uvicorn, which resolves names itself, so its host is left alone."""
+        monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
+        args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        argv = shlex.split(spec.launch_command(_make_router_ctx(host="node1234")))
+
+        assert parse_config_argv(MilesRouterConfig, argv[3:]).host == "node1234"
 
     def test_sgl_router_launch_preserves_prefixed_raw_inputs(self):
         """Raw --router-* aliases and collections survive the full launch-command path."""
