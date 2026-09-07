@@ -62,7 +62,8 @@ class TestBuildTrainArgs:
             "--dynamic-sampling-filter-path": "miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std",
             "--reward-key": "reward_value",
             "--log-reward-category": "outcome",
-            "--pause-generation-mode": "retract",
+            "--pause-generation-mode": "in_place",
+            "--namespaced-radix-cache": None,
             "--optimizer": "adam",
             "--lr": "1e-6",
             "--eval-interval": "20",
@@ -84,7 +85,9 @@ class TestBuildTrainArgs:
             "--rollout-num-gpus-per-engine": "1",
             "--sglang-mem-fraction-static": "0.65",
             "--sglang-enable-metrics": None,
+            "--sglang-enable-prefill-weight-versions": None,
             "--ci-test": None,
+            "--ci-assert-prefill-lag-max": "1",
             "--save-debug-event-data": str(compute_events_dir(args)),
             "--save-debug-rollout-data": compute_rollout_data_path_template(args),
             "--attention-dropout": "0.0",
@@ -98,10 +101,13 @@ class TestBuildTrainArgs:
             "--megatron-to-hf-mode": "bridge",
         }
 
-    def test_the_run_retracts_what_it_has_in_flight_when_generation_pauses(self, flags):
-        """in_place only ever bought this fully async run its way around the pre-refactor flush_cache deadlock."""
+    def test_in_place_generation_checks_namespaced_prompt_kv_freshness(self, flags):
+        """The shared recipe bounds prompt KV staleness while pausing generation in place."""
         assert flags["--fully-async"] is None
-        assert flags["--pause-generation-mode"] == "retract"
+        assert flags["--pause-generation-mode"] == "in_place"
+        assert flags["--namespaced-radix-cache"] is None
+        assert flags["--sglang-enable-prefill-weight-versions"] is None
+        assert flags["--ci-assert-prefill-lag-max"] == "1"
 
     def test_the_per_policy_configs_are_handed_over_as_files_of_their_own(self, flags):
         """Their contents are asserted below; here they only have to reach the run at all."""

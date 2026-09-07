@@ -125,6 +125,8 @@ def _compute_metrics_from_samples(args, samples):
         prefix="weight_version/prefill_",
     )
     log_dict |= _compute_prefill_lag_metrics(samples)
+    if args.ci_test and args.ci_assert_prefill_lag_max is not None:
+        _assert_prefill_lag_metrics(metrics=log_dict, bound=args.ci_assert_prefill_lag_max)
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]
@@ -229,6 +231,15 @@ def _compute_prefill_lag_metrics(samples: list[Sample]) -> dict[str, float]:
         "weight_version/prefill_stale_token_ratio": stale_tokens / prompt_tokens,
         "weight_version/prefill_lag_max": max(lag for _, lag in comparable),
     }
+
+
+def _assert_prefill_lag_metrics(*, metrics: dict[str, float], bound: int) -> None:
+    lag = metrics.get("weight_version/prefill_lag_max")
+    stale_ratio = metrics.get("weight_version/prefill_stale_token_ratio")
+    assert lag is not None and stale_ratio is not None, f"CI requires prompt KV lag and stale-token metrics: {metrics}"
+    assert 0 <= lag <= bound, f"prompt KV lag metric {lag} exceeds the expected range [0, {bound}]"
+    assert 0 <= stale_ratio <= 1, f"prompt KV stale-token ratio {stale_ratio} is outside [0, 1]"
+    assert lag != 0 or stale_ratio == 0, f"zero prompt KV lag must have zero stale-token ratio, got {stale_ratio}"
 
 
 def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[str, float | int]:

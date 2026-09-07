@@ -42,6 +42,8 @@ def execute():
         "--over-sampling-batch-size 16 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--global-batch-size 32 "
+        "--pause-generation-mode in_place "
+        "--namespaced-radix-cache "
     )
 
     eval_args = (
@@ -84,7 +86,7 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 1 "
 
     fault_tolerance_args = (
         "--use-fault-tolerance "

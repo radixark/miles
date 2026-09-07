@@ -77,6 +77,7 @@ def execute(eval_mode: str):
         "--global-batch-size 32 "
         "--balance-data "
         "--pause-generation-mode in_place "
+        "--namespaced-radix-cache "
     )
 
     eval_args = (
@@ -96,7 +97,10 @@ def execute(eval_mode: str):
         eval_args += "--eval-num-gpus 1 --eval-num-gpus-per-engine 1 "
     elif eval_mode == "external":
         eval_args += "--eval-function-path examples.infra_features.fully_async.external_eval_fn.ExternalSglangEvalFn "
-        eval_env = {"MILES_EXTERNAL_EVAL_GPUS": str(NUM_GPUS - 1)}
+        eval_env = {
+            "MILES_EXTERNAL_EVAL_GPUS": str(NUM_GPUS - 1),
+            "MILES_EXTERNAL_EVAL_SERVER_ARGS": "--enable-prefill-weight-versions",
+        }
 
     perf_args = (
         "--tensor-model-parallel-size 2 "
@@ -138,6 +142,7 @@ def execute(eval_mode: str):
     ci_args = (
         "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.4 "
         "--ci-metric-checker-expect-num 3 "
+        "--sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 1 "
     )
 
     misc_args = (

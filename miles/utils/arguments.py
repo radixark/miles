@@ -2732,6 +2732,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Require exactly this many eval checks, all meeting the CI threshold.",
             )
             parser.add_argument(
+                "--ci-assert-prefill-lag-max",
+                type=int,
+                default=None,
+                help="Require every rollout's prompt KV to lag its decode weight version by at most this much.",
+            )
+            parser.add_argument(
                 "--ci-save-grad-norm",
                 type=str,
                 default=None,

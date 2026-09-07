@@ -544,6 +544,50 @@ class TestPrefillWeightVersionMetrics:
         assert out["weight_version/mixed_version_ratio"] == 0.0
 
 
+class TestCiPrefillLagMetrics:
+    @pytest.mark.parametrize("overrides", [{"ci_test": False, "ci_assert_prefill_lag_max": 1}, {"ci_test": True}])
+    def test_lag_is_not_bounded_without_the_ci_gate(self, overrides: dict[str, object]) -> None:
+        """Large lag is reported without enforcement unless CI and its bound are both enabled."""
+        sample = _prefilled_sample(([("2", 3)], ["5"]))
+
+        metrics = _compute_metrics_from_samples(make_args(**overrides), [sample])
+
+        assert metrics["weight_version/prefill_lag_max"] == 3
+
+    @pytest.mark.parametrize(("prefill_version", "expected_lag", "expected_ratio"), [("4", 1, 1.0), ("5", 0, 0.0)])
+    def test_prefill_metrics_within_the_bound_are_reported(
+        self, prefill_version: str, expected_lag: int, expected_ratio: float
+    ) -> None:
+        """CI reports exact freshness metrics for fresh and one-version-old prompts."""
+        sample = _prefilled_sample(([(prefill_version, 3)], ["5"]))
+
+        metrics = _compute_metrics_from_samples(make_args(ci_test=True, ci_assert_prefill_lag_max=1), [sample])
+
+        assert metrics["weight_version/prefill_lag_max"] == expected_lag
+        assert metrics["weight_version/prefill_stale_token_ratio"] == expected_ratio
+
+    def test_prefill_metrics_beyond_the_bound_fail(self) -> None:
+        """CI rejects reported prompt KV lag beyond the configured bound."""
+        sample = _prefilled_sample(([("2", 3)], ["5"]))
+
+        with pytest.raises(AssertionError, match="lag metric 3"):
+            _compute_metrics_from_samples(make_args(ci_test=True, ci_assert_prefill_lag_max=1), [sample])
+
+    def test_missing_prefill_metrics_fail_instead_of_passing_vacuously(self) -> None:
+        """CI fails when an engine reports decode versions but no prompt KV versions."""
+        sample = _make_versioned_sample(["5"], index=0)
+
+        with pytest.raises(AssertionError, match="CI requires prompt KV lag"):
+            _compute_metrics_from_samples(make_args(ci_test=True, ci_assert_prefill_lag_max=1), [sample])
+
+    def test_prefill_spans_without_comparable_decode_versions_fail(self) -> None:
+        """CI fails when prompt versions exist but no call can produce freshness metrics."""
+        sample = _prefilled_sample(([("4", 3)], ["default"]))
+
+        with pytest.raises(AssertionError, match="CI requires prompt KV lag"):
+            _compute_metrics_from_samples(make_args(ci_test=True, ci_assert_prefill_lag_max=1), [sample])
+
+
 class TestLogRolloutData:
     def test_the_model_id_comes_from_the_caller_not_from_the_args(self, monkeypatch):
         """One rollout executor serves every policy, so the id must travel with the call, not with the run."""

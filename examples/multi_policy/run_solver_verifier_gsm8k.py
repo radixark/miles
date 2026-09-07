@@ -121,7 +121,8 @@ def build_train_args(
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--reward-key reward_value "
         "--log-reward-category outcome "
-        "--pause-generation-mode retract "
+        "--pause-generation-mode in_place "
+        "--namespaced-radix-cache "
     )
 
     eval_args = (
@@ -148,10 +149,16 @@ def build_train_args(
 
     optimizer_args = "--optimizer adam " "--lr 1e-6 "
 
-    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 1 "
+        "--sglang-mem-fraction-static 0.65 "
+        "--sglang-enable-metrics "
+        "--sglang-enable-prefill-weight-versions "
+    )
 
     ci_args = (
         "--ci-test "
+        "--ci-assert-prefill-lag-max 1 "
         f"--save-debug-event-data {events_dir} "
         f"--save-debug-rollout-data {compute_rollout_data_path_template(args)} "
     )

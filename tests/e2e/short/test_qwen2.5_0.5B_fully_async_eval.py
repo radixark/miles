@@ -41,6 +41,7 @@ def execute():
         "--global-batch-size 32 "
         # retract (default) can deadlock flush_cache in fully_async under load
         "--pause-generation-mode in_place "
+        "--namespaced-radix-cache "
     )
 
     # Dedicated eval fleet pinned to tmpfs HF snapshots: every eval point must
@@ -93,6 +94,7 @@ def execute():
     ci_args = (
         "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.4 "
         "--ci-metric-checker-expect-num 3 "
+        "--sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 1 "
     )
 
     misc_args = (
