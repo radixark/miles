@@ -28,7 +28,7 @@ class _ReplicaFactory:
         return _FakeReplica(params)
 
 
-def _make_protocol(p2p, *, gathered_dp_rank: int = 0, rollout_num_gpus: int = 4):
+def _make_protocol(p2p, *, gathered_dp_rank: int = 0):
     with (
         patch.object(p2p, "RemoteTransferPlan"),
         patch.object(p2p, "dist") as dist_mock,
@@ -37,7 +37,6 @@ def _make_protocol(p2p, *, gathered_dp_rank: int = 0, rollout_num_gpus: int = 4)
         dist_mock.get_rank.return_value = 0
         protocol = p2p.UpdateWeightP2P(Namespace(hf_checkpoint="/ckpt"))
     protocol.transfer_plan._gathered_dp_rank = gathered_dp_rank
-    protocol.transfer_plan._rollout_num_gpus = rollout_num_gpus
     return protocol
 
 
@@ -74,7 +73,10 @@ def _connect(
     engine_count = 1 + max((engine_ind for engine_ind, _rank in pairs), default=-1)
     protocol.connect(
         [object()] * engine_count,
-        None,
+        [
+            1 + max((rank for index, rank in pairs if index == engine_ind), default=0)
+            for engine_ind in range(engine_count)
+        ],
         None,
         [f"cell-{index}" for index in range(engine_count)],
         None,
@@ -180,7 +182,6 @@ class TestReconnection:
             engine_after_first = protocol._transfer_engine
             params_after_first = protocol._shared_params_dict
             protocol._weight_memory_registry = {"w": (0x1000, 2, 4)}
-            protocol.transfer_plan._gathered_dp_rank = 99
             _connect(protocol, patches, pairs=[])
 
         assert protocol.is_sender is False
@@ -354,3 +355,40 @@ class TestCpuReplicaReuse:
 
         assert len(factory.calls) == 1
         assert len(protocol._replicas_by_representation) == 1
+
+
+class TestOneReplicaPerEngineRank:
+    """All the cells of one engine rank are served from a single CPU replica, so they must agree on its layout."""
+
+    def test_targets_of_one_engine_rank_with_different_sharding_are_rejected(self, p2p_protocol) -> None:
+        """A TP1 and a TP2 cell hold different shards of the same rank, and one conversion cannot serve both."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with (
+            _patched_p2p(p2p_protocol, factory) as patches,
+            pytest.raises(AssertionError, match="different weight representations"),
+        ):
+            _connect(
+                protocol,
+                patches,
+                pairs=[(0, 0), (1, 0)],
+                layout_of=lambda pair: {"tp_rank": 0, "tp_size": 1 + pair[0]},
+            )
+
+    def test_targets_of_one_engine_rank_that_differ_only_in_placement_are_served_together(self, p2p_protocol) -> None:
+        """Two cells holding the same shard on different GPUs are exactly the case this backend must support."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(
+                protocol,
+                patches,
+                pairs=[(0, 0), (1, 0)],
+                layout_of=lambda pair: {"tp_rank": 0, "tp_size": 2, "global_rank": 4 * pair[0], "local_rank": 0},
+            )
+
+        assert len(factory.calls) == 1
+        assert len(_cell_updaters(protocol)) == 2
+        assert sorted(_target_session_ids(protocol)) == ["a-0-0", "a-1-0"]

@@ -71,9 +71,15 @@ def _write_one_target(
 
     session_id = target.session_id
     target_ptrs = []
-    for name in valid_names:
+    for name, source_len in zip(valid_names, source_lens, strict=True):
         if name in target.weights_info:
-            target_ptrs.append(target.weights_info[name].address)
+            location = target.weights_info[name]
+            target_len = location.numel * location.element_size
+            assert target_len == source_len, (
+                f"[P2P-Shared] {name} spans {source_len} bytes here and {target_len} bytes on session "
+                f"{session_id}, so writing it would run past the target buffer"
+            )
+            target_ptrs.append(location.address)
 
     assert len(target_ptrs) == len(source_ptrs), (
         f"[P2P-Shared] Pointer count mismatch for session {session_id}, "

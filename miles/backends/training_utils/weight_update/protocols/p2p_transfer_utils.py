@@ -56,11 +56,8 @@ class RemoteTransferPlan:
         self._rollout_pp_size = args.sglang_pp_size
         if self._rollout_pp_size != 1:
             raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
-        self._rollout_num_gpu_per_engine = args.rollout_num_gpus_per_engine
-        self._rollout_engine_count = args.rollout_num_gpus // self._rollout_num_gpu_per_engine
-        self._rollout_num_gpus = args.rollout_num_gpus
 
-    def plan_p2p(self) -> list[TransferTaskP2PMeta]:
+    def plan_p2p(self, engine_gpu_counts: Sequence[int]) -> list[TransferTaskP2PMeta]:
         """
         Plan P2P transfer within each pp_group -> all target engine ranks.
 
@@ -82,10 +79,15 @@ class RemoteTransferPlan:
         Finally extract the transfer tasks matching the current dp_rank(self._gathered_dp_rank).
 
         """
+        for engine_idx, engine_gpu_count in enumerate(engine_gpu_counts):
+            assert (
+                isinstance(engine_gpu_count, int) and not isinstance(engine_gpu_count, bool) and engine_gpu_count > 0
+            ), f"engine {engine_idx} declares {engine_gpu_count!r} GPUs, so it has no rank to send weights to"
+
         all_targets = [
             (engine_idx, engine_rank)
-            for engine_idx in range(self._rollout_engine_count)
-            for engine_rank in range(self._rollout_num_gpu_per_engine)
+            for engine_idx, engine_gpu_count in enumerate(engine_gpu_counts)
+            for engine_rank in range(engine_gpu_count)
         ]
         assignments = defaultdict(lambda: defaultdict(list))
 

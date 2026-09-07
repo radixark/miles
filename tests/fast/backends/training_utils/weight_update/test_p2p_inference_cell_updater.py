@@ -25,7 +25,7 @@ def _remote_weight_info(utils, session_id: str, base_address: int, names: list[s
     return utils.RemoteWeightInfo(
         session_id,
         {
-            name: utils.RemoteWeightLocation(base_address + index, 4, 2)
+            name: utils.RemoteWeightLocation(base_address + index, _REGISTRY[name][1], _REGISTRY[name][2])
             for index, name in enumerate(names if names is not None else _NAMES)
         },
     )
@@ -205,4 +205,29 @@ class TestSubmissionSemantics:
         future = updater.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY)
 
         with pytest.raises(AssertionError, match="Pointer count mismatch"):
+            future.result(timeout=30.0)
+
+    def test_a_target_buffer_of_another_size_is_rejected(
+        self, p2p_inference_cell_updater, p2p_transfer_utils, manager
+    ) -> None:
+        """A target that registered a smaller buffer would be written past its end by this source span."""
+        updater = _cell_updater(
+            p2p_inference_cell_updater,
+            manager,
+            _RecordingTransferEngine(),
+            cell_id="cell-0",
+            targets={
+                0: p2p_transfer_utils.RemoteWeightInfo(
+                    "cell-0-rank-0",
+                    {
+                        "layer.0": p2p_transfer_utils.RemoteWeightLocation(0xA000, 4, 2),
+                        "layer.1": p2p_transfer_utils.RemoteWeightLocation(0xA001, 4, 2),
+                    },
+                )
+            },
+        )
+
+        future = updater.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY)
+
+        with pytest.raises(AssertionError, match="run past the target buffer"):
             future.result(timeout=30.0)
