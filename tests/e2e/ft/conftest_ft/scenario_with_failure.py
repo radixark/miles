@@ -93,6 +93,9 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     if is_target:
         base += get_ft_args(mode)
 
+    if mode.has_real_rollout:
+        base += "--debug-deterministic-collective --clip-grad 10.0 "
+
     if is_phase_a:
         base += f"--save {dump_dir}/ckpt --save-interval 1 "
         base += f"--debug-exit-after-rollout {NUM_PHASE_A_STEPS} "
