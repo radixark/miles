@@ -2,8 +2,8 @@ import shlex
 
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
-    NUM_PHASE_A_STEPS,
     _WITH_FAILURE_ACTIONS,
+    NUM_PHASE_A_STEPS,
     _build_baseline_args,
     _build_target_args,
 )
