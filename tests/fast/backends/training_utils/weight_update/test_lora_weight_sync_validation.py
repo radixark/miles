@@ -117,11 +117,11 @@ class TestUpdateWeightsEmptyBaseIteration:
             patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol),
             patch(f"{_UPDATER_MODULE}.dist") as mock_dist,
             patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
-            patch(f"{_UPDATER_MODULE}.pause_engines"),
+            patch(f"{_UPDATER_MODULE}.maybe_pause_engines"),
             patch(f"{_UPDATER_MODULE}.begin_weight_update"),
             patch(f"{_UPDATER_MODULE}.set_weight_version"),
             patch(f"{_UPDATER_MODULE}.end_weight_update"),
-            patch(f"{_UPDATER_MODULE}.resume_engines"),
+            patch(f"{_UPDATER_MODULE}.maybe_resume_engines"),
         ):
             mock_dist.get_rank.return_value = 0
             updater = WeightUpdater(

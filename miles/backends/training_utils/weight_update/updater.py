@@ -21,9 +21,9 @@ from miles.backends.training_utils.weight_update.protocol import get_weight_tran
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
-    pause_engines,
+    maybe_pause_engines,
+    maybe_resume_engines,
     register_lora_adapter,
-    resume_engines,
     set_weight_version,
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
@@ -107,7 +107,7 @@ class WeightUpdater:
 
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
+            maybe_pause_engines(self.args, protocol.rollout_engines)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
             begin_weight_update(
                 protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
@@ -140,7 +140,7 @@ class WeightUpdater:
             if protocol.use_weight_update_session and driver:
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
                 set_weight_version(protocol.rollout_engines, self.weight_version)
-                resume_engines(protocol.rollout_engines)
+                maybe_resume_engines(self.args, protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
 
     def _iter_base_buckets(self, *, materialize: bool):

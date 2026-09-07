@@ -61,6 +61,10 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     return rollout_path, eval_path
 
 
+def driver_owns_generation_pause(args) -> bool:
+    return args.fully_async and args.colocate
+
+
 def _resolve_rollout_functions(args) -> None:
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
         raise ValueError(
