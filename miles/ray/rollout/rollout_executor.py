@@ -2,8 +2,8 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Iterable, Sequence
+from typing import Any, TypeVar
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
@@ -69,6 +69,7 @@ class RolloutExecutor:
         self.args = args
         # set by the training actor after each weight update, keyed by trainer model id (None for one policy)
         self._weight_versions_of_model_id: dict[str | None, int] = {}
+        self.last_get_rollout_id_of_model_id: dict[str | None, int] = {}
         self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
         self._train_parallel_configs_of_model_id: dict[str | None, dict[str, Any]] = {}
         self._router_providers = router_providers
@@ -119,7 +120,6 @@ class RolloutExecutor:
             logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
             logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
         self._eval_fleet: RolloutExecutorEvalFleet | None = None
 
@@ -146,7 +146,7 @@ class RolloutExecutor:
     @event_logger_context(lambda _self, rollout_id, trainer_model_id=None: dict(rollout_id=rollout_id))
     async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
         start_time = time.time()
-        self.rollout_id = rollout_id
+        self.last_get_rollout_id_of_model_id[trainer_model_id] = rollout_id
         self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
         assert_weight_version_is_published(
             self.args, rollouts_since_publish=self._rollouts_since_publish_of_model_id[trainer_model_id]
@@ -249,7 +249,8 @@ class RolloutExecutor:
             data = result.data
             save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
             extra_metrics = dict(result.metrics or {})
-            extra_metrics["eval/lag_steps"] = max(self.rollout_id - rollout_id, 0)
+            if (last_get_rollout_id := _single_or_none(self.last_get_rollout_id_of_model_id.values())) is not None:
+                extra_metrics["eval/lag_steps"] = max(last_get_rollout_id - rollout_id, 0)
             extra_metrics["eval/duration_seconds"] = time.time() - start_time
             if export_time_seconds is not None:
                 extra_metrics["eval/export_time_seconds"] = export_time_seconds
@@ -344,3 +345,12 @@ class RolloutExecutor:
         self._eval_fleet = RolloutExecutorEvalFleet(
             self.args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
         )
+
+
+_T = TypeVar("_T")
+
+
+def _single_or_none(xs: Iterable[_T]) -> _T | None:
+    xs = list(xs)
+    assert len(xs) <= 1, xs
+    return xs[0] if xs else None
