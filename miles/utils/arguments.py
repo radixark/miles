@@ -1115,6 +1115,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--update-weight-engine-request-timeout",
+                type=float,
+                default=600.0,
+                help=(
+                    "Seconds allowed for one engine-side weight-update request (metadata query, pause, flush, "
+                    "begin, end, set-version, resume); an engine that misses it is dropped from this update."
+                ),
+            )
+            parser.add_argument(
                 "--p2p-transfer-num-workers",
                 type=int,
                 default=4,
@@ -3841,6 +3850,12 @@ def miles_validate_args(args):
     ):
         args.check_weight_update_equal = True
 
+    assert (
+        math.isfinite(args.update_weight_engine_request_timeout) and args.update_weight_engine_request_timeout > 0
+    ), (
+        f"--update-weight-engine-request-timeout must be positive and finite, got "
+        f"{args.update_weight_engine_request_timeout!r}"
+    )
     assert (
         math.isfinite(args.update_weights_timeout) and args.update_weights_timeout > 0
     ), f"--update-weights-timeout must be positive and finite, got {args.update_weights_timeout!r}"

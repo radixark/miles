@@ -71,13 +71,23 @@ class _P2PRolloutCellUpdater:
             lambda client: client.update_weight_version(weight_version=str(weight_version)),
         )
 
+    def submit_check_weight_version(self, weight_version: int) -> Future[Any] | None:
+        return self._submit(
+            "check_weight_version",
+            lambda client: _check_weight_version(client, weight_version=weight_version),
+        )
+
     def submit_resume(self) -> Future[Any] | None:
         return self._submit("continue_generation", lambda client: client.continue_generation())
 
-    def collect(self, future: Future[Any]) -> None:
+    def collect(self, future: Future[Any], *, timeout: float) -> None:
         op = self._pending_op
         try:
-            _raise_if_unsuccessful(op, future.result())
+            _raise_if_unsuccessful(op, future.result(timeout=timeout))
+        except FutureTimeoutError as error:
+            future.cancel()
+            logger.error(f"[weight-update] {op} on inference cell {self.cell_id} outlived its deadline")
+            self.mark_errored(error)
         except Exception as error:
             logger.exception(f"[weight-update] {op} failed on inference cell {self.cell_id}")
             self.mark_errored(error)
@@ -157,6 +167,12 @@ class _P2PRolloutCellUpdater:
             logger.warning(f"[P2P-Shared] skipping a queued write to cell {self.cell_id}")
             return
         _do_p2p_write_one_session(self._transfer_engine, target, names, weight_memory_registry)
+
+
+async def _check_weight_version(client: SGLangApiClient, *, weight_version: int) -> None:
+    engine_version = await client.get_weight_version()
+    if str(engine_version) != str(weight_version):
+        raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {weight_version}")
 
 
 def _raise_if_unsuccessful(op: str, result: object) -> None:

@@ -7,6 +7,7 @@ LoRA adapter pushes.
 """
 
 import logging
+import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
@@ -180,6 +181,8 @@ class WeightUpdater:
         if protocol.cell_updaters:
             self._on_every_cell(lambda cell_updater: cell_updater.submit_end())
             self._on_every_cell(lambda cell_updater: cell_updater.submit_set_weight_version(weight_version))
+            if self.args.ci_test:
+                self._on_every_cell(lambda cell_updater: cell_updater.submit_check_weight_version(weight_version))
             return
 
         end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
@@ -195,12 +198,13 @@ class WeightUpdater:
         maybe_resume_engines(self.args, protocol.rollout_engines)
 
     def _on_every_cell(self, submit: Callable[["_P2PRolloutCellUpdater"], Future[Any] | None]) -> None:
+        deadline = time.monotonic() + self.args.update_weight_engine_request_timeout
         futures = {}
         for cell_updater in self.protocol.cell_updaters:
             if (future := submit(cell_updater)) is not None:
                 futures[cell_updater] = future
         for cell_updater, future in futures.items():
-            cell_updater.collect(future)
+            cell_updater.collect(future, timeout=max(0.0, deadline - time.monotonic()))
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

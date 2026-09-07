@@ -1,9 +1,11 @@
 import dataclasses
 import logging
+import time
 from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import NamedTuple
 
 import ray
@@ -237,6 +239,8 @@ async def _query_one_target(
 def query_remote_weight_infos(
     rollout_engines: Sequence[SGLangApiClient],
     targets,
+    *,
+    request_timeout: float,
 ) -> RemoteWeightQuery:
     """Query remote rollout engines for weight info, session IDs, and server args."""
     remote_weight_infos_by_session_id: dict[str, tuple] = {}
@@ -244,6 +248,7 @@ def query_remote_weight_infos(
     session_id_to_server_args: dict[str, ServerArgs] = {}
     failures_by_rollout_engine_ind: dict[int, Exception] = {}
     targets_to_query = sorted({(target.rollout_engine_ind, target.rollout_engine_rank) for target in targets})
+    deadline = time.monotonic() + request_timeout
     futures = {
         (rollout_engine_ind, rollout_engine_rank): async_utils.submit(
             _query_one_target(rollout_engines[rollout_engine_ind], rollout_engine_ind, rollout_engine_rank)
@@ -253,7 +258,14 @@ def query_remote_weight_infos(
 
     for (rollout_engine_ind, rollout_engine_rank), future in futures.items():
         try:
-            info = future.result()
+            info = future.result(timeout=max(0.0, deadline - time.monotonic()))
+        except FutureTimeoutError as error:
+            future.cancel()
+            logger.error(
+                f"[P2P-Shared] engine {rollout_engine_ind} rank {rollout_engine_rank} outlived the weight query deadline"
+            )
+            failures_by_rollout_engine_ind.setdefault(rollout_engine_ind, error)
+            continue
         except Exception as error:
             logger.exception(
                 f"[P2P-Shared] engine {rollout_engine_ind} rank {rollout_engine_rank} did not answer the weight query"

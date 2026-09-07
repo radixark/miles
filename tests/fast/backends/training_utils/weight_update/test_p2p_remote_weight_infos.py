@@ -116,7 +116,7 @@ def _make_targets(module, pairs: list[tuple[int, int]]) -> list:
 
 
 def _query(module, engines: list[_FakeRolloutEngine], pairs: list[tuple[int, int]]):
-    return module.query_remote_weight_infos(engines, _make_targets(module, pairs))
+    return module.query_remote_weight_infos(engines, _make_targets(module, pairs), request_timeout=30.0)
 
 
 class TestQueryRemoteWeightInfos:
