@@ -94,6 +94,7 @@ class TestConnect:
                 engines,
                 engine_gpu_counts=_ENGINE_GPU_COUNTS,
                 engine_gpu_offsets=_SPARSE_GPU_OFFSETS,
+                engine_cell_ids=[f"cell-{i}" for i in range(len(_ENGINE_GPU_COUNTS))],
                 parallel_state=parallel_state,
                 placement=SimpleNamespace(gather_pp=True),
                 selector="all",
