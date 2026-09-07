@@ -1424,7 +1424,12 @@ class _FakeTrainerCell:
         self.cell_id = f"cell-{cell_index}"
         self.is_alive = True
         self.calls: list[dict] = []
+        self.retired_reasons: list[str] = []
         self._outcome = outcome
+
+    async def mark_errored_and_kill(self, reason: str) -> None:
+        self.retired_reasons.append(reason)
+        self.is_alive = False
 
     async def execute(self, fn_name: str, *, timeout: float, info):
         self.calls.append(dict(fn_name=fn_name, timeout=timeout, info=info))
@@ -1657,6 +1662,64 @@ class TestUpdateWeightsUsesEveryAliveCell:
 
         with pytest.raises(AssertionError, match="different weight versions"):
             await controller.update_weights(info=_p2p_info(2))
+
+    async def test_a_trainer_that_lost_all_of_its_several_targets_is_retired(self):
+        """A broken NIC on the source fails every session, and the next round would just hand it a new batch."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=(), failed=("engine-0", "engine-1"))]),
+            _FakeTrainerCell(1),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        await controller.update_weights(info=_p2p_info(4))
+
+        assert len(cells[0].retired_reasons) == 1
+        assert cells[1].retired_reasons == []
+
+    async def test_a_trainer_that_lost_its_only_target_is_kept(self):
+        """One failure is far more likely the target's fault, and killing the source would lose a healthy trainer."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=(), failed=("engine-0",))]),
+            _FakeTrainerCell(1),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        await controller.update_weights(info=_p2p_info(2))
+
+        assert cells[0].retired_reasons == []
+
+    async def test_a_trainer_that_reached_one_of_two_targets_is_kept(self):
+        """It demonstrably still sends weights, so the fault is on the one target that failed."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=("engine-0",), failed=("engine-1",))]),
+            _FakeTrainerCell(1),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        await controller.update_weights(info=_p2p_info(4))
+
+        assert cells[0].retired_reasons == []
+
+    async def test_a_trainer_that_already_died_is_not_killed_again(self):
+        """Its cell was retired when the call raised, and a second kill would only confuse the state machine."""
+        cells = [_FakeTrainerCell(0, outcome=RuntimeError("the trainer died")), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        await controller.update_weights(info=_p2p_info(4))
+
+        assert cells[0].retired_reasons == []
+
+    async def test_retiring_the_trainer_still_reports_its_targets_as_failed(self):
+        """The engines it half-wrote must be retired too, whichever side caused the failure."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=(), failed=("engine-0", "engine-1"))]),
+            _FakeTrainerCell(1),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(4))
+
+        assert sorted(report.failed_cell_ids) == ["engine-0", "engine-1"]
 
     async def test_a_non_p2p_backend_keeps_using_a_single_cell(self):
         """Its transfer group spans the whole fleet, so slicing the targets across trainers would break it."""

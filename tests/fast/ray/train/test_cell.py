@@ -173,6 +173,21 @@ class TestMarkAsErrored:
         assert cell.indep_dp_info is None
 
 
+class TestMarkErroredAndKill:
+    async def test_the_cell_is_errored_and_its_workers_are_gone(self):
+        """A source the controller gave up on must stop being alive and stop holding its GPUs."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        handles = get_raw_actor_handles(cell)
+
+        await cell.mark_errored_and_kill("all of its weight update targets failed")
+
+        assert cell.is_errored
+        assert not cell.is_alive
+        for handle in handles:
+            with pytest.raises(ray.exceptions.RayActorError):
+                ray.get(handle.get_calls.remote())
+
+
 class TestErroredCellTeardown:
     async def test_kill_from_errored_reaches_the_workers(self):
         """An errored cell is torn down by killing its own workers."""

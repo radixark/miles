@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 
 
 _RETRY_MAX_ATTEMPTS = 30
+_SOURCE_FAILURE_MIN_TARGETS = 2
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
 _CPU_WITNESS_SNAPSHOT_TIMEOUT_SECONDS = 60.0
 
@@ -548,7 +549,27 @@ class TrainerController:
 
         if len(lost_trainers) == len(assignments):
             raise lost_trainers[0]
+        await self._retire_trainers_that_reached_no_target(assignments, reports)
         return combine_trainer_reports(reports)
+
+    async def _retire_trainers_that_reached_no_target(
+        self, assignments: list[tuple[TrainerCell, UpdatableEngines]], reports: list[WeightUpdateReport]
+    ) -> None:
+        doomed = [
+            (cell, report)
+            for (cell, assignment), report in zip(assignments, reports, strict=True)
+            if report.weight_version is not None
+            and not report.updated_cell_ids
+            and len(assignment.engine_cell_ids) >= _SOURCE_FAILURE_MIN_TARGETS
+        ]
+        outcomes = await asyncio.gather(
+            *[
+                cell.mark_errored_and_kill(f"all {len(report.failed_cell_ids)} of its weight update targets failed")
+                for cell, report in doomed
+            ],
+            return_exceptions=True,
+        )
+        AsyncioGatherUtils.log_error(outcomes, debug_name="retire_trainers_that_reached_no_target")
 
     def _assign_update_targets(self, info: UpdatableEngines) -> list[tuple[TrainerCell, UpdatableEngines]]:
         alive_cells = [cell for cell in self._cells if cell.is_alive]

@@ -147,6 +147,11 @@ class TrainerCell:
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
 
+    async def mark_errored_and_kill(self, reason: str) -> None:
+        logger.error(f"Trainer cell {self.cell_id} is given up on: {reason}")
+        self._mark_as_errored()
+        await self._kill_workers_and_confirm_dead()
+
     # ------------------------ state transition ------------------------
 
     async def _kill_workers_and_confirm_dead(self) -> None:
