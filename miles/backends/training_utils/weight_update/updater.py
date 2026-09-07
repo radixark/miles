@@ -19,6 +19,7 @@ from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.cell_session import _PerCellEngineSession
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport, build_weight_update_report
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -72,6 +73,7 @@ class WeightUpdater:
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
         self._cell_session: _PerCellEngineSession | None = None
+        self._engine_cell_ids: tuple[str, ...] = ()
         # Set by the actor before each update_weights call (loaded map at reconcile).
         self.multi_lora_adapters = None
 
@@ -94,6 +96,7 @@ class WeightUpdater:
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
+        self._engine_cell_ids = tuple(engine_cell_ids)
         self._cell_session = self._build_cell_session(rollout_engines, engine_cell_ids=engine_cell_ids)
 
     def _build_cell_session(
@@ -115,11 +118,11 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self, weight_version: int) -> int:
+    def update_weights(self, weight_version: int) -> WeightUpdateReport:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
         if not protocol.begin_sync(weight_version, self._iter_base_buckets):
-            return self.weight_version
+            return self._build_report()
         self.weight_version = weight_version
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
@@ -163,7 +166,15 @@ class WeightUpdater:
             self._sync_cell_failures()
             dist.barrier(group=get_gloo_group())
 
-        return self.weight_version
+        return self._build_report()
+
+    def _build_report(self) -> WeightUpdateReport:
+        health = self.protocol.inference_cell_health
+        return build_weight_update_report(
+            weight_version=self.weight_version,
+            assigned_cell_ids=self._engine_cell_ids,
+            failed_cell_ids=() if health is None else health.errored_cell_ids,
+        )
 
     def _sync_cell_failures(self) -> None:
         health = self.protocol.inference_cell_health

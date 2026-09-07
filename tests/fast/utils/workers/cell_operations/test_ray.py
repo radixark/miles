@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -61,7 +62,9 @@ class _Fixture:
 def _make_fixture() -> _Fixture:
     worker_manager = _RecordingWorkerManagerHandle()
     provider = _RecordingEngineProvider(worker_manager=worker_manager)
-    controller = InferenceController(SimpleNamespace(), engine_provider=provider, router_providers=[])
+    controller = InferenceController(
+        SimpleNamespace(), engine_provider=provider, router_providers=[], cell_operations=AsyncMock()
+    )
     controller.servers = {
         "actor": SimpleNamespace(
             server_cells={"engine-0-2": SimpleNamespace()},

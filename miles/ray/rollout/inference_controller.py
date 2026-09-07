@@ -29,6 +29,7 @@ from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import SimpleTicker
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.cell_operations.base import BaseCellOperations, CellTerminationOutcome
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.models import RegistrationSnapshot
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
@@ -51,11 +52,13 @@ class InferenceController:
         *,
         engine_provider: BaseWorkerProvider,
         router_providers: Sequence[BaseWorkerProvider],
+        cell_operations: BaseCellOperations,
     ) -> None:
         self._init_once = InitOnce(type(self).__name__)
         self.args = args
         self._engine_provider = engine_provider
         self._router_providers = router_providers
+        self._cell_operations = cell_operations
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
         self._eval_fleet: InferenceControllerEvalFleet | None = None
@@ -241,17 +244,79 @@ class InferenceController:
         )
 
     @releases_lock
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+    async def end_update_weights(
+        self,
+        snapshot_cell_id_to_hashes: dict[str, str],
+        *,
+        updated_cell_ids: Sequence[str],
+        failed_cell_ids: Sequence[str],
+    ) -> None:
+        await self._mark_cells_errored(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes, cell_ids=failed_cell_ids)
         await asyncio.gather(
             *[
                 cell.mark_weights_ready()
-                for srv in self.servers.values()
-                for cell_id, cell in srv.server_cells.items()
-                if cell_id in snapshot_cell_id_to_hashes
-                and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
-                and cell.is_pending_weights
+                for cell in self._cells_of_snapshot(
+                    snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes, cell_ids=updated_cell_ids
+                )
+                if cell.is_pending_weights
             ]
         )
+
+    @releases_lock
+    async def abort_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        logger.error(
+            f"The weight update of cells {sorted(snapshot_cell_id_to_hashes)} did not report an outcome, "
+            f"so none of them is marked ready"
+        )
+
+    @requires_lock
+    async def _mark_cells_errored(
+        self, *, snapshot_cell_id_to_hashes: dict[str, str], cell_ids: Sequence[str]
+    ) -> None:
+        cells = self._cells_of_snapshot(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes, cell_ids=cell_ids)
+        for cell in cells:
+            await cell.mark_errored()
+
+        outcomes = await asyncio.gather(
+            *[self._terminate_errored_cell(cell) for cell in cells], return_exceptions=True
+        )
+        for cell, outcome in zip(cells, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                logger.error(
+                    f"Cell {cell.meta.cell_id} was taken out of service but could not be stopped, so its paused "
+                    f"generate requests may hang until the external reconciler removes it",
+                    exc_info=outcome,
+                )
+
+    @requires_lock
+    async def _terminate_errored_cell(self, cell: ServerCell) -> None:
+        outcome = await self._cell_operations.terminate_incarnation(
+            cell_id=cell.meta.cell_id, expected_workers_hash=cell.meta.workers_hash
+        )
+        if outcome is CellTerminationOutcome.STALE:
+            logger.error(
+                f"Cell {cell.meta.cell_id} already runs a generation other than {cell.meta.workers_hash}, so this "
+                f"incarnation was left alone and its exit stays unconfirmed; its paused requests may still hang"
+            )
+            return
+        logger.info(f"Cell {cell.meta.cell_id} ({cell.meta.workers_hash}) is confirmed stopped: {outcome.value}")
+
+    @requires_lock
+    def _cells_of_snapshot(
+        self, *, snapshot_cell_id_to_hashes: dict[str, str], cell_ids: Sequence[str]
+    ) -> list[ServerCell]:
+        wanted = set(cell_ids)
+        unknown = wanted - set(snapshot_cell_id_to_hashes)
+        assert not unknown, (
+            f"cells {sorted(unknown)} were never part of this update window, which covered "
+            f"{sorted(snapshot_cell_id_to_hashes)}"
+        )
+        return [
+            cell
+            for srv in self.servers.values()
+            for cell_id, cell in srv.server_cells.items()
+            if cell_id in wanted and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
+        ]
 
     @requires_lock
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:

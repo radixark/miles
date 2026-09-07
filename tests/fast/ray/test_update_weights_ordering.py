@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
@@ -64,7 +65,9 @@ class _ServerStub:
 
 
 def _make_inference_controller(**arg_overrides: object) -> InferenceController:
-    return InferenceController(make_args(**arg_overrides), engine_provider=None, router_providers=[])
+    return InferenceController(
+        make_args(**arg_overrides), engine_provider=None, router_providers=[], cell_operations=AsyncMock()
+    )
 
 
 @pytest.mark.asyncio
@@ -131,9 +134,9 @@ def _orchestration_args(**overrides) -> Namespace:
 
 
 def _actor_model(order: list[str]) -> MagicMock:
-    async def _record_update_weights(*, info: object, rollout_id: int | None = None) -> int:
+    async def _record_update_weights(*, info: object, rollout_id: int | None = None) -> WeightUpdateReport:
         order.append("trainer_update_weights")
-        return 11
+        return WeightUpdateReport(weight_version=11, updated_cell_ids=("cell-0",), failed_cell_ids=())
 
     actor_model = MagicMock()
     actor_model.update_weights = AsyncMock(side_effect=_record_update_weights)

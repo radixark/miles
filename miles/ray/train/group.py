@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport, merge_rank_reports
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
@@ -478,16 +479,23 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> int | None:
-        """Broadcast weights to rollout engines and answer the version they now serve."""
+    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateReport:
+        """Broadcast weights to rollout engines and answer which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        weight_versions = await retry(
-            lambda _: self._execute_first_alive("update_weights", timeout=self.args.update_weights_timeout, info=info),
+        rank_reports = await retry(
+            lambda _: self._execute_first_alive(
+                "update_weights",
+                timeout=self.args.update_weights_timeout,
+                info=info,
+            ),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        return weight_versions[0]
+        report = merge_rank_reports(rank_reports, debug_name=f"trainer {self._trainer_id}")
+        report.validate_assignment(info.engine_cell_ids)
+
+        return report
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
         return self._deployment_identity

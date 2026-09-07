@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
 
@@ -112,7 +113,7 @@ def _make_updater(
         )
 
 
-def _run(updater: WeightUpdater, *, rank: int = 0, weight_version: int = 1) -> int:
+def _run(updater: WeightUpdater, *, rank: int = 0, weight_version: int = 1) -> WeightUpdateReport:
     with (
         patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
         patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
@@ -281,7 +282,7 @@ class TestExplicitWeightVersion:
 
         published = _run(updater, weight_version=7)
 
-        assert published == 7
+        assert published.weight_version == 7
         assert updater.weight_version == 7
         assert updater.protocol.begin_sync_versions == [7]
         updater.protocol.finalize.assert_called_once_with(7)
@@ -308,6 +309,6 @@ class TestExplicitWeightVersion:
 
         published = _run(updater, weight_version=1)
 
-        assert published == 0
+        assert published.weight_version == 0
         assert updater.weight_version == 0
         assert calls == []

@@ -1,8 +1,10 @@
 import asyncio
+import logging
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -22,6 +24,7 @@ from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_po
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.cell_operations.base import CellTerminationOutcome
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
@@ -190,12 +193,18 @@ class _FakeUpdatableCell:
         )
         self.api_client = api_client
         self.marked_ready = 0
+        self.marked_errored = 0
         self.is_pending_weights = True
         self.is_pending_weights_or_serving = True
         self.is_errored = False
 
     async def mark_weights_ready(self) -> None:
         self.marked_ready += 1
+
+    async def mark_errored(self) -> None:
+        self.marked_errored += 1
+        self.is_errored = True
+        self.is_pending_weights = False
 
 
 class _TickingCell:
@@ -279,6 +288,7 @@ def _make_controller(
     controller.context_lock = ContextLock("InferenceController")
     controller._engine_provider = engines
     controller._router_providers = [_FakeWorkerProvider([])]
+    controller._cell_operations = AsyncMock()
     return controller
 
 
@@ -332,7 +342,11 @@ class TestHealthCheckerActiveness:
         controller = _make_controller({"default": srv})
 
         info = await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=list(info.snapshot_cell_id_to_hashes),
+            failed_cell_ids=[],
+        )
 
         assert not srv.health_checker_activeness.get().active
 
@@ -544,7 +558,9 @@ class _RefusingWorkerProvider(_FakeWorkerProvider):
 
 
 async def _init_controller(args: Namespace, *, engine_provider: _FakeWorkerProvider) -> None:
-    controller = InferenceController(args, engine_provider=engine_provider, router_providers=[_FakeWorkerProvider([])])
+    controller = InferenceController(
+        args, engine_provider=engine_provider, router_providers=[_FakeWorkerProvider([])], cell_operations=AsyncMock()
+    )
     await controller.init()
     await controller.dispose()
 
@@ -641,7 +657,7 @@ class TestPerModelHealthCheckerActiveness:
         controller, servers = self._controller("solver", "verifier")
         servers["solver"].update_weights = True
         await controller.start_update_weights(model_id="solver")
-        await controller.end_update_weights({})
+        await controller.end_update_weights({}, updated_cell_ids=[], failed_cell_ids=[])
 
         await controller.prepare_eval(model_id="solver")
 
@@ -800,7 +816,11 @@ class TestUpdateWeightsLockWindow:
         info = await controller.start_update_weights()
         assert controller.context_lock.locked
 
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=list(info.snapshot_cell_id_to_hashes),
+            failed_cell_ids=[],
+        )
         assert not controller.context_lock.locked
 
     @pytest.mark.asyncio
@@ -814,7 +834,11 @@ class TestUpdateWeightsLockWindow:
             await asyncio.sleep(0)
         assert not reconcile_task.done()
 
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=list(info.snapshot_cell_id_to_hashes),
+            failed_cell_ids=[],
+        )
         await reconcile_task
 
     @pytest.mark.asyncio
@@ -1059,7 +1083,11 @@ class TestUpdatableEnginesPayload:
         controller = _make_controller({"actor": srv, "ref": _RecordingServer(model_name="ref")})
 
         updatable = await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes,
+            updated_cell_ids=list(updatable.snapshot_cell_id_to_hashes),
+            failed_cell_ids=[],
+        )
 
         assert updatable == UpdatableEngines(
             rollout_engines=["client-0", "client-1"],
@@ -1160,9 +1188,198 @@ class TestUpdatableEnginesPayload:
         controller = _make_controller({"actor": srv})
 
         await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes={"engine-0": "hash-old", "engine-1": "hash-b"})
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes={"engine-0": "hash-old", "engine-1": "hash-b"},
+            updated_cell_ids=["engine-0", "engine-1"],
+            failed_cell_ids=[],
+        )
 
         assert (relaunched.marked_ready, untouched.marked_ready) == (0, 1)
+
+
+class TestUpdateWindowOutcome:
+    """The trainer's per-cell verdict decides which engines serve these weights and which are retired."""
+
+    @staticmethod
+    def _controller_with(cells: dict) -> tuple[InferenceController, _RecordingServer]:
+        srv = _RecordingServer(cells, model_name="actor", update_weights=True)
+        return _make_controller({"actor": srv}), srv
+
+    @pytest.mark.asyncio
+    async def test_a_failed_cell_is_retired_instead_of_being_marked_ready(self):
+        """Marking it ready would put an engine that missed part of the weights back into the router."""
+        lost = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        reached = _FakeUpdatableCell("hash-b", cell_id="engine-1", gpu_offset=1)
+        controller, _srv = self._controller_with({"engine-0": lost, "engine-1": reached})
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=["engine-1"],
+            failed_cell_ids=["engine-0"],
+        )
+
+        assert (lost.marked_errored, lost.marked_ready) == (1, 0)
+        assert (reached.marked_errored, reached.marked_ready) == (0, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_replaced_incarnation_is_neither_retired_nor_marked_ready(self):
+        """The relaunched cell runs new processes, so the previous window's verdict says nothing about it."""
+        relaunched = _FakeUpdatableCell("hash-new", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": relaunched})
+
+        await controller.start_update_weights()
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes={"engine-0": "hash-old"},
+            updated_cell_ids=[],
+            failed_cell_ids=["engine-0"],
+        )
+
+        assert (relaunched.marked_errored, relaunched.marked_ready) == (0, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_cell_outside_the_window_is_rejected(self):
+        """A stale cell id from an earlier window would retire an engine this update never touched."""
+        cell = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": cell})
+
+        info = await controller.start_update_weights()
+        with pytest.raises(AssertionError, match="never part of this update window"):
+            await controller.end_update_weights(
+                snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+                updated_cell_ids=[],
+                failed_cell_ids=["engine-9"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_window_closes_even_when_the_verdict_never_arrives(self):
+        """A trainer that raised leaves the lock held forever, and every later rollout call wedges behind it."""
+        cell = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": cell})
+
+        info = await controller.start_update_weights()
+        await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        assert not controller.context_lock.locked
+        assert (cell.marked_errored, cell.marked_ready) == (0, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_cell_is_stopped_immediately(self):
+        """Unregistering alone leaves paused generate requests hanging until the process dies."""
+        lost = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": lost})
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=[],
+            failed_cell_ids=["engine-0"],
+        )
+
+        controller._cell_operations.terminate_incarnation.assert_awaited_once_with(
+            cell_id="engine-0", expected_workers_hash="hash-a"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_stop_that_found_another_generation_is_not_reported_as_confirmed(self, caplog):
+        """A stale answer means nothing was stopped, and calling it confirmed hides a process that may still hold on."""
+        lost = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": lost})
+        controller._cell_operations.terminate_incarnation = AsyncMock(return_value=CellTerminationOutcome.STALE)
+
+        info = await controller.start_update_weights()
+        with caplog.at_level(logging.ERROR, logger=inference_controller_module.__name__):
+            await controller.end_update_weights(
+                snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+                updated_cell_ids=[],
+                failed_cell_ids=["engine-0"],
+            )
+
+        assert any("stays unconfirmed" in message for message in caplog.messages)
+        assert not any("confirmed stopped" in message for message in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_a_stale_stop_does_not_go_on_to_kill_the_replacement(self):
+        """The generation now running was never part of this update, and killing it would cost a healthy engine."""
+        lost = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": lost})
+        controller._cell_operations.terminate_incarnation = AsyncMock(return_value=CellTerminationOutcome.STALE)
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=[],
+            failed_cell_ids=["engine-0"],
+        )
+
+        assert controller._cell_operations.terminate_incarnation.await_count == 1
+        assert controller._cell_operations.terminate_incarnation.await_args.kwargs == dict(
+            cell_id="engine-0", expected_workers_hash="hash-a"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_gone_incarnation_counts_as_confirmed(self, caplog):
+        """Its workers are demonstrably not running any more, which is the outcome the kill was after."""
+        lost = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": lost})
+        controller._cell_operations.terminate_incarnation = AsyncMock(return_value=CellTerminationOutcome.ALREADY_GONE)
+
+        info = await controller.start_update_weights()
+        with caplog.at_level(logging.INFO, logger=inference_controller_module.__name__):
+            await controller.end_update_weights(
+                snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+                updated_cell_ids=[],
+                failed_cell_ids=["engine-0"],
+            )
+
+        assert any("confirmed stopped" in message for message in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_a_cell_that_served_the_update_is_not_stopped(self):
+        """Stopping a healthy engine would cost the fleet a replica for nothing."""
+        reached = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": reached})
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=["engine-0"],
+            failed_cell_ids=[],
+        )
+
+        controller._cell_operations.terminate_incarnation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stop_that_fails_does_not_fail_the_update(self):
+        """The cell is already out of the router, and raising here would lose the healthy engines' publication."""
+        first = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        second = _FakeUpdatableCell("hash-b", cell_id="engine-1", gpu_offset=1)
+        controller, _srv = self._controller_with({"engine-0": first, "engine-1": second})
+        controller._cell_operations.terminate_incarnation.side_effect = RuntimeError("the worker manager is gone")
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=["engine-1"],
+            failed_cell_ids=["engine-0"],
+        )
+
+        assert (first.marked_errored, second.marked_ready) == (1, 1)
+
+    @pytest.mark.asyncio
+    async def test_the_update_window_lock_is_still_released_after_a_stop(self):
+        """The stop runs while the window is open, so re-entering the controller here would deadlock the run."""
+        lost = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": lost})
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=[],
+            failed_cell_ids=["engine-0"],
+        )
+
+        assert not controller.context_lock.locked
 
 
 class TestInitLifecycle:
@@ -1172,6 +1389,7 @@ class TestInitLifecycle:
             args,
             engine_provider=engine_provider if engine_provider is not None else _FakeWorkerProvider([]),
             router_providers=[_FakeWorkerProvider([])],
+            cell_operations=AsyncMock(),
         )
 
     @pytest.mark.asyncio
@@ -1194,6 +1412,7 @@ class TestInitLifecycle:
             make_args(debug_train_only=True),
             engine_provider=provider,
             router_providers=[_RefusingWorkerProvider()],
+            cell_operations=AsyncMock(),
         )
 
         await controller.init()
@@ -1505,6 +1724,7 @@ class TestInitRunsExactlyOnce:
             make_args(debug_train_only=True),
             engine_provider=_FakeWorkerProvider([]),
             router_providers=[_FakeWorkerProvider([])],
+            cell_operations=AsyncMock(),
         )
 
     @pytest.mark.asyncio
@@ -1558,7 +1778,10 @@ class TestInitRunsExactlyOnce:
         """The train-only shortcut returns early, so the refusal has to hold for a controller that built a fleet."""
         _patch_init(monkeypatch, servers={"default": _RecordingServer()})
         controller = InferenceController(
-            make_args(), engine_provider=_FakeWorkerProvider([]), router_providers=[_FakeWorkerProvider([])]
+            make_args(),
+            engine_provider=_FakeWorkerProvider([]),
+            router_providers=[_FakeWorkerProvider([])],
+            cell_operations=AsyncMock(),
         )
         await controller.init()
 

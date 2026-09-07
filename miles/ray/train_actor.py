@@ -12,6 +12,7 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
@@ -212,7 +213,7 @@ class TrainRayActor(NodeProbeMixin):
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def update_weights(self, info: UpdatableEngines) -> int | None:
+    def update_weights(self, info: UpdatableEngines) -> WeightUpdateReport:
         raise NotImplementedError
 
     @abc.abstractmethod

@@ -13,6 +13,7 @@ import torch
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport, build_weight_update_report
 from miles.utils import object_store
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
@@ -636,6 +637,7 @@ class _RecordingWeightUpdater:
         self.update_weights_calls: int = 0
         self.weight_version: int = 0
         self.multi_lora_adapters: dict[str, Any] = {}
+        self.engine_cell_ids: list[str] = []
 
     def connect_rollout_engines(
         self,
@@ -653,10 +655,14 @@ class _RecordingWeightUpdater:
                 engine_cell_ids=list(engine_cell_ids),
             )
         )
+        self.engine_cell_ids = list(engine_cell_ids)
 
-    def update_weights(self, weight_version: int) -> None:
+    def update_weights(self, weight_version: int) -> WeightUpdateReport:
         self.update_weights_calls += 1
         self.weight_version = weight_version
+        return build_weight_update_report(
+            weight_version=weight_version, assigned_cell_ids=self.engine_cell_ids, failed_cell_ids=()
+        )
 
 
 def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -718,7 +724,7 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     assert updater.connect_calls[1]["engine_gpu_counts"] == [2, 2]
     assert updater.connect_calls[1]["engine_gpu_offsets"] == [0, 2]
     assert updater.update_weights_calls == 3
-    assert weight_version == 3
+    assert weight_version.weight_version == 3
     assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b", "cell-1": "hash-b"})
 
 
@@ -782,3 +788,26 @@ class TestActorPublicationSource:
         assert worker._actor_weight_version() == 9
         assert worker._get_actor_weights() == {"weight": actor_weight}
         assert worker.model[0].weight_version.item() == 3
+
+
+class TestCellIsolatedVersionVerification:
+    def test_the_actor_does_not_probe_failed_targets_after_the_session_report(
+        self, actor_module: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A post-report probe must not turn a retired rollout target into a failed trainer."""
+        from types import SimpleNamespace
+
+        worker = _weight_update_worker(actor_module, monkeypatch)
+        worker.args.ci_test = True
+        worker.weight_updater.protocol = SimpleNamespace(inference_cell_health=object())
+        monkeypatch.setattr(actor_module, "is_lora_enabled", lambda _args: False)
+        worker.weight_updater.update_weights = lambda **kwargs: WeightUpdateReport(
+            weight_version=3, updated_cell_ids=("good",), failed_cell_ids=("bad",)
+        )
+
+        report = worker.update_weights(
+            _updatable_engines([object(), object()], {"good": "a", "bad": "b"}, gpu_count=1)
+        )
+
+        assert report.updated_cell_ids == ("good",)
+        assert report.failed_cell_ids == ("bad",)
