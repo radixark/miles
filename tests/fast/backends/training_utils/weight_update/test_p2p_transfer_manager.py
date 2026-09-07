@@ -1,4 +1,7 @@
 import threading
+from concurrent.futures import Future, TimeoutError
+
+import pytest
 
 
 def _blocking_task(started: threading.Event, release: threading.Event):
@@ -46,3 +49,36 @@ class TestSubmit:
         manager.wait_transfers()
 
         assert sorted(finished) == list(range(6))
+
+
+class TestWaitTransfers:
+    """Collection of the background P2P writes at the end of a weight update."""
+
+    def test_a_completed_round_of_transfers_finishes_quietly(self, p2p_transfer_utils) -> None:
+        """The happy path must stay silent and forget the futures it already collected."""
+        manager = p2p_transfer_utils.P2PTransferManager(num_workers=2, transfer_timeout=30.0)
+        manager.submit(lambda: None)
+
+        manager.wait_transfers()
+
+        assert manager.transfer_futures == []
+
+    def test_a_failed_transfer_is_raised_to_the_caller(self, p2p_transfer_utils) -> None:
+        """A silently logged RDMA failure would publish a half-written weight version, so it must propagate."""
+        manager = p2p_transfer_utils.P2PTransferManager(num_workers=2, transfer_timeout=30.0)
+
+        def failing() -> None:
+            raise RuntimeError("[P2P-Shared] Transfer failed for session s0, error: -1")
+
+        manager.submit(failing)
+
+        with pytest.raises(RuntimeError, match="error: -1"):
+            manager.wait_transfers()
+
+    def test_a_timed_out_transfer_propagates_timeout(self, p2p_transfer_utils) -> None:
+        """An unfinished write must fail the update when its wait deadline expires."""
+        manager = p2p_transfer_utils.P2PTransferManager(transfer_timeout=0)
+        manager.transfer_futures.append(Future())
+
+        with pytest.raises(TimeoutError):
+            manager.wait_transfers()
