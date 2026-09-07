@@ -29,6 +29,8 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
+    compute_kv_cache_namespace,
+    stamp_kv_cache_namespace,
 )
 from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
@@ -78,6 +80,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._worker: asyncio.Task | None = None
         self._eval_prompt_dataset_cache: dict = {}
+        self._curr_kv_cache_namespace: str | None = None
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
         self._output: DataBuffer | None = None
@@ -85,6 +88,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
             return await self._call_eval(input)
+        self._curr_kv_cache_namespace = compute_kv_cache_namespace(self.args, input)
         if self._worker is None:
             default_buffer_cls = (
                 DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
@@ -104,13 +108,21 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         if input.generate_state is not None:
-            results = await run_eval_datasets(input.generate_state, self._eval_prompt_dataset_cache)
+            results = await run_eval_datasets(
+                input.generate_state,
+                self._eval_prompt_dataset_cache,
+                kv_cache_namespace=compute_kv_cache_namespace(self.args, input),
+            )
             return RolloutFnEvalOutput(data=results)
 
         logger.info("Pausing fully-async producer submissions for shared-engine eval")
         self._producer_resumed.clear()
         try:
-            results = await run_eval_datasets(self.state, self._eval_prompt_dataset_cache)
+            results = await run_eval_datasets(
+                self.state,
+                self._eval_prompt_dataset_cache,
+                kv_cache_namespace=compute_kv_cache_namespace(self.args, input),
+            )
         finally:
             self._producer_resumed.set()
             logger.info("Resumed fully-async producer submissions after eval")
@@ -126,6 +138,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     def _submit_one_group(self) -> asyncio.Task:
         samples = self.data_source.get_samples(1)
+        stamp_kv_cache_namespace(samples, namespace=self._curr_kv_cache_namespace)
         self._scheduler.on_submit(samples)
         [prompt_group] = samples
         return asyncio.create_task(self._generate_group(prompt_group))

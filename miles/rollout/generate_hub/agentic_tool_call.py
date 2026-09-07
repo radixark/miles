@@ -48,7 +48,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         "Pass --use-session-server to start the session server."
     )
     use_v2 = getattr(input.args, "use_session_server", None) == "v2"
-    tracer = await OpenAIEndpointTracer.create(input.args)
+    tracer = await OpenAIEndpointTracer.create(input.args, extra_key=input.sample.kv_cache_namespace)
 
     custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
     assert (

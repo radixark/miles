@@ -256,7 +256,6 @@ class TestBasicMultiTurn:
 
 
 class TestRadixCacheExtraKey:
-    @pytest.mark.parametrize("variant", ["multi_turn"])
     def test_every_turn_of_a_started_sample_carries_its_kv_cache_namespace(self, variant, generation_env):
         """Both turns of a multi-turn sample send the same namespace key and the sample keeps it."""
         generation_env.mock_server.process_fn = TwoTurnStub.process_fn
@@ -267,10 +266,16 @@ class TestRadixCacheExtraKey:
         result = _run_generate(variant, generation_env, sample)
 
         extra_key = "train:-:7"
-        assert result.requests == [
-            expected_request(S.FIRST_PROMPT_TOKEN_IDS, extra_key=extra_key),
-            expected_request(S.SECOND_PROMPT_TOKEN_IDS, extra_key=extra_key),
-        ]
+        if is_agentic_variant(variant):
+            assert _strip_pretokenized(result.requests) == [
+                expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN, extra_key=extra_key),
+                expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT, extra_key=extra_key),
+            ]
+        else:
+            assert result.requests == [
+                expected_request(S.FIRST_PROMPT_TOKEN_IDS, extra_key=extra_key),
+                expected_request(S.SECOND_PROMPT_TOKEN_IDS, extra_key=extra_key),
+            ]
         assert [s.kv_cache_namespace for s in listify(result.sample)] == ["train:-:7"]
 
 

@@ -287,8 +287,8 @@ class SessionCore:
             body["session_server_instance_id"] = self.instance_id
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def create_session(self) -> Response:
-        session_id = self.registry.create_session()
+    async def create_session(self, *, extra_key: str | None = None) -> Response:
+        session_id = self.registry.create_session(extra_key=extra_key)
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     def _session_metadata(self, session_id: str, session) -> dict:

@@ -309,7 +309,11 @@ class SessionRegistry:
             message_matcher if message_matcher is not None else strict_message_matches
         )
 
-    def create_session(self) -> str:
+    def create_session(self, *, extra_key: str | None = None) -> str:
+        assert extra_key is None, (
+            f"session server v1 does not support the KV cache namespace {extra_key!r}; "
+            f"run with --use-session-server v2"
+        )
         session_id = uuid.uuid4().hex
         self.sessions[session_id] = LinearTrajectory()
         return session_id

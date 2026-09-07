@@ -311,6 +311,22 @@ class TestRollbackPins:
         assert len(records) == 2
         assert records[-1]["request"]["messages"][-1] == self.T1_DIFF
 
+    def test_a_keyed_session_stamps_every_turn_of_a_divergent_retry(self, router_env):
+        """The turns before a branch, and the branch itself, all go out under the session key, not the client's."""
+        session_id = _create_session(router_env.url, extra_key=TestSessionExtraKey.KEY)
+        client_body = {"extra_key": "mine"}
+        marker = len(router_env.backend.request_log)
+
+        first = _post_chat(router_env.url, session_id, {"messages": [self.U1], **client_body})
+        a1 = first.json()["choices"][0]["message"]
+        second = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1], **client_body})
+        retry = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1_DIFF], **client_body})
+
+        assert [first.status_code, second.status_code, retry.status_code] == [200, 200, 200]
+        proxied = router_env.backend.request_log[marker:]
+        assert len(proxied) == 3
+        assert [body["extra_key"] for body in proxied] == [TestSessionExtraKey.KEY] * 3
+
     def test_deep_divergence_branches_and_keeps_both_lines(self, router_env):
         """Was the deep-rollback 400 pin: a divergence beyond one generation now
         branches at the deep anchor (200), the abandoned deep line stays in the
@@ -626,3 +642,53 @@ class TestAdditionR3RequestOffsetV2:
             body = env.backend.request_log[-1]
             assert body["return_routed_experts"] is True
             assert "routed_experts_start_len" not in body
+
+
+class TestSessionExtraKey:
+    MESSAGES = [{"role": "user", "content": "partition me"}]
+    KEY = "train:-:7"
+
+    @pytest.mark.parametrize(
+        "client_body",
+        [{}, {"extra_key": KEY}, {"extra_key": "mine"}, {"extra_key": None}],
+        ids=["absent", "same", "different", "null"],
+    )
+    def test_a_keyed_session_stamps_its_key_on_every_chat_completion(self, router_env, client_body):
+        """Every backend request of a keyed session carries the session key, whatever extra_key the client sent."""
+        session_id = _create_session(router_env.url, extra_key=self.KEY)
+
+        first = _post_chat(router_env.url, session_id, {"messages": self.MESSAGES, **client_body})
+        assert first.status_code == 200
+        assert router_env.backend.request_log[-1]["extra_key"] == self.KEY
+
+        second_messages = [*self.MESSAGES, first.json()["choices"][0]["message"], {"role": "user", "content": "more"}]
+        second = _post_chat(router_env.url, session_id, {"messages": second_messages, **client_body})
+        assert second.status_code == 200
+        assert router_env.backend.request_log[-1]["extra_key"] == self.KEY
+
+    def test_a_keyed_session_stamps_a_failed_turn_and_its_retry(self, router_env):
+        """A backend-rejected turn and the retry after it both go out under the session key, not the client's."""
+        session_id = _create_session(router_env.url, extra_key=self.KEY)
+        body = {"messages": self.MESSAGES, "extra_key": "mine"}
+
+        async def log_and_reject(self, request, compute_fn):
+            self.request_log.append(await request.json())
+            return JSONResponse(content={"error": "context too long"}, status_code=400)
+
+        with patch.object(MockSGLangServer, "_handle_generate_like_request", new=log_and_reject):
+            failed = _post_chat(router_env.url, session_id, body)
+        assert failed.status_code == 400
+        assert router_env.backend.request_log[-1]["extra_key"] == self.KEY
+
+        retry = _post_chat(router_env.url, session_id, body)
+        assert retry.status_code == 200
+        assert router_env.backend.request_log[-1]["extra_key"] == self.KEY
+
+    def test_an_unkeyed_session_proxies_the_client_key_as_is(self, router_env):
+        """With the partition off the session is unkeyed, so the server neither rewrites nor injects extra_key."""
+        session_id = _create_session(router_env.url)
+
+        response = _post_chat(router_env.url, session_id, {"messages": self.MESSAGES, "extra_key": "mine"})
+
+        assert response.status_code == 200
+        assert router_env.backend.request_log[-1]["extra_key"] == "mine"

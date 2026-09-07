@@ -11,20 +11,29 @@ from dataclasses import replace
 
 import pytest
 
+from tests.fast.rollout.inference_rollout.conftest import (
+    StampRecordingGenerate,
+    make_eval_args,
+    make_eval_prompt_dataset_cache,
+)
+
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
 
 
-class FakeGenerateState:
+class FakeGenerateState(GenerateState):
     def __init__(self, args):
         self.args = args
         self.sampling_params = {}
         self.aborted = False
+        self.generate_fn_semaphore = asyncio.Semaphore(2)
+        self.generate_function = None
 
 
 class FakeDataSource:
@@ -94,6 +103,7 @@ def make_args(**overrides) -> Namespace:
         sglang_router_port=30000,
         sglang_router_request_timeout_secs=14400,
         eval_num_gpus=0,
+        namespaced_radix_cache=True,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -199,6 +209,95 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
     # Eval must not start the producer or consume training prompts.
     assert fn._worker is None
     assert data_source.num_get_calls == 0
+
+
+class TestKvCacheNamespace:
+    def _make_eval_fn(self, monkeypatch, recorder: StampRecordingGenerate, *, partition: bool = True, **overrides):
+        args = make_args(**make_eval_args(namespaced_radix_cache=partition), **overrides)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn.state.generate_function = recorder
+        fn._eval_prompt_dataset_cache.update(make_eval_prompt_dataset_cache(args))
+        return fn
+
+    async def test_a_train_call_takes_over_the_namespace_the_producer_stamps_with(self, monkeypatch):
+        """The producer follows the rollout id of the call in flight, never a counter of its own."""
+        fn = make_fn(monkeypatch, make_args(), FakeDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=5))
+        assert fn._curr_kv_cache_namespace == "train:-:5"
+
+        await fn(RolloutFnTrainInput(rollout_id=6))
+        assert fn._curr_kv_cache_namespace == "train:-:6"
+
+    @pytest.mark.parametrize("producer_namespace", [None, "train:-:1"])
+    @pytest.mark.parametrize("partition", [False, True])
+    async def test_shared_eval_uses_its_own_namespace_without_changing_the_producer(
+        self, monkeypatch: pytest.MonkeyPatch, producer_namespace: str | None, partition: bool
+    ) -> None:
+        """Initial and final shared evals select eval partitions without changing subsequent training stamps."""
+        recorder = StampRecordingGenerate()
+        fn = self._make_eval_fn(monkeypatch, recorder, partition=partition)
+        fn._curr_kv_cache_namespace = producer_namespace
+
+        for rollout_id in (0, 1):
+            await fn(RolloutFnEvalInput(rollout_id=rollout_id))
+
+            assert recorder.take_stamps() == {f"eval:-:{rollout_id}" if partition else None}
+            assert fn._curr_kv_cache_namespace == producer_namespace
+            assert fn._producer_resumed.is_set()
+
+    async def test_fleet_state_eval_stamps_its_samples_with_the_eval_namespace(self, monkeypatch):
+        """Eval on a dedicated fleet opens its own namespace and leaves the producer's alone."""
+        recorder = StampRecordingGenerate()
+        fn = self._make_eval_fn(monkeypatch, recorder, eval_num_gpus=1, eval_num_gpus_per_engine=1)
+        fleet_state = FakeGenerateState(fn.args)
+        fleet_state.generate_function = recorder
+
+        await fn(RolloutFnEvalInput(rollout_id=4, generate_state=fleet_state, weight_version="0"))
+
+        assert recorder.take_stamps() == {"eval:-:4"}
+        assert fn._curr_kv_cache_namespace is None
+
+    async def test_the_partition_being_off_names_no_namespace_for_a_train_call(self, monkeypatch):
+        """With --no-namespaced-radix-cache the producer names no namespace at all."""
+        fn = make_fn(monkeypatch, make_args(namespaced_radix_cache=False), FakeDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=5))
+
+        assert fn._curr_kv_cache_namespace is None
+
+    async def test_the_partition_being_off_leaves_fleet_eval_samples_unstamped(self, monkeypatch):
+        """With the partition off eval on a dedicated fleet stamps nothing, so no request carries an extra_key."""
+        recorder = StampRecordingGenerate()
+        fn = self._make_eval_fn(monkeypatch, recorder, partition=False, eval_num_gpus=1, eval_num_gpus_per_engine=1)
+        fleet_state = FakeGenerateState(fn.args)
+        fleet_state.generate_function = recorder
+
+        await fn(RolloutFnEvalInput(rollout_id=4, generate_state=fleet_state, weight_version="0"))
+
+        assert recorder.take_stamps() == {None}
+
+    async def test_calls_of_different_policies_each_open_their_own_namespace(self, monkeypatch):
+        """A sample is stamped when the producer takes it, so each policy's rollout id partitions on its own."""
+        gate: asyncio.Queue[None] = asyncio.Queue()
+        stamps: list[str] = []
+
+        async def gated_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+            stamps.append(group[0].kv_cache_namespace)
+            await gate.get()
+            return group
+
+        args = make_args(rollout_batch_size=1, megatron_config=encode_megatron_config("a", "b"))
+        fn = make_fn(monkeypatch, args, MultiPolicyDataSource(), generate=gated_generate)
+
+        for trainer_model_id, rollout_id in [("a", 10), ("b", 3), ("b", 4)]:
+            marker = len(stamps)
+            for _ in range(2 * fn.args.rollout_batch_size):
+                gate.put_nowait(None)
+            await fn(RolloutFnTrainInput(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
+            await asyncio.sleep(0.05)
+
+            assert set(stamps[marker:]) == {f"train:{trainer_model_id}:{rollout_id}"}
 
 
 async def test_aborted_group_recycled(monkeypatch):

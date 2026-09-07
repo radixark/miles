@@ -20,6 +20,7 @@ from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_sampl
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
+    SessionStateV2,
     commit_generation,
     position_for_request,
     prepare_pretokenized,
@@ -162,6 +163,7 @@ class SessionCoreV2(SessionCore):
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
+            _add_session_extra_key(request_body, session)
 
             proxy_body = json.dumps(request_body).encode()
             attach_parent = session.active_leaf
@@ -215,3 +217,8 @@ class SessionCoreV2(SessionCore):
         # --- lock released ---
 
         return _chat_client_response(result, response, client_stream)
+
+
+def _add_session_extra_key(request_body: dict, session: SessionStateV2) -> None:
+    if session.extra_key is not None:
+        request_body["extra_key"] = session.extra_key

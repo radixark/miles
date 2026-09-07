@@ -41,6 +41,7 @@ class SessionStateV2:
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
     active_leaf: TrajectoryNode | None = None
+    extra_key: str | None = None
 
     def active_path(self) -> list[TrajectoryNode]:
         return self.active_leaf.path_nodes() if self.active_leaf is not None else []
@@ -184,9 +185,9 @@ class SessionRegistryV2(SessionRegistry):
 
     sessions: dict[str, SessionStateV2]
 
-    def create_session(self) -> str:
+    def create_session(self, *, extra_key: str | None = None) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = SessionStateV2()
+        self.sessions[session_id] = SessionStateV2(extra_key=extra_key)
         return session_id
 
     def compute_mismatch(self, messages: list[dict[str, Any]], token_ids: list[int], tools: Any) -> list[dict] | None:
