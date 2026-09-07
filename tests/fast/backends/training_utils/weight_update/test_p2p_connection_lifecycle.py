@@ -36,7 +36,9 @@ def _make_protocol(p2p, *, gathered_dp_rank: int = 0):
         patch.object(p2p, "get_gloo_group"),
     ):
         dist_mock.get_rank.return_value = 0
-        protocol = p2p.UpdateWeightP2P(Namespace(hf_checkpoint="/ckpt", update_weight_engine_request_timeout=30.0))
+        protocol = p2p.UpdateWeightP2P(
+            Namespace(hf_checkpoint="/ckpt", update_weight_engine_request_timeout=30.0, p2p_transfer_timeout=30.0)
+        )
     protocol.transfer_plan._gathered_dp_rank = gathered_dp_rank
     return protocol
 
@@ -92,6 +94,19 @@ def _connect(
         None,
         "all",
     )
+
+
+def _blocked_executor(p2p, cell_id: str, release: threading.Event):
+    executor = p2p._CellWriteExecutor(cell_id)
+    started = threading.Event()
+
+    def block() -> None:
+        started.set()
+        release.wait(timeout=30.0)
+
+    executor.submit(block)
+    assert started.wait(timeout=30.0)
+    return executor
 
 
 def _target_session_ids(protocol) -> list[str]:
@@ -161,15 +176,17 @@ class TestReconnection:
         """The trainer has to reconnect to its healthy cells, but must not forget a write still reading its buffers."""
         protocol = _make_protocol(p2p_protocol)
         factory = _ReplicaFactory()
-        protocol.transfer_manager.transfer_timeout = 0.05
+        protocol._transfer_timeout = 0.05
         release = threading.Event()
 
         with _patched_p2p(p2p_protocol, factory) as patches:
             _connect(protocol, patches, pairs=[(0, 0)])
             engine_after_first = protocol._transfer_engine
             params_after_first = protocol._shared_params_dict
-            stuck = protocol.transfer_manager.submit(lambda: release.wait(timeout=30.0))
-            protocol._cell_updaters_by_cell_id["cell-0"]._pending_writes.append(stuck)
+            cell_updater = protocol._cell_updaters_by_cell_id["cell-0"]
+            cell_updater._transfer_timeout = 0.05
+            stuck = cell_updater._executor.submit(lambda: release.wait(timeout=30.0))
+            cell_updater._pending_writes.append(stuck)
 
             try:
                 _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
@@ -177,6 +194,7 @@ class TestReconnection:
                 release.set()
 
         assert protocol._unfinished_writes == [stuck]
+        assert len(protocol._stalled_executors) == 1
         assert protocol._transfer_engine is engine_after_first
         assert protocol._shared_params_dict is params_after_first
         assert sorted(_target_session_ids(protocol)) == ["b-0-0"]
@@ -640,3 +658,126 @@ class TestConnectWhoseEveryTargetIsDead:
         assert protocol.is_sender is True
         assert sorted(_target_session_ids(protocol)) == ["a-1-0"]
         assert protocol._cell_updaters_by_cell_id["cell-1"].accepts_writes is True
+
+
+class TestPerCellWriteThreads:
+    """Each inference cell writes from its own thread, and a stuck one is bounded rather than repeated forever."""
+
+    def test_every_cell_gets_its_own_executor(self, p2p_protocol) -> None:
+        """One shared pool lets a few stuck cells exhaust the workers of every healthy cell."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0), (1, 0)])
+
+        executors = [updater._executor for updater in protocol._cell_updaters_by_cell_id.values()]
+        assert len(executors) == 2
+        assert len({id(executor) for executor in executors}) == 2
+        assert [executor.cell_id for executor in executors] == ["cell-0", "cell-1"]
+
+    def test_an_idle_cell_releases_its_executor_on_reconnection(self, p2p_protocol) -> None:
+        """A thread per cell per reconnection would grow without bound over a long healing run."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)])
+            first_executor = protocol._cell_updaters_by_cell_id["cell-0"]._executor
+            first_executor.submit(lambda: None).result(timeout=30.0)
+            _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+
+        assert first_executor.is_running is False
+        assert protocol._stalled_executors == []
+
+    def test_a_write_queued_before_a_reconnection_never_reaches_the_new_cell(self, p2p_protocol) -> None:
+        """The queued write still carries the target of the replaced engine, whose memory now belongs to somebody else."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+        protocol._transfer_timeout = 0.05
+        release = threading.Event()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)])
+            old_cell_updater = protocol._cell_updaters_by_cell_id["cell-0"]
+            old_cell_updater._transfer_timeout = 0.05
+            old_cell_updater._pending_writes.append(
+                old_cell_updater._executor.submit(lambda: release.wait(timeout=30.0))
+            )
+            queued = old_cell_updater.submit_write(
+                engine_rank=0, names=["w"], weight_memory_registry={"w": (0x1000, 2, 4)}
+            )
+
+            try:
+                _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+            finally:
+                release.set()
+
+        assert queued.cancelled() is True
+        assert old_cell_updater.is_disposed is True
+        assert old_cell_updater.accepts_writes is False
+        assert protocol._cell_updaters_by_cell_id["cell-0"].is_errored is False
+        assert protocol.inference_cell_health.errored_cell_ids == []
+
+    def test_a_long_run_of_healthy_reconnections_strands_nothing(self, p2p_protocol) -> None:
+        """Counting reconnections instead of live threads would retire a perfectly healthy trainer rank."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            for attempt in range(65):
+                _connect(protocol, patches, pairs=[(0, 0)], session_prefix=f"gen{attempt}")
+                cell_updater = protocol._cell_updaters_by_cell_id["cell-0"]
+                cell_updater._executor.submit(lambda: None).result(timeout=30.0)
+            _connect(protocol, patches, pairs=[(0, 0)], session_prefix="last")
+
+        assert protocol._stalled_executors == []
+        assert protocol._unfinished_writes == []
+
+    def test_a_write_thread_that_ends_late_is_not_counted_as_stalled(self, p2p_protocol) -> None:
+        """A thread that had not yet reached the sentinel is not stuck, and would retire the rank for a scheduling gap."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+        release = threading.Event()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(protocol, patches, pairs=[(0, 0)])
+            stalled = protocol._cell_updaters_by_cell_id["cell-0"]._executor
+            stalled.submit(lambda: release.wait(timeout=30.0))
+            protocol._cell_updaters_by_cell_id["cell-0"].dispose()
+            protocol._stalled_executors.append(stalled)
+            release.set()
+            assert stalled.close(timeout=30.0) is True
+
+            _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+
+        assert protocol._stalled_executors == []
+
+    def test_enough_stuck_write_threads_fail_the_trainer_rank(self, p2p_protocol) -> None:
+        """Reconnecting forever around a transfer engine that never completes a write would leak threads instead."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+        release = threading.Event()
+        already_stuck = [
+            _blocked_executor(p2p_protocol, f"retired-{index}", release)
+            for index in range(p2p_protocol._MAX_STALLED_WRITE_THREADS)
+        ]
+        protocol._stalled_executors = list(already_stuck)
+        protocol._transfer_timeout = 0.05
+
+        try:
+            with _patched_p2p(p2p_protocol, factory) as patches:
+                _connect(protocol, patches, pairs=[(0, 0)])
+                cell_updater = protocol._cell_updaters_by_cell_id["cell-0"]
+                cell_updater._transfer_timeout = 0.05
+                cell_updater._pending_writes.append(cell_updater._executor.submit(lambda: release.wait(timeout=30.0)))
+
+                with pytest.raises(AssertionError, match="stuck inside a native transfer"):
+                    _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+
+                assert len(protocol._stalled_executors) == p2p_protocol._MAX_STALLED_WRITE_THREADS + 1
+                assert all(executor.is_running for executor in already_stuck)
+        finally:
+            release.set()
+            for executor in protocol._stalled_executors:
+                executor.close(timeout=30.0)

@@ -32,8 +32,8 @@ class InferenceCellHealth:
     def error_of(self, cell_id: str) -> BaseException | None:
         return self._errors.get(cell_id)
 
-    def synchronize(self, group) -> None:
-        reported: list = [None] * dist.get_world_size(group=group)
+    def synchronize(self, group: dist.ProcessGroup) -> None:
+        reported: list[list[str] | None] = [None] * dist.get_world_size(group=group)
         dist.all_gather_object(reported, self.errored_cell_ids, group=group)
 
         for rank, cell_ids in enumerate(reported):
