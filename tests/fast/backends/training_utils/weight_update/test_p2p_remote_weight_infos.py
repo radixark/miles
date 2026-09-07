@@ -219,7 +219,11 @@ def test_replica_loads_inside_its_parallelism_context():
     protocol.transfer_manager = MagicMock()
     protocol._do_p2p_write_one_session = MagicMock()
     ready = [("model.embed_tokens.weight", torch.zeros(1))]
-    protocol._get_transfer_ready_params = lambda tensors: (["model.embed_tokens.weight"], ready)
+    protocol._shared_param_mapper = None
+    protocol._shared_params_dict = {}
+    protocol._model_param_stager = SimpleNamespace(
+        get_transfer_ready_params=lambda tensors, param_mapper, params_dict: (["model.embed_tokens.weight"], ready)
+    )
 
     with patch(f"{_P2P_MODULE}.ParallelismContext", fake_context):
         protocol.send_bucket(list(ready))
