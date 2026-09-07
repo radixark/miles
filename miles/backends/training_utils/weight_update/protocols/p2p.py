@@ -27,6 +27,7 @@ from .p2p_transfer_utils import (
     P2PTransferManager,
     RemoteTransferPlan,
     RemoteWeightInfo,
+    TransferEngineMeta,
     create_transfer_engine,
     query_remote_weight_infos,
     register_cpu_memory,
@@ -92,14 +93,14 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
         if transfer_ready_params and ready_hf_tensors:
             last_idx = len(self._transfer_engine_meta_list) - 1
-            for i, (model_replica, remote_weight_infos) in enumerate(self._transfer_engine_meta_list):
-                model_replica.load_weights(ready_hf_tensors)
+            for i, meta in enumerate(self._transfer_engine_meta_list):
+                meta.model_replica.load_weights(ready_hf_tensors)
 
                 is_last = i == last_idx
                 if is_last:
                     # Last engine rank: fire-and-forget all sessions to background,
                     # as the weight will no longer be overwritten
-                    for remote_session in remote_weight_infos:
+                    for remote_session in meta.remote_weight_infos:
                         self.transfer_manager.submit(
                             self._do_p2p_write_one_session,
                             remote_session,
@@ -113,7 +114,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                             remote_session,
                             transfer_ready_params,
                         )
-                        for remote_session in remote_weight_infos
+                        for remote_session in meta.remote_weight_infos
                     ]
                     for f in futures:
                         f.result()
@@ -163,7 +164,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             # in self._transfer_engine_meta_list: tuple of
             # - single CPU replica shared among all sessions
             # - related remote weight info
-            self._transfer_engine_meta_list: list[tuple[torch.nn.Module, list[RemoteWeightInfo]]] = []
+            self._transfer_engine_meta_list: list[TransferEngineMeta] = []
             first_engine_rank = True
             for rank_targets in targets_grouped_by_engine_rank.values():
                 first_target = rank_targets[0]
@@ -194,7 +195,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     for t in rank_targets
                 ]
 
-                self._transfer_engine_meta_list.append((model_replica, remote_infos))
+                self._transfer_engine_meta_list.append(
+                    TransferEngineMeta(model_replica=model_replica, remote_weight_infos=remote_infos)
+                )
 
     def _create_cpu_replica(
         self,
@@ -273,7 +276,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         target_ptrs = []
         for name in valid_names:
             if name in remote_session.weights_info:
-                target_ptrs.append(remote_session.weights_info[name][0])
+                target_ptrs.append(remote_session.weights_info[name].address)
 
         assert len(target_ptrs) == len(source_ptrs), (
             f"[P2P-Shared] Pointer count mismatch for session {session_id}, "
