@@ -1,6 +1,7 @@
 import ast
 import glob
 import warnings
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -146,8 +147,9 @@ def _extract_list_constant(node: ast.AST, *, context: str = "value") -> list:
 
 
 class RegistryVisitor(ast.NodeVisitor):
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, known_labels: Collection[str] | None = None):
         self.filename = filename
+        self.known_labels = frozenset(KNOWN_LABELS if known_labels is None else known_labels)
         self.registries: list[CIRegistry] = []
 
     def _parse_call_args(self, func_call: ast.Call, func_name: str) -> CIRegistry:
@@ -213,9 +215,9 @@ class RegistryVisitor(ast.NodeVisitor):
         if disabled is not None and not isinstance(disabled, str):
             raise ValueError(f"{self.filename}: disabled must be a string or None in {func_name}()")
 
-        unknown = [label for label in labels if label not in KNOWN_LABELS]
+        unknown = [label for label in labels if label not in self.known_labels]
         if unknown:
-            valid_list = ", ".join(sorted(KNOWN_LABELS))
+            valid_list = ", ".join(sorted(self.known_labels))
             raise ValueError(
                 f"{self.filename}: unknown labels {unknown} in {func_name}(); "
                 f"valid labels: [{valid_list}]. "
@@ -250,11 +252,11 @@ class RegistryVisitor(ast.NodeVisitor):
                 self.registries.append(cr)
 
 
-def ut_parse_one_file(filename: str) -> list[CIRegistry]:
+def ut_parse_one_file(filename: str, *, known_labels: Collection[str] | None = None) -> list[CIRegistry]:
     with open(filename) as f:
         file_content = f.read()
     tree = ast.parse(file_content, filename=filename)
-    visitor = RegistryVisitor(filename=filename)
+    visitor = RegistryVisitor(filename=filename, known_labels=known_labels)
     visitor.visit(tree)
     return visitor.registries
 
@@ -311,10 +313,12 @@ def _make_implicit_cpu_registry(filename: str) -> CIRegistry:
     )
 
 
-def collect_tests(files: list[str], sanity_check: bool = True) -> list[CIRegistry]:
+def collect_tests(
+    files: list[str], sanity_check: bool = True, *, known_labels: Collection[str] | None = None
+) -> list[CIRegistry]:
     ci_tests: list[CIRegistry] = []
     for file in files:
-        registries = ut_parse_one_file(file)
+        registries = ut_parse_one_file(file, known_labels=known_labels)
         if _is_implicit_fast_cpu_path(file):
             # tests/fast/ is CPU-only by location;
             for r in registries:
