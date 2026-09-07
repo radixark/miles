@@ -72,3 +72,13 @@ def merge_rank_reports(reports: Sequence[WeightUpdateReport], *, debug_name: str
 
 def build_untouched_targets_report(assigned_cell_ids: Sequence[str]) -> WeightUpdateReport:
     return build_weight_update_report(weight_version=None, assigned_cell_ids=assigned_cell_ids, failed_cell_ids=())
+
+
+def combine_trainer_reports(reports: Sequence[WeightUpdateReport]) -> WeightUpdateReport:
+    assert reports, "no trainer cell reported the outcome of this update"
+
+    return WeightUpdateReport(
+        weight_version=reports[0].weight_version,
+        updated_cell_ids=tuple(cell_id for report in reports for cell_id in report.updated_cell_ids),
+        failed_cell_ids=tuple(cell_id for report in reports for cell_id in report.failed_cell_ids),
+    )
