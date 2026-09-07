@@ -146,9 +146,10 @@ class TestQueryRemoteWeightInfos:
         """Every weight, parallelism, and converted server-args entry must match its session ID."""
         engines = [_FakeRolloutEngine(0), _FakeRolloutEngine(1)]
 
-        weight_infos, targets_to_session_id, session_id_to_server_args = _query(
-            p2p_transfer_utils, engines, [(0, 0), (0, 1), (1, 0)]
-        )
+        query = _query(p2p_transfer_utils, engines, [(0, 0), (0, 1), (1, 0)])
+        weight_infos = query.remote_weight_infos_by_session_id
+        targets_to_session_id = query.targets_to_session_id
+        session_id_to_server_args = query.session_id_to_server_args
 
         assert targets_to_session_id == {
             (0, 0): "session-0-0",
@@ -176,10 +177,66 @@ class TestQueryRemoteWeightInfos:
         """The engines answer over HTTP, so JSON lists must become RemoteWeightLocation before any caller indexes them."""
         engines = [_JsonRolloutEngine(0)]
 
-        weight_infos, _targets_to_session_id, _session_id_to_server_args = _query(
-            p2p_transfer_utils, engines, [(0, 0)]
-        )
+        query = _query(p2p_transfer_utils, engines, [(0, 0)])
 
-        location = weight_infos["session-0-0"][0]["weight-0"]
+        location = query.remote_weight_infos_by_session_id["session-0-0"][0]["weight-0"]
         assert isinstance(location, p2p_transfer_utils.RemoteWeightLocation)
         assert (location.address, location.numel, location.element_size) == (0x1000, 4, 2)
+
+
+class _DeadRolloutEngine(_FakeRolloutEngine):
+    async def get_remote_instance_transfer_engine_info(self, rank: int):
+        self.calls.append(("get_remote_instance_transfer_engine_info", {"rank": rank}))
+        raise ConnectionError(f"engine {self._engine_index} is unreachable")
+
+
+class _NamelessRolloutEngine(_FakeRolloutEngine):
+    async def get_remote_instance_transfer_engine_info(self, rank: int):
+        self.calls.append(("get_remote_instance_transfer_engine_info", {"rank": rank}))
+        return None, {}
+
+
+class TestQueryFailureAttribution:
+    """A target that cannot be queried belongs to one inference cell, not to the whole update."""
+
+    def test_a_dead_engine_is_reported_instead_of_raising(self, p2p_transfer_utils):
+        """Raising here would kill the trainer for a fault that only one inference cell has."""
+        engines = [_DeadRolloutEngine(0), _FakeRolloutEngine(1)]
+
+        query = _query(p2p_transfer_utils, engines, [(0, 0), (1, 0)])
+
+        assert sorted(query.failures_by_engine_ind) == [0]
+        assert isinstance(query.failures_by_engine_ind[0], ConnectionError)
+        assert query.targets_to_session_id == {(1, 0): "session-1-0"}
+        assert sorted(query.remote_weight_infos_by_session_id) == ["session-1-0"]
+
+    def test_a_healthy_engine_is_queried_even_when_another_one_is_dead(self, p2p_transfer_utils):
+        """The healthy targets must have their requests issued, not be skipped behind a broken one."""
+        engines = [_DeadRolloutEngine(0), _FakeRolloutEngine(1)]
+
+        _query(p2p_transfer_utils, engines, [(0, 0), (1, 0), (1, 1)])
+
+        assert sorted(kwargs["rank"] for name, kwargs in engines[1].calls if name == "get_parallelism_info") == [0, 1]
+
+    def test_an_engine_without_a_session_id_is_reported_as_that_engine_failing(self, p2p_transfer_utils):
+        """A target that answers without a session cannot be written to, and naming it is the whole point."""
+        engines = [_NamelessRolloutEngine(0)]
+
+        query = _query(p2p_transfer_utils, engines, [(0, 0)])
+
+        assert isinstance(query.failures_by_engine_ind[0], AssertionError)
+        assert query.targets_to_session_id == {}
+
+    def test_a_server_configuration_this_trainer_cannot_read_stays_a_hard_failure(
+        self, p2p_transfer_utils, monkeypatch
+    ):
+        """An incompatible SGLang build is a version mismatch of the whole run, not one dead target."""
+        engines = [_FakeRolloutEngine(0)]
+
+        def rejecting_server_args(_data_dict):
+            raise TypeError("unexpected keyword argument")
+
+        monkeypatch.setattr(p2p_transfer_utils, "create_server_args_from_dict", rejecting_server_args)
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            _query(p2p_transfer_utils, engines, [(0, 0)])

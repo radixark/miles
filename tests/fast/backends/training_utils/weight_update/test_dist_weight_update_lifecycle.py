@@ -88,6 +88,7 @@ def _make_updater(
         rollout_engines=engines,
         required_placement=MagicMock(),
         supports_lora=False,
+        inference_cell_health=None,
         begin_sync=begin_sync,
         begin_sync_versions=begin_sync_versions,
         send_bucket=MagicMock(),

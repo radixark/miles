@@ -207,28 +207,64 @@ def create_transfer_engine():
     return transfer_engine
 
 
+class _RemoteTargetInfo(NamedTuple):
+    session_id: str
+    weights_info: dict[str, RemoteWeightLocation]
+    parallelism_info: dict
+    server_info: dict
+
+
+class RemoteWeightQuery(NamedTuple):
+    remote_weight_infos_by_session_id: dict[str, tuple]
+    targets_to_session_id: dict[tuple[int, int], str]
+    session_id_to_server_args: dict[str, ServerArgs]
+    failures_by_engine_ind: dict[int, Exception]
+
+
+async def _query_one_target(client: SGLangApiClient, engine_ind: int, engine_rank: int) -> _RemoteTargetInfo:
+    session_id, raw_weights_info = await client.get_remote_instance_transfer_engine_info(rank=engine_rank)
+    assert session_id is not None, f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
+    parallelism_info = await client.get_parallelism_info(rank=engine_rank)
+    server_info = await client.get_server_info()
+    return _RemoteTargetInfo(
+        session_id=session_id,
+        weights_info={name: RemoteWeightLocation(*location) for name, location in raw_weights_info.items()},
+        parallelism_info=parallelism_info,
+        server_info=server_info,
+    )
+
+
 def query_remote_weight_infos(
     rollout_engines: Sequence[SGLangApiClient],
     targets,
-) -> tuple[dict, dict, dict]:
+) -> RemoteWeightQuery:
     """Query remote rollout engines for weight info, session IDs, and server args."""
-    remote_weight_infos_by_session_id = {}
-    targets_to_session_id = {}
-    session_id_to_server_args = {}
-    targets_to_query = set((target.engine_ind, target.engine_rank) for target in targets)
-
-    for engine_ind, engine_rank in targets_to_query:
-        session_id, raw_weights_info = async_utils.run(
-            rollout_engines[engine_ind].get_remote_instance_transfer_engine_info(rank=engine_rank)
+    remote_weight_infos_by_session_id: dict[str, tuple] = {}
+    targets_to_session_id: dict[tuple[int, int], str] = {}
+    session_id_to_server_args: dict[str, ServerArgs] = {}
+    failures_by_engine_ind: dict[int, Exception] = {}
+    targets_to_query = sorted({(target.engine_ind, target.engine_rank) for target in targets})
+    futures = {
+        (engine_ind, engine_rank): async_utils.submit(
+            _query_one_target(rollout_engines[engine_ind], engine_ind, engine_rank)
         )
-        weights_info = {name: RemoteWeightLocation(*location) for name, location in raw_weights_info.items()}
-        parallelism_info = async_utils.run(rollout_engines[engine_ind].get_parallelism_info(rank=engine_rank))
+        for engine_ind, engine_rank in targets_to_query
+    }
 
-        session_id_to_server_args[session_id] = create_server_args_from_dict(
-            async_utils.run(rollout_engines[engine_ind].get_server_info())
-        )
-        assert session_id is not None, f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
-        remote_weight_infos_by_session_id[session_id] = (weights_info, parallelism_info)
-        targets_to_session_id[(engine_ind, engine_rank)] = session_id
+    for (engine_ind, engine_rank), future in futures.items():
+        try:
+            info = future.result()
+        except Exception as error:
+            logger.exception(f"[P2P-Shared] engine {engine_ind} rank {engine_rank} did not answer the weight query")
+            failures_by_engine_ind.setdefault(engine_ind, error)
+            continue
+        session_id_to_server_args[info.session_id] = create_server_args_from_dict(info.server_info)
+        remote_weight_infos_by_session_id[info.session_id] = (info.weights_info, info.parallelism_info)
+        targets_to_session_id[(engine_ind, engine_rank)] = info.session_id
 
-    return remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args
+    return RemoteWeightQuery(
+        remote_weight_infos_by_session_id=remote_weight_infos_by_session_id,
+        targets_to_session_id=targets_to_session_id,
+        session_id_to_server_args=session_id_to_server_args,
+        failures_by_engine_ind=failures_by_engine_ind,
+    )
