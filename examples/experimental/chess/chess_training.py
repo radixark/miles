@@ -21,7 +21,7 @@ def _invalid_move_termination(metadata: Mapping[str, Any]) -> bool:
 
 
 def postprocess_samples(leaf_samples: list[Sample], session_metadata: dict) -> list[Sample]:
-    """Keep invalid-move trajectories at zero; shape repetition in other games."""
+    """Zero invalid-move base rewards, then penalize every repetitive game."""
     agent = session_metadata["agent"]
     invalid = _invalid_move_termination(agent)
     penalty = agent["repetition_reward_penalty"]
@@ -30,10 +30,10 @@ def postprocess_samples(leaf_samples: list[Sample], session_metadata: dict) -> l
 
     samples = default_postprocess(leaf_samples, session_metadata)
     flags = [has_repetition(sample.response) for sample in samples]
-    applied_penalty = penalty if any(flags) and not invalid else 0.0
+    applied_penalty = penalty if any(flags) else 0.0
     for sample, repeated in zip(samples, flags, strict=True):
-        base_reward = sample.reward
-        sample.reward = 0.0 if invalid else base_reward - applied_penalty
+        base_reward = 0.0 if invalid else sample.reward
+        sample.reward = base_reward - applied_penalty
         sample.metadata.update(
             has_repetition=repeated,
             reward_before_repetition_penalty=base_reward,

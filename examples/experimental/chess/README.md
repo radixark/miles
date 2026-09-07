@@ -42,17 +42,23 @@ stays fixed for the complete game, including retries and context compaction.
 The base reward is `1.0` for a win or a positive final Stockfish score at the
 turn cap, and `0.0` otherwise. Training defaults to `--max-llm-retries-per-move 0`:
 there is one initial answer attempt, and an empty, malformed, illegal, or
-output-limit answer ends the game immediately. These trajectories receive exactly
-`0.0`, remain in the training batch, and are not treated as infrastructure errors.
+output-limit answer ends the game immediately. These trajectories receive a base
+reward of `0.0`, remain in the training batch, and are not treated as infrastructure errors.
 For evaluation, the harness can allow three or five retries after the initial
 attempt. Provider/API errors use a separate retry budget.
 
-For other games, the chess sample postprocessor subtracts the configured
+After assigning the base reward, the chess sample postprocessor subtracts the configured
 `--repetition-reward-penalty` (default `0.1`) once from any
 rollout whose training samples contain a repetitive 10,000-character window.
-Windows overlap with a 5,000-character stride, and the final suffix is checked.
+Windows use a 5,000-character stride, widened for very long responses to bound the
+scan to 32 windows; the first window and exact final suffix are always checked.
 TITO compaction siblings share this penalty so the rollout keeps one reward.
-Invalid-move termination takes precedence over repetition shaping. The launcher
+Repetitive invalid-move trajectories also receive the penalty: with a configured
+penalty of `0.5`, their final training reward is `0.0 - 0.5 = -0.5`, while a
+non-repetitive invalid trajectory stays at `0.0`. This creates a reward difference
+between repetitive and ordinary failures even when no game in a group succeeds.
+The detector is a compression-based heuristic, not a guarantee that every semantic
+loop will be detected. The launcher
 passes the penalty through chess metadata and disables Miles' second, global
 application (`--repetition-reward-penalty 0` in the generated trainer command),
 so penalties are not applied twice. The configured chess penalty is recorded in
