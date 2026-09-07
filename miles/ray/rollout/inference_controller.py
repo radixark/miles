@@ -255,21 +255,55 @@ class InferenceController:
         )
 
     @releases_lock
-    async def abort_update_weights(self) -> None:
-        pass
+    async def abort_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        logger.error(
+            f"The weight update of cells {sorted(snapshot_cell_id_to_hashes)} did not report an outcome, "
+            f"so none of them is marked ready"
+        )
 
     @releases_lock
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+    async def end_update_weights(
+        self,
+        snapshot_cell_id_to_hashes: dict[str, str],
+        *,
+        updated_cell_ids: Sequence[str],
+        failed_cell_ids: Sequence[str],
+    ) -> None:
+        await self._mark_cells_errored(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes, cell_ids=failed_cell_ids)
         await asyncio.gather(
             *[
                 cell.mark_weights_ready()
-                for srv in self.servers.values()
-                for cell_id, cell in srv.server_cells.items()
-                if cell_id in snapshot_cell_id_to_hashes
-                and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
-                and cell.is_pending_weights
+                for cell in self._cells_of_snapshot(
+                    snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes, cell_ids=updated_cell_ids
+                )
+                if cell.is_pending_weights
             ]
         )
+
+    @requires_lock
+    async def _mark_cells_errored(
+        self, *, snapshot_cell_id_to_hashes: dict[str, str], cell_ids: Sequence[str]
+    ) -> None:
+        cells = self._cells_of_snapshot(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes, cell_ids=cell_ids)
+        for cell in cells:
+            await cell.mark_errored()
+
+    @requires_lock
+    def _cells_of_snapshot(
+        self, *, snapshot_cell_id_to_hashes: dict[str, str], cell_ids: Sequence[str]
+    ) -> list[ServerCell]:
+        wanted = set(cell_ids)
+        unknown = wanted - set(snapshot_cell_id_to_hashes)
+        assert not unknown, (
+            f"cells {sorted(unknown)} were never part of this update window, which covered "
+            f"{sorted(snapshot_cell_id_to_hashes)}"
+        )
+        return [
+            cell
+            for srv in self.servers.values()
+            for cell_id, cell in srv.server_cells.items()
+            if cell_id in wanted and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
+        ]
 
     @requires_lock
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:

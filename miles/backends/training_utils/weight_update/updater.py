@@ -21,6 +21,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport, build_weight_update_report
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -76,6 +77,7 @@ class WeightUpdater:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
+        self._engine_cell_ids: tuple[str, ...] = ()
         # Set by the actor before each update_weights call (loaded map at reconcile).
         self.multi_lora_adapters = None
 
@@ -97,6 +99,7 @@ class WeightUpdater:
             self._hf_weight_iterator.weight_update_selector,
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
+        self._engine_cell_ids = tuple(engine_cell_ids)
         if self.protocol.cell_updaters:
             assert not self.is_lora, (
                 f"per-inference-cell failure isolation is not supported for LoRA weight sync over "
@@ -109,11 +112,11 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self, weight_version: int) -> None:
+    def update_weights(self, weight_version: int) -> WeightUpdateReport:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
         if not protocol.begin_sync(weight_version, self._iter_base_buckets):
-            return
+            return self._build_report(weight_version)
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
@@ -156,6 +159,17 @@ class WeightUpdater:
             self._sync_cell_failures()
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
+
+        return self._build_report(weight_version)
+
+    def _build_report(self, weight_version: int) -> WeightUpdateReport:
+        return build_weight_update_report(
+            weight_version=weight_version,
+            assigned_cell_ids=self._engine_cell_ids,
+            failed_cell_ids=[
+                cell_updater.cell_id for cell_updater in self.protocol.cell_updaters if cell_updater.is_errored
+            ],
+        )
 
     def _sync_cell_failures(self) -> None:
         if not self.protocol.cell_updaters:
