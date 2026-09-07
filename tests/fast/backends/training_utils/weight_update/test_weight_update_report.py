@@ -6,6 +6,7 @@ from miles.backends.training_utils.weight_update.report import (
     build_untouched_targets_report,
     build_weight_update_report,
     combine_trainer_reports,
+    discard_version_nothing_serves,
     merge_rank_reports,
 )
 
@@ -140,6 +141,53 @@ class TestCombineTrainerReports:
         """Nothing serves the new weights, so the executor must not be told a version exists."""
         combined = combine_trainer_reports(
             [build_lost_trainer_report(["cell-0"]), build_lost_trainer_report(["cell-1"])]
+        )
+
+        assert combined.weight_version is None
+        assert combined.failed_cell_ids == ("cell-0", "cell-1")
+
+
+class TestDiscardVersionNothingServes:
+    """A version is published only when an engine actually serves it."""
+
+    def test_a_version_no_engine_serves_is_dropped(self):
+        """Stamping samples with it would judge them against weights that were never loaded anywhere."""
+        report = WeightUpdateReport(weight_version=5, updated_cell_ids=(), failed_cell_ids=("cell-0",))
+
+        assert discard_version_nothing_serves(report).weight_version is None
+
+    def test_the_failed_targets_survive_the_version_being_dropped(self):
+        """They still have to be retired, whether or not anything else was published."""
+        report = WeightUpdateReport(weight_version=5, updated_cell_ids=(), failed_cell_ids=("cell-0",))
+
+        assert discard_version_nothing_serves(report).failed_cell_ids == ("cell-0",)
+
+    def test_a_version_at_least_one_engine_serves_is_kept(self):
+        """A partial success still moves the healthy engines forward and must be published."""
+        report = WeightUpdateReport(weight_version=5, updated_cell_ids=("cell-1",), failed_cell_ids=("cell-0",))
+
+        assert discard_version_nothing_serves(report).weight_version == 5
+
+
+class TestPublishedVersionAgreement:
+    """Only the trainers that landed weights somewhere define the version the fleet serves."""
+
+    def test_a_trainer_that_lost_every_target_does_not_define_the_version(self):
+        """It ran to the end locally, but no engine took those weights, so it publishes nothing."""
+        lost_all = WeightUpdateReport(weight_version=3, updated_cell_ids=(), failed_cell_ids=("cell-0",))
+        published = WeightUpdateReport(weight_version=3, updated_cell_ids=("cell-1",), failed_cell_ids=())
+
+        combined = combine_trainer_reports([lost_all, published])
+
+        assert combined.weight_version == 3
+
+    def test_an_update_where_every_target_failed_publishes_no_version(self):
+        """Every engine is retired, so the executor must not be told a new version exists."""
+        combined = combine_trainer_reports(
+            [
+                WeightUpdateReport(weight_version=3, updated_cell_ids=(), failed_cell_ids=("cell-0",)),
+                WeightUpdateReport(weight_version=3, updated_cell_ids=(), failed_cell_ids=("cell-1",)),
+            ]
         )
 
         assert combined.weight_version is None

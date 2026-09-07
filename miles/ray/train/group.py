@@ -12,6 +12,7 @@ from miles.backends.training_utils.weight_update.report import (
     build_lost_trainer_report,
     build_untouched_targets_report,
     combine_trainer_reports,
+    discard_version_nothing_serves,
     merge_rank_reports,
 )
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -406,6 +407,7 @@ class TrainerController:
         else:
             report = await self._update_weights_on_first_alive_cell(info, weight_version=candidate_version)
         report.validate_assignment(info.engine_cell_ids)
+        report = discard_version_nothing_serves(report)
 
         published_version = report.weight_version
         if published_version is None:

@@ -75,7 +75,7 @@ def build_lost_trainer_report(assigned_cell_ids: Sequence[str]) -> WeightUpdateR
 def combine_trainer_reports(reports: Sequence[WeightUpdateReport]) -> WeightUpdateReport:
     assert reports, "no trainer cell reported the outcome of this update"
 
-    versions = {report.weight_version for report in reports if report.weight_version is not None}
+    versions = {report.weight_version for report in reports if report.updated_cell_ids}
     assert len(versions) <= 1, f"the trainer cells published different weight versions, got {versions}"
 
     return WeightUpdateReport(
@@ -83,3 +83,9 @@ def combine_trainer_reports(reports: Sequence[WeightUpdateReport]) -> WeightUpda
         updated_cell_ids=tuple(cell_id for report in reports for cell_id in report.updated_cell_ids),
         failed_cell_ids=tuple(cell_id for report in reports for cell_id in report.failed_cell_ids),
     )
+
+
+def discard_version_nothing_serves(report: WeightUpdateReport) -> WeightUpdateReport:
+    if report.updated_cell_ids:
+        return report
+    return WeightUpdateReport(weight_version=None, updated_cell_ids=(), failed_cell_ids=report.failed_cell_ids)
