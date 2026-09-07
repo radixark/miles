@@ -5,7 +5,7 @@ from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import make_p
 
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_provider.kubernetes.core.cell_view import compute_cell_info, compute_worker_infos
-from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys, ParsedPod
+from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys, ContainerIdentity, ParsedPod
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo
 
 CELL_ID = "engine-00000"
@@ -31,7 +31,10 @@ def make_parsed_pod(
         deleting=deleting,
         pod_ip=pod_ip,
         uid=f"uid-{pod_in_cell_index}",
+        resource_version=kwargs.pop("resource_version", f"rv-{pod_in_cell_index}"),
         restart_count=0,
+        declared_container_names=("worker",),
+        containers=(ContainerIdentity(name="worker", container_id="containerd://worker-0", restart_count=0),),
         cell_size=cell_size,
         subdomain=kwargs.pop("subdomain", None),
         gpu_ids=kwargs.pop("gpu_ids", ()),

@@ -29,6 +29,21 @@ class KubernetesWorkerInfo(FrozenStrictBaseModel):
     gpu_ids: list[int]
 
 
+class PodIdentity(FrozenStrictBaseModel):
+    name: str
+    uid: str
+    resource_version: str | None
+    restart_count: int
+    declared_container_names: list[str]
+    containers: list[pod_view.ContainerIdentity]
+
+
+class CellIncarnation(FrozenStrictBaseModel):
+    cell_id: str
+    workers_hash: str
+    pods: list[PodIdentity]
+
+
 def compute_cell_info(cell_id: str, *, pods: list[pod_view.ParsedPod], run: KubernetesRunInfo) -> CellInfo | None:
     if not pods:
         return None
@@ -43,6 +58,27 @@ def compute_cell_info(cell_id: str, *, pods: list[pod_view.ParsedPod], run: Kube
         worker_names=[worker.name for worker in workers_of_pods(pods, run=run)],
         workers_hash=pod_view.cell_members_hash(pods),
         meta=meta,
+    )
+
+
+def compute_cell_incarnation(cell_id: str, *, pods: list[pod_view.ParsedPod]) -> CellIncarnation | None:
+    if not pods:
+        return None
+
+    return CellIncarnation(
+        cell_id=cell_id,
+        workers_hash=pod_view.cell_members_hash(pods),
+        pods=[
+            PodIdentity(
+                name=pod.name,
+                uid=pod.uid,
+                resource_version=pod.resource_version,
+                restart_count=pod.restart_count,
+                declared_container_names=list(pod.declared_container_names),
+                containers=list(pod.containers),
+            )
+            for pod in pod_view.sorted_by_pod_in_cell_index(pods)
+        ],
     )
 
 

@@ -15,6 +15,11 @@ from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
+from miles.utils.workers.cell_operations.base import (
+    TERMINATE_INCARNATION_TIMEOUT_SECONDS,
+    BaseCellOperations,
+    CellTerminationOutcome,
+)
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import DeploymentIdentity
@@ -100,6 +105,40 @@ class RecordingHealthChecker(BaseHealthChecker):
         self.task_started = True
 
 
+class RecordingCellOperations(BaseCellOperations):
+    def __init__(self) -> None:
+        self.terminated: list[tuple[str, str]] = []
+        self.outcome: CellTerminationOutcome = CellTerminationOutcome.TERMINATED
+        self.error: Exception | None = None
+        self.hangs: bool = False
+
+    async def cell_infos(self, *, pool_ids: list[str]) -> dict[str, Any]:
+        return {}
+
+    async def suspend(self, *, cell_id: str) -> None:
+        raise AssertionError(f"no trainer cell test suspends {cell_id}")
+
+    async def resume(self, *, cell_id: str) -> None:
+        raise AssertionError(f"no trainer cell test resumes {cell_id}")
+
+    async def terminate_incarnation(
+        self,
+        *,
+        cell_id: str,
+        expected_workers_hash: str,
+        timeout: float = TERMINATE_INCARNATION_TIMEOUT_SECONDS,
+    ) -> CellTerminationOutcome:
+        self.terminated.append((cell_id, expected_workers_hash))
+        if self.hangs:
+            await asyncio.Event().wait()
+        if self.error is not None:
+            raise self.error
+        return self.outcome
+
+    async def inject_fault(self, *, cell_id: str, mode: Any, sub_index: int) -> None:
+        raise AssertionError(f"no trainer cell test injects a fault into {cell_id}")
+
+
 def make_provider(trainer_id: str = "actor") -> BaseWorkerProvider:
     return RayWorkerProvider(worker_manager_handle=fake_worker_manager, pool_ids=[compute_trainer_pool_id(trainer_id)])
 
@@ -131,6 +170,7 @@ def make_cell(
     *,
     actor_count: int = 2,
     health_checker: BaseHealthChecker | None = None,
+    cell_operations: BaseCellOperations | None = None,
 ) -> TrainerCell:
     fake_worker_manager.actor_count_per_cell = actor_count
     return TrainerCell(
@@ -142,12 +182,19 @@ def make_cell(
         workers_hash="pseudo-hash-1",
         health_checker=health_checker if health_checker is not None else NoopHealthChecker(),
         provider=make_provider(),
+        cell_operations=cell_operations if cell_operations is not None else RecordingCellOperations(),
     )
 
 
-def make_alive_cell(cell_index: int, *, alive_cell_indices: list[int], quorum_id: int = 0) -> TrainerCell:
+def make_alive_cell(
+    cell_index: int,
+    *,
+    alive_cell_indices: list[int],
+    quorum_id: int = 0,
+    cell_operations: BaseCellOperations | None = None,
+) -> TrainerCell:
     """Create a cell and transition it to Alive state."""
-    cell = make_cell(cell_index)
+    cell = make_cell(cell_index, cell_operations=cell_operations)
     cell._mark_as_alive(
         indep_dp_info=make_indep_dp_info(
             cell_index=cell_index,

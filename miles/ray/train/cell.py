@@ -15,6 +15,7 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.cell_operations.base import BaseCellOperations, CellTerminationOutcome
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 KILL_RPC_TIMEOUT_S = 10.0
 CONFIRM_DEAD_TIMEOUT_S = 120.0
+DEAD_PROBE_INTERVAL_S = 1.0
+DEAD_PROBE_TIMEOUT_S = 10.0
+TERMINATE_CALL_TIMEOUT_S = 180.0
+STALE_CONFIRM_TIMEOUT_S = 30.0
 
 
 class TrainerCell:
@@ -39,6 +44,7 @@ class TrainerCell:
         workers_hash: str,
         health_checker: BaseHealthChecker,
         provider: BaseWorkerProvider,
+        cell_operations: BaseCellOperations,
     ) -> None:
         self.args = args
         self.cell_id = cell_id
@@ -48,6 +54,7 @@ class TrainerCell:
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
         self.health_checker = health_checker
+        self._cell_operations = cell_operations
 
         (worker_infos,) = provider.get_worker_infos(cell_ids=[cell_id])
         self._master_addr: HostAndPort = worker_infos[0].self_addrs[MASTER_PORT_NAME]
@@ -150,15 +157,58 @@ class TrainerCell:
         )
         start = time.monotonic()
         await asyncio.gather(*[_kill_worker(handle) for handle in handles])
-        await asyncio.gather(*[handle.wait_dead(timeout=CONFIRM_DEAD_TIMEOUT_S) for handle in handles])
+        confirmed = await _wait_all_workers_dead(handles, timeout=CONFIRM_DEAD_TIMEOUT_S)
+        if not confirmed:
+            confirmed = await self._terminate_incarnation(handles)
         log_structured(
-            logger.info,
+            logger.info if confirmed else logger.error,
             tag="ft",
             op="confirm_dead",
             phase="end",
             cell=self.cell_id,
+            confirmed=confirmed,
             elapsed_s=round(time.monotonic() - start, 1),
         )
+
+    async def _terminate_incarnation(self, handles: list[BaseWorkerHandle]) -> bool:
+        log_structured(
+            logger.warning,
+            tag="ft",
+            op="terminate_incarnation",
+            phase="start",
+            cell=self.cell_id,
+            workers_hash=self.workers_hash,
+        )
+        try:
+            outcome = await asyncio.wait_for(
+                self._cell_operations.terminate_incarnation(
+                    cell_id=self.cell_id, expected_workers_hash=self.workers_hash
+                ),
+                timeout=TERMINATE_CALL_TIMEOUT_S,
+            )
+        except Exception:
+            log_structured(
+                logger.error,
+                tag="ft",
+                op="terminate_incarnation",
+                phase="fail",
+                cell=self.cell_id,
+                workers_hash=self.workers_hash,
+                exc_info=True,
+            )
+            return False
+        log_structured(
+            logger.info,
+            tag="ft",
+            op="terminate_incarnation",
+            phase="end",
+            cell=self.cell_id,
+            workers_hash=self.workers_hash,
+            outcome=outcome.value,
+        )
+        if outcome is CellTerminationOutcome.STALE:
+            return await _wait_all_workers_dead(handles, timeout=STALE_CONFIRM_TIMEOUT_S)
+        return True
 
     def _mark_as_alive(self, indep_dp_info: IndepDPInfo) -> None:
         self._change_state(
@@ -214,11 +264,14 @@ class TrainerCell:
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
-    async def execute(self, fn_name: str, *, kill_on_failure: bool = True, **kwargs) -> list:
+    async def execute(
+        self, fn_name: str, *, kill_on_failure: bool = True, timeout: float | None = None, **kwargs
+    ) -> list:
         return await self._execute_raw(
             fn_name,
             compute_kwargs=lambda _: kwargs,
             kill_on_failure=kill_on_failure,
+            timeout=timeout,
         )
 
     async def _execute_raw(
@@ -226,6 +279,7 @@ class TrainerCell:
         fn_name: str,
         compute_kwargs,
         kill_on_failure: bool = True,
+        timeout: float | None = None,
     ) -> list:
         handles = self._get_worker_handles()
         log_structured(
@@ -233,8 +287,9 @@ class TrainerCell:
         )
         start = time.monotonic()
         try:
-            result = await asyncio.gather(
-                *[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]
+            result = await asyncio.wait_for(
+                asyncio.gather(*[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]),
+                timeout=timeout,
             )
             log_structured(
                 logger.info,
@@ -298,6 +353,36 @@ class TrainerCell:
             self._state, StateAllocatedBase
         ), f"Cell {self.cell_id} is not allocated (state={type(self._state).__name__})"
         return self._state.worker_handles
+
+
+async def _wait_all_workers_dead(handles: list[BaseWorkerHandle], *, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    pending = list(handles)
+    while pending:
+        probes = await asyncio.gather(*[_probe_is_dead(handle) for handle in pending])
+        pending = [handle for handle, is_dead in zip(pending, probes, strict=True) if not is_dead]
+        if not pending:
+            break
+        if time.monotonic() >= deadline:
+            logger.error(
+                "Workers %s are still answering probes %.0fs after being asked to die, "
+                "so the control plane has to terminate them",
+                pending,
+                timeout,
+            )
+            return False
+        await asyncio.sleep(DEAD_PROBE_INTERVAL_S)
+    return True
+
+
+async def _probe_is_dead(handle: BaseWorkerHandle) -> bool:
+    try:
+        return await asyncio.wait_for(handle.probe_is_dead(), timeout=DEAD_PROBE_TIMEOUT_S)
+    except (TimeoutError, asyncio.TimeoutError):
+        return False
+    except Exception:
+        logger.warning("Probing whether %r died failed, so it counts as still running", handle, exc_info=True)
+        return False
 
 
 async def _kill_worker(handle: BaseWorkerHandle) -> None:

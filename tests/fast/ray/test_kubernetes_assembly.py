@@ -393,6 +393,7 @@ class TestKubernetesDriverAssembly:
                         workers_hash="hash-1",
                         health_checker=SimpleNamespace(start=lambda: None, status=None),
                         provider=provider,
+                        cell_operations=SimpleNamespace(),
                     )
                     return cell, await cell.execute(
                         "configure_master_addr_and_port", master_addr="10.0.0.1", master_port=9000

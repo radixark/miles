@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -1070,6 +1071,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "files are written, before the engines read them — to publish the writes on a "
                     "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
                     "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."
+                ),
+            )
+            parser.add_argument(
+                "--update-weights-timeout",
+                type=float,
+                default=3600.0,
+                help=(
+                    "Deadline in seconds for one trainer cell's update_weights RPC, measured by the trainer "
+                    "controller. A trainer rank wedged in a native collective answers no heartbeat and cannot "
+                    "be cancelled, so the controller gives up after this long and takes the cell through the "
+                    "usual mark-errored, kill and confirm-dead path. It has to cover a full model transfer to "
+                    "every assigned inference cell; only the tests shorten it."
                 ),
             )
             parser.add_argument(
@@ -3798,6 +3811,11 @@ def miles_validate_args(args):
         and not args.ci_disable_weight_update_checker
     ):
         args.check_weight_update_equal = True
+
+    assert math.isfinite(args.update_weights_timeout) and args.update_weights_timeout > 0, (
+        f"--update-weights-timeout is the controller's deadline for one weight update, got "
+        f"{args.update_weights_timeout!r}; an infinite or non-positive one either never fires or kills every update"
+    )
 
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":

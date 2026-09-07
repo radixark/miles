@@ -41,6 +41,10 @@ class PodSchedulingGate(FrozenPartialBaseModel):
     name: str
 
 
+class ContainerSpec(FrozenPartialBaseModel):
+    name: str = ""
+
+
 class PodSpec(FrozenPartialBaseModel):
     node_name: str | None = Field(default=None, validation_alias=AliasChoices("node_name", "nodeName"))
     subdomain: str | None = None
@@ -48,6 +52,7 @@ class PodSpec(FrozenPartialBaseModel):
     scheduling_gates: Annotated[list[PodSchedulingGate], BeforeValidator(_absent_as_empty_list)] = Field(
         default=[], validation_alias=AliasChoices("scheduling_gates", "schedulingGates")
     )
+    containers: Annotated[list[ContainerSpec], BeforeValidator(_absent_as_empty_list)] = []
 
 
 class PodCondition(FrozenPartialBaseModel):

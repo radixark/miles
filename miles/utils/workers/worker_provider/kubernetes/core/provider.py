@@ -76,6 +76,9 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
     def cell_info(self, cell_id: str) -> CellInfo | None:
         return cell_view.compute_cell_info(cell_id, pods=self._pods_of_cell(cell_id), run=self._run)
 
+    def cell_incarnation(self, cell_id: str) -> cell_view.CellIncarnation | None:
+        return cell_view.compute_cell_incarnation(cell_id, pods=self._pods_of_cell(cell_id))
+
     def pod_names_of_cell(self, cell_id: str) -> list[str]:
         return [pod.name for pod in self._pods_of_cell(cell_id)]
 

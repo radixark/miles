@@ -17,6 +17,12 @@ class CellLabelKeys(FrozenStrictBaseModel):
     base_gpu_id_annotation: str
 
 
+class ContainerIdentity(FrozenStrictBaseModel):
+    name: str
+    container_id: str | None
+    restart_count: int
+
+
 class ParsedPod(FrozenStrictBaseModel):
     name: str
     cell_id: str
@@ -27,7 +33,10 @@ class ParsedPod(FrozenStrictBaseModel):
     deleting: bool
     pod_ip: str | None
     uid: str
+    resource_version: str | None
     restart_count: int
+    declared_container_names: tuple[str, ...]
+    containers: tuple[ContainerIdentity, ...]
     meta: dict[str, str]
     cell_size: int
     subdomain: str | None
@@ -59,7 +68,10 @@ def parse_pod(pod: Pod, keys: CellLabelKeys) -> ParsedPod | None:
         deleting=metadata.deletion_timestamp is not None,
         pod_ip=status.pod_ip,
         uid=metadata.uid,
+        resource_version=metadata.resource_version,
         restart_count=sum(container.restart_count for container in status.container_statuses),
+        declared_container_names=tuple(container.name for container in pod.spec.containers),
+        containers=_parse_containers(status),
         meta=meta,
         cell_size=int(metadata.annotations.get(keys.cell_size_annotation, 0)),
         subdomain=pod.spec.subdomain,
@@ -80,6 +92,15 @@ def _read_meta(pod: Pod, keys: CellLabelKeys) -> dict[str, str]:
     annotations = pod.metadata.annotations
     prefix = keys.meta_annotation_prefix
     return {key[len(prefix) :]: value for key, value in annotations.items() if key.startswith(prefix)}
+
+
+def _parse_containers(status: PodStatus) -> tuple[ContainerIdentity, ...]:
+    return tuple(
+        ContainerIdentity(
+            name=container.name, container_id=container.container_id, restart_count=container.restart_count
+        )
+        for container in status.container_statuses
+    )
 
 
 def _parse_gpu_ids(value: str, *, base: int) -> tuple[int, ...]:
