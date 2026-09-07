@@ -1,7 +1,8 @@
+import json
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import torch
 import torch.distributed as dist
@@ -37,6 +38,8 @@ from .p2p_transfer_utils import (
 
 logger = logging.getLogger(__name__)
 
+_PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
+
 
 # ============================== transfer protocol ==============================
 
@@ -63,6 +66,12 @@ class UpdateWeightP2P(WeightTransferProtocol):
             num_workers=getattr(args, "p2p_transfer_num_workers", 4),
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
         )
+        self._transfer_engine: Any | None = None
+        self._cpu_replicas = _CPUReplicasManager(model_path=args.hf_checkpoint)
+        self._weight_memory_registry: dict[str, tuple[int, int, int]] = {}
+        self.remote_weight_infos_by_session_id: dict[str, tuple] = {}
+        self.session_id_to_server_args: dict[str, ServerArgs] = {}
+        self._rollout_engine_rank_infos: list[_RolloutEngineRankInfo] = []
 
     def after_base_weights(self) -> None:
         """Wait for all background P2P writes to complete."""
@@ -141,6 +150,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
           replica that mirrors the target's sharding layout, enabling correct
           weight format conversion before transfer.
         """
+        self.disconnect()
         self.rollout_engines = rollout_engines
         self._cell_updaters_of_rollout_engine_ind = {
             rollout_engine_ind: _P2PRolloutCellUpdater(rollout_engine_ind=rollout_engine_ind)
@@ -162,13 +172,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for target in targets:
                 targets_grouped_by_rollout_engine_rank.setdefault(target.rollout_engine_rank, []).append(target)
 
-            # Create ONE transfer engine for all rollout engine ranks
-            self._transfer_engine = create_transfer_engine()
-            self._cpu_replicas = _CPUReplicasManager(model_path=self.args.hf_checkpoint)
-            # in self._rollout_engine_rank_infos: tuple of
-            # - single CPU replica shared among all sessions
-            # - related remote weight info
-            self._rollout_engine_rank_infos: list[_RolloutEngineRankInfo] = []
+            if self._transfer_engine is None:
+                # Create ONE transfer engine for all rollout engine ranks
+                self._transfer_engine = create_transfer_engine()
 
             _assign_p2p_targets(
                 self._cell_updaters_of_rollout_engine_ind,
@@ -180,13 +186,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for rollout_engine_rank, rank_targets in targets_grouped_by_rollout_engine_rank.items():
                 first_target = rank_targets[0]
                 session_id = targets_to_session_id[(first_target.rollout_engine_ind, first_target.rollout_engine_rank)]
-                parallelism_config = RankParallelismConfig.from_dict(
-                    self.remote_weight_infos_by_session_id[session_id][1]
-                )
-                server_args = self.session_id_to_server_args[session_id]
-
-                model_replica = self._cpu_replicas.create_replica(
-                    parallelism_config=parallelism_config, server_args=server_args
+                model_replica = self._cpu_replicas.get_or_create_replica(
+                    parallelism_info=self.remote_weight_infos_by_session_id[session_id][1],
+                    server_args=self.session_id_to_server_args[session_id],
                 )
 
                 rank_cell_updaters = [
@@ -200,6 +202,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
                         target_cell_updaters=rank_cell_updaters,
                     )
                 )
+
+    def disconnect(self) -> None:
+        self.transfer_manager.wait_transfers()
+        self._rollout_engine_rank_infos = []
+        self.remote_weight_infos_by_session_id = {}
+        self.session_id_to_server_args = {}
+        self.rollout_engines = []
+        self.is_sender = False
+        self._model_param_stager = ModelParamStager()
 
 
 def _assign_p2p_targets(
@@ -232,6 +243,15 @@ class _CPUReplicasManager:
         self.replicas: list[torch.nn.Module] = []
         self.shared_params_dict: dict[str, torch.Tensor] = {}
         self.shared_param_mapper: ParameterMapper | None = None
+        self._replicas_by_shard_layout: dict[str, torch.nn.Module] = {}
+
+    def get_or_create_replica(self, parallelism_info: dict, server_args: ServerArgs) -> torch.nn.Module:
+        shard_layout_key = _shard_layout_key(parallelism_info, server_args)
+        if shard_layout_key not in self._replicas_by_shard_layout:
+            self._replicas_by_shard_layout[shard_layout_key] = self.create_replica(
+                parallelism_config=RankParallelismConfig.from_dict(parallelism_info), server_args=server_args
+            )
+        return self._replicas_by_shard_layout[shard_layout_key]
 
     def create_replica(self, parallelism_config: RankParallelismConfig, server_args: ServerArgs) -> torch.nn.Module:
         first_rollout_engine_rank = not self.replicas
@@ -247,6 +267,13 @@ class _CPUReplicasManager:
             self.shared_param_mapper = ParameterMapper.from_model(model_replica)
         self.replicas.append(model_replica)
         return model_replica
+
+
+def _shard_layout_key(parallelism_info: dict, server_args: ServerArgs) -> str:
+    sharding = {name: value for name, value in parallelism_info.items() if name not in _PLACEMENT_PARALLELISM_FIELDS}
+    return json.dumps(
+        {"sharding": sharding, "rl_quant_profile": server_args.rl_quant_profile}, sort_keys=True, default=str
+    )
 
 
 def _create_cpu_replica(
