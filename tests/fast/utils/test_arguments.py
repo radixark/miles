@@ -2626,3 +2626,46 @@ class TestMilesValidateArgsCheckpointResolution:
         miles_validate_args(args)
 
         assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
+
+
+class TestUpdateWeightsTimeoutArgument:
+    """The controller-side deadline that turns a wedged weight update into a cell failure."""
+
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        parser.set_defaults(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            context_parallel_size=1,
+            world_size=1,
+        )
+        return parser.parse_args([*extra, *REQUIRED_ARGS, "--num-rollout", "1"])
+
+    def test_the_default_covers_a_full_model_transfer(self) -> None:
+        """A default that expires during a normal large-model update would kill every trainer cell in turn."""
+        args = self._parse([])
+
+        assert args.update_weights_timeout >= 600.0
+
+    def test_a_shorter_deadline_can_be_configured(self) -> None:
+        """The fault-injection tests need a deadline they can actually reach."""
+        args = self._parse(["--update-weights-timeout", "5"])
+
+        miles_validate_args(args)
+
+        assert args.update_weights_timeout == 5.0
+
+    def test_a_non_positive_deadline_is_rejected(self) -> None:
+        """A deadline of zero would fail every update before the first byte is sent."""
+        args = self._parse(["--update-weights-timeout", "0"])
+
+        with pytest.raises(AssertionError, match="update-weights-timeout"):
+            miles_validate_args(args)
+
+    def test_an_infinite_deadline_is_rejected(self) -> None:
+        """An infinite deadline is exactly the wedged-forever case this flag exists to end."""
+        args = self._parse(["--update-weights-timeout", "inf"])
+
+        with pytest.raises(AssertionError, match="update-weights-timeout"):
+            miles_validate_args(args)

@@ -66,6 +66,7 @@ def _make_mock_args(
         object_store_backend="ray",
         worker_comm_backend="ray",
         trainer_model_id=None,
+        update_weights_timeout=1800.0,
     )
 
 
@@ -1208,7 +1209,12 @@ class TestCellStatusesUnderConcurrentReconcile:
 class TestUpdateWeightsReturnsTheVersion:
     def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
-        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
+        group.args = SimpleNamespace(
+            debug_train_only=False,
+            debug_rollout_only=False,
+            trainer_model_id=None,
+            update_weights_timeout=1800.0,
+        )
         group._trainer_id = "trainer-0"
         group._last_published_weight_version = 0
         group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
@@ -1233,15 +1239,19 @@ class TestUpdateWeightsReturnsTheVersion:
 
         await group.update_weights(info=info)
 
-        group._execute_first_alive.assert_awaited_once_with("update_weights", info=info, weight_version=1)
+        group._execute_first_alive.assert_awaited_once_with(
+            "update_weights", timeout=1800.0, info=info, weight_version=1
+        )
 
 
 class _RecordingCellFleet:
     def __init__(self, outcomes: list) -> None:
         self._outcomes = list(outcomes)
         self.weight_versions: list[int] = []
+        self.timeouts: list[float] = []
 
-    async def execute_first_alive(self, fn_name: str, *, info: object, weight_version: int) -> list:
+    async def execute_first_alive(self, fn_name: str, *, timeout: float, info: object, weight_version: int) -> list:
+        self.timeouts.append(timeout)
         self.weight_versions.append(weight_version)
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
@@ -1251,6 +1261,7 @@ class _RecordingCellFleet:
 
 def _make_version_controller(outcomes: list) -> tuple[TrainerController, _RecordingCellFleet]:
     controller = TrainerController.__new__(TrainerController)
+    controller.args = SimpleNamespace(update_weights_timeout=1800.0)
     controller._trainer_id = "trainer-0"
     controller._last_published_weight_version = 0
     fleet = _RecordingCellFleet(outcomes)
@@ -1409,3 +1420,25 @@ class TestUpdateWeightsReachesTheWorker:
         for handle in handles:
             calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
             assert [c[2]["weight_version"] for c in calls] == [1, 2]
+
+
+class TestUpdateWeightsDeadline:
+    """The controller gives up on a wedged trainer cell instead of waiting for a heartbeat that never comes."""
+
+    async def test_the_configured_deadline_is_the_one_the_cell_is_given(self):
+        """A deadline shorter than a real transfer would kill every healthy update instead of the stuck one."""
+        controller, fleet = _make_version_controller([1])
+        controller.args = SimpleNamespace(update_weights_timeout=42.5)
+
+        await controller.update_weights(info=MagicMock())
+
+        assert fleet.timeouts == [42.5]
+
+    async def test_no_other_controller_call_borrows_the_deadline(self):
+        """Training steps and checkpoints legitimately outlast a weight update, and must not inherit its deadline."""
+        group = await _make_alive_controller(num_cells=1)
+        group._execute_first_alive = AsyncMock(return_value=[None])
+
+        await group.save_model(rollout_id=1)
+
+        assert "timeout" not in group._execute_first_alive.await_args.kwargs

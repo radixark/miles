@@ -146,6 +146,7 @@ class TrainerController:
             workers_hash=workers_hash,
             health_checker=NoopHealthChecker(),
             provider=self._provider,
+            cell_operations=self._cell_operations,
         )
 
         if self._health_checker_config is not None:
@@ -393,7 +394,12 @@ class TrainerController:
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         weight_versions = await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info, weight_version=candidate_version),
+            lambda _: self._execute_first_alive(
+                "update_weights",
+                timeout=self.args.update_weights_timeout,
+                info=info,
+                weight_version=candidate_version,
+            ),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
         published_version = weight_versions[0]
@@ -478,12 +484,12 @@ class TrainerController:
             self._raise_if_no_cell_can_recover(debug_name=debug_name, cause=_first_exception(outputs))
         return snapshot_alive_cells, outputs
 
-    async def _execute_first_alive(self, fn_name: str, **kwargs):
+    async def _execute_first_alive(self, fn_name: str, *, timeout: float | None = None, **kwargs):
         alive_cells = [c for c in self._cells if c.is_alive]
         if not alive_cells:
             raise NonRetryableError("No alive cells, therefore cannot heal anymore")
         try:
-            return await alive_cells[0].execute(fn_name, **kwargs)
+            return await alive_cells[0].execute(fn_name, timeout=timeout, **kwargs)
         except Exception as cause:
             self._raise_if_no_cell_can_recover(debug_name=f"execute_first_alive#{fn_name}", cause=cause)
             raise

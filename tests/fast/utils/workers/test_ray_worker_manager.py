@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 from unittest.mock import patch
 
 import pytest
+import ray
 from tests.fast.utils.workers.conftest import worker_manager_args
-from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
+from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, READINESS_METHOD, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager
@@ -1307,6 +1309,154 @@ class TestCellStop:
 
         assert fake_ray_cluster.events.count(EVENT_KILL) == 2
         assert cell.actors is None
+
+
+def _die_when_killed(cluster: FakeRayCluster) -> None:
+    """Let killed actors stop answering, the way a real ray.kill removes the process."""
+    kill_actor = cluster.kill_actor
+
+    def kill_and_stop_answering(handle: Any) -> None:
+        kill_actor(handle)
+        handle.failing_methods[READINESS_METHOD] = ray.exceptions.RayActorError()
+
+    cluster.kill_actor = kill_and_stop_answering
+
+
+@pytest.fixture
+def impatient_stop_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ray_worker_manager, "_STOP_CONFIRM_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(ray_worker_manager, "_STOP_CONFIRM_PROBE_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(ray_worker_manager, "_STOP_CONFIRM_PROBE_TIMEOUT_SECONDS", 0.05)
+
+
+class TestStopCellIncarnation:
+    """The trainer gives up on a wedged cell by asking the manager to stop exactly that incarnation."""
+
+    async def test_the_incarnation_the_caller_saw_is_killed_and_confirmed(self, fake_ray_cluster: FakeRayCluster):
+        """A cell nothing can reach from inside is only released by the control plane killing its actors."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        cell = manager._pools["engine"].cells[0]
+        _die_when_killed(fake_ray_cluster)
+
+        outcome = await manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash=cell.get_info().workers_hash)
+
+        assert outcome == "terminated"
+        assert all(handle.killed for handle in fake_ray_cluster.handles)
+        assert cell.actors is None
+
+    async def test_an_actor_that_survives_the_kill_is_not_reported_as_terminated(
+        self, fake_ray_cluster: FakeRayCluster, impatient_stop_confirmation: None
+    ):
+        """ray.kill only issues the request; answering terminated here would report a live rank as released."""
+        manager = await _launch([_make_spec("engine")])
+        cell = manager._pools["engine"].cells[0]
+
+        outcome = await manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash=cell.get_info().workers_hash)
+
+        assert outcome == "not_confirmed"
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
+    async def test_one_surviving_actor_of_a_cell_is_enough_to_withhold_confirmation(
+        self, fake_ray_cluster: FakeRayCluster, impatient_stop_confirmation: None
+    ):
+        """A single rank still holding its gpus keeps the cell from being reused, however dead its peers are."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        cell = manager._pools["engine"].cells[0]
+        fake_ray_cluster.handles[0].failing_methods[READINESS_METHOD] = ray.exceptions.RayActorError()
+
+        outcome = await manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash=cell.get_info().workers_hash)
+
+        assert outcome == "not_confirmed"
+
+    async def test_a_probe_that_never_answers_does_not_hold_the_membership_lock(
+        self, fake_ray_cluster: FakeRayCluster, impatient_stop_confirmation: None
+    ):
+        """A hung probe inside the lock would freeze every later start, stop and heal of the whole run."""
+        manager = await _launch([_make_spec("engine")])
+        cell = manager._pools["engine"].cells[0]
+        fake_ray_cluster.handles[0].hanging_methods[READINESS_METHOD] = 3600
+
+        outcome = await asyncio.wait_for(
+            manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash=cell.get_info().workers_hash),
+            timeout=5.0,
+        )
+
+        assert outcome == "not_confirmed"
+        await asyncio.wait_for(manager.start_cells([cell.cell_id]), timeout=5.0)
+
+    async def test_a_stale_hash_leaves_the_current_incarnation_running(self, fake_ray_cluster: FakeRayCluster):
+        """The failure report may arrive after the cell was replaced, and the replacement is innocent."""
+        manager = await _launch([_make_spec("engine")])
+        cell = manager._pools["engine"].cells[0]
+
+        outcome = await manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash="pseudo-hash-of-a-past-run")
+
+        assert outcome == "stale"
+        assert not any(handle.killed for handle in fake_ray_cluster.handles)
+        assert cell.actors is not None
+
+    async def test_a_restarted_cell_is_neither_killed_nor_probed_for_its_predecessor(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """Regression: healing relaunches the cell under the same id, so the id alone must never authorise a kill."""
+        manager = await _launch([_make_spec("engine")])
+        cell = manager._pools["engine"].cells[0]
+        stale_hash = cell.get_info().workers_hash
+        await manager.stop_cells([cell.cell_id])
+        await manager.start_cells([cell.cell_id])
+        replacement_handle = fake_ray_cluster.handles[-1]
+        fake_ray_cluster.calls.clear()
+
+        outcome = await manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash=stale_hash)
+
+        assert outcome == "stale"
+        assert not replacement_handle.killed
+        assert fake_ray_cluster.calls_of(READINESS_METHOD) == []
+        assert cell.actors is not None
+
+    async def test_a_cell_that_was_already_stopped_is_reported_as_gone(self, fake_ray_cluster: FakeRayCluster):
+        """Nothing is left to kill, and reporting a failure here would block the run from healing."""
+        manager = await _launch([_make_spec("engine")])
+        cell = manager._pools["engine"].cells[0]
+        expected_hash = cell.get_info().workers_hash
+        await manager.stop_cells([cell.cell_id])
+
+        outcome = await manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash=expected_hash)
+
+        assert outcome == "already_gone"
+
+    async def test_a_kill_ray_refuses_is_reported_instead_of_swallowed(self, fake_ray_cluster: FakeRayCluster):
+        """Answering success for a kill that failed would tell the trainer a live rank had released its gpus."""
+        manager = await _launch([_make_spec("engine")])
+        cell = manager._pools["engine"].cells[0]
+        fake_ray_cluster.kill_error = RuntimeError("kill failed")
+
+        with pytest.raises(RuntimeError, match="kill failed"):
+            await manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash=cell.get_info().workers_hash)
+
+        assert cell.actors is not None
+
+    async def test_a_failed_stop_still_releases_the_membership_lock(self, fake_ray_cluster: FakeRayCluster):
+        """Every later membership change waits on this lock, so an early return must not keep it."""
+        manager = await _launch([_make_spec("engine")])
+        cell = manager._pools["engine"].cells[0]
+        fake_ray_cluster.kill_error = RuntimeError("kill failed")
+
+        with pytest.raises(RuntimeError, match="kill failed"):
+            await manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash=cell.get_info().workers_hash)
+
+        assert await asyncio.wait_for(
+            manager.stop_cell_incarnation(cell.cell_id, expected_workers_hash="pseudo-hash-of-a-past-run"), timeout=5.0
+        )
+
+    async def test_an_ordinary_stop_still_tolerates_a_failing_kill(self, fake_ray_cluster: FakeRayCluster):
+        """Suspending a cell for healing must keep tearing the rest of it down, as it always did."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        fake_ray_cluster.kill_error = RuntimeError("kill failed")
+
+        await manager.stop_cells([manager._pools["engine"].cells[0].cell_id])
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 2
 
 
 class TestStopDetails:

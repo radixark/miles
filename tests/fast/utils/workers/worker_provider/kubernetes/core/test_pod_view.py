@@ -1,4 +1,12 @@
-from miles.utils.workers.k8s_types import ContainerStatus, Pod, PodCondition, PodMetadata, PodSpec, PodStatus
+from miles.utils.workers.k8s_types import (
+    ContainerSpec,
+    ContainerStatus,
+    Pod,
+    PodCondition,
+    PodMetadata,
+    PodSpec,
+    PodStatus,
+)
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
 from miles.utils.workers.worker_provider.kubernetes.helm import env as helm_env
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
@@ -27,11 +35,15 @@ def make_pod(
             annotations=kwargs.pop("annotations", {}),
             deletion_timestamp=kwargs.pop("deletion_timestamp", None),
         ),
-        spec=PodSpec(node_name=kwargs.pop("node_name", "gpu-1"), subdomain=kwargs.pop("subdomain", None)),
+        spec=PodSpec(
+            node_name=kwargs.pop("node_name", "gpu-1"),
+            subdomain=kwargs.pop("subdomain", None),
+            containers=kwargs.pop("declared_containers", [ContainerSpec(name="worker")]),
+        ),
         status=PodStatus(
             pod_ip=kwargs.pop("pod_ip", "10.0.0.1"),
             conditions=[PodCondition(type="Ready", status="True" if ready else "False")],
-            container_statuses=[ContainerStatus(restart_count=kwargs.pop("restarts", 0))],
+            container_statuses=kwargs.pop("containers", [ContainerStatus(restart_count=kwargs.pop("restarts", 0))]),
         ),
     )
     assert not kwargs, f"make_pod does not know {sorted(kwargs)}, so the fixture would not be what the test meant"
@@ -56,6 +68,33 @@ class TestParsePod:
         parsed = parse(make_pod(pool_id="inference-engine-0-0", cell_id_suffix="2"))
 
         assert parsed.cell_id == "inference-engine-0-0-00002"
+
+    def test_reads_the_identity_of_every_container_the_pod_runs(self):
+        """A summed restart count cannot say which container restarted, so each one is recorded on its own."""
+        containers = [
+            ContainerStatus(name="worker", container_id="containerd://w-1", restart_count=1),
+            ContainerStatus(name="log-shipper", container_id="containerd://l-0", restart_count=0),
+        ]
+
+        parsed = parse(make_pod(containers=containers))
+
+        assert [(one.name, one.container_id, one.restart_count) for one in parsed.containers] == [
+            ("worker", "containerd://w-1", 1),
+            ("log-shipper", "containerd://l-0", 0),
+        ]
+        assert parsed.restart_count == 1
+
+    def test_reads_the_containers_the_pod_spec_declares(self):
+        """The status list can be short or stale, so only the spec says how many containers this pod is."""
+        declared = [ContainerSpec(name="worker"), ContainerSpec(name="log-shipper")]
+
+        parsed = parse(make_pod(declared_containers=declared, containers=[ContainerStatus(restart_count=0)]))
+
+        assert parsed.declared_container_names == ("worker", "log-shipper")
+
+    def test_reports_no_declared_container_when_the_spec_carries_none(self):
+        """An object the apiserver answered without a spec must not read as a pod running one container."""
+        assert parse(make_pod(declared_containers=[])).declared_container_names == ()
 
     def test_ignores_a_pod_that_carries_no_cell_labels(self):
         """A namespace holds other pods, and treating one as a worker would invent a cell."""

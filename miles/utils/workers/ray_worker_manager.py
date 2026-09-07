@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from functools import partial
@@ -20,6 +21,7 @@ from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
+from miles.utils.workers.cell_operations.base import CELL_TERMINATION_NOT_CONFIRMED, CellTerminationOutcome
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
@@ -51,6 +53,10 @@ if TYPE_CHECKING:
 _ACTOR_NAME = "ray_worker_manager"
 
 _LIVENESS_SCAN_INTERVAL_SECONDS = 10.0
+
+_STOP_CONFIRM_TIMEOUT_SECONDS = 60.0
+_STOP_CONFIRM_PROBE_INTERVAL_SECONDS = 1.0
+_STOP_CONFIRM_PROBE_TIMEOUT_SECONDS = 10.0
 
 
 class RayWorkerManager:
@@ -97,6 +103,25 @@ class RayWorkerManager:
     async def stop_cells(self, cell_ids: list[str]) -> None:
         async with self._membership_lock:
             await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
+
+    async def stop_cell_incarnation(self, cell_id: str, *, expected_workers_hash: str) -> str:
+        async with self._membership_lock:
+            cell = self._find_cell(cell_id)
+            if (observed_hash := cell.get_info().workers_hash) != expected_workers_hash:
+                logger.warning(
+                    f"Not stopping cell {cell_id}: it now runs {observed_hash}, not the {expected_workers_hash} "
+                    f"the request was issued against"
+                )
+                return CellTerminationOutcome.STALE.value
+            if not cell.alive:
+                return CellTerminationOutcome.ALREADY_GONE.value
+
+            stopped_actors = list(cell.actors)
+            await cell.stop(require_kill=True)
+
+            if not await _confirm_actors_dead(stopped_actors, timeout=_STOP_CONFIRM_TIMEOUT_SECONDS):
+                return CELL_TERMINATION_NOT_CONFIRMED
+            return CellTerminationOutcome.TERMINATED.value
 
     async def shutdown(self) -> None:
         async with self._membership_lock:
@@ -244,10 +269,10 @@ class _CellManager(Generic[SpecT]):
     async def post_setup(self) -> None:
         await self._for_all_actors(lambda a: a.post_setup())
 
-    async def stop(self) -> None:
+    async def stop(self, *, require_kill: bool = False) -> None:
         if self.actors is None:
             return
-        await self._for_all_actors(lambda a: a.stop())
+        await self._for_all_actors(lambda a: a.stop(require_kill=require_kill))
         self.actors = None
 
     async def _scan_liveness_forever(self, generation: int) -> None:
@@ -390,7 +415,7 @@ class _BaseActorManager(Generic[SpecT]):
             return False
         return await RayWorkerHandle(self.actor_handle).probe_is_dead()
 
-    async def stop(self) -> None:
+    async def stop(self, *, require_kill: bool = False) -> None:
         if self.actor_handle is None:
             return
 
@@ -400,6 +425,9 @@ class _BaseActorManager(Generic[SpecT]):
             ray.kill(self.actor_handle)
             logger.info(f"Killed actor at {self=}")
         except Exception as e:
+            if require_kill:
+                logger.error(f"Failed to kill actor at {self=}, which had to be terminated", exc_info=True)
+                raise
             logger.warning(f"Failed to kill actor at {self=} ({e})")
 
     async def _shutdown_gracefully(self) -> None:
@@ -558,6 +586,34 @@ def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
 
 def _create_ray_backend_capability() -> BackendCapability:
     return RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
+
+
+async def _confirm_actors_dead(actors: list[_BaseActorManager], *, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    pending = list(actors)
+    while pending:
+        probes = await asyncio.gather(*[_probe_actor_is_dead(actor) for actor in pending])
+        pending = [actor for actor, is_dead in zip(pending, probes, strict=True) if not is_dead]
+        if not pending:
+            break
+        if time.monotonic() >= deadline:
+            logger.error(
+                f"Actors {[actor.name for actor in pending]} still answer {timeout}s after being killed, "
+                f"so their death cannot be confirmed"
+            )
+            return False
+        await asyncio.sleep(_STOP_CONFIRM_PROBE_INTERVAL_SECONDS)
+    return True
+
+
+async def _probe_actor_is_dead(actor: _BaseActorManager) -> bool:
+    try:
+        return await asyncio.wait_for(actor.probe_is_dead(), timeout=_STOP_CONFIRM_PROBE_TIMEOUT_SECONDS)
+    except (TimeoutError, asyncio.TimeoutError):
+        return False
+    except Exception:
+        logger.warning(f"Probing whether {actor.name} died failed, so it counts as still running", exc_info=True)
+        return False
 
 
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:

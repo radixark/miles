@@ -1,9 +1,11 @@
 import asyncio
+import logging
 
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import (
+    RecordingCellOperations,
     RecordingHealthChecker,
     get_raw_actor_handles,
     make_alive_cell,
@@ -12,6 +14,7 @@ from tests.fast.ray.train.conftest import (
 )
 
 from miles.ray.train import cell as cell_module
+from miles.utils.workers.cell_operations.base import CellTerminationNotConfirmedError, CellTerminationOutcome
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
@@ -414,3 +417,253 @@ class TestFullLifecycle:
         cell._mark_as_alive(indep_dp_info=info_v2)
         assert cell.is_alive
         assert cell.indep_dp_info.quorum_id == 2
+
+
+class _NeverReturningWorkerHandle:
+    def __init__(self, *, dies_when_killed: bool = True) -> None:
+        self.killed = False
+        self.dead = False
+        self.probes = 0
+        self._dies_when_killed = dies_when_killed
+
+    async def update_weights(self, **_kwargs) -> None:
+        await asyncio.Event().wait()
+
+    async def train(self, **_kwargs) -> str:
+        await asyncio.Event().wait()
+
+    async def kill_self(self) -> None:
+        self.killed = True
+        if not self._dies_when_killed:
+            await asyncio.Event().wait()
+
+    async def probe_is_dead(self) -> bool:
+        self.probes += 1
+        return self.dead or (self._dies_when_killed and self.killed)
+
+
+class TestExecuteDeadline:
+    """A worker that never answers has to be given up on, because nothing else can unblock the caller."""
+
+    async def test_a_wedged_worker_errors_the_cell_and_is_killed(self, monkeypatch: pytest.MonkeyPatch):
+        """A trainer stuck in a native collective answers no heartbeat, so only the caller's deadline frees the run."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        handles = [_NeverReturningWorkerHandle() for _ in range(2)]
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: handles)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await cell.execute("update_weights", timeout=0.05, info=None, weight_version=1)
+
+        assert cell.is_errored
+        assert all(handle.killed for handle in handles)
+        assert all(handle.probes > 0 for handle in handles)
+
+    async def test_a_call_without_a_deadline_is_not_given_one(self, monkeypatch: pytest.MonkeyPatch):
+        """Training steps and checkpoints legitimately run for hours; a borrowed deadline would kill them."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        handles = [_NeverReturningWorkerHandle()]
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: handles)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(cell.execute("train", rollout_id=0), timeout=0.05)
+
+        assert not cell.is_errored
+        assert not handles[0].killed
+
+    async def test_a_worker_answering_inside_the_deadline_is_untouched(self, monkeypatch: pytest.MonkeyPatch):
+        """The deadline must not disturb the normal path, which is every weight update that works."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+
+        class _PromptWorkerHandle:
+            async def update_weights(self, **_kwargs) -> int:
+                return 7
+
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_PromptWorkerHandle()])
+
+        assert await cell.execute("update_weights", timeout=30.0, info=None, weight_version=1) == [7]
+        assert cell.is_alive
+
+
+class TestControlPlaneTermination:
+    """kill_self runs inside the wedged process, so a cell that ignores it must be terminated from outside."""
+
+    @pytest.fixture(autouse=True)
+    def _impatient_confirmation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cell_module, "KILL_RPC_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(cell_module, "CONFIRM_DEAD_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(cell_module, "DEAD_PROBE_INTERVAL_S", 0.01)
+        monkeypatch.setattr(cell_module, "DEAD_PROBE_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(cell_module, "STALE_CONFIRM_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(cell_module, "TERMINATE_CALL_TIMEOUT_S", 0.05)
+
+    async def test_a_worker_that_never_dies_is_terminated_through_the_control_plane(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The whole point: a process wedged in native code answers neither the rpc nor the probe."""
+        operations = RecordingCellOperations()
+        cell = make_alive_cell(0, alive_cell_indices=[0], cell_operations=operations)
+        handles = [_NeverReturningWorkerHandle(dies_when_killed=False) for _ in range(2)]
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: handles)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await cell.execute("update_weights", timeout=0.05, info=None, weight_version=1)
+
+        assert cell.is_errored
+        assert all(handle.killed for handle in handles)
+        assert operations.terminated == [(cell.cell_id, "pseudo-hash-1")]
+
+    async def test_a_worker_that_dies_on_request_is_not_terminated_through_the_control_plane(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The rpc is the fast path; going to the control plane for every failure would be a pointless api call."""
+        operations = RecordingCellOperations()
+        cell = make_alive_cell(0, alive_cell_indices=[0], cell_operations=operations)
+        handles = [_NeverReturningWorkerHandle()]
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: handles)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await cell.execute("update_weights", timeout=0.05, info=None, weight_version=1)
+
+        assert operations.terminated == []
+
+    async def test_a_successful_weight_update_terminates_nothing(self, monkeypatch: pytest.MonkeyPatch):
+        """Killing a healthy trainer because the control plane call is now wired up would end the run."""
+        operations = RecordingCellOperations()
+        cell = make_alive_cell(0, alive_cell_indices=[0], cell_operations=operations)
+
+        class _PromptWorkerHandle:
+            async def update_weights(self, **_kwargs) -> int:
+                return 7
+
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_PromptWorkerHandle()])
+
+        assert await cell.execute("update_weights", timeout=30.0, info=None, weight_version=1) == [7]
+        assert operations.terminated == []
+
+    async def test_a_stale_answer_alone_does_not_confirm_the_workers_died(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """A kubernetes hash moves when the pod is merely marked for deletion, while its process runs on."""
+        operations = RecordingCellOperations()
+        operations.outcome = CellTerminationOutcome.STALE
+        cell = make_alive_cell(0, alive_cell_indices=[0], cell_operations=operations)
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_NeverReturningWorkerHandle(dies_when_killed=False)])
+
+        with caplog.at_level(logging.INFO, logger=cell_module.__name__):
+            await cell._kill_workers_and_confirm_dead()
+
+        assert operations.terminated == [(cell.cell_id, "pseudo-hash-1")]
+        assert "confirmed=false" in caplog.text
+        assert "confirmed=true" not in caplog.text
+
+    async def test_a_stale_answer_is_confirmed_once_the_pinned_handles_stop_answering(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """A cell somebody else already removed is confirmed by probing the handles pinned to that incarnation."""
+        handle = _NeverReturningWorkerHandle(dies_when_killed=False)
+
+        class _CellOperationsThatFoundItAlreadyRemoved(RecordingCellOperations):
+            async def terminate_incarnation(self, **kwargs) -> CellTerminationOutcome:
+                handle.dead = True
+                return await super().terminate_incarnation(**kwargs)
+
+        operations = _CellOperationsThatFoundItAlreadyRemoved()
+        operations.outcome = CellTerminationOutcome.STALE
+        cell = make_alive_cell(0, alive_cell_indices=[0], cell_operations=operations)
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [handle])
+
+        with caplog.at_level(logging.INFO, logger=cell_module.__name__):
+            await cell._kill_workers_and_confirm_dead()
+
+        assert operations.terminated == [(cell.cell_id, "pseudo-hash-1")]
+        assert "confirmed=true" in caplog.text
+
+    async def test_a_control_plane_that_never_answers_leaves_the_cell_unconfirmed(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """The control plane can be wedged too, and waiting on it forever is the deadlock this op removes."""
+        operations = RecordingCellOperations()
+        operations.hangs = True
+        cell = make_alive_cell(0, alive_cell_indices=[0], cell_operations=operations)
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_NeverReturningWorkerHandle(dies_when_killed=False)])
+
+        with caplog.at_level(logging.INFO, logger=cell_module.__name__):
+            await asyncio.wait_for(cell._kill_workers_and_confirm_dead(), timeout=5.0)
+
+        assert "confirmed=false" in caplog.text
+
+    async def test_a_failed_termination_is_never_reported_as_confirmed_dead(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """A run that believes a wedged rank died would restart its dp group while the old rank still holds the gpu."""
+        operations = RecordingCellOperations()
+        operations.error = CellTerminationNotConfirmedError("the pod is still there")
+        cell = make_alive_cell(0, alive_cell_indices=[0], cell_operations=operations)
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_NeverReturningWorkerHandle(dies_when_killed=False)])
+
+        with caplog.at_level(logging.INFO, logger=cell_module.__name__):
+            await cell._kill_workers_and_confirm_dead()
+
+        assert "confirmed=false" in caplog.text
+        assert "confirmed=true" not in caplog.text
+
+    async def test_a_confirmed_termination_is_reported_as_confirmed_dead(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """The healing path reads this log to tell a released cell from one still holding its gpus."""
+        cell = make_alive_cell(0, alive_cell_indices=[0], cell_operations=RecordingCellOperations())
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_NeverReturningWorkerHandle(dies_when_killed=False)])
+
+        with caplog.at_level(logging.INFO, logger=cell_module.__name__):
+            await cell._kill_workers_and_confirm_dead()
+
+        assert "confirmed=true" in caplog.text
+
+
+class TestWaitAllWorkersDead:
+    @pytest.fixture(autouse=True)
+    def _fast_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cell_module, "DEAD_PROBE_INTERVAL_S", 0.01)
+
+    async def test_a_worker_that_never_answers_the_probe_is_not_confirmed_dead(self):
+        """wait_dead returns after logging a timeout, which would pass a live worker off as a dead one."""
+        handle = _NeverReturningWorkerHandle(dies_when_killed=False)
+
+        assert not await cell_module._wait_all_workers_dead([handle], timeout=0.05)
+
+    async def test_every_worker_must_be_dead_before_the_cell_is(self):
+        """One surviving rank keeps the collective alive, so a partly dead cell is not confirmed dead."""
+        dead, alive = _NeverReturningWorkerHandle(), _NeverReturningWorkerHandle(dies_when_killed=False)
+        await dead.kill_self()
+
+        assert not await cell_module._wait_all_workers_dead([dead, alive], timeout=0.05)
+
+    async def test_workers_that_died_are_confirmed(self):
+        """The common case must stay cheap: dead workers are confirmed on the first probe."""
+        handles = [_NeverReturningWorkerHandle() for _ in range(2)]
+        for handle in handles:
+            await handle.kill_self()
+
+        assert await cell_module._wait_all_workers_dead(handles, timeout=30.0)
+        assert all(handle.probes == 1 for handle in handles)
+
+    async def test_a_probe_that_never_answers_counts_as_still_running(self, monkeypatch: pytest.MonkeyPatch):
+        """A probe against a wedged node can hang as hard as the call it is checking on."""
+        monkeypatch.setattr(cell_module, "DEAD_PROBE_TIMEOUT_S", 0.01)
+
+        class _SilentProbeHandle:
+            async def probe_is_dead(self) -> bool:
+                await asyncio.Event().wait()
+
+        assert not await asyncio.wait_for(
+            cell_module._wait_all_workers_dead([_SilentProbeHandle()], timeout=0.05), timeout=5.0
+        )
+
+    async def test_a_probe_that_raises_counts_as_still_running(self):
+        """An unreachable probe is not evidence of death, and treating it as one would skip the real termination."""
+
+        class _BrokenProbeHandle:
+            async def probe_is_dead(self) -> bool:
+                raise RuntimeError("the node is unreachable")
+
+        assert not await cell_module._wait_all_workers_dead([_BrokenProbeHandle()], timeout=0.05)
