@@ -1,7 +1,10 @@
+import logging
 from concurrent.futures import Future
 from typing import Any
 
 from .p2p_transfer_utils import P2PTransferManager, RemoteWeightInfo
+
+logger = logging.getLogger(__name__)
 
 
 # This class, like the rest of the p2p weight-update code, is kept deliberately naive until yueming's refactor part 2 reshapes it.
@@ -14,18 +17,43 @@ class _P2PRolloutCellUpdater:
         targets_by_rollout_engine_rank: dict[int, RemoteWeightInfo],
     ) -> None:
         self.cell_id = cell_id
+        self.error: BaseException | None = None
         self._transfer_engine = transfer_engine
         self._transfer_manager = transfer_manager
+        self._disposed = False
         self._target_by_rollout_engine_rank = targets_by_rollout_engine_rank
         self._pending_writes: list[Future[None]] = []
+
+    @property
+    def is_errored(self) -> bool:
+        return self.error is not None
+
+    @property
+    def is_disposed(self) -> bool:
+        return self._disposed
+
+    @property
+    def accepts_writes(self) -> bool:
+        return not self._disposed and not self.is_errored
+
+    def mark_errored(self, error: BaseException) -> None:
+        if self.error is not None:
+            logger.warning(f"inference cell {self.cell_id} failed again, keeping the first error", exc_info=error)
+            return
+        self.error = error
+        logger.error(f"inference cell {self.cell_id} can no longer be updated", exc_info=error)
+
+    def dispose(self) -> None:
+        self._disposed = True
 
     def submit_write(
         self, rollout_engine_rank: int, names: list[str], weight_memory_registry: dict[str, tuple[int, int, int]]
     ) -> None:
+        if not self.accepts_writes:
+            return
         self._pending_writes.append(
             self._transfer_manager.submit(
-                _do_p2p_write_one_session,
-                self._transfer_engine,
+                self._write_if_active,
                 self._target_by_rollout_engine_rank[rollout_engine_rank],
                 names,
                 weight_memory_registry,
@@ -36,6 +64,17 @@ class _P2PRolloutCellUpdater:
         pending, self._pending_writes = self._pending_writes, []
         for future in pending:
             future.result()
+
+    def _write_if_active(
+        self,
+        target: RemoteWeightInfo,
+        names: list[str],
+        weight_memory_registry: dict[str, tuple[int, int, int]],
+    ) -> None:
+        if not self.accepts_writes:
+            logger.warning(f"[P2P-Shared] skipping a queued write to cell {self.cell_id}")
+            return
+        _do_p2p_write_one_session(self._transfer_engine, target, names, weight_memory_registry)
 
 
 def _do_p2p_write_one_session(

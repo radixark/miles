@@ -3,13 +3,16 @@
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+
+if TYPE_CHECKING:
+    from miles.backends.training_utils.weight_update.protocols.p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 
 
 class WeightTransferProtocol(ABC):
@@ -30,6 +33,7 @@ class WeightTransferProtocol(ABC):
         self.args = args
         self.rollout_engines: Sequence[SGLangApiClient] | None = None
         self.is_sender: bool | None = None
+        self.cell_updaters: list[_P2PRolloutCellUpdater] = []
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
 
