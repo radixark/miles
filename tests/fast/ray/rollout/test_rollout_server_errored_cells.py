@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
@@ -220,6 +221,7 @@ class TestStartUpdateWeightsSkipsErroredCells:
         controller.args = srv.args
         controller.servers = {"default": srv}
         controller.context_lock = srv.context_lock
+        controller._cell_operations = AsyncMock()
         return controller
 
     async def test_the_next_update_targets_only_the_cells_that_are_still_alive(self, cell_env):

@@ -9,6 +9,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
@@ -303,15 +304,32 @@ async def update_weights(
         await orchestration_executor.run_after_step(rollout_id=rollout_id)
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
-    weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
-    await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+    try:
+        report: WeightUpdateReport = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+    except BaseException:
+        await _abort_update_window(inference_controller, snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        raise
+    await inference_controller.end_update_weights(
+        snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+        updated_cell_ids=list(report.updated_cell_ids),
+        failed_cell_ids=list(report.failed_cell_ids),
+    )
 
     await _maybe_log_inference_engine_weight_checksums(
         args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
     )
 
-    if weight_version is not None:
-        await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
+    if report.weight_version is not None:
+        await rollout_executor.set_weight_version(report.weight_version, trainer_model_id=trainer_model_id)
+
+
+async def _abort_update_window(
+    inference_controller: BaseWorkerHandle, *, snapshot_cell_id_to_hashes: dict[str, str]
+) -> None:
+    try:
+        await inference_controller.abort_update_weights(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes)
+    except Exception:
+        logger.exception("Closing the weight update window after a failed update failed as well")
 
 
 async def _maybe_log_inference_engine_weight_checksums(

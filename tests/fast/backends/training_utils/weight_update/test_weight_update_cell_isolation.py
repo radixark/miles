@@ -2,6 +2,7 @@ from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
@@ -109,7 +110,7 @@ def _run(
     rank: int = 0,
     weight_version: int = 1,
     other_rank_reports: list[list[str]] | None = None,
-) -> int:
+) -> WeightUpdateReport:
     with (
         patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
         patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
@@ -177,9 +178,48 @@ class TestPerCellSessionFrame:
         ]
         updater = _make_updater(engines, protocol)
 
-        assert _run(updater, weight_version=4) == 4
+        assert _run(updater, weight_version=4).weight_version == 4
         assert protocol.inference_cell_health.errored_cell_ids == ["cell-0"]
         assert protocol.inference_cell_health.healthy_cell_ids == ["cell-1"]
+
+
+class TestUpdateReport:
+    """The trainer's answer is what the controller uses to retire exactly the lost cells."""
+
+    def test_the_report_separates_the_lost_cell_from_the_reached_one(self) -> None:
+        """Reporting the lost cell as updated would put a half-written engine back into the router."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        engines = [
+            _RecordingApiClient(calls, "cell-0", failing_method="pause_generation"),
+            _RecordingApiClient(calls, "cell-1"),
+        ]
+        updater = _make_updater(engines, protocol)
+
+        report = _run(updater)
+
+        assert report.failed_cell_ids == ("cell-0",)
+        assert report.updated_cell_ids == ("cell-1",)
+
+    def test_a_cell_only_another_rank_lost_is_still_reported_as_failed(self) -> None:
+        """Every rank answers the same verdict, so the controller cannot be handed two different fleets."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        updater = _make_updater([_RecordingApiClient(calls, cell_id) for cell_id in _CELL_IDS], protocol)
+
+        report = _run(updater, other_rank_reports=[["cell-0"]])
+
+        assert report.failed_cell_ids == ("cell-0",)
+
+    def test_every_assigned_cell_appears_in_the_report(self) -> None:
+        """A missing cell would make the controller reject the whole answer instead of publishing."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        updater = _make_updater([_RecordingApiClient(calls, cell_id) for cell_id in _CELL_IDS], protocol)
+
+        report = _run(updater)
+
+        report.validate_assignment(list(_CELL_IDS))
 
 
 class TestCrossRankAgreement:

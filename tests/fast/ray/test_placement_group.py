@@ -10,6 +10,7 @@ from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import (
     create_rollout_components,
@@ -319,7 +320,11 @@ class TestCreatePlacementGroups:
 class TestUpdateWeights:
     def _fakes(self, *, weight_version: int | None):
         actor_model = MagicMock()
-        actor_model.update_weights = AsyncMock(return_value=weight_version)
+        actor_model.update_weights = AsyncMock(
+            return_value=WeightUpdateReport(
+                weight_version=weight_version, updated_cell_ids=("cell-0",), failed_cell_ids=()
+            )
+        )
         rollout_executor = MagicMock()
         rollout_executor.set_weight_version = AsyncMock()
         return actor_model, rollout_executor
@@ -443,6 +448,56 @@ class TestUpdateWeights:
         )
 
         assert [payload["rollout_id"] for payload in logged] == [6]
+
+    async def test_a_failed_update_closes_the_window_without_marking_anything_ready(self):
+        """A trainer that raised leaves the controller lock held, wedging every later rollout call."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+        actor_model.update_weights = AsyncMock(side_effect=RuntimeError("the trainer died"))
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), abort_update_weights=AsyncMock()
+        )
+
+        with pytest.raises(RuntimeError, match="the trainer died"):
+            await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
+
+        inference_controller.abort_update_weights.assert_awaited_once()
+        inference_controller.end_update_weights.assert_not_awaited()
+        rollout_executor.set_weight_version.assert_not_awaited()
+
+    async def test_a_failing_cleanup_does_not_hide_why_the_update_failed(self):
+        """The trainer error names the actual fault; the cleanup error would send the operator down a dead end."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+        actor_model.update_weights = AsyncMock(side_effect=RuntimeError("the trainer died"))
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(),
+            end_update_weights=AsyncMock(),
+            abort_update_weights=AsyncMock(side_effect=RuntimeError("the controller is gone too")),
+        )
+
+        with pytest.raises(RuntimeError, match="the trainer died"):
+            await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
+
+    async def test_the_failed_targets_are_handed_to_the_controller(self):
+        """Without them the controller marks a half-written engine ready and the router keeps routing to it."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+        actor_model.update_weights = AsyncMock(
+            return_value=WeightUpdateReport(
+                weight_version=7, updated_cell_ids=("cell-0",), failed_cell_ids=("cell-1",)
+            )
+        )
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+
+        await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
+
+        end_kwargs = inference_controller.end_update_weights.await_args.kwargs
+        assert end_kwargs["updated_cell_ids"] == ["cell-0"]
+        assert end_kwargs["failed_cell_ids"] == ["cell-1"]
 
     async def test_a_trainer_that_skipped_the_broadcast_publishes_nothing(self):
         """--debug-skip-weight-update leaves the engines on their old weights, so the version must not move."""

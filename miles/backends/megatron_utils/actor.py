@@ -13,6 +13,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport, build_untouched_targets_report
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -880,17 +881,17 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: UpdatableEngines, weight_version: int) -> int | None:
+    def update_weights(self, info: UpdatableEngines, weight_version: int) -> WeightUpdateReport:
         self._heartbeat.bump()
-        if self.args.debug_train_only or self.args.debug_rollout_only:
-            return None
-
         rollout_engines = info.rollout_engines
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
         engine_cell_ids = info.engine_cell_ids
         del info
+
+        if self.args.debug_train_only or self.args.debug_rollout_only:
+            return build_untouched_targets_report(engine_cell_ids)
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
         if process_groups_are_temporary:
@@ -914,7 +915,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 torch_memory_saver.pause(tag="param_buffer")
             if process_groups_are_temporary:
                 destroy_process_groups()
-            return None
+            return build_untouched_targets_report(engine_cell_ids)
 
         version_update_names: list[str] = []
         if is_multi_lora_enabled(self.args):
@@ -929,8 +930,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights(weight_version=weight_version)
+            report = self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
+            report.validate_assignment(engine_cell_ids)
 
             if is_multi_lora_enabled(self.args):
                 from miles.backends.megatron_utils.multi_lora_utils import commit_weight_push
@@ -962,7 +964,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             destroy_process_groups()
 
-        return self.weight_updater.weight_version
+        return report
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
