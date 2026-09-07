@@ -13,6 +13,7 @@ from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment
 import miles.ray.train.group as group_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.weight_update.report import WeightUpdateReport
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
@@ -38,6 +39,7 @@ def _make_mock_args(
     num_cells: int = 3,
     ci_ft_test_actions: str | None = None,
     ci_ft_test_actions_path: str | None = None,
+    update_weight_transfer_mode: str = "broadcast",
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
@@ -68,6 +70,8 @@ def _make_mock_args(
         worker_comm_backend="ray",
         trainer_model_id=None,
         update_weights_timeout=1800.0,
+        colocate=False,
+        update_weight_transfer_mode=update_weight_transfer_mode,
     )
 
 
@@ -1223,6 +1227,8 @@ class TestUpdateWeightsReturnsTheVersion:
             debug_rollout_only=False,
             trainer_model_id=None,
             update_weights_timeout=1800.0,
+            colocate=False,
+            update_weight_transfer_mode="broadcast",
         )
         group._trainer_id = "trainer-0"
         group._last_published_weight_version = 0
@@ -1290,6 +1296,139 @@ class TestUpdateWeightsReturnsTheVersion:
         assert report.failed_cell_ids == ("cell-1",)
 
 
+class _FakeTrainerCell:
+    def __init__(self, cell_index: int, *, outcome=None) -> None:
+        self.cell_index = cell_index
+        self.cell_id = f"cell-{cell_index}"
+        self.is_alive = True
+        self.calls: list[dict] = []
+        self._outcome = outcome
+
+    async def execute(self, fn_name: str, *, timeout: float, info, weight_version: int):
+        self.calls.append(dict(fn_name=fn_name, timeout=timeout, info=info, weight_version=weight_version))
+        if isinstance(self._outcome, BaseException):
+            raise self._outcome
+        if self._outcome is not None:
+            return self._outcome
+        return [
+            _rank_report(weight_version, updated=tuple(info.engine_cell_ids)),
+            _rank_report(weight_version, updated=tuple(info.engine_cell_ids)),
+        ]
+
+
+def _make_fanout_controller(cells: list[_FakeTrainerCell]) -> TrainerController:
+    controller = TrainerController.__new__(TrainerController)
+    controller.args = SimpleNamespace(update_weights_timeout=1800.0, colocate=False, update_weight_transfer_mode="p2p")
+    controller._trainer_id = "trainer-0"
+    controller._last_published_weight_version = 0
+    controller._cells_by_id = {cell.cell_id: cell for cell in cells}
+    return controller
+
+
+def _p2p_info(count: int) -> UpdatableEngines:
+    return UpdatableEngines(
+        rollout_engines=[f"client-{index}" for index in range(count)],
+        engine_gpu_counts=[1] * count,
+        engine_gpu_offsets=list(range(count)),
+        engine_cell_ids=[f"engine-{index}" for index in range(count)],
+        snapshot_cell_id_to_hashes={f"engine-{index}": f"hash-{index}" for index in range(count)},
+    )
+
+
+class TestUpdateWeightsUsesEveryAliveCell:
+    """One trainer cell doing all the sending wastes the others and makes it the single point of failure."""
+
+    async def test_every_alive_cell_gets_its_own_slice_of_the_targets(self):
+        """Both cells must send, and no engine may be written by two of them or by none."""
+        cells = [_FakeTrainerCell(0), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(3))
+
+        assert [call["info"].engine_cell_ids for call in cells[0].calls] == [["engine-0", "engine-1"]]
+        assert [call["info"].engine_cell_ids for call in cells[1].calls] == [["engine-2"]]
+        assert sorted(report.updated_cell_ids) == ["engine-0", "engine-1", "engine-2"]
+
+    async def test_a_cell_that_is_not_alive_is_left_out(self):
+        """A dead cell cannot send, and giving it a slice would leave those engines on old weights."""
+        cells = [_FakeTrainerCell(0), _FakeTrainerCell(1)]
+        cells[1].is_alive = False
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(2))
+
+        assert [call["info"].engine_cell_ids for call in cells[0].calls] == [["engine-0", "engine-1"]]
+        assert cells[1].calls == []
+        assert sorted(report.updated_cell_ids) == ["engine-0", "engine-1"]
+
+    async def test_a_trainer_with_no_targets_is_not_called(self):
+        """Opening a session frame for an empty assignment only risks failing an update that had nothing to do."""
+        cells = [_FakeTrainerCell(0), _FakeTrainerCell(1), _FakeTrainerCell(2)]
+        controller = _make_fanout_controller(cells)
+
+        await controller.update_weights(info=_p2p_info(2))
+
+        assert cells[2].calls == []
+
+    async def test_every_cell_is_given_the_same_reserved_ordinal(self):
+        """Two trainers publishing different versions would leave the fleet serving a mix of them."""
+        cells = [_FakeTrainerCell(0), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        await controller.update_weights(info=_p2p_info(2))
+
+        assert [call["weight_version"] for cell in cells for call in cell.calls] == [1, 1]
+
+    async def test_the_cells_send_at_the_same_time(self):
+        """Serializing the trainers would make an update take as long as the sum of every transfer."""
+        started = asyncio.Event()
+        blocker = asyncio.Event()
+
+        class _BlockingCell(_FakeTrainerCell):
+            async def execute(self, fn_name: str, *, timeout: float, info, weight_version: int):
+                started.set()
+                await blocker.wait()
+                return await super().execute(fn_name, timeout=timeout, info=info, weight_version=weight_version)
+
+        class _ReleasingCell(_FakeTrainerCell):
+            async def execute(self, fn_name: str, *, timeout: float, info, weight_version: int):
+                await started.wait()
+                blocker.set()
+                return await super().execute(fn_name, timeout=timeout, info=info, weight_version=weight_version)
+
+        cells = [_BlockingCell(0), _ReleasingCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        report = await asyncio.wait_for(controller.update_weights(info=_p2p_info(2)), timeout=5)
+
+        assert sorted(report.updated_cell_ids) == ["engine-0", "engine-1"]
+
+    async def test_the_failures_of_every_cell_reach_the_caller(self):
+        """The orchestration script retires exactly the reported failures, whichever trainer lost them."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=(), failed=("engine-0",))]),
+            _FakeTrainerCell(1),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(2))
+
+        assert report.failed_cell_ids == ("engine-0",)
+        assert report.updated_cell_ids == ("engine-1",)
+
+    async def test_a_non_p2p_backend_keeps_using_a_single_cell(self):
+        """Its transfer group spans the whole fleet, so slicing the targets across trainers would break it."""
+        cells = [_FakeTrainerCell(0), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+        controller.args.update_weight_transfer_mode = "broadcast"
+        controller._execute_first_alive = AsyncMock(return_value=[_rank_report(1, updated=("engine-0", "engine-1"))])
+
+        report = await controller.update_weights(info=_p2p_info(2))
+
+        assert cells[0].calls == [] and cells[1].calls == []
+        assert report.updated_cell_ids == ("engine-0", "engine-1")
+
+
 class _RecordingCellFleet:
     def __init__(self, outcomes: list) -> None:
         self._outcomes = list(outcomes)
@@ -1307,7 +1446,9 @@ class _RecordingCellFleet:
 
 def _make_version_controller(outcomes: list) -> tuple[TrainerController, _RecordingCellFleet]:
     controller = TrainerController.__new__(TrainerController)
-    controller.args = SimpleNamespace(update_weights_timeout=1800.0)
+    controller.args = SimpleNamespace(
+        update_weights_timeout=1800.0, colocate=False, update_weight_transfer_mode="broadcast"
+    )
     controller._trainer_id = "trainer-0"
     controller._last_published_weight_version = 0
     fleet = _RecordingCellFleet(outcomes)
@@ -1476,7 +1617,9 @@ class TestUpdateWeightsDeadline:
     async def test_the_configured_deadline_is_the_one_the_cell_is_given(self):
         """A deadline shorter than a real transfer would kill every healthy update instead of the stuck one."""
         controller, fleet = _make_version_controller([1])
-        controller.args = SimpleNamespace(update_weights_timeout=42.5)
+        controller.args = SimpleNamespace(
+            update_weights_timeout=42.5, colocate=False, update_weight_transfer_mode="broadcast"
+        )
 
         await controller.update_weights(info=_assigned_info())
 
