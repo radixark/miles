@@ -1,7 +1,8 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Coroutine, Mapping
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -106,9 +107,37 @@ class _P2PRolloutCellUpdater:
         )
 
     def wait_for_pending_writes(self) -> None:
-        pending, self._pending_writes = self._pending_writes, []
-        for future in pending:
-            future.result()
+        for future in list(self._pending_writes):
+            self._collect_write(future)
+
+    def take_unfinished_writes(self) -> list[Future]:
+        unfinished, self._pending_writes = self._pending_writes, []
+        return unfinished
+
+    def _collect_write(self, future: Future) -> None:
+        try:
+            future.result(timeout=0.0 if self.is_errored else self._transfer_manager.transfer_timeout)
+        except FutureTimeoutError as error:
+            self._abandon_write(future, error)
+            return
+        except CancelledError:
+            self._forget_write(future)
+            return
+        except Exception as error:
+            logger.exception(f"[P2P-Shared] a write to cell {self.cell_id} failed")
+            self.mark_errored(error)
+        self._forget_write(future)
+
+    def _abandon_write(self, future: Future, error: BaseException) -> None:
+        self.mark_errored(error)
+        if future.cancel():
+            self._forget_write(future)
+            return
+        logger.error(f"[P2P-Shared] a write to cell {self.cell_id} is still running after the transfer timeout")
+
+    def _forget_write(self, future: Future) -> None:
+        if future in self._pending_writes:
+            self._pending_writes.remove(future)
 
     def _submit(
         self, op: str, make_request: Callable[[SGLangApiClient], Coroutine[Any, Any, Any]]
