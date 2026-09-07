@@ -92,8 +92,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
         if transfer_ready_params and ready_hf_tensors:
             last_idx = len(self._transfer_engine_meta_list) - 1
-            for i, (model_replica, remote_weight_infos) in enumerate(self._transfer_engine_meta_list):
-                model_replica.load_weights(ready_hf_tensors)
+            for i, (model_replica, remote_weight_infos, parallelism_config) in enumerate(
+                self._transfer_engine_meta_list
+            ):
+                with ParallelismContext(parallelism_config):
+                    model_replica.load_weights(ready_hf_tensors)
 
                 is_last = i == last_idx
                 if is_last:
@@ -163,7 +166,10 @@ class UpdateWeightP2P(WeightTransferProtocol):
             # in self._transfer_engine_meta_list: tuple of
             # - single CPU replica shared among all sessions
             # - related remote weight info
-            self._transfer_engine_meta_list: list[tuple[torch.nn.Module, list[RemoteWeightInfo]]] = []
+            # - the replica's parallelism, re-entered around every load_weights
+            self._transfer_engine_meta_list: list[
+                tuple[torch.nn.Module, list[RemoteWeightInfo], RankParallelismConfig]
+            ] = []
             first_engine_rank = True
             for rank_targets in targets_grouped_by_engine_rank.values():
                 first_target = rank_targets[0]
@@ -194,7 +200,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     for t in rank_targets
                 ]
 
-                self._transfer_engine_meta_list.append((model_replica, remote_infos))
+                self._transfer_engine_meta_list.append((model_replica, remote_infos, parallelism_config))
 
     def _create_cpu_replica(
         self,
