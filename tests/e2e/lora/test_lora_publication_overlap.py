@@ -4,6 +4,7 @@ The tensor source is synthetic; WeightUpdater, transport, SGLang and generation
 are real. This checks publication, not optimizer or Tinker SDK training E2E.
 """
 
+import asyncio
 import concurrent.futures
 import json
 import os
@@ -12,6 +13,7 @@ import threading
 import time
 import unittest
 from argparse import Namespace
+from dataclasses import dataclass, field
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -35,6 +37,7 @@ from miles.utils.ft_utils.process_group_utils import GroupInfo
 register_cuda_ci(est_time=240, suite="stage-c-2-gpu-h200", labels=["lora"])
 
 _NAMES = ("A@1", "B", "C")
+_UPDATES = (("A@2", 4), ("B@2", 5))
 _TOKENS = 4096
 
 
@@ -54,14 +57,40 @@ class _AdapterIterator(HfWeightIteratorBase):
                 yield [(f"{prefix}.lora_A.weight", a.cuda()), (f"{prefix}.lora_B.weight", b.cuda())]
 
 
+@dataclass(frozen=True)
 class _PublicationClient(SGLangApiClient):
+    _probed_sessions: set[str] = field(default_factory=set, compare=False)
+
     async def _make_request(self, endpoint, payload=None):
         assert endpoint not in {"pause_generation", "continue_generation", "flush_cache", "update_weight_version"}
         started = time.monotonic()
         result = await super()._make_request(endpoint, payload)
-        if payload and payload.get("session_id") == "A@2":
+        session_id = (payload or {}).get("session_id")
+        if session_id in {name for name, _ in _UPDATES}:
             print(f"{self.server_url} {endpoint}: {time.monotonic() - started:.3f}s", flush=True)
+            if endpoint in {"update_weights_from_tensor", "update_weights_from_distributed"}:
+                if session_id not in self._probed_sessions:
+                    self._probed_sessions.add(session_id)
+                    await asyncio.to_thread(self._probe_new_c_request, session_id)
         return result
+
+    def _probe_new_c_request(self, session_id):
+        # A bucket has arrived, but this session cannot finish before C does.
+        response = requests.post(
+            f"{self.server_url}/generate",
+            json={
+                "text": "Continue counting integers, separated by commas: 1, 2, 3,",
+                "lora_path": "C",
+                "sampling_params": {"temperature": 0, "max_new_tokens": 32, "ignore_eos": True},
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        assert response.json()["meta_info"]["completion_tokens"] == 32, response.text
+        print(
+            json.dumps({"engine": self.server_url, "new_C_completed_during_session": session_id}),
+            flush=True,
+        )
 
 
 def _make_updater(urls, colocate):
@@ -153,17 +182,26 @@ def _publish_with_live_requests(updater, urls):
         assert all(not future.done() for future in active.values())
         dist.barrier()
         begin = time.monotonic()
-        updater.push_adapter("A@2", SimpleNamespace(rank=8, alpha=8, seed=4))
+        publications = []
+        for name, seed in _UPDATES:
+            updater.push_adapter(name, SimpleNamespace(rank=8, alpha=8, seed=seed))
+            assert all(not future.done() for future in active.values()), progress
+            publications.append({"name": name, "elapsed": time.monotonic() - begin})
         published = time.monotonic()
         assert all(not future.done() for future in active.values()), progress
         progress_at_publish = {f"engine-{urls.index(url)}/{name}": count for (url, name), count in progress.items()}
         for url in urls:
-            response = requests.post(
-                f"{url}/generate",
-                json={"text": "Hello", "lora_path": "A@2", "sampling_params": {"temperature": 0, "max_new_tokens": 1}},
-                timeout=30,
-            )
-            response.raise_for_status()
+            for name, _ in _UPDATES:
+                response = requests.post(
+                    f"{url}/generate",
+                    json={
+                        "text": "Hello",
+                        "lora_path": name,
+                        "sampling_params": {"temperature": 0, "max_new_tokens": 1},
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
         for pair, future in active.items():
             tokens, finished = future.result(timeout=120)
             assert published < finished, pair
@@ -172,6 +210,7 @@ def _publish_with_live_requests(updater, urls):
         json.dumps(
             {
                 "publication_seconds": published - begin,
+                "publications": publications,
                 "tokens_at_publish": progress_at_publish,
                 "engines": len(urls),
                 "old_version_tokens_unchanged": True,
@@ -200,7 +239,8 @@ def _rank_main(rank, urls, store_path, colocate):
             _publish_with_live_requests(updater, urls)
         else:
             dist.barrier()
-            updater.push_adapter("A@2", SimpleNamespace(rank=8, alpha=8, seed=4))
+            for name, seed in _UPDATES:
+                updater.push_adapter(name, SimpleNamespace(rank=8, alpha=8, seed=seed))
         dist.barrier()
     finally:
         dist.destroy_process_group()

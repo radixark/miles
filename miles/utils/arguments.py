@@ -839,7 +839,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "'abort' immediately terminates all requests (previous default). "
                     "'retract' moves running requests back to the waiting queue and "
                     "recomputes KV cache after update. "
-                    "'in_place' freezes requests and resumes with existing KV cache."
+                    "'in_place' freezes requests and resumes with existing KV cache. "
+                    "Publishing fresh LoRA versions does not pause generation and does not use this mode."
                 ),
             )
             parser.add_argument(
