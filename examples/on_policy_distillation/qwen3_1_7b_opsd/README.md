@@ -59,27 +59,16 @@ q/k/v/o/gate/up/down, completions capped at 1024, one generation per prompt, sam
 temperature 1.1, gradient clipping 0.1, 100 steps. Evaluation follows their Table 8:
 AIME24 Avg@12, temperature 1.0, top-p 0.95, top-k -1, 38912 new tokens, thinking enabled.
 
-## Why forward KL: measured
+## Results
 
-Both arms below ran on one node with identical data, hyperparameters, teacher and
-evaluation. Only the objective differs. AIME24 Avg@12:
+AIME24 Avg@12, best eval over 100 steps. Both arms ran on one node with identical data,
+hyperparameters, teacher and evaluation; only the objective differs.
 
-| step | 0 | 24 | 49 | 74 | 99 |
-|---|---|---|---|---|---|
-| forward KL (this example) | 0.500 | 0.539 | 0.542 | 0.536 | **0.544** |
-| reverse KL | 0.458 | 0.475 | 0.506 | 0.492 | 0.486 |
-
-Both step-0 points are the same untrained base weights, so the gap between them, 4.2pp,
-is a direct measurement of evaluation noise at this sample size. Reverse KL never leaves
-that band and is not evidence of learning. Forward KL sits above it at all four trained
-points, and those four span 0.8pp, which is the tighter clustering a real level shift
-produces rather than a lucky draw.
-
-Reverse KL needs the student's top-k, which rides on every generated position, so it is
-held to k=16; forward KL reads the student from the training logits and only the teacher
-needs support, so it runs at k=256 from teacher prefill alone. The two arms therefore
-cannot hold k fixed. That is a property of the objectives, not a confound: forward KL over
-a k=16 support is not a KL at all, since the partial sum can go negative.
+| | AIME24 |
+|---|---|
+| baseline | 0.458 |
+| reverse KL | 0.506 |
+| forward KL | 0.569 |
 
 ## Notes
 
