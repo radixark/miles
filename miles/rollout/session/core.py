@@ -245,11 +245,14 @@ class SessionCore:
             body["session_server_instance_id"] = self.instance_id
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def create_session(self, *, evaluation: bool = False, sampling_defaults: dict | None = None) -> Response:
+    async def create_session(
+        self, *, evaluation: bool = False, sampling_defaults: dict | None = None, extra_key: str | None = None
+    ) -> Response:
         session_id = self.registry.create_session(
             evaluation=evaluation,
             sampling_defaults=sampling_defaults,
             sampling_support_replay=not evaluation and self.config.use_sampling_support_replay,
+            extra_key=extra_key,
         )
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 

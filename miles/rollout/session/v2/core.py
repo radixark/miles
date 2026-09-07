@@ -21,6 +21,7 @@ from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
+    SessionStateV2,
     commit_generation,
     prepare_token_ids_and_request_args,
 )
@@ -168,6 +169,7 @@ class SessionCoreV2(SessionCore):
 
             checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
             self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
+            _add_session_extra_key(request_body, session)
 
             proxy_body = json.dumps(request_body).encode()
         # --- lock released ---
@@ -221,3 +223,8 @@ class SessionCoreV2(SessionCore):
         # --- lock released ---
 
         return _chat_client_response(result, response, client_stream)
+
+
+def _add_session_extra_key(request_body: dict, session: SessionStateV2) -> None:
+    if session.extra_key is not None:
+        request_body["extra_key"] = session.extra_key

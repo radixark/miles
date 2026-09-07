@@ -4,6 +4,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel, StrictBaseModel
 
 
 class CreateSessionRequest(StrictBaseModel):
+    extra_key: str | None = None
     evaluation: StrictBool = False
     # the caller resolves rollout/eval/dataset values; the session only fills fields a request omits
     temperature: StrictFloat | None = None
