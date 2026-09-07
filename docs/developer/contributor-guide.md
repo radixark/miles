@@ -33,7 +33,7 @@ miles/
 ├── tools/                    # checkpoint converters, quantizers, profilers
 ├── tests/                    # fast / fast-gpu / e2e / ci / manual (see Running CI)
 ├── docker/                   # Dockerfile, Dockerfile.rocm, build.py, patches
-├── docs/                     # the source of this site, plus docs/ci internals
+├── docs/                     # the source of this site, plus docs/developer/ci internals
 └── .claude/                  # rules and skills (see What lives in .claude)
 ```
 
