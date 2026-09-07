@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 class P2PInferenceCellUpdater:
     def __init__(
         self,
-        engine_ind: int,
+        cell_id: str,
         transfer_engine: Any,
         transfer_manager: P2PTransferManager,
         targets_by_engine_rank: dict[int, RemoteWeightInfo],
     ) -> None:
-        self.engine_ind = engine_ind
+        self.cell_id = cell_id
         self._transfer_engine = transfer_engine
         self._transfer_manager = transfer_manager
         self._target_by_engine_rank = targets_by_engine_rank

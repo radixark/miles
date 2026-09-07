@@ -104,6 +104,8 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
         rollout_engines,
         engine_gpu_counts=None,
         engine_gpu_offsets=None,
+        *,
+        engine_cell_ids,
     ):
         self.rollout_engines = rollout_engines
 
@@ -120,7 +122,9 @@ def _make_updater(model, rollout_engines):
         Namespace(update_weight_buffer_size=1024),
         SimpleNamespace(config=SimpleNamespace(model_type=""), state_dict=lambda: model),
     )
-    updater.connect_rollout_engines(rollout_engines, None)
+    updater.connect_rollout_engines(
+        rollout_engines, None, engine_cell_ids=[f"engine-{index}" for index in range(len(rollout_engines))]
+    )
     return updater
 
 
@@ -231,6 +235,7 @@ class _RecordingWeightUpdater:
         self.conn_status: ConnStatusManager = ConnStatusManager()
         self.connect_calls: list[list[object]] = []
         self.connect_topologies: list[tuple[list[int] | None, list[int] | None]] = []
+        self.connect_cell_ids: list[list[str]] = []
         self.update_weights_calls: int = 0
         self.weight_version: int = 0
 
@@ -239,9 +244,12 @@ class _RecordingWeightUpdater:
         rollout_engines: list[object],
         engine_gpu_counts: list[int] | None = None,
         engine_gpu_offsets: list[int] | None = None,
+        *,
+        engine_cell_ids: list[str],
     ) -> None:
         self.connect_calls.append(list(rollout_engines))
         self.connect_topologies.append((engine_gpu_counts, engine_gpu_offsets))
+        self.connect_cell_ids.append(list(engine_cell_ids))
 
     def update_weights(self, weight_version: int) -> None:
         self.update_weights_calls += 1
@@ -267,6 +275,7 @@ def _make_updatable_engines(
         has_new_engines=has_new_engines,
         engine_gpu_counts=[1] * len(rollout_engines),
         engine_gpu_offsets=list(range(len(rollout_engines))),
+        engine_cell_ids=[f"engine-{index}" for index in range(len(rollout_engines))],
         snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes if snapshot_cell_id_to_hashes is not None else {},
     )
 

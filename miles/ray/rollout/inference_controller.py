@@ -227,14 +227,17 @@ class InferenceController:
                 rollout_engines=[],
                 engine_gpu_counts=[],
                 engine_gpu_offsets=[],
+                engine_cell_ids=[],
                 snapshot_cell_id_to_hashes={},
             )
 
+        cells = srv.engine_cells
         return UpdatableEngines(
-            rollout_engines=srv.api_clients,
-            engine_gpu_counts=srv.engine_gpu_counts,
-            engine_gpu_offsets=srv.engine_gpu_offsets,
-            snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
+            rollout_engines=[cell.api_client for cell in cells],
+            engine_gpu_counts=[cell.meta.num_gpus_per_engine for cell in cells],
+            engine_gpu_offsets=[cell.meta.gpu_offset for cell in cells],
+            engine_cell_ids=[cell.meta.cell_id for cell in cells],
+            snapshot_cell_id_to_hashes={cell.meta.cell_id: cell.meta.workers_hash for cell in cells},
         )
 
     @releases_lock
@@ -393,7 +396,28 @@ class UpdatableEngines:
     rollout_engines: list[SGLangApiClient]
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
+    engine_cell_ids: list[str]
     snapshot_cell_id_to_hashes: dict[str, str]
+
+    def __post_init__(self) -> None:
+        lengths = {
+            "rollout_engines": len(self.rollout_engines),
+            "engine_gpu_counts": len(self.engine_gpu_counts),
+            "engine_gpu_offsets": len(self.engine_gpu_offsets),
+            "engine_cell_ids": len(self.engine_cell_ids),
+        }
+        assert len(set(lengths.values())) == 1, f"the per-engine lists must be aligned, got {lengths}"
+        assert len(set(self.engine_cell_ids)) == len(
+            self.engine_cell_ids
+        ), f"every engine must name its own cell, got {self.engine_cell_ids}"
+        assert set(self.engine_cell_ids) == set(self.snapshot_cell_id_to_hashes), (
+            f"the worker generation snapshot must cover exactly these engines, got "
+            f"{sorted(self.snapshot_cell_id_to_hashes)} for {sorted(self.engine_cell_ids)}"
+        )
+        for cell_id, gpu_count in zip(self.engine_cell_ids, self.engine_gpu_counts, strict=True):
+            assert (
+                isinstance(gpu_count, int) and not isinstance(gpu_count, bool) and gpu_count > 0
+            ), f"engine {cell_id} serves on {gpu_count!r} GPUs, which cannot be updated"
 
 
 # TODO may move and generalize later

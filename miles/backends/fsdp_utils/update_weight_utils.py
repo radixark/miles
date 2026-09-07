@@ -72,6 +72,8 @@ class UpdateWeight(abc.ABC):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
+        *,
+        engine_cell_ids: Sequence[str],
     ) -> None:
         pass
 
@@ -147,6 +149,8 @@ class UpdateWeightFromTensor(UpdateWeight):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
+        *,
+        engine_cell_ids: Sequence[str],
     ) -> None:
         """Attach rollout engines and create per-engine IPC (Gloo) groups (sets gather src rank, engine, tp_rank)."""
         self.rollout_engines = rollout_engines
@@ -235,6 +239,8 @@ class UpdateWeightFromDistributed(UpdateWeight):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
+        *,
+        engine_cell_ids: Sequence[str],
     ) -> None:
         """On rank 0, initialize a temporary NCCL group for parameter broadcast."""
         self.rollout_engines = rollout_engines

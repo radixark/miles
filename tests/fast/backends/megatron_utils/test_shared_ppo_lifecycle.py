@@ -206,6 +206,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
         rollout_engines=[],
         engine_gpu_counts=[],
         engine_gpu_offsets=[],
+        engine_cell_ids=[],
         snapshot_cell_id_to_hashes={},
     )
     reload_groups = Mock()
@@ -641,12 +642,15 @@ class _RecordingWeightUpdater:
         rollout_engines: list[Any],
         engine_gpu_counts: list[int] | None = None,
         engine_gpu_offsets: list[int] | None = None,
+        *,
+        engine_cell_ids: list[str],
     ) -> None:
         self.connect_calls.append(
             dict(
                 rollout_engines=list(rollout_engines),
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
+                engine_cell_ids=list(engine_cell_ids),
             )
         )
 
@@ -679,10 +683,12 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
 def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int) -> Any:
     from miles.ray.rollout.inference_controller import UpdatableEngines
 
+    assert len(snapshot) == len(rollout_engines), "the snapshot describes one worker generation per engine"
     return UpdatableEngines(
         rollout_engines=rollout_engines,
         engine_gpu_counts=[gpu_count] * len(rollout_engines),
         engine_gpu_offsets=[index * gpu_count for index in range(len(rollout_engines))],
+        engine_cell_ids=list(snapshot),
         snapshot_cell_id_to_hashes=snapshot,
     )
 
@@ -699,7 +705,8 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4), weight_version=1)
     worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4), weight_version=2)
     weight_version = worker.update_weights(
-        _updatable_engines(replacement_engines, {"cell-0": "hash-b"}, gpu_count=2), weight_version=3
+        _updatable_engines(replacement_engines, {"cell-0": "hash-b", "cell-1": "hash-b"}, gpu_count=2),
+        weight_version=3,
     )
 
     assert [call["rollout_engines"] for call in updater.connect_calls] == [first_engines, replacement_engines]

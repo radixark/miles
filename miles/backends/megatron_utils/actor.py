@@ -889,6 +889,7 @@ class MegatronTrainRayActor(TrainRayActor):
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
+        engine_cell_ids = info.engine_cell_ids
         del info
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
@@ -901,6 +902,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_engines,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
+                engine_cell_ids=engine_cell_ids,
             )
             self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
