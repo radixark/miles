@@ -448,7 +448,26 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
-            return result
+        # Record this phase's peak before releasing anything: the peak allocated
+        # (live tensors) is the number a topology has to fit, and the peak reserved
+        # is what a co-resident process actually loses to it.
+        if torch.cuda.is_available() and dist.is_initialized():
+            peak_alloc_gb = torch.cuda.max_memory_allocated() / 1024**3
+            peak_reserved_gb = torch.cuda.max_memory_reserved() / 1024**3
+            logger.info(
+                f"[Rank {dist.get_rank()}] {self.role} train phase peak memory: "
+                f"allocated {peak_alloc_gb:.2f} GB, reserved {peak_reserved_gb:.2f} GB"
+            )
+            torch.cuda.reset_peak_memory_stats()
+
+        # Release this phase's cached allocator blocks. Without --offload-train the
+        # actor and critic are separate processes on the same GPUs, and one process
+        # cannot reclaim another's reservation: a critic that keeps its peak working
+        # set cached (~65 GB on a 27B model at 49k tokens) leaves the actor's phase
+        # to OOM on the free remainder even though both live sets fit.
+        del rollout_data
+        clear_memory()
+        return result
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutput:
@@ -791,6 +810,13 @@ class MegatronTrainRayActor(TrainRayActor):
         process_groups_are_temporary = self.args.offload_train and self._asleep
         if process_groups_are_temporary:
             reload_process_groups()
+        # A disaggregated actor broadcasts its GPU parameters. While asleep those
+        # pages are released, so bring them back from their CPU backup for the
+        # broadcast and release them again afterwards. Colocated actors read the
+        # weights_backuper copy instead and never touch the paused buffers.
+        params_are_paused = process_groups_are_temporary and not self.args.colocate
+        if params_are_paused:
+            torch_memory_saver.resume()
 
         needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
         if needs_reconnect:
@@ -807,6 +833,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 logger.warning("Skipping actor-to-rollout weight update because " "--debug-skip-weight-update is set.")
             if self.args.rematerialize_param_from_master_weight:
                 torch_memory_saver.pause(tag="param_buffer")
+            if params_are_paused:
+                torch_memory_saver.pause()
             if process_groups_are_temporary:
                 destroy_process_groups()
             return None
@@ -854,6 +882,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.rematerialize_param_from_master_weight:
             torch_memory_saver.pause(tag="param_buffer")
+        if params_are_paused:
+            torch_memory_saver.pause()
         if process_groups_are_temporary:
             destroy_process_groups()
 

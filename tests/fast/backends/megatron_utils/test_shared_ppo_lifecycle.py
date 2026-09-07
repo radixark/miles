@@ -181,13 +181,15 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     destroy_groups.assert_not_called()
 
 
+@pytest.mark.parametrize("colocate", [False, True])
 @pytest.mark.parametrize("asleep", [False, True])
-def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep):
+def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep, colocate):
     """Weight update reloads and destroys temporary process groups only when the model is offloaded."""
     from miles.ray.rollout.inference_controller import UpdatableEngines
 
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(
+        colocate=colocate,
         debug_rollout_only=False,
         debug_skip_weight_update=True,
         debug_train_only=False,
@@ -207,14 +209,24 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     )
     reload_groups = Mock()
     destroy_groups = Mock()
+    saver = Mock()
     monkeypatch.setattr(actor_module, "reload_process_groups", reload_groups)
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
+    monkeypatch.setattr(actor_module, "torch_memory_saver", saver)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
 
     worker.update_weights(info)
 
     assert reload_groups.call_count == int(asleep)
     assert destroy_groups.call_count == int(asleep)
+    # A sleeping disaggregated actor broadcasts from GPU parameters, so it must
+    # bring them back for the broadcast and release them again; a colocated
+    # actor reads its weights_backuper copy and never touches the paused buffers.
+    expected = int(asleep and not colocate)
+    assert saver.resume.call_count == expected
+    assert saver.pause.call_count == expected
+    if expected:
+        assert saver.method_calls.index(saver.method_calls[0]) == 0 and saver.method_calls[0][0] == "resume"
 
 
 def _lifecycle_worker(actor_module, monkeypatch, asleep):
