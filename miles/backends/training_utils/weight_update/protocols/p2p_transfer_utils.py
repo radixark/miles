@@ -165,13 +165,7 @@ class P2PTransferManager:
             # NOTE: RDMA ops won't be affected by the python GIL
             self.executor = ThreadPoolExecutor(max_workers=self.num_workers)
 
-    def submit(self, fn: Callable, *args) -> None:
-        """Submit a callable to the thread pool."""
-        self.ensure_started()
-        future = self.executor.submit(fn, *args)
-        self.transfer_futures.append(future)
-
-    def submit_returning_future(self, fn: Callable, *args) -> torch.Future:
+    def submit(self, fn: Callable, *args) -> Future:
         """Submit a callable and return its future (also tracked for bulk waiting)."""
         self.ensure_started()
         future = self.executor.submit(fn, *args)
