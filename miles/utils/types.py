@@ -125,6 +125,18 @@ def _get_prefill_spans(meta_info: dict) -> list[WeightVersionSpan]:
     ]
 
 
+def prefill_lag(call: WeightVersionsPerCall) -> int | None:
+    decode = numeric_versions(call.spans)
+    prefill = numeric_versions(call.prefill_spans)
+    if len(decode) != len(call.spans) or len(prefill) != len(call.prefill_spans) or not decode or not prefill:
+        return None
+    return max(decode) - min(prefill)
+
+
+def decode_version(call: WeightVersionsPerCall) -> int | None:
+    return max(numeric_versions(call.spans), default=None)
+
+
 def numeric_versions(spans: list[WeightVersionSpan]) -> list[int]:
     return [int(span.version) for span in spans if str(span.version).isdigit()]
 
@@ -434,9 +446,17 @@ class Sample:
         return [span for call in self.weight_versions for span in call.spans]
 
     @property
+    def all_prefill_weight_version_spans(self) -> list[WeightVersionSpan]:
+        return [span for call in self.weight_versions for span in call.prefill_spans]
+
+    @property
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
         return min(numeric_versions(self.all_weight_version_spans), default=None)
+
+    @property
+    def oldest_prefill_weight_version(self) -> int | None:
+        return min(numeric_versions(self.all_prefill_weight_version_spans), default=None)
 
     def update_from_meta_info(self, args, meta_info: dict):
         """

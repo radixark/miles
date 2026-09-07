@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from numbers import Number
 from typing import Any
 
@@ -15,7 +16,7 @@ from miles.utils.metric_utils import (
     namespace_metrics,
 )
 from miles.utils.tracking_utils import tracking
-from miles.utils.types import AdapterRef, Sample
+from miles.utils.types import AdapterRef, Sample, WeightVersionSpan, decode_version, numeric_versions, prefill_lag
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +114,17 @@ def _compute_metrics_from_samples(args, samples):
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
 
-    oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]
-    if oldest_versions:
-        log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
-        mixed = sum(1 for s in samples if len({span.version for span in s.all_weight_version_spans}) > 1)
-        log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
+    log_dict |= _compute_weight_version_span_metrics(
+        samples,
+        spans_of_sample=lambda sample: sample.all_weight_version_spans,
+        prefix="weight_version/",
+    )
+    log_dict |= _compute_weight_version_span_metrics(
+        samples,
+        spans_of_sample=lambda sample: sample.all_prefill_weight_version_spans,
+        prefix="weight_version/prefill_",
+    )
+    log_dict |= _compute_prefill_lag_metrics(samples)
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]
@@ -181,6 +188,45 @@ def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str,
     )
     log_dict["episode_total_response_length/mean"] = np.mean(list(total_lengths_by_rollout.values())).item()
     return log_dict
+
+
+def _compute_weight_version_span_metrics(
+    samples: list[Sample],
+    *,
+    spans_of_sample: Callable[[Sample], list[WeightVersionSpan]],
+    prefix: str,
+) -> dict[str, float]:
+    spans_by_sample = [spans_of_sample(sample) for sample in samples]
+    oldest_versions = [
+        version for spans in spans_by_sample if (version := min(numeric_versions(spans), default=None)) is not None
+    ]
+    if not oldest_versions:
+        return {}
+
+    log_dict = dict_add_prefix(compute_statistics(oldest_versions), prefix)
+    mixed = sum(1 for spans in spans_by_sample if len({span.version for span in spans}) > 1)
+    log_dict[f"{prefix}mixed_version_ratio"] = mixed / len(samples)
+    return log_dict
+
+
+def _compute_prefill_lag_metrics(samples: list[Sample]) -> dict[str, float]:
+    comparable = [
+        (call, lag) for sample in samples for call in sample.weight_versions if (lag := prefill_lag(call)) is not None
+    ]
+    if not comparable:
+        return {}
+
+    prompt_tokens = sum(span.abs_end - span.abs_start for call, _ in comparable for span in call.prefill_spans)
+    stale_tokens = sum(
+        span.abs_end - span.abs_start
+        for call, _ in comparable
+        for span in call.prefill_spans
+        if int(span.version) < decode_version(call)
+    )
+    return {
+        "weight_version/prefill_stale_token_ratio": stale_tokens / prompt_tokens,
+        "weight_version/prefill_lag_max": max(lag for _, lag in comparable),
+    }
 
 
 def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[str, float | int]:

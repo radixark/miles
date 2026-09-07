@@ -449,6 +449,102 @@ class TestCurrentFormatWeightVersionSummary:
         assert row["weight_version"] == "3"
 
 
+class TestPrefillSummaryColumns:
+    def test_prefill_columns_report_the_oldest_prompt_version_and_the_largest_per_call_lag(self, tmp_path):
+        """The summary exposes the oldest prompt KV version and the worst lag any single call experienced."""
+        sample = Sample(
+            group_index=0,
+            index=0,
+            tokens=[1, 2, 3, 4],
+            response_length=2,
+            weight_versions=[
+                WeightVersionsPerCall(
+                    spans=[WeightVersionSpan("5", 2, 3)],
+                    prefill_spans=[WeightVersionSpan("1", 0, 1), WeightVersionSpan("5", 1, 2)],
+                    output_start=2,
+                ),
+                WeightVersionsPerCall(
+                    spans=[WeightVersionSpan("6", 3, 4)], prefill_spans=[WeightVersionSpan("5", 0, 3)], output_start=3
+                ),
+            ],
+        )
+        sample.validate()
+
+        row = DumpReader(tmp_path)._summary_row(sample, None, rollout_id=6, sample_occurrence=0)
+
+        assert row["weight_version"] == "6"
+        assert row["prefill_weight_version_min"] == 1
+        assert row["prefill_lag"] == 4
+
+    def test_prefill_lag_never_pairs_the_prompt_of_one_call_with_the_decode_of_another(self, tmp_path):
+        """A prompt recomputed under fresh weights must not inherit the lag of an earlier call."""
+        sample = Sample(
+            group_index=0,
+            index=0,
+            tokens=[1, 2, 3, 4],
+            response_length=2,
+            weight_versions=[
+                WeightVersionsPerCall(
+                    spans=[WeightVersionSpan("2", 2, 3)], prefill_spans=[WeightVersionSpan("1", 0, 2)], output_start=2
+                ),
+                WeightVersionsPerCall(
+                    spans=[WeightVersionSpan("100", 3, 4)],
+                    prefill_spans=[WeightVersionSpan("100", 0, 3)],
+                    output_start=3,
+                ),
+            ],
+        )
+        sample.validate()
+
+        row = DumpReader(tmp_path)._summary_row(sample, None, rollout_id=100, sample_occurrence=0)
+
+        assert row["prefill_weight_version_min"] == 1
+        assert row["prefill_lag"] == 1
+
+    def test_prefill_columns_are_null_without_prefill_spans(self, tmp_path):
+        """A dump from an engine without prefill weight versions leaves both columns empty."""
+        sample = Sample(
+            group_index=0,
+            index=0,
+            tokens=[1, 2],
+            response_length=1,
+            weight_versions=[WeightVersionsPerCall(spans=[WeightVersionSpan("3", 1, 2)], output_start=1)],
+        )
+        sample.validate()
+
+        row = DumpReader(tmp_path)._summary_row(sample, None, rollout_id=3, sample_occurrence=0)
+
+        assert row["prefill_weight_version_min"] is None
+        assert row["prefill_lag"] is None
+
+    def test_prefill_lag_is_null_when_no_call_has_a_numeric_decode_version(self, tmp_path):
+        """A call whose decode version is a placeholder is not comparable, while the minimum is still reported."""
+        sample = Sample(
+            group_index=0,
+            index=0,
+            tokens=[1, 2],
+            response_length=1,
+            weight_versions=[
+                WeightVersionsPerCall(
+                    spans=[WeightVersionSpan("mock", 1, 2)],
+                    prefill_spans=[WeightVersionSpan("2", 0, 1)],
+                    output_start=1,
+                )
+            ],
+        )
+        sample.validate()
+
+        row = DumpReader(tmp_path)._summary_row(sample, None, rollout_id=3, sample_occurrence=0)
+
+        assert row["prefill_weight_version_min"] == 2
+        assert row["prefill_lag"] is None
+
+    def test_summary_columns_include_the_prefill_columns(self):
+        """The declared column order carries the prefill columns so an empty step keeps the same schema."""
+        assert "prefill_weight_version_min" in DumpReader.SUMMARY_COLUMNS
+        assert "prefill_lag" in DumpReader.SUMMARY_COLUMNS
+
+
 class TestSummaryCacheVersioning:
     def test_summary_invalidates_v2_cache_after_weight_version_schema_change(self, reader):
         """A summary cache stamped with the previous schema version is rebuilt and restamped at version 5."""
@@ -464,7 +560,22 @@ class TestSummaryCacheVersioning:
 
         assert rebuilt.equals(expected)
         assert pl.read_parquet(cache_path).equals(expected)
-        assert json.loads(sources_path.read_text())["_summary_version"] == 7
+        assert json.loads(sources_path.read_text())["_summary_version"] == 9
+
+    def test_summary_invalidates_a_v8_cache_whose_prefill_lag_paired_calls(self, reader):
+        """A v8 cache computed prefill_lag across calls, so it must be rebuilt rather than served."""
+        import polars as pl
+
+        expected = reader.summary(0)
+        cache_path = reader.cache_dir / "rollout_0.parquet"
+        sources_path = reader.cache_dir / "rollout_0.sources.json"
+        pl.DataFrame({"sample_index": [-1]}).write_parquet(cache_path)
+        sources_path.write_text(json.dumps(json.loads(sources_path.read_text()) | {"_summary_version": 8}))
+
+        rebuilt = reader.summary(0)
+
+        assert rebuilt.equals(expected)
+        assert json.loads(sources_path.read_text())["_summary_version"] == 9
 
 
 def test_pre_span_dump_survives_the_full_reader_pipeline(tmp_path):
@@ -477,7 +588,7 @@ def test_pre_span_dump_survives_the_full_reader_pipeline(tmp_path):
     for path in (tmp_path / "rollout_data").glob("*.pt"):
         pack = torch.load(path, weights_only=False)
         for data in pack["samples"]:
-            data["weight_versions"] = [span["version"] for call in data["weight_versions"] for span in call]
+            data["weight_versions"] = [span["version"] for call in data["weight_versions"] for span in call["spans"]]
         torch.save(pack, path)
 
     reader = DumpReader(tmp_path)
