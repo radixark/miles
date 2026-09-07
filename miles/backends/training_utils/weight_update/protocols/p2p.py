@@ -23,6 +23,7 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.utils import ModelParamStager
 from miles.utils.distributed_utils import get_gloo_group
 
+from .p2p_rollout_cell_updater import _do_p2p_write_one_session
 from .p2p_transfer_utils import (
     P2PTransferManager,
     RemoteTransferPlan,
@@ -100,9 +101,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 # as the weight will no longer be overwritten
                 futures = [
                     self.transfer_manager.submit(
-                        self._do_p2p_write_one_session,
+                        _do_p2p_write_one_session,
+                        self._transfer_engine,
                         remote_session,
                         transfer_ready_params,
+                        self._weight_memory_registry,
                     )
                     for remote_session in meta.remote_weight_infos
                 ]
@@ -192,42 +195,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self._transfer_engine_meta_list.append(
                     TransferEngineMeta(model_replica=model_replica, remote_weight_infos=remote_infos)
                 )
-
-    def _do_p2p_write_one_session(self, remote_session: RemoteWeightInfo, names: list[str]) -> None:
-        """P2P write from shared CPU pinned buffers to a single remote session.
-
-        Used by the parallelized submission path where each session within an
-        engine rank is submitted as a separate task to P2PTransferManager.
-        """
-        source_ptrs, source_lens = [], []
-        valid_names = []
-
-        for name in names:
-            cpu_reg = self._weight_memory_registry.get(name)
-            assert cpu_reg, f"the _weight_memory_registry of {name} failed"
-
-            data_ptr, numel, ele_size = cpu_reg
-            source_ptrs.append(data_ptr)
-            source_lens.append(numel * ele_size)
-            valid_names.append(name)
-
-        if not source_ptrs:
-            return
-
-        session_id = remote_session.session_id
-        target_ptrs = []
-        for name in valid_names:
-            if name in remote_session.weights_info:
-                target_ptrs.append(remote_session.weights_info[name].address)
-
-        assert len(target_ptrs) == len(source_ptrs), (
-            f"[P2P-Shared] Pointer count mismatch for session {session_id}, "
-            f"source: {len(source_ptrs)}, target: {len(target_ptrs)}"
-        )
-
-        ret = self._transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
-        if ret < 0:
-            raise RuntimeError(f"[P2P-Shared] Transfer failed for session {session_id}, error: {ret}")
 
 
 def _create_cpu_replica(
