@@ -276,6 +276,7 @@ def generation_env(request, variant):
             cached_tokens=x.get("cached_tokens", 0),
             meta_info=ProcessResultMetaInfo(
                 weight_version=x.get("weight_version"),
+                prefill_weight_versions=x.get("prefill_weight_versions"),
                 routed_experts=x.get("routed_experts"),
                 spec_accept_token_num=x.get("spec_accept_token_num"),
                 spec_draft_token_num=x.get("spec_draft_token_num"),

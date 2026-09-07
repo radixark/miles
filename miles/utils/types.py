@@ -21,13 +21,53 @@ class WeightVersionSpan:
 @dataclass
 class WeightVersionsPerCall:
     spans: list[WeightVersionSpan] = field(default_factory=list)
+    prefill_spans: list[WeightVersionSpan] = field(default_factory=list)
+    output_start: int | None = None
+    prompt_tokens: int | None = None
 
-    def to_dicts(self) -> list[dict]:
-        return [asdict(span) for span in self.spans]
+    def to_dict(self) -> dict:
+        return {
+            "spans": [asdict(span) for span in self.spans],
+            "prefill_spans": [asdict(span) for span in self.prefill_spans],
+            "output_start": self.output_start,
+            "prompt_tokens": self.prompt_tokens,
+        }
 
     @staticmethod
-    def from_dicts(data: list[dict]) -> "WeightVersionsPerCall":
-        return WeightVersionsPerCall(spans=[WeightVersionSpan(**span) for span in data])
+    def from_dict(data: dict) -> "WeightVersionsPerCall":
+        return WeightVersionsPerCall(
+            spans=[WeightVersionSpan(**span) for span in data["spans"]],
+            prefill_spans=[WeightVersionSpan(**span) for span in data["prefill_spans"]],
+            output_start=data["output_start"],
+            prompt_tokens=data.get("prompt_tokens"),
+        )
+
+    def validate(self, *, num_tokens: int) -> None:
+        for span in self.prefill_spans + self.spans:
+            assert span.version, f"weight version call {self} carries a span with an empty version: {span}"
+
+        if (output_start := self.output_start) is None:
+            assert not self.prefill_spans, f"weight version call {self} carries prefill spans without output_start"
+            return
+
+        assert (
+            0 <= output_start <= num_tokens
+        ), f"weight version call {self} starts its output at {output_start} but the sample has {num_tokens} tokens"
+
+        if self.prefill_spans:
+            prefill_end = _assert_spans_run_in_order(
+                spans=self.prefill_spans, call=self, kind="prefill", start=0
+            )
+            prompt_tokens = self.prompt_tokens if self.prompt_tokens is not None else output_start
+            assert prefill_end == prompt_tokens, (
+                f"prefill weight version spans of call {self} must cover exactly the {prompt_tokens} prompt tokens "
+                f"of this call; the engine stamps every prompt token whose KV it computed or reused"
+            )
+
+        output_end = _assert_spans_run_in_order(spans=self.spans, call=self, kind="output", start=output_start)
+        assert (
+            output_end <= num_tokens
+        ), f"output weight version spans of call {self} end at {output_end} but the sample has {num_tokens} tokens"
 
     @staticmethod
     def from_meta_info(meta_info: dict, output_end: int) -> "WeightVersionsPerCall":
@@ -53,8 +93,41 @@ class WeightVersionsPerCall:
                 WeightVersionSpan(version=version, abs_start=output_start + start, abs_end=output_start + end)
                 for version, start, end in output_relative
                 if start < end
-            ]
+            ],
+            prefill_spans=_compute_prefill_spans_from_meta_info(meta_info),
+            output_start=output_start,
+            prompt_tokens=meta_info.get("prompt_tokens"),
         )
+
+
+def _assert_spans_run_in_order(
+    *, spans: list[WeightVersionSpan], call: WeightVersionsPerCall, kind: str, start: int
+) -> int:
+    expected_start = start
+    for span in spans:
+        assert span.abs_start == expected_start and span.abs_start < span.abs_end, (
+            f"{kind} weight version span {span} of call {call} must be non-empty and start at "
+            f"token {expected_start}"
+        )
+        expected_start = span.abs_end
+    return expected_start
+
+
+def _compute_prefill_spans_from_meta_info(meta_info: dict) -> list[WeightVersionSpan]:
+    if (raw_prefill_spans := meta_info.get("prefill_weight_versions")) is None:
+        return []
+
+    assert isinstance(
+        raw_prefill_spans, list
+    ), f"prefill_weight_versions must be a list of spans, got {type(raw_prefill_spans).__name__}"
+    return [
+        WeightVersionSpan(version=span["version"], abs_start=span["start"], abs_end=span["end"])
+        for span in raw_prefill_spans
+    ]
+
+
+def compute_numeric_versions_of_spans(spans: list[WeightVersionSpan]) -> list[int]:
+    return [int(span.version) for span in spans if str(span.version).isdigit()]
 
 
 @dataclass(frozen=True)
@@ -210,7 +283,7 @@ class Sample:
         value["status"] = self.status.value
         value["spec_info"] = self.spec_info.to_dict()
         value["prefix_cache_info"] = self.prefix_cache_info.to_dict()
-        value["weight_versions"] = [call.to_dicts() for call in self.weight_versions]
+        value["weight_versions"] = [call.to_dict() for call in self.weight_versions]
         return value
 
     @staticmethod
@@ -225,7 +298,7 @@ class Sample:
             data[LEGACY_WEIGHT_VERSIONS_KEY] = raw_weight_versions
             raw_weight_versions = []
 
-        data["weight_versions"] = [WeightVersionsPerCall.from_dicts(call) for call in raw_weight_versions]
+        data["weight_versions"] = [WeightVersionsPerCall.from_dict(call) for call in raw_weight_versions]
 
         field_names = set(Sample.__dataclass_fields__.keys())
         init_data = {k: v for k, v in data.items() if k in field_names}
@@ -292,6 +365,8 @@ class Sample:
                 previous_end <= span.abs_start < span.abs_end <= len(self.tokens)
             ), f"invalid weight version span {span} (previous_end={previous_end}, len(tokens)={len(self.tokens)})"
             previous_end = span.abs_end
+        for call in self.weight_versions:
+            call.validate(num_tokens=len(self.tokens))
 
     def strip_last_output_tokens(self, n: int, tokenizer) -> None:
         """Remove the last *n* output tokens and all associated per-token info."""
@@ -319,6 +394,9 @@ class Sample:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
         if self.rollout_indexer_topk is not None:
             self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
+        self.weight_versions = [
+            call for call in self.weight_versions if call.output_start is None or call.output_start <= len(self.tokens)
+        ]
         for call in self.weight_versions:
             call.spans = [
                 span if span.abs_end <= len(self.tokens) else replace(span, abs_end=len(self.tokens))
@@ -359,8 +437,7 @@ class Sample:
     @property
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
-        numeric = [int(span.version) for span in self.all_weight_version_spans if str(span.version).isdigit()]
-        return min(numeric) if numeric else None
+        return min(compute_numeric_versions_of_spans(self.all_weight_version_spans), default=None)
 
     def update_from_meta_info(self, args, meta_info: dict):
         """

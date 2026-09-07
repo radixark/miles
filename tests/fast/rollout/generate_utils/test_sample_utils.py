@@ -102,6 +102,28 @@ class TestMergeSamples:
         ]
         merged.validate()
 
+    def test_merge_preserves_each_calls_engine_prompt_boundary(self, mock_tokenizer: MagicMock) -> None:
+        """Turn assembly keeps distinct expanded prompt lengths while output spans share sample coordinates."""
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.weight_versions = [WeightVersionsPerCall(
+            spans=[WeightVersionSpan("2", 2, 3)],
+            prefill_spans=[WeightVersionSpan("1", 0, 33)],
+            output_start=2,
+            prompt_tokens=33,
+        )]
+        b.weight_versions = [WeightVersionsPerCall(
+            spans=[WeightVersionSpan("3", 4, 5)],
+            prefill_spans=[WeightVersionSpan("2", 0, 35)],
+            output_start=4,
+            prompt_tokens=35,
+        )]
+
+        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+        merged.validate()
+
+        assert merged.weight_versions == a.weight_versions + b.weight_versions
+
     def test_merge_preserves_the_shared_trainer_model_id(self, mock_tokenizer: MagicMock) -> None:
         """Merging turns from one trainer preserves their shared policy identity."""
         a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])

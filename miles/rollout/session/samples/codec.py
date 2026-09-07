@@ -115,7 +115,7 @@ def encode_samples(
                 if field == "status":
                     value = value.value
                 elif field == "weight_versions":
-                    value = [call.to_dicts() for call in value]
+                    value = [call.to_dict() for call in value]
                 elif field == "prefix_cache_info":
                     value = value.to_dict()
                 sample_meta[field] = value
@@ -179,7 +179,7 @@ def decode_samples_and_merge_input_sample(
                 if field == "status":
                     value = Sample.Status(value)
                 elif field == "weight_versions":
-                    value = [WeightVersionsPerCall.from_dicts(call) for call in value]
+                    value = [WeightVersionsPerCall.from_dict(call) for call in value]
                 elif field == "prefix_cache_info":
                     value = Sample.PrefixCacheInfo.from_dict(value)
                 elif field == "reward":

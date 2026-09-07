@@ -198,8 +198,8 @@ async def test_assembled_samples_golden_merged(core):
     assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
     assert m.weight_versions == [
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)]),
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)]),
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)], output_start=3),
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)], output_start=7),
     ]
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
     assert m.prefix_cache_info.to_dict() == {"cached_tokens": 5, "total_prompt_tokens": 10}
@@ -217,6 +217,40 @@ async def test_assembled_samples_golden_merged(core):
     assert m.metadata["agent_only"] == 1
     assert m.metadata["accumulated_token_ids"] == _ACCUMULATED
     assert reply.session_metadata["agent"] == _AGENT_METADATA
+
+
+async def test_assembled_sample_carries_prefill_spans_per_turn(core):
+    """Each turn's prompt KV versions land on that turn's call in absolute coordinates, starting at token 0."""
+    records = _two_turn_records()
+    records[0].response["choices"][0]["meta_info"]["prefill_weight_versions"] = [
+        {"version": "w1", "start": 0, "end": 3}
+    ]
+    records[1].response["choices"][0]["meta_info"]["prefill_weight_versions"] = [
+        {"version": "w1", "start": 0, "end": 5},
+        {"version": "w2", "start": 5, "end": 7},
+    ]
+    sid = await _make_session(core, records, _ACCUMULATED)
+    status, payload = await _collect_via_op(core, sid, agent_metadata=_AGENT_METADATA)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+    (m,) = samples
+
+    assert m.weight_versions == [
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)],
+            prefill_spans=[WeightVersionSpan(version="w1", abs_start=0, abs_end=3)],
+            output_start=3,
+        ),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)],
+            prefill_spans=[
+                WeightVersionSpan(version="w1", abs_start=0, abs_end=5),
+                WeightVersionSpan(version="w2", abs_start=5, abs_end=7),
+            ],
+            output_start=7,
+        ),
+    ]
+    m.validate()
 
 
 async def test_truncation_golden(core):
