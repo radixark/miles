@@ -5,7 +5,20 @@ from miles.backends.training_utils.weight_update.inference_cell_health import In
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
+_HEALTH_MODULE = "miles.backends.training_utils.weight_update.inference_cell_health"
 _CELL_IDS = ["cell-0", "cell-1"]
+
+
+def _patched_health_dist(other_rank_reports: list[list[str]]):
+    def all_gather_object(gathered, obj, group=None):
+        gathered[0] = list(obj)
+        for index, report in enumerate(other_rank_reports):
+            gathered[index + 1] = list(report)
+
+    dist_mock = MagicMock()
+    dist_mock.get_world_size.return_value = 1 + len(other_rank_reports)
+    dist_mock.all_gather_object.side_effect = all_gather_object
+    return patch(f"{_HEALTH_MODULE}.dist", dist_mock)
 
 
 class _RecordingApiClient:
@@ -85,10 +98,17 @@ def _make_updater(engines: list[_RecordingApiClient], protocol: _FakeCellIsolati
     return updater
 
 
-def _run(updater: WeightUpdater, *, rank: int = 0, weight_version: int = 1) -> int:
+def _run(
+    updater: WeightUpdater,
+    *,
+    rank: int = 0,
+    weight_version: int = 1,
+    other_rank_reports: list[list[str]] | None = None,
+) -> int:
     with (
         patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
         patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+        _patched_health_dist(other_rank_reports if other_rank_reports is not None else []),
     ):
         dist_mock.get_rank.return_value = rank
         return updater.update_weights(weight_version=weight_version)
@@ -155,3 +175,170 @@ class TestPerCellSessionFrame:
         assert _run(updater, weight_version=4) == 4
         assert protocol.inference_cell_health.errored_cell_ids == ["cell-0"]
         assert protocol.inference_cell_health.healthy_cell_ids == ["cell-1"]
+
+
+class TestCrossRankAgreement:
+    """Only one rank has to fail to write a cell for the whole trainer cell to give up on it."""
+
+    def test_a_cell_another_rank_lost_is_never_resumed_here(self) -> None:
+        """A cell that missed one shard serves a mixed model, so resuming it hides the corruption."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        updater = _make_updater([_RecordingApiClient(calls, cell_id) for cell_id in _CELL_IDS], protocol)
+
+        _run(updater, other_rank_reports=[["cell-0"]])
+
+        assert protocol.inference_cell_health.errored_cell_ids == ["cell-0"]
+        assert ("cell-0", "end_weight_update") not in calls
+        assert ("cell-0", "update_weight_version") not in calls
+        assert ("cell-0", "continue_generation") not in calls
+        assert ("cell-1", "continue_generation") in calls
+
+    def test_a_cell_this_rank_lost_is_reported_to_the_others(self) -> None:
+        """The other ranks keep writing to a cell nobody told them about."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        engines = [
+            _RecordingApiClient(calls, "cell-0", failing_method="begin_weight_update"),
+            _RecordingApiClient(calls, "cell-1"),
+        ]
+        updater = _make_updater(engines, protocol)
+        reported: list[list[str]] = []
+
+        def all_gather_object(gathered, obj, group=None):
+            reported.append(list(obj))
+            gathered[0] = list(obj)
+            gathered[1] = []
+
+        with (
+            patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
+            patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+            patch(f"{_HEALTH_MODULE}.dist") as health_dist,
+        ):
+            dist_mock.get_rank.return_value = 0
+            health_dist.get_world_size.return_value = 2
+            health_dist.all_gather_object.side_effect = all_gather_object
+            updater.update_weights(weight_version=1)
+
+        assert reported == [["cell-0"], ["cell-0"], ["cell-0"], ["cell-0"]]
+
+    def test_a_rank_that_lost_no_cell_still_joins_the_aggregation(self) -> None:
+        """A collective inside a rank-conditional branch would hang the ranks that skipped it."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        updater = _make_updater([_RecordingApiClient(calls, cell_id) for cell_id in _CELL_IDS], protocol)
+
+        with (
+            patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
+            patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+            _patched_health_dist([["cell-1"]]) as health_dist,
+        ):
+            dist_mock.get_rank.return_value = 3
+            updater.update_weights(weight_version=1)
+
+        assert health_dist.all_gather_object.call_count == 4
+        assert calls == []
+        assert protocol.inference_cell_health.errored_cell_ids == ["cell-1"]
+
+    def test_a_resume_that_fails_reaches_every_rank(self) -> None:
+        """op12 exports one report per update, and a cell resumed into a stale model must not be in it as healthy."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        engines = [
+            _RecordingApiClient(calls, "cell-0", failing_method="continue_generation"),
+            _RecordingApiClient(calls, "cell-1"),
+        ]
+        updater = _make_updater(engines, protocol)
+        reported: list[list[str]] = []
+
+        def all_gather_object(gathered, obj, group=None):
+            reported.append(list(obj))
+            gathered[0] = list(obj)
+            gathered[1] = []
+
+        with (
+            patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
+            patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+            patch(f"{_HEALTH_MODULE}.dist") as health_dist,
+        ):
+            dist_mock.get_rank.return_value = 0
+            health_dist.get_world_size.return_value = 2
+            health_dist.all_gather_object.side_effect = all_gather_object
+            updater.update_weights(weight_version=1)
+
+        assert ("cell-0", "continue_generation") in calls
+        assert reported[-1] == ["cell-0"]
+        assert protocol.inference_cell_health.errored_cell_ids == ["cell-0"]
+        assert ("cell-1", "continue_generation") in calls
+
+    def test_a_rank_that_drives_no_engine_learns_of_a_failed_resume(self) -> None:
+        """A non-driver rank never sees the resume request, so only the aggregation can tell it the cell is gone."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        updater = _make_updater([_RecordingApiClient(calls, cell_id) for cell_id in _CELL_IDS], protocol)
+        syncs: list[list[str]] = []
+
+        def all_gather_object(gathered, obj, group=None):
+            syncs.append(list(obj))
+            gathered[0] = list(obj)
+            gathered[1] = ["cell-0"] if len(syncs) >= 4 else []
+
+        with (
+            patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
+            patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+            patch(f"{_HEALTH_MODULE}.dist") as health_dist,
+        ):
+            dist_mock.get_rank.return_value = 2
+            health_dist.get_world_size.return_value = 2
+            health_dist.all_gather_object.side_effect = all_gather_object
+            updater.update_weights(weight_version=1)
+
+        assert len(syncs) == 4
+        assert calls == []
+        assert protocol.inference_cell_health.errored_cell_ids == ["cell-0"]
+
+    def test_a_rank_without_a_healthy_target_still_joins_the_final_aggregation(self) -> None:
+        """Skipping the last collective on a rank whose cells all failed would hang the ranks that took it."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        engines = [_RecordingApiClient(calls, cell_id, failing_method="pause_generation") for cell_id in _CELL_IDS]
+        updater = _make_updater(engines, protocol)
+
+        with (
+            patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
+            patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+            _patched_health_dist([[]]) as health_dist,
+        ):
+            dist_mock.get_rank.return_value = 0
+            updater.update_weights(weight_version=1)
+
+        assert health_dist.all_gather_object.call_count == 4
+        assert protocol.inference_cell_health.healthy_cell_ids == []
+
+    def test_the_failures_are_aggregated_before_the_engines_are_resumed(self) -> None:
+        """A verdict that lands after the resume request cannot take it back."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        updater = _make_updater([_RecordingApiClient(calls, cell_id) for cell_id in _CELL_IDS], protocol)
+        gathered_at: list[list[tuple[str, str]]] = []
+
+        def all_gather_object(gathered, obj, group=None):
+            gathered_at.append(list(calls))
+            gathered[0] = list(obj)
+            gathered[1] = ["cell-0"] if len(gathered_at) >= 3 else []
+
+        with (
+            patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
+            patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+            patch(f"{_HEALTH_MODULE}.dist") as health_dist,
+        ):
+            dist_mock.get_rank.return_value = 0
+            health_dist.get_world_size.return_value = 2
+            health_dist.all_gather_object.side_effect = all_gather_object
+            updater.update_weights(weight_version=1)
+
+        assert len(gathered_at) == 4
+        assert ("cell-0", "update_weight_version") in gathered_at[2]
+        assert not [entry for entry in gathered_at[2] if entry[1] == "continue_generation"]
+        assert ("cell-0", "continue_generation") not in calls
+        assert ("cell-1", "continue_generation") in calls

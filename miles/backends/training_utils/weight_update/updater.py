@@ -129,6 +129,7 @@ class WeightUpdater:
         if protocol.use_weight_update_session and driver:
             self._open_engine_session(adapters, sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
+        self._sync_cell_failures()
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
         if checksums is not None:
@@ -150,14 +151,25 @@ class WeightUpdater:
                     pbar.update(1)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
+            self._sync_cell_failures()
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
             if protocol.use_weight_update_session and driver:
-                self._close_engine_session(checksums)
+                self._publish_weight_version(checksums)
+            self._sync_cell_failures()
+            if protocol.use_weight_update_session and driver:
+                self._resume_engines()
+            self._sync_cell_failures()
             dist.barrier(group=get_gloo_group())
 
         return self.weight_version
+
+    def _sync_cell_failures(self) -> None:
+        health = self.protocol.inference_cell_health
+        if health is None:
+            return
+        health.synchronize(get_gloo_group())
 
     def _open_engine_session(self, adapters: list[tuple[str, object]], *, sync_base: bool) -> None:
         protocol = self.protocol
@@ -172,17 +184,22 @@ class WeightUpdater:
             protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
         )
 
-    def _close_engine_session(self, checksums: dict | None) -> None:
+    def _publish_weight_version(self, checksums: dict | None) -> None:
         protocol = self.protocol
         if self._cell_session is not None:
             self._cell_session.end()
             self._cell_session.set_weight_version(self.weight_version)
-            self._cell_session.resume()
             return
 
         end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
         set_weight_version(protocol.rollout_engines, self.weight_version)
-        resume_engines(protocol.rollout_engines)
+
+    def _resume_engines(self) -> None:
+        if self._cell_session is not None:
+            self._cell_session.resume()
+            return
+
+        resume_engines(self.protocol.rollout_engines)
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
