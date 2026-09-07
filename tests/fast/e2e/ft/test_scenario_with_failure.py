@@ -1,8 +1,8 @@
+import json
 import shlex
 
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
-    _WITH_FAILURE_ACTIONS,
     NUM_PHASE_A_STEPS,
     _build_baseline_args,
     _build_target_args,
@@ -39,8 +39,9 @@ def test_debug_data_modes_keep_the_production_collective() -> None:
 
 def test_injection_starts_after_the_fault_rollout() -> None:
     """Only post-fault rollouts may inject baseline data; the fault rollout trains live samples."""
-    fault_rollout_ids = {action["at_rollout"] for action in _WITH_FAILURE_ACTIONS}
     target_tokens = _phase_b_tokens(_REAL_ROLLOUT_MODE, "target")
+    actions = json.loads(_option_value(target_tokens, "--ci-ft-test-actions"))
+    fault_rollout_ids = {action["at_rollout"] for action in actions}
     start = int(_option_value(target_tokens, "--ci-inject-rollout-data-start-rollout-id"))
 
     assert fault_rollout_ids == {NUM_PHASE_A_STEPS + 1}
