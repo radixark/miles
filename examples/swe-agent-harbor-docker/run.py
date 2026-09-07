@@ -10,8 +10,6 @@ Usage:
 
 import os
 import socket
-import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -68,22 +66,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     use_prometheus: bool = True
     prometheus_port: int = 9090
     prometheus_run_name: str = "glm47-flash-swe-tito"
-
-
-def cleanup():
-    """Kill old Ray jobs and stale processes to free GPU resources."""
-    my_pid = os.getpid()
-    ppid = os.getppid()
-    print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
-    targets = ["sglang", "train.py", "MegatronTrain"]
-    exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
-    for t in targets:
-        subprocess.run(
-            f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
-            shell=True,
-        )
-    time.sleep(5)
-    print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
 
 
 def prepare(args: ScriptArgs):
@@ -253,7 +235,7 @@ def execute(args: ScriptArgs):
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
-    cleanup()
+    U.cleanup_stale_processes()
     if not args.skip_prepare:
         prepare(args)
     execute(args)

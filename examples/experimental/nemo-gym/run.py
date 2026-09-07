@@ -12,8 +12,6 @@ Usage:
 """
 
 import os
-import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -56,19 +54,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # host cannot resolve the trainer's hostname (e.g. it dials back over a
     # tailnet).
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
-
-
-def cleanup():
-    """Kill old Ray jobs and stale processes to free GPU resources."""
-    my_pid = os.getpid()
-    ppid = os.getppid()
-    exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
-    for t in ["sglang", "train.py", "MegatronTrain"]:
-        subprocess.run(
-            f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
-            shell=True,
-        )
-    time.sleep(5)
 
 
 def prepare(args: ScriptArgs):
@@ -198,7 +183,7 @@ def execute(args: ScriptArgs):
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
-    cleanup()
+    U.cleanup_stale_processes()
     if not args.skip_prepare:
         prepare(args)
     execute(args)

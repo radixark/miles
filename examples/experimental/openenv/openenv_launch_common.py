@@ -10,8 +10,6 @@ perf/sglang/misc profile and its ``ScriptArgs`` defaults.
 """
 
 import os
-import subprocess
-import time
 from pathlib import Path
 from typing import Protocol
 
@@ -48,22 +46,6 @@ class LaunchArgs(Protocol):
     use_prometheus: bool
     prometheus_port: int
     prometheus_run_name: str
-
-
-def cleanup() -> None:
-    """Kill old Ray jobs and stale processes to free GPU resources."""
-    my_pid = os.getpid()
-    ppid = os.getppid()
-    print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
-    targets = ["sglang", "train.py", "MegatronTrain"]
-    exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
-    for t in targets:
-        subprocess.run(
-            f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
-            shell=True,
-        )
-    time.sleep(5)
-    print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
 
 
 def rollout_args(args: LaunchArgs) -> str:
