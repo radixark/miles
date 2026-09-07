@@ -5,7 +5,12 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 from argparse import Namespace
 
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput, FilterOutput, iter_samples
-from miles.rollout.filter_hub.common_filters import check_no_aborted, check_reward_nonzero_std, group_staleness
+from miles.rollout.filter_hub.common_filters import (
+    apply_aborted_filter,
+    apply_reward_nonzero_std_filter,
+    group_staleness,
+)
+from miles.rollout.filter_hub.dynamic_sampling_filters import check_no_aborted as legacy_check_no_aborted
 from miles.rollout.filter_hub.dynamic_sampling_filters import (
     check_reward_nonzero_std as legacy_check_reward_nonzero_std,
 )
@@ -33,7 +38,8 @@ def test_dynamic_filter_output_is_a_compatibility_alias():
 
 
 def test_dynamic_sampling_filters_reexports_common_implementation():
-    assert legacy_check_reward_nonzero_std is check_reward_nonzero_std
+    assert legacy_check_no_aborted is apply_aborted_filter
+    assert legacy_check_reward_nonzero_std is apply_reward_nonzero_std_filter
 
 
 def test_iter_samples_preserves_flat_and_mixed_nested_order():
@@ -44,7 +50,7 @@ def test_iter_samples_preserves_flat_and_mixed_nested_order():
 
 
 def test_common_filter_returns_structured_drop():
-    assert check_no_aborted(
+    assert apply_aborted_filter(
         Namespace(reward_key=None),
         [make_sample(status=Sample.Status.ABORTED)],
         ignored=True,

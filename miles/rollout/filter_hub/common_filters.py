@@ -8,14 +8,14 @@ from miles.utils.types import Sample
 Group = list[Sample | list[Sample]]
 
 
-def check_no_aborted(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
+def apply_aborted_filter(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
     """Reject entire group if any sample was aborted (e.g. env timeout, Docker crash)."""
     if any(sample.status == Sample.Status.ABORTED for sample in iter_samples(samples)):
         return FilterOutput(keep=False, reason="group_has_aborted")
     return FilterOutput(keep=True)
 
 
-def check_reward_nonzero_std(args, samples: list[Sample | list[Sample]], **kwargs):
+def apply_reward_nonzero_std_filter(args, samples: list[Sample | list[Sample]], **kwargs):
     rewards = [sample.get_reward_value(args) for sample in iter_samples(samples)]
     keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
     return FilterOutput(
