@@ -46,6 +46,7 @@ Starting from a working run, the rest of this page covers what you can change:
 | To change | See |
 |---|---|
 | How much generation stays in flight | [Arguments: Scheduling options](#arguments-scheduling-options) |
+| Whether the engines and the trainer share GPUs | [Colocate](#colocate) |
 | How deep the buffer is, how stale a group may be, which groups reach training, or the buffer implementation itself | [Arguments: Buffer options](#arguments-buffer-options) |
 | Where eval runs and where it gets its weights | [Evaluation](#evaluation) |
 | Which numbers tell you where the bottleneck is, or where the metrics are logged | [Metrics](#metrics) |
@@ -107,6 +108,25 @@ Three flags control how much generation stays in flight:
 | `--rollout-batch-size` | Groups the trainer consumes per step. It is also the default in-flight cap, so raising it widens both the batch and the concurrency unless `--async-max-concurrent-samples` is set |
 | `--async-max-concurrent-samples` | In-flight cap in trajectories rather than groups, floored to `value // n_samples_per_prompt` groups. Use it to decouple generation concurrency from batch size |
 | `--rollout-submission-granularity` | Sets when a finished unit frees a submission slot. Under `--fully-async` the default is `sample`, which frees each slot as its own sample completes; `group` holds the slot until the whole group returns |
+
+## Colocate
+
+`--fully-async --colocate` puts the engines and the trainer on the same GPUs, down to a
+single one. Generation still runs continuously between training steps, but the two now
+take turns on the device instead of holding separate GPUs. Generation stops for the whole
+train window, so no samples are produced there. That is the same gap as the pause window
+in the disaggregated mode, and `--max-weight-staleness` and the weight-version
+bookkeeping are unchanged.
+
+### Launch
+
+```diff
+  python3 train_async.py ...
+    --fully-async
++   --colocate
++   --num-gpus-per-node 1
+-   --rollout-num-gpus 4
+```
 
 ## Data path
 

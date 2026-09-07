@@ -506,24 +506,60 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
 
 def test_fully_async_rejects_abort_pause_mode():
     """Generation is always in flight, so aborting on every weight update would kill it."""
-    args = SimpleNamespace(
-        fully_async=True,
-        multi_lora=False,
-        rollout_function_path=None,
-        eval_function_path=None,
-        colocate=False,
-        partial_rollout=False,
-        pause_generation_mode="abort",
-        recompute_logprobs_via_prefill=False,
-        rollout_all_samples_process_path=None,
-        eval_num_gpus=0,
-    )
+    args = _make_fully_async_args(colocate=False, pause_generation_mode="abort")
 
     with pytest.raises(AssertionError, match="pause-generation-mode abort"):
         _resolve_rollout_functions(args)
 
     args.pause_generation_mode = "retract"
     _resolve_rollout_functions(args)
+
+
+def _make_fully_async_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        fully_async=True,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=True,
+        partial_rollout=False,
+        pause_generation_mode="retract",
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+        train_backend="megatron",
+        ft_components=[],
+    )
+    return SimpleNamespace(**{**defaults, **overrides})
+
+
+def test_fully_async_accepts_colocate():
+    """The driver-orchestrated colocate path is allowed."""
+    _resolve_rollout_functions(_make_fully_async_args())
+
+
+def test_fully_async_colocate_rejects_fsdp_train_backend():
+    """Only the megatron IPC updater lets the driver own the pause/continue window."""
+    args = _make_fully_async_args(train_backend="fsdp")
+
+    with pytest.raises(AssertionError, match="megatron IPC weight updater"):
+        _resolve_rollout_functions(args)
+
+
+def test_fully_async_colocate_rejects_in_place_pause_mode():
+    """Colocate releases the KV cache, so in_place cannot keep its promise to preserve it."""
+    args = _make_fully_async_args(pause_generation_mode="in_place")
+
+    with pytest.raises(AssertionError, match="pause-generation-mode retract"):
+        _resolve_rollout_functions(args)
+
+
+def test_fully_async_colocate_rejects_rollout_fault_tolerance():
+    """A cell replaced inside the training pause would serve without the pause or its KV cache."""
+    args = _make_fully_async_args(ft_components=["rollout"])
+
+    with pytest.raises(AssertionError, match="rollout fault tolerance"):
+        _resolve_rollout_functions(args)
 
 
 class TestClusterBackend:
