@@ -15,7 +15,7 @@ to Megatron `torch_dist`; this script only submits the training job.
 =====================
 
 Args:
-  --model-name: Model variant, one of Qwen3-4B-Base / Qwen3-235B-A22B.
+  --model-name: Qwen3-4B-Base, Qwen3-235B-A22B, or Qwen3.6-35B-A3B.
   --num-gpus-per-node: GPUs per node (default: 8).
   --join-ray-workers: For the multi-node recipe, ssh every host of /root/mpi_rack_hostfile
     into the ray cluster (default: on). Turn off when the cluster is already joined.
@@ -36,7 +36,7 @@ import typer
 
 import miles.utils.external_utils.command_utils as U
 
-_MODEL_NAMES = Literal["Qwen3-4B-Base", "Qwen3-235B-A22B"]
+_MODEL_NAMES = Literal["Qwen3-4B-Base", "Qwen3-235B-A22B", "Qwen3.6-35B-A3B"]
 
 
 @dataclass(frozen=True)
@@ -48,12 +48,15 @@ class _Recipe:
     adam_beta2: float
     optimizer_cpu_offload: bool
     ssh_ray_workers: bool
+    context_parallel_size: int = 1
+    max_tokens_per_gpu: int = 9216
 
 
 _RECIPES: dict[str, _Recipe] = {
     # Qwen3-4B-Base is architecturally identical to Qwen3-4B, so it reuses that definition.
     "Qwen3-4B-Base": _Recipe("qwen3-4B", 1, 1, 1, 0.95, False, False),
     "Qwen3-235B-A22B": _Recipe("qwen3-235B-A22B", 4, 4, 32, 0.98, True, True),
+    "Qwen3.6-35B-A3B": _Recipe("qwen3.6-35B-A3B", 1, 2, 8, 0.98, True, False, 4, 65536),
 }
 
 
@@ -67,6 +70,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
+    prompt_data: str | None = None
+    num_epoch: int = 3
+    rollout_batch_size: int = 128
+    global_batch_size: int = 128
+    learning_rate: float = 1e-5
+    min_learning_rate: float = 1e-6
+    save_interval: int = 1000
+    checkpointed_output_projection: bool = False
+    log_probs_chunk_size: int = 256
 
     @property
     def recipe(self) -> _Recipe:
@@ -79,19 +91,19 @@ def execute(args: ScriptArgs):
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
         f"--load {args.output_dir}/checkpoints "
         f"--save {args.output_dir}/checkpoints "
-        "--save-interval 1000 "
+        f"--save-interval {args.save_interval} "
     )
 
     sft_args = (
         "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
-        f"--prompt-data {args.data_dir}/openhermes2_5.parquet "
+        f"--prompt-data {args.prompt_data or f'{args.data_dir}/openhermes2_5.parquet'} "
         "--input-key messages "
         # no --apply-chat-template: sft_rollout renders the raw messages itself, together
         # with the per-token loss mask
         "--rollout-shuffle "
-        "--num-epoch 3 "
-        "--rollout-batch-size 128 "
-        "--global-batch-size 128 "
+        f"--num-epoch {args.num_epoch} "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--global-batch-size {args.global_batch_size} "
         "--loss-type sft_loss "
         "--calculate-per-token-loss "
         "--disable-compute-advantages-and-returns "
@@ -103,21 +115,32 @@ def execute(args: ScriptArgs):
         f"--tensor-model-parallel-size {args.recipe.tensor_model_parallel_size} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
+        f"--context-parallel-size {args.recipe.context_parallel_size} "
         f"--expert-model-parallel-size {args.recipe.expert_model_parallel_size} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 9216 "
+        f"--max-tokens-per-gpu {args.recipe.max_tokens_per_gpu} "
     )
+    if args.checkpointed_output_projection:
+        if args.log_probs_chunk_size <= 0:
+            raise ValueError("checkpointed output projection requires a positive chunk size")
+        perf_args += (
+            "--sft-checkpointed-output-projection "
+            f"--log-probs-chunk-size {args.log_probs_chunk_size} "
+            "--empty-unused-memory-level 2 "
+        )
+    if args.model_name == "Qwen3.6-35B-A3B":
+        sft_args += "--loss-mask-type qwen3 "
+        perf_args += "--enable-mtp-training --mtp-loss-scaling-factor 0.2 --moe-token-dispatcher-type flex "
 
     optimizer_args = (
         "--optimizer adam "
-        "--lr 1e-5 "
+        f"--lr {args.learning_rate} "
         "--lr-decay-style cosine "
-        "--min-lr 1e-6 "
+        f"--min-lr {args.min_learning_rate} "
         "--lr-warmup-fraction 0.1 "
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
