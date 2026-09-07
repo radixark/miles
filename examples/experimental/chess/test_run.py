@@ -188,9 +188,35 @@ def test_qwen38_dense_defaults_match_supported_recipe() -> None:
 
     assert args.model_name == "Qwen3.8-27B"
     assert args.megatron_model_type == "qwen3.8-27B"
+    assert "--tito-model qwen38small " in _agent_args(args)
     assert (args.tp, args.pp, args.cp, args.ep, args.etp) == (4, 1, 1, 1, 1)
     assert args.rollout_num_gpus_per_engine == 1
     assert args.sglang_mem_fraction_static == 0.8
+
+
+def test_qwen36_uses_selected_native_tito_family_and_zero_retry_policy() -> None:
+    args = ScriptArgs(
+        hardware="H200",
+        num_gpus_per_node=8,
+        model_name="Qwen3.6-35B-A3B",
+        megatron_model_type="qwen3.6-35B-A3B",
+        tito_model="qwen36",
+        model_dir="/models",
+        rollout_max_response_len=16384,
+        repetition_reward_penalty=0.5,
+        max_llm_retries_per_move=0,
+        system_prompt_variant="random",
+    )
+    assert "--tito-model qwen36 " in _agent_args(args)
+    assert "qwen38small" not in _agent_args(args)
+    assert "--ref-load /models/Qwen3.6-35B-A3B_torch_dist " in _checkpoint_args(args)
+    assert "--rollout-max-response-len 16384 " in _rollout_args(args)
+    assert "--fully-async " not in _rollout_args(args)
+    assert "--colocate " in _misc_args(args)
+    chess = _prompt_rows(args)[0]["metadata"]["chess"]
+    assert chess["max_llm_retries_per_move"] == 0
+    assert chess["repetition_reward_penalty"] == 0.5
+    assert chess["system_prompt_variant"] == "random"
 
 
 def test_qwen38_dense_rollout_omits_moe_and_speculative_flags() -> None:
