@@ -7,7 +7,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
-from miles.rollout.base_types import RolloutFnTrainOutput
+from miles.rollout.base_types import RolloutFnTrainOutput, stamp_kv_cache_namespace
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -90,7 +90,11 @@ def submit_generate_tasks(
 
 
 async def generate_rollout_async(
-    state: GenerateState, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]
+    state: GenerateState,
+    rollout_id: int,
+    data_source: Callable[[int], list[list[Sample]]],
+    *,
+    kv_cache_namespace: str | None = None,
 ) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
     args = state.args
     assert args.rollout_global_dataset
@@ -117,6 +121,7 @@ async def generate_rollout_async(
         while scheduler.has_capacity(pending_groups=len(pendings), group_budget=target_data_size - len(data)):
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
+            stamp_kv_cache_namespace(samples, namespace=kv_cache_namespace)
             scheduler.on_submit(samples)
             pendings.update(submit_generate_tasks(state, samples, scheduler.sample_done_callback))
 

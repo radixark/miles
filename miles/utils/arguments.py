@@ -652,6 +652,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--namespaced-radix-cache",
+                action=argparse.BooleanOptionalAction,
+                help=(
+                    "Whether every generation request carries a radix cache key naming the rollout call "
+                    "the sample started under, so prefix KV computed under old weights cannot serve "
+                    "samples of a later call. Defaults to true when --fully-async is combined with "
+                    "--pause-generation-mode in_place, where the engine never flushes the cache and the "
+                    "staleness of a shared prompt is otherwise unbounded; an explicit "
+                    "--no-namespaced-radix-cache is respected."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-temperature",
                 type=float,
                 default=1.0,
@@ -3889,6 +3901,22 @@ def miles_validate_args(args):
             f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must be at least "
             f"--n-samples-per-prompt ({args.n_samples_per_prompt}): the worker submits whole groups, "
             f"so one group already puts n_samples_per_prompt trajectories in flight"
+        )
+
+    if args.namespaced_radix_cache is None:
+        args.namespaced_radix_cache = args.fully_async and args.pause_generation_mode == "in_place"
+        if args.namespaced_radix_cache:
+            logger.info(
+                "--fully-async with --pause-generation-mode in_place never flushes the engine cache: "
+                "defaulting to --namespaced-radix-cache so prefix KV computed under old "
+                "weights cannot serve a later rollout call. Pass "
+                "--no-namespaced-radix-cache to keep one shared cache."
+            )
+
+    if args.namespaced_radix_cache:
+        assert not use_legacy_rollout_v1(), (
+            "--namespaced-radix-cache requires the class-based rollout API; "
+            "unset MILES_USE_LEGACY_ROLLOUT_V1 or pass --no-namespaced-radix-cache"
         )
 
     _resolve_rollout_functions(args)

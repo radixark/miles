@@ -16,6 +16,7 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
+    compute_kv_cache_namespace,
 )
 from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
@@ -222,7 +223,10 @@ class InferenceRolloutFn(BaseRolloutFn):
         from miles.rollout.inference_rollout.inference_rollout_train import generate_rollout_async
 
         output, aborted_samples = await generate_rollout_async(
-            self.state, input.rollout_id, self.data_source.get_samples
+            self.state,
+            input.rollout_id,
+            self.data_source.get_samples,
+            kv_cache_namespace=compute_kv_cache_namespace(self.state.args, input),
         )
         self.data_source.add_samples(aborted_samples)
         return output
@@ -232,5 +236,9 @@ class InferenceRolloutFn(BaseRolloutFn):
         from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
         state = input.generate_state or self.state
-        results = await run_eval_datasets(state, self.eval_prompt_dataset_cache)
+        results = await run_eval_datasets(
+            state,
+            self.eval_prompt_dataset_cache,
+            kv_cache_namespace=compute_kv_cache_namespace(state.args, input),
+        )
         return RolloutFnEvalOutput(data=results)

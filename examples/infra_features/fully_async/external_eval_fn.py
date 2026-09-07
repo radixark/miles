@@ -27,7 +27,12 @@ import shlex
 import subprocess
 import sys
 
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnEvalOutput
+from miles.rollout.base_types import (
+    RolloutFnConstructorInput,
+    RolloutFnEvalInput,
+    RolloutFnEvalOutput,
+    compute_kv_cache_namespace,
+)
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
@@ -88,7 +93,13 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
         await self._pin(checkpoint_dir, input.weight_version)
         if self._state is None:
             self._state = GenerateState(self._eval_args)
-        return RolloutFnEvalOutput(data=await run_eval_datasets(self._state, self._cache))
+        return RolloutFnEvalOutput(
+            data=await run_eval_datasets(
+                self._state,
+                self._cache,
+                kv_cache_namespace=compute_kv_cache_namespace(self._eval_args, input),
+            )
+        )
 
     async def _pin(self, checkpoint_dir: str, weight_version: str, *, retries: int = 2) -> None:
         """Pin discipline: after loading, read the version back and compare — never

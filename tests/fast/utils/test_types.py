@@ -627,6 +627,30 @@ class TestWeightVersions:
         assert restored.weight_versions == s.weight_versions
 
 
+class TestKvCacheNamespace:
+    def test_a_new_sample_has_not_started_under_any_namespace(self):
+        """kv_cache_namespace defaults to None until the first generate stamps it."""
+        assert Sample().kv_cache_namespace is None
+
+    def test_reset_for_retry_forgets_the_namespace_the_sample_started_under(self):
+        """A retry starts over, so it must earn a fresh kv_cache_namespace."""
+        s = _make_sample([1, 2], [3, 4])
+        s.kv_cache_namespace = "train:-:5"
+
+        s.reset_for_retry()
+
+        assert s.kv_cache_namespace is None
+
+    def test_to_dict_from_dict_roundtrip_keeps_kv_cache_namespace(self):
+        """kv_cache_namespace survives a to_dict/from_dict roundtrip."""
+        s = _make_sample([1, 2], [3, 4])
+        s.kv_cache_namespace = "train:-:5"
+
+        restored = Sample.from_dict(s.to_dict())
+
+        assert restored.kv_cache_namespace == "train:-:5"
+
+
 class TestWeightVersionsPerCallFromMetaInfo:
     @pytest.mark.parametrize("prompt_tokens", [36, 68], ids=["image", "audio"])
     def test_expanded_media_prefill_keeps_engine_coordinates_through_roundtrip_and_trimming(

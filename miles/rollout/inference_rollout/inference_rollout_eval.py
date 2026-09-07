@@ -6,6 +6,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from miles.rollout.base_types import stamp_kv_cache_namespace
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
@@ -24,13 +25,19 @@ logger = logging.getLogger(__name__)
 async def run_eval_datasets(
     state: GenerateState,
     prompt_dataset_cache: dict[Any, Dataset],
+    *,
+    kv_cache_namespace: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
     for dataset_cfg in args.eval_datasets:
-        coros.append(eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache))
+        coros.append(
+            eval_rollout_single_dataset(
+                state, dataset_cfg, prompt_dataset_cache, kv_cache_namespace=kv_cache_namespace
+            )
+        )
     results_list = await asyncio.gather(*coros)
     return {k: v for r in results_list for k, v in r.items()}
 
@@ -39,6 +46,8 @@ async def eval_rollout_single_dataset(
     state: GenerateState,
     dataset_cfg: EvalDatasetConfig,
     prompt_dataset_cache: dict[Any, Dataset],
+    *,
+    kv_cache_namespace: str | None = None,
 ) -> dict[str, dict[str, list[Any]]]:
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
@@ -83,6 +92,7 @@ async def eval_rollout_single_dataset(
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
             sample.generate_function_path = dataset_cfg.custom_generate_function_path
+            stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params

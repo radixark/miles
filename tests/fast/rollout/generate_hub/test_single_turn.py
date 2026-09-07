@@ -46,6 +46,7 @@ def expected_request(
     return_routed_experts: bool = False,
     return_indexer_topk: bool = False,
     image_data: list[str] | None = None,
+    extra_key: str | None = None,
 ) -> dict:
     result = {
         "input_ids": input_ids or PROMPT_TOKENS,
@@ -58,6 +59,8 @@ def expected_request(
         result["return_indexer_topk"] = return_indexer_topk
     if image_data is not None:
         result["image_data"] = image_data
+    if extra_key is not None:
+        result["extra_key"] = extra_key
     return result
 
 
@@ -87,6 +90,7 @@ def expected_sample(
     multimodal_inputs: dict | None = None,
     multimodal_train_inputs: dict | None = None,
     loss_mask: list[int] | None | _Unset = _UNSET,
+    kv_cache_namespace: str | None = None,
 ) -> Sample:
     actual_response_length = response_length if response_length is not None else len(RESPONSE_TOKENS)
     if isinstance(loss_mask, _Unset):
@@ -131,6 +135,7 @@ def expected_sample(
         non_generation_time=0.0,
         spec_info=spec_info or Sample.SpecInfo(),
         prefix_cache_info=Sample.PrefixCacheInfo(cached_tokens=cached_tokens, total_prompt_tokens=prompt_tokens),
+        kv_cache_namespace=kv_cache_namespace,
     )
 
 
@@ -155,6 +160,26 @@ def _run_generate(variant: str, env: GenerateEnv, sample: Sample | None = None, 
 class TestBasicGeneration:
     def test_basic_generation(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
+        assert result.requests == [expected_request(variant)]
+        assert listify(result.sample) == [expected_sample(variant)]
+
+
+class TestRadixCacheExtraKey:
+    def test_a_started_sample_partitions_the_cache_by_its_kv_cache_namespace(self, variant, generation_env):
+        """A sample with a kv_cache_namespace sends extra_key the namespace itself and keeps it."""
+        sample = _make_sample()
+        sample.kv_cache_namespace = "train:-:7"
+
+        result = _run_generate(variant, generation_env, sample)
+
+        assert result.requests == [expected_request(variant, extra_key="train:-:7")]
+        assert listify(result.sample) == [expected_sample(variant, kv_cache_namespace="train:-:7")]
+
+    def test_an_unstamped_sample_carries_no_extra_key(self, variant, generation_env):
+        """With the partition off nothing stamps the sample, so the request looks exactly as it used to."""
+        result = _run_generate(variant, generation_env, _make_sample())
+
+        assert "extra_key" not in result.requests[0]
         assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant)]
 
@@ -189,7 +214,8 @@ class TestEndpointRouting:
 
 
 class TestResumedSingleTurn:
-    def test_two_consecutive_calls_on_same_sample(self, variant, generation_env):
+    def test_two_consecutive_calls_on_same_sample(self, variant: str, generation_env: GenerateEnv) -> None:
+        """An aborted sample resumes with the same radix cache key and accumulated output."""
         if variant == "multi_turn":
             pytest.skip("not tested yet")
         partial_text = "\\boxed"
@@ -202,10 +228,12 @@ class TestResumedSingleTurn:
 
         generation_env.mock_server.process_fn = lambda _: ProcessResult(text=partial_text, finish_reason="abort")
         sample = _make_sample()
-        result1 = _run_generate(variant, generation_env, sample)
-        assert result1.requests == [expected_request(variant)]
+        sample.kv_cache_namespace = "train:-:7"
+        result1 = _run_generate(variant=variant, env=generation_env, sample=sample)
+        assert result1.requests == [expected_request(variant=variant, extra_key="train:-:7")]
         assert result1.sample == expected_sample(
-            variant,
+            variant=variant,
+            kv_cache_namespace="train:-:7",
             response=partial_text,
             response_length=2,
             tokens=PROMPT_TOKENS + partial_tokens,
@@ -214,17 +242,19 @@ class TestResumedSingleTurn:
         )
 
         generation_env.mock_server.process_fn = lambda _: ProcessResult(text=remaining_text, finish_reason="stop")
-        result2 = _run_generate(variant, generation_env, result1.sample)
+        result2 = _run_generate(variant=variant, env=generation_env, sample=result1.sample)
         tokens_after_turn1 = PROMPT_TOKENS + partial_tokens
         assert result2.requests == [
             expected_request(
-                variant,
+                variant=variant,
+                extra_key="train:-:7",
                 input_ids=tokens_after_turn1,
                 sampling_params={"max_new_tokens": 14, "temperature": 0.7},
             )
         ]
         assert result2.sample == expected_sample(
-            variant,
+            variant=variant,
+            kv_cache_namespace="train:-:7",
             response=partial_text + remaining_text,
             response_length=2 + 3,
             tokens=tokens_after_turn1 + remaining_tokens,

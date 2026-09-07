@@ -514,6 +514,7 @@ def test_fully_async_rejects_abort_pause_mode():
         colocate=False,
         partial_rollout=False,
         pause_generation_mode="abort",
+        namespaced_radix_cache=False,
         recompute_logprobs_via_prefill=False,
         rollout_all_samples_process_path=None,
         eval_num_gpus=0,
@@ -1695,6 +1696,86 @@ class TestSessionServerPauseGenerationMode:
 
         warned = any("R3 payloads can become very large" in record.message for record in caplog.records)
         assert warned is expect_warning
+
+
+class TestPartitionRadixCacheByRolloutCallResolution:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_it_is_unset_before_validation(self):
+        """The flag is tri-state, so parsing alone must not decide it."""
+        assert self._parse([]).namespaced_radix_cache is None
+
+    def test_fully_async_with_in_place_pausing_turns_it_on(self, caplog):
+        """in_place never flushes the cache, so the fully async producer gets the partition by default."""
+        args = self._parse(["--fully-async", "--pause-generation-mode", "in_place"])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is True
+        assert any("--namespaced-radix-cache" in record.message for record in caplog.records)
+
+    @pytest.mark.parametrize(
+        argnames="extra",
+        argvalues=[
+            [],
+            ["--pause-generation-mode", "in_place"],
+            ["--fully-async"],
+            ["--fully-async", "--pause-generation-mode", "retract"],
+        ],
+    )
+    def test_every_other_configuration_leaves_it_off(self, caplog, extra):
+        """Existing runs keep one shared radix cache, so nothing changes for them."""
+        args = self._parse(extra)
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is False
+        assert not any("--namespaced-radix-cache" in record.message for record in caplog.records)
+
+    def test_an_explicit_yes_is_respected_outside_the_default_configuration(self):
+        """A run that asks for the partition gets it even without fully async in_place pausing."""
+        args = self._parse(["--namespaced-radix-cache"])
+
+        miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is True
+
+    def test_an_explicit_no_is_respected_inside_the_default_configuration(self):
+        """The default is only a default: fully async in_place can still opt out."""
+        args = self._parse(
+            ["--fully-async", "--pause-generation-mode", "in_place", "--no-namespaced-radix-cache"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is False
+
+    @pytest.mark.parametrize("namespaced", [False, True])
+    def test_legacy_rollout_rejects_only_enabled_namespaced_caches(
+        self, monkeypatch: pytest.MonkeyPatch, namespaced: bool
+    ) -> None:
+        """Legacy rollout cannot silently accept cache isolation that its entrypoints do not implement."""
+        monkeypatch.setenv("MILES_USE_LEGACY_ROLLOUT_V1", "1")
+        args = self._parse(
+            [
+                "--pause-generation-mode",
+                "in_place",
+                "--namespaced-radix-cache" if namespaced else "--no-namespaced-radix-cache",
+            ]
+        )
+
+        if namespaced:
+            with pytest.raises(AssertionError, match="--namespaced-radix-cache requires the class-based rollout API"):
+                miles_validate_args(args)
+        else:
+            miles_validate_args(args)
+            assert args.namespaced_radix_cache is False
+            assert args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout"
 
 
 class TestTitoFixedTemplateConfiguration:

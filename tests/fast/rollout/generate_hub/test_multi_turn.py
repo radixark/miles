@@ -143,14 +143,18 @@ def expected_request(
     *,
     return_routed_experts: bool = False,
     return_indexer_topk: bool = False,
+    extra_key: str | None = None,
 ) -> dict:
-    return {
+    result = {
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
         "return_routed_experts": return_routed_experts,
         "return_indexer_topk": return_indexer_topk,
     }
+    if extra_key is not None:
+        result["extra_key"] = extra_key
+    return result
 
 
 def expected_openai_request(messages: list[dict], **extra) -> dict:
@@ -249,6 +253,25 @@ class TestBasicMultiTurn:
             ),
         ]
         verify_samples(result.sample, expected)
+
+
+class TestRadixCacheExtraKey:
+    @pytest.mark.parametrize("variant", ["multi_turn"])
+    def test_every_turn_of_a_started_sample_carries_its_kv_cache_namespace(self, variant, generation_env):
+        """Both turns of a multi-turn sample send the same namespace key and the sample keeps it."""
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        S = TwoTurnStub
+        sample = make_sample(prompt=S.PROMPT)
+        sample.kv_cache_namespace = "train:-:7"
+        result = _run_generate(variant, generation_env, sample)
+
+        extra_key = "train:-:7"
+        assert result.requests == [
+            expected_request(S.FIRST_PROMPT_TOKEN_IDS, extra_key=extra_key),
+            expected_request(S.SECOND_PROMPT_TOKEN_IDS, extra_key=extra_key),
+        ]
+        assert [s.kv_cache_namespace for s in listify(result.sample)] == ["train:-:7"]
 
 
 class TestExitConditions:
