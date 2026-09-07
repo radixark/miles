@@ -68,6 +68,7 @@ def _make_mock_args(
         object_store_backend="ray",
         worker_comm_backend="ray",
         trainer_model_id=None,
+        update_weights_timeout=1800.0,
     )
 
 
@@ -1216,7 +1217,12 @@ class TestCellStatusesUnderConcurrentReconcile:
 class TestUpdateWeightsReturnsTheVersion:
     def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
-        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
+        group.args = SimpleNamespace(
+            debug_train_only=False,
+            debug_rollout_only=False,
+            trainer_model_id=None,
+            update_weights_timeout=1800.0,
+        )
         group._trainer_id = "trainer-0"
         group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
         return group
@@ -1240,7 +1246,7 @@ class TestUpdateWeightsReturnsTheVersion:
 
         await group.update_weights(info=info)
 
-        group._execute_first_alive.assert_awaited_once_with("update_weights", info=info)
+        group._execute_first_alive.assert_awaited_once_with("update_weights", timeout=1800.0, info=info)
 
 
 class TestModelOwnedWeightVersions:
@@ -1249,16 +1255,21 @@ class TestModelOwnedWeightVersions:
         """Republishing, skipped steps and checkpoint rewinds preserve model versions."""
         controller = TrainerController.__new__(TrainerController)
         controller._trainer_id = "trainer-0"
+        controller.args = SimpleNamespace(update_weights_timeout=1800.0)
         controller._execute_first_alive = AsyncMock(side_effect=[[version, version] for version in versions])
         info = MagicMock()
 
         assert [await controller.update_weights(info=info) for _ in versions] == versions
-        assert all(call.kwargs == {"info": info} for call in controller._execute_first_alive.await_args_list)
+        assert all(
+            call.kwargs == {"info": info, "timeout": 1800.0}
+            for call in controller._execute_first_alive.await_args_list
+        )
 
     async def test_retry_reads_the_recovered_models_version(self) -> None:
         """A failed trainer does not reserve a version for its replacement."""
         controller = TrainerController.__new__(TrainerController)
         controller._trainer_id = "trainer-0"
+        controller.args = SimpleNamespace(update_weights_timeout=1800.0)
         controller._execute_first_alive = AsyncMock(side_effect=[RuntimeError("cell died"), [12, 12]])
 
         assert await controller.update_weights(info=MagicMock()) == 12
