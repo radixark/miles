@@ -1261,7 +1261,30 @@ class TestUpdateWindowOutcome:
         await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
         assert not controller.context_lock.locked
-        assert (cell.marked_errored, cell.marked_ready) == (0, 0)
+        assert cell.marked_ready == 0
+
+    @pytest.mark.asyncio
+    async def test_an_update_that_reported_nothing_retires_every_target(self):
+        """Every engine is stuck part way through the update, so none of them may serve again."""
+        first = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        second = _FakeUpdatableCell("hash-b", cell_id="engine-1", gpu_offset=1)
+        controller, _srv = self._controller_with({"engine-0": first, "engine-1": second})
+
+        info = await controller.start_update_weights()
+        await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        assert (first.marked_errored, second.marked_errored) == (1, 1)
+
+    @pytest.mark.asyncio
+    async def test_an_aborted_update_leaves_a_replaced_incarnation_alone(self):
+        """The relaunched cell was never part of this update, and retiring it would kill a healthy engine."""
+        relaunched = _FakeUpdatableCell("hash-new", cell_id="engine-0", gpu_offset=0)
+        controller, _srv = self._controller_with({"engine-0": relaunched})
+
+        await controller.start_update_weights()
+        await controller.abort_update_weights(snapshot_cell_id_to_hashes={"engine-0": "hash-old"})
+
+        assert relaunched.marked_errored == 0
 
     @pytest.mark.asyncio
     async def test_a_failed_cell_is_stopped_immediately(self):

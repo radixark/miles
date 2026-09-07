@@ -9,6 +9,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.backends.training_utils.weight_update.protocol import supports_partial_target_weight_update
 from miles.backends.training_utils.weight_update.report import (
     WeightUpdateReport,
+    build_lost_trainer_report,
     build_untouched_targets_report,
     combine_trainer_reports,
     merge_rank_reports,
@@ -452,12 +453,23 @@ class TrainerController:
         )
 
         reports: list[WeightUpdateReport] = []
+        lost_trainers: list[BaseException] = []
         for (cell, assignment), outcome in zip(assignments, outcomes, strict=True):
             if isinstance(outcome, BaseException):
-                raise outcome
+                logger.error(
+                    f"Trainer cell {cell.cell_id} lost the weight update of "
+                    f"{list(assignment.engine_cell_ids)}, which are all given up on",
+                    exc_info=outcome,
+                )
+                lost_trainers.append(outcome)
+                reports.append(build_lost_trainer_report(assignment.engine_cell_ids))
+                continue
             report = merge_rank_reports(outcome, debug_name=f"trainer cell {cell.cell_id}")
             report.validate_assignment(assignment.engine_cell_ids)
             reports.append(report)
+
+        if len(lost_trainers) == len(assignments):
+            raise lost_trainers[0]
         return combine_trainer_reports(reports)
 
     def _assign_update_targets(self, info: UpdatableEngines) -> list[tuple[TrainerCell, UpdatableEngines]]:

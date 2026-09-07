@@ -265,8 +265,11 @@ class InferenceController:
     @releases_lock
     async def abort_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
         logger.error(
-            f"The weight update of cells {sorted(snapshot_cell_id_to_hashes)} did not report an outcome, "
-            f"so none of them is marked ready"
+            f"The weight update of cells {sorted(snapshot_cell_id_to_hashes)} reported no outcome at all, "
+            f"so all of them are retired: their weights are stuck half way through the update"
+        )
+        await self._mark_cells_errored(
+            snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes, cell_ids=list(snapshot_cell_id_to_hashes)
         )
 
     @requires_lock

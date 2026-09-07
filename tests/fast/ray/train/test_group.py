@@ -1416,6 +1416,77 @@ class TestUpdateWeightsUsesEveryAliveCell:
         assert report.failed_cell_ids == ("engine-0",)
         assert report.updated_cell_ids == ("engine-1",)
 
+    async def test_the_targets_of_a_lost_trainer_are_all_reported_as_failed(self):
+        """Its engines are stuck half way through the update, so serving from them would mix two models."""
+        cells = [_FakeTrainerCell(0, outcome=RuntimeError("the trainer died")), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(4))
+
+        assert sorted(report.failed_cell_ids) == ["engine-0", "engine-1"]
+        assert sorted(report.updated_cell_ids) == ["engine-2", "engine-3"]
+
+    async def test_a_lost_trainer_does_not_hand_its_targets_to_another_trainer(self):
+        """Those engines are mid-update, so a second sender would write over an unknown partial state."""
+        cells = [_FakeTrainerCell(0, outcome=RuntimeError("the trainer died")), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        await controller.update_weights(info=_p2p_info(4))
+
+        assert [call["info"].engine_cell_ids for call in cells[1].calls] == [["engine-2", "engine-3"]]
+
+    async def test_a_healthy_trainer_still_finishes_after_another_one_failed(self):
+        """Cancelling it on the first exception would abandon a transfer that was already writing weights."""
+        released = asyncio.Event()
+
+        class _FailingCell(_FakeTrainerCell):
+            async def execute(self, fn_name: str, *, timeout: float, info, weight_version: int):
+                raise RuntimeError("the trainer died")
+
+        class _SlowCell(_FakeTrainerCell):
+            async def execute(self, fn_name: str, *, timeout: float, info, weight_version: int):
+                await asyncio.sleep(0)
+                released.set()
+                return await super().execute(fn_name, timeout=timeout, info=info, weight_version=weight_version)
+
+        cells = [_FailingCell(0), _SlowCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(2))
+
+        assert released.is_set()
+        assert report.updated_cell_ids == ("engine-1",)
+
+    async def test_the_version_of_the_surviving_trainer_is_still_published(self):
+        """A partial update still moves the healthy engines forward, and the executor must stamp them correctly."""
+        cells = [_FakeTrainerCell(0, outcome=RuntimeError("the trainer died")), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(2))
+
+        assert report.weight_version == 1
+
+    async def test_losing_every_trainer_raises_instead_of_answering_a_partial_success(self):
+        """Nothing was published and no cell can send, so the run must heal the trainers instead of continuing."""
+        cells = [
+            _FakeTrainerCell(0, outcome=RuntimeError("the first trainer died")),
+            _FakeTrainerCell(1, outcome=RuntimeError("the second trainer died")),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        with pytest.raises(RuntimeError, match="the first trainer died"):
+            await controller.update_weights(info=_p2p_info(2))
+
+    async def test_a_lost_trainer_does_not_advance_the_published_version_for_its_targets(self):
+        """Its engines never received these weights, so counting them as published would mislabel their samples."""
+        cells = [_FakeTrainerCell(0, outcome=RuntimeError("the trainer died")), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(2))
+
+        assert report.updated_cell_ids == ("engine-1",)
+        assert controller._last_published_weight_version == 1
+
     async def test_a_non_p2p_backend_keeps_using_a_single_cell(self):
         """Its transfer group spans the whole fleet, so slicing the targets across trainers would break it."""
         cells = [_FakeTrainerCell(0), _FakeTrainerCell(1)]

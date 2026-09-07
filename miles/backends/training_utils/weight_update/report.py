@@ -19,12 +19,6 @@ class WeightUpdateReport:
         both = sorted(set(self.updated_cell_ids) & set(self.failed_cell_ids))
         assert not both, f"cells {both} are reported as both updated and failed"
 
-        if self.weight_version is None:
-            assert not self.failed_cell_ids, (
-                f"an update that published no version reached no cell to fail, "
-                f"got failures {sorted(self.failed_cell_ids)}"
-            )
-
     @property
     def reported_cell_ids(self) -> frozenset[str]:
         return frozenset(self.updated_cell_ids) | frozenset(self.failed_cell_ids)
@@ -74,15 +68,18 @@ def build_untouched_targets_report(assigned_cell_ids: Sequence[str]) -> WeightUp
     return build_weight_update_report(weight_version=None, assigned_cell_ids=assigned_cell_ids, failed_cell_ids=())
 
 
+def build_lost_trainer_report(assigned_cell_ids: Sequence[str]) -> WeightUpdateReport:
+    return WeightUpdateReport(weight_version=None, updated_cell_ids=(), failed_cell_ids=tuple(assigned_cell_ids))
+
+
 def combine_trainer_reports(reports: Sequence[WeightUpdateReport]) -> WeightUpdateReport:
     assert reports, "no trainer cell reported the outcome of this update"
 
-    versions = {report.weight_version for report in reports}
-    assert len(versions) == 1, f"the trainer cells published different weight versions, got {sorted(versions)}"
-    [weight_version] = versions
+    versions = {report.weight_version for report in reports if report.weight_version is not None}
+    assert len(versions) <= 1, f"the trainer cells published different weight versions, got {versions}"
 
     return WeightUpdateReport(
-        weight_version=weight_version,
+        weight_version=next(iter(versions), None),
         updated_cell_ids=tuple(cell_id for report in reports for cell_id in report.updated_cell_ids),
         failed_cell_ids=tuple(cell_id for report in reports for cell_id in report.failed_cell_ids),
     )
