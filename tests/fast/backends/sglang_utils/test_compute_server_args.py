@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 
 
@@ -36,7 +37,7 @@ def compute(args: SimpleNamespace, **overrides: object) -> dict:
         nccl_port=5000,
         host="127.0.0.1",
         port=30000,
-        worker_type="regular",
+        worker_type=WorkerType.REGULAR,
         disaggregation_bootstrap_port=None,
         base_gpu_id=0,
         engine_info_bootstrap_port=None,

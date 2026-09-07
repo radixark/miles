@@ -17,6 +17,7 @@ pytest.importorskip("sglang")
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv, server_args_to_argv
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 from miles.utils.workers.argv_utils import _actions_by_dest, _render_action_argv, _resolve_action
 
@@ -47,7 +48,7 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
 
 def _server_args(
     *,
-    worker_type: str = "regular",
+    worker_type: WorkerType = WorkerType.REGULAR,
     node_rank: int = 0,
     dist_init_addr: str = "10.0.0.1:20000",
     args: Namespace | None = None,
@@ -116,14 +117,14 @@ class TestServerArgsToArgv:
 
     def test_a_prefill_worker_roundtrips(self):
         """PD-disaggregation prefill fields survive the argv boundary."""
-        server_args = _server_args(worker_type="prefill", disaggregation_bootstrap_port=20090)
+        server_args = _server_args(worker_type=WorkerType.PREFILL, disaggregation_bootstrap_port=20090)
         assert server_args["disaggregation_mode"] == "prefill"
         assert "--disaggregation-mode" in server_args_to_argv(server_args)
         _assert_roundtrips(server_args)
 
     def test_a_decode_worker_roundtrips(self):
         """PD-disaggregation decode fields survive the argv boundary."""
-        server_args = _server_args(worker_type="decode")
+        server_args = _server_args(worker_type=WorkerType.DECODE)
         assert server_args["disaggregation_mode"] == "decode"
         _assert_roundtrips(server_args)
 

@@ -5,6 +5,7 @@ import time
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
@@ -691,7 +692,7 @@ class TestMarkWeightsReady:
                 "add_worker",
                 dict(
                     worker_url="http://10.0.0.1:30000",
-                    worker_type="regular",
+                    worker_type=WorkerType.REGULAR,
                     use_legacy_api=False,
                     bootstrap_port=None,
                 ),

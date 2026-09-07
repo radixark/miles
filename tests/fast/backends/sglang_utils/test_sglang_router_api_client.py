@@ -5,6 +5,7 @@ import pytest
 
 sglang_router = pytest.importorskip("sglang_router")
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType  # noqa: E402
 from miles.backends.sglang_utils.sglang_router_api_client import (  # noqa: E402
     ROUTER_REQUEST_TIMEOUT,
     SGLangRouterApiClient,
@@ -67,7 +68,7 @@ def client():
 
 async def test_add_worker_uses_the_query_string_api_when_legacy(client, recorder):
     """Routers <= 0.2.1 and the miles router only understand /add_worker?url=."""
-    await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=True)
+    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=True)
 
     assert recorder.calls == [
         ("post", f"{ROUTER_URL}/add_worker?url={WORKER_URL}", {"timeout": ROUTER_REQUEST_TIMEOUT})
@@ -77,12 +78,12 @@ async def test_add_worker_uses_the_query_string_api_when_legacy(client, recorder
 async def test_add_worker_rejects_pd_disaggregation_on_the_legacy_api(client, recorder):
     """The legacy API has no worker_type concept, so prefill/decode workers must be refused."""
     with pytest.raises(AssertionError, match="pd disaggregation is not supported"):
-        await client.add_worker(worker_url=WORKER_URL, worker_type="prefill", use_legacy_api=True)
+        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.PREFILL, use_legacy_api=True)
 
 
 async def test_add_worker_posts_the_worker_payload_on_the_modern_api(client, recorder):
     """Modern routers take a JSON body on /workers."""
-    await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=False)
+    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=False)
 
     assert len(recorder.calls) == 1
     verb, url, kwargs = recorder.calls[0]
@@ -92,7 +93,9 @@ async def test_add_worker_posts_the_worker_payload_on_the_modern_api(client, rec
 
 async def test_add_worker_includes_the_bootstrap_port_for_prefill_workers(client, recorder):
     """PD disaggregation needs the prefill worker's bootstrap port registered with the router."""
-    await client.add_worker(worker_url=WORKER_URL, worker_type="prefill", use_legacy_api=False, bootstrap_port=8998)
+    await client.add_worker(
+        worker_url=WORKER_URL, worker_type=WorkerType.PREFILL, use_legacy_api=False, bootstrap_port=8998
+    )
 
     assert len(recorder.calls) == 1
     assert recorder.calls[0][2]["json"] == {
@@ -153,7 +156,7 @@ async def test_add_worker_propagates_router_errors(client, monkeypatch):
     rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
 
     with pytest.raises(httpx.HTTPStatusError):
-        await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=True)
+        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=True)
 
 
 async def test_remove_worker_propagates_router_errors(client, monkeypatch):
@@ -165,7 +168,7 @@ async def test_remove_worker_propagates_router_errors(client, monkeypatch):
         await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=True)
 
 
-@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+@pytest.mark.parametrize("worker_type", [WorkerType.PREFILL, WorkerType.DECODE])
 async def test_add_worker_rejects_pd_worker_types_before_any_request(client, monkeypatch, worker_type):
     """The legacy API has no worker_type, so a pd worker must be refused without registering it."""
     rec = _Recorder()
@@ -177,7 +180,7 @@ async def test_add_worker_rejects_pd_worker_types_before_any_request(client, mon
     assert rec.calls == []
 
 
-@pytest.mark.parametrize("worker_type", ["regular", "decode"])
+@pytest.mark.parametrize("worker_type", [WorkerType.REGULAR, WorkerType.DECODE])
 async def test_add_worker_omits_bootstrap_port_for_non_prefill_workers(client, recorder, worker_type):
     """Only a prefill worker exposes a bootstrap port for the decode side to dial."""
     await client.add_worker(worker_url=WORKER_URL, worker_type=worker_type, use_legacy_api=False, bootstrap_port=8998)
@@ -206,7 +209,7 @@ async def test_add_worker_propagates_a_failing_modern_response(client, monkeypat
     rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
 
     with pytest.raises(httpx.HTTPStatusError):
-        await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=False)
+        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=False)
 
 
 async def test_remove_worker_propagates_a_failing_url_addressed_delete(client, monkeypatch):
@@ -296,7 +299,7 @@ def test_the_router_timeout_bounds_the_whole_request_not_just_the_connect():
 @pytest.mark.parametrize("use_legacy_api", [True, False])
 async def test_add_worker_bounds_the_registration_request(client, recorder, use_legacy_api):
     """A router that accepts the connection but never answers would wedge the weight-update window forever."""
-    await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=use_legacy_api)
+    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=use_legacy_api)
 
     assert [kwargs.get("timeout") for _verb, _url, kwargs in recorder.calls] == [ROUTER_REQUEST_TIMEOUT]
 

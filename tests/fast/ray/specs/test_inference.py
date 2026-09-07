@@ -12,6 +12,7 @@ from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.ray.rollout import external_engine_provider as external_engine_provider_module
 from miles.ray.rollout.inference_controller import InferenceController
@@ -877,7 +878,7 @@ class TestInferenceEngineRandomSeed:
         for model_idx, model_cfg in enumerate(resolve_sglang_config(args).models):
             for group_index, group_cfg in enumerate(model_cfg.server_groups):
                 num_actors = group_cfg.num_gpus // min(group_cfg.num_gpus_per_engine, args.num_gpus_per_node)
-                if group_cfg.worker_type != "placeholder":
+                if group_cfg.worker_type != WorkerType.PLACEHOLDER:
                     pool_id = compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index)
                     seeds[pool_id] = [args.seed + global_rank + i for i in range(num_actors)]
                 global_rank += num_actors

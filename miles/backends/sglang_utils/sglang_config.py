@@ -2,12 +2,12 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Literal
 
 import pydantic
 import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -21,7 +21,7 @@ class _RawServerGroupConfig(FrozenStrictBaseModel):
     """Configuration for a single server group.
 
     Attributes:
-        worker_type: One of "regular", "prefill", "decode", or "placeholder".
+        worker_type: One of the WorkerType values.
                      "placeholder" reserves GPU slots without creating engines.
         num_gpus: Total number of GPUs for this group.
         num_gpus_per_engine: GPUs per engine for this group.  Overrides the
@@ -31,7 +31,7 @@ class _RawServerGroupConfig(FrozenStrictBaseModel):
                    arguments in ``_compute_server_args``.
     """
 
-    worker_type: Literal["regular", "prefill", "decode", "placeholder"]
+    worker_type: WorkerType
     num_gpus: int
     num_gpus_per_engine: int | None = None
     overrides: dict = {}
@@ -125,8 +125,8 @@ class _RawSglangConfig(FrozenStrictBaseModel):
                 _RawModelConfig(
                     name="default",
                     server_groups=[
-                        _RawServerGroupConfig(worker_type="prefill", num_gpus=prefill_gpus),
-                        _RawServerGroupConfig(worker_type="decode", num_gpus=decode_gpus),
+                        _RawServerGroupConfig(worker_type=WorkerType.PREFILL, num_gpus=prefill_gpus),
+                        _RawServerGroupConfig(worker_type=WorkerType.DECODE, num_gpus=decode_gpus),
                     ],
                 )
             ]
@@ -141,7 +141,7 @@ class _RawSglangConfig(FrozenStrictBaseModel):
 
 
 class ServerGroupConfig(FrozenStrictBaseModel):
-    worker_type: Literal["regular", "prefill", "decode", "placeholder"]
+    worker_type: WorkerType
     num_gpus: int = pydantic.Field(gt=0)
     num_gpus_per_engine: int = pydantic.Field(gt=0)
     gpu_offset: int = pydantic.Field(ge=0)
@@ -246,14 +246,14 @@ class ModelConfig(FrozenStrictBaseModel):
 
     @property
     def has_pd_disaggregation(self) -> bool:
-        return any(g.worker_type in ("prefill", "decode") for g in self.server_groups)
+        return any(g.worker_type in (WorkerType.PREFILL, WorkerType.DECODE) for g in self.server_groups)
 
     @property
     def num_server_cells(self) -> int:
         return sum(
             group.num_gpus // group.num_gpus_per_engine
             for group in self.server_groups
-            if group.worker_type != "placeholder"
+            if group.worker_type != WorkerType.PLACEHOLDER
         )
 
 
@@ -316,7 +316,9 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
             models=[
                 _RawModelConfig(
                     name="default",
-                    server_groups=[_RawServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
+                    server_groups=[
+                        _RawServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus=args.rollout_num_gpus)
+                    ],
                 )
             ]
         )
@@ -327,7 +329,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
     eval_model = _compute_eval_raw_model(
         _RawModelConfig(
             name="eval",
-            server_groups=[_RawServerGroupConfig(worker_type="regular", num_gpus=eval_num_gpus)],
+            server_groups=[_RawServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus=eval_num_gpus)],
         ),
         args,
     )
