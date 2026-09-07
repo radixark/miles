@@ -1,9 +1,12 @@
+import asyncio
 import importlib
 import sys
+import threading
 from collections import Counter
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from dataclasses import dataclass
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -115,8 +118,8 @@ def _make_targets(module, pairs: list[tuple[int, int]]) -> list:
     ]
 
 
-def _query(module, engines: list[_FakeRolloutEngine], pairs: list[tuple[int, int]]):
-    return module.query_remote_weight_infos(engines, _make_targets(module, pairs))
+def _query(module, engines: list[_FakeRolloutEngine], pairs: list[tuple[int, int]], timeout: float = 30.0):
+    return module.query_remote_weight_infos(engines, _make_targets(module, pairs), request_timeout=timeout)
 
 
 class TestQueryRemoteWeightInfos:
@@ -240,3 +243,154 @@ class TestQueryFailureAttribution:
 
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             _query(p2p_transfer_utils, engines, [(0, 0)])
+
+
+class _HangingRolloutEngine(_FakeRolloutEngine):
+    def __init__(self, engine_index: int, cancelled: threading.Event):
+        super().__init__(engine_index)
+        self._cancelled = cancelled
+
+    async def get_remote_instance_transfer_engine_info(self, rank: int):
+        self.calls.append(("get_remote_instance_transfer_engine_info", {"rank": rank}))
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self._cancelled.set()
+            raise
+
+
+class TestQueryDeadline:
+    """An engine that accepts the connection and never answers must not stall the connect."""
+
+    def test_an_engine_that_never_answers_is_reported_as_failed(self, p2p_transfer_utils):
+        """A weight query with no deadline hangs the trainer where no heartbeat can reach it."""
+        cancelled = threading.Event()
+        engines = [_HangingRolloutEngine(0, cancelled), _FakeRolloutEngine(1)]
+
+        query = _query(p2p_transfer_utils, engines, [(0, 0), (1, 0)], timeout=0.05)
+
+        assert sorted(query.failures_by_engine_ind) == [0]
+        assert query.targets_to_session_id == {(1, 0): "session-1-0"}
+
+    def test_the_request_of_a_timed_out_engine_is_cancelled(self, p2p_transfer_utils):
+        """A query left running answers into a connect that already gave up on that engine."""
+        cancelled = threading.Event()
+        engines = [_HangingRolloutEngine(0, cancelled)]
+
+        _query(p2p_transfer_utils, engines, [(0, 0)], timeout=0.05)
+
+        assert cancelled.wait(timeout=30.0)
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class _PlannedFuture:
+    def __init__(self, clock: _FakeClock, *, blocks: bool, result: object) -> None:
+        self._clock = clock
+        self._blocks = blocks
+        self._result = result
+        self.waited: float | None = None
+        self.cancelled = False
+
+    def result(self, timeout: float | None = None):
+        self.waited = timeout
+        if not self._blocks:
+            return self._result
+        self._clock.now += timeout
+        raise FutureTimeoutError(f"nothing answered within {timeout}s")
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+
+class _PlannedRolloutEngine:
+    def __init__(self, engine_index: int):
+        self._engine_index = engine_index
+
+    async def get_remote_instance_transfer_engine_info(self, rank: int):
+        return f"session-{self._engine_index}-{rank}", {}
+
+    async def get_parallelism_info(self, rank: int):
+        return {"tp_rank": rank}
+
+    async def get_server_info(self):
+        return {"model_path": f"/model/{self._engine_index}"}
+
+
+def _plan_query(p2p_transfer_utils, monkeypatch, *, pairs, blocking):
+    clock = _FakeClock()
+    futures: dict[tuple[int, int], _PlannedFuture] = {}
+    submitted: list[tuple[int, int]] = []
+
+    def fake_submit(coro):
+        coro.close()
+        target = pairs[len(submitted)]
+        submitted.append(target)
+        engine_ind, engine_rank = target
+        futures[target] = _PlannedFuture(
+            clock,
+            blocks=target in blocking,
+            result=SimpleNamespace(
+                session_id=f"session-{engine_ind}-{engine_rank}",
+                weights_info={},
+                parallelism_info={"tp_rank": engine_rank},
+                server_info={"model_path": f"/model/{engine_ind}"},
+                receiver_identity=None,
+            ),
+        )
+        return futures[target]
+
+    monkeypatch.setattr(p2p_transfer_utils, "time", clock)
+    monkeypatch.setattr(p2p_transfer_utils.async_utils, "submit", fake_submit)
+    engines = [_PlannedRolloutEngine(index) for index in range(1 + max(ind for ind, _ in pairs))]
+    return clock, futures, engines
+
+
+class TestOneDeadlineForTheWholeQuery:
+    """Every target of a connect is queried at once, so the connect may not pay one deadline per wedged rank."""
+
+    def test_two_wedged_ranks_of_one_engine_do_not_cost_two_deadlines(self, p2p_transfer_utils, monkeypatch):
+        """A per-future deadline let a single wedged engine hold the connect for one deadline per rank it serves."""
+        pairs = [(0, 0), (0, 1), (1, 0)]
+        clock, futures, engines = _plan_query(p2p_transfer_utils, monkeypatch, pairs=pairs, blocking={(0, 0), (0, 1)})
+
+        query = p2p_transfer_utils.query_remote_weight_infos(
+            engines, _make_targets(p2p_transfer_utils, pairs), request_timeout=100.0
+        )
+
+        assert clock.now == 1_100.0
+        assert [futures[target].waited for target in pairs] == [100.0, 0.0, 0.0]
+        assert query.targets_to_session_id == {(1, 0): "session-1-0"}
+
+    def test_every_wedged_rank_of_one_engine_marks_that_engine_once(self, p2p_transfer_utils, monkeypatch):
+        """The transfer plan gives up per engine, so two ranks of the same engine are one failure, not two."""
+        pairs = [(0, 0), (0, 1), (1, 0)]
+        _, futures, engines = _plan_query(p2p_transfer_utils, monkeypatch, pairs=pairs, blocking={(0, 0), (0, 1)})
+
+        query = p2p_transfer_utils.query_remote_weight_infos(
+            engines, _make_targets(p2p_transfer_utils, pairs), request_timeout=100.0
+        )
+
+        assert sorted(query.failures_by_engine_ind) == [0]
+        assert [futures[target].cancelled for target in pairs] == [True, True, False]
+
+    def test_a_rank_that_already_answered_is_still_read_after_the_deadline_passed(
+        self, p2p_transfer_utils, monkeypatch
+    ):
+        """Its metadata is what the transfer writes into, and dropping it would blame a healthy engine."""
+        pairs = [(0, 0), (1, 0)]
+        _, _, engines = _plan_query(p2p_transfer_utils, monkeypatch, pairs=pairs, blocking={(0, 0)})
+
+        query = p2p_transfer_utils.query_remote_weight_infos(
+            engines, _make_targets(p2p_transfer_utils, pairs), request_timeout=100.0
+        )
+
+        assert query.targets_to_session_id == {(1, 0): "session-1-0"}
+        assert sorted(query.session_id_to_server_args) == ["session-1-0"]

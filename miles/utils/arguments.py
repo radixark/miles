@@ -1086,6 +1086,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--update-weight-engine-request-timeout",
+                type=float,
+                default=600.0,
+                help=(
+                    "Deadline in seconds for one engine-side weight-update request: the remote transfer "
+                    "metadata query, and every pause, flush, begin, end, set-version and resume call. An "
+                    "engine that misses it is dropped from this update instead of stalling the trainer, so "
+                    "it has to cover the slowest of these, which is the engine reloading its weights."
+                ),
+            )
+            parser.add_argument(
                 "--p2p-transfer-num-workers",
                 type=int,
                 default=4,
@@ -3812,6 +3823,12 @@ def miles_validate_args(args):
     ):
         args.check_weight_update_equal = True
 
+    assert (
+        math.isfinite(args.update_weight_engine_request_timeout) and args.update_weight_engine_request_timeout > 0
+    ), (
+        f"--update-weight-engine-request-timeout bounds every engine-side call of a weight update, got "
+        f"{args.update_weight_engine_request_timeout!r}; an infinite one is the hang this deadline exists to end"
+    )
     assert math.isfinite(args.update_weights_timeout) and args.update_weights_timeout > 0, (
         f"--update-weights-timeout is the controller's deadline for one weight update, got "
         f"{args.update_weights_timeout!r}; an infinite or non-positive one either never fires or kills every update"

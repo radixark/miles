@@ -1,8 +1,11 @@
 import asyncio
+import threading
 from argparse import Namespace
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import pytest
 
+from miles.backends.training_utils.weight_update import cell_session
 from miles.backends.training_utils.weight_update.cell_session import _PerCellEngineSession, _raise_if_unsuccessful
 from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
 
@@ -50,8 +53,16 @@ class _FakeEngine:
         return await self._answer("continue_generation")
 
 
-def _session(engines: dict[str, _FakeEngine], health: InferenceCellHealth, *, pause_mode: str = "retract"):
-    return _PerCellEngineSession(Namespace(pause_generation_mode=pause_mode), engines, health)
+def _session(
+    engines: dict[str, _FakeEngine],
+    health: InferenceCellHealth,
+    *,
+    pause_mode: str = "retract",
+    timeout: float = 30.0,
+    ci_test: bool = False,
+):
+    args = Namespace(pause_generation_mode=pause_mode, update_weight_engine_request_timeout=timeout, ci_test=ci_test)
+    return _PerCellEngineSession(args, engines, health)
 
 
 def _fleet(log: list[tuple], cell_ids: list[str], **kwargs) -> dict[str, _FakeEngine]:
@@ -235,3 +246,194 @@ def test_an_unsuccessful_answer_names_the_reason_the_engine_gave(result, expecte
 def test_an_answer_without_a_success_field_is_accepted() -> None:
     """pause_generation answers with a raw HTTP response, which carries no success flag to inspect."""
     _raise_if_unsuccessful("pause_generation", object())
+
+
+class TestRequestDeadline:
+    """An engine that stops answering must lose the update instead of stalling the trainer forever."""
+
+    def test_a_request_that_never_answers_errors_its_cell(self) -> None:
+        """Without a deadline the trainer waits on a dead engine until the controller kills the whole cell."""
+        log: list[tuple] = []
+        engines = _fleet(log, ["cell-0", "cell-1"])
+        never_answers = asyncio.Event()
+
+        async def hanging_begin(selector: str, sync_base: bool):
+            log.append(("begin_weight_update", "cell-0", (selector, sync_base)))
+            await never_answers.wait()
+            return {"success": True}
+
+        engines["cell-0"].begin_weight_update = hanging_begin
+        health = InferenceCellHealth(["cell-0", "cell-1"])
+
+        _session(engines, health, timeout=0.05).begin(selector="all", sync_base=True)
+
+        assert health.errored_cell_ids == ["cell-0"]
+        assert isinstance(health.error_of("cell-0"), FutureTimeoutError)
+        assert ("begin_weight_update", "cell-1", ("all", True)) in log
+
+    def test_a_timed_out_request_is_cancelled(self) -> None:
+        """A request left running would keep the connection open and answer into a session nobody is reading."""
+        log: list[tuple] = []
+        engines = _fleet(log, ["cell-0"])
+        cancelled = threading.Event()
+
+        async def hanging_begin(selector: str, sync_base: bool):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        engines["cell-0"].begin_weight_update = hanging_begin
+        health = InferenceCellHealth(["cell-0"])
+
+        _session(engines, health, timeout=0.05).begin(selector="all", sync_base=True)
+
+        assert cancelled.wait(timeout=30.0)
+        assert health.errored_cell_ids == ["cell-0"]
+
+    def test_a_cell_that_timed_out_is_not_asked_again(self) -> None:
+        """Every later stage would hit the same deadline and add its own wait to the update."""
+        log: list[tuple] = []
+        engines = _fleet(log, ["cell-0", "cell-1"])
+
+        async def hanging_end():
+            await asyncio.Event().wait()
+
+        engines["cell-0"].end_weight_update = hanging_end
+        health = InferenceCellHealth(["cell-0", "cell-1"])
+        session = _session(engines, health, timeout=0.05)
+
+        session.end()
+        session.set_weight_version(2)
+        session.resume()
+
+        assert [entry[0] for entry in log if entry[1] == "cell-0"] == []
+        assert [entry[0] for entry in log if entry[1] == "cell-1"] == [
+            "end_weight_update",
+            "update_weight_version",
+            "continue_generation",
+        ]
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class _PlannedFuture:
+    def __init__(self, clock: _FakeClock, *, blocks: bool, result: object) -> None:
+        self._clock = clock
+        self._blocks = blocks
+        self._result = result
+        self.waited: float | None = None
+        self.cancelled = False
+
+    def result(self, timeout: float | None = None) -> object:
+        self.waited = timeout
+        if not self._blocks:
+            return self._result
+        self._clock.now += timeout
+        raise FutureTimeoutError(f"nothing answered within {timeout}s")
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+
+class _PlannedEngine:
+    def __init__(self, cell_id: str) -> None:
+        self._cell_id = cell_id
+
+    def begin_weight_update(self, selector: str, sync_base: bool) -> str:
+        return self._cell_id
+
+
+def _planned_fleet(
+    monkeypatch: pytest.MonkeyPatch, *, cell_ids: list[str], blocking: set[str]
+) -> tuple[_FakeClock, dict[str, _PlannedFuture], dict[str, _PlannedEngine]]:
+    clock = _FakeClock()
+    futures = {
+        cell_id: _PlannedFuture(clock, blocks=cell_id in blocking, result={"success": True}) for cell_id in cell_ids
+    }
+    monkeypatch.setattr(cell_session, "time", clock)
+    monkeypatch.setattr(cell_session.async_utils, "submit", lambda request: futures[request])
+    return clock, futures, {cell_id: _PlannedEngine(cell_id) for cell_id in cell_ids}
+
+
+class TestOneDeadlineForTheWholeBatch:
+    """The engine calls of one stage run at once, so the stage may not cost one deadline per wedged cell."""
+
+    def test_two_wedged_cells_do_not_cost_two_deadlines(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A per-future deadline let n wedged engines hold the update for n times the deadline."""
+        clock, futures, engines = _planned_fleet(
+            monkeypatch, cell_ids=["cell-0", "cell-1", "cell-2"], blocking={"cell-0", "cell-1"}
+        )
+        health = InferenceCellHealth(["cell-0", "cell-1", "cell-2"])
+
+        _session(engines, health, timeout=100.0).begin(selector="all", sync_base=True)
+
+        assert clock.now == 1_100.0
+        assert [futures[cell_id].waited for cell_id in ["cell-0", "cell-1", "cell-2"]] == [100.0, 0.0, 0.0]
+
+    def test_a_cell_that_already_answered_is_still_read_after_the_deadline_passed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its answer is on the wire either way, and dropping it would retire a cell that did the update."""
+        _, _, engines = _planned_fleet(monkeypatch, cell_ids=["cell-0", "cell-1"], blocking={"cell-0"})
+        health = InferenceCellHealth(["cell-0", "cell-1"])
+
+        _session(engines, health, timeout=100.0).begin(selector="all", sync_base=True)
+
+        assert health.errored_cell_ids == ["cell-0"]
+        assert health.healthy_cell_ids == ["cell-1"]
+
+    def test_the_cell_that_ran_the_deadline_out_is_cancelled_like_the_rest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A request left running would answer into a session nobody reads, holding the connection open."""
+        _, futures, engines = _planned_fleet(monkeypatch, cell_ids=["cell-0", "cell-1"], blocking={"cell-0", "cell-1"})
+        health = InferenceCellHealth(["cell-0", "cell-1"])
+
+        _session(engines, health, timeout=100.0).begin(selector="all", sync_base=True)
+
+        assert [futures[cell_id].cancelled for cell_id in ["cell-0", "cell-1"]] == [True, True]
+        assert health.errored_cell_ids == ["cell-0", "cell-1"]
+
+
+class TestVersionVerification:
+    @pytest.mark.parametrize("answer", ["12", "11", "hang", "error"])
+    def test_a_bad_version_probe_only_retires_its_own_cell(self, answer: str) -> None:
+        """Version checks share the session deadline and cannot discard another cell's successful update."""
+        log: list[tuple] = []
+        engines = _fleet(log, ["bad", "good", "retired"])
+        health = InferenceCellHealth(list(engines))
+        health.mark_errored("retired", RuntimeError("already lost"))
+        queried: list[str] = []
+
+        async def bad_version() -> str:
+            queried.append("bad")
+            if answer == "hang":
+                await asyncio.Event().wait()
+            if answer == "error":
+                raise ConnectionError("lost during verification")
+            return answer
+
+        async def good_version() -> str:
+            queried.append("good")
+            return "12"
+
+        engines["bad"].get_weight_version = bad_version
+        engines["good"].get_weight_version = good_version
+        session = _session(engines, health, ci_test=True, timeout=0.05)
+
+        session.set_weight_version(12)
+        session.resume()
+
+        assert set(queried) == {"bad", "good"}
+        assert health.healthy_cell_ids == (["bad", "good"] if answer == "12" else ["good"])
+        assert ("continue_generation", "good", None) in log
+        assert not any(cell_id == "retired" for _, cell_id, _ in log)

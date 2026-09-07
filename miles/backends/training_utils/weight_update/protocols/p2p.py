@@ -180,7 +180,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
         if planned_targets:
             self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
-            query = query_remote_weight_infos(rollout_engines, planned_targets)
+            query = query_remote_weight_infos(
+                rollout_engines, planned_targets, request_timeout=self.args.update_weight_engine_request_timeout
+            )
             self.remote_weight_infos_by_session_id = query.remote_weight_infos_by_session_id
             self.session_id_to_server_args = query.session_id_to_server_args
             targets_to_session_id = query.targets_to_session_id

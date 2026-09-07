@@ -980,7 +980,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 self._multi_lora_pending_push.clear()
                 commit_weight_push(version_update_names, self._is_first_replica_megatron_main_rank)
 
-            if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
+            if (
+                self.args.ci_test
+                and len(rollout_engines) > 0
+                and not is_lora_enabled(self.args)
+                and self.weight_updater.protocol.inference_cell_health is None
+            ):
                 engine = random.choice(rollout_engines)
                 engine_version = async_utils.run(engine.get_weight_version())
                 if str(engine_version) != str(self.weight_updater.weight_version):
