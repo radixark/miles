@@ -40,7 +40,13 @@ import ray
 from tests.fast.utils.fake_ray_ids import fake_ray_node_id
 
 from miles.utils import http_utils
-from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready, wait_tcp_ready_async
+from miles.utils.http_utils import (
+    MILES_PREFER_IPV6_ENV,
+    GeneralHttpClientProvider,
+    resolve_ip,
+    wait_for_server_ready,
+    wait_tcp_ready_async,
+)
 
 
 def _find_free_port() -> int:
@@ -58,6 +64,90 @@ def _listen_after_delay(host: str, port: int, delay: float, stop_event: threadin
     srv.listen(1)
     stop_event.wait()
     srv.close()
+
+
+def _addrinfo_of(records: dict[int, list[str]]):
+    def _getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ips = records.get(family)
+        if not ips:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return [(family, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in ips]
+
+    return _getaddrinfo
+
+
+def _refuse_lookup(*_args, **_kwargs):
+    raise AssertionError("a name lookup ran for a host that needs none")
+
+
+class TestResolveIp:
+    def test_an_ipv4_literal_passes_through_without_a_lookup(self, monkeypatch):
+        """A literal already is what a socket address parser wants, so resolving it would only add a failure mode."""
+        monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
+
+        assert resolve_ip("10.0.0.7") == "10.0.0.7"
+
+    def test_a_wildcard_literal_passes_through(self, monkeypatch):
+        """Kubernetes binds every command worker on the wildcard, which no lookup could produce."""
+        monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
+
+        assert resolve_ip("0.0.0.0") == "0.0.0.0"
+        assert resolve_ip("::") == "[::]"
+
+    def test_an_ipv6_literal_keeps_its_brackets(self, monkeypatch):
+        """A socket address parser needs the brackets to tell the address from the port."""
+        monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
+
+        assert resolve_ip("[fd00::7]") == "[fd00::7]"
+        assert resolve_ip("fd00::7") == "[fd00::7]"
+
+    def test_a_hostname_resolves_to_its_first_non_loopback_address(self, monkeypatch):
+        """Ray hands out the hostname a slurm node was started with, and the router cannot bind on a name."""
+        monkeypatch.delenv(MILES_PREFER_IPV6_ENV, raising=False)
+        monkeypatch.setattr(socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["127.0.1.1", "10.0.0.7"]}))
+
+        assert resolve_ip("node1234") == "10.0.0.7"
+
+    def test_ipv4_is_the_only_family_by_default(self, monkeypatch):
+        """A dual-stack name binds the v4 address unless the deployment asks for v6."""
+        monkeypatch.delenv(MILES_PREFER_IPV6_ENV, raising=False)
+        monkeypatch.setattr(
+            socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["10.0.0.7"], socket.AF_INET6: ["fd00::7"]})
+        )
+
+        assert resolve_ip("node1234") == "10.0.0.7"
+
+    def test_ipv6_is_preferred_when_the_environment_asks_for_it(self, monkeypatch):
+        """MILES_PREFER_IPV6 picks the v6 address of a dual-stack name."""
+        monkeypatch.setenv(MILES_PREFER_IPV6_ENV, "1")
+        monkeypatch.setattr(
+            socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["10.0.0.7"], socket.AF_INET6: ["fd00::7"]})
+        )
+
+        assert resolve_ip("node1234") == "[fd00::7]"
+
+    def test_a_v6_only_request_never_falls_back_to_v4(self, monkeypatch):
+        """A deployment that asked for v6 has a v4 that does not route, so a silent v4 bind would be unreachable."""
+        monkeypatch.setenv(MILES_PREFER_IPV6_ENV, "1")
+        monkeypatch.setattr(socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["10.0.0.7"]}))
+
+        with pytest.raises(socket.gaierror):
+            resolve_ip("node1234")
+
+    def test_a_name_that_only_reaches_loopback_fails_loudly(self, monkeypatch):
+        """Binding on loopback would start a router nothing else can reach, so the launch must fail instead."""
+        monkeypatch.delenv(MILES_PREFER_IPV6_ENV, raising=False)
+        monkeypatch.setattr(socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["127.0.1.1"]}))
+
+        with pytest.raises(RuntimeError, match="node1234"):
+            resolve_ip("node1234")
+
+    def test_an_unknown_name_fails_loudly(self, monkeypatch):
+        """An unresolvable name has no address to bind, so the lookup error propagates as is."""
+        monkeypatch.setattr(socket, "getaddrinfo", _addrinfo_of({}))
+
+        with pytest.raises(socket.gaierror):
+            resolve_ip("node1234")
 
 
 # ---------------------------------------------------------------------------
