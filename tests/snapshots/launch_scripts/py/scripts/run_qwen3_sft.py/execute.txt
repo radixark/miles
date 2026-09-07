@@ -49,9 +49,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --disable-compute-advantages-and-returns
   --debug-train-only 
   --optimizer adam
-  --lr 1e-5
+  --lr 1e-05
   --lr-decay-style cosine
-  --min-lr 1e-6
+  --min-lr 1e-06
   --lr-warmup-fraction 0.1
   --weight-decay 0.1
   --adam-beta1 0.9
