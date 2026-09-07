@@ -7,7 +7,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import NamedTuple
 
 import ray
-import torch
 from sglang.srt.server_args import ServerArgs
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -140,11 +139,6 @@ class RemoteWeightInfo:
 
     session_id: str
     weights_info: dict[str, RemoteWeightLocation]  # name -> (remote_address, numel, element_size)
-
-
-class TransferEngineMeta(NamedTuple):
-    model_replica: torch.nn.Module
-    remote_weight_infos: list[RemoteWeightInfo]
 
 
 class P2PTransferManager:

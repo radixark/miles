@@ -7,6 +7,23 @@ from types import ModuleType
 import pytest
 
 _P2P_TRANSFER_UTILS_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils"
+_P2P_CELL_UPDATER_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_inference_cell_updater"
+_P2P_PROTOCOL_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p"
+
+_P2P_PROTOCOL_EXTERNAL_SDKS = {
+    "mooncake.engine": {"TransferEngine": object},
+    "sglang.srt.server_args": {"ServerArgs": object},
+    "sglang.srt.configs.device_config": {"DeviceConfig": object},
+    "sglang.srt.configs.load_config": {"LoadConfig": object},
+    "sglang.srt.configs.model_config": {"ModelConfig": object},
+    "sglang.srt.distributed.parallel_state": {"ParallelismContext": object, "RankParallelismConfig": object},
+    "sglang.srt.layers.moe": {"initialize_moe_config": object},
+    "sglang.srt.layers.quantization.fp4_utils": {"initialize_fp4_gemm_config": object},
+    "sglang.srt.layers.quantization.fp8_utils": {"initialize_fp8_gemm_config": object},
+    "sglang.srt.model_loader": {"get_model": object},
+    "sglang.srt.model_loader.loader": {"post_load_weights": object},
+    "sglang.srt.model_loader.parameter_mapper": {"ParameterMapper": object},
+}
 
 
 @contextmanager
@@ -57,3 +74,20 @@ def p2p_transfer_utils() -> ModuleType:
         }
     ):
         return importlib.import_module(_P2P_TRANSFER_UTILS_MODULE)
+
+
+@pytest.fixture(scope="module")
+def p2p_inference_cell_updater() -> ModuleType:
+    with stubbed_missing_external_sdks(
+        {
+            "mooncake.engine": {"TransferEngine": object},
+            "sglang.srt.server_args": {"ServerArgs": object},
+        }
+    ):
+        return importlib.import_module(_P2P_CELL_UPDATER_MODULE)
+
+
+@pytest.fixture(scope="module")
+def p2p_protocol() -> Iterator[ModuleType]:
+    with stubbed_missing_external_sdks(_P2P_PROTOCOL_EXTERNAL_SDKS):
+        yield importlib.import_module(_P2P_PROTOCOL_MODULE)
