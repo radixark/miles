@@ -48,6 +48,20 @@ def _make_rollout_data() -> dict[str, Any]:
         "total_lengths": [3, 2],
         "prompt": ["hello", "world"],
         "metadata": [{"a": 1}, {"b": 2}],
+        "weight_versions": [
+            [
+                {"spans": [{"version": "2", "abs_start": 1, "abs_end": 3}], "prefill_spans": [], "output_start": 1},
+                {
+                    "spans": [{"version": "3", "abs_start": 3, "abs_end": 3}],
+                    "prefill_spans": [
+                        {"version": "1", "abs_start": 0, "abs_end": 2},
+                        {"version": "3", "abs_start": 2, "abs_end": 3},
+                    ],
+                    "output_start": 3,
+                },
+            ],
+            [],
+        ],
     }
 
 
@@ -58,6 +72,7 @@ def _assert_roundtrip_equal(fetched: dict[str, Any], original: dict[str, Any]) -
     assert _tolist(fetched["raw_reward"]) == original["raw_reward"]
     assert _tolist(fetched["total_lengths"]) == original["total_lengths"]
     assert list(fetched["prompt"]) == original["prompt"]
+    assert list(fetched["weight_versions"]) == original["weight_versions"]
     assert list(fetched["metadata"]) == original["metadata"]
 
 
