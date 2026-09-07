@@ -356,6 +356,7 @@ class TestWeightVersionsOnTheSamplesWire:
     @pytest.mark.parametrize(
         ("weight_versions", "expected_error", "match"),
         [
+            pytest.param(["w1", "w2"], AssertionError, None, id="legacy-scalar-versions"),
             pytest.param(
                 [{"version": "w1", "abs_start": 3, "abs_end": 5}],
                 KeyError,

@@ -419,18 +419,12 @@ class TestWeightVersions:
         assert restored.weight_versions == []
         assert getattr(restored, LEGACY_WEIGHT_VERSIONS_KEY) == ["v1", "v2"]
 
-    def test_from_dict_reads_current_dumps_unchanged(self):
-        """A dump written with per-call span mappings round-trips into the typed structure."""
+    def test_from_dict_reads_previous_dumps_with_bare_span_lists(self):
+        """A dump written before prefill spans reads back typed, with the output boundary taken from its first span."""
         restored = Sample.from_dict(
             {
                 "status": "completed",
-                "weight_versions": [
-                    {
-                        "spans": [{"version": "v1", "abs_start": 0, "abs_end": 2}],
-                        "prefill_spans": [],
-                        "output_start": 0,
-                    }
-                ],
+                "weight_versions": [[{"version": "v1", "abs_start": 0, "abs_end": 2}]],
                 "tokens": [1, 2],
             }
         )
@@ -814,6 +808,15 @@ class TestWeightVersionsPerCallDict:
         """An unstamped call serializes to two empty lists and reads back empty."""
         assert WeightVersionsPerCall.from_dict(WeightVersionsPerCall().to_dict()) == WeightVersionsPerCall()
 
+    def test_from_dict_reads_the_bare_span_list_of_older_dumps(self):
+        """Dumps written before prefill spans hold a bare list of output spans per call."""
+        call = WeightVersionsPerCall.from_dict([{"version": "3", "abs_start": 4, "abs_end": 6}])
+        assert call == WeightVersionsPerCall(spans=[WeightVersionSpan("3", 4, 6)], output_start=4)
+
+    def test_from_dict_leaves_the_output_start_of_an_unstamped_legacy_call_unknown(self):
+        """A bare empty list has no span to derive the output boundary from."""
+        assert WeightVersionsPerCall.from_dict([]) == WeightVersionsPerCall(output_start=None)
+
     def test_from_dict_requires_output_start_in_the_mapping_shape(self):
         """A mapping without the output boundary is malformed and fails instead of defaulting."""
         with pytest.raises(KeyError, match="output_start"):
@@ -823,6 +826,11 @@ class TestWeightVersionsPerCallDict:
         """A mapping missing one of the span lists is malformed and fails instead of defaulting."""
         with pytest.raises(KeyError, match="prefill_spans"):
             WeightVersionsPerCall.from_dict({"spans": []})
+
+    def test_from_dict_rejects_anything_but_a_mapping_or_a_span_list(self):
+        """A legacy scalar version string is neither shape and must not decode."""
+        with pytest.raises(AssertionError):
+            WeightVersionsPerCall.from_dict("v1")
 
 
 class TestOldestPrefillWeightVersion:

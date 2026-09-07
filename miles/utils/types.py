@@ -34,7 +34,12 @@ class WeightVersionsPerCall:
         }
 
     @staticmethod
-    def from_dict(data: dict) -> "WeightVersionsPerCall":
+    def from_dict(data: dict | list[dict]) -> "WeightVersionsPerCall":
+        if isinstance(data, list):
+            spans = [WeightVersionSpan(**span) for span in data]
+            return WeightVersionsPerCall(spans=spans, output_start=spans[0].abs_start if spans else None)
+
+        assert isinstance(data, dict)
         return WeightVersionsPerCall(
             spans=[WeightVersionSpan(**span) for span in data["spans"]],
             prefill_spans=[WeightVersionSpan(**span) for span in data["prefill_spans"]],
