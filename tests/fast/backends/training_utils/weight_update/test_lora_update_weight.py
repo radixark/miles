@@ -67,6 +67,7 @@ class TestWeightUpdaterLoraConfig:
     def _make_updater(self, *, is_lora, lora_sync_config):
         protocol = MagicMock()
         protocol.supports_lora = True
+        protocol.cell_updaters = []
         with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
             return WeightUpdater(
                 Namespace(),

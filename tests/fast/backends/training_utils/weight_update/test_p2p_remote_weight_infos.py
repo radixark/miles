@@ -146,7 +146,7 @@ class TestQueryRemoteWeightInfos:
         """Every weight, parallelism, and converted server-args entry must match its session ID."""
         engines = [_FakeRolloutEngine(0), _FakeRolloutEngine(1)]
 
-        weight_infos, targets_to_session_id, session_id_to_server_args = _query(
+        weight_infos, targets_to_session_id, session_id_to_server_args, _failures = _query(
             p2p_transfer_utils, engines, [(0, 0), (0, 1), (1, 0)]
         )
 
@@ -176,7 +176,7 @@ class TestQueryRemoteWeightInfos:
         """The engines answer over HTTP, so JSON lists must become RemoteWeightLocation before any caller indexes them."""
         engines = [_JsonRolloutEngine(0)]
 
-        weight_infos, _targets_to_session_id, _session_id_to_server_args = _query(
+        weight_infos, _targets_to_session_id, _session_id_to_server_args, _failures = _query(
             p2p_transfer_utils, engines, [(0, 0)]
         )
 

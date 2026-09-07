@@ -111,6 +111,7 @@ class TestUpdateWeightsEmptyBaseIteration:
         protocol.group_name = "test"
         protocol.begin_sync.return_value = True
         protocol.rollout_engines = [MagicMock()]
+        protocol.cell_updaters = []
 
         args = _make_args(custom_model_provider_path=None, check_lora_weight_equal=False)
         with (

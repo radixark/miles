@@ -86,7 +86,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
     ) -> bool:
         """Register shared CPU pinned memory with P2P on the first sync."""
-        if self.is_sender and not self._model_registered:
+        if self.is_sender and not self._model_registered and self._cpu_replicas.shared_params_dict:
             self._weight_memory_registry = register_cpu_memory(
                 self._cpu_replicas.shared_params_dict, self._transfer_engine
             )
@@ -160,25 +160,41 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.disconnect()
         self.rollout_engines = rollout_engines
 
-        targets = self.transfer_plan.plan_p2p(engine_gpu_counts)
-        self.is_sender = bool(targets)
+        planned_targets = self.transfer_plan.plan_p2p(engine_gpu_counts)
 
-        if self.is_sender and self._transfer_engine is None:
+        if planned_targets and self._transfer_engine is None:
             # Create ONE transfer engine for all rollout engine ranks
             self._transfer_engine = create_transfer_engine()
 
         targets_by_cell_id: dict[str, dict[int, RemoteWeightInfo]] = {cell_id: {} for cell_id in engine_cell_ids}
         targets_grouped_by_rollout_engine_rank: dict[int, list] = {}
+        targets_to_session_id: dict[tuple[int, int], str] = {}
 
-        if self.is_sender:
+        self.cell_updaters = [
+            _P2PRolloutCellUpdater(
+                args=self.args,
+                cell_id=cell_id,
+                api_client=rollout_engines[rollout_engine_ind],
+                transfer_engine=self._transfer_engine,
+                transfer_manager=self.transfer_manager,
+                targets_by_rollout_engine_rank=targets_by_cell_id[cell_id],
+            )
+            for rollout_engine_ind, cell_id in enumerate(engine_cell_ids)
+        ]
+        updaters_by_cell_id = {cell_updater.cell_id: cell_updater for cell_updater in self.cell_updaters}
+
+        if planned_targets:
             self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
-            (
-                self.remote_weight_infos_by_session_id,
-                targets_to_session_id,
-                self.session_id_to_server_args,
-            ) = query_remote_weight_infos(rollout_engines, targets)
+            query = query_remote_weight_infos(rollout_engines, planned_targets)
+            self.remote_weight_infos_by_session_id = query.remote_weight_infos_by_session_id
+            self.session_id_to_server_args = query.session_id_to_server_args
+            targets_to_session_id = query.targets_to_session_id
+            for rollout_engine_ind, error in query.failures_by_rollout_engine_ind.items():
+                updaters_by_cell_id[engine_cell_ids[rollout_engine_ind]].mark_errored(error)
 
-            for target in targets:
+            for target in planned_targets:
+                if updaters_by_cell_id[engine_cell_ids[target.rollout_engine_ind]].is_errored:
+                    continue
                 targets_grouped_by_rollout_engine_rank.setdefault(target.rollout_engine_rank, []).append(target)
                 session_id = targets_to_session_id[(target.rollout_engine_ind, target.rollout_engine_rank)]
                 cell_targets = targets_by_cell_id[engine_cell_ids[target.rollout_engine_ind]]
@@ -186,17 +202,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 cell_targets[target.rollout_engine_rank] = RemoteWeightInfo(
                     session_id, self.remote_weight_infos_by_session_id[session_id][0]
                 )
-        self.cell_updaters = [
-            _P2PRolloutCellUpdater(
-                cell_id=cell_id,
-                transfer_engine=self._transfer_engine,
-                transfer_manager=self.transfer_manager,
-                targets_by_rollout_engine_rank=targets_by_cell_id[cell_id],
-            )
-            for cell_id in engine_cell_ids
-        ]
-        updaters_by_cell_id = {cell_updater.cell_id: cell_updater for cell_updater in self.cell_updaters}
-
         for rollout_engine_rank, rank_targets in targets_grouped_by_rollout_engine_rank.items():
             rank_session_ids = [
                 targets_to_session_id[(t.rollout_engine_ind, t.rollout_engine_rank)] for t in rank_targets
@@ -218,6 +223,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     ],
                 )
             )
+
+        self.is_sender = bool(self._rollout_engine_rank_infos)
 
     def disconnect(self) -> None:
         self.transfer_manager.wait_transfers()

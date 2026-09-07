@@ -1,6 +1,11 @@
 import logging
+from argparse import Namespace
+from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import Future
 from typing import Any
+
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.utils import async_utils
 
 from .p2p_transfer_utils import P2PTransferManager, RemoteWeightInfo
 
@@ -11,17 +16,22 @@ logger = logging.getLogger(__name__)
 class _P2PRolloutCellUpdater:
     def __init__(
         self,
+        args: Namespace,
         cell_id: str,
+        api_client: SGLangApiClient,
         transfer_engine: Any,
         transfer_manager: P2PTransferManager,
         targets_by_rollout_engine_rank: dict[int, RemoteWeightInfo],
     ) -> None:
         self.cell_id = cell_id
         self.error: BaseException | None = None
+        self._args = args
+        self._api_client = api_client
         self._transfer_engine = transfer_engine
         self._transfer_manager = transfer_manager
         self._disposed = False
         self._target_by_rollout_engine_rank = targets_by_rollout_engine_rank
+        self._pending_op = ""
         self._pending_writes: list[Future[None]] = []
 
     @property
@@ -35,6 +45,41 @@ class _P2PRolloutCellUpdater:
     @property
     def accepts_writes(self) -> bool:
         return not self._disposed and not self.is_errored
+
+    def submit_pause(self) -> Future[Any] | None:
+        mode = self._args.pause_generation_mode
+        return self._submit("pause_generation", lambda client: client.pause_generation(mode=mode))
+
+    def submit_flush_cache(self) -> Future[Any] | None:
+        if self._args.pause_generation_mode == "in_place":
+            return None
+        return self._submit("flush_cache", lambda client: client.flush_cache())
+
+    def submit_begin(self, *, selector: str, sync_base: bool) -> Future[Any] | None:
+        return self._submit(
+            "begin_weight_update",
+            lambda client: client.begin_weight_update(selector=selector, sync_base=sync_base),
+        )
+
+    def submit_end(self) -> Future[Any] | None:
+        return self._submit("end_weight_update", lambda client: client.end_weight_update())
+
+    def submit_set_weight_version(self, weight_version: int) -> Future[Any] | None:
+        return self._submit(
+            "update_weight_version",
+            lambda client: client.update_weight_version(weight_version=str(weight_version)),
+        )
+
+    def submit_resume(self) -> Future[Any] | None:
+        return self._submit("continue_generation", lambda client: client.continue_generation())
+
+    def collect(self, future: Future[Any]) -> None:
+        op = self._pending_op
+        try:
+            _raise_if_unsuccessful(op, future.result())
+        except Exception as error:
+            logger.exception(f"[weight-update] {op} failed on inference cell {self.cell_id}")
+            self.mark_errored(error)
 
     def mark_errored(self, error: BaseException) -> None:
         if self.error is not None:
@@ -65,6 +110,14 @@ class _P2PRolloutCellUpdater:
         for future in pending:
             future.result()
 
+    def _submit(
+        self, op: str, make_request: Callable[[SGLangApiClient], Coroutine[Any, Any, Any]]
+    ) -> Future[Any] | None:
+        if self.is_errored:
+            return None
+        self._pending_op = op
+        return async_utils.submit(make_request(self._api_client))
+
     def _write_if_active(
         self,
         target: RemoteWeightInfo,
@@ -75,6 +128,14 @@ class _P2PRolloutCellUpdater:
             logger.warning(f"[P2P-Shared] skipping a queued write to cell {self.cell_id}")
             return
         _do_p2p_write_one_session(self._transfer_engine, target, names, weight_memory_registry)
+
+
+def _raise_if_unsuccessful(op: str, result: object) -> None:
+    if not isinstance(result, Mapping) or result.get("success") is not False:
+        return
+
+    message = result.get("error_message") or result.get("error") or result.get("message") or "unknown error"
+    raise RuntimeError(f"{op} was rejected by the rollout engine: {message}")
 
 
 def _do_p2p_write_one_session(

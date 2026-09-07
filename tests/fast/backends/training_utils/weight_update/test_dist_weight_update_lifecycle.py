@@ -86,6 +86,7 @@ def _make_updater(
         is_sender=True,
         group_name="test",
         rollout_engines=engines,
+        cell_updaters=[],
         required_placement=MagicMock(),
         supports_lora=False,
         begin_sync=begin_sync,
