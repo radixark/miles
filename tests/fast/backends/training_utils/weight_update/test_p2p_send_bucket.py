@@ -28,6 +28,9 @@ class _RecordingCellUpdater:
         self._log.append(("submit", self.cell_id, engine_rank, tuple(names), weight_memory_registry))
         return _LoggingFuture(self._log, self.cell_id, engine_rank)
 
+    def wait_for_write(self, future: Future) -> None:
+        future.result()
+
 
 class _RecordingReplica:
     def __init__(self, log: list[tuple], engine_rank: int):
@@ -174,3 +177,76 @@ class TestSendBucketWithAnErroredCell:
 
         assert [entry for entry in log if entry[0] == "await"] == [("await", "cell-live", 0)]
         assert [(entry[1], entry[2]) for entry in log if entry[0] == "skip"] == [("cell-dead", 0), ("cell-dead", 1)]
+
+
+class _FailingCellUpdater(_RecordingCellUpdater):
+    def __init__(self, log: list[tuple], cell_id: str):
+        super().__init__(log, cell_id)
+        self.is_errored = False
+
+    def submit_write(self, engine_rank: int, names: list[str], weight_memory_registry) -> Future | None:
+        if self.is_errored:
+            self._log.append(("skip", self.cell_id, engine_rank))
+            return None
+        return super().submit_write(engine_rank, names, weight_memory_registry)
+
+    def wait_for_write(self, future: Future) -> None:
+        self._log.append(("await", self.cell_id, future._engine_rank))
+        self.is_errored = True
+
+
+def _send_one_bucket_with_a_failing_wait(p2p, *, engine_ranks: list[int]) -> list[tuple]:
+    log: list[tuple] = []
+    failing = _FailingCellUpdater(log, "cell-broken")
+    healthy = _RecordingCellUpdater(log, "cell-live")
+    ready_hf_tensors = [("hf.w", torch.zeros(1))]
+    protocol = SimpleNamespace(
+        is_sender=True,
+        _shared_param_mapper=object(),
+        _shared_params_dict={},
+        _weight_memory_registry=_REGISTRY,
+        _model_param_stager=SimpleNamespace(
+            get_transfer_ready_params=lambda *_args, **_kwargs: (["w"], ready_hf_tensors)
+        ),
+        _transfer_engine_meta_list=[
+            p2p.TransferEngineMeta(
+                engine_rank=engine_rank,
+                model_replica=_RecordingReplica(log, engine_rank),
+                cell_updaters=[failing, healthy],
+            )
+            for engine_rank in engine_ranks
+        ],
+    )
+
+    p2p.UpdateWeightP2P.send_bucket(protocol, [("hf.w", torch.zeros(1))])
+    return log
+
+
+class TestSendBucketWithAFailingWrite:
+    """A write that fails while the bucket is streaming must not escape into the other cells."""
+
+    def test_a_failing_wait_does_not_abort_the_bucket(self, p2p_protocol) -> None:
+        """Letting the failure escape would drop the remaining engine ranks of every healthy cell."""
+        log = _send_one_bucket_with_a_failing_wait(p2p_protocol, engine_ranks=[0, 1, 2])
+
+        assert [entry[1] for entry in log if entry[0] == "load"] == [0, 1, 2]
+        assert [entry[1] for entry in log if entry[0] == "submit"] == [
+            "cell-broken",
+            "cell-live",
+            "cell-live",
+            "cell-live",
+        ]
+
+    def test_the_failed_cell_is_skipped_by_the_remaining_engine_ranks(self, p2p_protocol) -> None:
+        """A cell that lost one write has an inconsistent shard set, so the rest of the bucket is wasted on it."""
+        log = _send_one_bucket_with_a_failing_wait(p2p_protocol, engine_ranks=[0, 1, 2])
+
+        assert [(entry[1], entry[2]) for entry in log if entry[0] == "skip"] == [
+            ("cell-broken", 1),
+            ("cell-broken", 2),
+        ]
+        assert [(entry[1], entry[2]) for entry in log if entry[0] == "await"] == [
+            ("cell-broken", 0),
+            ("cell-live", 0),
+            ("cell-live", 1),
+        ]

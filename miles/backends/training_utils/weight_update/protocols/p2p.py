@@ -2,6 +2,7 @@ import json
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future
 from typing import Any
 
 import torch
@@ -52,7 +53,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
     For each engine rank:
         load_weights(shared buffer) → P2P write
         where the last rank's write is submitted to a background thread
-    wait_transfers() at finish to collect all background writes
+    each inference cell collects its own writes at finish
     """
 
     def __init__(self, args: Namespace) -> None:
@@ -72,6 +73,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self._replicas_by_representation: dict[str, torch.nn.Module] = {}
         self.inference_cell_health = InferenceCellHealth()
         self._cell_updaters_by_cell_id: dict[str, P2PInferenceCellUpdater] = {}
+        self._unfinished_writes: list[Future] = []
         self.remote_weight_infos_by_session_id: dict[str, tuple] = {}
         self.session_id_to_server_args: dict[str, ServerArgs] = {}
         # in self._transfer_engine_meta_list: tuple of
@@ -83,7 +85,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         """Wait for all background P2P writes to complete."""
         if not self.is_sender:
             return
-        self.transfer_manager.wait_transfers()
+        for cell_updater in self._cell_updaters_by_cell_id.values():
+            cell_updater.wait_for_pending_writes()
         self._model_param_stager.assert_all_done()
 
     def begin_sync(
@@ -119,7 +122,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
                 # Last engine rank: fire-and-forget all sessions to background,
                 # as the weight will no longer be overwritten
-                futures = []
+                submitted = []
                 for cell_updater in meta.cell_updaters:
                     future = cell_updater.submit_write(
                         engine_rank=meta.engine_rank,
@@ -127,12 +130,12 @@ class UpdateWeightP2P(WeightTransferProtocol):
                         weight_memory_registry=self._weight_memory_registry,
                     )
                     if future is not None:
-                        futures.append(future)
+                        submitted.append((cell_updater, future))
 
                 if i != last_idx:
                     # Non-last engine rank needs to be fully written to target before next update can happen.
-                    for f in futures:
-                        f.result()
+                    for cell_updater, future in submitted:
+                        cell_updater.wait_for_write(future)
 
         converted_named_tensors.clear()
 
@@ -227,9 +230,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.is_sender = bool(self._transfer_engine_meta_list)
 
     def disconnect(self) -> None:
-        self.transfer_manager.wait_transfers()
-        for cell_updater in self._cell_updaters_by_cell_id.values():
-            cell_updater.dispose()
+        self._drain_pending_writes()
         self._transfer_engine_meta_list = []
         self._cell_updaters_by_cell_id = {}
         self.inference_cell_health = InferenceCellHealth()
@@ -238,6 +239,17 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.rollout_engines = []
         self.is_sender = False
         self._model_param_stager = ModelParamStager()
+
+    def _drain_pending_writes(self) -> None:
+        for cell_updater in self._cell_updaters_by_cell_id.values():
+            cell_updater.wait_for_pending_writes()
+            cell_updater.dispose()
+            self._unfinished_writes += cell_updater.take_unfinished_writes()
+        if self._unfinished_writes:
+            logger.error(
+                f"[P2P-Shared] {len(self._unfinished_writes)} p2p writes of this trainer rank never finished; "
+                f"their source buffers stay registered for the lifetime of this actor"
+            )
 
     def _assert_one_weight_representation(self, engine_rank: int, session_ids: list[str]) -> None:
         keys_by_session = {

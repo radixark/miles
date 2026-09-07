@@ -1,5 +1,6 @@
 import logging
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, NamedTuple
 
 import torch
@@ -28,6 +29,7 @@ class P2PInferenceCellUpdater:
         self._health = health
         self._disposed = False
         self._target_by_engine_rank = targets_by_engine_rank
+        self._pending_writes: list[Future] = []
 
     @property
     def is_errored(self) -> bool:
@@ -52,12 +54,52 @@ class P2PInferenceCellUpdater:
     ) -> Future | None:
         if not self.accepts_writes:
             return None
-        return self._transfer_manager.submit(
+        future = self._transfer_manager.submit(
             self._write_if_active,
             self._target_by_engine_rank[engine_rank],
             names,
             weight_memory_registry,
         )
+        self._pending_writes.append(future)
+        return future
+
+    def wait_for_write(self, future: Future | None) -> None:
+        if future is None:
+            return
+        self._collect_write(future)
+
+    def wait_for_pending_writes(self) -> None:
+        for future in list(self._pending_writes):
+            self._collect_write(future)
+
+    def take_unfinished_writes(self) -> list[Future]:
+        unfinished, self._pending_writes = self._pending_writes, []
+        return unfinished
+
+    def _collect_write(self, future: Future) -> None:
+        try:
+            future.result(timeout=0.0 if self.is_errored else self._transfer_manager.transfer_timeout)
+        except FutureTimeoutError as error:
+            self._abandon_write(future, error)
+            return
+        except CancelledError:
+            self._forget_write(future)
+            return
+        except Exception as error:
+            logger.exception(f"[P2P-Shared] a write to cell {self.cell_id} failed")
+            self.mark_errored(error)
+        self._forget_write(future)
+
+    def _abandon_write(self, future: Future, error: BaseException) -> None:
+        self.mark_errored(error)
+        if future.cancel():
+            self._forget_write(future)
+            return
+        logger.error(f"[P2P-Shared] a write to cell {self.cell_id} is still running after the transfer timeout")
+
+    def _forget_write(self, future: Future) -> None:
+        if future in self._pending_writes:
+            self._pending_writes.remove(future)
 
     def _write_if_active(
         self,

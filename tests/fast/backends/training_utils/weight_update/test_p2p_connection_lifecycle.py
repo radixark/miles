@@ -1,3 +1,4 @@
+import threading
 from argparse import Namespace
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -140,42 +141,42 @@ class TestReconnection:
         protocol = _make_protocol(p2p_protocol)
         factory = _ReplicaFactory()
         observed_targets_at_drain: list[list[str]] = []
-        real_wait = protocol.transfer_manager.wait_transfers
+        real_drain = protocol._drain_pending_writes
 
-        def recording_wait() -> None:
+        def recording_drain() -> None:
             observed_targets_at_drain.append(sorted(_target_session_ids(protocol)))
-            real_wait()
+            real_drain()
 
         with _patched_p2p(p2p_protocol, factory) as patches:
             _connect(protocol, patches, pairs=[(0, 0)])
-            protocol.transfer_manager.wait_transfers = recording_wait
+            protocol._drain_pending_writes = recording_drain
             _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
 
         assert observed_targets_at_drain == [["a-0-0"]]
 
-    def test_a_failed_drain_keeps_the_source_state_and_propagates(self, p2p_protocol) -> None:
-        """The buffers a failed write may still be reading must stay alive, and the failure must not be hidden."""
+    def test_a_write_that_never_finished_is_kept_and_does_not_block_the_reconnection(self, p2p_protocol) -> None:
+        """The trainer has to reconnect to its healthy cells, but must not forget a write still reading its buffers."""
         protocol = _make_protocol(p2p_protocol)
         factory = _ReplicaFactory()
+        protocol.transfer_manager.transfer_timeout = 0.05
+        release = threading.Event()
 
         with _patched_p2p(p2p_protocol, factory) as patches:
             _connect(protocol, patches, pairs=[(0, 0)])
             engine_after_first = protocol._transfer_engine
             params_after_first = protocol._shared_params_dict
+            stuck = protocol.transfer_manager.submit(lambda: release.wait(timeout=30.0))
+            protocol._cell_updaters_by_cell_id["cell-0"]._pending_writes.append(stuck)
 
-            def failing_wait() -> None:
-                raise RuntimeError("[P2P] 1 of 1 transfers failed")
-
-            protocol.transfer_manager.wait_transfers = failing_wait
-
-            with pytest.raises(RuntimeError, match="transfers failed"):
+            try:
                 _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+            finally:
+                release.set()
 
+        assert protocol._unfinished_writes == [stuck]
         assert protocol._transfer_engine is engine_after_first
         assert protocol._shared_params_dict is params_after_first
-        assert sorted(_target_session_ids(protocol)) == ["a-0-0"]
-        assert protocol.is_sender is True
-        assert sorted(protocol.remote_weight_infos_by_session_id) == ["a-0-0"]
+        assert sorted(_target_session_ids(protocol)) == ["b-0-0"]
 
     def test_a_rank_without_targets_drops_its_targets_and_keeps_its_buffers(self, p2p_protocol) -> None:
         """Losing every target must not free registered source memory the transfer engine still knows about."""
@@ -289,7 +290,7 @@ class TestStandaloneDisconnect:
             protocol.after_base_weights()
 
         register.assert_not_called()
-        assert protocol.transfer_manager.transfer_futures == []
+        assert protocol._cell_updaters_by_cell_id == {}
         assert len(bucket) == 1
 
     def test_a_connection_after_a_standalone_disconnect_serves_the_new_targets(self, p2p_protocol) -> None:
