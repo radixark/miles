@@ -578,6 +578,22 @@ class TestMegatronNumGpus:
 
 
 class TestHostPortOverrideRejection:
+    @pytest.mark.parametrize("mode", ["null", "prefill", "decode"])
+    def test_a_disaggregation_mode_override_is_rejected_at_resolve_time(self, tmp_path, mode: str):
+        """worker_type owns the engine's role; an override would launch a different role than the one registered."""
+        with pytest.raises(AssertionError, match="must not override host/port/disaggregation_mode"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                f"          disaggregation_mode: {mode}\n",
+                rollout_num_gpus=8,
+            )
+
     def test_a_port_override_is_rejected_at_resolve_time(self, tmp_path):
         """Overriding the allocator-owned port must fail fast instead of desyncing engine and controller."""
         with pytest.raises(AssertionError, match="must not override host/port"):
