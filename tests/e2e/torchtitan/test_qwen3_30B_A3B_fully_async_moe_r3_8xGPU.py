@@ -26,6 +26,7 @@ CASE = CaseConfig(
     fully_async=True,
     num_rollout=3,
     mem_fraction_static=0.8,
+    extra_args="--sglang-moe-runner-backend triton ",
 )
 
 
