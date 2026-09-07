@@ -214,7 +214,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
 
-    worker.update_weights(info)
+    worker.update_weights(info, weight_version=1)
 
     assert reload_groups.call_count == int(asleep)
     assert destroy_groups.call_count == int(asleep)
@@ -650,9 +650,9 @@ class _RecordingWeightUpdater:
             )
         )
 
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> None:
         self.update_weights_calls += 1
-        self.weight_version += 1
+        self.weight_version = weight_version
 
 
 def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -696,9 +696,11 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     first_engines = [object()]
     replacement_engines = [object(), object()]
 
-    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
-    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
-    weight_version = worker.update_weights(_updatable_engines(replacement_engines, {"cell-0": "hash-b"}, gpu_count=2))
+    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4), weight_version=1)
+    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4), weight_version=2)
+    weight_version = worker.update_weights(
+        _updatable_engines(replacement_engines, {"cell-0": "hash-b"}, gpu_count=2), weight_version=3
+    )
 
     assert [call["rollout_engines"] for call in updater.connect_calls] == [first_engines, replacement_engines]
     assert updater.connect_calls[1]["engine_gpu_counts"] == [2, 2]
@@ -720,10 +722,10 @@ def test_reconnecting_engines_receive_every_loaded_multi_lora_adapter(
     worker._is_first_replica_megatron_main_rank = False
     engines = [object()]
 
-    worker.update_weights(_updatable_engines(engines, {"cell-0": "hash-a"}, gpu_count=4))
+    worker.update_weights(_updatable_engines(engines, {"cell-0": "hash-a"}, gpu_count=4), weight_version=1)
     adapters_on_reconnect = updater.multi_lora_adapters
     worker._multi_lora_pending_push = {"beta"}
-    worker.update_weights(_updatable_engines(engines, {"cell-0": "hash-a"}, gpu_count=4))
+    worker.update_weights(_updatable_engines(engines, {"cell-0": "hash-a"}, gpu_count=4), weight_version=2)
 
     assert adapters_on_reconnect == {"alpha": "alpha-weights", "beta": "beta-weights"}
     assert updater.multi_lora_adapters == {"beta": "beta-weights"}
@@ -742,8 +744,8 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     engines = [object()]
     snapshot = {"cell-0": "hash-a"}
 
-    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
+    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4), weight_version=1)
     worker.reconfigure_indep_dp(object(), "10.0.0.1:1234")
-    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
+    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4), weight_version=2)
 
     assert len(updater.connect_calls) == 2

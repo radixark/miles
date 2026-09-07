@@ -134,7 +134,7 @@ def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
 
-    updater.update_weights()
+    updater.update_weights(weight_version=1)
 
     assert events == [
         "engine0.pause_generation",
@@ -165,7 +165,7 @@ def test_fsdp_nonzero_rank_does_not_manage_engine_session(monkeypatch):
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
 
-    updater.update_weights()
+    updater.update_weights(weight_version=1)
 
     assert events == ["barrier", "barrier", "barrier"]
     assert engine.submissions == []
@@ -188,7 +188,7 @@ class TestUpdateWeight:
         monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
 
         with pytest.raises(RuntimeError, match=f"engine0 rejected {failing_phase}"):
-            updater.update_weights()
+            updater.update_weights(weight_version=1)
 
         reached_phases = _SESSION_PHASES[: _SESSION_PHASES.index(failing_phase) + 1]
         assert events[-2:] == [f"engine0.{failing_phase}", f"engine1.{failing_phase}"]
@@ -217,7 +217,7 @@ def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
 
-    updater.update_weights()
+    updater.update_weights(weight_version=1)
 
     synced = dict(updater.last_named_tensors)
     assert synced["fp32_weight"].dtype is torch.float32
@@ -243,9 +243,9 @@ class _RecordingWeightUpdater:
         self.connect_calls.append(list(rollout_engines))
         self.connect_topologies.append((engine_gpu_counts, engine_gpu_offsets))
 
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> None:
         self.update_weights_calls += 1
-        self.weight_version += 1
+        self.weight_version = weight_version
 
 
 class _VersionReportingEngine:
@@ -289,8 +289,8 @@ def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch
     updater = actor.weight_updater
     engines: list[object] = [object(), object()]
 
-    first_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
-    second_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
+    first_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=True), weight_version=1)
+    second_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=False), weight_version=2)
 
     assert updater.connect_calls == [engines]
     assert updater.update_weights_calls == 2
@@ -413,17 +413,20 @@ def test_fsdp_actor_reconnects_after_rollout_cell_hash_changes(monkeypatch):
     replacement_engines: list[object] = [object(), object()]
 
     actor.update_weights(
-        _make_updatable_engines(engines, has_new_engines=True, snapshot_cell_id_to_hashes={"cell-0": "hash-a"})
+        _make_updatable_engines(engines, has_new_engines=True, snapshot_cell_id_to_hashes={"cell-0": "hash-a"}),
+        weight_version=1,
     )
     actor.update_weights(
         _make_updatable_engines(
             replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
-        )
+        ),
+        weight_version=2,
     )
     actor.update_weights(
         _make_updatable_engines(
             replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
-        )
+        ),
+        weight_version=3,
     )
 
     assert updater.connect_calls == [engines, replacement_engines]
@@ -439,6 +442,6 @@ def test_fsdp_actor_rejects_a_mismatched_engine_weight_version(monkeypatch):
     engines: list[object] = [_VersionReportingEngine(7)]
 
     with pytest.raises(RuntimeError, match="Weight version mismatch"):
-        actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+        actor.update_weights(_make_updatable_engines(engines, has_new_engines=True), weight_version=1)
 
     assert updater.update_weights_calls == 1

@@ -95,12 +95,13 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> int:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
-        if not protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets):
-            return
-        self.weight_version += 1
+        if not protocol.begin_sync(weight_version, self._iter_base_buckets):
+            self.weight_version = weight_version - 1
+            return self.weight_version
+        self.weight_version = weight_version
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
@@ -142,6 +143,8 @@ class WeightUpdater:
                 set_weight_version(protocol.rollout_engines, self.weight_version)
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
+
+        return self.weight_version
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

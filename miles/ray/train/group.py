@@ -79,6 +79,7 @@ class TrainerController:
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
+        self._last_published_weight_version = 0
 
     @property
     def pool_id(self) -> str:
@@ -387,13 +388,23 @@ class TrainerController:
     async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> int | None:
         """Broadcast weights to rollout engines and answer the version they now serve."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
+        previous_version = self._last_published_weight_version
+        candidate_version = previous_version + 1
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         weight_versions = await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
+            lambda _: self._execute_first_alive("update_weights", info=info, weight_version=candidate_version),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        return weight_versions[0]
+        published_version = weight_versions[0]
+        if published_version is None:
+            return None
+        assert published_version in (candidate_version, previous_version), (
+            f"trainer {self._trainer_id} answered weight version {published_version}, "
+            f"expected the candidate {candidate_version} or the previous {previous_version}"
+        )
+        self._last_published_weight_version = published_version
+        return published_version
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
         return self._deployment_identity

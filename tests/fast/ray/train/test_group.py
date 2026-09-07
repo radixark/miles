@@ -1209,14 +1209,16 @@ class TestUpdateWeightsReturnsTheVersion:
     def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
         group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
+        group._trainer_id = "trainer-0"
+        group._last_published_weight_version = 0
         group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
         return group
 
     async def test_the_controller_answers_the_version_the_engines_now_serve(self):
         """The driver can only publish the version to the executor if the controller hands it back."""
-        group = self._make_group(per_worker_versions=[11, 11])
+        group = self._make_group(per_worker_versions=[1, 1])
 
-        assert await group.update_weights(info=MagicMock()) == 11
+        assert await group.update_weights(info=MagicMock()) == 1
 
     async def test_a_trainer_that_skipped_the_broadcast_answers_nothing(self):
         """--debug-skip-weight-update returns None from every worker, which must reach the driver as None."""
@@ -1226,12 +1228,86 @@ class TestUpdateWeightsReturnsTheVersion:
 
     async def test_it_broadcasts_the_window_the_orchestration_script_opened(self):
         """The engines it writes into are the ones the script snapshotted, not a set it fetched for itself."""
-        group = self._make_group(per_worker_versions=[11])
+        group = self._make_group(per_worker_versions=[1])
         info = MagicMock()
 
         await group.update_weights(info=info)
 
-        group._execute_first_alive.assert_awaited_once_with("update_weights", info=info)
+        group._execute_first_alive.assert_awaited_once_with("update_weights", info=info, weight_version=1)
+
+
+class _RecordingCellFleet:
+    def __init__(self, outcomes: list) -> None:
+        self._outcomes = list(outcomes)
+        self.weight_versions: list[int] = []
+
+    async def execute_first_alive(self, fn_name: str, *, info: object, weight_version: int) -> list:
+        self.weight_versions.append(weight_version)
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return [outcome, outcome]
+
+
+def _make_version_controller(outcomes: list) -> tuple[TrainerController, _RecordingCellFleet]:
+    controller = TrainerController.__new__(TrainerController)
+    controller._trainer_id = "trainer-0"
+    controller._last_published_weight_version = 0
+    fleet = _RecordingCellFleet(outcomes)
+    controller._execute_first_alive = fleet.execute_first_alive
+    return controller, fleet
+
+
+class TestWeightVersionAllocation:
+    """The controller, not the trainer actors, owns the ordinal each weight publication carries."""
+
+    async def test_every_retry_of_one_update_reserves_the_same_ordinal(self):
+        """A retry that moved on would make the healed cell publish a version the previous attempt already burned."""
+        controller, fleet = _make_version_controller([RuntimeError("cell died"), 1])
+
+        assert await controller.update_weights(info=MagicMock()) == 1
+        assert fleet.weight_versions == [1, 1]
+
+    async def test_the_next_update_reserves_the_next_ordinal(self):
+        """Consecutive publications must be consecutive ordinals, otherwise the engines cannot be told apart."""
+        controller, fleet = _make_version_controller([1, 2])
+
+        assert await controller.update_weights(info=MagicMock()) == 1
+        assert await controller.update_weights(info=MagicMock()) == 2
+        assert fleet.weight_versions == [1, 2]
+
+    async def test_a_skipped_update_leaves_the_ordinal_unconsumed(self):
+        """--debug-skip-weight-update publishes nothing, so the first real publication is still version 1."""
+        controller, fleet = _make_version_controller([None, 1])
+
+        assert await controller.update_weights(info=MagicMock()) is None
+        assert await controller.update_weights(info=MagicMock()) == 1
+        assert fleet.weight_versions == [1, 1]
+
+    async def test_a_baseline_that_answers_the_previous_ordinal_does_not_advance_the_counter(self):
+        """disk-delta's cold baseline captures a snapshot without publishing, and its first delta must be version 1."""
+        controller, fleet = _make_version_controller([0, 1])
+
+        assert await controller.update_weights(info=MagicMock()) == 0
+        assert await controller.update_weights(info=MagicMock()) == 1
+        assert fleet.weight_versions == [1, 1]
+
+    async def test_an_unexpected_ordinal_from_the_trainer_is_rejected(self):
+        """A healed cell answering its own local count would silently rewind the version the fleet serves."""
+        controller, _fleet = _make_version_controller([7])
+
+        with pytest.raises(AssertionError, match="expected the candidate 1"):
+            await controller.update_weights(info=MagicMock())
+
+    async def test_two_controllers_keep_separate_counters(self):
+        """Each policy publishes its own weights, so one controller must not consume another's ordinals."""
+        first, first_fleet = _make_version_controller([1])
+        second, second_fleet = _make_version_controller([1])
+
+        await first.update_weights(info=MagicMock())
+        await second.update_weights(info=MagicMock())
+
+        assert (first_fleet.weight_versions, second_fleet.weight_versions) == ([1], [1])
 
 
 class TestInitForwardsModelFlags:
@@ -1306,10 +1382,30 @@ class TestUpdateWeightsReachesTheWorker:
         info = SimpleNamespace(snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"})
         group = await _make_alive_controller(num_cells=1)
         for handle in get_raw_actor_handles(_cell(group, 0)):
-            ray.get(handle.set_update_weights_return_value.remote(11))
+            ray.get(handle.set_update_weights_return_value.remote(1))
 
-        assert await group.update_weights(info=info, rollout_id=3) == 11
+        assert await group.update_weights(info=info, rollout_id=3) == 1
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
             assert update_call[2]["info"].snapshot_cell_id_to_hashes == {"trainer-actor-0": "workers-hash-9"}
+            assert update_call[2]["weight_version"] == 1
+
+    async def test_reloading_the_trainer_state_does_not_rewind_the_published_version(self):
+        """A hot restart reloads the cells while the controller survives, and restarting at version 1 would republish an old ordinal."""
+        info = SimpleNamespace(snapshot_cell_id_to_hashes={})
+        group = await _make_alive_controller(num_cells=1)
+        handles = get_raw_actor_handles(_cell(group, 0))
+        for handle in handles:
+            ray.get(handle.set_update_weights_return_value.remote(1))
+        assert await group.update_weights(info=info) == 1
+
+        await group.load_state()
+        for handle in handles:
+            ray.get(handle.set_update_weights_return_value.remote(2))
+
+        assert await group.update_weights(info=info) == 2
+
+        for handle in handles:
+            calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
+            assert [c[2]["weight_version"] for c in calls] == [1, 2]

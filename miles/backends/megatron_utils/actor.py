@@ -880,7 +880,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: UpdatableEngines) -> int | None:
+    def update_weights(self, info: UpdatableEngines, weight_version: int) -> int | None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
@@ -927,7 +927,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):

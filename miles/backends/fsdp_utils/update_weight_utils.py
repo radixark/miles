@@ -75,8 +75,8 @@ class UpdateWeight(abc.ABC):
     ) -> None:
         pass
 
-    def update_weights(self) -> None:
-        self.weight_version += 1
+    def update_weights(self, weight_version: int) -> None:
+        self.weight_version = weight_version
 
         if dist.get_rank() == 0:
             async_utils.wait_futures(
