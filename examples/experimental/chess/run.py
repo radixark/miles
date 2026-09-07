@@ -1,4 +1,4 @@
-"""Train Qwen3.8-27B on chess games through Miles TITO v2.
+"""Train Qwen models on chess games through Miles TITO v2.
 
 The launcher adapts Miles' full-parameter dense Qwen3.8 recipe to the
 replayable chess harness in radix_raft. Each prompt owns one TITO v2 session and
@@ -10,6 +10,7 @@ assistant turns emitted by the chess harness.
 
 Args:
     run_id: Reproducible identifier for outputs and telemetry.
+    tito_model: Native TITO tokenizer family matching the selected checkpoint.
     learning_rate: Constant Adam learning rate used for policy updates.
     kl_loss_coef: Coefficient for the low-variance KL regularization loss.
     repetition_reward_penalty: Reward subtracted once from repetitive rollouts.
@@ -58,6 +59,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = field(default_factory=U.create_run_id)
     model_name: str = "Qwen3.8-27B"
     megatron_model_type: str = "qwen3.8-27B"
+    tito_model: Literal["qwen36", "qwen38small"] = "qwen38small"
     hardware: Literal["auto", "H200"] = "auto"
     num_gpus_per_node: int | None = None
     megatron_path: str = "/root/Megatron-LM"
@@ -376,7 +378,7 @@ def _agent_args(args: ScriptArgs) -> str:
         "--dynamic-sampling-filter-path chess_filter.check_chess_group "
         "--session-sample-postprocessor-path chess_training.postprocess_samples "
         "--custom-rollout-log-function-path chess_training.log_rollout_metrics "
-        f"--tito-model qwen38small --use-session-server v2 --session-server-port {args.session_server_port} "
+        f"--tito-model {args.tito_model} --use-session-server v2 --session-server-port {args.session_server_port} "
     )
 
 

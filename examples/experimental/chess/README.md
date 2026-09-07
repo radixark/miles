@@ -6,8 +6,11 @@ owns the board, move validation, Stockfish opponent, compaction, replay journal,
 and reward; Miles owns policy serving, exact training samples, optimization,
 telemetry, and session cleanup.
 
-The recipe uses Miles' native `qwen38small` TITO family so the fixed Qwen 3.8
-template retains reasoning and applies the correct message-boundary semantics.
+The recipe defaults to Miles' native `qwen38small` TITO family so the fixed
+Qwen 3.8 template retains reasoning and applies the correct message-boundary
+semantics. For Qwen3.6-35B-A3B, select the model and its matching tokenizer with
+`--model-name Qwen3.6-35B-A3B --megatron-model-type qwen3.6-35B-A3B --tito-model qwen36`.
+The harness, reward policy, and observability hooks are shared by both models.
 
 Set `--system-prompt-variant random` to select one of the chess harness's five
 UCI-only system prompts independently for every rollout. The selected prompt

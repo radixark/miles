@@ -1,4 +1,4 @@
-"""Qwen 3.8 TITO adapter for one chess rollout."""
+"""Thinking-enabled Qwen TITO adapter for one chess rollout."""
 
 import asyncio
 import weakref
