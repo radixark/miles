@@ -65,6 +65,10 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     return rollout_path, eval_path
 
 
+def driver_owns_generation_pause(args) -> bool:
+    return args.fully_async and args.colocate
+
+
 def _resolve_rollout_functions(args) -> None:
     if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
         # The selection --fully-async makes, so enable the mode: as a plugin path it would
