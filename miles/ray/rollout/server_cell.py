@@ -276,6 +276,15 @@ class ServerCell:
     async def onload(self, tags: list[str] | None):
         return await self.api_client.resume_memory_occupation(tags=tags)
 
+    async def pause_generation(self, mode: str):
+        return await self.api_client.pause_generation(mode=mode)
+
+    async def continue_generation(self):
+        return await self.api_client.continue_generation()
+
+    async def flush_cache(self):
+        return await self.api_client.flush_cache()
+
     async def abort_all(self):
         return await self.api_client.abort_all_requests(timeout=ABORT_REQUEST_TIMEOUT_SECONDS)
 
