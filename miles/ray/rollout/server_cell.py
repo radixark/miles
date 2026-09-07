@@ -4,11 +4,11 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, probe_server_healthy
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.cell_state import (
@@ -42,7 +42,7 @@ ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
 
 class ServerCellMetadata(FrozenStrictBaseModel):
     model_id: str
-    worker_type: Literal["regular", "prefill", "decode"]
+    worker_type: WorkerType
     cell_id: str
     num_gpus_per_engine: int
     gpu_offset: int
