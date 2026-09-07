@@ -15,6 +15,7 @@ class _FakeCell:
         self.state = state
         self.init_count = 0
         self.init_started = asyncio.Event()
+        self.is_errored = False
         self._init_gate = init_gate
 
     async def init(self) -> None:
@@ -27,6 +28,10 @@ class _FakeCell:
 
     def become_ready(self) -> None:
         self.state = "pending_weights"
+
+    def become_errored(self) -> None:
+        self.state = "errored"
+        self.is_errored = True
 
     @property
     def is_uninitialized(self) -> bool:
@@ -101,6 +106,28 @@ class TestEnsureCellsReady:
         await asyncio.wait_for(_ensure_ready_under_lock(controller), timeout=1)
 
         assert running.init_count == 0
+
+    async def test_an_errored_cell_is_not_waited_for(self):
+        """It never becomes ready again, so waiting for it would stall every later weight update."""
+        errored, ready = _FakeCell(state="initializing"), _FakeCell(state="pending_weights")
+        errored.become_errored()
+        controller = _make_controller({"default": _StubServer({"a": errored, "b": ready})}, colocate=False)
+
+        await asyncio.wait_for(_ensure_ready_under_lock(controller), timeout=1)
+
+        assert errored.init_count == 0
+
+    async def test_a_cell_still_loading_is_waited_for_even_when_another_one_errored(self):
+        """Skipping the errored cell must not turn into skipping the wait altogether."""
+        errored, loading = _FakeCell(state="initializing"), _FakeCell(state="initializing")
+        errored.become_errored()
+        controller = _make_controller({"default": _StubServer({"a": errored, "b": loading})}, colocate=False)
+
+        task = asyncio.create_task(_ensure_ready_under_lock(controller))
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        loading.become_ready()
+        await asyncio.wait_for(task, timeout=1)
 
     async def test_it_waits_until_the_engines_finished_loading(self):
         """Returning early would let the trainer push weights into an engine that is not up."""
