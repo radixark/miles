@@ -9,6 +9,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
 from miles.utils.function_registry import load_function
+from miles.utils.http_utils import resolve_ip
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
@@ -178,7 +179,7 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
         else:
             router_args = compute_sglang_router_args(
                 args,
-                host=primary.host,
+                host=resolve_ip(primary.host),
                 port=primary.port,
                 prometheus_port=ctx.self_addrs["prometheus"].port,
                 has_pd_disaggregation=has_pd_disaggregation,

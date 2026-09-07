@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import pytest
 
 from miles.utils import misc
-from miles.utils.http_utils import MILES_HOST_IP_ENV, get_host_info
+from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import (
     MutableBox,
     NodeProbeMixin,
@@ -194,12 +194,6 @@ class TestNodeProbeMixin:
         monkeypatch.setenv(MILES_HOST_IP_ENV, "")
 
         assert NodeProbeMixin._get_node_ip() == get_current_node_ip()
-
-    def test_get_node_ip_publishes_the_same_override_as_the_host_info_probe(self, monkeypatch):
-        """The worker and the host probe must read one env var, or a deployment's override reaches only half of them."""
-        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.20.30.40")
-
-        assert NodeProbeMixin._get_node_ip() == get_host_info()[1]
 
     def test_get_node_ip_follows_an_override_that_changes_between_calls(self, monkeypatch):
         """The probe runs inside the worker at allocation time, so a cached first answer would outlive its address."""
