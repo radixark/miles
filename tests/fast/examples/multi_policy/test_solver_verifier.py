@@ -9,6 +9,7 @@ from examples.multi_policy.solver_verifier import _Verdict
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_hub import single_turn
 from miles.utils.types import Sample
 
 SOLVER_URL = "http://solver-host:1111/generate"
@@ -28,14 +29,31 @@ class _FakeGenerate:
         return GenerateFnOutput(samples=sample)
 
 
+class _FakeTokenizer:
+    def apply_chat_template(self, messages: list[dict[str, str]], **kwargs) -> str:
+        return "\n".join(message["content"] for message in messages)
+
+    def encode(self, text: str, add_special_tokens: bool) -> list[int]:
+        return list(range(len(text)))
+
+
 def _make_input(*, prompt: str | list[dict[str, str]], label: str) -> GenerateFnInput:
     args = Namespace(
         megatron_config=encode_megatron_config("solver", "verifier"),
         use_critic=False,
         sglang_model_routers={"solver": ("solver-host", 1111), "verifier": ("verifier-host", 2222)},
+        sglang_router_policy="round_robin",
+        sglang_speculative_algorithm=None,
+        rollout_max_response_len=16,
+        rollout_max_context_len=None,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
+        lora_rank=0,
+        lora_adapter_path=None,
     )
+    state = SimpleNamespace(args=args, tokenizer=_FakeTokenizer(), processor=None)
     sample = Sample(group_index=3, index=7, prompt=prompt, label=label)
-    return GenerateFnInput(state=SimpleNamespace(args=args), sample=sample, sampling_params={}, evaluation=False)
+    return GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
 
 
 @dataclass(frozen=True)
@@ -217,6 +235,13 @@ class TestBuildVerifierSample:
 
         assert solver_verifier._build_verifier_sample(solver).routing_key == "key-1"
 
+    def test_the_kv_cache_namespace_is_carried_over(self):
+        """The verifier sample never passes the stamping point itself, so it inherits the solver's namespace."""
+        solver = Sample(prompt=[dict(role="user", content="q")], kv_cache_namespace="train:-:7")
+        solver.response = "#### 18"
+
+        assert solver_verifier._build_verifier_sample(solver).kv_cache_namespace == "train:-:7"
+
 
 class TestExtractQuestion:
     def test_a_system_message_is_not_quoted_as_the_question(self):
@@ -311,6 +336,26 @@ class TestGenerate:
 
         with pytest.raises(AssertionError, match="pairs one solver policy with one verifier policy"):
             await solver_verifier.generate(input)
+
+
+class TestGeneratePayloads:
+    async def test_both_policies_generate_under_the_key_of_the_input_sample(self, monkeypatch):
+        """The solver and verifier /generate payloads carry the same namespace key."""
+        payloads: list[tuple[str, dict]] = []
+        responses = {SOLVER_URL: "#### 18", VERIFIER_URL: "VERDICT: AGREE"}
+
+        async def fake_post(url: str, payload: dict, headers: dict | None = None) -> dict:
+            payloads.append((url, payload))
+            return {"text": responses[url], "meta_info": {"finish_reason": {"type": "stop"}}}
+
+        monkeypatch.setattr(single_turn, "post", fake_post)
+        generate_input = _make_input(prompt=[dict(role="user", content="What is 9 + 9?")], label="#### 18")
+        generate_input.sample.kv_cache_namespace = "train:-:7"
+
+        await solver_verifier.generate(generate_input)
+
+        assert [url for url, _ in payloads] == [SOLVER_URL, VERIFIER_URL]
+        assert [payload["extra_key"] for _, payload in payloads] == ["train:-:7"] * 2
 
 
 class TestTheLauncherLeavesThePromptAsMessages:
