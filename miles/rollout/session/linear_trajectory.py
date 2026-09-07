@@ -390,7 +390,12 @@ class SessionRegistry:
         evaluation: bool = False,
         sampling_defaults: dict[str, Any] | None = None,
         sampling_support_replay: bool = False,
+        extra_key: str | None = None,
     ) -> str:
+        assert extra_key is None, (
+            f"session server v1 does not support the KV cache namespace {extra_key!r}; "
+            f"run with --use-session-server v2"
+        )
         session_id = uuid.uuid4().hex
         self.sessions[session_id] = LinearTrajectory(
             evaluation=evaluation,
