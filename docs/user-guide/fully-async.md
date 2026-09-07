@@ -128,6 +128,10 @@ bookkeeping are unchanged.
 -   --rollout-num-gpus 4
 ```
 
+[`examples/retool_v2`](https://github.com/radixark/miles/blob/main/examples/retool_v2)
+runs a multi-turn tool-call recipe this way on one GPU:
+`python examples/retool_v2/run_retool_multi_turn.py --fully-async --num-gpus-per-node 1`.
+
 ## Data path
 
 ### The data buffer
