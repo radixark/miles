@@ -1612,6 +1612,52 @@ class TestUpdateWeightsUsesEveryAliveCell:
         assert report.updated_cell_ids == ("engine-1",)
         assert controller._last_published_weight_version == 1
 
+    async def test_an_update_that_reached_no_engine_does_not_advance_the_version(self):
+        """The next real update must reuse this ordinal, otherwise the fleet skips a version nobody served."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=(), failed=("engine-0",))]),
+            _FakeTrainerCell(1, outcome=[_rank_report(1, updated=(), failed=("engine-1",))]),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(2))
+
+        assert report.weight_version is None
+        assert controller._last_published_weight_version == 0
+
+    async def test_an_update_that_reached_no_engine_still_reports_every_failure(self):
+        """All of them have to be retired even though there is no version to publish."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=(), failed=("engine-0",))]),
+            _FakeTrainerCell(1, outcome=[_rank_report(1, updated=(), failed=("engine-1",))]),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        report = await controller.update_weights(info=_p2p_info(2))
+
+        assert sorted(report.failed_cell_ids) == ["engine-0", "engine-1"]
+
+    async def test_the_ordinal_is_reserved_once_for_the_whole_fan_out(self):
+        """Two trainers reserving their own ordinal would put the fleet on two different versions."""
+        cells = [_FakeTrainerCell(0), _FakeTrainerCell(1)]
+        controller = _make_fanout_controller(cells)
+
+        await controller.update_weights(info=_p2p_info(2))
+        await controller.update_weights(info=_p2p_info(2))
+
+        assert [call["weight_version"] for cell in cells for call in cell.calls] == [1, 2, 1, 2]
+
+    async def test_trainers_that_published_different_versions_are_rejected(self):
+        """Half the fleet on another version silently mislabels every sample it produces."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=("engine-0",))]),
+            _FakeTrainerCell(1, outcome=[_rank_report(2, updated=("engine-1",))]),
+        ]
+        controller = _make_fanout_controller(cells)
+
+        with pytest.raises(AssertionError, match="different weight versions"):
+            await controller.update_weights(info=_p2p_info(2))
+
     async def test_a_non_p2p_backend_keeps_using_a_single_cell(self):
         """Its transfer group spans the whole fleet, so slicing the targets across trainers would break it."""
         cells = [_FakeTrainerCell(0), _FakeTrainerCell(1)]
