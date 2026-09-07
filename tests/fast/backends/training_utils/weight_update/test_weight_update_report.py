@@ -2,8 +2,10 @@ import pytest
 
 from miles.backends.training_utils.weight_update.report import (
     WeightUpdateReport,
+    build_lost_trainer_report,
     build_untouched_targets_report,
     build_weight_update_report,
+    combine_trainer_reports,
     merge_rank_reports,
 )
 
@@ -21,10 +23,13 @@ class TestWeightUpdateReportShape:
         with pytest.raises(AssertionError, match="names a cell twice"):
             WeightUpdateReport(weight_version=1, updated_cell_ids=("cell-0", "cell-0"), failed_cell_ids=())
 
-    def test_an_update_that_published_nothing_cannot_report_failures(self):
-        """Only the debug paths answer no version, and they never touch an engine to fail it."""
-        with pytest.raises(AssertionError, match="published no version"):
-            WeightUpdateReport(weight_version=None, updated_cell_ids=(), failed_cell_ids=("cell-0",))
+    def test_a_trainer_that_published_nothing_can_still_report_failures(self):
+        """A trainer that died mid-update published no version, yet its targets are all unusable."""
+        report = build_lost_trainer_report(["cell-0", "cell-1"])
+
+        assert report.weight_version is None
+        assert report.updated_cell_ids == ()
+        assert report.failed_cell_ids == ("cell-0", "cell-1")
 
 
 class TestValidateAssignment:
@@ -97,3 +102,45 @@ class TestMergeRankReports:
         """A trainer cell with no workers cannot have updated anything, so its silence must not read as success."""
         with pytest.raises(AssertionError, match="no report at all"):
             merge_rank_reports([], debug_name="trainer-0")
+
+
+class TestCombineTrainerReports:
+    """One update spans several trainers, and the caller acts on the union of their verdicts."""
+
+    def test_the_verdicts_of_every_trainer_are_merged(self):
+        """A failure only one trainer saw must still retire that engine."""
+        first = WeightUpdateReport(weight_version=3, updated_cell_ids=("cell-0",), failed_cell_ids=("cell-1",))
+        second = WeightUpdateReport(weight_version=3, updated_cell_ids=("cell-2",), failed_cell_ids=())
+
+        combined = combine_trainer_reports([first, second])
+
+        assert combined.updated_cell_ids == ("cell-0", "cell-2")
+        assert combined.failed_cell_ids == ("cell-1",)
+        assert combined.weight_version == 3
+
+    def test_a_lost_trainer_does_not_hide_the_version_the_others_published(self):
+        """The surviving engines really do serve the new weights, and the executor must stamp them with it."""
+        lost = build_lost_trainer_report(["cell-0"])
+        published = WeightUpdateReport(weight_version=3, updated_cell_ids=("cell-1",), failed_cell_ids=())
+
+        combined = combine_trainer_reports([lost, published])
+
+        assert combined.weight_version == 3
+        assert combined.failed_cell_ids == ("cell-0",)
+
+    def test_trainers_that_published_different_versions_are_rejected(self):
+        """Half the fleet serving another version would silently mislabel every sample it produces."""
+        first = WeightUpdateReport(weight_version=3, updated_cell_ids=("cell-0",), failed_cell_ids=())
+        second = WeightUpdateReport(weight_version=4, updated_cell_ids=("cell-1",), failed_cell_ids=())
+
+        with pytest.raises(AssertionError, match="different weight versions"):
+            combine_trainer_reports([first, second])
+
+    def test_an_update_where_every_trainer_was_lost_publishes_no_version(self):
+        """Nothing serves the new weights, so the executor must not be told a version exists."""
+        combined = combine_trainer_reports(
+            [build_lost_trainer_report(["cell-0"]), build_lost_trainer_report(["cell-1"])]
+        )
+
+        assert combined.weight_version is None
+        assert combined.failed_cell_ids == ("cell-0", "cell-1")
