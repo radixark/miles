@@ -9,6 +9,7 @@ from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     CellState,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
@@ -137,6 +138,31 @@ class TestServerCellStatus:
             ("Serving", TriState.TRUE),
         ]
 
+    def test_an_errored_cell_is_still_allocated_but_neither_healthy_nor_serving(self):
+        """Reporting it suspended would read as a deliberate stop and no reconciler would replace it."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO)).cell_status()
+
+        assert status.phase == "Running"
+        assert _conditions(status) == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.FALSE),
+            ("Serving", TriState.FALSE),
+        ]
+
+    def test_an_errored_cell_does_not_report_a_stale_probe_verdict(self):
+        """Its health checker is stopped, so whatever it last observed says nothing about the failure."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO), health=TriState.TRUE).cell_status()
+
+        assert ("Healthy", TriState.FALSE) in _conditions(status)
+
+    def test_an_errored_cell_names_why_it_is_unhealthy(self):
+        """The reason is what tells an operator this was a failed weight update, not a failed probe."""
+        [healthy] = [
+            c for c in _make_cell(StateErrored(addr_info=_ADDR_INFO)).cell_status().conditions if c.type == "Healthy"
+        ]
+
+        assert healthy.reason == "CellErrored"
+
     def test_a_disposed_cell_is_suspended(self):
         """Nothing is left to probe once the cell has been torn down."""
         status = _make_cell(StateDisposed()).cell_status()
@@ -153,6 +179,7 @@ class TestServerCellStatusGeneration:
             StateInitializing(addr_info=_ADDR_INFO, start_time=time.monotonic()),
             StatePendingWeights(addr_info=_ADDR_INFO),
             StateServing(addr_info=_ADDR_INFO),
+            StateErrored(addr_info=_ADDR_INFO),
             StateDisposed(),
         ],
     )

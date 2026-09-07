@@ -260,7 +260,7 @@ class InferenceController:
             cells = [cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.server_cells.values()]
             if self.args.colocate:
                 await asyncio.gather(*[cell.init() for cell in cells if cell.is_uninitialized])
-            pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
+            pending = [cell for cell in cells if not cell.is_pending_weights_or_serving and not cell.is_errored]
             if not pending:
                 return
             if time.monotonic() >= deadline:

@@ -42,6 +42,7 @@ class _ColocatedCellStub:
     def __init__(self) -> None:
         self.init_count = 0
         self.ready = False
+        self.is_errored = False
 
     async def init(self) -> None:
         self.init_count += 1
