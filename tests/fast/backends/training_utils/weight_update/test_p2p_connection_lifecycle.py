@@ -61,15 +61,21 @@ def _connect(
     layout_of=lambda pair: {"tp_rank": pair[1]},
     quant_profile: str | None = None,
     engine_count: int | None = None,
+    query_failures: dict[int, Exception] | None = None,
 ) -> None:
+    query_failures = query_failures if query_failures is not None else {}
     protocol.transfer_plan.plan_p2p.return_value = [
         SimpleNamespace(engine_ind=engine_ind, engine_rank=engine_rank) for engine_ind, engine_rank in pairs
     ]
-    targets_to_session_id = {pair: f"{session_prefix}-{pair[0]}-{pair[1]}" for pair in pairs}
-    patches.query.return_value = (
-        {targets_to_session_id[pair]: ({}, layout_of(pair)) for pair in pairs},
-        targets_to_session_id,
-        {targets_to_session_id[pair]: SimpleNamespace(rl_quant_profile=quant_profile) for pair in pairs},
+    answered = [pair for pair in pairs if pair[0] not in query_failures]
+    targets_to_session_id = {pair: f"{session_prefix}-{pair[0]}-{pair[1]}" for pair in answered}
+    patches.query.return_value = SimpleNamespace(
+        remote_weight_infos_by_session_id={targets_to_session_id[pair]: ({}, layout_of(pair)) for pair in answered},
+        targets_to_session_id=targets_to_session_id,
+        session_id_to_server_args={
+            targets_to_session_id[pair]: SimpleNamespace(rl_quant_profile=quant_profile) for pair in answered
+        },
+        failures_by_engine_ind=query_failures,
     )
     if engine_count is None:
         engine_count = 1 + max((engine_ind for engine_ind, _rank in pairs), default=-1)
@@ -502,3 +508,134 @@ class TestInferenceCellState:
         assert protocol.inference_cell_health.errored_cell_ids == []
         assert protocol._cell_updaters_by_cell_id == {}
         assert old_health.errored_cell_ids == ["cell-0"]
+
+
+class TestConnectWithADeadTarget:
+    """An engine that cannot be queried at connect time only costs its own cell."""
+
+    def test_a_dead_engine_marks_its_cell_and_leaves_the_others_connected(self, p2p_protocol) -> None:
+        """Failing the whole connect would kill a healthy trainer over one unreachable inference cell."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(
+                protocol,
+                patches,
+                pairs=[(0, 0), (1, 0)],
+                query_failures={0: ConnectionError("engine 0 is unreachable")},
+            )
+
+        assert protocol.is_sender is True
+        assert protocol.inference_cell_health.errored_cell_ids == ["cell-0"]
+        assert sorted(_target_session_ids(protocol)) == ["a-1-0"]
+        assert [meta.engine_rank for meta in protocol._transfer_engine_meta_list] == [0]
+
+    def test_a_dead_engine_is_not_written_to_by_the_next_bucket(self, p2p_protocol) -> None:
+        """The cell updater of a cell that never handed over its targets must submit nothing."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(
+                protocol,
+                patches,
+                pairs=[(0, 0), (1, 0)],
+                query_failures={0: ConnectionError("engine 0 is unreachable")},
+            )
+
+        dead = protocol._cell_updaters_by_cell_id["cell-0"]
+        assert dead.is_errored is True
+        assert dead._target_by_engine_rank == {}
+        assert dead.submit_write(engine_rank=0, names=["w"], weight_memory_registry={}) is None
+
+    def test_every_engine_of_a_rank_failing_leaves_that_rank_without_a_replica(self, p2p_protocol) -> None:
+        """Building a CPU replica for a rank whose every target is gone would load a model for nobody."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(
+                protocol,
+                patches,
+                pairs=[(0, 0)],
+                query_failures={0: ConnectionError("engine 0 is unreachable")},
+            )
+
+        assert protocol.is_sender is False
+        assert protocol._transfer_engine_meta_list == []
+        assert factory.calls == []
+        assert protocol.inference_cell_health.errored_cell_ids == ["cell-0"]
+
+
+class TestConnectWhoseEveryTargetIsDead:
+    """A rank left without a single usable target must stay out of the way, not break the trainer."""
+
+    def test_no_usable_target_neither_stages_nor_registers(self, p2p_protocol) -> None:
+        """With no CPU replica there is no parameter mapper, so staging a bucket would raise on the source side."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(
+                protocol,
+                patches,
+                pairs=[(0, 0)],
+                query_failures={0: ConnectionError("engine 0 is unreachable")},
+            )
+            with patch.object(p2p_protocol, "register_cpu_memory") as register:
+                assert protocol.begin_sync(1, lambda **_kwargs: iter([])) is True
+
+            bucket = [("hf.w", torch.zeros(1))]
+            protocol.send_bucket(bucket)
+            protocol.after_base_weights()
+
+        register.assert_not_called()
+        assert protocol._model_registered is False
+        assert protocol._weight_memory_registry == {}
+        assert len(bucket) == 1
+
+    def test_a_later_connection_to_a_healthy_target_registers_real_buffers(self, p2p_protocol) -> None:
+        """A registration marked done against an empty dict would leave the real pinned buffers unknown to RDMA."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+        registered: list[dict] = []
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(
+                protocol,
+                patches,
+                pairs=[(0, 0)],
+                query_failures={0: ConnectionError("engine 0 is unreachable")},
+            )
+            protocol.begin_sync(1, lambda **_kwargs: iter([]))
+
+            _connect(protocol, patches, pairs=[(0, 0)], session_prefix="b")
+            with patch.object(
+                p2p_protocol,
+                "register_cpu_memory",
+                side_effect=lambda params, engine: registered.append(dict(params)) or {"w": (0x1000, 2, 4)},
+            ):
+                protocol.begin_sync(2, lambda **_kwargs: iter([]))
+
+        assert protocol.is_sender is True
+        assert [sorted(params) for params in registered] == [["w"]]
+        assert protocol._weight_memory_registry == {"w": (0x1000, 2, 4)}
+        assert protocol._model_registered is True
+
+    def test_a_healthy_target_beside_a_dead_one_still_sends(self, p2p_protocol) -> None:
+        """Isolating the dead target is worthless if the surviving one stops being written to."""
+        protocol = _make_protocol(p2p_protocol)
+        factory = _ReplicaFactory()
+
+        with _patched_p2p(p2p_protocol, factory) as patches:
+            _connect(
+                protocol,
+                patches,
+                pairs=[(0, 0), (1, 0)],
+                query_failures={0: ConnectionError("engine 0 is unreachable")},
+            )
+
+        assert protocol.is_sender is True
+        assert sorted(_target_session_ids(protocol)) == ["a-1-0"]
+        assert protocol._cell_updaters_by_cell_id["cell-1"].accepts_writes is True

@@ -17,6 +17,7 @@ from tqdm import tqdm
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.cell_session import _PerCellEngineSession
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
@@ -70,6 +71,7 @@ class WeightUpdater:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
+        self._cell_session: _PerCellEngineSession | None = None
         # Set by the actor before each update_weights call (loaded map at reconcile).
         self.multi_lora_adapters = None
 
@@ -92,6 +94,21 @@ class WeightUpdater:
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
+        self._cell_session = self._build_cell_session(rollout_engines, engine_cell_ids=engine_cell_ids)
+
+    def _build_cell_session(
+        self, rollout_engines: Sequence[SGLangApiClient], *, engine_cell_ids: Sequence[str]
+    ) -> _PerCellEngineSession | None:
+        health = self.protocol.inference_cell_health
+        if health is None:
+            return None
+        assert not self.is_lora, (
+            f"per-inference-cell failure isolation is not supported for LoRA weight sync over "
+            f"{self.args.update_weight_transfer_mode!r}"
+        )
+        return _PerCellEngineSession(
+            self.args, dict(zip(engine_cell_ids, rollout_engines, strict=True)), health=health
+        )
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear the protocol's metrics; the actor drains them onto the step log."""
@@ -110,11 +127,7 @@ class WeightUpdater:
 
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
-            self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(
-                protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-            )
+            self._open_engine_session(adapters, sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
@@ -141,12 +154,35 @@ class WeightUpdater:
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
             if protocol.use_weight_update_session and driver:
-                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                set_weight_version(protocol.rollout_engines, self.weight_version)
-                resume_engines(protocol.rollout_engines)
+                self._close_engine_session(checksums)
             dist.barrier(group=get_gloo_group())
 
         return self.weight_version
+
+    def _open_engine_session(self, adapters: list[tuple[str, object]], *, sync_base: bool) -> None:
+        protocol = self.protocol
+        if self._cell_session is not None:
+            self._cell_session.pause()
+            self._cell_session.begin(selector=self._hf_weight_iterator.weight_update_selector, sync_base=sync_base)
+            return
+
+        pause_engines(self.args, protocol.rollout_engines)
+        self._register_new_lora_adapters(protocol.rollout_engines, adapters)
+        begin_weight_update(
+            protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
+        )
+
+    def _close_engine_session(self, checksums: dict | None) -> None:
+        protocol = self.protocol
+        if self._cell_session is not None:
+            self._cell_session.end()
+            self._cell_session.set_weight_version(self.weight_version)
+            self._cell_session.resume()
+            return
+
+        end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
+        set_weight_version(protocol.rollout_engines, self.weight_version)
+        resume_engines(protocol.rollout_engines)
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
