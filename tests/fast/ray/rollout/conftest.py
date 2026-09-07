@@ -168,6 +168,7 @@ def make_args(**overrides: Any) -> Namespace:
         # CI
         ci_test=False,
         ci_tito_special_token_count_threshold=0.0,
+        ci_assert_prefill_lag_max=None,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
         dumper_inference=False,
