@@ -10,6 +10,7 @@ import torch
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
 
 
 class WeightTransferProtocol(ABC):
@@ -30,6 +31,7 @@ class WeightTransferProtocol(ABC):
         self.args = args
         self.rollout_engines: Sequence[SGLangApiClient] | None = None
         self.is_sender: bool | None = None
+        self.inference_cell_health: InferenceCellHealth | None = None
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
 

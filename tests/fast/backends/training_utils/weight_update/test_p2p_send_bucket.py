@@ -120,3 +120,57 @@ class TestSendBucketOrdering:
         log = _send_one_bucket(p2p_protocol, engine_ranks=[0], cell_ids=["cell-a", "cell-b"])
 
         assert [(entry[3], entry[4]) for entry in log if entry[0] == "submit"] == [(("w",), _REGISTRY)] * 2
+
+
+class _ErroredCellUpdater:
+    def __init__(self, log: list[tuple], cell_id: str):
+        self._log = log
+        self.cell_id = cell_id
+
+    def submit_write(self, engine_rank: int, names: list[str], weight_memory_registry) -> None:
+        self._log.append(("skip", self.cell_id, engine_rank))
+        return None
+
+
+def _send_one_bucket_with_an_errored_cell(p2p, *, engine_ranks: list[int]) -> list[tuple]:
+    log: list[tuple] = []
+    cell_updaters = [_ErroredCellUpdater(log, "cell-dead"), _RecordingCellUpdater(log, "cell-live")]
+    ready_hf_tensors = [("hf.w", torch.zeros(1))]
+    protocol = SimpleNamespace(
+        is_sender=True,
+        _shared_param_mapper=object(),
+        _shared_params_dict={},
+        _weight_memory_registry=_REGISTRY,
+        _model_param_stager=SimpleNamespace(
+            get_transfer_ready_params=lambda *_args, **_kwargs: (["w"], ready_hf_tensors)
+        ),
+        _transfer_engine_meta_list=[
+            p2p.TransferEngineMeta(
+                engine_rank=engine_rank,
+                model_replica=_RecordingReplica(log, engine_rank),
+                cell_updaters=cell_updaters,
+            )
+            for engine_rank in engine_ranks
+        ],
+    )
+
+    p2p.UpdateWeightP2P.send_bucket(protocol, [("hf.w", torch.zeros(1))])
+    return log
+
+
+class TestSendBucketWithAnErroredCell:
+    """A cell that already failed must neither be written to nor waited for."""
+
+    def test_a_healthy_cell_still_receives_every_engine_rank(self, p2p_protocol) -> None:
+        """Isolating a dead cell is worthless if it also stops the bucket stream of its neighbours."""
+        log = _send_one_bucket_with_an_errored_cell(p2p_protocol, engine_ranks=[0, 1])
+
+        assert [(entry[1], entry[2]) for entry in log if entry[0] == "submit"] == [("cell-live", 0), ("cell-live", 1)]
+        assert [entry[1] for entry in log if entry[0] == "load"] == [0, 1]
+
+    def test_the_errored_cell_is_never_awaited(self, p2p_protocol) -> None:
+        """Waiting on a write that was never submitted would block the non-last rank forever."""
+        log = _send_one_bucket_with_an_errored_cell(p2p_protocol, engine_ranks=[0, 1])
+
+        assert [entry for entry in log if entry[0] == "await"] == [("await", "cell-live", 0)]
+        assert [(entry[1], entry[2]) for entry in log if entry[0] == "skip"] == [("cell-dead", 0), ("cell-dead", 1)]
