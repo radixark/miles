@@ -69,6 +69,18 @@ class WeightVersionsPerCall:
             output_end <= num_tokens
         ), f"output weight version spans of call {self} end at {output_end} but the sample has {num_tokens} tokens"
 
+    @property
+    def prefill_lag(self) -> int | None:
+        decode = compute_numeric_versions_of_spans(self.spans)
+        prefill = compute_numeric_versions_of_spans(self.prefill_spans)
+        if len(decode) != len(self.spans) or len(prefill) != len(self.prefill_spans) or not decode or not prefill:
+            return None
+        return max(decode) - min(prefill)
+
+    @property
+    def max_decode_version(self) -> int | None:
+        return max(compute_numeric_versions_of_spans(self.spans), default=None)
+
     @staticmethod
     def from_meta_info(meta_info: dict, output_end: int) -> "WeightVersionsPerCall":
         num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
@@ -435,9 +447,17 @@ class Sample:
         return [span for call in self.weight_versions for span in call.spans]
 
     @property
+    def all_prefill_weight_version_spans(self) -> list[WeightVersionSpan]:
+        return [span for call in self.weight_versions for span in call.prefill_spans]
+
+    @property
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
         return min(compute_numeric_versions_of_spans(self.all_weight_version_spans), default=None)
+
+    @property
+    def oldest_prefill_weight_version(self) -> int | None:
+        return min(compute_numeric_versions_of_spans(self.all_prefill_weight_version_spans), default=None)
 
     def update_from_meta_info(self, args, meta_info: dict):
         """

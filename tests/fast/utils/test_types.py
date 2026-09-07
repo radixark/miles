@@ -823,3 +823,84 @@ class TestWeightVersionsPerCallDict:
         """A mapping missing one of the span lists is malformed and fails instead of defaulting."""
         with pytest.raises(KeyError, match="prefill_spans"):
             WeightVersionsPerCall.from_dict({"spans": []})
+
+
+class TestOldestPrefillWeightVersion:
+    def test_reads_the_minimum_across_every_call(self):
+        """The oldest prompt KV version is the minimum numeric prefill version over all calls."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("5", 2, 4)], prefill_spans=[WeightVersionSpan("3", 0, 2)], output_start=2
+            ),
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("6", 4, 5)],
+                prefill_spans=[WeightVersionSpan("1", 0, 1), WeightVersionSpan("6", 1, 4)],
+                output_start=4,
+            ),
+        ]
+        s.validate()
+        assert s.oldest_prefill_weight_version == 1
+
+    def test_ignores_nonnumeric_versions(self):
+        """Nonnumeric prefill versions are skipped, and a sample with only those reports no version."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("5", 2, 5)],
+                prefill_spans=[WeightVersionSpan("default", 0, 1), WeightVersionSpan("4", 1, 2)],
+                output_start=2,
+            )
+        ]
+        s.validate()
+        assert s.oldest_prefill_weight_version == 4
+
+        s.weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("5", 2, 5)], prefill_spans=[WeightVersionSpan("v1", 0, 2)], output_start=2
+            )
+        ]
+        s.validate()
+        assert s.oldest_prefill_weight_version is None
+
+    def test_is_none_without_prefill_spans(self):
+        """Calls that only carry output spans give no prompt KV version."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("5", 2, 5)])]
+        assert s.oldest_prefill_weight_version is None
+
+
+class TestWeightVersionsPerCallPrefillLag:
+    def test_lag_is_the_newest_decode_version_minus_the_oldest_prompt_version(self):
+        """A call decoding across an update measures its prompt staleness against the newest version it decoded with."""
+        call = WeightVersionsPerCall(
+            spans=[WeightVersionSpan("4", 4, 5), WeightVersionSpan("5", 5, 6)],
+            prefill_spans=[WeightVersionSpan("1", 0, 2), WeightVersionSpan("4", 2, 4)],
+            output_start=4,
+        )
+        assert call.prefill_lag == 4
+
+    def test_a_call_without_output_spans_has_no_lag(self):
+        """Without a decode version there is nothing to compare the prompt versions against."""
+        call = WeightVersionsPerCall(spans=[], prefill_spans=[WeightVersionSpan("1", 0, 2)], output_start=2)
+        assert call.prefill_lag is None
+
+    def test_a_call_without_prefill_spans_has_no_lag(self):
+        """An engine that did not report prompt versions leaves the lag undefined rather than zero."""
+        assert WeightVersionsPerCall(spans=[WeightVersionSpan("4", 2, 3)], output_start=2).prefill_lag is None
+
+    @pytest.mark.parametrize(
+        ("output_versions", "prefill_versions"),
+        [(["default"], ["1"]), (["4"], ["default", "3"]), (["v4"], ["3"]), (["4", "mock"], ["3"])],
+    )
+    def test_any_non_numeric_version_in_either_list_makes_the_call_ineligible(
+        self, output_versions: list[str], prefill_versions: list[str]
+    ):
+        """A single placeholder version anywhere in the call makes its lag unknowable, not partially computed."""
+        num_prompt = len(prefill_versions)
+        call = WeightVersionsPerCall(
+            spans=[WeightVersionSpan(v, num_prompt + i, num_prompt + i + 1) for i, v in enumerate(output_versions)],
+            prefill_spans=[WeightVersionSpan(v, i, i + 1) for i, v in enumerate(prefill_versions)],
+            output_start=num_prompt,
+        )
+        assert call.prefill_lag is None
