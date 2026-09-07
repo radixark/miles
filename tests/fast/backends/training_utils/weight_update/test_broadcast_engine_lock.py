@@ -72,6 +72,7 @@ class TestEngineLockConstruction:
                 [MagicMock()],
                 engine_gpu_counts=None,
                 engine_gpu_offsets=None,
+                engine_cell_ids=["cell-0"],
                 parallel_state=parallel_state,
                 placement=SimpleNamespace(gather_pp=False),
                 selector="all",

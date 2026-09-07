@@ -8,12 +8,12 @@ from .p2p_transfer_utils import P2PTransferManager, RemoteWeightInfo
 class _P2PRolloutCellUpdater:
     def __init__(
         self,
-        rollout_engine_ind: int,
+        cell_id: str,
         transfer_engine: Any,
         transfer_manager: P2PTransferManager,
         targets_by_rollout_engine_rank: dict[int, RemoteWeightInfo],
     ) -> None:
-        self.rollout_engine_ind = rollout_engine_ind
+        self.cell_id = cell_id
         self._transfer_engine = transfer_engine
         self._transfer_manager = transfer_manager
         self._target_by_rollout_engine_rank = targets_by_rollout_engine_rank

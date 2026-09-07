@@ -36,7 +36,11 @@ class TestTheTrainerControllerSurfaceIsCallableOverRpc:
         """This parameter was unannotated once, and it took the whole pool down at import rather than at call."""
         spec = collect_rpc_method_specs(TrainerController)["update_weights"]
         info = UpdatableEngines(
-            rollout_engines=[], engine_gpu_counts=[], engine_gpu_offsets=[], snapshot_cell_id_to_hashes={}
+            rollout_engines=[],
+            engine_gpu_counts=[],
+            engine_gpu_offsets=[],
+            engine_cell_ids=[],
+            snapshot_cell_id_to_hashes={},
         )
 
         decoded = spec.serializer.decode_query(spec.serializer.encode_query(dict(info=info, rollout_id=3)))
