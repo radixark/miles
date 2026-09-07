@@ -20,6 +20,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.utils import ModelParamStager
 from miles.utils.distributed_utils import get_gloo_group
 
 from .p2p_transfer_utils import (
@@ -50,9 +51,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.transfer_plan = RemoteTransferPlan(args)
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
-        self._tensor_update_pending: dict[str, int] = {}
-
-        self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
+        self._model_param_stager = ModelParamStager()
         self.transfer_manager = P2PTransferManager(
             num_workers=getattr(args, "p2p_transfer_num_workers", 4),
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
@@ -63,10 +62,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         if not self.is_sender:
             return
         self.transfer_manager.wait_transfers()
-        assert len(self._tensor_update_pending) == 0 and len(self._staged_tensors) == 0, (
-            f"Some tensors were not transferred during P2P weight update. "
-            f"Pending: {self._tensor_update_pending}, Staged: {self._staged_tensors}"
-        )
+        self._model_param_stager.assert_all_done()
 
     def begin_sync(
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
@@ -88,7 +84,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
         if not self.is_sender or not converted_named_tensors:
             return
         # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
-        transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
+        transfer_ready_params, ready_hf_tensors = self._model_param_stager.get_transfer_ready_params(
+            converted_named_tensors,
+            param_mapper=self._shared_param_mapper,
+            params_dict=self._shared_params_dict,
+        )
 
         if transfer_ready_params and ready_hf_tensors:
             last_idx = len(self._transfer_engine_meta_list) - 1
@@ -247,62 +247,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 param.data = self._shared_params_dict[name]
 
         return model
-
-    def _get_transfer_ready_params(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]]
-    ) -> tuple[list[str], list[tuple[str, torch.Tensor]]]:
-        """Determine which sglang params have all shards present, returning their accumulated tensors.
-
-        Some parameters are trained separately on the training side but fused into a
-        single tensor on the rollout side (e.g., Q/K/V projections are separate in
-        Megatron but merged into one qkv_proj in sglang). This function stages
-        incoming HF tensors in self._staged_tensors until all shards for a
-        sglang param are collected. Only returns tensors for fully-ready params,
-        preventing partial load_weights() calls that would corrupt the shared buffer.
-
-        Return:
-            transfer_ready_params: tensors' names for the ones ready to be transferred.
-            ready_hf_tensor: corresponding complete tensors ready to be transferred.
-        """
-        transfer_ready_params = []
-        params_dict = self._shared_params_dict
-
-        for name, tensor in converted_named_tensors:
-            # map the tensor name of huggingface to the one of sglang.
-            mapped_result = self._shared_param_mapper.map(name)
-            mapped, num_shards, num_experts = (
-                mapped_result.sglang_name,
-                mapped_result.num_shards,
-                mapped_result.num_local_experts,
-            )
-            if mapped not in params_dict:
-                logger.warning(f"Parameter {mapped} not found in shared model replica.")
-                continue
-
-            if num_experts is not None and num_experts > 0:
-                total_expected = num_experts * num_shards
-            else:
-                total_expected = num_shards
-
-            self._staged_tensors.setdefault(mapped, []).append((name, tensor))
-
-            if total_expected == 1:
-                transfer_ready_params.append(mapped)
-            else:
-                if mapped not in self._tensor_update_pending:
-                    self._tensor_update_pending[mapped] = total_expected - 1
-                else:
-                    self._tensor_update_pending[mapped] -= 1
-                if self._tensor_update_pending[mapped] == 0:
-                    transfer_ready_params.append(mapped)
-
-        ready_hf_tensors: list[tuple[str, torch.Tensor]] = []
-        for param_name in transfer_ready_params:
-            staged = self._staged_tensors.pop(param_name, [])
-            ready_hf_tensors.extend(staged)
-            self._tensor_update_pending.pop(param_name, None)
-
-        return transfer_ready_params, ready_hf_tensors
 
     def _do_p2p_write_one_session(self, remote_session: RemoteWeightInfo, names: list[str]) -> None:
         """P2P write from shared CPU pinned buffers to a single remote session.
