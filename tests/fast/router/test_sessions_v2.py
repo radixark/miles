@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
 from miles.rollout.session.config import compute_session_server_config
+from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
 from miles.rollout.session.v2 import core as session_core_v2
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
@@ -29,6 +30,7 @@ from miles.utils.http_utils import find_available_port
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
+from miles.utils.types import Sample, WeightVersionSpan
 
 
 @contextmanager
@@ -483,6 +485,38 @@ def _clean_r3_meta():
 def _decode_samples_meta(payload: bytes) -> dict:
     tensors = safetensors.numpy.load(payload)
     return json.loads(tensors["_samples_meta"].tobytes().decode("utf-8"))
+
+
+class TestPrefillWeightVersions:
+    def test_prefill_weight_versions_reach_the_collected_sample(self):
+        """Prompt KV version spans the engine reports for a chat turn land on that turn's call in the assembled sample."""
+        fixture_response = MockSGLangServer._compute_chat_completions_response
+
+        def stamped_response(mock_self, payload: dict) -> dict:
+            response = fixture_response(mock_self, payload)
+            meta = response["choices"][0]["meta_info"]
+            num_prompt_tokens = len(payload["input_ids"])
+            meta["weight_versions"] = [{"version": "4", "start": 0, "end": meta["completion_tokens"]}]
+            meta["prefill_weight_versions"] = [
+                {"version": "1", "start": 0, "end": 2},
+                {"version": "4", "start": 2, "end": num_prompt_tokens},
+            ]
+            return response
+
+        with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=stamped_response):
+            with _serve_router() as env:
+                session_id = _create_session(env.url)
+                resp = _post_chat(env.url, session_id, {"messages": [{"role": "user", "content": "What is 1+2?"}]})
+                assert resp.status_code == 200
+                num_prompt_tokens = len(env.backend.request_log[-1]["input_ids"])
+
+                resp = requests.post(f"{env.url}/sessions/{session_id}/samples", json={}, timeout=10.0)
+
+        assert resp.status_code == 200
+        [sample] = decode_samples_and_merge_input_sample(resp.content, Sample()).samples
+        [call] = sample.weight_versions
+        assert call.spans == [WeightVersionSpan("4", num_prompt_tokens, len(sample.tokens))]
+        assert call.prefill_spans == [WeightVersionSpan("1", 0, 2), WeightVersionSpan("4", 2, num_prompt_tokens)]
 
 
 class TestTruncationAndCompaction:

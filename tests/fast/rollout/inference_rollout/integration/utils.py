@@ -25,7 +25,7 @@ def expected_sample(*, group_index: int | None) -> Sample:
         label="8",
         reward=1,
         loss_mask=None,
-        weight_versions=[WeightVersionsPerCall(spans=[])],
+        weight_versions=[WeightVersionsPerCall(spans=[], output_start=7)],
         rollout_log_probs=[-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125],
         rollout_routed_experts=None,
         remove_sample=False,

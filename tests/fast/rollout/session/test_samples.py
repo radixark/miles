@@ -41,6 +41,7 @@ def _make_record(
     routed_experts: str | None = None,
     routed_experts_start_len: int | None = None,
     weight_versions: list[dict[str, str | int]] | None = None,
+    prefill_weight_versions: list[dict[str, str | int]] | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
@@ -74,6 +75,8 @@ def _make_record(
         request["routed_experts_start_len"] = routed_experts_start_len
     if weight_versions is not None:
         meta_info["weight_versions"] = weight_versions
+    if prefill_weight_versions is not None:
+        meta_info["prefill_weight_versions"] = prefill_weight_versions
     return SessionRecord(
         timestamp=0.0,
         method="POST",
@@ -122,7 +125,9 @@ class TestComputeSamplesFromRecords:
 
         samples = compute_samples_from_openai_records(_ARGS, [record], tok)
 
-        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v3", 3, 5)])]
+        assert samples[0].weight_versions == [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v3", 3, 5)], output_start=3)
+        ]
 
     def test_single_record_per_token_weight_versions_become_spans(self):
         """Per-token weight_versions in meta_info are shifted by the prompt length."""
@@ -136,8 +141,42 @@ class TestComputeSamplesFromRecords:
         samples = compute_samples_from_openai_records(_ARGS, [record], tok)
 
         assert samples[0].weight_versions == [
-            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 3, 5), WeightVersionSpan("v2", 5, 6)])
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 3, 5), WeightVersionSpan("v2", 5, 6)], output_start=3)
         ]
+
+    def test_single_record_prefill_weight_versions_become_prefill_spans(self):
+        """prefill_weight_versions in meta_info index the prompt from token 0 and land on the call unshifted."""
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            weight_versions=[{"version": "v2", "start": 0, "end": 2}],
+            prefill_weight_versions=[{"version": "v1", "start": 0, "end": 1}, {"version": "v2", "start": 1, "end": 3}],
+        )
+
+        samples = compute_samples_from_openai_records(_ARGS, [record], tok)
+
+        assert samples[0].weight_versions == [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("v2", 3, 5)],
+                prefill_spans=[WeightVersionSpan("v1", 0, 1), WeightVersionSpan("v2", 1, 3)],
+                output_start=3,
+            )
+        ]
+
+    def test_prefill_weight_versions_not_covering_the_prompt_are_rejected(self):
+        """A prefill span list that stops short of the prompt length cannot be anchored, so the sample fails validate."""
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            prefill_weight_versions=[{"version": "v1", "start": 0, "end": 2}],
+        )
+
+        samples = compute_samples_from_openai_records(_ARGS, [record], tok)
+
+        with pytest.raises(AssertionError, match="must cover exactly the 3 prompt tokens"):
+            samples[0].validate()
 
     def test_trimmed_trailing_tokens_clip_the_weight_version_span(self):
         """Spans are built over the untrimmed output, so trimming must clip the last span's end."""
@@ -156,8 +195,12 @@ class TestComputeSamplesFromRecords:
         )
 
         assert samples[0].tokens == [1, 2, 3, 10]
-        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v3", 3, 4)])]
-        assert samples[1].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v4", 5, 6)])]
+        assert samples[0].weight_versions == [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v3", 3, 4)], output_start=3)
+        ]
+        assert samples[1].weight_versions == [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v4", 5, 6)], output_start=5)
+        ]
 
     def test_weight_version_span_past_output_tokens_is_rejected(self):
         """A span reaching beyond the reported output tokens cannot be anchored, so no Sample is built."""
@@ -178,7 +221,7 @@ class TestComputeSamplesFromRecords:
 
         samples = compute_samples_from_openai_records(_ARGS, [record], tok)
 
-        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[])]
+        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[], output_start=2)]
 
     def test_multiple_records_produce_multiple_samples(self):
         tok = _mock_tokenizer()
@@ -470,6 +513,48 @@ class TestTITOTrailingTokenTrim:
     The tests below encode this example (and variants) with concrete
     token IDs.  We use ``STOP = 99`` to represent ``<|observation|>``.
     """
+
+    def test_a_turn_trimmed_to_nothing_keeps_its_prefill_spans_and_still_validates(self):
+        """A stop-only turn loses every output token but stays a turn whose prompt versions are known."""
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(
+                prompt_token_ids=[1, 2, 3],
+                output_token_ids=[STOP],
+                weight_version="3",
+                prefill_weight_versions=[
+                    {"version": "1", "start": 0, "end": 2},
+                    {"version": "3", "start": 2, "end": 3},
+                ],
+            ),
+            _make_record(
+                prompt_token_ids=[1, 2, 3, 4, 5],
+                output_token_ids=[20],
+                weight_version="3",
+                prefill_weight_versions=[{"version": "3", "start": 0, "end": 5}],
+            ),
+        ]
+
+        samples = compute_samples_from_openai_records(
+            _ARGS, records, tok, accumulated_token_ids=[1, 2, 3, 4, 5, 20], max_trim_tokens=1
+        )
+
+        assert samples[0].tokens == [1, 2, 3]
+        assert samples[0].response_length == 0
+        assert samples[0].weight_versions == [
+            WeightVersionsPerCall(
+                spans=[],
+                prefill_spans=[WeightVersionSpan("1", 0, 2), WeightVersionSpan("3", 2, 3)],
+                output_start=3,
+            )
+        ]
+        assert samples[1].weight_versions == [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("3", 5, 6)], prefill_spans=[WeightVersionSpan("3", 0, 5)], output_start=5
+            )
+        ]
+        for sample in samples:
+            sample.validate()
 
     def test_three_turn_trim_trailing_stop_tokens(self):
         """Three-turn retry: non-final turns have 1 trailing stop token trimmed."""

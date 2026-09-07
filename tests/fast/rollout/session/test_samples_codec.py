@@ -311,24 +311,74 @@ class TestWeightVersionsOnTheSamplesWire:
 
         assert out.weight_versions == weight_versions
 
+    def test_weight_versions_round_trip_preserves_prefill_spans(self):
+        """The prompt KV versions of every call cross the wire next to its output spans."""
+        weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("w2", 3, 4)],
+                prefill_spans=[WeightVersionSpan("w1", 0, 2), WeightVersionSpan("w2", 2, 3)],
+                output_start=3,
+            ),
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("w3", 4, 5)], prefill_spans=[WeightVersionSpan("w2", 0, 4)], output_start=4
+            ),
+        ]
+        sample = _computed_sample(weight_versions=weight_versions)
+        sample.validate()
+        payload = encode_samples([sample], {}, None)
+
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
+
+        assert out.weight_versions == weight_versions
+
+    def test_weight_versions_cross_the_wire_as_span_mappings(self):
+        """Each call is one JSON object with both span lists, so a v1 decoder never sees a bare list."""
+        weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("w2", 3, 5)], prefill_spans=[WeightVersionSpan("w1", 0, 3)], output_start=3
+            )
+        ]
+        sample = _computed_sample(weight_versions=weight_versions)
+        sample.validate()
+        payload = encode_samples([sample], {}, None)
+
+        meta = json.loads(safetensors.numpy.load(payload)["_samples_meta"].tobytes().decode("utf-8"))
+
+        assert meta["samples"][0]["weight_versions"] == [
+            {
+                "spans": [{"version": "w2", "abs_start": 3, "abs_end": 5}],
+                "prefill_spans": [{"version": "w1", "abs_start": 0, "abs_end": 3}],
+                "output_start": 3,
+            }
+        ]
+
     @pytest.mark.parametrize(
-        ("weight_versions", "match"),
+        ("weight_versions", "expected_error", "match"),
         [
-            pytest.param(["w1", "w2"], "must be a mapping", id="legacy-scalar-versions"),
             pytest.param(
                 [{"version": "w1", "abs_start": 3, "abs_end": 5}],
-                "must be a mapping",
+                KeyError,
+                "spans",
                 id="spans-not-nested-per-call",
             ),
-            pytest.param([[{"version": "w1", "abs_start": 3}]], "abs_end", id="span-missing-field"),
+            pytest.param(
+                [{"spans": [{"version": "w1", "abs_start": 3}], "prefill_spans": []}],
+                TypeError,
+                "abs_end",
+                id="span-missing-field",
+            ),
+            pytest.param([{"spans": []}], KeyError, "prefill_spans", id="call-missing-prefill-spans"),
+            pytest.param(
+                [{"spans": [], "prefill_spans": []}], KeyError, "output_start", id="call-missing-output-start"
+            ),
         ],
     )
-    def test_malformed_weight_versions_shape_fails_loudly(self, weight_versions, match):
+    def test_malformed_weight_versions_shape_fails_loudly(self, weight_versions, expected_error, match):
         """A weight_versions payload that is not a per-call list of span mappings raises instead of decoding."""
         valid = encode_samples([_computed_sample(weight_versions=[_per_call(("w1", 3, 5))])], {}, None)
         payload = _mutated_payload(
             valid, lambda meta, tensors: meta["samples"][0].update(weight_versions=weight_versions)
         )
 
-        with pytest.raises(TypeError, match=match):
+        with pytest.raises(expected_error, match=match):
             decode_samples_and_merge_input_sample(payload, Sample())
