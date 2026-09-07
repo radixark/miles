@@ -2,7 +2,11 @@ import logging
 import os
 import shlex
 
-from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
+from miles.backends.sglang_utils.router_args_utils import (
+    compute_sglang_router_args,
+    compute_sglang_router_bind_host,
+    router_args_to_argv,
+)
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
@@ -44,7 +48,8 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
         else:
             router_args = compute_sglang_router_args(
                 args,
-                host=primary.host,
+                # peers keep reaching the router by primary.host; only its listening socket needs the literal
+                host=compute_sglang_router_bind_host(primary.host),
                 port=primary.port,
                 prometheus_port=ctx.self_addrs["prometheus"].port,
                 has_pd_disaggregation=model_cfg.has_pd_disaggregation,
