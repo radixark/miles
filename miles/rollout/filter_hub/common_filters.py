@@ -13,7 +13,7 @@ def apply_preput_filters(args: Namespace, dynamic_filter, samples: Group, **kwar
     if not output.keep:
         return output
 
-    output = check_no_missing_reward(args, samples, **kwargs)
+    output = apply_missing_reward_filter(args, samples, **kwargs)
     if not output.keep:
         return output
 
@@ -27,7 +27,7 @@ def apply_aborted_filter(args: Namespace, samples: Group, **kwargs) -> FilterOut
     return FilterOutput(keep=True)
 
 
-def check_no_missing_reward(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
+def apply_missing_reward_filter(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
     if any(sample.reward is None or sample.get_reward_value(args) is None for sample in iter_samples(samples)):
         return FilterOutput(keep=False, reason="group_has_missing_reward")
     return FilterOutput(keep=True)

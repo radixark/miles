@@ -11,9 +11,9 @@ from miles.rollout.filter_hub import dynamic_sampling_filters
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput, FilterOutput, iter_samples
 from miles.rollout.filter_hub.common_filters import (
     apply_aborted_filter,
+    apply_missing_reward_filter,
     apply_preput_filters,
     apply_reward_nonzero_std_filter,
-    check_no_missing_reward,
     group_staleness,
 )
 from miles.utils.function_registry import load_function
@@ -122,7 +122,7 @@ def test_iter_samples_preserves_flat_and_mixed_nested_order():
             FilterOutput(keep=False, reason="group_has_aborted"),
         ),
         (
-            check_no_missing_reward,
+            apply_missing_reward_filter,
             [make_sample(reward=None)],
             FilterOutput(keep=False, reason="group_has_missing_reward"),
         ),

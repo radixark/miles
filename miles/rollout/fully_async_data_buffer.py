@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.rollout.filter_hub.common_filters import apply_aborted_filter, check_no_missing_reward, group_staleness
+from miles.rollout.filter_hub.common_filters import apply_aborted_filter, apply_missing_reward_filter, group_staleness
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -127,7 +127,7 @@ class DefaultDataBuffer(DataBuffer):
             self._unused_handler_fn(input.prompt_group)
             return False
 
-        output = check_no_missing_reward(self._args, input.group)
+        output = apply_missing_reward_filter(self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
             return False
