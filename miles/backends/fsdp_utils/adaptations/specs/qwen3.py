@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import torch
 
-from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
+from miles.true_on_policy.contracts import TRUE_ON_POLICY_V1
 
 from ..class_patches import ModelInstancePatchHook, register_model_instance_patch
 from ..precision import PrecisionPolicyHook, register_precision_policy
@@ -18,15 +18,15 @@ def _uses_formal_contract(hf_config, args) -> bool:
     return (
         _is_qwen3(hf_config)
         and getattr(args, "true_on_policy_mode", False)
-        and getattr(args, "sglang_true_on_policy_contract", None) == QWEN3_DENSE_TRUE_ON_POLICY_V1.name
+        and getattr(args, "sglang_true_on_policy_contract", None) == TRUE_ON_POLICY_V1.name
     )
 
 
 def _resolve_precision(base_policy, hf_config, args):
     if getattr(args, "fp16", False):
-        raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires bf16 training")
+        raise ValueError(f"{TRUE_ON_POLICY_V1.name} requires bf16 training")
     if not base_policy.keep_fp32_master:
-        raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires fp32 master weights")
+        raise ValueError(f"{TRUE_ON_POLICY_V1.name} requires fp32 master weights")
     return replace(
         base_policy,
         param_dtype=torch.float32,

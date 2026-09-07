@@ -50,7 +50,7 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
     assert seen["payload"]["return_logprob"] is True
     assert seen["payload"]["logprob_start_len"] == 2
     assert seen["payload"]["sampling_params"]["max_new_tokens"] == 0
-    assert seen["payload"]["sampling_params"]["temperature"] == 0
+    assert seen["payload"]["sampling_params"]["temperature"] == 1.0
 
 
 @pytest.mark.asyncio

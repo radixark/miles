@@ -219,6 +219,17 @@ def get_log_probs_and_entropy(
         sample. If `with_entropy` is True, also includes "entropy" key with
         a list of `[R]` tensors.
     """
+    if args.true_on_policy_mode:
+        if (
+            args.rollout_temperature != 1.0
+            or getattr(args, "rollout_top_k", -1) not in (-1, 1 << 30)
+            or getattr(args, "rollout_top_p", 1.0) != 1.0
+            or rollout_sampling_mask is not None
+        ):
+            raise ValueError(
+                "true-on-policy supports only temperature=1 and unfiltered, unmodified "
+                "full-vocabulary sampling; sampling-mask replay is not supported"
+            )
     assert non_loss_data
     if rollout_sampling_mask is not None:
         for sample_index, (sampling_mask, response_length) in enumerate(

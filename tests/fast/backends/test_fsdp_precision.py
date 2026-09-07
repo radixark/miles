@@ -14,7 +14,7 @@ from miles.backends.fsdp_utils.adaptations.precision import (
 )
 from miles.backends.fsdp_utils.arguments import load_fsdp_args, parse_fsdp_cli
 from miles.backends.training_utils.data import _rollout_logprob_dtype
-from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
+from miles.true_on_policy.contracts import TRUE_ON_POLICY_V1
 
 
 def test_resolve_precision_policy_uses_independent_fp32_master_switch_and_dtypes():
@@ -61,7 +61,7 @@ def test_qwen3_formal_true_on_policy_resolves_fp32_params_with_bf16_autocast():
         fp16=False,
         keep_fp32_master=True,
         true_on_policy_mode=True,
-        sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+        sglang_true_on_policy_contract=TRUE_ON_POLICY_V1.name,
     )
 
     policy = resolve_precision_policy(SimpleNamespace(model_type="qwen3"), args)
@@ -76,9 +76,9 @@ def test_qwen3_formal_true_on_policy_resolves_fp32_params_with_bf16_autocast():
 @pytest.mark.parametrize(
     ("model_type", "true_on_policy_mode", "contract"),
     [
-        ("qwen3", False, QWEN3_DENSE_TRUE_ON_POLICY_V1.name),
+        ("qwen3", False, TRUE_ON_POLICY_V1.name),
         ("qwen3", True, None),
-        ("qwen3_moe", True, QWEN3_DENSE_TRUE_ON_POLICY_V1.name),
+        ("qwen3_moe", True, TRUE_ON_POLICY_V1.name),
     ],
 )
 def test_qwen3_formal_precision_does_not_leak_to_other_modes(model_type, true_on_policy_mode, contract):
@@ -105,7 +105,7 @@ def test_qwen3_formal_true_on_policy_rejects_fp16():
                 fp16=True,
                 keep_fp32_master=True,
                 true_on_policy_mode=True,
-                sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+                sglang_true_on_policy_contract=TRUE_ON_POLICY_V1.name,
             ),
         )
 
@@ -118,7 +118,7 @@ def test_qwen3_formal_true_on_policy_rejects_disabled_fp32_master():
                 fp16=False,
                 keep_fp32_master=False,
                 true_on_policy_mode=True,
-                sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+                sglang_true_on_policy_contract=TRUE_ON_POLICY_V1.name,
             ),
         )
 
@@ -138,7 +138,7 @@ def test_precision_forward_context_uses_policy_autocast(monkeypatch):
             fp16=False,
             keep_fp32_master=True,
             true_on_policy_mode=True,
-            sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+            sglang_true_on_policy_contract=TRUE_ON_POLICY_V1.name,
         ),
     )
 

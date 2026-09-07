@@ -110,7 +110,7 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
     args = SimpleNamespace(
         qkv_format="thd",
         rollout_temperature=1.0,
-        true_on_policy_mode=True,
+        true_on_policy_mode=False,
         bf16=False,
         fp16=False,
         log_probs_chunk_size=-1,
@@ -219,3 +219,31 @@ def test_zigzag_cp_response_rows_keep_global_response_indices(monkeypatch, cp_ra
     assert list(response_indices) == expected_indices
     assert tokens_chunk.tolist() == [3 + index for index in expected_indices]
     assert logits_chunk.size(0) == len(expected_indices)
+
+
+@pytest.mark.parametrize(
+    "overrides, sampling_mask",
+    [
+        ({"rollout_temperature": 0.7}, None),
+        ({"rollout_top_k": 10}, None),
+        ({"rollout_top_p": 0.9}, None),
+        ({}, [RolloutSamplingMask.from_mask_list([[0]])]),
+    ],
+)
+def test_true_on_policy_rejects_transformed_sampling(overrides, sampling_mask):
+    args = SimpleNamespace(**{
+        "true_on_policy_mode": True,
+        "rollout_temperature": 1.0,
+        "rollout_top_k": -1,
+        "rollout_top_p": 1.0,
+        **overrides,
+    })
+    with pytest.raises(ValueError, match="unfiltered, unmodified"):
+        logit_processors.get_log_probs_and_entropy(
+            torch.zeros(1, 2, 4),
+            args=args,
+            unconcat_tokens=[torch.tensor([0, 1])],
+            total_lengths=[2],
+            response_lengths=[1],
+            rollout_sampling_mask=sampling_mask,
+        )

@@ -12,10 +12,12 @@ logger = logging.getLogger(__name__)
 
 
 def set_default_megatron_args(args):
-    if getattr(args, "true_on_policy_mode", False):
+    if getattr(args, "true_on_policy_mode", False) and not getattr(args, "true_on_policy_contract", None):
         raise NotImplementedError(
-            "--true-on-policy-mode is not supported on the megatron backend with this Megatron "
-            "version; support lands in a follow-up PR. Use --train-backend fsdp for true-on-policy."
+            "--true-on-policy-mode on the megatron backend requires --true-on-policy-contract "
+            "naming a program (see miles_plugins/top/program.py), which also selects the "
+            "matching --spec. The unprogrammed path is the fsdp backend's, reached by "
+            "hand-assembling --true-on-policy-mode with --sglang-true-on-policy-contract."
         )
     # Muon currently owns its sharding path, and Megatron's distributed optimizer
     # only supports Adam-family optimizers.

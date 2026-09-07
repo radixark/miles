@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1, LogprobContract, ModelFamily, TrueOnPolicyContract
+from typing import Literal
+
+from .contracts import TRUE_ON_POLICY_V1
+from .schema import TrueOnPolicyContractSchema
+
+ModelFamily = Literal["qwen3_dense"]
 
 ParallelLayout = str
 
@@ -14,27 +19,10 @@ class TrueOnPolicyModelProfile:
     family: ModelFamily
     model_names: tuple[str, ...]
     megatron_model_types: dict[str, str]
+    sglang_attention_backend: str
     supported_train_layouts: tuple[ParallelLayout, ...]
     supported_rollout_layouts: tuple[ParallelLayout, ...]
-    contract: TrueOnPolicyContract
-    supports_megatron: bool = True
-    supports_fsdp: bool = True
-
-    @property
-    def required_kernel_contracts(self):
-        return self.contract.required_kernel_contracts
-
-    @property
-    def logprob_contract(self) -> LogprobContract:
-        return self.contract.logprob_contract
-
-    @property
-    def sglang_attention_backend(self) -> str:
-        return self.contract.sglang_attention_backend
-
-    @property
-    def fsdp_attention_implementation(self) -> str:
-        return self.contract.fsdp_attention_implementation
+    contract: TrueOnPolicyContractSchema
 
     @property
     def disable_megatron_sequence_parallel(self) -> bool:
@@ -45,8 +33,26 @@ class TrueOnPolicyModelProfile:
         return "ulysses_cp" in self.supported_train_layouts
 
     @property
-    def supports_tp_invariant(self) -> bool:
-        return "tp" in self.supported_train_layouts or "tp" in self.supported_rollout_layouts
+    def requires_allgather_cp(self) -> bool:
+        """Does this family's CP need miles' contiguous-chunk sequence layout?
+
+        The SECOND CP axis, orthogonal to the attention comm type. Families whose attention shares
+        index/kv across the CP group (DSA) gather in the contiguous layout and break under zigzag;
+        Ulysses instead requires per-sequence zigzag shards, enforced by config validation.
+        """
+        return "allgather_cp" in self.supported_train_layouts
+
+    @property
+    def supports_train_tensor_parallel(self) -> bool:
+        return "tp" in self.supported_train_layouts
+
+    @property
+    def supports_rollout_tensor_parallel(self) -> bool:
+        return "tp" in self.supported_rollout_layouts
+
+    @property
+    def supports_expert_parallel(self) -> bool:
+        return "ep" in self.supported_train_layouts or "ep" in self.supported_rollout_layouts
 
     def megatron_model_type_for(self, model_name: str) -> str:
         try:
@@ -67,6 +73,7 @@ QWEN3_DENSE_PROFILE = TrueOnPolicyModelProfile(
         "Qwen3-4B-Base",
         "Qwen3-4B-Instruct-2507",
     ),
+    sglang_attention_backend="fa3",
     megatron_model_types={
         "Qwen3-0.6B": "qwen3-0.6B",
         "Qwen3-4B": "qwen3-4B",
@@ -75,7 +82,7 @@ QWEN3_DENSE_PROFILE = TrueOnPolicyModelProfile(
     },
     supported_train_layouts=("dp", "tp", "pp", "ulysses_cp"),
     supported_rollout_layouts=("dp", "tp"),
-    contract=QWEN3_DENSE_TRUE_ON_POLICY_V1,
+    contract=TRUE_ON_POLICY_V1,
 )
 
 

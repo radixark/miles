@@ -343,6 +343,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to enable true-on-policy mode.",
             )
             parser.add_argument(
+                "--true-on-policy-contract",
+                type=str,
+                default=None,
+                help=(
+                    "Name of the numerical program both engines resolve their op "
+                    "implementations from (see miles_plugins/top/program.py)."
+                ),
+            )
+            parser.add_argument(
                 "--recompute-logprobs-via-prefill",
                 action="store_true",
                 default=False,

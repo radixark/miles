@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from miles.true_on_policy import (
-    QWEN3_DENSE_TRUE_ON_POLICY_V1,
+    TRUE_ON_POLICY_V1,
     apply_true_on_policy_script_defaults,
     build_true_on_policy_launch_plan,
     get_megatron_model_type,
@@ -26,6 +26,10 @@ def _args(**overrides):
         "sglang_rl_on_policy_target": None,
         "true_on_policy_contract": None,
         "use_sequence_parallel": True,
+        # cp>1 now requires an explicit Ulysses declaration; megatron's default is p2p (ring),
+        # which the contract refuses.
+        "cp_comm_type": "a2a",
+        "allgather_cp": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -33,19 +37,17 @@ def _args(**overrides):
 
 def test_qwen3_dense_profile_resolves_model_names():
     profile = get_true_on_policy_model_profile("Qwen3-4B")
-    contract = get_true_on_policy_contract("qwen3_dense_true_on_policy_v1")
+    contract = get_true_on_policy_contract("true_on_policy_v1")
 
     assert profile.family == "qwen3_dense"
-    assert profile.contract is QWEN3_DENSE_TRUE_ON_POLICY_V1
+    assert profile.contract is TRUE_ON_POLICY_V1
     assert profile.contract is contract
-    assert contract.schema.name == "qwen3_dense_true_on_policy_v1"
-    assert contract.schema.model_family == "qwen3_dense"
+    assert contract.name == "true_on_policy_v1"
     assert profile.supported_train_layouts == ("dp", "tp", "pp", "ulysses_cp")
     assert profile.supported_rollout_layouts == ("dp", "tp")
-    assert profile.required_kernel_contracts == ("qwen3_dense_sglang_math",)
-    assert profile.logprob_contract == "sglang_prefill"
     assert profile.supports_ulysses_cp
-    assert profile.supports_tp_invariant
+    assert profile.supports_train_tensor_parallel
+    assert profile.supports_rollout_tensor_parallel
     assert get_megatron_model_type("Qwen3-4B") == "qwen3-4B"
     assert get_megatron_model_type("Qwen3-4B-Instruct-2507") == "qwen3-4B-Instruct-2507"
 
@@ -56,18 +58,18 @@ def test_unknown_true_on_policy_model_fails_early():
 
 
 @pytest.mark.parametrize(
-    ("tp_size", "rollout_tp_size", "expected_target"),
+    ("tp_size", "rollout_tp_size"),
     [
-        (1, 1, "fsdp"),
-        (2, 1, "fsdp_tp"),
-        (1, 2, "fsdp_tp"),
+        (1, 1),
+        (2, 1),
+        (1, 2),
     ],
 )
-def test_true_on_policy_target_is_derived_from_train_and_rollout_tp(
+def test_launch_plan_does_not_vary_with_tensor_parallel_degree(
     tp_size: int,
     rollout_tp_size: int,
-    expected_target: str,
 ):
+    """The program is declared, not derived from topology: a result at one degree transfers."""
     args = _args(
         tensor_model_parallel_size=tp_size,
         context_parallel_size=1,
@@ -78,19 +80,18 @@ def test_true_on_policy_target_is_derived_from_train_and_rollout_tp(
     plan = build_true_on_policy_launch_plan(args)
 
     assert args.sglang_rl_on_policy_target is None
-    assert plan.sglang_target == expected_target
-    assert plan.contract is QWEN3_DENSE_TRUE_ON_POLICY_V1
+    assert plan.contract is TRUE_ON_POLICY_V1
     assert plan.sglang_args.values == (
         "--sglang-enable-deterministic-inference",
         "--sglang-true-on-policy-contract",
-        "qwen3_dense_true_on_policy_v1",
+        "true_on_policy_v1",
         "--sglang-attention-backend",
         "fa3",
     )
     assert "--sglang-rl-on-policy-target" not in plan.train_args
 
 
-def test_legacy_sglang_target_override_does_not_change_contract_policy():
+def test_legacy_sglang_target_override_is_ignored():
     args = _args(
         tensor_model_parallel_size=2,
         context_parallel_size=1,
@@ -102,9 +103,7 @@ def test_legacy_sglang_target_override_does_not_change_contract_policy():
     plan = build_true_on_policy_launch_plan(args)
 
     assert args.sglang_rl_on_policy_target == "fsdp"
-    assert plan.sglang_target == "fsdp_tp"
     assert plan.kernel_policy is not None
-    assert plan.kernel_policy.tp_invariant_row_linear
     assert "--sglang-rl-on-policy-target" not in plan.train_args
     assert "ROW_LINEAR_ENABLE_INV" not in plan.env_vars
 
@@ -120,14 +119,20 @@ def test_contract_object_owns_miles_kernel_policy_values():
     plan = build_true_on_policy_launch_plan(args)
 
     assert plan.kernel_policy is not None
-    assert plan.kernel_policy.contract is QWEN3_DENSE_TRUE_ON_POLICY_V1
+    assert plan.kernel_policy.contract is TRUE_ON_POLICY_V1
     assert plan.kernel_policy.sglang_attention_backend == "fa3"
-    assert plan.kernel_policy.megatron_uses_sglang_backend
-    assert plan.kernel_policy.disable_rope_fusion
-    assert plan.kernel_policy.disable_bias_swiglu_fusion
-    assert plan.kernel_policy.batch_invariant_mode
-    assert plan.kernel_policy.tp_invariant_row_linear
-    assert plan.kernel_policy.deterministic_tp_allreduce
+    assert plan.kernel_policy.build_megatron_args().values == (
+        "--true-on-policy-contract",
+        "true_on_policy_v1",
+        "--spec",
+        "miles_plugins.top.spec",
+        "get_top_spec",
+        "--transformer-impl",
+        "local",
+        "--use-cpu-initialization",
+        "--batch-invariant-mode",
+        "--no-bias-swiglu-fusion",
+    )
 
 
 def test_megatron_true_on_policy_disables_sequence_parallel_and_enables_backend_flags():
@@ -138,11 +143,12 @@ def test_megatron_true_on_policy_disables_sequence_parallel_and_enables_backend_
 
     assert args.use_sequence_parallel is False
     assert "--use-sglang" not in plan.train_args
-    assert "--true-on-policy-contract qwen3_dense_true_on_policy_v1" in plan.train_args
-    assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in plan.train_args
-    assert "--recompute-logprobs-via-prefill" in plan.train_args
+    assert "--true-on-policy-contract true_on_policy_v1" in plan.train_args
+    assert "--sglang-true-on-policy-contract true_on_policy_v1" in plan.train_args
+    # the gate scores DECODE-produced logprobs; a plan that re-adds the prefill recompute
+    # certifies a different program (and masks every decode-only gap)
+    assert "--recompute-logprobs-via-prefill" not in plan.train_args
     assert "--batch-invariant-mode" in plan.train_args
-    assert "--no-rope-fusion" in plan.train_args
     assert "ROW_LINEAR_ENABLE_INV" not in plan.env_vars
     assert "MEGATRON_USE_DETERMINISTIC_ALLREDUCE" not in plan.env_vars
 
@@ -172,29 +178,32 @@ def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(m
     assert plan.parallel_layout.uses_ulysses_cp
     assert plan.parallel_layout.uses_rollout_tp
     assert plan.kernel_policy is not None
-    assert plan.kernel_policy.tp_invariant_row_linear
-    assert plan.kernel_policy.deterministic_tp_allreduce
     assert plan.sglang_args.values == (
         "--sglang-enable-deterministic-inference",
         "--sglang-true-on-policy-contract",
-        "qwen3_dense_true_on_policy_v1",
+        "true_on_policy_v1",
         "--sglang-attention-backend",
         "fa3",
     )
     assert plan.megatron_args.values == (
         "--true-on-policy-contract",
-        "qwen3_dense_true_on_policy_v1",
+        "true_on_policy_v1",
+        "--spec",
+        "miles_plugins.top.spec",
+        "get_top_spec",
         "--transformer-impl",
         "local",
         "--use-cpu-initialization",
         "--batch-invariant-mode",
         "--no-bias-swiglu-fusion",
-        "--no-rope-fusion",
     )
     assert plan.miles_args.values == (
         "--deterministic-mode",
         "--true-on-policy-mode",
-        "--recompute-logprobs-via-prefill",
+        # emitted because this fixture is cp=4: megatron's parser defaults it to ["p2p"], so an
+        # unemitted declaration would silently select ring
+        "--cp-comm-type",
+        "a2a",
     )
     assert plan.env_vars == {
         "NCCL_ALGO": "Ring",
@@ -210,7 +219,8 @@ def test_true_on_policy_contract_override_is_validated():
         build_true_on_policy_launch_plan(args)
 
 
-def test_fsdp_true_on_policy_uses_fsdp_attention_without_megatron_backend_flags():
+def test_non_megatron_train_backend_is_refused():
+    """Megatron is the true-on-policy backend; another backend must refuse, not lose its flags."""
     args = _args(
         train_backend="fsdp",
         tensor_model_parallel_size=1,
@@ -218,16 +228,8 @@ def test_fsdp_true_on_policy_uses_fsdp_attention_without_megatron_backend_flags(
         rollout_num_gpus_per_engine=1,
     )
 
-    apply_true_on_policy_script_defaults(args)
-    plan = build_true_on_policy_launch_plan(args)
-
-    assert args.use_sequence_parallel is True
-    assert plan.sglang_target == "fsdp"
-    assert plan.fsdp_args.values == ("--attn-implementation", "flash_attention_3")
-    assert plan.megatron_args.values == ()
-    assert "--attn-implementation flash_attention_3" in plan.train_args
-    assert "--use-sglang" not in plan.train_args
-    assert "ROW_LINEAR_ENABLE_INV" not in plan.env_vars
+    with pytest.raises(ValueError, match="megatron backend only"):
+        build_true_on_policy_launch_plan(args)
 
 
 def test_fsdp_e2e_uses_current_true_on_policy_contract(monkeypatch):
@@ -240,7 +242,7 @@ def test_fsdp_e2e_uses_current_true_on_policy_contract(monkeypatch):
     fsdp_e2e.execute()
 
     train_args = captured["train_args"]
-    assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
+    assert "--sglang-true-on-policy-contract true_on_policy_v1" in train_args
     assert "--recompute-logprobs-via-prefill" not in train_args
     assert "--sglang-rl-on-policy-target" not in train_args
 

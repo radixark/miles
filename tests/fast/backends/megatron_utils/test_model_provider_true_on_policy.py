@@ -44,7 +44,7 @@ def _patch_local_model_provider(monkeypatch):
             hidden_size=2560,
             sequence_parallel=False,
             use_kitchen=False,
-            true_on_policy_contract="qwen3_dense_true_on_policy_v1",
+            true_on_policy_contract="true_on_policy_v1",
             use_kitchen_attention=False,
             kitchen_attention_backend="sdpa",
         )
