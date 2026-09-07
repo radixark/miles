@@ -15,6 +15,7 @@ class _FakeCell:
         self.state = state
         self.init_count = 0
         self.init_started = asyncio.Event()
+        self.is_errored = False
         self._init_gate = init_gate
 
     async def init(self) -> None:

@@ -9,6 +9,7 @@ from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     CellState,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
@@ -153,6 +154,7 @@ class TestServerCellStatusGeneration:
             StateInitializing(addr_info=_ADDR_INFO, start_time=time.monotonic()),
             StatePendingWeights(addr_info=_ADDR_INFO),
             StateServing(addr_info=_ADDR_INFO),
+            StateErrored(addr_info=_ADDR_INFO),
             StateDisposed(),
         ],
     )
