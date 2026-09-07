@@ -2,11 +2,7 @@ import json
 import shlex
 
 from tests.e2e.ft.conftest_ft.modes import MODES
-from tests.e2e.ft.conftest_ft.scenario_with_failure import (
-    NUM_PHASE_A_STEPS,
-    _build_baseline_args,
-    _build_target_args,
-)
+from tests.e2e.ft.conftest_ft.scenario_with_failure import NUM_PHASE_A_STEPS, _build_baseline_args, _build_target_args
 
 _REAL_ROLLOUT_MODE = "dp2_cp2_real_rollout_dense"
 _DEBUG_DATA_MODE = "dp2_cp2_tp2_ep2"
