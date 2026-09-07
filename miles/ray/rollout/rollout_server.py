@@ -103,6 +103,11 @@ class RolloutServer:
     def engine_gpu_offsets(self) -> list[int]:
         return [cell.meta.gpu_offset for cell in self._cells_by_gpu_offset()]
 
+    @property
+    @requires_lock
+    def engine_cells(self) -> list[ServerCell]:
+        return self._cells_by_gpu_offset()
+
     @requires_lock
     def _cells_by_gpu_offset(self) -> list[ServerCell]:
         return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)

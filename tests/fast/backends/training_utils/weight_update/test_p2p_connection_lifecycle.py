@@ -71,7 +71,16 @@ def _connect(
         targets_to_session_id,
         {targets_to_session_id[pair]: SimpleNamespace(rl_quant_profile=quant_profile) for pair in pairs},
     )
-    protocol.connect([], None, None, None, None, "all")
+    engine_count = 1 + max((engine_ind for engine_ind, _rank in pairs), default=-1)
+    protocol.connect(
+        [object()] * engine_count,
+        None,
+        None,
+        [f"cell-{index}" for index in range(engine_count)],
+        None,
+        None,
+        "all",
+    )
 
 
 def _target_session_ids(protocol) -> list[str]:
