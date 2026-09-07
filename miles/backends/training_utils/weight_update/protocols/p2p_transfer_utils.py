@@ -4,6 +4,7 @@ from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from typing import NamedTuple
 
 import ray
 import torch
@@ -125,6 +126,12 @@ class RemoteTransferPlan:
         return transfer_tasks
 
 
+class RemoteWeightLocation(NamedTuple):
+    address: int
+    numel: int
+    element_size: int
+
+
 @dataclasses.dataclass
 class RemoteWeightInfo:
     """
@@ -132,7 +139,12 @@ class RemoteWeightInfo:
     """
 
     session_id: str
-    weights_info: dict[str, tuple[int, int, int]]  # name -> (remote_address, numel, element_size)
+    weights_info: dict[str, RemoteWeightLocation]  # name -> (remote_address, numel, element_size)
+
+
+class TransferEngineMeta(NamedTuple):
+    model_replica: torch.nn.Module
+    remote_weight_infos: list[RemoteWeightInfo]
 
 
 class P2PTransferManager:
@@ -220,9 +232,10 @@ def query_remote_weight_infos(
     targets_to_query = set((target.engine_ind, target.engine_rank) for target in targets)
 
     for engine_ind, engine_rank in targets_to_query:
-        session_id, weights_info = async_utils.run(
+        session_id, raw_weights_info = async_utils.run(
             rollout_engines[engine_ind].get_remote_instance_transfer_engine_info(rank=engine_rank)
         )
+        weights_info = {name: RemoteWeightLocation(*location) for name, location in raw_weights_info.items()}
         parallelism_info = async_utils.run(rollout_engines[engine_ind].get_parallelism_info(rank=engine_rank))
 
         session_id_to_server_args[session_id] = create_server_args_from_dict(

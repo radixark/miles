@@ -39,6 +39,12 @@ class _FakeRolloutEngine:
         return {"model_path": f"/model/{self._engine_index}"}
 
 
+class _JsonRolloutEngine(_FakeRolloutEngine):
+    async def get_remote_instance_transfer_engine_info(self, rank: int):
+        session_id, weights_info = await super().get_remote_instance_transfer_engine_info(rank)
+        return session_id, {name: list(location) for name, location in weights_info.items()}
+
+
 @contextmanager
 def _stubbed_missing_external_sdks():
     missing = object()
@@ -165,3 +171,15 @@ class TestQueryRemoteWeightInfos:
             "session-0-1": "/model/0",
             "session-1-0": "/model/1",
         }
+
+    def test_weight_locations_are_decoded_from_the_wire_into_named_fields(self, p2p_transfer_utils):
+        """The engines answer over HTTP, so JSON lists must become RemoteWeightLocation before any caller indexes them."""
+        engines = [_JsonRolloutEngine(0)]
+
+        weight_infos, _targets_to_session_id, _session_id_to_server_args = _query(
+            p2p_transfer_utils, engines, [(0, 0)]
+        )
+
+        location = weight_infos["session-0-0"][0]["weight-0"]
+        assert isinstance(location, p2p_transfer_utils.RemoteWeightLocation)
+        assert (location.address, location.numel, location.element_size) == (0x1000, 4, 2)
