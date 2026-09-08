@@ -89,9 +89,11 @@ class HfWeightIteratorBase(ABC):
         """
         hf_param_units = self._iter_hf_param_units(weights, materialize=materialize) if include_base else iter(())
         for lora_name, adapter in adapters:
-            hf_param_units = itertools.chain(
-                hf_param_units, self._iter_hf_adapter_units(lora_name, adapter, materialize=materialize)
+            prefixed = (
+                [(f"{lora_name}:{name}", tensor) for name, tensor in unit]
+                for unit in self._iter_hf_adapter_units(adapter, materialize=materialize)
             )
+            hf_param_units = itertools.chain(hf_param_units, prefixed)
         atomic_update_groups = self._hf_atomic_update_groups() if include_base and materialize else []
         hf_param_units = assemble_atomic_update_groups(hf_param_units, atomic_update_groups)
         yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
@@ -112,11 +114,19 @@ class HfWeightIteratorBase(ABC):
         """Backend hook: HF-namespace atomic groups for this model. Default none."""
         return []
 
+    def materialize_adapter(self, adapter, *, materialize: bool = True) -> dict[str, torch.Tensor]:
+        """One adapter as ``{hf_key: tensor}`` — the unit stream without the
+        transport bucketing. Collective: every rank must call; ``materialize=False``
+        joins the gathers and returns an empty dict."""
+        return {
+            name: tensor
+            for unit in self._iter_hf_adapter_units(adapter, materialize=materialize)
+            for name, tensor in unit
+        }
+
     @abstractmethod
-    def _iter_hf_adapter_units(
-        self, lora_name: str, adapter, *, materialize: bool
-    ) -> Iterator[list[tuple[str, torch.Tensor]]]:
+    def _iter_hf_adapter_units(self, adapter, *, materialize: bool) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """Backend hook: this rank's slice of the adapter per ``self.placement``,
-        one unit per parameter, names ``{lora_name}:{hf_key}``, rank-trimmed.
-        Collectives must run lockstep on every rank; ``materialize=False`` joins
-        them but yields nothing."""
+        one unit per parameter, bare ``hf_key`` names, rank-trimmed. Collectives
+        must run lockstep on every rank; ``materialize=False`` joins them but
+        yields nothing."""

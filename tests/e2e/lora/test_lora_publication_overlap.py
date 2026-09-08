@@ -45,13 +45,13 @@ class _AdapterIterator(HfWeightIteratorBase):
     def _iter_hf_param_units(self, weights, *, materialize):
         raise AssertionError("Publishing an adapter must not read the base")
 
-    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
+    def _iter_hf_adapter_units(self, adapter, *, materialize):
         if not materialize:
             return
         rng = torch.Generator().manual_seed(adapter.seed)
         for layer in range(28):
             for module, width in (("q_proj", 2048), ("k_proj", 1024), ("v_proj", 1024)):
-                prefix = f"{lora_name}:model.layers.{layer}.self_attn.{module}"
+                prefix = f"model.layers.{layer}.self_attn.{module}"
                 a = torch.randn(8, 1024, generator=rng, dtype=torch.bfloat16) * 0.04
                 b = torch.randn(width, 8, generator=rng, dtype=torch.bfloat16) * 0.04
                 yield [(f"{prefix}.lora_A.weight", a.cuda()), (f"{prefix}.lora_B.weight", b.cuda())]

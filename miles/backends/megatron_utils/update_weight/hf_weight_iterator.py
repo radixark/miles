@@ -35,7 +35,7 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
     def _hf_atomic_update_groups(self):
         return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.q_lora_rank)
 
-    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
+    def _iter_hf_adapter_units(self, adapter, *, materialize):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP
         gather runs only where the resolved placement asks for it."""
         named_tensors = self._export_pp_local_lora(adapter)
@@ -54,7 +54,7 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
         if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
             raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
         for hf_name, tensor in named_tensors:
-            yield [(f"{lora_name}:{hf_name}", tensor)]
+            yield [(hf_name, tensor)]
 
     @abstractmethod
     def _export_pp_local_lora(self, adapter) -> list[tuple[str, torch.Tensor]]:

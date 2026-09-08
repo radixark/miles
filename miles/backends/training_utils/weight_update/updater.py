@@ -6,13 +6,10 @@ buckets (senders transmit, other ranks join the gathers), and orchestrates
 LoRA adapter pushes.
 """
 
-import json
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
 
-import safetensors.torch
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
@@ -31,7 +28,7 @@ from miles.backends.training_utils.weight_update.session import (
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora import LORA_ADAPTER_NAME, save_peft_dir
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.timer import timer
 
@@ -190,21 +187,12 @@ class WeightUpdater:
         streamed apply feed the engine identically. Collective: every rank
         must call; rank 0 writes."""
         driver = dist.get_rank() == 0
-        tensors: dict[str, torch.Tensor] = {}
-        for bucket in self._hf_weight_iterator.iter_hf_weights(
-            None, include_base=False, adapters=[("export", adapter)], materialize=driver
-        ):
-            for prefixed_name, tensor in bucket:
-                _, hf_key = prefixed_name.split(":", 1)
-                tensors[hf_key] = tensor.detach().contiguous().cpu()
+        tensors = {
+            name: tensor.detach().contiguous().cpu()
+            for name, tensor in self._hf_weight_iterator.materialize_adapter(adapter, materialize=driver).items()
+        }
         if driver:
-            config = dict(self._lora_sync_config)
-            if adapter is not None:
-                config |= {"r": adapter.rank, "lora_alpha": adapter.alpha}
-            out = Path(out_dir)
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "adapter_config.json").write_text(json.dumps(config, indent=2))
-            safetensors.torch.save_file(tensors, str(out / "adapter_model.safetensors"))
+            save_peft_dir(out_dir, self._adapter_config(adapter), tensors)
         dist.barrier(group=get_gloo_group())
 
     def _iter_base_buckets(self, *, materialize: bool):
@@ -220,6 +208,12 @@ class WeightUpdater:
             return []
         return [(LORA_ADAPTER_NAME, None)]
 
+    def _adapter_config(self, adapter) -> dict:
+        config = dict(self._lora_sync_config)
+        if adapter is not None:
+            config |= {"r": adapter.rank, "lora_alpha": adapter.alpha}
+        return config
+
     def _register_new_lora_adapters(
         self,
         rollout_engines,
@@ -233,13 +227,10 @@ class WeightUpdater:
         for lora_name, adapter in adapters:
             if lora_name in self._registered_adapters:
                 continue
-            config = self._lora_sync_config
-            if adapter is not None:
-                config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
             register_lora_adapter(
                 rollout_engines,
                 lora_name=lora_name,
-                lora_config=config,
+                lora_config=self._adapter_config(adapter),
                 lora_path=lora_path,
                 defer_publish=defer_publish,
             )
