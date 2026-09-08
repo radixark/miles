@@ -3,99 +3,47 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import asyncio
+import inspect
+import pickle
 from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args as _make_args
 
 import miles.ray.rollout.eval_fleet as eval_fleet_mod
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.rollout.checkpoint_eval import EvalSkip
+from miles.utils.context_lock import ContextLock
 
 
 def make_args(**overrides):
     defaults = dict(
         eval_num_gpus=1,
         eval_num_gpus_per_engine=1,
-        use_fault_tolerance=False,
-        ft_components=[],
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
     return _make_args(**defaults)
 
 
-class FakeRemoteMethod:
-    def __init__(self, engine, name):
-        self.engine = engine
-        self.name = name
-
-    def remote(self, *args, **kwargs):
-        self.engine.log.append((self.name, args, kwargs))
-        result = self.engine.responses[self.name](*args, **kwargs)
-        fut = asyncio.get_event_loop().create_future()
-        fut.set_result(result)
-        return fut
-
-
-class FakeEngine:
-    def __init__(self, log):
+class FakeApiClient:
+    def __init__(self, log: list) -> None:
         self.log = log
-        self.weight_version = None
+        self.weight_version: str | None = None
+        self.weight_version_response: str | None = None
 
-        def load(model_path, weight_version=None):
-            self.weight_version = weight_version
-            return None
+    async def update_weights_from_disk(
+        self, model_path: str, load_format: str | None = None, weight_version: str | None = None
+    ) -> None:
+        self.log.append(("update_weights_from_disk", model_path, weight_version))
+        self.weight_version = weight_version
 
-        self.responses = {
-            "update_weights_from_disk": load,
-            "get_weight_version": lambda: self.weight_version,
-        }
-
-    def __getattr__(self, name):
-        if name in ("update_weights_from_disk", "get_weight_version"):
-            return FakeRemoteMethod(self, name)
-        raise AttributeError(name)
-
-
-class FakeServerEngineWrapper:
-    def __init__(self, actor):
-        self._actor = actor
-        self.is_allocated = True
-        self.stopped = False
-
-    @property
-    def actor_handle(self):
-        return self._actor
-
-    def mark_stopped(self):
-        self.stopped = True
-        self.is_allocated = False
-
-
-class FakeEvalServer:
-    async def probe_and_mark_dead(self):
-        self.probe_calls += 1
-
-    def __init__(self, engines):
-        self._engines = engines
-        self.wrappers = [FakeServerEngineWrapper(e) for e in engines]
-        self.recover_calls = 0
-        self.probe_calls = 0
-
-    @property
-    def server_groups(self):
-        return [SimpleNamespace(all_engines=self.wrappers)]
-
-    @property
-    def engines(self):
-        return [SimpleNamespace(actor_handle=e) for e in self._engines]
-
-    async def recover(self):
-        self.recover_calls += 1
-
-    async def wait_all_engines_alive(self):
-        pass
+    async def get_weight_version(self) -> str | None:
+        self.log.append(("get_weight_version", None, None))
+        if self.weight_version_response is not None:
+            return self.weight_version_response
+        return self.weight_version
 
 
 @pytest.fixture
@@ -114,19 +62,24 @@ def fleet_env(monkeypatch):
     return SimpleNamespace(state_builds=state_builds)
 
 
-def make_fleet(args, engines):
-    return EvalFleet(args, srv=FakeEvalServer(engines))
+def make_fleet(args, api_clients):
+    return EvalFleet(args, api_clients=api_clients, router_host="10.0.0.2", router_port=31000)
+
+
+def reachable_values(obj: object) -> list:
+    values = list(vars(obj).values())
+    return values + [nested for value in values if hasattr(value, "__dict__") for nested in vars(value).values()]
 
 
 async def test_fleet_pins_every_engine_before_returning_the_state(fleet_env):
     log = []
-    fleet = make_fleet(make_args(), [FakeEngine(log), FakeEngine(log)])
+    fleet = make_fleet(make_args(), [FakeApiClient(log), FakeApiClient(log)])
 
     state = await fleet.pin("/snap/step_5", "5")
 
     load_events = [e for e in log if e[0] == "update_weights_from_disk"]
     assert len(load_events) == 2
-    assert all(e[2]["weight_version"] == "5" for e in load_events)
+    assert all(e[2] == "5" for e in load_events)
     # The caller cannot generate before the pin: the state only exists as pin's return.
     assert state == "fake-fleet-state"
     # Built once at construction, not per eval.
@@ -140,8 +93,8 @@ async def test_fleet_pin_requires_all_match_and_retries(fleet_env):
     versions: the pin must fail even when the other engine matches, retry once,
     then degrade to an attributable skip."""
     log = []
-    good, stale = FakeEngine(log), FakeEngine(log)
-    stale.responses["get_weight_version"] = lambda: "999"
+    good, stale = FakeApiClient(log), FakeApiClient(log)
+    stale.weight_version_response = "999"
     fleet = make_fleet(make_args(), [good, stale])
 
     with pytest.raises(EvalSkip) as exc:
@@ -151,44 +104,164 @@ async def test_fleet_pin_requires_all_match_and_retries(fleet_env):
     assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 4  # 2 engines x 2 attempts
 
 
-async def test_fleet_recovers_before_pinning(fleet_env):
-    """A revived engine must be up before the load: pin runs the health sequence first."""
-    fleet = make_fleet(make_args(), [FakeEngine([])])
+async def test_fleet_pin_does_not_health_probe_the_server(fleet_env):
+    """The eval fleet has no fault tolerance: pin goes straight to the weight load."""
+    fleet = make_fleet(make_args(), [FakeApiClient([])])
+    assert not any(hasattr(fleet, name) for name in ("probe_and_mark_dead", "recover", "wait_all_engines_alive"))
 
-    await fleet.pin("/snap/step_5", "5")
+    state = await fleet.pin("/snap/step_5", "5")
 
-    assert (fleet._srv.probe_calls, fleet._srv.recover_calls) == (1, 1)
-
-
-async def test_fleet_leaves_probing_to_the_health_monitor(fleet_env):
-    """Rollout FT leaves probing to the RolloutHealthMonitor."""
-    fleet = make_fleet(make_args(use_fault_tolerance=True, ft_components=["rollout"]), [FakeEngine([])])
-
-    await fleet.pin("/snap/step_5", "5")
-
-    assert fleet._srv.probe_calls == 0
-    assert fleet._srv.recover_calls == 1
+    assert state == "fake-fleet-state"
 
 
-async def test_fleet_probes_with_train_only_fault_tolerance(fleet_env):
-    """Train-only FT has no RolloutHealthMonitor, so the fleet must probe itself."""
-    fleet = make_fleet(make_args(use_fault_tolerance=True, ft_components=["train"]), [FakeEngine([])])
+async def test_fleet_holds_a_snapshot_rather_than_the_live_rollout_server(fleet_env):
+    """set_eval_fleet pickles the fleet into the executor actor, and a captured asyncio lock would never survive that."""
+    fleet = make_fleet(make_args(), [FakeApiClient([])])
 
-    await fleet.pin("/snap/step_5", "5")
+    pickle.loads(pickle.dumps(fleet))
 
-    assert fleet._srv.probe_calls == 1
-    assert fleet._srv.recover_calls == 1
+    assert not any(isinstance(value, (ContextLock, asyncio.Lock)) for value in reachable_values(fleet))
 
 
-async def test_fleet_skips_when_the_fleet_stays_unhealthy(fleet_env):
-    fleet = make_fleet(make_args(), [FakeEngine([])])
+class FlakyApiClient(FakeApiClient):
+    def __init__(self, log: list, *, failures: int) -> None:
+        super().__init__(log)
+        self.remaining_failures = failures
 
-    async def never_alive():
-        raise TimeoutError("engines never came up")
+    async def update_weights_from_disk(
+        self, model_path: str, load_format: str | None = None, weight_version: str | None = None
+    ) -> None:
+        if self.remaining_failures > 0:
+            self.remaining_failures -= 1
+            raise RuntimeError("transient http failure")
+        await super().update_weights_from_disk(model_path, load_format=load_format, weight_version=weight_version)
 
-    fleet._srv.wait_all_engines_alive = never_alive
 
-    with pytest.raises(EvalSkip) as exc:
+class HangingApiClient(FakeApiClient):
+    async def update_weights_from_disk(
+        self, model_path: str, load_format: str | None = None, weight_version: str | None = None
+    ) -> None:
+        self.log.append(("update_weights_from_disk", model_path, weight_version))
+        await asyncio.Event().wait()
+
+
+@pytest.fixture
+def router_probe_env(monkeypatch):
+    probes = []
+
+    async def record_probe(url: str, *, json_payload=None, timeout: float = 180.0) -> None:
+        probes.append(SimpleNamespace(url=url, json_payload=json_payload, timeout=timeout))
+
+    monkeypatch.setattr(eval_fleet_mod, "wait_http_ok", record_probe)
+    monkeypatch.setattr(eval_fleet_mod, "GenerateState", lambda args: "fake-fleet-state")
+    return SimpleNamespace(probes=probes)
+
+
+class TestPinWeightTransport:
+    async def test_pin_sends_the_checkpoint_dir_as_the_http_model_path(self, fleet_env):
+        """The snapshot directory reaches every engine as the model path of the weight load, not as any other field."""
+        log = []
+        fleet = make_fleet(make_args(), [FakeApiClient(log), FakeApiClient(log)])
+
+        await fleet.pin("/snap/step_7", "7")
+
+        assert [e for e in log if e[0] == "update_weights_from_disk"] == [
+            ("update_weights_from_disk", "/snap/step_7", "7"),
+            ("update_weights_from_disk", "/snap/step_7", "7"),
+        ]
+
+    async def test_the_calls_pin_makes_bind_against_the_real_api_client(self):
+        """The fleet talks HTTP now, so the two calls it makes must stay bindable against the real client."""
+        client = SGLangApiClient(server_url="http://10.0.0.2:31000")
+
+        inspect.signature(SGLangApiClient.update_weights_from_disk).bind(
+            client, model_path="/snap/step_7", weight_version="7"
+        )
+        inspect.signature(SGLangApiClient.get_weight_version).bind(client)
+
+        assert inspect.iscoroutinefunction(SGLangApiClient.update_weights_from_disk)
+        assert inspect.iscoroutinefunction(SGLangApiClient.get_weight_version)
+
+
+class TestPinFailureModes:
+    async def test_pin_retries_a_transient_load_failure_and_then_succeeds(self, fleet_env):
+        """One engine failing its first weight load is retried, and the eval point still runs."""
+        log = []
+        flaky = FlakyApiClient(log, failures=1)
+        fleet = make_fleet(make_args(), [FakeApiClient(log), flaky])
+
+        state = await fleet.pin("/snap/step_5", "5")
+
+        assert state == "fake-fleet-state"
+        assert flaky.remaining_failures == 0
+
+    async def test_pin_skips_when_every_attempt_fails(self, fleet_env):
+        """A fleet that never loads its weights must degrade to an attributable skip, not a crash."""
+        log = []
+        fleet = make_fleet(make_args(), [FlakyApiClient(log, failures=99)])
+
+        with pytest.raises(EvalSkip) as exc:
+            await fleet.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "pin_violation"
+        assert [e for e in log if e[0] == "get_weight_version"] == []
+
+    async def test_pin_skips_when_a_weight_load_hangs_past_the_timeout(self, fleet_env, monkeypatch):
+        """A wedged engine must not park the manager event loop forever, so the load is deadlined."""
+        monkeypatch.setattr(eval_fleet_mod, "EVAL_WEIGHT_LOAD_TIMEOUT_SECS", 0.01)
+        log = []
+        fleet = make_fleet(make_args(), [HangingApiClient(log)])
+
+        with pytest.raises(EvalSkip) as exc:
+            await fleet.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "pin_violation"
+        assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 2
+
+    async def test_pin_skips_when_the_fleet_snapshot_holds_no_clients(self, fleet_env):
+        """An empty snapshot proves nothing about the served weights, so it must not pass the version check vacuously."""
+        fleet = make_fleet(make_args(), [])
+
+        with pytest.raises(EvalSkip) as exc:
+            await fleet.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "pin_violation"
+
+
+class TestRouterProbe:
+    async def test_pin_probes_the_router_address_handed_to_the_constructor(self, router_probe_env):
+        """The fleet no longer owns a server object, so the probe must use the router address it was constructed with."""
+        args = make_args(sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)})
+        fleet = EvalFleet(args, api_clients=[FakeApiClient([])], router_host="10.9.9.9", router_port=39999)
+
         await fleet.pin("/snap/step_5", "5")
 
-    assert exc.value.reason == "unhealthy"
+        assert [probe.url for probe in router_probe_env.probes] == ["http://10.9.9.9:39999/generate"]
+        assert router_probe_env.probes[0].json_payload["sampling_params"]["max_new_tokens"] == 1
+
+    async def test_pin_skips_as_unhealthy_when_the_router_never_answers(self, router_probe_env, monkeypatch):
+        """A router that keeps 503ing after a revival must skip the point rather than dispatch into a dead route."""
+
+        async def failing_probe(url: str, *, json_payload=None, timeout: float = 180.0) -> None:
+            raise TimeoutError(url)
+
+        monkeypatch.setattr(eval_fleet_mod, "wait_http_ok", failing_probe)
+        fleet = make_fleet(make_args(), [FakeApiClient([])])
+
+        with pytest.raises(EvalSkip) as exc:
+            await fleet.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "unhealthy"
+
+
+class TestClientSnapshot:
+    async def test_the_fleet_ignores_clients_appended_after_construction(self, fleet_env):
+        """The fleet keeps its own snapshot, so a later mutation of the caller's list cannot change what it pins."""
+        log = []
+        api_clients = [FakeApiClient(log)]
+        fleet = make_fleet(make_args(), api_clients)
+        api_clients.append(FakeApiClient(log))
+
+        await fleet.pin("/snap/step_5", "5")
+
+        assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 1

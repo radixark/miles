@@ -2,6 +2,7 @@ import inspect
 from collections.abc import Callable
 
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     GenerateFnInput,
     GenerateFnOutput,
     RolloutFnConstructorInput,
@@ -11,11 +12,12 @@ from miles.rollout.base_types import (
     RolloutFnTrainOutput,
 )
 from miles.utils.async_utils import run
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 
 
-class LegacyRolloutFnAdapter:
+class LegacyRolloutFnAdapter(BaseRolloutFn):
     def __init__(self, input: RolloutFnConstructorInput, fn: Callable):
+        super().__init__(input)
         self.args = input.args
         self.data_source = input.data_source
         self.fn = fn
@@ -30,10 +32,15 @@ class LegacyRolloutFnAdapter:
         return output
 
 
-def load_rollout_function(input: RolloutFnConstructorInput, path: str):
+def load_rollout_function(input: RolloutFnConstructorInput, path: str) -> BaseRolloutFn:
     fn = load_function(path)
 
     if inspect.isclass(fn):
+        if not issubclass(fn, BaseRolloutFn):
+            raise TypeError(
+                f"Class-based rollout function {path} must subclass "
+                f"miles.rollout.base_types.BaseRolloutFn, got {fn.__name__}."
+            )
         return fn(input)
     else:
         return LegacyRolloutFnAdapter(input, fn)

@@ -7,7 +7,7 @@ import pytest
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 
 
-def make_args(**overrides) -> SimpleNamespace:
+def make_args(**overrides: object) -> SimpleNamespace:
     defaults = dict(
         hf_checkpoint="/fake/model",
         seed=0,
@@ -29,18 +29,56 @@ def make_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-def compute(args, **kwargs) -> dict:
-    server_args, _ = _compute_server_args(
-        args,
-        rank=0,
+def compute(args: SimpleNamespace, **overrides: object) -> dict:
+    kwargs = dict(
+        node_rank=0,
         dist_init_addr="127.0.0.1:1234",
         nccl_port=5000,
         host="127.0.0.1",
         port=30000,
+        worker_type="regular",
+        disaggregation_bootstrap_port=None,
         base_gpu_id=0,
-        **kwargs,
+        engine_info_bootstrap_port=None,
+        sglang_overrides=None,
+        num_gpus_per_engine=None,
+        gated_launch_port=30001,
+        random_seed=0,
     )
-    return server_args
+    kwargs.update(overrides)
+    return _compute_server_args(args, **kwargs)
+
+
+class TestRandomSeed:
+    def test_the_caller_chosen_seed_reaches_the_engine(self):
+        """A seed sglang picks for itself makes a restarted engine replay a different RNG stream."""
+        server_args = compute(make_args(seed=1234), random_seed=7)
+
+        assert server_args["random_seed"] == 7
+
+    def test_a_group_override_still_wins_over_the_seed_the_caller_computed(self):
+        """A group pinning random_seed in its sglang_overrides must keep beating the derived number."""
+        server_args = compute(make_args(seed=1234), random_seed=7, sglang_overrides={"random_seed": 99})
+
+        assert server_args["random_seed"] == 99
+
+
+class TestBaseGpuId:
+    def test_the_given_base_gpu_id_is_used_verbatim_under_a_visibility_mask(self, monkeypatch):
+        """The id already names the engine's own device space, so remapping it here moves the engine."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+
+        server_args = compute(make_args(), base_gpu_id=6)
+
+        assert server_args["base_gpu_id"] == 6
+
+    def test_a_base_gpu_id_outside_this_processs_visibility_mask_is_not_rejected(self, monkeypatch):
+        """The engine's mask differs from this process's, so judging the id here fails a valid launch."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+
+        server_args = compute(make_args(), base_gpu_id=7)
+
+        assert server_args["base_gpu_id"] == 7
 
 
 class TestSglangOverridePrecedence:

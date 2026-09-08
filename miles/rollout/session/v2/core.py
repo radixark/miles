@@ -25,7 +25,7 @@ from miles.rollout.session.v2.session_state import (
     prepare_pretokenized,
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +36,12 @@ class SessionCoreV2(SessionCore):
     transport shell (health, create/delete, raw proxy)."""
 
     def __init__(
-        self, backend, registry: SessionRegistryV2, args, session_server_instance_id=None, *, use_addition_r3=False
+        self, backend, registry: SessionRegistryV2, config, session_server_instance_id=None, *, use_addition_r3=False
     ):
-        super().__init__(backend, registry, args, session_server_instance_id, use_addition_r3=use_addition_r3)
+        super().__init__(backend, registry, config, session_server_instance_id, use_addition_r3=use_addition_r3)
         # Import-path only in production: function_registry is process-local.
-        self.sample_picker = load_function(args.session_sample_picker_path, sync_required=True)
-        self.sample_postprocessor = load_function(args.session_sample_postprocessor_path, sync_required=True)
+        self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
+        self.sample_postprocessor = load_function(config.session_sample_postprocessor_path, sync_required=True)
 
     def _session_metadata(self, session_id: str, session) -> dict:
         """Mirrors ``core.SessionCore._session_metadata``: token ids come from
@@ -89,7 +89,7 @@ class SessionCoreV2(SessionCore):
 
         try:
             material = build_leaf_material(
-                self.args,
+                self.config,
                 session,
                 self.registry,
                 session_id=session_id,
@@ -116,8 +116,8 @@ class SessionCoreV2(SessionCore):
             samples = self.sample_postprocessor(picked, metadata)
         except Exception as exc:
             body = (
-                f"session sample hook failed (picker={self.args.session_sample_picker_path}, "
-                f"postprocessor={self.args.session_sample_postprocessor_path}): {exc}"
+                f"session sample hook failed (picker={self.config.session_sample_picker_path}, "
+                f"postprocessor={self.config.session_sample_postprocessor_path}): {exc}"
             )
             return Response(content=body.encode(), status_code=422, media_type="text/plain")
         if not samples:
@@ -147,7 +147,7 @@ class SessionCoreV2(SessionCore):
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.args, self.registry.tito_tokenizer
+                body, self.config, self.registry.tito_tokenizer
             )
 
             request_messages = request_body.get("messages", [])

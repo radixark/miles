@@ -5,8 +5,11 @@ import time
 import pytest
 import requests
 
+from miles.utils.http_utils import MILES_HOST_IP_ENV
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.test_utils.mock_sglang_server import (
     Counter,
+    MockSGLangServer,
     ProcessResult,
     ProcessResultMetaInfo,
     default_process_fn,
@@ -279,6 +282,25 @@ class TestChatCompletionsEndpoint:
             },
         }
 
+    def test_chat_completions_forwards_weight_version_spans_in_meta_info(self):
+        """Per-token weight version spans set on the process result reach the chat choice's meta_info verbatim."""
+        spans = [{"version": "v1", "start": 0, "end": 1}, {"version": "v2", "start": 1, "end": 3}]
+
+        def process_fn(_: str) -> ProcessResult:
+            return ProcessResult(text="one two three", meta_info=ProcessResultMetaInfo(weight_versions=spans))
+
+        with with_mock_server(process_fn=process_fn) as server:
+            response = requests.post(
+                f"{server.url}/v1/chat/completions",
+                json={"model": "test", "messages": [{"role": "user", "content": "count"}]},
+                timeout=5.0,
+            )
+            meta_info = response.json()["choices"][0]["meta_info"]
+
+        assert meta_info["weight_versions"] == spans
+        assert "weight_version" not in meta_info
+        assert meta_info["completion_tokens"] == len(meta_info["output_token_logprobs"])
+
     def test_with_tool_calls(self):
         tool_call_response = 'Let me check for you.\n<tool_call>\n{"name": "get_year", "arguments": {}}\n</tool_call>'
 
@@ -463,3 +485,52 @@ class TestMultiTurnToolCallProcessFn:
             assert data["choices"][0]["message"]["content"] == expected_content
             assert data["choices"][0]["message"]["tool_calls"] == expected_tool_calls
             assert data["choices"][0]["finish_reason"] == expected_finish_reason
+
+
+class TestNodeAddress:
+    def test_the_default_host_is_the_node_ip_instead_of_loopback(self):
+        """``with_mock_server`` must default to an address other nodes can reach."""
+        with with_mock_server() as server:
+            assert server.host == NodeProbeMixin._get_node_ip()
+            assert server.host != "127.0.0.1"
+            assert server.url == f"http://{NodeProbeMixin._get_node_ip()}:{server.port}"
+
+
+class TestHostResolution:
+    def test_an_explicit_host_is_kept_instead_of_the_node_ip(self):
+        """A caller that pins a host keeps it, so a test can still ask for a loopback-only mock."""
+        server = MockSGLangServer(
+            model_name="Qwen/Qwen3-0.6B", process_fn=default_process_fn, host="127.0.0.1", port=0
+        )
+
+        assert server.host == "127.0.0.1"
+        assert server.url == f"http://127.0.0.1:{server.port}"
+
+    def test_a_missing_host_falls_back_to_the_node_ip(self):
+        """Without an explicit host the mock advertises the node ip so peers on other nodes can dial it."""
+        server = MockSGLangServer(model_name="Qwen/Qwen3-0.6B", process_fn=default_process_fn, host=None, port=0)
+
+        assert server.host == NodeProbeMixin._get_node_ip()
+        assert server.host != "127.0.0.1"
+
+    def test_a_server_advertising_the_node_ip_still_answers_on_loopback(self, mock_server):
+        """The mock binds every interface, so advertising the node ip must not cut off local clients."""
+        response = requests.get(f"http://127.0.0.1:{mock_server.port}/health", timeout=5)
+
+        assert response.status_code == 200
+
+    def test_the_default_host_honours_the_node_ip_override(self, monkeypatch):
+        """A deployment publishes a reachable address through MILES_HOST_IP; the mock must serve on that one."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "127.0.0.1")
+
+        with with_mock_server() as server:
+            assert server.url == f"http://127.0.0.1:{server.port}"
+            assert requests.get(f"{server.url}/health", timeout=10).status_code == 200
+
+    def test_an_explicit_host_wins_over_the_node_ip_override(self, monkeypatch):
+        """A caller that pins a host asked for that exact address; an env override must not silently replace it."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.9.9.9")
+
+        with with_mock_server(host="127.0.0.1") as server:
+            assert server.host == "127.0.0.1"
+            assert requests.get(f"{server.url}/health", timeout=10).status_code == 200
