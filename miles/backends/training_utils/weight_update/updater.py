@@ -188,6 +188,9 @@ class WeightUpdater:
         streamed apply feed the engine identically. Collective: every rank
         must call; rank 0 writes."""
         should_save_adapter = dist.get_rank() == 0
+        assert (
+            self._hf_weight_iterator.placement.gather_pp
+        ), "the exported dir must hold the full adapter, which this placement never gathers onto one rank"
         tensors = {
             name: tensor.detach().contiguous().cpu()
             for name, tensor in self._hf_weight_iterator.materialize_adapter(
