@@ -21,6 +21,7 @@ def load_module(name, path):
 
 
 HANDLER = load_module("lark_notify_test", HANDLER_PATH)
+ANALYSIS = HANDLER.analyze_failures.__globals__["JobAnalysis"]
 
 
 def run(**overrides):
@@ -61,10 +62,25 @@ def test_analysis_disabled_preserves_exact_original_card():
 
 
 def test_validated_reason_is_directly_beneath_its_existing_job_link():
-    outcome = HANDLER.AnalysisOutcome(enabled=True, reasons={10: "The assertion expected 4 but received 3."})
+    outcome = HANDLER.AnalysisOutcome(
+        enabled=True,
+        reasons={
+            10: ANALYSIS(
+                reason="The assertion expected 4 but received 3.",
+                tags=("megatron", "lora"),
+                test_name="tests/fast/test_thing.py",
+                related_pull_request=2754,
+            )
+        },
+    )
     content = markdown(HANDLER.render_ci_status(run(), [job()], None, outcome))
-    assert "- [unit](https://example/jobs/10)\n  ↳ Likely reason: The assertion expected 4 but received 3." in content
-    assert content.count("Likely reason:") == 1
+    assert (
+        "- [unit](https://example/jobs/10)\n"
+        "  ↳ [megatron][lora] `tests/fast/test_thing.py`\n"
+        "  ↳ The assertion expected 4 but received 3.\n"
+        "  ↳ related to [PR #2754](https://github.com/radixark/miles/pull/2754)" in content
+    )
+    assert content.count("↳") == 3
 
 
 def test_rerun_reasons_apply_only_to_current_failures():
@@ -72,11 +88,15 @@ def test_rerun_reasons_apply_only_to_current_failures():
     previous = {"fixed": job(10, "fixed"), "still": job(19, "still")}
     outcome = HANDLER.AnalysisOutcome(
         enabled=True,
-        reasons={10: "Wrong old reason.", 20: "The same assertion still fails.", 30: "A new timeout occurred."},
+        reasons={
+            10: ANALYSIS(reason="Wrong old reason."),
+            20: ANALYSIS(reason="The same assertion still fails."),
+            30: ANALYSIS(reason="A new timeout occurred."),
+        },
     )
     content = markdown(HANDLER.render_ci_status(run(run_attempt=2), current, previous, outcome))
-    assert "Fixed by rerun" in content and "Likely reason: Wrong old reason." not in content
-    assert content.count("Likely reason:") == 2
+    assert "Fixed by rerun" in content and "Wrong old reason." not in content
+    assert content.count("↳") == 2
 
 
 def test_model_failure_adds_one_note_without_removing_original_rows():
@@ -84,17 +104,17 @@ def test_model_failure_adds_one_note_without_removing_original_rows():
     content = markdown(HANDLER.render_ci_status(run(), [job()], None, outcome))
     assert "[unit](https://example/jobs/10)" in content
     assert content.count("AI analysis unavailable") == 1
-    assert "Likely reason:" not in content
+    assert "↳" not in content
 
 
 def test_per_job_missing_log_reason_and_omitted_footer_render_compactly():
     outcome = HANDLER.AnalysisOutcome(
         enabled=True,
-        reasons={10: HANDLER.analyze_failures.__globals__["UNAVAILABLE_REASON"]},
+        reasons={10: ANALYSIS(reason=HANDLER.analyze_failures.__globals__["UNAVAILABLE_REASON"])},
         omitted_count=2,
     )
     content = markdown(HANDLER.render_ci_status(run(), [job()], None, outcome))
-    assert "Likely reason: unavailable" in content
+    assert "↳ unavailable" in content
     assert "AI analysis omitted for 2 additional failed jobs" in content
 
 

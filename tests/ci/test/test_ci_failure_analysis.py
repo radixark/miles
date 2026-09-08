@@ -164,10 +164,13 @@ def valid_response(kwargs):
         analyses.append(
             {
                 "job_id": item["job_id"],
+                "tags": [],
+                "test_name": None,
                 "reason": "The assertion failed because the returned value was 3 instead of 4.",
                 "category": "test_failure",
                 "confidence": "high",
                 "evidence_refs": [item["evidence_refs"][0]],
+                "related_pull_request": None,
             }
         )
     return SimpleNamespace(
@@ -296,6 +299,75 @@ def test_evidence_stops_growing_at_the_edges_of_a_short_log():
     assert evidence["text"].splitlines()[1:] == ["AssertionError: boom", "second line"]
 
 
+GROUNDING = (
+    "E   ModuleNotFoundError: No module named 'miles.backends.update_weight'\n"
+    "tests/fast/ray/test_layout.py:10: in <module>\n"
+    "Commits touching miles/backends: refactor(update-weight): move the protocols (#2754)\n"
+)
+
+
+def grounded_item(**overrides):
+    item = {
+        "job_id": 10,
+        "tags": ["weight-update", "megatron"],
+        "test_name": "tests/fast/ray/test_layout.py",
+        "reason": "Collection failed because the update_weight module no longer exists.",
+        "category": "test_failure",
+        "confidence": "high",
+        "evidence_refs": ["job:10:log:1-2"],
+        "related_pull_request": 2754,
+    }
+    item.update(overrides)
+    return item
+
+
+def validate_grounded(**overrides):
+    return ANALYZER.validate_response(
+        json.dumps({"schema_version": "1", "analyses": [grounded_item(**overrides)]}),
+        [{"job_id": 10, "evidence_refs": ["job:10:log:1-2"]}],
+        280,
+        ANALYZER.load_tags(),
+        {10: GROUNDING},
+    )
+
+
+def test_tag_vocabulary_is_the_only_source_of_the_schema_enum():
+    tags = ANALYZER.load_tags()
+    schema = ANALYZER.load_schema(SCHEMA_PATH, tags)
+    assert schema["properties"]["analyses"]["items"]["properties"]["tags"]["items"]["enum"] == tags
+    assert tags == sorted(set(tags)) and "weight-update" in tags
+
+
+def test_grounded_analysis_keeps_tags_test_name_and_cause_pull_request():
+    analysis = validate_grounded()[10]
+    assert analysis.tags == ("weight-update", "megatron")
+    assert analysis.test_name == "tests/fast/ray/test_layout.py"
+    assert analysis.related_pull_request == 2754
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"tags": ["deepseek-v9"]},
+        {"tags": ["megatron", "megatron"]},
+        {"tags": ["megatron", "lora", "fsdp"]},
+        {"test_name": "tests/fabricated/test_nope.py"},
+        {"test_name": "tests/fast/ray/test_layout.py; rm -rf /"},
+        {"related_pull_request": 9999},
+        {"related_pull_request": -1},
+        {"related_pull_request": True},
+    ],
+)
+def test_ungrounded_tags_test_names_and_pull_requests_are_rejected(overrides):
+    with pytest.raises(ValueError):
+        validate_grounded(**overrides)
+
+
+def test_absent_test_name_and_cause_pull_request_are_allowed():
+    analysis = validate_grounded(tags=[], test_name=None, related_pull_request=None)[10]
+    assert analysis.tags == () and analysis.test_name is None and analysis.related_pull_request is None
+
+
 def test_source_locations_keep_only_safe_repository_paths():
     text = (
         'File "/home/runner/work/miles/miles/tests/ci/test/test_gate.py", line 41\n'
@@ -317,14 +389,19 @@ def test_validate_response_accepts_exact_job_and_evidence_contract():
         "analyses": [
             {
                 "job_id": 10,
+                "tags": [],
+                "test_name": None,
                 "reason": "The assertion failed because the result was empty.",
                 "category": "test_failure",
                 "confidence": "high",
                 "evidence_refs": ["job:10:log:1-2"],
+                "related_pull_request": None,
             }
         ],
     }
-    assert ANALYZER.validate_response(json.dumps(raw), jobs, 280)[10].startswith("The assertion")
+    analyses = ANALYZER.validate_response(json.dumps(raw), jobs, 280, ANALYZER.load_tags(), {10: ""})
+    assert analyses[10].reason.startswith("The assertion")
+    assert analyses[10].tags == () and analyses[10].related_pull_request is None
 
 
 def test_strict_response_schema_uses_only_supported_structured_output_keywords():
@@ -373,16 +450,21 @@ def test_strict_response_schema_uses_only_supported_structured_output_keywords()
 def test_local_validation_rejects_duplicate_empty_or_invalid_evidence_refs(refs):
     item = {
         "job_id": 10,
+        "tags": [],
+        "test_name": None,
         "reason": "The assertion failed because the result was empty.",
         "category": "test_failure",
         "confidence": "high",
         "evidence_refs": refs,
+        "related_pull_request": None,
     }
     with pytest.raises(ValueError):
         ANALYZER.validate_response(
             json.dumps({"schema_version": "1", "analyses": [item]}),
             [{"job_id": 10, "evidence_refs": ["job:10:log:1-2"]}],
             280,
+            ANALYZER.load_tags(),
+            {10: ""},
         )
 
 
@@ -406,10 +488,13 @@ def test_local_validation_rejects_duplicate_empty_or_invalid_evidence_refs(refs)
 def test_validate_response_rejects_untrusted_or_unverifiable_output(mutation):
     item = {
         "job_id": 10,
+        "tags": [],
+        "test_name": None,
         "reason": "The assertion failed because the result was empty.",
         "category": "test_failure",
         "confidence": "high",
         "evidence_refs": ["job:10:log:1-2"],
+        "related_pull_request": None,
     }
     mutation(item)
     with pytest.raises(ValueError):
@@ -417,6 +502,8 @@ def test_validate_response_rejects_untrusted_or_unverifiable_output(mutation):
             json.dumps({"schema_version": "1", "analyses": [item]}),
             [{"job_id": 10, "evidence_refs": ["job:10:log:1-2"]}],
             280,
+            ANALYZER.load_tags(),
+            {10: ""},
         )
 
 
@@ -444,7 +531,10 @@ def test_missing_analysis_app_token_preserves_base_card_contract(tmp_path):
 def test_all_missing_logs_get_per_row_fallback_without_model_call(tmp_path):
     client = FakeClient(response=valid_response)
     outcome, emitted = analyze(tmp_path, [job(10), job(11)], FakeGitHub(), client)
-    assert outcome.reasons == {10: ANALYZER.UNAVAILABLE_REASON, 11: ANALYZER.UNAVAILABLE_REASON}
+    assert {key: value.reason for key, value in outcome.reasons.items()} == {
+        10: ANALYZER.UNAVAILABLE_REASON,
+        11: ANALYZER.UNAVAILABLE_REASON,
+    }
     assert not outcome.unavailable and client.responses.calls == []
     assert '"request_count":0' in emitted[0]
 
@@ -525,8 +615,8 @@ def test_policy_cap_omits_hidden_jobs_and_records_count(tmp_path):
         max_jobs=2,
     )
     assert set(outcome.reasons) == {10, 11, 12, 13}
-    assert outcome.reasons[12] == ANALYZER.UNAVAILABLE_REASON
-    assert outcome.reasons[13] == ANALYZER.UNAVAILABLE_REASON
+    assert outcome.reasons[12].reason == ANALYZER.UNAVAILABLE_REASON
+    assert outcome.reasons[13].reason == ANALYZER.UNAVAILABLE_REASON
     assert outcome.omitted_count == 2
     assert [item["job_id"] for item in json.loads(client.responses.calls[0]["input"])["jobs"]] == [10, 11]
 

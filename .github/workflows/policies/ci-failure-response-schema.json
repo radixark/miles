@@ -1,8 +1,11 @@
 {
-  "$id": "ci-failure-response-v1",
+  "$id": "ci-failure-response-v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "analyses"],
+  "required": [
+    "schema_version",
+    "analyses"
+  ],
   "properties": {
     "schema_version": {
       "type": "string",
@@ -14,10 +17,33 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["job_id", "reason", "category", "confidence", "evidence_refs"],
+        "required": [
+          "job_id",
+          "tags",
+          "test_name",
+          "reason",
+          "category",
+          "confidence",
+          "evidence_refs",
+          "related_pull_request"
+        ],
         "properties": {
           "job_id": {
             "type": "integer"
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 2,
+            "items": {
+              "type": "string"
+            }
+          },
+          "test_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
           },
           "reason": {
             "type": "string",
@@ -26,11 +52,21 @@
           },
           "category": {
             "type": "string",
-            "enum": ["test_failure", "build", "infra", "timeout", "unknown"]
+            "enum": [
+              "test_failure",
+              "build",
+              "infra",
+              "timeout",
+              "unknown"
+            ]
           },
           "confidence": {
             "type": "string",
-            "enum": ["high", "medium", "low"]
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
           },
           "evidence_refs": {
             "type": "array",
@@ -38,6 +74,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "related_pull_request": {
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         }
       }

@@ -185,6 +185,12 @@ class GitHub:
     def pull_files(self, pull_number: int) -> list:
         return self.paginate_list(f"repos/{self.repo}/pulls/{pull_number}/files", max_pages=3)
 
+    def commits_for_path(self, path: str, sha: str, limit: int) -> list:
+        commits = self.get(f"repos/{self.repo}/commits", {"path": path, "sha": sha, "per_page": limit})
+        if not isinstance(commits, list):
+            raise RuntimeError("GitHub API returned an unexpected commit response")
+        return commits
+
     def file_content(self, path: str, sha: str, max_bytes: int) -> str:
         payload = self.get(f"repos/{self.repo}/contents/{urllib.parse.quote(path)}", {"ref": sha})
         if payload.get("encoding") != "base64" or not isinstance(payload.get("content"), str):
@@ -335,13 +341,26 @@ def fmt_duration(seconds: float | None) -> str:
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
 
 
-def list_jobs_md(jobs: list, limit: int = MAX_LISTED_JOBS, reasons: dict[int, str] | None = None) -> str:
+def analysis_md(analysis: Any, repo: str) -> list[str]:
+    tags = "".join(f"[{tag}]" for tag in analysis.tags)
+    headline = " ".join(part for part in (tags, f"`{analysis.test_name}`" if analysis.test_name else "") if part)
+    lines = [f"  ↳ {headline}"] if headline else []
+    lines.append(f"  ↳ {analysis.reason}")
+    if analysis.related_pull_request:
+        number = analysis.related_pull_request
+        lines.append(f"  ↳ related to [PR #{number}](https://github.com/{repo}/pull/{number})")
+    return lines
+
+
+def list_jobs_md(
+    jobs: list, limit: int = MAX_LISTED_JOBS, reasons: dict | None = None, repo: str = DEFAULT_REPO
+) -> str:
     lines = []
     for job in jobs[:limit]:
         lines.append(f"- [{job['name']}]({job['html_url']})")
-        reason = (reasons or {}).get(job.get("id"))
-        if reason:
-            lines.append(f"  ↳ Likely reason: {reason}")
+        analysis = (reasons or {}).get(job.get("id"))
+        if analysis:
+            lines.extend(analysis_md(analysis, repo))
     if len(jobs) > limit:
         lines.append(f"- ... and {len(jobs) - limit} more")
     return "\n".join(lines)
@@ -376,6 +395,7 @@ def render_ci_status(
     jobs: list,
     prev_failed: dict | None,
     analysis: AnalysisOutcome | None = None,
+    repo: str = DEFAULT_REPO,
 ) -> dict:
     name = ci_display_name(run)
     attempt = run.get("run_attempt", 1)
@@ -425,7 +445,7 @@ def render_ci_status(
         if failed:
             sections.append(
                 f"**Failed jobs ({len(failed)})**\n"
-                f"{list_jobs_md(list(failed.values()), reasons=analysis.reasons if analysis else None)}"
+                f"{list_jobs_md(list(failed.values()), reasons=analysis.reasons if analysis else None, repo=repo)}"
             )
     else:
         diff = diff_attempts(failed, prev_failed)
@@ -438,7 +458,7 @@ def render_ci_status(
             if diff[key]:
                 reasons = analysis.reasons if analysis and key in ("still", "new") else None
                 limit = MAX_LISTED_JOBS if key == "fixed" else remaining_current_jobs
-                sections.append(f"**{heading} ({len(diff[key])})**\n{list_jobs_md(diff[key], limit, reasons)}")
+                sections.append(f"**{heading} ({len(diff[key])})**\n{list_jobs_md(diff[key], limit, reasons, repo)}")
                 if key in ("still", "new"):
                     remaining_current_jobs = max(0, remaining_current_jobs - len(diff[key][:limit]))
     if analysis and analysis.unavailable:
@@ -488,7 +508,7 @@ def cmd_ci_status(args: argparse.Namespace, gh: GitHub) -> None:
         except Exception as exc:
             print(f"ci_failure_analysis_unexpected={type(exc).__name__}", file=sys.stderr)
             analysis = AnalysisOutcome(enabled=True, reasons={}, unavailable=True)
-    post_card(render_ci_status(run, jobs, prev_failed, analysis), args.webhook, args.dry_run)
+    post_card(render_ci_status(run, jobs, prev_failed, analysis, args.repo), args.webhook, args.dry_run)
 
 
 # --------------------------------------------------------------------------
