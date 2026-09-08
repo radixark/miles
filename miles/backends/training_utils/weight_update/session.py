@@ -51,9 +51,7 @@ def end_weight_update(
     ``abort`` discards the stash and any deferred publications instead."""
     results = async_utils.wait_futures(
         [
-            async_utils.submit(
-                client.end_weight_update(expected_lora_checksums=expected_lora_checksums, abort=abort)
-            )
+            async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums, abort=abort))
             for client in rollout_engines
         ]
     )

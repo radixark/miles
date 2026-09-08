@@ -166,9 +166,7 @@ class WeightUpdater:
 
         # a staged push commits only under a manifest: a lost bucket must not publish
         checksums = (
-            {name: {} for name, _ in adapters}
-            if adapters and (staged or self.args.check_lora_weight_equal)
-            else None
+            {name: {} for name, _ in adapters} if adapters and (staged or self.args.check_lora_weight_equal) else None
         )
         if checksums is not None:
             assert (
