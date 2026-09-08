@@ -59,7 +59,9 @@ class RolloutExecutor:
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
 
-        if not self.args.debug_train_only:
+        # Snapshot eval still posts through the shared client, even when the
+        # training-rollout side is disabled.
+        if not self.args.debug_train_only or self.args.eval_uses_snapshots:
             init_http_client(args)
 
         data_source_cls = load_function(self.args.data_source_path)
@@ -146,11 +148,23 @@ class RolloutExecutor:
         export_time_seconds: float | None = None,
         require_marker: bool = True,
     ):
-        if self.args.debug_train_only:
+        if self.args.debug_train_only and not self.args.eval_uses_snapshots:
             # if debug train only, we don't generate evaluation data
             return
 
         if self.args.eval_uses_snapshots:
+            if hf_dir is None:
+                # Bare eval calls come from the sync driver (train.py), which has
+                # no snapshot exporter. Reuse the periodic --save-hf checkpoint,
+                # like EvalDispatcher's no-export branch; a missing or incomplete
+                # snapshot then degrades to a skipped point in _eval_checkpoint.
+                if self.args.save_hf is None:
+                    logger.warning(
+                        f"eval {rollout_id}: no snapshot dir was supplied and --save-hf is unset; "
+                        "--eval-hf-dir exports need the async driver's EvalDispatcher. Skipping."
+                    )
+                    return self.report_eval_skip(rollout_id, "no_snapshot")
+                hf_dir = self.args.save_hf.format(rollout_id=rollout_id)
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
         with timer("eval_rollout"):

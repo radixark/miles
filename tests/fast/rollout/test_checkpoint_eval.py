@@ -117,6 +117,70 @@ async def test_eval_checkpoint_threads_input_and_logs(controller_env, tmp_path):
     assert extra["eval/export_time_seconds"] == 1.5
 
 
+async def test_bare_eval_reuses_save_hf_snapshot(controller_env, tmp_path):
+    """train.py calls eval() with no hf_dir; under snapshot eval the manager
+    reuses the periodic --save-hf checkpoint, mirroring EvalDispatcher's
+    no-export branch, instead of crashing on the hf_dir assert."""
+    snapshot = tmp_path / "hf_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    fn = CheckpointFnStub()
+    args = make_args(
+        debug_train_only=True,
+        hf_checkpoint="/base",
+        eval_hf_dir=None,
+        save_hf=str(tmp_path / "hf_{rollout_id}"),
+        eval_keep_snapshots=2,
+    )
+    mgr = make_manager(args, eval_fn=fn)
+
+    await mgr.eval(5)
+
+    assert len(fn.inputs) == 1
+    assert fn.inputs[0].hf_dir == str(snapshot)
+
+
+async def test_bare_eval_without_save_hf_skips(controller_env, tmp_path):
+    """--eval-hf-dir exports need the async driver's dispatcher; a bare eval
+    call cannot export, so it degrades to a skipped point rather than a crash."""
+    fn = CheckpointFnStub()
+    args = make_args(
+        debug_train_only=True,
+        hf_checkpoint="/base",
+        eval_hf_dir=str(tmp_path),
+        save_hf=None,
+        eval_keep_snapshots=2,
+    )
+    mgr = make_manager(args, eval_fn=fn)
+
+    await mgr.eval(5)
+
+    assert fn.inputs == []
+    assert controller_env.logged["skip"] == (5, "no_snapshot")
+
+
+async def test_debug_train_only_runs_snapshot_eval(controller_env, tmp_path):
+    """Pure SFT skips shared-engine eval, but a separately pinned snapshot is valid."""
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    fn = CheckpointFnStub()
+    args = make_args(
+        debug_train_only=True,
+        hf_checkpoint="/base",
+        eval_hf_dir=str(tmp_path),
+        eval_keep_snapshots=2,
+    )
+    mgr = make_manager(args, eval_fn=fn)
+
+    await mgr.eval(5, hf_dir=str(snapshot))
+
+    assert len(fn.inputs) == 1
+    assert fn.inputs[0].weight_version == "5"
+
+
 async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path):
     """The fleet only delivers weights — the configured eval fn still generates, and it
     is the same object the shared posture would call."""
@@ -216,16 +280,18 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 
 
 class TestSnapshotEvalGuards:
-    async def test_snapshot_eval_without_an_hf_dir_is_rejected(self, controller_env):
-        """Snapshot eval has no checkpoint to evaluate without a dir, so it must fail loudly."""
+    async def test_snapshot_eval_without_an_hf_dir_and_no_source_skips(self, controller_env):
+        """A bare eval call resolves the periodic --save-hf checkpoint; with no
+        source configured at all there is nothing to evaluate, and the point
+        degrades to an attributable skip instead of crashing the loop."""
         fn = CheckpointFnStub()
-        args = make_args(hf_checkpoint="/base", eval_keep_snapshots=2)
+        args = make_args(hf_checkpoint="/base", eval_keep_snapshots=2, save_hf=None)
         mgr = make_manager(args, eval_fn=fn)
 
-        with pytest.raises(AssertionError, match="checkpoint eval requires an HF snapshot dir"):
-            await mgr.eval(5)
+        await mgr.eval(5)
 
         assert fn.inputs == []
+        assert controller_env.logged["skip"] == (5, "no_snapshot")
 
     async def test_marker_bypass_evaluates_a_dir_without_a_complete_marker(self, controller_env, tmp_path):
         """A caller-supplied checkpoint was never exported here, so there is no marker to wait for."""

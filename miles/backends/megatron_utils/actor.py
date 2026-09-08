@@ -70,6 +70,15 @@ logging.getLogger("megatron").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def _best_effort(fn) -> None:
+    """Run a state-repair step; a failure is logged, never raised (the caller
+    is already handling a more important error)."""
+    try:
+        fn()
+    except Exception:
+        logger.exception(f"best-effort {getattr(fn, '__name__', fn)!r} failed")
+
+
 def _setup_disk_offload_reclaim(disk_dir: str) -> None:
     """Wipe this rank's train disk-offload dir on startup and re-arm the atexit wipe.
 
@@ -349,10 +358,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         tag = "default" if lora_rollout_enabled(self.args) else None
         torch_memory_saver.resume(tag=tag)
+        # The flag tracks the tensor state from here on: if the rest of the wake
+        # fails, the next sleep() must really pause instead of no-op'ing while
+        # the memory is resident.
+        self._asleep = False
 
         clear_memory()
         reload_process_groups()
-        self._asleep = False
         print_memory("after wake_up model")
 
     @property
@@ -757,7 +769,48 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         from miles.backends.megatron_utils.hf_export import save_hf_model
 
-        save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
+        # The sync driver dispatches snapshot evals after offload_train() put the
+        # model to sleep; exporting paused tensors would read freed storage. Wake
+        # for the export and restore the offloaded state afterwards.
+        was_asleep = self._asleep
+        wake_failed = False
+        if was_asleep:
+            try:
+                self.wake_up()
+            except Exception:
+                # Do NOT raise yet: save_hf_model is collective, so bailing out
+                # on this rank alone would hang every healthy rank on its
+                # barriers. Repair what the failure allows -- a wake that got
+                # past the resume left only the process-group tail undone
+                # (wake_up's not-asleep path), a failed resume left the rank
+                # consistently asleep and only needs groups for the vote below
+                # (reloading them while asleep is the update_weights pattern).
+                logger.exception("wake_up before HF export failed")
+                wake_failed = True
+                if not self._asleep:
+                    _best_effort(self.wake_up)
+                else:
+                    _best_effort(reload_process_groups)
+        try:
+            # Every rank must enter save_hf_model or none may: agree on the wake
+            # outcome first so one failed rank aborts the export everywhere
+            # instead of deadlocking the rest.
+            ok = torch.tensor([int(not wake_failed)], dtype=torch.int32)
+            dist.all_reduce(ok, op=dist.ReduceOp.MIN, group=get_gloo_group())
+            if not ok.item():
+                raise RuntimeError(f"HF export {rollout_id} aborted: a rank failed to wake for the export")
+            save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
+        finally:
+            if was_asleep and not self._asleep:
+                try:
+                    self.sleep()
+                except Exception:
+                    # sleep() destroys process groups before the fallible pause(),
+                    # so restore them: the actor must be genuinely resident, and
+                    # this failure must not masquerade as an export failure (the
+                    # caller deletes the snapshot on error).
+                    logger.exception("re-sleep after HF export failed; restoring process groups and staying resident")
+                    _best_effort(reload_process_groups)
 
     def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False):
         return named_params_and_buffers(
