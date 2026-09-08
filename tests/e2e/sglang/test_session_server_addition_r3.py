@@ -12,6 +12,7 @@ from huggingface_hub import snapshot_download
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.utils.sglang_server import start_sglang_server
 
+from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
@@ -77,12 +78,20 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         use_session_server="v1",
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
-        session_server_instance_id="session-addition-r3-e2e",
         save_debug_trajectory_data=None,
         pause_generation_mode="in_place",
         num_layers=_NUM_LAYERS,
+        lora_rank=0,
+        lora_adapter_path=None,
     )
-    server = UvicornThreadServer(SessionServer(args, backend_url=backend_url).app, host="127.0.0.1", port=port)
+    config = compute_session_server_config(
+        args,
+        host="127.0.0.1",
+        port=port,
+        instance_id="session-addition-r3-e2e",
+        backend_url=backend_url,
+    )
+    server = UvicornThreadServer(SessionServer(config).app, host="127.0.0.1", port=port)
     server.start()
     try:
         yield server.url

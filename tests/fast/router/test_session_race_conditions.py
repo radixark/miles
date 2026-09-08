@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
@@ -59,15 +60,14 @@ def _patch_mock_chat_response():
 def _router_env(process_fn, *, latency: float = 0.0):
     with _patch_mock_chat_response():
         with with_mock_server(model_name=HF_CHECKPOINT, process_fn=process_fn, latency=latency) as backend:
-            args = SimpleNamespace(
-                miles_router_timeout=30,
+            config = make_session_server_config(
+                backend_url=backend.url,
                 hf_checkpoint=HF_CHECKPOINT,
                 chat_template_path=None,
-                trajectory_manager="linear_trajectory",
                 sglang_speculative_algorithm=None,
                 pause_generation_mode="retract",
             )
-            server_obj = SessionServer(args, backend_url=backend.url)
+            server_obj = SessionServer(config)
 
             port = find_available_port(31000)
             server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)

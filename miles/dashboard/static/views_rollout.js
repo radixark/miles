@@ -220,7 +220,11 @@ export async function renderRollout(view, meta, route) {
         createAnatomy({
           lanes: trajectories.lanes,
           consumeTs: trajectories.consume_ts,
-          rowsByIndex: new Map(rows.map((r) => [r.sample_index, r])),
+          // A TITO index can carry several leaves; the lifecycle lane is their
+          // shared execution, so the panel labels and opens the FIRST leaf
+          // (last-one-wins would label one leaf while clicking opened another).
+          // The samples table below reaches every (index, occurrence) row.
+          rowsByIndex: new Map(rows.filter((r) => (r.sample_occurrence ?? 0) === 0).map((r) => [r.sample_index, r])),
           onClickSample: (index) => openTokens({ sample_index: index, sample_occurrence: 0 }),
         }),
       );

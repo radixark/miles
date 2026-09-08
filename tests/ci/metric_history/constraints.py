@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """The band constraint for the CI regression gate.
 
 * A constraint decides whether one extracted scalar `cur` passes against a

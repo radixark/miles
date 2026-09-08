@@ -5,7 +5,6 @@ logic in isolation (no HTTP server, no real tokenizer).
 """
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -57,14 +56,13 @@ class _MockTITOTokenizer(TITOTokenizer):
 
 
 def _make_registry(allowed_append_roles: frozenset[str] = ALL_APPEND_ROLES) -> SessionRegistry:
-    args = SimpleNamespace()
     configured_mock_type = type(
         "_ConfiguredMockTITOTokenizer",
         (_MockTITOTokenizer,),
         {"FIXED_TEMPLATE": FixedTemplate(allowed_append_roles=allowed_append_roles)},
     )
     mock_tito = configured_mock_type(tokenizer=None, assistant_start_str="<|im_start|>assistant")
-    return SessionRegistry(args, tokenizer=None, tito_tokenizer=mock_tito)
+    return SessionRegistry(tokenizer=None, tito_tokenizer=mock_tito)
 
 
 @pytest.fixture

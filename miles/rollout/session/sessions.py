@@ -9,11 +9,17 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
-from sglang.srt.entrypoints.anthropic.serving import convert_response, convert_to_chat_completion_request
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionResponse
 from sglang.srt.parser.template_detection import detect_inline_system_support
 from starlette.responses import Response
+
+try:
+    from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
+    from sglang.srt.entrypoints.anthropic.serving import convert_response, convert_to_chat_completion_request
+except ImportError:
+    anthropic_utils = None
+    convert_response = None
+    convert_to_chat_completion_request = None
 
 from miles.rollout.session.anthropic_adapter import (
     _ANTHROPIC_ERROR_HEADER_ALLOWLIST as _ANTHROPIC_ERROR_HEADER_ALLOWLIST,
@@ -32,7 +38,8 @@ from miles.rollout.session.anthropic_adapter import (
 from miles.rollout.session.anthropic_adapter import (
     _validate_anthropic_content_block as _validate_anthropic_content_block,
 )
-from miles.rollout.session.anthropic_adapter import _validate_anthropic_features
+from miles.rollout.session.anthropic_adapter import _validate_anthropic_features, anthropic_adapter_available
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import JSON_MEDIA_TYPE, SessionCore, _render_json
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
@@ -46,39 +53,36 @@ from miles.utils.processing_utils import load_tokenizer
 logger = logging.getLogger(__name__)
 
 
-def setup_session_routes(app, backend, args, *, use_addition_r3: bool = False):
-    hf_checkpoint = getattr(args, "hf_checkpoint", None)
-    if not hf_checkpoint:
+def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addition_r3: bool = False):
+    if not config.hf_checkpoint:
         logger.info("[session] Skipping session routes (hf_checkpoint not set).")
         return
 
-    session_server_instance_id = getattr(args, "session_server_instance_id", None)
-
-    message_matcher_selector = getattr(args, "session_message_matcher", "strict")
+    message_matcher_selector = config.session_message_matcher
     message_matcher = resolve_session_message_matcher(message_matcher_selector)
     logger.info("[session] Using message matcher selector=%r callable=%r", message_matcher_selector, message_matcher)
 
     tokenizer = load_tokenizer(
-        hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
+        config.hf_checkpoint, chat_template_path=config.chat_template_path, trust_remote_code=True
     )
 
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
-        tokenizer_type=getattr(args, "tito_model", "default"),
-        chat_template_kwargs=getattr(args, "apply_chat_template_kwargs", None),
+        tokenizer_type=config.tito_model,
+        chat_template_kwargs=config.apply_chat_template_kwargs,
     )
     merge_inline_system = not detect_inline_system_support(getattr(tokenizer, "chat_template", None))
 
-    use_v2 = getattr(args, "use_session_server", None) == "v2"
+    use_v2 = config.use_session_server == "v2"
     if use_v2:
         from miles.rollout.session.v2.core import SessionCoreV2
         from miles.rollout.session.v2.session_state import SessionRegistryV2
 
-        registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
-        core = SessionCoreV2(backend, registry, args, session_server_instance_id, use_addition_r3=use_addition_r3)
+        registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
+        core = SessionCoreV2(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
     else:
-        registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
-        core = SessionCore(backend, registry, args, session_server_instance_id, use_addition_r3=use_addition_r3)
+        registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
+        core = SessionCore(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
@@ -122,6 +126,25 @@ def setup_session_routes(app, backend, args, *, use_addition_r3: bool = False):
     @app.post("/sessions/{session_id}/v1/messages")
     async def anthropic_messages(request: Request, session_id: str):
         """Serve Anthropic Messages through the OpenAI session path."""
+        if (
+            anthropic_utils is None
+            or convert_response is None
+            or convert_to_chat_completion_request is None
+            or not anthropic_adapter_available()
+        ):
+            # _anthropic_error_response depends on the very helpers that are
+            # missing, so write the wire envelope out literally: this route
+            # always speaks Anthropic error shapes, 501 included.
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": "The installed SGLang does not support the Anthropic Messages adapter",
+                    },
+                },
+            )
         body = await request.body()
         try:
             anthropic_request = _parse_anthropic_request(body)

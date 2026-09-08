@@ -30,7 +30,8 @@ def test_fresh_rollout_hidden_until_train_companion_exists(run):
     torch.save(dict(rollout_id=3, samples=[]), fresh)  # mtime = now
     assert 3 not in reader.rollout_ids().train
 
-    (reader.train_dir / "3_0.pt").touch()  # train companion written strictly later
+    # any rank number counts: with pp > 1 global rank 0 does not dump
+    (reader.train_dir / "3_6.pt").touch()  # train companion written strictly later
     assert 3 in reader.rollout_ids().train
 
 

@@ -62,7 +62,9 @@ def init_dashboard(args, *, primary: bool = True, router_addr: str | None = None
                     node_id=ray.get_runtime_context().get_node_id(), soft=False
                 ),
             )
-            .remote(config, prometheus_handle_factory=_prometheus_factory if config.forward_prometheus else None)
+            .remote(
+                config=config, prometheus_handle_factory=_prometheus_factory if config.forward_prometheus else None
+            )
         )
         ray.get(_handle.ping.remote())
         _handle.start.remote()
