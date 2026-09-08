@@ -71,7 +71,7 @@ def register_lora_adapter(
 ) -> None:
     """Create-or-refresh an adapter's identity and config on every engine
     (weights zeroed; the bytes follow in the update stream). ``lora_path``
-    names a PEFT dir holding the same adapter, making it engine-evictable;
+    names a adapter dir holding the same adapter, making it engine-evictable;
     ``defer_publish`` keeps the name unservable until the session commits."""
     futures = [
         async_utils.submit(

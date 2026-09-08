@@ -47,7 +47,7 @@ class ExecutorBackend:
         raise NotImplementedError
 
     async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
-        """Write the slot's adapter as an engine-loadable PEFT dir."""
+        """Write the slot's adapter as an engine-loadable adapter dir."""
         raise NotImplementedError
 
     async def push_slot(
@@ -257,7 +257,7 @@ class TinkerService:
             entry[0].cancel()
 
     def _resolve_sampler(self, tenant: str, model_path: str) -> tuple[str, str]:
-        """-> (engine lora_name, PEFT dir): the request carries both, so the
+        """-> (engine lora_name, adapter dir): the request carries both, so the
         engine can backfill an evicted version from disk on its own."""
         model_id, kind, name = _parse_tinker_path(model_path)
         record = self.get_model(tenant, model_id)

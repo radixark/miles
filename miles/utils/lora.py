@@ -29,8 +29,8 @@ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
-def save_peft_dir(out_dir, config: dict, tensors: dict) -> None:
-    """Write a PEFT adapter dir (adapter_config.json + adapter_model.safetensors)."""
+def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
+    """Write a LoRA adapter dir (adapter_config.json + adapter_model.safetensors)."""
     import safetensors.torch  # lazy: this module is imported on paths that never touch weights
 
     out = Path(out_dir)

@@ -28,7 +28,7 @@ from miles.backends.training_utils.weight_update.session import (
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.lora import LORA_ADAPTER_NAME, save_peft_dir
+from miles.utils.lora import LORA_ADAPTER_NAME, save_adapter_to_disk
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.timer import timer
 
@@ -108,7 +108,7 @@ class WeightUpdater:
         """Push one adapter as a staged session under a fresh engine-side name:
         no pause, no weight-version move — the name has no readers until
         `end_weight_update` commits it under a checksum manifest. ``lora_path``
-        names a PEFT dir holding the same adapter, letting the engine evict and
+        names a adapter dir holding the same adapter, letting the engine evict and
         refill it from disk."""
         self._sync([(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path)
 
@@ -182,17 +182,19 @@ class WeightUpdater:
 
     @torch.no_grad()
     def export_adapter(self, adapter, out_dir: str) -> None:
-        """Write one adapter as a PEFT dir the rollout engine can load from disk.
+        """Write one adapter as a adapter dir the rollout engine can load from disk.
         Tensor names are the streamed ``hf_key`` names, so disk load and
         streamed apply feed the engine identically. Collective: every rank
         must call; rank 0 writes."""
-        driver = dist.get_rank() == 0
+        should_save_adapter = dist.get_rank() == 0
         tensors = {
             name: tensor.detach().contiguous().cpu()
-            for name, tensor in self._hf_weight_iterator.materialize_adapter(adapter, materialize=driver).items()
+            for name, tensor in self._hf_weight_iterator.materialize_adapter(
+                adapter, materialize=should_save_adapter
+            ).items()
         }
-        if driver:
-            save_peft_dir(out_dir, self._adapter_config(adapter), tensors)
+        if should_save_adapter:
+            save_adapter_to_disk(out_dir, self._adapter_config(adapter), tensors)
         dist.barrier(group=get_gloo_group())
 
     def _iter_base_buckets(self, *, materialize: bool):

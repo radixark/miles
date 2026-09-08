@@ -166,7 +166,7 @@ async def test_sampling_resolves_against_the_pushed_version(service):
 
 
 async def test_sampler_publication_commits_on_disk_and_rides_requests(service):
-    """The PEFT export is the commit point; the push and every sample request
+    """The adapter export is the commit point; the push and every sample request
     carry the dir so the engine can backfill the version from disk."""
     model_id = await created_model(service)
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
