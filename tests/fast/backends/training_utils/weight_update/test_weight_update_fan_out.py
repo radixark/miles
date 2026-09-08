@@ -22,7 +22,7 @@ class _RecordingClient:
         self._selectors.append(selector)
         return {"success": True}
 
-    async def end_weight_update(self, expected_lora_checksums=None):
+    async def end_weight_update(self, expected_lora_checksums=None, abort: bool = False):
         self._calls.append(f"end-{self._engine_index}")
         return {"success": True}
 
@@ -40,7 +40,7 @@ class _FailingClient:
             return {"success": True}
         raise RuntimeError("boom")
 
-    async def end_weight_update(self, expected_lora_checksums=None):
+    async def end_weight_update(self, expected_lora_checksums=None, abort: bool = False):
         return {"success": True}
 
 
@@ -53,7 +53,7 @@ class _EndFailingClient:
         self._calls.append(f"begin-{self._engine_index}")
         return {"success": True}
 
-    async def end_weight_update(self, expected_lora_checksums=None):
+    async def end_weight_update(self, expected_lora_checksums=None, abort: bool = False):
         raise RuntimeError("close failed")
 
 
@@ -67,7 +67,7 @@ class _GatedEndClient:
         self._calls.append(f"begin-{self._engine_index}")
         return {"success": True}
 
-    async def end_weight_update(self, expected_lora_checksums=None):
+    async def end_weight_update(self, expected_lora_checksums=None, abort: bool = False):
         if not await asyncio.to_thread(self._gate.wait, 5):
             raise TimeoutError("end_weight_update gate timed out")
         self._calls.append(f"end-{self._engine_index}")

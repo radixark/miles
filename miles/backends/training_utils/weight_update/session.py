@@ -41,13 +41,19 @@ def begin_weight_update(
 
 
 def end_weight_update(
-    rollout_engines: Sequence[SGLangApiClient], *, expected_lora_checksums: Mapping | None = None
+    rollout_engines: Sequence[SGLangApiClient],
+    *,
+    expected_lora_checksums: Mapping | None = None,
+    abort: bool = False,
 ) -> None:
     """Close the session: re-finalize base weights (sync_base sessions) and apply
-    the streamed LoRA stash (optionally verified against a sha256 manifest)."""
+    the streamed LoRA stash (optionally verified against a sha256 manifest).
+    ``abort`` discards the stash and any deferred publications instead."""
     results = async_utils.wait_futures(
         [
-            async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums))
+            async_utils.submit(
+                client.end_weight_update(expected_lora_checksums=expected_lora_checksums, abort=abort)
+            )
             for client in rollout_engines
         ]
     )
@@ -57,13 +63,27 @@ def end_weight_update(
 
 
 def register_lora_adapter(
-    rollout_engines: Sequence[SGLangApiClient], *, lora_name: str, lora_config: Mapping, pinned: bool = False
+    rollout_engines: Sequence[SGLangApiClient],
+    *,
+    lora_name: str,
+    lora_config: Mapping,
+    pinned: bool = False,
+    lora_path: str | None = None,
+    defer_publish: bool = False,
 ) -> None:
     """Create-or-refresh an adapter's identity and config on every engine
-    (weights zeroed; the bytes follow in the update stream)."""
+    (weights zeroed; the bytes follow in the update stream). ``lora_path``
+    names a PEFT dir holding the same adapter, making it engine-evictable;
+    ``defer_publish`` keeps the name unservable until the session commits."""
     futures = [
         async_utils.submit(
-            client.register_lora_adapter(lora_name=lora_name, config_dict=dict(lora_config), pinned=pinned)
+            client.register_lora_adapter(
+                lora_name=lora_name,
+                config_dict=dict(lora_config),
+                pinned=pinned,
+                lora_path=lora_path,
+                defer_publish=defer_publish,
+            )
         )
         for client in rollout_engines
     ]

@@ -70,6 +70,7 @@ class WeightUpdater:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
+        self._staged_session_open = False
 
     def connect_rollout_engines(
         self,
@@ -104,24 +105,68 @@ class WeightUpdater:
         self._sync(self._get_updated_adapters(), sync_base=sync_base, weight_version=self.weight_version)
 
     @torch.no_grad()
-    def push_adapter(self, lora_name: str, adapter) -> None:
-        """Push one adapter under an explicit engine-side name. The base weights
-        and the weight version stay put: versioning lives in the name, so
-        in-flight sampling against an older name is never disturbed."""
-        self._sync([(lora_name, adapter)], sync_base=False, weight_version=None)
+    def push_adapter(self, lora_name: str, adapter, lora_path: str | None = None) -> None:
+        """Push one adapter as a staged session under a fresh engine-side name:
+        no pause, no weight-version move — the name has no readers until
+        `end_weight_update` commits it under a checksum manifest. ``lora_path``
+        names a PEFT dir holding the same adapter, letting the engine evict and
+        refill it from disk."""
+        self._sync([(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path)
 
-    def _sync(self, adapters: list, *, sync_base: bool, weight_version: int | None) -> None:
+    def _sync(
+        self,
+        adapters: list,
+        *,
+        sync_base: bool,
+        weight_version: int | None,
+        staged: bool = False,
+        lora_path: str | None = None,
+    ) -> None:
+        if not staged:
+            self._run_sync(adapters, sync_base=sync_base, weight_version=weight_version)
+            return
+        self._staged_session_open = False
+        try:
+            self._run_sync(
+                adapters, sync_base=sync_base, weight_version=weight_version, staged=True, lora_path=lora_path
+            )
+        except Exception:
+            if self._staged_session_open and dist.get_rank() == 0:
+                try:
+                    end_weight_update(self.protocol.rollout_engines, abort=True)
+                except Exception:
+                    logger.exception("Failed to discard the staged adapter session")
+            raise
+
+    def _run_sync(
+        self,
+        adapters: list,
+        *,
+        sync_base: bool,
+        weight_version: int | None,
+        staged: bool = False,
+        lora_path: str | None = None,
+    ) -> None:
         protocol = self.protocol
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
-            self._register_new_lora_adapters(protocol.rollout_engines, adapters)
+            if not staged:
+                pause_engines(self.args, protocol.rollout_engines)
+            self._register_new_lora_adapters(
+                protocol.rollout_engines, adapters, defer_publish=staged, lora_path=lora_path
+            )
             begin_weight_update(
                 protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
             )
+            self._staged_session_open = staged
         dist.barrier(group=get_gloo_group())
 
-        checksums = {name: {} for name, _ in adapters} if adapters and self.args.check_lora_weight_equal else None
+        # a staged push commits only under a manifest: a lost bucket must not publish
+        checksums = (
+            {name: {} for name, _ in adapters}
+            if adapters and (staged or self.args.check_lora_weight_equal)
+            else None
+        )
         if checksums is not None:
             assert (
                 self._hf_weight_iterator.placement.gather_pp
@@ -146,9 +191,11 @@ class WeightUpdater:
             protocol.finalize(self.weight_version)
             if protocol.use_weight_update_session and driver:
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
+                self._staged_session_open = False
                 if weight_version is not None:
                     set_weight_version(protocol.rollout_engines, weight_version)
-                resume_engines(protocol.rollout_engines)
+                if not staged:
+                    resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
 
     def _iter_base_buckets(self, *, materialize: bool):
@@ -164,7 +211,14 @@ class WeightUpdater:
             return []
         return [(LORA_ADAPTER_NAME, None)]
 
-    def _register_new_lora_adapters(self, rollout_engines, adapters: list[tuple[str, object]]) -> None:
+    def _register_new_lora_adapters(
+        self,
+        rollout_engines,
+        adapters: list[tuple[str, object]],
+        *,
+        defer_publish: bool = False,
+        lora_path: str | None = None,
+    ) -> None:
         """Register adapters the current engine set has not seen, with their
         per-adapter config; eager so the engine validates rank before any bytes move."""
         for lora_name, adapter in adapters:
@@ -173,5 +227,11 @@ class WeightUpdater:
             config = self._lora_sync_config
             if adapter is not None:
                 config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-            register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
+            register_lora_adapter(
+                rollout_engines,
+                lora_name=lora_name,
+                lora_config=config,
+                lora_path=lora_path,
+                defer_publish=defer_publish,
+            )
             self._registered_adapters.add(lora_name)
