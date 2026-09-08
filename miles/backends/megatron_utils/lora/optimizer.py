@@ -133,12 +133,6 @@ def _slot_children(optimizer, slot: int):
     return [optimizer.chained_optimizers[i] for i in optimizer.miles_slot_child_indices[slot]]
 
 
-def reload_adapter_slot_params(optimizer, slot: int) -> None:
-    """Refresh this slot's optimizer masters from its model weights only."""
-    for child in _slot_children(optimizer, slot):
-        child.reload_model_params()
-
-
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
     """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
     survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
