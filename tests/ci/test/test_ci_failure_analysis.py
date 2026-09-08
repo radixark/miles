@@ -351,6 +351,8 @@ def test_grounded_analysis_keeps_tags_test_name_and_cause_pull_request():
     [
         {"tags": ["deepseek-v9"]},
         {"tags": ["inkling"]},
+        {"tags": ["multi-lora"]},
+        {"reason": "Collection failed because the module is gone [job:10:log:1-2]."},
         {"tags": ["megatron", "megatron"]},
         {"tags": ["megatron", "lora", "fsdp"]},
         {"test_name": "tests/fabricated/test_nope.py"},
@@ -363,6 +365,17 @@ def test_grounded_analysis_keeps_tags_test_name_and_cause_pull_request():
 def test_ungrounded_tags_test_names_and_pull_requests_are_rejected(overrides):
     with pytest.raises(ValueError):
         validate_grounded(**overrides)
+
+
+def test_a_tag_needs_its_whole_phrase_not_scattered_words():
+    vocabulary = ANALYZER.load_tags()
+    scattered = "lora adapters across multi node runs in megatron_utils"
+    with pytest.raises(ValueError):
+        ANALYZER._validate_tags(["multi-lora"], vocabulary, scattered)
+    assert ANALYZER._validate_tags(["megatron"], vocabulary, scattered) == ("megatron",)
+    assert ANALYZER._validate_tags(["weight-update"], vocabulary, "update_weight_from_distributed") == (
+        "weight-update",
+    )
 
 
 def test_prompt_states_the_reason_limit_the_policy_enforces():

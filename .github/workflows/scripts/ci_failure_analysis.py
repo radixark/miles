@@ -63,7 +63,7 @@ PATH_LINE_RE = re.compile(
 )
 SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$")
 EARLY_SENTENCE_END_RE = re.compile(r"[!?]|\.[\"')\]]*\s")
-URL_OR_MARKDOWN_RE = re.compile(r"(?i)(?:https?:)?//|www\.|\[[^\]]*\]\([^)]*\)|[<>`*]")
+URL_OR_MARKDOWN_RE = re.compile(r"(?i)(?:https?:)?//|www\.|\[[^\]]*\]\([^)]*\)|[<>`*\[\]]")
 OIDC_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.I)
 
 SECRET_PATTERNS = (
@@ -739,7 +739,11 @@ def _validate_tags(raw: Any, vocabulary: list[str], evidence_text: str) -> tuple
         raise ValueError("unknown or duplicate tag")
     haystack = re.sub(r"[^a-z0-9]", "", evidence_text.lower())
     for tag in raw:
-        if any(word not in haystack for word in tag.split("-")):
+        words = tag.split("-")
+        # Scattered words prove nothing: "multi" and "lora" occur everywhere. Demand the phrase itself,
+        # in either order, because code spells the same idea update_weight and weight-update.
+        forms = {"".join(words), "".join(reversed(words))}
+        if not any(form in haystack for form in forms):
             raise ValueError("tag is not grounded in the evidence")
     return tuple(raw)
 
@@ -1085,6 +1089,7 @@ def analyze_failures(
         "model": policy.model,
         "request_count": 0,
         "evidence_hashes": [item["sha256"] for item in all_evidence],
+        "evidence_ids": [item["id"] for item in all_evidence],
         "validation": "not_requested",
     }
     if not model_jobs:
