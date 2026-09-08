@@ -132,6 +132,7 @@ Both `run_qwen3_30b_a3b.py` (H100, 1 node) and `run_qwen3_235b_a22b.py` enable C
 
 - **30 B launcher** supports FP8 / MXFP8 / INT4 rollout, Blackwell hardware, Megatron-bridge mode, and MIS via Typer flags.
 - **235 B defaults to the FP8 HF checkpoint** — pass `--no-rollout-fp8` to roll out from the BF16 directory instead.
+- **AMD ROCm LoRA**: `python scripts/amd/run_qwen3_30b_a3b_lora.py` trains a rank-32 per-expert MoE adapter colocated with the rollout engines on `MI350X` / `MI355X`.
 - **R3 not on by default**; opt-in via `run_qwen3_30b_a3b.py --enable-mis` (TIS / RS) for routing-stability experiments.
 
 ## 6. Pairs Well With
