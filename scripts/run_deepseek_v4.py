@@ -2,6 +2,9 @@
 DeepSeek V4 training script.
 
 Supports:
+  - DeepSeek-V4-Flash             Official Preview release from deepseek-ai
+                                  (FP8 attention/shared weights and packed-MXFP4
+                                  routed experts). Supports direct-HF P1-P3.
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
                                   Verified full-model profiles: 8 nodes x 8 GPUs on H200
@@ -21,7 +24,13 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Individual steps (download [-> MXFP4->FP8] -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
+  2. Direct-HF P1-P3 (no offline weight conversion):
+       python scripts/run_deepseek_v4.py full-train \
+           --model-name DeepSeek-V4-Flash \
+           --init-model-source hf --rollout-weight-source trainer \
+           --no-train-fp8 --train-mxfp8 --no-rollout-fp8 --rollout-mxfp8
+
+  3. Individual converted-checkpoint steps:
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-fp8      --model-name DeepSeek-V4-Flash-0731
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
@@ -34,6 +43,7 @@ Usage patterns:
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
 """
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -41,10 +51,12 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.hf_rollout_schema import create_mxfp8_rollout_schema
 
 app = typer.Typer()
 
 _DEFAULT_MODEL_ORG = {
+    "DeepSeek-V4-Flash": "deepseek-ai",
     "DeepSeek-V4-Flash-FP8": "sgl-project",
     # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8.
     "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",
@@ -54,6 +66,7 @@ _DEFAULT_MODEL_ORG = {
 }
 
 _MEGATRON_MODEL_TYPE = {
+    "DeepSeek-V4-Flash": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
     "DeepSeek-V4-Pro-FP8": "deepseek-v4-pro",
@@ -61,8 +74,9 @@ _MEGATRON_MODEL_TYPE = {
 }
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
-_MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash-0731",)
-_FLASH_FULL_MODEL_NAMES = ("DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731")
+_MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-0731")
+_FLASH_FULL_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731")
+_MXFP4_QAT_MODEL_NAMES = _MXFP4_MODEL_NAMES
 
 _DSV4_TE_PRECISION_CONFIG = """
 configs:
@@ -84,6 +98,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_org: str = ""
     model_name: Literal[
+        "DeepSeek-V4-Flash",
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
         "DeepSeek-V4-Pro-FP8",
@@ -94,6 +109,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
 
     hf_checkpoint: str | None = None
+    init_model_source: Literal["torch_dist", "hf"] = "torch_dist"
+    rollout_weight_source: Literal["checkpoint", "trainer"] = "checkpoint"
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     # Defaults to model_dir. Set explicitly when shared NFS -> per-node local NVMe copy is needed.
@@ -134,6 +151,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_fp8: bool = True
     train_mxfp8: bool = False
     rollout_mxfp8: bool = False
+    rollout_expert_dtype: Literal["auto", "fp4", "fp8"] = "auto"
+    dsv4_mxfp4_qat: bool = False
+    # Empty keeps the backend implied by the rollout precision.
+    sglang_moe_runner_backend: str = ""
+    sglang_fp8_gemm_backend: str = ""
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -187,12 +209,34 @@ class ScriptArgs(U.ExecuteTrainConfig):
         return f"{self.model_name}-MXFP8"
 
     @property
+    def mxfp8_schema_name(self):
+        return f"{self.mxfp8_name}-schema"
+
+    @property
     def rollout_name(self):
         if self.rollout_mxfp8:
             return self.mxfp8_name
         if self.rollout_fp8:
             return self.fp8_name
         return self.bf16_name
+
+
+def _resolve_rollout_expert_dtype(args: ScriptArgs, rollout_checkpoint: str) -> Literal["fp4", "fp8"]:
+    """Resolve the routed-expert layout shared by SGLang and online sync."""
+    if args.rollout_expert_dtype != "auto":
+        return args.rollout_expert_dtype
+    if args.rollout_mxfp8 or not args.rollout_fp8:
+        return "fp8"
+    if args.model_name not in _MXFP4_MODEL_NAMES:
+        return "fp8"
+
+    config_path = Path(rollout_checkpoint) / "config.json"
+    with config_path.open(encoding="utf-8") as config_file:
+        config = json.load(config_file)
+    expert_dtype = config.get("expert_dtype", "fp8")
+    if expert_dtype not in ("fp4", "fp8"):
+        raise ValueError(f"Unsupported expert_dtype={expert_dtype!r} in {config_path}")
+    return expert_dtype
 
 
 def _download_dataset(args: ScriptArgs):
@@ -208,6 +252,34 @@ def _download_dataset(args: ScriptArgs):
 def _hf_checkpoint_path(args: ScriptArgs) -> str:
     """Resolve hf_checkpoint path: explicit override wins, else {model_dir}/{model_name}."""
     return args.hf_checkpoint or f"{args.model_dir}/{args.model_name}"
+
+
+def _local_hf_checkpoint_path(args: ScriptArgs) -> str:
+    source = Path(_hf_checkpoint_path(args))
+    if args.model_local_dir == args.model_dir:
+        return str(source)
+    return str(Path(args.model_local_dir) / source.name)
+
+
+def _mxfp8_schema_path(args: ScriptArgs, *, local: bool) -> str:
+    root = args.model_local_dir if local else args.model_dir
+    return str(Path(root) / args.mxfp8_schema_name)
+
+
+def _trainer_checkpoint_path(args: ScriptArgs) -> str:
+    if args.init_model_source == "hf":
+        return _local_hf_checkpoint_path(args)
+    return str(Path(args.model_local_dir) / args.torch_dist_name)
+
+
+def _rollout_checkpoint_path(args: ScriptArgs) -> str:
+    if args.rollout_weight_source == "trainer":
+        if args.rollout_mxfp8:
+            return _mxfp8_schema_path(args, local=True)
+        return _local_hf_checkpoint_path(args)
+    if args.rollout_fp8 and args.hf_checkpoint is not None:
+        return _local_hf_checkpoint_path(args)
+    return str(Path(args.model_local_dir) / args.rollout_name)
 
 
 def _ensure_4layer_model_type(args: ScriptArgs):
@@ -297,6 +369,16 @@ def _prepare_mxfp8(args: ScriptArgs):
     )
 
 
+def _prepare_mxfp8_schema(args: ScriptArgs) -> None:
+    if args.rollout_weight_source != "trainer" or not args.rollout_mxfp8:
+        return
+    schema_path = create_mxfp8_rollout_schema(
+        source_dir=_hf_checkpoint_path(args),
+        destination_dir=_mxfp8_schema_path(args, local=False),
+    )
+    print(f"[prepare] MXFP8 metadata-only rollout schema: {schema_path}")
+
+
 @app.command()
 @U.dataclass_cli
 def prepare_mxfp8(args: ScriptArgs):
@@ -373,16 +455,28 @@ def prepare_cp(args: ScriptArgs):
 
 
 def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.torch_dist_name}",
-        path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
-        num_nodes=args.num_nodes,
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.rollout_name}",
-        path_dst=f"{args.model_local_dir}/{args.rollout_name}",
-        num_nodes=args.num_nodes,
-    )
+    copies: list[tuple[str, str]] = []
+    if args.init_model_source == "hf" or args.rollout_weight_source == "trainer":
+        copies.append((_hf_checkpoint_path(args), _local_hf_checkpoint_path(args)))
+    if args.init_model_source == "torch_dist":
+        copies.append(
+            (
+                str(Path(args.model_dir) / args.torch_dist_name),
+                str(Path(args.model_local_dir) / args.torch_dist_name),
+            )
+        )
+    if args.rollout_weight_source == "trainer" and args.rollout_mxfp8:
+        copies.append((_mxfp8_schema_path(args, local=False), _mxfp8_schema_path(args, local=True)))
+    elif args.rollout_weight_source == "checkpoint":
+        copies.append(
+            (
+                str(Path(args.model_dir) / args.rollout_name),
+                str(Path(args.model_local_dir) / args.rollout_name),
+            )
+        )
+
+    for source, destination in dict.fromkeys(copies):
+        U.rsync_simple(path_src=source, path_dst=destination, num_nodes=args.num_nodes)
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -476,14 +570,25 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 def _train(args: ScriptArgs):
     if args.train_mxfp8 or args.rollout_mxfp8:
         assert U.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
-    if not args.rollout_fp8 or args.hf_checkpoint is None or args.model_name in _MXFP4_MODEL_NAMES:
-        rollout_checkpoint = f"{args.model_local_dir}/{args.rollout_name}"
-        if args.hf_checkpoint != rollout_checkpoint:
-            print(f"[precision] rollout checkpoint: {args.hf_checkpoint} -> {rollout_checkpoint}")
-            args.hf_checkpoint = rollout_checkpoint
+    if args.init_model_source == "hf" and args.dsv4_impl != "megatron":
+        raise ValueError("Direct-HF DeepSeek-V4 training requires --dsv4-impl megatron.")
+
+    rollout_checkpoint = _rollout_checkpoint_path(args)
+    trainer_checkpoint = _trainer_checkpoint_path(args)
+    rollout_expert_dtype = _resolve_rollout_expert_dtype(args, rollout_checkpoint)
+    rollout_fp4_experts = rollout_expert_dtype == "fp4"
+    if args.dsv4_mxfp4_qat:
+        assert args.model_name in _MXFP4_QAT_MODEL_NAMES, "MXFP4 QAT requires a packed-MXFP4 DSV4 checkpoint."
+        assert args.train_mxfp8, "MXFP4 QAT requires the P3 MXFP8 training recipe."
+        assert rollout_fp4_experts, "MXFP4 QAT requires packed MXFP4 routed experts in rollout."
+
+    print(f"[checkpoint] trainer initialization ({args.init_model_source}): {trainer_checkpoint}")
+    print(f"[checkpoint] rollout layout ({args.rollout_weight_source}): {rollout_checkpoint}")
+    args.hf_checkpoint = rollout_checkpoint
     print(
         f"[precision] train_fp8={args.train_fp8}, rollout_fp8={args.rollout_fp8}, "
-        f"train_mxfp8={args.train_mxfp8}, rollout_mxfp8={args.rollout_mxfp8}"
+        f"train_mxfp8={args.train_mxfp8}, rollout_mxfp8={args.rollout_mxfp8}, "
+        f"rollout_expert_dtype={rollout_expert_dtype}, dsv4_mxfp4_qat={args.dsv4_mxfp4_qat}"
     )
     print(
         f"running on {args.num_nodes} nodes "
@@ -493,7 +598,9 @@ def _train(args: ScriptArgs):
     _ensure_4layer_model_type(args)
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
+    ckpt_args = f"--hf-checkpoint {rollout_checkpoint} " f"--ref-load {trainer_checkpoint} "
+    if args.init_model_source == "hf":
+        ckpt_args += "--megatron-to-hf-mode bridge "
     if not args.skip_saving:
         ckpt_args += (
             f"--load {load_save_path} " f"--save {load_save_path} " "--save-interval 20 " "--save-retain-interval 20 "
@@ -604,10 +711,14 @@ def _train(args: ScriptArgs):
         sglang_fp8_gemm_backend = "auto"
     if args.rollout_mxfp8:
         sglang_moe_runner_backend = "flashinfer_trtllm_routed"
+    elif rollout_fp4_experts:
+        sglang_moe_runner_backend = "flashinfer_mxfp4"
     elif args.model_name == "DeepSeek-V4-Pro-FP8":
         sglang_moe_runner_backend = "deep_gemm"
     else:
         sglang_moe_runner_backend = "auto"
+    sglang_moe_runner_backend = args.sglang_moe_runner_backend or sglang_moe_runner_backend
+    sglang_fp8_gemm_backend = args.sglang_fp8_gemm_backend or sglang_fp8_gemm_backend
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         f"--sglang-fp8-gemm-backend {sglang_fp8_gemm_backend} "
@@ -635,13 +746,15 @@ def _train(args: ScriptArgs):
         )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
-        "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_DSV4_FP4_EXPERTS": "1" if rollout_fp4_experts else "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
         # Colocated multi-engine init can deadlock in the multimem all-gather rendezvous (sgl-project/sglang#36110).
         "SGLANG_DISABLE_MULTIMEM_AG": "1",
     }
+    if args.rollout_weight_source == "trainer":
+        extra_env_vars["MILES_SGLANG_DUMMY_LOAD"] = "1"
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
         extra_env_vars["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
@@ -669,6 +782,10 @@ def _train(args: ScriptArgs):
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
+    if rollout_fp4_experts:
+        misc_args += "--rollout-fp4-experts "
+    if args.dsv4_mxfp4_qat:
+        misc_args += "--dsv4-mxfp4-qat "
     if args.colocate:
         misc_args += "--colocate "
     else:
@@ -745,48 +862,55 @@ def train(args: ScriptArgs):
     _train(args)
 
 
-@app.command()
-@U.dataclass_cli
-def full_train(args: ScriptArgs):
+def _full_train(args: ScriptArgs) -> None:
     _prepare_download(args)
 
-    if args.model_name in _MXFP4_MODEL_NAMES:
+    needs_converted_rollout = args.rollout_weight_source == "checkpoint" and not args.rollout_fp8
+    needs_bf16 = args.init_model_source == "torch_dist" or needs_converted_rollout
+    if args.model_name in _MXFP4_MODEL_NAMES and needs_bf16:
         fp8_sentinel = Path(f"{args.model_dir}/{args.fp8_name}") / "model.safetensors.index.json"
         if not fp8_sentinel.exists():
             _prepare_fp8(args)
         else:
             print(f"[full_train] Skipping MXFP4->FP8 cast: {fp8_sentinel} already exists.")
 
-    bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
-    bf16_sentinel = bf16_dir / "model.safetensors.index.json"
-    if not bf16_sentinel.exists():
-        _prepare_single(args)
-    else:
-        print(f"[full_train] Skipping FP8->BF16 cast: {bf16_sentinel} already exists.")
+    if needs_bf16:
+        bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
+        bf16_sentinel = bf16_dir / "model.safetensors.index.json"
+        if not bf16_sentinel.exists():
+            _prepare_single(args)
+        else:
+            print(f"[full_train] Skipping FP8->BF16 cast: {bf16_sentinel} already exists.")
 
-    if args.rollout_mxfp8:
+    if args.rollout_weight_source == "checkpoint" and args.rollout_mxfp8:
         mxfp8_sentinel = Path(f"{args.model_dir}/{args.mxfp8_name}") / "model.safetensors.index.json"
         if not mxfp8_sentinel.exists():
             _prepare_mxfp8(args)
         else:
             print(f"[full_train] Skipping BF16->MXFP8 conversion: {mxfp8_sentinel} already exists.")
 
-    torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
-    torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
-    if not torch_dist_sentinel.exists():
-        _prepare_spmd(args)
-    else:
-        print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
+    if args.init_model_source == "torch_dist":
+        torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
+        torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
+        if not torch_dist_sentinel.exists():
+            _prepare_spmd(args)
+        else:
+            print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
+
+    _prepare_mxfp8_schema(args)
 
     if args.model_local_dir != args.model_dir:
         _prepare_cp(args)
     else:
         print(f"[full_train] Skipping rsync: model_local_dir == model_dir ({args.model_dir})")
 
-    if args.hf_checkpoint is None:
-        args.hf_checkpoint = f"{args.model_local_dir}/{args.rollout_name}"
-
     _train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def full_train(args: ScriptArgs):
+    _full_train(args)
 
 
 if __name__ == "__main__":

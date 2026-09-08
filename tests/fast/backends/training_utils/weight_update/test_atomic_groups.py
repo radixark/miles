@@ -1,5 +1,7 @@
 """Unit tests for the HF-namespace atomic group registry."""
 
+import pytest
+
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
@@ -9,14 +11,37 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_group
 
 
 class TestHfAtomicUpdateGroups:
-    def test_deepseekv4_registers_the_three_fused_pairs(self):
-        groups = {g.key: g.suffixes for g in get_hf_atomic_update_groups("deepseekv4")}
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "deepseekv4",
+            "DeepSeek-V4-Flash",
+            "deepseek-ai/DeepSeek-V4-Flash",
+            "DeepSeek_V4_Flash_0731",
+        ],
+    )
+    def test_deepseekv4_registers_the_three_fused_pairs(self, model_name):
+        groups = {g.key: g.suffixes for g in get_hf_atomic_update_groups(model_name)}
         assert groups == {
             "wqkv_a": (".self_attn.wq_a.weight", ".self_attn.wkv.weight"),
             "compressor_wkv_gate": (".self_attn.compressor.wkv.weight", ".self_attn.compressor.wgate.weight"),
             "indexer_compressor_wkv_gate": (
                 ".self_attn.indexer.compressor.wkv.weight",
                 ".self_attn.indexer.compressor.wgate.weight",
+            ),
+        }
+
+    def test_deepseekv4_checkpoint_layout_registers_bridge_export_names(self):
+        groups = {
+            group.key: group.suffixes
+            for group in get_hf_atomic_update_groups("deepseekv4", dsv4_checkpoint_layout=True)
+        }
+        assert groups == {
+            "wqkv_a": (".attn.wq_a.weight", ".attn.wkv.weight"),
+            "compressor_wkv_gate": (".attn.compressor.wkv.weight", ".attn.compressor.wgate.weight"),
+            "indexer_compressor_wkv_gate": (
+                ".attn.indexer.compressor.wkv.weight",
+                ".attn.indexer.compressor.wgate.weight",
             ),
         }
 

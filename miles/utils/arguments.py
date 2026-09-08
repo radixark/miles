@@ -406,6 +406,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
             parser.add_argument(
+                "--dsv4-mxfp4-qat",
+                action="store_true",
+                help=(
+                    "Fake-quantize DeepSeek V4 routed-expert weights to MXFP4 during Megatron forwards. "
+                    "The trainable parameters and optimizer states retain their configured precision."
+                ),
+            )
+            parser.add_argument(
                 "--dsa-attention-backend",
                 choices=["megatron", "tilelang"],
                 default="tilelang",
@@ -2215,6 +2223,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            parser.add_argument(
+                "--rollout-fp4-experts",
+                action="store_true",
+                help=(
+                    "The rollout model holds packed MXFP4 routed experts, so online updates must encode "
+                    "those tensors as MXFP4 rather than block-scaled FP8."
+                ),
+            )
             parser.add_argument(
                 "--check-weight-update-selector",
                 type=str,

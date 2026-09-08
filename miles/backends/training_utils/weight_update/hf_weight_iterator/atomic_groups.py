@@ -6,7 +6,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.bucketing im
 # sglang's deepseek_v4 load_weights cache-and-concats each pair into one engine
 # param (wqkv_a / compressor.wkv_gate / indexer.compressor.wkv_gate) and
 # hard-asserts no half-arrived pair remains at end of call.
-_DEEPSEEK_V4_GROUPS = [
+_DEEPSEEK_V4_NATIVE_GROUPS = [
     AtomicUpdateGroup(key, suffixes)
     for key, suffixes in [
         ("wqkv_a", (".self_attn.wq_a.weight", ".self_attn.wkv.weight")),
@@ -24,14 +24,38 @@ _DEEPSEEK_V4_GROUPS = [
     ]
 ]
 
+_DEEPSEEK_V4_CHECKPOINT_GROUPS = [
+    AtomicUpdateGroup(key, suffixes)
+    for key, suffixes in [
+        ("wqkv_a", (".attn.wq_a.weight", ".attn.wkv.weight")),
+        (
+            "compressor_wkv_gate",
+            (".attn.compressor.wkv.weight", ".attn.compressor.wgate.weight"),
+        ),
+        (
+            "indexer_compressor_wkv_gate",
+            (
+                ".attn.indexer.compressor.wkv.weight",
+                ".attn.indexer.compressor.wgate.weight",
+            ),
+        ),
+    ]
+]
 
-def get_hf_atomic_update_groups(model_name: str, *, q_lora_rank: int | None = None) -> list[AtomicUpdateGroup]:
+
+def get_hf_atomic_update_groups(
+    model_name: str,
+    *,
+    q_lora_rank: int | None = None,
+    dsv4_checkpoint_layout: bool = False,
+) -> list[AtomicUpdateGroup]:
     """Atomic groups for a model. inkling registers none: its fusions happen
     inside the converter, and its engine-side loads are split-safe."""
-    model_name = model_name.lower()
-    if "deepseekv4" in model_name:
-        return list(_DEEPSEEK_V4_GROUPS)
-    if "inkling" in model_name:
+    normalized_model_name = model_name.lower().replace("-", "").replace("_", "")
+    if "deepseekv4" in normalized_model_name:
+        groups = _DEEPSEEK_V4_CHECKPOINT_GROUPS if dsv4_checkpoint_layout else _DEEPSEEK_V4_NATIVE_GROUPS
+        return list(groups)
+    if "inkling" in normalized_model_name:
         return []
     if q_lora_rank is not None:
         # sglang's deepseek family cache-and-concats q_a_proj + kv_a_proj_with_mqa

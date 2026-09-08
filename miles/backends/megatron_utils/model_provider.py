@@ -77,6 +77,23 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
 
     # attention kernel selection
     provider.attention_backend = args.attention_backend
+    if hasattr(provider, "dsa_kernel_backend"):
+        dsa_kernel_backend = getattr(args, "dsa_kernel_backend", None)
+        if dsa_kernel_backend is None:
+            dsa_kernel_backend = (
+                "cudnn" if getattr(provider, "experimental_attention_variant", None) == "dsv4_hybrid" else "none"
+            )
+        provider.dsa_kernel_backend = dsa_kernel_backend
+
+    # The HF checkpoint can contain an MTP module even when this run trains only
+    # the target model. Follow the launched runtime rather than the source file.
+    provider.mtp_num_layers = args.mtp_num_layers
+
+    provider.dsv4_mxfp4_qat = getattr(args, "dsv4_mxfp4_qat", False)
+    if provider.dsv4_mxfp4_qat:
+        from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import install_dsv4_mxfp4_qat
+
+        install_dsv4_mxfp4_qat()
 
     # MoE token dispatcher (same-name, always present)
     provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type

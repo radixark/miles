@@ -186,6 +186,11 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             if futures_distributed:
                 futures = (futures or []) + futures_distributed
         check_weight_sync_results(async_utils.wait_futures(futures or []), is_lora=False)
+        # Only the gather source receives the engine RPC future, but every rank
+        # owns storage referenced by the gathered CUDA IPC handles. Keep each
+        # producer bucket alive until its consumer has completed the import.
+        if self._ipc_gather_group is not None:
+            dist.barrier(group=self._ipc_gather_group)
         del long_lived_tensors
 
 
