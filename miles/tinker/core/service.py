@@ -409,7 +409,6 @@ class TinkerService:
             # disk is the commit point: the export makes the version exist; the
             # push only warms the engine cache
             await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
-            record.sampler_version = candidate
             record.published_sampler_versions.add(candidate)
             try:
                 await self.backend.push_slot(
