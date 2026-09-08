@@ -105,6 +105,13 @@ the build; `HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER` gives the first build of each
 task headroom. With terminus-2 (a host-process agent) the sandboxes need no
 route back to the trainer.
 
+Sandboxes orphaned by a killed rollout worker are reclaimed by the same
+backstop the agent-server path uses: unless `HARBOR_ENV_KWARGS` says
+otherwise, `auto_stop_interval_mins` defaults to 540 and
+`auto_delete_interval_mins` to 1440. Keep the auto-stop interval above your
+longest trial — an in-sandbox agent generates no Daytona API activity, so a
+live trial can look idle to the timer for its whole duration.
+
 ```bash
 HARBOR_ENV_TYPE=daytona HARBOR_ENV_KWARGS='{"auto_snapshot": true}' HARBOR_OVERRIDE_STORAGE_MB=10240 \
     python examples/experimental/harbor/run.py ... --prompt-data /path/to/tb2_train.jsonl   # data prepared with --agent-name terminus-2

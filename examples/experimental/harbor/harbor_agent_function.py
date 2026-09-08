@@ -301,6 +301,16 @@ def _environment_config():
         raise ValueError("set HARBOR_ENV_TYPE to the Harbor environment type to run trials on (e.g. e2b, daytona)")
     env_type = EnvironmentType(raw)  # raises on an unknown backend instead of guessing
     kwargs = json.loads(os.getenv("HARBOR_ENV_KWARGS", "{}") or "{}")
+    if env_type == EnvironmentType.DAYTONA:
+        # Dead-man's switch, same behavior as the agent-server path's
+        # HARBOR_DAYTONA_AUTO_STOP_MIN/AUTO_DELETE_MIN defaults: Harbor deletes
+        # sandboxes on normal teardown, but a killed rollout worker never runs
+        # teardown, and Harbor's own defaults (auto_stop=0) leave that sandbox
+        # RUNNING forever. Auto-stop must stay above the longest trial: an
+        # in-sandbox agent generates no Daytona API activity, so a live trial
+        # can look idle to the timer for its whole duration.
+        kwargs.setdefault("auto_stop_interval_mins", 540)
+        kwargs.setdefault("auto_delete_interval_mins", 1440)
     overrides = {}
     for field, var in (
         ("override_memory_mb", "HARBOR_OVERRIDE_MEMORY_MB"),

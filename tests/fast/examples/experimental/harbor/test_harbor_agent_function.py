@@ -121,12 +121,36 @@ def _verdict(reward=1.0, **agent_fields):
 
 
 def test_environment_type_is_passed_straight_through(tasks_dir, monkeypatch):
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"template": "base"}')
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+    assert cfg.environment.type.value == "e2b"
+    assert cfg.environment.kwargs == {"template": "base"}
+    assert cfg.environment.delete is True
+
+
+def test_daytona_gets_the_dead_mans_ttls_unless_overridden(tasks_dir, monkeypatch):
     monkeypatch.setenv("HARBOR_ENV_TYPE", "daytona")
     monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"auto_snapshot": true}')
-    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
-    assert cfg.environment.type.value == "daytona"
-    assert cfg.environment.kwargs == {"auto_snapshot": True}
-    assert cfg.environment.delete is True
+    cfg = haf.build_trial_config({"instance_id": "task-1"}, "http://s/v1", {})
+    # Defaults match the agent-server path (HARBOR_DAYTONA_AUTO_STOP_MIN /
+    # AUTO_DELETE_MIN): orphans from a killed worker must not run forever.
+    assert cfg.environment.kwargs == {
+        "auto_snapshot": True,
+        "auto_stop_interval_mins": 540,
+        "auto_delete_interval_mins": 1440,
+    }
+
+    monkeypatch.setenv(
+        "HARBOR_ENV_KWARGS",
+        '{"auto_stop_interval_mins": 0, "auto_delete_interval_mins": 0}',
+    )
+    cfg = haf.build_trial_config({"instance_id": "task-1"}, "http://s/v1", {})
+    # An explicit 0 is a real choice (ephemeral / GPU sandboxes), not "unset".
+    assert cfg.environment.kwargs == {
+        "auto_stop_interval_mins": 0,
+        "auto_delete_interval_mins": 0,
+    }
 
 
 def test_resource_overrides_reach_the_environment_config(tasks_dir, monkeypatch):
