@@ -41,6 +41,7 @@ HARD_MAX_SOURCE_FILES = 3
 HARD_MAX_SOURCE_CHARS = 20_000
 HARD_MAX_COMMITS_PER_PATH = 8
 HARD_MAX_CHANGE_PATHS = 4
+CHANGES_BUDGET_CHARS = 1_500
 HARD_MAX_RECENT_COMMITS = 8
 HARD_MAX_REASON_CHARS = 280
 HARD_MAX_TAGS = 200
@@ -512,7 +513,10 @@ def _collect_context(
             break
 
     evidence: list[dict[str, Any]] = []
-    remaining = char_limit
+    # Commit subjects are small and are the only evidence that can name a cause, so they get their
+    # slice before the far larger source excerpts claim the budget.
+    changes_budget = min(CHANGES_BUDGET_CHARS, char_limit // 3)
+    remaining = char_limit - changes_budget
     if pull and resolved and remaining:
         relevant = {path for path, _ in resolved}
         patches = [
@@ -558,6 +562,7 @@ def _collect_context(
 
     change_paths = extract_missing_module_paths(log_text)
     change_paths += [path for path, _ in resolved if path not in change_paths]
+    remaining += changes_budget
     for index, path in enumerate(change_paths[:HARD_MAX_CHANGE_PATHS], start=1):
         if remaining <= 0 or time.monotonic() >= deadline:
             break
@@ -768,6 +773,14 @@ def _validate_pull_request(raw: Any, evidence_text: str) -> int | None:
     return raw
 
 
+def _drop_if_ungrounded(validator: Callable[..., Any], *args: Any, default: Any = None) -> Any:
+    """A decoration the evidence cannot support is dropped; only the core contract fails a whole response."""
+    try:
+        return validator(*args)
+    except ValueError:
+        return default
+
+
 def validate_response(
     text: str,
     jobs: list[dict[str, Any]],
@@ -811,9 +824,9 @@ def validate_response(
         grounding = evidence_by_job.get(job_id, "")
         results[job_id] = JobAnalysis(
             reason=_validate_reason(item["reason"], max_reason_chars),
-            tags=_validate_tags(item["tags"], vocabulary, grounding),
-            test_name=_validate_test_name(item["test_name"], grounding),
-            related_pull_request=_validate_pull_request(item["related_pull_request"], grounding),
+            tags=_drop_if_ungrounded(_validate_tags, item["tags"], vocabulary, grounding, default=()),
+            test_name=_drop_if_ungrounded(_validate_test_name, item["test_name"], grounding),
+            related_pull_request=_drop_if_ungrounded(_validate_pull_request, item["related_pull_request"], grounding),
         )
     if set(results) != set(expected):
         raise ValueError("model response is missing job ids")

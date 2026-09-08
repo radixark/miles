@@ -349,22 +349,36 @@ def test_grounded_analysis_keeps_tags_test_name_and_cause_pull_request():
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"tags": ["deepseek-v9"]},
-        {"tags": ["inkling"]},
-        {"tags": ["multi-lora"]},
         {"reason": "Collection failed because the module is gone [job:10:log:1-2]."},
-        {"tags": ["megatron", "megatron"]},
-        {"tags": ["megatron", "lora", "fsdp"]},
-        {"test_name": "tests/fabricated/test_nope.py"},
-        {"test_name": "tests/fast/ray/test_layout.py; rm -rf /"},
-        {"related_pull_request": 9999},
-        {"related_pull_request": -1},
-        {"related_pull_request": True},
+        {"reason": "no terminal punctuation"},
+        {"category": "remediation"},
+        {"evidence_refs": ["job:other:log:1"]},
     ],
 )
-def test_ungrounded_tags_test_names_and_pull_requests_are_rejected(overrides):
+def test_a_broken_core_contract_still_rejects_the_whole_response(overrides):
     with pytest.raises(ValueError):
         validate_grounded(**overrides)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "field", "expected"),
+    [
+        ({"tags": ["deepseek-v9"]}, "tags", ()),
+        ({"tags": ["inkling"]}, "tags", ()),
+        ({"tags": ["multi-lora"]}, "tags", ()),
+        ({"tags": ["megatron", "megatron"]}, "tags", ()),
+        ({"tags": ["megatron", "lora", "fsdp"]}, "tags", ()),
+        ({"test_name": "tests/fabricated/test_nope.py"}, "test_name", None),
+        ({"test_name": "tests/fast/ray/test_layout.py; rm -rf /"}, "test_name", None),
+        ({"related_pull_request": 9999}, "related_pull_request", None),
+        ({"related_pull_request": -1}, "related_pull_request", None),
+        ({"related_pull_request": True}, "related_pull_request", None),
+    ],
+)
+def test_an_ungrounded_decoration_drops_itself_and_keeps_the_row(overrides, field, expected):
+    analysis = validate_grounded(**overrides)[10]
+    assert getattr(analysis, field) == expected
+    assert analysis.reason.startswith("Collection failed")
 
 
 def test_a_tag_needs_its_whole_phrase_not_scattered_words():
