@@ -14,7 +14,7 @@ reproduces it. launch_16node_slurm.sh is only a site adapter (container + Ray
 bring-up); see README.md for the environment contract and preparation steps.
 
 Env consumed here (credentials must NOT live in this file):
-    DAYTONA_API_KEY, OPENENV_TB2_TASKS_DIR, OPENENV_LAUNCHER, OPENENV_RUN_ID
+    DAYTONA_API_KEY_FILE, OPENENV_TB2_TASKS_DIR, OPENENV_LAUNCHER, OPENENV_RUN_ID
 """
 
 import importlib.util
@@ -26,6 +26,7 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, sandbox_key_supply
 
 app = typer.Typer()
 
@@ -85,7 +86,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     eval_interval: int = 10
     eval_prompt_data: str = ""  # default: <data_dir>/tbench2_eval.jsonl
     n_samples_per_eval_prompt: int = 2
-    daytona_api_key: str = os.environ.get("DAYTONA_API_KEY", "")
+    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
+    daytona_api_key_file: str = os.environ.get("DAYTONA_API_KEY_FILE", "")
+    # end
     # Load initial weights from this checkpoint dir instead of this run's own
     # (empty) save path. For evaluating an existing checkpoint: point at the
     # source run's checkpoints/, add --start-rollout-id 0 to --extra-args, and
@@ -105,7 +108,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
         assert (
             self.num_nodes >= min_nodes and self.num_gpus_per_node == 4
         ), "GB300 config: 8 train nodes plus inference nodes (4 GPUs each)"
-        assert self.daytona_api_key, "DAYTONA_API_KEY must be set in the environment"
         if not self.prompt_data:
             self.prompt_data = f"{self.data_dir}/tbench2_train69.jsonl"
         if self.eval_interval and not self.eval_prompt_data:
@@ -329,8 +331,19 @@ def _execute_train(args: ScriptArgs):
         "OPENENV_DAYTONA_CREATE_MAX_RETRIES": str(args.openenv_daytona_create_max_retries),
         "OPENENV_LAUNCHER": args.openenv_launcher,
         "OPENENV_RUN_ID": args.openenv_run_id,
-        "DAYTONA_API_KEY": args.daytona_api_key,
     }
+    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
+    spec = PROVIDER_CREDENTIALS["daytona"]
+    sandbox_key_supply(
+        extra_env_vars,
+        provider=spec["provider"],
+        key_env_vars=spec["key_env_vars"],
+        file_env_var=spec["file_env_var"],
+        arg_path=args.daytona_api_key_file,
+        default_path=spec["default_path"],
+        provision_hint=spec["provision_hint"],
+    )
+    # end
 
     U.execute_train(
         train_args=train_args,

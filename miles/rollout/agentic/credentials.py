@@ -1,16 +1,21 @@
 """Sandbox-provider credentials and endpoints for agent-function launchers.
 
 The contract every sandbox backend shares: rollout workers read a provider
-credential from their own environment or from a key file; the launcher
-forwards only the file PATH (never the value, which would ride ray's
-runtime_env in plaintext) and address-like variables by value.
+credential from a key file; the launcher forwards only the file PATH (never
+the value, which would ride ray's runtime_env in plaintext) and address-like
+variables by value. A set key env var is rejected: env supply used to win
+silently over a missing or unread file, which is how a worker-side resolver
+gap passed every unit test until the first GPU e2e run.
 
 PROVIDER_CREDENTIALS holds one entry per backend in
 openenv_sandbox_common.AGENT_MODULES; a provider is added there, not by
 growing a branch:
 
-  key_env_vars   what a worker must ALL have for the env-supply path to work
-                 (Modal's credential is a token PAIR, not one key)
+  # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
+  key_env_vars   vars that must be UNSET; a set value is rejected (env supply
+                 used to silently mask a missing file resolver). Modal's
+                 pair is both halves
+  # end
   file_env_var   the path-valued var the launcher forwards instead of secrets
   forward        addresses/selectors, safe to forward by value
   target         (var, label, default description) echoed so a launch says
@@ -57,8 +62,10 @@ PROVIDER_CREDENTIALS = {
     },
     "modal": {
         "provider": "Modal",
-        # Modal has no single API key: the SDK wants both token halves, or the
-        # config file whose path MODAL_CONFIG_PATH names.
+        # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
+        # Modal has no single API key: the SDK reads the config file whose path
+        # MODAL_CONFIG_PATH names. Token env vars are rejected, not used.
+        # end
         "key_env_vars": ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"),
         "file_env_var": "MODAL_CONFIG_PATH",
         "arg_attr": "modal_config_file",
@@ -88,8 +95,9 @@ def forward_address(env: dict[str, str], var: str, value: str) -> None:
         raise ValueError(
             f"{var} looks like it embeds credentials ('@'), and anything forwarded "
             "to rollout workers is logged in plaintext by ray. Put the credential "
-            "in the provider's key file (or the worker environment) and leave a "
-            "bare address here."
+            # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
+            "in the provider's key file and leave a bare address here."
+            # end
         )
     env[var] = value
 
@@ -104,24 +112,23 @@ def sandbox_key_supply(
     default_path: str,
     provision_hint: str,
 ) -> None:
+    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
     """Key-supply contract, shared by the sandbox backends: rollout workers
-    get the provider credential from their OWN environment (e.g.
-    platform-injected) or from a file they can read (a dotfile, K8s Secret
-    mount, or shared-FS path). The launcher forwards only the file PATH, never
-    the value: worker env rides ray's runtime_env, which exec_command_cpu
-    echoes into driver logs and ray persists in job metadata, all in
-    plaintext."""
+    read the provider credential from a file they can read (a dotfile, K8s
+    Secret mount, or shared-FS path). The launcher forwards only the file PATH,
+    never the value: worker env rides ray's runtime_env, which
+    exec_command_cpu echoes into driver logs and ray persists in job metadata,
+    all in plaintext. A set key env var is rejected so it cannot silently
+    satisfy preflight while the file path is missing or unread."""
     key_file = Path(arg_path or default_path).expanduser()
+    set_vars = tuple(var for var in key_env_vars if os.environ.get(var, "").strip())
+    if set_vars:
+        names = " + ".join(set_vars)
+        raise ValueError(_file_only_env_message(names, key_file, file_env_var, provision_hint))
     try:
         key_present = bool(key_file.read_text(encoding="utf-8").strip())
     except OSError:
         key_present = False
-    # Either supply is fine; neither is fully verifiable from here (the
-    # launcher cannot probe worker nodes), so echo which one is in effect.
-    # A provider whose credential is several variables (Modal's token pair) is
-    # only satisfied by having ALL of them; a partial set is a misconfiguration
-    # that would fail every episode.
-    names = " + ".join(key_env_vars)
     if key_present:
         env[file_env_var] = str(key_file)
         print(
@@ -133,20 +140,13 @@ def sandbox_key_supply(
         # An explicitly configured path that doesn't resolve on the launcher
         # is a config error; failing every episode later is far worse.
         raise ValueError(f"{file_env_var}={arg_path} is missing or empty")
-    elif all(os.environ.get(var, "").strip() for var in key_env_vars):
-        print(
-            f"{provider} credential supply: worker environment ({names} "
-            "set here; workers are assumed to have them in their own env — "
-            "single-host inheritance or platform-injected pod env)",
-            flush=True,
-        )
     else:
         raise ValueError(
             f"the {provider} sandbox mode needs credentials: put them in a file "
-            f"({key_file}; {file_env_var} overrides) or in the "
-            f"environment as {names}. Provision the file with:\n"
+            f"({key_file}; {file_env_var} overrides). Provision the file with:\n"
             f"  {provision_hint}"
         )
+    # end
 
 
 def preflight_sdk(module: str, install_hint: str, min_version: str | None = None) -> None:
@@ -196,24 +196,38 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def _file_only_env_message(names: str, key_file: Path, file_env_var: str, provision_hint: str | None = None) -> str:
+    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
+    msg = (
+        f"{names} is set; sandbox credentials are file-only "
+        f"(env supply silently masked a missing file resolver). "
+        f"Unset {names} and put the key in {key_file} ({file_env_var} overrides)"
+    )
+    if provision_hint:
+        msg += f". Provision the file with:\n  {provision_hint}"
+    return msg
+    # end
+
+
 def resolve_provider_api_key(env_var: str, file_env_var: str, default_path: str) -> str:
-    """A provider API key: *env_var*, else the key file.
+    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
+    """A provider API key from the key file only.
 
     The file indirection (*file_env_var*, default *default_path*) exists so
     launchers can hand rollout workers a PATH instead of the secret itself:
     anything a launcher forwards rides ray's runtime_env, which is echoed into
-    driver logs and persisted in job metadata in plaintext. Env vars the
-    worker already has (platform-injected, single-host inheritance) never pass
-    through ray, so *env_var* is checked first.
+    driver logs and persisted in job metadata in plaintext. *env_var* is
+    not a supply path: if it is set, this errors and names the file to create,
+    rather than silently winning over a missing or unread file.
     """
-    key = os.environ.get(env_var, "").strip()
-    if key:
-        return key
     key_file = Path(os.environ.get(file_env_var, "").strip() or default_path).expanduser()
+    if os.environ.get(env_var, "").strip():
+        raise RuntimeError(_file_only_env_message(env_var, key_file, file_env_var))
     try:
         key = key_file.read_text(encoding="utf-8").strip()
     except OSError:
         key = ""
     if not key:
-        raise RuntimeError(f"no API key: {env_var} is unset and {key_file} is missing or empty")
+        raise RuntimeError(f"no API key: {key_file} is missing or empty ({file_env_var} overrides)")
     return key
+    # end

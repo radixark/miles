@@ -39,7 +39,6 @@ from tb2_sandbox_recipe import (
 )
 from miles.rollout.agentic.credentials import resolve_provider_api_key
 
-
 # Every knob describing ONE Daytona sandbox lives here, next to the create
 # that uses it; the backend module keeps only the fan-out knobs. Read at import:
 # a rollout worker is a fresh process per run.
@@ -154,9 +153,11 @@ _DEFAULT_API_KEY_FILE = "~/.config/daytona/api_key"
 
 
 def resolve_api_key() -> str:
-    """The Daytona API key: DAYTONA_API_KEY, else the key file (see
-    recipe.resolve_provider_api_key for the file-indirection rationale)."""
+    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
+    """The Daytona API key from the key file (see
+    credentials.resolve_provider_api_key). A set DAYTONA_API_KEY is rejected."""
     return resolve_provider_api_key("DAYTONA_API_KEY", "DAYTONA_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
+    # end
 
 
 _client_lock = threading.Lock()

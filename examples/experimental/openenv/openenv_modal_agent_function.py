@@ -17,20 +17,22 @@ backends, this variant needs the pinned tbench2_env install from the README
 server).
 
 Credentials are the one place Modal does not fit the other backends' shape: there
-is no single API key, so nothing here reads or forwards one. The SDK resolves
-MODAL_TOKEN_ID + MODAL_TOKEN_SECRET from the worker's own environment, else the
+is no single API key, so nothing here reads or forwards one. The SDK reads the
 config file at MODAL_CONFIG_PATH (default ``~/.modal.toml``) — and the launcher
-forwards that PATH, never the token, on the same reasoning as the other
-providers' key files (see openenv_launch_common).
+forwards that PATH, never a token, on the same reasoning as the other
+providers' key files (see openenv_launch_common). A set MODAL_TOKEN_ID /
+MODAL_TOKEN_SECRET is rejected so env supply cannot silently mask a missing file.
 
 Env vars (the agent-loop ones in ``openenv_agent_function`` apply too):
   OPENENV_TB2_TASKS_DIR       path to a terminal-bench-2 checkout. The first
                     episode of a task pays its image build; repeats hit
                     Modal's layer cache, and all tasks share every layer but
                     the last (see tb2_sandbox_modal.task_image).
-  MODAL_TOKEN_ID / MODAL_TOKEN_SECRET / MODAL_CONFIG_PATH   credential supply,
-                    read by the SDK itself. MODAL_PROFILE / MODAL_ENVIRONMENT
-                    select a profile / workspace environment when set.
+  MODAL_CONFIG_PATH             credential file the SDK reads (default
+                    ~/.modal.toml). File-only: a set MODAL_TOKEN_ID /
+                    MODAL_TOKEN_SECRET is rejected. MODAL_PROFILE /
+                    MODAL_ENVIRONMENT select a profile / workspace environment
+                    when set.
   OPENENV_MODAL_APP                app the sandboxes are created under
                     (default openenv-tbench2) — what a sweep scopes to.
   OPENENV_MODAL_CREATE_CONCURRENCY max in-flight sandbox creates (default 4).
