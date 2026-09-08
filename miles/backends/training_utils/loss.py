@@ -39,12 +39,10 @@ def compute_advantages_and_returns(
     `args.normalize_advantages` is True, advantages are whitened across the
     data-parallel group using masked statistics.
 
-    Early returns on intermediate pipeline stages, decided from the parallel
-    state rather than from `log_probs` and `values` both being None: under
-    `--use-rollout-logprobs` every stage holds log-probs while only the last
-    stage holds values. On the last stage it also returns early when neither
-    is present, unless the stage is explicitly allowed to derive zero-KL
-    shapes without the standalone actor pass.
+    Early returns on intermediate pipeline stages; the last stage also
+    returns early when neither `log_probs` nor `values` is present, unless
+    it is explicitly allowed to derive zero-KL shapes without the standalone
+    actor pass.
 
     Args:
         args: Configuration specifying estimator type, KL coefficient,
@@ -65,10 +63,7 @@ def compute_advantages_and_returns(
     total_lengths: list[int] = rollout_data.get("total_lengths")
     max_seq_lens: list[int] | None = rollout_data.get("max_seq_lens", None)
 
-    # return when not the last pp stage. Ask the parallel state directly:
-    # inferring "intermediate stage" from log_probs and values both being None
-    # breaks under --use-rollout-logprobs, where log_probs come from the rollout
-    # and are present on every stage while values exist only on the last one.
+    # under --use-rollout-logprobs every stage holds log-probs, so ask the parallel state, not the tensors
     if not get_parallel_state().is_pp_last_stage:
         return
     if log_probs is None and values is None and not allow_missing_log_probs:
