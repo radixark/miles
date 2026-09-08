@@ -365,6 +365,12 @@ def test_ungrounded_tags_test_names_and_pull_requests_are_rejected(overrides):
         validate_grounded(**overrides)
 
 
+def test_prompt_states_the_reason_limit_the_policy_enforces():
+    prompt, _ = ANALYZER.load_prompt(PROMPT_PATH)
+    limit = ANALYZER.load_policy(POLICY_PATH).max_reason_chars
+    assert f"at most {limit} characters" in prompt
+
+
 def test_audit_names_our_own_validation_rule_but_never_foreign_text():
     ours = ANALYZER._analysis_error_audit(ValueError("tag is not grounded in the evidence"))
     assert ours["validation_reason"] == "tag is not grounded in the evidence"

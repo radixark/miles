@@ -5,6 +5,10 @@ import sys
 import urllib.error
 from pathlib import Path
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+
 ROOT = Path(__file__).parents[3]
 SCRIPT_DIR = ROOT / ".github/workflows/scripts"
 HANDLER_PATH = SCRIPT_DIR / "lark_notify.py"
@@ -376,4 +380,4 @@ def test_policy_prompt_and_schema_are_git_versioned_and_strict():
     assert policy["enabled"] is False and policy["max_model_calls"] == 1
     assert schema["additionalProperties"] is False
     assert schema["properties"]["analyses"]["items"]["additionalProperties"] is False
-    assert "untrusted" in prompt and "one short" in prompt
+    assert "untrusted" in prompt and "exactly one factual sentence" in prompt
