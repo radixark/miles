@@ -165,6 +165,84 @@ async def test_sampling_resolves_against_the_pushed_version(service):
     assert service.backend.named("sample")[0]["lora_name"] == f"{model_id}@1"
 
 
+async def test_sampler_publication_commits_on_disk_and_rides_requests(service):
+    """The PEFT export is the commit point; the push and every sample request
+    carry the dir so the engine can backfill the version from disk."""
+    model_id = await created_model(service)
+    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", request_id)).result["path"]
+
+    disk_dir = service._checkpoint_dir(model_id, "sampler_weights", "1")
+    assert service.backend.named("export_slot")[0]["path"] == disk_dir
+    assert service.backend.named("push_slot")[0]["lora_path"] == disk_dir
+
+    sample_id, _ = service.submit_sample(
+        "tenant",
+        {
+            "model_path": path,
+            "num_samples": 1,
+            "prompt_tokens": [1],
+            "sampling_params": {"max_tokens": 2},
+            "prompt_logprobs": False,
+            "topk_prompt_logprobs": 0,
+        },
+    )
+    await await_settled(service, "tenant", sample_id)
+    assert service.backend.named("sample")[0]["lora_path"] == disk_dir
+
+
+async def test_warm_push_failure_still_publishes_the_version(service):
+    """The engine push only warms the cache: with the export on disk the
+    version exists, and sample requests backfill it from the carried path."""
+    model_id = await created_model(service)
+    service.backend.fail_on["push_slot"] = RuntimeError("engine down")
+    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    promise = await await_settled(service, "tenant", request_id)
+    assert promise.result["path"] == f"tinker://{model_id}/sampler_weights/1"
+
+    sample_id, _ = service.submit_sample(
+        "tenant",
+        {
+            "model_path": promise.result["path"],
+            "num_samples": 1,
+            "prompt_tokens": [1],
+            "sampling_params": {"max_tokens": 2},
+            "prompt_logprobs": False,
+            "topk_prompt_logprobs": 0,
+        },
+    )
+    promise = await await_settled(service, "tenant", sample_id)
+    assert promise.result["sequences"]
+
+
+async def test_failed_export_burns_the_version_number(service):
+    """A failed export leaves no version behind: the number is burned, the
+    next save publishes under the next one, and sampling the burned number is
+    a user error."""
+    model_id = await created_model(service)
+    service.backend.fail_on["export_slot"] = RuntimeError("disk full")
+    failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    promise = await await_settled(service, "tenant", failed)
+    assert (promise.state, promise.error_category) == (FAILED, "server")
+
+    retried = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
+    promise = await await_settled(service, "tenant", retried)
+    assert promise.result["path"] == f"tinker://{model_id}/sampler_weights/2"
+
+    with pytest.raises(UserInputError):
+        service.submit_sample(
+            "tenant",
+            {
+                "model_path": f"tinker://{model_id}/sampler_weights/1",
+                "num_samples": 1,
+                "prompt_tokens": [1],
+                "sampling_params": {"max_tokens": 2},
+                "prompt_logprobs": False,
+                "topk_prompt_logprobs": 0,
+            },
+        )
+
+
 async def test_lease_expiry_reclaims_the_tenant(service):
     session_id = service.create_session("tenant", {})
     model_id = await created_model(service)

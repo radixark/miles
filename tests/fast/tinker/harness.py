@@ -23,11 +23,15 @@ class FakeBackend(ExecutorBackend):
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.fail_next: Exception | None = None
+        self.fail_on: dict[str, Exception] = {}
 
     def _record(self, name: str, **kwargs) -> None:
         self.calls.append((name, kwargs))
         if self.fail_next is not None:
             error, self.fail_next = self.fail_next, None
+            raise error
+        error = self.fail_on.pop(name, None)
+        if error is not None:
             raise error
 
     def named(self, name: str) -> list[dict]:
