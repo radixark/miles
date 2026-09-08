@@ -72,6 +72,20 @@ def test_script_args_rejects_negative_kl_loss_coefficient() -> None:
         )
 
 
+@pytest.mark.parametrize("kl_loss_type", ["k1", "k2", "k3", "low_var_kl"])
+def test_grpo_args_forward_selected_kl_estimator(kl_loss_type: str) -> None:
+    args = ScriptArgs(hardware="H200", kl_loss_coef=0.01, kl_loss_type=kl_loss_type)
+    train_args = _grpo_args(args)
+    assert f"--kl-loss-type {kl_loss_type} " in train_args
+    assert "--use-kl-loss " in train_args
+    assert "--kl-loss-coef 0.01 " in train_args
+
+
+def test_script_args_reject_unknown_kl_estimator() -> None:
+    with pytest.raises(ValueError, match="kl_loss_type must be"):
+        ScriptArgs(hardware="H200", kl_loss_type="unknown")
+
+
 def test_grpo_args_uses_configured_repetition_reward_penalty() -> None:
     args = ScriptArgs(
         hardware="H200",

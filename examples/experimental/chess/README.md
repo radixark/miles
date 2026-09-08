@@ -171,6 +171,12 @@ Set `--kl-loss-coef` to a positive value to regularize the policy toward the
 reference model. The default is `0.0`, preserving the original unregularized
 recipe.
 
+Select the estimator with `--kl-loss-type`. The backward-compatible recipe
+default is `low_var_kl`, which clamps both the log-ratio and the resulting
+per-token penalty. Use `--kl-loss-type k3 --kl-loss-coef 0.01` to retain KL
+regularization without those hard caps. This changes the estimator, not the
+reward penalty; the additive repetition deduction remains separately configured.
+
 Set `--learning-rate` to control the constant Adam learning rate. Its default is
 `1e-6`, preserving the original recipe.
 

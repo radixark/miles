@@ -12,7 +12,8 @@ Args:
     run_id: Reproducible identifier for outputs and telemetry.
     tito_model: Native TITO tokenizer family matching the selected checkpoint.
     learning_rate: Constant Adam learning rate used for policy updates.
-    kl_loss_coef: Coefficient for the low-variance KL regularization loss.
+    kl_loss_coef: Coefficient for the KL regularization loss.
+    kl_loss_type: KL estimator; use ``k3`` to avoid the ``low_var_kl`` hard caps.
     repetition_reward_penalty: Reward subtracted once from repetitive rollouts.
     max_llm_retries_per_move: Retries after an invalid answer; training defaults to zero.
     fully_async: Run rollout generation continuously on disaggregated nodes.
@@ -51,7 +52,7 @@ import miles.utils.external_utils.command_utils as U
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _RADIX_RAFT_REPOSITORY = "https://github.com/radixark/radix_raft.git"
-_RADIX_RAFT_REVISION = "95eb7e0aa855baaea2ae8c219ebec8c6278c6007"
+_RADIX_RAFT_REVISION = "0bbabe1a87ce4f064eae08baf3da3fd6604a22af"
 
 
 @dataclass
@@ -82,6 +83,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     max_seq_len: int = 65536
     learning_rate: float = 1e-6
     kl_loss_coef: float = 0.0
+    kl_loss_type: Literal["k1", "k2", "k3", "low_var_kl"] = "low_var_kl"
     repetition_reward_penalty: float = 0.1
     fully_async: bool = False
     train_num_nodes: int = 1
@@ -140,6 +142,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("max_llm_retries_per_move must be a non-negative integer")
         if self.kl_loss_coef < 0:
             raise ValueError("kl_loss_coef must be nonnegative")
+        if self.kl_loss_type not in ("k1", "k2", "k3", "low_var_kl"):
+            raise ValueError("kl_loss_type must be k1, k2, k3, or low_var_kl")
         if self.repetition_reward_penalty < 0:
             raise ValueError("repetition_reward_penalty must be nonnegative")
         if self.learning_rate <= 0:
@@ -349,8 +353,8 @@ def _performance_args(args: ScriptArgs) -> str:
 
 def _grpo_args(args: ScriptArgs) -> str:
     tis_args = "--use-tis " if args.fully_async else ""
-    # The chess postprocessor owns shaping so invalid-move trajectories stay at zero.
-    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty 0 {tis_args}"
+    # The chess postprocessor applies the episode penalty after assigning the base reward.
+    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type {args.kl_loss_type} --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty 0 {tis_args}"
 
 
 def _optimizer_args(args: ScriptArgs) -> str:
