@@ -339,6 +339,15 @@ def test_job_log_download_is_bounded_when_the_body_never_ends(monkeypatch):
     assert gh.job_log(10, 32) == "x" * 32
 
 
+def test_every_configuration_file_the_analyzer_reads_is_checked_out():
+    analyzer = HANDLER.analyze_failures.__globals__
+    workflow = (SCRIPT_DIR.parents[0] / "ci-lark-notify.yml").read_text()
+    repo_root = SCRIPT_DIR.parents[2]
+    for name in ("DEFAULT_POLICY_PATH", "DEFAULT_SCHEMA_PATH", "DEFAULT_PROMPT_PATH", "DEFAULT_TAGS_PATH"):
+        relative = analyzer[name].relative_to(repo_root).as_posix()
+        assert f"\n            {relative}\n" in workflow, f"{relative} is missing from sparse-checkout"
+
+
 def test_notifier_workflow_has_pinned_read_only_identity_boundaries():
     workflow = WORKFLOW_PATH.read_text()
     assert "workflow_run:" in workflow and 'workflows: ["PR Test"]' in workflow

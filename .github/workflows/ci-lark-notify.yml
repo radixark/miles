@@ -49,6 +49,7 @@ jobs:
             .github/workflows/prompts/ci-failure-analysis.md
             .github/workflows/policies/ci-failure-analysis.json
             .github/workflows/policies/ci-failure-response-schema.json
+            .github/workflows/policies/ci-failure-tags.json
           sparse-checkout-cone-mode: false
 
       - name: Set up Python
