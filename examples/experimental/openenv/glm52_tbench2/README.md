@@ -68,11 +68,9 @@ official `docker_image`. Point `OPENENV_TB2_TASKS_DIR` at it.
 sandboxes (128 in the reference config; each 2 vCPU / 4 GiB / 10 GiB). Keep
 the credential in a file outside git:
 
-<!-- 2026-09-09, tianqi, file-only sandbox credentials (#3111) -->
 ```bash
 mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key && chmod 600 ~/.config/daytona/api_key
 ```
-<!-- end -->
 
 Images are built per task and cached by definition hash (first episode of a
 task ~10 min, repeats ~1 min).

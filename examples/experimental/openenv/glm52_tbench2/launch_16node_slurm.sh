@@ -15,9 +15,7 @@ set -uo pipefail
 : "${MILES_ROOT:?path to this miles checkout}"
 : "${CONTAINER_IMAGE:?squashfs image with the miles runtime}"
 : "${CONTAINER_MOUNTS:?must expose the checkouts, model/data dirs and node-local scratch}"
-# 2026-09-09, tianqi, file-only sandbox credentials (#3111)
 : "${DAYTONA_API_KEY_FILE:?path to the Daytona key file (chmod 600, never in git)}"
-# end
 : "${FABRIC_PREFIX:?leading octets of the compute-fabric IP, e.g. 10.4.}"
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
@@ -40,9 +38,7 @@ srun --overlap --nodes=1 --ntasks=1 --gpus-per-node=4 -w "${nodes[0]}" $C bash -
     ray status 2>/dev/null | grep -q '/$ngpu_total\.0 GPU' && break
     echo \"waiting for ray nodes... (\$t/90)\"; sleep 10
   done
-  # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
   export DAYTONA_API_KEY_FILE=$DAYTONA_API_KEY_FILE
-  # end
   export MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_ADDR=$head_ip OPENENV_RUN_ID=\${OPENENV_RUN_ID:-$SLURM_JOB_ID}
   cd $MILES_ROOT
   python3 $RECIPE train --num-nodes $SLURM_JOB_NUM_NODES $RECIPE_ARGS

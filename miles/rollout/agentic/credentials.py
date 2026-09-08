@@ -11,11 +11,9 @@ PROVIDER_CREDENTIALS holds one entry per backend in
 openenv_sandbox_common.AGENT_MODULES; a provider is added there, not by
 growing a branch:
 
-  # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
   key_env_vars   vars that must be UNSET; a set value is rejected (env supply
                  used to silently mask a missing file resolver). Modal's
                  pair is both halves
-  # end
   file_env_var   the path-valued var the launcher forwards instead of secrets
   forward        addresses/selectors, safe to forward by value
   target         (var, label, default description) echoed so a launch says
@@ -62,10 +60,8 @@ PROVIDER_CREDENTIALS = {
     },
     "modal": {
         "provider": "Modal",
-        # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
         # Modal has no single API key: the SDK reads the config file whose path
         # MODAL_CONFIG_PATH names. Token env vars are rejected, not used.
-        # end
         "key_env_vars": ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"),
         "file_env_var": "MODAL_CONFIG_PATH",
         "arg_attr": "modal_config_file",
@@ -95,9 +91,7 @@ def forward_address(env: dict[str, str], var: str, value: str) -> None:
         raise ValueError(
             f"{var} looks like it embeds credentials ('@'), and anything forwarded "
             "to rollout workers is logged in plaintext by ray. Put the credential "
-            # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
             "in the provider's key file and leave a bare address here."
-            # end
         )
     env[var] = value
 
@@ -112,7 +106,6 @@ def sandbox_key_supply(
     default_path: str,
     provision_hint: str,
 ) -> None:
-    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
     """Key-supply contract, shared by the sandbox backends: rollout workers
     read the provider credential from a file they can read (a dotfile, K8s
     Secret mount, or shared-FS path). The launcher forwards only the file PATH,
@@ -146,7 +139,6 @@ def sandbox_key_supply(
             f"({key_file}; {file_env_var} overrides). Provision the file with:\n"
             f"  {provision_hint}"
         )
-    # end
 
 
 def preflight_sdk(module: str, install_hint: str, min_version: str | None = None) -> None:
@@ -197,7 +189,6 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 def _file_only_env_message(names: str, key_file: Path, file_env_var: str, provision_hint: str | None = None) -> str:
-    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
     msg = (
         f"{names} is set; sandbox credentials are file-only "
         f"(env supply silently masked a missing file resolver). "
@@ -206,11 +197,9 @@ def _file_only_env_message(names: str, key_file: Path, file_env_var: str, provis
     if provision_hint:
         msg += f". Provision the file with:\n  {provision_hint}"
     return msg
-    # end
 
 
 def resolve_provider_api_key(env_var: str, file_env_var: str, default_path: str) -> str:
-    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
     """A provider API key from the key file only.
 
     The file indirection (*file_env_var*, default *default_path*) exists so
@@ -230,4 +219,3 @@ def resolve_provider_api_key(env_var: str, file_env_var: str, default_path: str)
     if not key:
         raise RuntimeError(f"no API key: {key_file} is missing or empty ({file_env_var} overrides)")
     return key
-    # end

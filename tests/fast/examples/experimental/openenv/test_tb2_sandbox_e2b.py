@@ -238,7 +238,6 @@ def test_task_build_resources_floors(tmp_path: Path):
 # --- key supply --------------------------------------------------------------
 
 
-# 2026-09-09, tianqi, invert env-wins tests for file-only supply (#3111)
 def test_resolve_api_key_rejects_a_set_env_var(monkeypatch, tmp_path: Path):
     key_file = tmp_path / "api_key"
     key_file.write_text("e2b_from_file\n")
@@ -246,9 +245,6 @@ def test_resolve_api_key_rejects_a_set_env_var(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("E2B_API_KEY_FILE", str(key_file))
     with pytest.raises(RuntimeError, match="E2B_API_KEY is set"):
         sandbox.resolve_api_key()
-
-
-# end
 
 
 def test_resolve_api_key_falls_back_to_file(monkeypatch, tmp_path: Path):

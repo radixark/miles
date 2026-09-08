@@ -62,16 +62,12 @@ def test_a_forwarded_url_may_not_smuggle_a_credential():
 # --- launcher-side key supply -------------------------------------------------
 
 
-# 2026-09-09, tianqi, file-only sandbox credentials (#3111)
 @pytest.fixture(autouse=True)
 def _clear_provider_key_env(monkeypatch):
     """Ambient key env vars would fail file-only tests that never set them."""
     for spec in PROVIDER_CREDENTIALS.values():
         for var in spec["key_env_vars"]:
             monkeypatch.delenv(var, raising=False)
-
-
-# end
 
 
 def _supply(env, spec_name, *, arg_path="", **overrides):
@@ -96,16 +92,12 @@ def test_readable_file_forwards_the_path_never_the_value(tmp_path):
     assert "dtn_secret_value" not in str(env)
 
 
-# 2026-09-09, tianqi, set key env var is rejected even with a readable file (#3111)
 def test_set_key_env_is_rejected_even_when_the_file_is_readable(monkeypatch, tmp_path):
     key_file = tmp_path / "api_key"
     key_file.write_text("dtn_from_file\n")
     monkeypatch.setenv("DAYTONA_API_KEY", "dtn_from_env")
     with pytest.raises(ValueError, match="DAYTONA_API_KEY is set"):
         _supply({}, "daytona", arg_path=str(key_file))
-
-
-# end
 
 
 def test_configured_path_that_does_not_resolve_is_an_error(tmp_path):
@@ -120,7 +112,6 @@ def test_empty_file_is_not_a_credential(tmp_path):
         _supply({}, "e2b", arg_path=str(key_file))
 
 
-# 2026-09-09, tianqi, invert env-wins tests for file-only supply (#3111)
 def test_unreadable_path_does_not_fall_back_to_env(monkeypatch, tmp_path):
     """A path that raises on read (here: a directory) is not a credential, and
     a set key env var must not silently satisfy preflight."""
@@ -146,9 +137,6 @@ def test_modal_token_env_is_rejected(monkeypatch, tmp_path):
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "as-456")
     with pytest.raises(ValueError, match="file-only"):
         _supply({}, "modal", default_path=str(tmp_path / "absent"))
-
-
-# end
 
 
 def test_modal_config_file_is_forwarded_by_path(tmp_path):
@@ -213,7 +201,6 @@ def test_version_tuple_reads_leading_numbers():
 # --- worker-side key resolution -------------------------------------------------
 
 
-# 2026-09-09, tianqi, invert env-wins tests for file-only supply (#3111)
 def test_resolve_rejects_a_set_key_env_var(monkeypatch, tmp_path):
     key_file = tmp_path / "api_key"
     key_file.write_text("from_file\n")
@@ -231,9 +218,6 @@ def test_resolve_reads_the_file_and_strips_whitespace(monkeypatch, tmp_path):
     assert resolve_provider_api_key("PROV_API_KEY", "PROV_API_KEY_FILE", "~/nope") == "from_file"
 
 
-# end
-
-
 def test_resolve_default_path_expands_the_home_dir(monkeypatch, tmp_path):
     (tmp_path / ".config").mkdir()
     (tmp_path / ".config" / "api_key").write_text("from_default\n")
@@ -243,12 +227,8 @@ def test_resolve_default_path_expands_the_home_dir(monkeypatch, tmp_path):
     assert resolve_provider_api_key("PROV_API_KEY", "PROV_API_KEY_FILE", "~/.config/api_key") == "from_default"
 
 
-# 2026-09-09, tianqi, file-only error names the key file (#3111)
 def test_resolve_missing_key_names_the_file(monkeypatch, tmp_path):
     monkeypatch.delenv("PROV_API_KEY", raising=False)
     monkeypatch.setenv("PROV_API_KEY_FILE", str(tmp_path / "absent"))
     with pytest.raises(RuntimeError, match="missing or empty"):
         resolve_provider_api_key("PROV_API_KEY", "PROV_API_KEY_FILE", "~/nope")
-
-
-# end

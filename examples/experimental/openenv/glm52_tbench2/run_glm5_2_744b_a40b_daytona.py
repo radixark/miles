@@ -86,9 +86,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     eval_interval: int = 10
     eval_prompt_data: str = ""  # default: <data_dir>/tbench2_eval.jsonl
     n_samples_per_eval_prompt: int = 2
-    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
     daytona_api_key_file: str = os.environ.get("DAYTONA_API_KEY_FILE", "")
-    # end
     # Load initial weights from this checkpoint dir instead of this run's own
     # (empty) save path. For evaluating an existing checkpoint: point at the
     # source run's checkpoints/, add --start-rollout-id 0 to --extra-args, and
@@ -332,7 +330,6 @@ def _execute_train(args: ScriptArgs):
         "OPENENV_LAUNCHER": args.openenv_launcher,
         "OPENENV_RUN_ID": args.openenv_run_id,
     }
-    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
     spec = PROVIDER_CREDENTIALS["daytona"]
     sandbox_key_supply(
         extra_env_vars,
@@ -343,7 +340,6 @@ def _execute_train(args: ScriptArgs):
         default_path=spec["default_path"],
         provision_hint=spec["provision_hint"],
     )
-    # end
 
     U.execute_train(
         train_args=train_args,

@@ -275,13 +275,11 @@ _DEFAULT_API_KEY_FILE = "~/.config/e2b/api_key"
 
 
 def resolve_api_key() -> str:
-    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
     """The E2B API key from the key file (see
     credentials.resolve_provider_api_key). A set E2B_API_KEY is rejected.
     AgentENV does not enforce keys today, but recent SDKs validate the format
     client-side — provision a well-formed one (e2b_ + 40 hex chars)."""
     return resolve_provider_api_key("E2B_API_KEY", "E2B_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
-    # end
 
 
 def bake(tasks_dir: Path, task_id: str, force: bool) -> None:

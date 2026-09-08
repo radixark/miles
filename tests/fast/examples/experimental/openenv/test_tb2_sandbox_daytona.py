@@ -38,12 +38,10 @@ def test_make_daytona_reuses_one_client(monkeypatch, tmp_path):
     """One client per call is a socket leak: the SDK owns a connection pool with
     no close(), and this runs once per create attempt, retries included."""
     monkeypatch.setattr(sandbox, "_client", None)
-    # 2026-09-09, tianqi, file-only sandbox credentials (#3111)
     key_file = tmp_path / "api_key"
     key_file.write_text("dtn_test\n")
     monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
     monkeypatch.setenv("DAYTONA_API_KEY_FILE", str(key_file))
-    # end
     built = []
 
     class _Daytona:
@@ -60,7 +58,6 @@ def test_make_daytona_reuses_one_client(monkeypatch, tmp_path):
     assert all(c is clients[0] for c in clients)
 
 
-# 2026-09-09, tianqi, invert env-wins tests for file-only supply (#3111)
 def test_resolve_api_key_rejects_a_set_env_var(monkeypatch, tmp_path: Path):
     key_file = tmp_path / "api_key"
     key_file.write_text("dtn_from_file\n")
@@ -68,9 +65,6 @@ def test_resolve_api_key_rejects_a_set_env_var(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("DAYTONA_API_KEY_FILE", str(key_file))
     with pytest.raises(RuntimeError, match="DAYTONA_API_KEY is set"):
         sandbox.resolve_api_key()
-
-
-# end
 
 
 def test_resolve_api_key_falls_back_to_file(monkeypatch, tmp_path: Path):

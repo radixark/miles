@@ -53,7 +53,6 @@ documented in the [AgentENV docs](https://kvcache-ai.github.io/AgentENV/).
 
 ## 2. Point the E2B SDK at it
 
-<!-- 2026-09-09, tianqi, file-only sandbox credentials (#3111) -->
 ```bash
 pip install -e '<miles>[e2b]'   # e2b>=2.12: older releases send the template name in a field AgentENV does not read
 export E2B_API_URL=http://<server>:8000       # control plane
@@ -64,7 +63,6 @@ export OPENENV_E2B_URL_SCHEME=http
 # recent SDKs do validate the format client-side
 mkdir -p ~/.config/e2b && echo e2b_0000000000000000000000000000000000000000 > ~/.config/e2b/api_key
 ```
-<!-- end -->
 
 ## 3. Train
 

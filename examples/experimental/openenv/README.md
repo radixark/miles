@@ -64,7 +64,6 @@ from, and `OPENENV_SANDBOX_BACKEND`, the provider to build them on. Neither has
 a default — the provider decides whose quota a run spends and which credentials
 have to be present — so setting one without the other fails at launch.
 
-<!-- 2026-09-09, tianqi, file-only sandbox credentials (#3111) -->
 Every provider authenticates the same way: a key *file* whose *path* the
 launcher forwards (`~/.config/daytona/api_key`, `~/.config/e2b/api_key`, or
 Modal's `~/.modal.toml`). It never forwards the value, which ray's
@@ -74,7 +73,6 @@ env supply used to silently mask a missing file resolver. The
 agent-function docstrings cover what that means on a multi-host cluster.
 CI runners whose secrets are env-shaped write the file in a one-line step
 before launching.
-<!-- end -->
 
 ### Daytona
 
