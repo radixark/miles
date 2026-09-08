@@ -13,6 +13,7 @@ from tests.fast.backends.sglang_utils.conftest import tiny_model_path
 
 pytest.importorskip("sglang")
 
+import sglang.srt.server_args as sglang_server_args
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv, server_args_to_argv
@@ -20,6 +21,7 @@ from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 from miles.utils.workers.argv_utils import _actions_by_dest, _render_action_argv, _resolve_action
 
 _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
+    "grpc_worker_threads": "Configured through SGLANG_GRPC_WORKER_THREADS and declared Arg(no_cli=True).",
     "custom_sigquit_handler": "A Python-only callable hook; sglang registers no CLI option for it.",
     "stat_loggers": "A Python-only injection point; sglang registers no CLI option for it.",
     "uses_mamba_radix_cache": "Derived inside __post_init__; sglang registers no CLI option for it.",
@@ -86,19 +88,34 @@ class TestServerArgsToArgv:
         _assert_roundtrips(server_args)
 
     def test_the_identity_flags_are_always_rendered_exactly_once(self):
-        """Model path, addressing, and device must stay explicit even at CLI defaults."""
+        """Model path and addressing must stay explicit even at CLI defaults."""
         argv = server_args_to_argv(_server_args())
-        for flag in ("--trust-remote-code", "--model-path", "--host", "--port", "--device"):
+        for flag in ("--trust-remote-code", "--model-path", "--host", "--port"):
             assert argv.count(flag) == 1
 
-    def test_an_unspecified_device_renders_the_auto_detected_accelerator(self, monkeypatch):
-        """An unset device renders the accelerator chosen by ServerArgs instead of the text None."""
-        monkeypatch.setattr("sglang.srt.server_args.get_device", lambda: "cuda")
+    @pytest.mark.parametrize("include_device", [False, True], ids=["omitted", "none"])
+    def test_an_unspecified_device_keeps_cli_auto_detection(self, monkeypatch, include_device):
+        """Omitting the flag preserves auto-detection across eager and deferred resolution."""
+        if hasattr(sglang_server_args, "get_device"):
+            monkeypatch.setattr(sglang_server_args, "get_device", lambda: "cuda")
         server_args = _server_args(sglang_overrides={"device": None})
+        if not include_device:
+            server_args.pop("device")
         argv = server_args_to_argv(server_args)
 
-        assert server_args["device"] is None
-        assert argv[argv.index("--device") + 1] == "cuda"
+        assert server_args.get("device") is None
+        assert "--device" not in argv
+        _assert_roundtrips(server_args)
+
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
+    def test_an_explicit_device_is_preserved(self, device):
+        """A caller-selected device crosses the CLI boundary unchanged."""
+        server_args = _server_args(sglang_overrides={"device": device})
+        argv = server_args_to_argv(server_args)
+
+        assert argv.count("--device") == 1
+        assert argv[argv.index("--device") + 1] == device
+        assert parse_server_args_argv(argv).device == device
         _assert_roundtrips(server_args)
 
     def test_a_prefill_worker_roundtrips(self):
@@ -130,8 +147,8 @@ class TestServerArgsToArgv:
         assert server_args["dtype"] == "float16"
         _assert_roundtrips(server_args)
 
-    def test_dp_attention_defaults_are_normalized_exactly_once(self):
-        """Raw DP inputs are compared before ServerArgs applies interacting defaults."""
+    def test_dp_attention_inputs_preserve_the_server_args_resolution_boundary(self):
+        """Preserve raw inputs with deferred resolution and normalize once on legacy SGLang."""
         server_args = _server_args(
             args=_args(
                 rollout_num_gpus_per_engine=2,
@@ -148,8 +165,11 @@ class TestServerArgsToArgv:
 
         assert "--schedule-conservativeness" not in argv
         assert argv[argv.index("--chunked-prefill-size") + 1] == "4096"
-        assert parsed.schedule_conservativeness == expected.schedule_conservativeness == 0.3
-        assert parsed.chunked_prefill_size == expected.chunked_prefill_size == 2048
+        deferred_resolution = hasattr(ServerArgs, "resolve_once")
+        expected_schedule = 1.0 if deferred_resolution else 0.3
+        expected_chunk_size = 4096 if deferred_resolution else 2048
+        assert parsed.schedule_conservativeness == expected.schedule_conservativeness == expected_schedule
+        assert parsed.chunked_prefill_size == expected.chunked_prefill_size == expected_chunk_size
         _assert_roundtrips(server_args)
 
     def test_sglang_overrides_roundtrip(self):

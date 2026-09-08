@@ -102,6 +102,8 @@ async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(mo
         url="http://localhost/generate",
         sampling_params={"max_new_tokens": 32},
     )
+
+
 @pytest.mark.asyncio
 async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
     samples = [
