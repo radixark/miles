@@ -1,7 +1,6 @@
 """runtime.py is the miles translator: rows -> RolloutBatch keys, neutral
 sampling payloads -> sglang /generate requests, engine responses -> sequences."""
 
-import math
 from argparse import Namespace
 
 import pytest
@@ -49,45 +48,6 @@ async def test_forward_backward_merges_worker_replicas():
         {"loss": 1.0, "logprobs": [pytest.approx(-0.1)]},
         {"loss": 2.0, "logprobs": [pytest.approx(-0.2)]},
     ]
-
-
-@pytest.mark.parametrize(
-    "loss_fn, config, expected",
-    [
-        ("cross_entropy", {}, -2 * math.log(0.25) + 0.5 * math.log(0.5)),
-        ("importance_sampling", {}, -3.5),
-        ("ppo", {}, -1.6),
-        ("ppo", {"clip_low_threshold": 0.6, "clip_high_threshold": 1.5}, -2.4),
-        ("cispo", {}, 0.5 * math.log(0.25) - 4 * math.log(0.5)),
-        (
-            "cispo",
-            {"clip_low_threshold": 0.75, "clip_high_threshold": 1.5},
-            0.75 * math.log(0.25) - 3 * math.log(0.5),
-        ),
-        ("dro", {}, 0.05 * math.log(2) ** 2),
-        ("dro", {"beta": 0.3}, 0.3 * math.log(2) ** 2),
-    ],
-)
-async def test_forward_only_computes_requested_loss(monkeypatch, loss_fn, config, expected):
-    backend = MilesBackend(Namespace(), trainer=None, router_url="http://router")
-    logprobs = torch.tensor([math.log(0.25), math.log(0.5)])
-    row = _row(
-        [1, 2, 3], weights=[2.0, -0.5], advantages=[-1.0, 2.0], sampling_logprobs=[math.log(0.5), math.log(0.25)]
-    )
-    other = _row([4, 5], weights=[3.0], advantages=[0.0], sampling_logprobs=[-0.25])
-
-    async def fake_run_unit(method, unit_id, train_data):
-        assert method == "forward_only_logprobs"
-        assert unit_id == 7
-        replica = {"sample_indices": [1, 0], "logprobs": [torch.tensor([-0.25]), logprobs]}
-        return [None, replica, replica]
-
-    monkeypatch.setattr("miles.tinker.runtime._box_get", lambda box: box)
-    backend._run_unit = fake_run_unit
-    outputs = await backend.forward_only(7, [(0, row), (1, other)], loss_fn, config)
-    assert outputs[0]["loss"] == pytest.approx(expected, abs=1e-6)
-    assert outputs[0]["logprobs"] == pytest.approx(logprobs.tolist())
-    assert outputs[1] == {"loss": 0.75 if loss_fn == "cross_entropy" else 0.0, "logprobs": [-0.25]}
 
 
 class TestGenerateRequest:

@@ -11,7 +11,6 @@ import asyncio
 import uuid
 from argparse import Namespace
 
-from miles.backends.training_utils.loss_hub.tinker_losses import compute_per_datum_losses
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.service import ExecutorBackend
 from miles.tinker.core.types import UserInputError
@@ -50,20 +49,16 @@ class MilesBackend(ExecutorBackend):
         return [by_index[index] for index in range(len(slot_rows))]
 
     async def forward_only(self, unit_id: int, slot_rows: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
-        train_data = _build_train_data(slot_rows)
-        train_data["loss_fn_config"] = loss_fn_config
-        worker_results = await self._run_unit("forward_only_logprobs", unit_id, train_data)
-        by_index = {}
+        worker_results = await self._run_unit("forward_only_logprobs", unit_id, _build_train_data(slot_rows))
+        by_index: dict[int, dict] = {}
         for box in worker_results:
             if box is None:
                 continue
             value = _box_get(box)
             for index, logprobs in zip(value["sample_indices"], value["logprobs"], strict=True):
                 if index not in by_index:
-                    by_index[index] = logprobs
-        log_probs = [by_index[index] for index in range(len(slot_rows))]
-        losses = compute_per_datum_losses(log_probs, batch=train_data, loss_fn=loss_fn)
-        return [{"loss": float(loss), "logprobs": lp.tolist()} for lp, loss in zip(log_probs, losses, strict=True)]
+                    by_index[index] = {"loss": 0.0, "logprobs": logprobs.tolist()}
+        return [by_index[index] for index in range(len(slot_rows))]
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, float]:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)

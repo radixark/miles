@@ -68,39 +68,6 @@ def _like(values, reference: torch.Tensor) -> torch.Tensor:
     return torch.as_tensor(values, dtype=reference.dtype, device=reference.device)
 
 
-def compute_per_datum_losses(
-    log_probs: list[torch.Tensor], *, batch: RolloutBatch, loss_fn: str
-) -> list[torch.Tensor]:
-    """Evaluate the same token-sum objective for forward and forward-backward."""
-    if loss_fn == "cross_entropy":
-        return [-(_like(weights, lp) * lp).sum() for lp, weights in zip(log_probs, batch["loss_weights"], strict=True)]
-    if loss_fn not in ("importance_sampling", "ppo", "cispo", "dro"):
-        raise ValueError(f"unknown Tinker loss: {loss_fn}")
-
-    config = batch.get("loss_fn_config") or {}
-    clip_defaults = CISPO_DEFAULTS if loss_fn == "cispo" else PPO_DEFAULTS
-    clip_low = config.get("clip_low_threshold", clip_defaults["clip_low_threshold"])
-    clip_high = config.get("clip_high_threshold", clip_defaults["clip_high_threshold"])
-    beta = config.get("beta", DRO_DEFAULTS["beta"])
-    per_sample = []
-    for lp, sampling, adv in zip(log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True):
-        advantages = _like(adv, lp)
-        divergence = lp - _like(sampling, lp)
-        if loss_fn == "dro":
-            objective = lp * advantages - 0.5 * beta * divergence**2
-        else:
-            ratio = torch.exp(divergence)
-            if loss_fn == "importance_sampling":
-                objective = ratio * advantages
-            elif loss_fn == "ppo":
-                objective = torch.minimum(ratio * advantages, torch.clamp(ratio, clip_low, clip_high) * advantages)
-            else:
-                coefficient = torch.clamp(ratio, clip_low, clip_high).detach()
-                objective = coefficient * lp * advantages
-        per_sample.append(-objective.sum())
-    return per_sample
-
-
 def _finish(
     batch: RolloutBatch,
     logits: torch.Tensor,
@@ -116,21 +83,17 @@ def _finish(
     return loss, {"loss": loss.clone().detach()}
 
 
-def _loss_function(
-    args: Namespace, batch: RolloutBatch, logits: torch.Tensor, *, loss_fn: str
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    log_probs = _target_logprobs(args, batch, logits)
-    per_sample = compute_per_datum_losses(log_probs, batch=batch, loss_fn=loss_fn)
-    return _finish(batch, logits, log_probs, per_sample)
-
-
 def cross_entropy_loss_function(
     args: Namespace,
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    return _loss_function(args, batch, logits, loss_fn="cross_entropy")
+    log_probs = _target_logprobs(args, batch, logits)
+    per_sample = [
+        -(_like(weights, lp) * lp).sum() for lp, weights in zip(log_probs, batch["loss_weights"], strict=True)
+    ]
+    return _finish(batch, logits, log_probs, per_sample)
 
 
 def importance_sampling_loss_function(
@@ -139,7 +102,12 @@ def importance_sampling_loss_function(
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    return _loss_function(args, batch, logits, loss_fn="importance_sampling")
+    log_probs = _target_logprobs(args, batch, logits)
+    per_sample = []
+    for lp, sampling, adv in zip(log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True):
+        ratio = torch.exp(lp - _like(sampling, lp))
+        per_sample.append(-(ratio * _like(adv, lp)).sum())
+    return _finish(batch, logits, log_probs, per_sample)
 
 
 def ppo_loss_function(
@@ -148,7 +116,17 @@ def ppo_loss_function(
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    return _loss_function(args, batch, logits, loss_fn="ppo")
+    config = batch.get("loss_fn_config") or {}
+    clip_low = config.get("clip_low_threshold", PPO_DEFAULTS["clip_low_threshold"])
+    clip_high = config.get("clip_high_threshold", PPO_DEFAULTS["clip_high_threshold"])
+    log_probs = _target_logprobs(args, batch, logits)
+    per_sample = []
+    for lp, sampling, adv in zip(log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True):
+        ratio = torch.exp(lp - _like(sampling, lp))
+        advantages = _like(adv, lp)
+        objective = torch.minimum(ratio * advantages, torch.clamp(ratio, clip_low, clip_high) * advantages)
+        per_sample.append(-objective.sum())
+    return _finish(batch, logits, log_probs, per_sample)
 
 
 def cispo_loss_function(
@@ -157,7 +135,16 @@ def cispo_loss_function(
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    return _loss_function(args, batch, logits, loss_fn="cispo")
+    config = batch.get("loss_fn_config") or {}
+    clip_low = config.get("clip_low_threshold", CISPO_DEFAULTS["clip_low_threshold"])
+    clip_high = config.get("clip_high_threshold", CISPO_DEFAULTS["clip_high_threshold"])
+    log_probs = _target_logprobs(args, batch, logits)
+    per_sample = []
+    for lp, sampling, adv in zip(log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True):
+        ratio = torch.exp(lp - _like(sampling, lp))
+        coefficient = torch.clamp(ratio, clip_low, clip_high).detach()
+        per_sample.append(-(coefficient * lp * _like(adv, lp)).sum())
+    return _finish(batch, logits, log_probs, per_sample)
 
 
 def dro_loss_function(
@@ -166,7 +153,15 @@ def dro_loss_function(
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    return _loss_function(args, batch, logits, loss_fn="dro")
+    config = batch.get("loss_fn_config") or {}
+    beta = config.get("beta", DRO_DEFAULTS["beta"])
+    log_probs = _target_logprobs(args, batch, logits)
+    per_sample = []
+    for lp, sampling, adv in zip(log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True):
+        divergence = lp - _like(sampling, lp)
+        objective = lp * _like(adv, lp) - 0.5 * beta * divergence**2
+        per_sample.append(-objective.sum())
+    return _finish(batch, logits, log_probs, per_sample)
 
 
 TINKER_LOSS_FUNCTIONS = {
