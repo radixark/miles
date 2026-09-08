@@ -105,17 +105,6 @@ class WeightUpdater:
             self._get_updated_adapters(), sync_base=sync_base, weight_version=self.weight_version
         )
 
-    @torch.no_grad()
-    def push_adapter(self, lora_name: str, adapter, lora_path: str | None = None) -> None:
-        """Push one adapter as a staged session under a fresh engine-side name:
-        no pause, no weight-version move — the name has no readers until
-        `end_weight_update` commits it under a checksum manifest. ``lora_path``
-        names a adapter dir holding the same adapter, letting the engine evict and
-        refill it from disk."""
-        self._run_weight_update_session(
-            [(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path
-        )
-
     def _run_weight_update_session(
         self,
         adapters: list,
@@ -181,26 +170,6 @@ class WeightUpdater:
                     logger.exception("Failed to discard the staged adapter session")
             raise
 
-    @torch.no_grad()
-    def export_adapter(self, adapter, out_dir: str) -> None:
-        """Write one adapter as a adapter dir the rollout engine can load from disk.
-        Tensor names are the streamed ``hf_key`` names, so disk load and
-        streamed apply feed the engine identically. Collective: every rank
-        must call; rank 0 writes."""
-        should_save_adapter = dist.get_rank() == 0
-        assert (
-            self._hf_weight_iterator.placement.is_full_gather
-        ), "the exported dir must hold the full adapter, which this placement never gathers onto one rank"
-        tensors = {
-            name: tensor.detach().contiguous().cpu()
-            for name, tensor in self._hf_weight_iterator.materialize_adapter(
-                adapter, materialize=should_save_adapter
-            ).items()
-        }
-        if should_save_adapter:
-            save_adapter_to_disk(out_dir, self._adapter_config(adapter), tensors)
-        dist.barrier(group=get_gloo_group())
-
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
 
@@ -241,3 +210,36 @@ class WeightUpdater:
                 defer_publish=defer_publish,
             )
             self._registered_adapters.add(lora_name)
+
+    # -------- multi-LoRA adapter publication --------
+
+    @torch.no_grad()
+    def push_adapter(self, lora_name: str, adapter, lora_path: str | None = None) -> None:
+        """Push one adapter as a staged session under a fresh engine-side name:
+        no pause, no weight-version move — the name has no readers until
+        `end_weight_update` commits it under a checksum manifest. ``lora_path``
+        names a adapter dir holding the same adapter, letting the engine evict and
+        refill it from disk."""
+        self._run_weight_update_session(
+            [(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path
+        )
+
+    @torch.no_grad()
+    def export_adapter(self, adapter, out_dir: str) -> None:
+        """Write one adapter as a adapter dir the rollout engine can load from disk.
+        Tensor names are the streamed ``hf_key`` names, so disk load and
+        streamed apply feed the engine identically. Collective: every rank
+        must call; rank 0 writes."""
+        should_save_adapter = dist.get_rank() == 0
+        assert (
+            self._hf_weight_iterator.placement.is_full_gather
+        ), "the exported dir must hold the full adapter, which this placement never gathers onto one rank"
+        tensors = {
+            name: tensor.detach().contiguous().cpu()
+            for name, tensor in self._hf_weight_iterator.materialize_adapter(
+                adapter, materialize=should_save_adapter
+            ).items()
+        }
+        if should_save_adapter:
+            save_adapter_to_disk(out_dir, self._adapter_config(adapter), tensors)
+        dist.barrier(group=get_gloo_group())

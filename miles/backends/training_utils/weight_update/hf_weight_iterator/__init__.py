@@ -32,7 +32,6 @@ class WeightUpdatePlacement:
 
     @property
     def is_full_gather(self) -> bool:
-        """Every dim gathered: one rank holds a complete copy of what it yields."""
         return self.gather_pp and self.gather_tp and self.gather_ep
 
 
