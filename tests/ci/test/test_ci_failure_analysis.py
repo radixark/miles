@@ -300,7 +300,7 @@ def test_evidence_stops_growing_at_the_edges_of_a_short_log():
 
 
 GROUNDING = (
-    "E   ModuleNotFoundError: No module named 'miles.backends.update_weight'\n"
+    "E   ModuleNotFoundError: No module named 'miles.backends.megatron_utils.update_weight'\n"
     "tests/fast/ray/test_layout.py:10: in <module>\n"
     "Commits touching miles/backends: refactor(update-weight): move the protocols (#2754)\n"
 )
@@ -349,6 +349,7 @@ def test_grounded_analysis_keeps_tags_test_name_and_cause_pull_request():
     "overrides",
     [
         {"tags": ["deepseek-v9"]},
+        {"tags": ["inkling"]},
         {"tags": ["megatron", "megatron"]},
         {"tags": ["megatron", "lora", "fsdp"]},
         {"test_name": "tests/fabricated/test_nope.py"},
@@ -361,6 +362,18 @@ def test_grounded_analysis_keeps_tags_test_name_and_cause_pull_request():
 def test_ungrounded_tags_test_names_and_pull_requests_are_rejected(overrides):
     with pytest.raises(ValueError):
         validate_grounded(**overrides)
+
+
+def test_missing_module_paths_cover_deleted_packages_and_module_files():
+    text = (
+        "ModuleNotFoundError: No module named 'miles.backends.megatron_utils.update_weight'\n"
+        "ImportError: cannot import name 'exec_command' from 'miles.utils.misc'\n"
+        "No module named 'torch_memory_saver'\n"
+    )
+    paths = ANALYZER.extract_missing_module_paths(text)
+    assert paths[0] == "miles/backends/megatron_utils/update_weight"
+    assert "miles/utils/misc.py" in paths and paths.index("miles/utils/misc.py") < paths.index("miles/utils/misc")
+    assert not any("torch_memory_saver" in path for path in paths)
 
 
 def test_absent_test_name_and_cause_pull_request_are_allowed():

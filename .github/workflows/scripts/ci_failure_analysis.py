@@ -29,6 +29,9 @@ ALLOWED_REASONING_EFFORT = {"low", "medium"}
 UNAVAILABLE_REASON = "unavailable — open the job log for details."
 PULL_REQUEST_RE = re.compile(r"\(#(\d{1,7})\)")
 TAG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+MISSING_MODULE_RE = re.compile(
+    r"(?:(?P<package>No module named)|cannot import name '[^']+' from)\s+'(?P<module>[A-Za-z_][A-Za-z0-9_.]*)'"
+)
 TEST_NAME_RE = re.compile(r"[A-Za-z0-9_./:\[\]-]+")
 
 HARD_MAX_JOBS = 15
@@ -37,6 +40,7 @@ HARD_MAX_TOTAL_EVIDENCE_CHARS = 80_000
 HARD_MAX_SOURCE_FILES = 3
 HARD_MAX_SOURCE_CHARS = 20_000
 HARD_MAX_COMMITS_PER_PATH = 8
+HARD_MAX_CHANGE_PATHS = 4
 HARD_MAX_RECENT_COMMITS = 8
 HARD_MAX_REASON_CHARS = 280
 HARD_MAX_TAGS = 200
@@ -396,6 +400,22 @@ def _safe_path(path: str) -> str | None:
     return path if "/" in path and not path.startswith(("tmp/", "home/", "opt/", "usr/")) else None
 
 
+def extract_missing_module_paths(text: str) -> list[str]:
+    """An ImportError names the module that disappeared; its history is what identifies the cause."""
+    paths: list[str] = []
+    for match in MISSING_MODULE_RE.finditer(text):
+        parts = match.group("module").split(".")
+        if parts[0] not in ("miles", "miles_plugins") or any(not part for part in parts):
+            continue
+        stem = "/".join(parts)
+        # "No module named" usually names a package; "cannot import name" always names a module file.
+        variants = (stem, f"{stem}.py") if match.group("package") else (f"{stem}.py", stem)
+        for path in variants:
+            if path not in paths:
+                paths.append(path)
+    return paths
+
+
 def extract_source_locations(text: str) -> list[tuple[str, int | None]]:
     locations: list[tuple[str, int | None]] = []
     seen: set[str] = set()
@@ -509,7 +529,9 @@ def _collect_context(
         )
         remaining -= len(excerpt)
 
-    for index, (path, _) in enumerate(resolved, start=1):
+    change_paths = extract_missing_module_paths(log_text)
+    change_paths += [path for path, _ in resolved if path not in change_paths]
+    for index, path in enumerate(change_paths[:HARD_MAX_CHANGE_PATHS], start=1):
         if remaining <= 0 or time.monotonic() >= deadline:
             break
         try:
@@ -521,7 +543,8 @@ def _collect_context(
             if not isinstance(commit, dict):
                 continue
             message = str((commit.get("commit") or {}).get("message") or "").split("\n")[0]
-            if PULL_REQUEST_RE.search(message):
+            # A subject without "(#NNNN)" still names the change; it just cannot be cited as a pull request.
+            if message:
                 subjects.append(message[:200])
         if not subjects:
             continue
@@ -682,11 +705,15 @@ def _validate_reason(reason: Any, limit: int) -> str:
     return reason
 
 
-def _validate_tags(raw: Any, vocabulary: list[str]) -> tuple[str, ...]:
+def _validate_tags(raw: Any, vocabulary: list[str], evidence_text: str) -> tuple[str, ...]:
     if not isinstance(raw, list) or len(raw) > 2:
         raise ValueError("invalid tags")
     if any(tag not in vocabulary for tag in raw) or len(raw) != len(set(raw)):
         raise ValueError("unknown or duplicate tag")
+    haystack = re.sub(r"[^a-z0-9]", "", evidence_text.lower())
+    for tag in raw:
+        if any(word not in haystack for word in tag.split("-")):
+            raise ValueError("tag is not grounded in the evidence")
     return tuple(raw)
 
 
@@ -753,7 +780,7 @@ def validate_response(
         grounding = evidence_by_job.get(job_id, "")
         results[job_id] = JobAnalysis(
             reason=_validate_reason(item["reason"], max_reason_chars),
-            tags=_validate_tags(item["tags"], vocabulary),
+            tags=_validate_tags(item["tags"], vocabulary, grounding),
             test_name=_validate_test_name(item["test_name"], grounding),
             related_pull_request=_validate_pull_request(item["related_pull_request"], grounding),
         )
