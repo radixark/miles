@@ -101,7 +101,9 @@ class WeightUpdater:
             return
         self.weight_version += 1
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
-        self._sync(self._get_updated_adapters(), sync_base=sync_base, weight_version=self.weight_version)
+        self._run_weight_update_session(
+            self._get_updated_adapters(), sync_base=sync_base, weight_version=self.weight_version
+        )
 
     @torch.no_grad()
     def push_adapter(self, lora_name: str, adapter, lora_path: str | None = None) -> None:
@@ -110,9 +112,11 @@ class WeightUpdater:
         `end_weight_update` commits it under a checksum manifest. ``lora_path``
         names a adapter dir holding the same adapter, letting the engine evict and
         refill it from disk."""
-        self._sync([(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path)
+        self._run_weight_update_session(
+            [(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path
+        )
 
-    def _sync(
+    def _run_weight_update_session(
         self,
         adapters: list,
         *,
