@@ -355,8 +355,8 @@ class TestComputePassrateFromSamples:
 
 
 class TestWeightVersionMetrics:
-    def test_reports_oldest_version_statistics_and_mixed_ratio(self):
-        """weight_version/* summarises each sample's oldest version; mixed counts samples spanning an update."""
+    def test_all_numeric_inputs_keep_the_existing_decode_metric_keys_and_values(self):
+        """All-numeric decode spans retain the complete pre-existing metric surface."""
         samples = [
             _make_versioned_sample(["4"], index=0),
             _make_versioned_sample(["5", "6"], index=1),
@@ -364,9 +364,41 @@ class TestWeightVersionMetrics:
 
         out = _compute_metrics_from_samples(make_args(), samples)
 
+        assert {key: value for key, value in out.items() if key.startswith("weight_version/")} == {
+            "weight_version/mean": 4.5,
+            "weight_version/median": 4.5,
+            "weight_version/max": 5,
+            "weight_version/min": 4,
+            "weight_version/mixed_version_ratio": 0.5,
+        }
+
+    def test_a_placeholder_and_numeric_decode_mix_is_mixed(self):
+        """Any two distinct version labels count as mixed, placeholders included."""
+        sample = _make_versioned_sample(["default", "4"], index=0)
+
+        out = _compute_metrics_from_samples(make_args(), [sample])
+
         assert out["weight_version/min"] == 4
-        assert out["weight_version/max"] == 5
+        assert out["weight_version/mixed_version_ratio"] == 1.0
+
+    def test_the_mixed_ratio_denominator_is_the_sample_count_not_the_call_count(self):
+        """Mixedness is a per-sample verdict, so one sample spanning three calls still weighs one sample."""
+        samples = [
+            _make_versioned_sample(["4", "5", "6"], index=0),
+            _make_versioned_sample(["7"], index=1),
+        ]
+
+        out = _compute_metrics_from_samples(make_args(), samples)
+
         assert out["weight_version/mixed_version_ratio"] == 0.5
+
+    def test_no_version_metrics_when_no_span_carries_a_numeric_version(self):
+        """Placeholder-only labels leave nothing to average, so the whole series stays absent."""
+        samples = [_make_versioned_sample(["default", "mock-v0"], index=0)]
+
+        out = _compute_metrics_from_samples(make_args(), samples)
+
+        assert not any(key.startswith("weight_version/") for key in out)
 
     def test_a_call_spanning_no_update_is_not_mixed(self):
         """Two calls that both saw the same version must not count as mixed."""

@@ -21,6 +21,7 @@ def _make_args(**overrides: object) -> Namespace:
         lora_rank=0,
         lora_adapter_path=None,
         update_weights_interval=1,
+        sglang_enable_prefill_weight_versions=False,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -38,6 +39,31 @@ def _make_sample(versions: list[str], index: int = 0) -> Sample:
         response_length=len(versions),
         weight_versions=calls,
     )
+
+
+def _make_prefilled_sample(prefill_versions: list[str], *, decode_version: str = "3", index: int = 0) -> Sample:
+    num_prompt = len(prefill_versions)
+    call = WeightVersionsPerCall(
+        spans=[WeightVersionSpan(version=decode_version, abs_start=num_prompt, abs_end=num_prompt + 1)],
+        prefill_spans=[
+            WeightVersionSpan(version=version, abs_start=i, abs_end=i + 1)
+            for i, version in enumerate(prefill_versions)
+        ],
+        output_start=num_prompt,
+    )
+    sample = Sample(index=index, tokens=list(range(num_prompt + 1)), response_length=1, weight_versions=[call])
+    sample.validate()
+    return sample
+
+
+def _make_unstamped_prompt_sample(*, num_prompt_tokens: int, index: int = 0) -> Sample:
+    call = WeightVersionsPerCall(
+        spans=[WeightVersionSpan(version="3", abs_start=num_prompt_tokens, abs_end=num_prompt_tokens + 1)],
+        output_start=num_prompt_tokens,
+    )
+    sample = Sample(index=index, tokens=list(range(num_prompt_tokens + 1)), response_length=1, weight_versions=[call])
+    sample.validate()
+    return sample
 
 
 def _simulate_rollouts_since_publish(*, update_weights_interval: int, num_rollout: int) -> list[int]:
@@ -96,6 +122,61 @@ class TestAssertSamplesWeightVersionSane:
     def test_a_sample_without_spans_passes(self):
         """Samples with no recorded weight versions carry nothing to validate."""
         assert_samples_weight_version_sane(_make_args(), samples=[_make_sample([])])
+
+    def test_numeric_prefill_versions_pass(self):
+        """Prompt KV computed under earlier real versions is stale but legitimately stamped."""
+        assert_samples_weight_version_sane(_make_args(), samples=[_make_prefilled_sample(["1", "2", "3"])])
+
+    def test_the_sglang_default_prefill_version_fails(self):
+        """Prompt KV stamped with the placeholder was computed before miles ever pushed weights."""
+        samples = [_make_prefilled_sample(["1", SGLANG_LITERAL], index=4)]
+        with pytest.raises(
+            AssertionError, match=r"index=4 tokens \[1, 2\) had their prompt KV computed under weight version"
+        ):
+            assert_samples_weight_version_sane(_make_args(), samples=samples)
+
+    @pytest.mark.parametrize("version", ["mock-v0", "v3", "3.0", "-1", "3 "])
+    def test_a_non_numeric_prefill_version_fails(self, version: str):
+        """Prompt KV versions are held to the same numeric contract as output versions."""
+        with pytest.raises(AssertionError, match="not the numeric version"):
+            assert_samples_weight_version_sane(_make_args(), samples=[_make_prefilled_sample([version])])
+
+    def test_the_opt_in_flag_requires_the_engine_to_report_prompt_versions(self):
+        """Opting in and then seeing nothing means the engine is silent, which would read as a perfectly fresh run."""
+        args = _make_args(sglang_enable_prefill_weight_versions=True)
+        with pytest.raises(AssertionError, match="reported no prompt KV versions"):
+            assert_samples_weight_version_sane(args, samples=[_make_unstamped_prompt_sample(num_prompt_tokens=3)])
+
+    def test_the_opt_in_flag_is_satisfied_once_prompt_versions_arrive(self):
+        """An engine that stamps its prompt tokens is exactly what the flag asks for."""
+        args = _make_args(sglang_enable_prefill_weight_versions=True)
+
+        assert_samples_weight_version_sane(args, samples=[_make_prefilled_sample(["1", "2"])])
+
+    def test_missing_prompt_versions_are_fine_without_the_opt_in_flag(self):
+        """Engines that never report prompt KV versions stay usable while the flag is off."""
+        assert_samples_weight_version_sane(_make_args(), samples=[_make_unstamped_prompt_sample(num_prompt_tokens=3)])
+
+    def test_a_call_with_an_empty_prompt_reports_nothing_and_is_still_fine(self):
+        """A call with no prompt token has nothing to stamp, so its silence is not evidence of a silent engine."""
+        args = _make_args(sglang_enable_prefill_weight_versions=True)
+
+        assert_samples_weight_version_sane(args, samples=[_make_unstamped_prompt_sample(num_prompt_tokens=0)])
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"debug_rollout_only": True},
+            {"debug_skip_weight_update": True},
+            {"lora_rank": 8},
+            {"lora_adapter_path": "/adapters/foo"},
+        ],
+    )
+    def test_modes_that_never_push_weights_exempt_prefill_versions_too(self, overrides: dict[str, object]):
+        """The same modes that tolerate default output versions tolerate default prompt KV versions."""
+        assert_samples_weight_version_sane(
+            _make_args(**overrides), samples=[_make_prefilled_sample([SGLANG_LITERAL], decode_version=SGLANG_LITERAL)]
+        )
 
     @pytest.mark.parametrize(
         "overrides",

@@ -110,6 +110,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_server_concurrency=512,
         use_session_server=False,
         use_rollout_routing_replay=False,
+        sglang_enable_prefill_weight_versions=False,
         session_server_ip=None,
         session_server_port=None,
         session_server_workers=1,

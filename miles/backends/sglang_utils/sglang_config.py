@@ -162,9 +162,11 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         default_model_path: str,
         offset_cursor: "_OffsetCursor",
     ) -> "ServerGroupConfig":
-        assert not ({"host", "port", "gated_launch_port"} & set(raw.overrides)), (
-            f"sglang_overrides must not override host/port ({raw.overrides=}): the rollout process derives "
-            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
+        assert not ({"host", "port", "gated_launch_port", "disaggregation_mode"} & set(raw.overrides)), (
+            f"sglang_overrides must not override host/port/disaggregation_mode ({raw.overrides=}): the rollout "
+            f"process derives each engine's url from the addr allocator and its disaggregation_mode from "
+            f"worker_type, so an override would make it talk to the wrong endpoint or serve a different role "
+            f"than the one it registers with"
         )
 
         rollout_pg_offset = _compute_rollout_offset(args)
