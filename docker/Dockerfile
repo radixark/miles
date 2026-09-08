@@ -12,6 +12,48 @@
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
 ARG SGLANG_IMAGE_TAG=v0.5.18
+
+# ====================================== Collect pre-built wheels ============================================
+# This stage exists only to HOLD /tmp/wheels. It is never the build target, so
+# nothing it writes can reach the published image; the installs below bind-mount
+# it for the length of one RUN each.
+#
+# It was previously fetched into the final stage and deleted again at the end of
+# this file. A delete in a later layer cannot reclaim bytes an earlier layer has
+# already committed, so every wheel shipped: `radixark/miles:dev` carried
+# 1,776,421,896 bytes across 13 files under /tmp/wheels, and the closing
+# `rm -rf /tmp/wheels` was a 127-byte whiteout.
+#
+# The base is the same image the final stage uses, so this pulls nothing extra —
+# it is already in the build cache — and it has the curl and python3 the fetch needs.
+FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS wheels
+
+ARG WHEELS_REPO=yueming-yuan/miles-wheels
+# Two complete wheels release tags (the wheels repo's own names). The build picks
+# one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
+ARG TARGETARCH
+ARG WHEELS_TAG_X86=cu130-torch213-x86_64
+ARG WHEELS_TAG_ARM64=cu130-torch213-aarch64
+
+# Optional: drop pre-built wheels into <miles>/wheels/ to skip the release download below.
+# `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
+COPY wheel[s]/ /tmp/wheels/
+
+RUN case "${TARGETARCH}" in \
+      amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
+      arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    echo "Fetching wheels release ${WHEELS_TAG}" && \
+    mkdir -p /tmp/wheels && \
+    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+    | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
+[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
+ for a in json.load(sys.stdin).get('assets',[]) \
+ if a['name'].endswith(('.whl', '.tar.gz')) and not os.path.exists(os.path.join(w,a['name']))]" && \
+    ls -lh /tmp/wheels/
+
+
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -26,12 +68,9 @@ ARG MEGATRON_COMMIT=""
 
 ARG ENABLE_CUDA_13=1
 
-ARG WHEELS_REPO=yueming-yuan/miles-wheels
-# Two complete wheels release tags (the wheels repo's own names). The build picks
-# one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
+# Still needed here: install-kube-tools.sh is passed ${TARGETARCH} below. The
+# WHEELS_* args moved to the `wheels` stage, which is the only place they are read.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-torch213-x86_64
-ARG WHEELS_TAG_ARM64=cu130-torch213-aarch64
 
 # ======================================== Setup =============================================
 
@@ -51,36 +90,21 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
     cp /tmp/nccl-tests/build/*_perf /usr/local/bin/ && \
     rm -rf /tmp/nccl-tests
 
-# ====================================== Collect pre-built wheels ============================================
-# Optional: drop pre-built wheels into <miles>/wheels/ to skip the release download below.
-# `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
-COPY wheel[s]/ /tmp/wheels/
-
-RUN case "${TARGETARCH}" in \
-      amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
-      arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
-      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac && \
-    echo "Fetching wheels release ${WHEELS_TAG}" && \
-    mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
-    | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
-[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
- for a in json.load(sys.stdin).get('assets',[]) \
- if a['name'].endswith(('.whl', '.tar.gz')) and not os.path.exists(os.path.join(w,a['name']))]" && \
-    ls -lh /tmp/wheels/
-
 # ====================================== Python dependencies ============================================
+# Every install that reads /tmp/wheels mounts it from the `wheels` stage above.
+# The mount is visible for exactly one RUN and contributes nothing to this layer.
 
 # flash-attn
-RUN pip install /tmp/wheels/flash_attn-*.whl
+RUN --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
+    pip install /tmp/wheels/flash_attn-*.whl
 
 # flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
 # The wheel ships flash_attn_interface top-level (what transformer_engine imports)
 # plus a flash_attn_3.flash_attn_interface re-export shim, so there is nothing to
 # fetch separately. Do not overwrite the shim with a copy of the full module: it
 # re-runs @torch.library.custom_op("flash_attn_3::...") and double-registers.
-RUN pip install /tmp/wheels/flash_attn_3-*.whl
+RUN --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
+    pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
@@ -93,14 +117,16 @@ RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
 # builds are the expensive path this avoids).
-RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; then \
+RUN --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
+    if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; then \
       pip install /tmp/wheels/fast_hadamard_transform-*.whl; \
     else \
       pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation; \
     fi
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
-RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
+RUN --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
+    if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
        ls /tmp/wheels/mamba_ssm-*.whl 2>/dev/null | grep -q .; then \
       pip install /tmp/wheels/causal_conv1d-*.whl /tmp/wheels/mamba_ssm-*.whl; \
     else \
@@ -113,6 +139,7 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
 # runtime deps, which still have to be installed: transformer_engine.pytorch
 # imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
 RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
+    --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
     if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       TE_CORE_DIST=transformer_engine_cu13; \
     else \
@@ -149,7 +176,8 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
     fi && rm -rf /tmp/patches
 
 # apex
-RUN pip install /tmp/wheels/apex-*.whl
+RUN --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
+    pip install /tmp/wheels/apex-*.whl
 
 RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
     cd Megatron-LM && \
@@ -215,7 +243,8 @@ RUN cd /sgl-workspace/sglang && \
 
 # Miles' Mooncake backend requires the structured object store API. Install the selected
 # CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+RUN --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
+    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
       if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
         echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
@@ -238,7 +267,8 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     pip install -e . --no-deps
 
 # int4_qat
-RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
+RUN --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
+    pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
 
 # ====================================== Install sgl-model-gateway ============================================
 #   SGL_ROUTER_USE_WHEELS=0:
@@ -251,6 +281,7 @@ ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
 ARG SGL_ROUTER_BRANCH=main
 
 RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,from=wheels,source=/tmp/wheels,target=/tmp/wheels \
     set -eux; \
     if [ "${SGL_ROUTER_USE_WHEELS}" = "1" ]; then \
       pip install --force-reinstall /tmp/wheels/sglang_router-*.whl && \
@@ -288,7 +319,8 @@ p = inspect.signature(k.make_kwargs_wrapper).parameters; \
 assert 'map_dataclass_to_tuple' in p, \
   'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
 
-RUN rm -rf /tmp/wheels
+# No `rm -rf /tmp/wheels` here any more: the wheels now live in the `wheels`
+# stage and are mounted per-RUN, so this stage never has them to delete.
 
 # The cu130 sglang base ships its baked Rust toolchain outside the default PATH.
 ENV PATH="/root/.cargo/bin:${PATH}"
