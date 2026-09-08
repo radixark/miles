@@ -97,6 +97,33 @@ POLICY_FIELDS = {
     "failure_behavior",
 }
 
+# Every message this module raises itself: a literal, so it carries no model or log content.
+SAFE_VALIDATION_REASONS = frozenset(
+    {
+        "analyses must be a list",
+        "invalid analysis enum",
+        "invalid analysis object",
+        "invalid evidence references",
+        "invalid model JSON",
+        "invalid model response envelope",
+        "invalid pull request number",
+        "invalid reason",
+        "invalid tags",
+        "invalid test name",
+        "job id must be an integer",
+        "missing, duplicate, or unknown job id",
+        "model response did not contain output text",
+        "model response is missing job ids",
+        "pull request is not grounded in the evidence",
+        "reason does not meet sentence limits",
+        "reason is not one safe sentence",
+        "tag is not grounded in the evidence",
+        "test name is not grounded in the evidence",
+        "unknown evidence reference",
+        "unknown or duplicate tag",
+    }
+)
+
 SAFE_ERROR_TYPE_NAMES = {
     "AnalysisConfigError",
     "APIConnectionError",
@@ -869,6 +896,9 @@ def _analysis_error_audit(exc: BaseException) -> dict[str, str | int]:
         result["cause_type"] = names[1]
     root = chain[-1]
     result["root_cause_type"] = names[-1]
+    reason = next((str(item) for item in chain if str(item) in SAFE_VALIDATION_REASONS), None)
+    if reason is not None:
+        result["validation_reason"] = reason
     oidc_reason = next((reason for item in chain if (reason := _oidc_failure_reason(item)) is not None), None)
     if oidc_reason is not None:
         result["oidc_failure_reason"] = oidc_reason

@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import ssl
 import sys
 import urllib.error
@@ -362,6 +363,18 @@ def test_grounded_analysis_keeps_tags_test_name_and_cause_pull_request():
 def test_ungrounded_tags_test_names_and_pull_requests_are_rejected(overrides):
     with pytest.raises(ValueError):
         validate_grounded(**overrides)
+
+
+def test_audit_names_our_own_validation_rule_but_never_foreign_text():
+    ours = ANALYZER._analysis_error_audit(ValueError("tag is not grounded in the evidence"))
+    assert ours["validation_reason"] == "tag is not grounded in the evidence"
+    assert "validation_reason" not in ANALYZER._analysis_error_audit(ValueError("leaked secret value"))
+
+
+def test_every_validation_message_is_declared_safe_for_the_audit():
+    source = ANALYZER_PATH.read_text()
+    raised = set(re.findall(r'raise ValueError\("([^"]+)"\)', source))
+    assert raised and raised <= ANALYZER.SAFE_VALIDATION_REASONS
 
 
 def test_missing_module_paths_cover_deleted_packages_and_module_files():
