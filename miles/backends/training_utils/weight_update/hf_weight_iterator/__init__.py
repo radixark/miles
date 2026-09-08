@@ -30,6 +30,11 @@ class WeightUpdatePlacement:
     gather_tp: bool = True
     gather_ep: bool = True
 
+    @property
+    def is_full_gather(self) -> bool:
+        """Every dim gathered: one rank holds a complete copy of what it yields."""
+        return self.gather_pp and self.gather_tp and self.gather_ep
+
 
 def resolve_placement(required: WeightUpdatePlacement, forced: WeightUpdatePlacement | None) -> WeightUpdatePlacement:
     """Join of the protocol's required placement and the iterator's forced one:

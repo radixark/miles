@@ -146,7 +146,7 @@ class WeightUpdater:
             )
             if checksums is not None:
                 assert (
-                    self._hf_weight_iterator.placement.gather_pp
+                    self._hf_weight_iterator.placement.is_full_gather
                 ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
             with timer("update_weights_implementation"):
                 pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
@@ -189,7 +189,7 @@ class WeightUpdater:
         must call; rank 0 writes."""
         should_save_adapter = dist.get_rank() == 0
         assert (
-            self._hf_weight_iterator.placement.gather_pp
+            self._hf_weight_iterator.placement.is_full_gather
         ), "the exported dir must hold the full adapter, which this placement never gathers onto one rank"
         tensors = {
             name: tensor.detach().contiguous().cpu()

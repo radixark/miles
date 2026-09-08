@@ -13,6 +13,7 @@ from tests.fast.backends.training_utils.weight_update.test_dist_weight_update_li
     _RecordingApiClient,
 )
 
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 _MODULE = "miles.backends.training_utils.weight_update.updater"
@@ -37,7 +38,7 @@ def _updater(calls, client_type=_PendingAckClient, failing_method=None):
     engines = [client_type(calls, index, failing_method if index == 0 else None) for index in range(2)]
     updater = _make_updater(engines)
     updater._lora_sync_config = {"r": 8, "lora_alpha": 16}
-    updater._hf_weight_iterator.placement = SimpleNamespace(gather_pp=True)
+    updater._hf_weight_iterator.placement = WeightUpdatePlacement(gather_pp=True)
     updater._hf_weight_iterator.iter_hf_weights.side_effect = lambda _weights, **kwargs: iter(
         [
             [(f"{name}:model.layers.0.self_attn.q_proj.lora_A.weight", torch.ones(2, 2))]
