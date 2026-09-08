@@ -134,7 +134,41 @@ class WeightUpdater:
             )
         dist.barrier(group=get_gloo_group())
         try:
-            self._stream_and_commit(adapters, sync_base=sync_base, weight_version=weight_version, staged=staged)
+            # a staged push commits only under a manifest: a lost bucket must not publish
+            checksums = (
+                {name: {} for name, _ in adapters}
+                if adapters and (staged or self.args.check_lora_weight_equal)
+                else None
+            )
+            if checksums is not None:
+                assert (
+                    self._hf_weight_iterator.placement.gather_pp
+                ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
+            with timer("update_weights_implementation"):
+                pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
+                for bucket in self._hf_weight_iterator.iter_hf_weights(
+                    self.weights_getter() if sync_base else None,
+                    include_base=sync_base,
+                    adapters=adapters,
+                    materialize=protocol.is_sender,
+                ):
+                    if protocol.is_sender:
+                        if driver and checksums is not None:
+                            record_lora_checksums(bucket, checksums)
+                        protocol.send_bucket(bucket)
+                        pbar.update(1)
+                protocol.after_base_weights()
+                dist.barrier(group=get_gloo_group())
+
+            with timer("finalize_and_resume_engines"):
+                protocol.finalize(self.weight_version)
+                if protocol.use_weight_update_session and driver:
+                    end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
+                    if weight_version is not None:
+                        set_weight_version(protocol.rollout_engines, weight_version)
+                    if not staged:
+                        resume_engines(protocol.rollout_engines)
+                dist.barrier(group=get_gloo_group())
         except Exception:
             if staged and driver:
                 try:
@@ -142,43 +176,6 @@ class WeightUpdater:
                 except Exception:
                     logger.exception("Failed to discard the staged adapter session")
             raise
-
-    def _stream_and_commit(self, adapters: list, *, sync_base: bool, weight_version: int | None, staged: bool) -> None:
-        protocol = self.protocol
-        driver = dist.get_rank() == 0
-        # a staged push commits only under a manifest: a lost bucket must not publish
-        checksums = (
-            {name: {} for name, _ in adapters} if adapters and (staged or self.args.check_lora_weight_equal) else None
-        )
-        if checksums is not None:
-            assert (
-                self._hf_weight_iterator.placement.gather_pp
-            ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
-        with timer("update_weights_implementation"):
-            pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
-            for bucket in self._hf_weight_iterator.iter_hf_weights(
-                self.weights_getter() if sync_base else None,
-                include_base=sync_base,
-                adapters=adapters,
-                materialize=protocol.is_sender,
-            ):
-                if protocol.is_sender:
-                    if driver and checksums is not None:
-                        record_lora_checksums(bucket, checksums)
-                    protocol.send_bucket(bucket)
-                    pbar.update(1)
-            protocol.after_base_weights()
-            dist.barrier(group=get_gloo_group())
-
-        with timer("finalize_and_resume_engines"):
-            protocol.finalize(self.weight_version)
-            if protocol.use_weight_update_session and driver:
-                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                if weight_version is not None:
-                    set_weight_version(protocol.rollout_engines, weight_version)
-                if not staged:
-                    resume_engines(protocol.rollout_engines)
-            dist.barrier(group=get_gloo_group())
 
     @torch.no_grad()
     def export_adapter(self, adapter, out_dir: str) -> None:
