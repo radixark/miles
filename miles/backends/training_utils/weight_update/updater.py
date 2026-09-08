@@ -73,7 +73,6 @@ class WeightUpdater:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
-        self._staged_session_open = False
 
     def connect_rollout_engines(
         self,
@@ -125,31 +124,6 @@ class WeightUpdater:
         staged: bool = False,
         lora_path: str | None = None,
     ) -> None:
-        if not staged:
-            self._run_sync(adapters, sync_base=sync_base, weight_version=weight_version)
-            return
-        self._staged_session_open = False
-        try:
-            self._run_sync(
-                adapters, sync_base=sync_base, weight_version=weight_version, staged=True, lora_path=lora_path
-            )
-        except Exception:
-            if self._staged_session_open and dist.get_rank() == 0:
-                try:
-                    end_weight_update(self.protocol.rollout_engines, abort=True)
-                except Exception:
-                    logger.exception("Failed to discard the staged adapter session")
-            raise
-
-    def _run_sync(
-        self,
-        adapters: list,
-        *,
-        sync_base: bool,
-        weight_version: int | None,
-        staged: bool = False,
-        lora_path: str | None = None,
-    ) -> None:
         protocol = self.protocol
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
@@ -161,9 +135,20 @@ class WeightUpdater:
             begin_weight_update(
                 protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
             )
-            self._staged_session_open = staged
         dist.barrier(group=get_gloo_group())
+        try:
+            self._stream_and_commit(adapters, sync_base=sync_base, weight_version=weight_version, staged=staged)
+        except Exception:
+            if staged and driver:
+                try:
+                    end_weight_update(protocol.rollout_engines, abort=True)
+                except Exception:
+                    logger.exception("Failed to discard the staged adapter session")
+            raise
 
+    def _stream_and_commit(self, adapters: list, *, sync_base: bool, weight_version: int | None, staged: bool) -> None:
+        protocol = self.protocol
+        driver = dist.get_rank() == 0
         # a staged push commits only under a manifest: a lost bucket must not publish
         checksums = (
             {name: {} for name, _ in adapters} if adapters and (staged or self.args.check_lora_weight_equal) else None
@@ -192,7 +177,6 @@ class WeightUpdater:
             protocol.finalize(self.weight_version)
             if protocol.use_weight_update_session and driver:
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                self._staged_session_open = False
                 if weight_version is not None:
                     set_weight_version(protocol.rollout_engines, weight_version)
                 if not staged:
