@@ -85,7 +85,11 @@ def register_lora_adapter(
         )
         for client in rollout_engines
     ]
-    check_weight_sync_results(async_utils.wait_futures(futures), is_lora=True)
+    results = async_utils.wait_futures(futures)
+    check_weight_sync_results(results, is_lora=True)
+    if defer_publish and any(not isinstance(result, Mapping) or not result.get("pending") for result in results):
+        # an engine that ignored defer_publish would serve the name while its weights stream
+        raise RuntimeError("the rollout engines must support deferred LoRA publication")
 
 
 def set_weight_version(rollout_engines: Sequence[SGLangApiClient], weight_version: int) -> None:
