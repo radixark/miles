@@ -453,6 +453,13 @@ class MegatronTrainRayActor(TrainRayActor):
         lora_checkpoint.save_slot(self.model, self.optimizer, slot, path)
 
     @with_logs
+    def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
+        """Write the slot's adapter as an engine-loadable PEFT dir."""
+        assert self.args.multi_lora, "export_slot is a multi-LoRA slot command"
+        self._heartbeat.bump()
+        self.weight_updater.export_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path)
+
+    @with_logs
     def unload_slot(self, slot: int) -> None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
         lora_executor.unload_slot(self.model, self.optimizer, slot)

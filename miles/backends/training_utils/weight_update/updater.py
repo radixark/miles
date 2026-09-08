@@ -6,10 +6,13 @@ buckets (senders transmit, other ranks join the gathers), and orchestrates
 LoRA adapter pushes.
 """
 
+import json
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 
+import safetensors.torch
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
@@ -197,6 +200,30 @@ class WeightUpdater:
                 if not staged:
                     resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
+
+    @torch.no_grad()
+    def export_adapter(self, adapter, out_dir: str) -> None:
+        """Write one adapter as a PEFT dir the rollout engine can load from disk.
+        Tensor names are the streamed ``hf_key`` names, so disk load and
+        streamed apply feed the engine identically. Collective: every rank
+        must call; rank 0 writes."""
+        driver = dist.get_rank() == 0
+        tensors: dict[str, torch.Tensor] = {}
+        for bucket in self._hf_weight_iterator.iter_hf_weights(
+            None, include_base=False, adapters=[("export", adapter)], materialize=driver
+        ):
+            for prefixed_name, tensor in bucket:
+                _, hf_key = prefixed_name.split(":", 1)
+                tensors[hf_key] = tensor.detach().contiguous().cpu()
+        if driver:
+            config = dict(self._lora_sync_config)
+            if adapter is not None:
+                config |= {"r": adapter.rank, "lora_alpha": adapter.alpha}
+            out = Path(out_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "adapter_config.json").write_text(json.dumps(config, indent=2))
+            safetensors.torch.save_file(tensors, str(out / "adapter_model.safetensors"))
+        dist.barrier(group=get_gloo_group())
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
