@@ -5,7 +5,7 @@ description: Who may run each PR-comment CI command — the identity bindings, a
 
 # Command Identity
 
-This page owns the identity and authorization rules of the PR-comment command gateway. What each command does, its syntax, and its failure semantics live in [Labels](/ci/01-label); this page answers only "who may run it, and as whom does it execute".
+This page owns the identity and authorization rules of the PR-comment command gateway. What each command does, its syntax, and its failure semantics live in [Labels](/developer/ci/01-label); this page answers only "who may run it, and as whom does it execute".
 
 ## Identity binding
 
@@ -29,7 +29,7 @@ This policy is checked in and reviewed as trusted configuration. Maintainers mus
 
 The tiers are deliberate, not incidental:
 
-- **Label mutations stay write-gated because a label is CI policy.** A `run-ci-*` label selects what CI spends and, for fork PRs, doubles as the standing Approve-and-run decision (see [Labels](/ci/01-label)); granting it below write would let non-maintainers set policy.
+- **Label mutations stay write-gated because a label is CI policy.** A `run-ci-*` label selects what CI spends and, for fork PRs, doubles as the standing Approve-and-run decision (see [Labels](/developer/ci/01-label)); granting it below write would let non-maintainers set policy.
 - **The rerun commands are cheaper to grant, so they sit at the prior-contributor tier.** The author association GitHub stamps on the comment admits `OWNER`, `MEMBER`, `COLLABORATOR`, and `CONTRIBUTOR` — anyone with a commit already merged into `radixark/miles` — without a live-permission lookup; an explicit numeric user `id` entry admits a named exception, and anyone else needs live `write` or `admin`. First-time contributors and users with no history in the repository are denied unless they are explicitly allowlisted. A failed-job rerun re-executes an already-authorized run with its original privileges and SHA, and a file run is bounded by one registered file, its registration's timeout, and per-PR serialization, so the residual exposure is runner time rather than code trust.
 - **Constraint: a fork head is the normal shape of a contribution from someone without write permission** — pushing a same-repository branch already requires write. `/rerun-test` therefore adds no fork-specific approval: the policy tier is the whole gate for both head shapes, and requiring anything extra of forks would exclude exactly the contributors the command exists for. What changes on a fork head is containment, not authorization: the head identity is re-verified against its unique open pull request before dispatch, and the run receives no repository secrets (`WANDB_API_KEY` and `HF_TOKEN` are withheld), matching the pr-test fork policy.
 

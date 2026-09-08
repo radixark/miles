@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """SQLite-backed :class:`MetricHistoryStore` for offline use and tests.
 
 * No network dependency; the store runs entirely in-process. An in-memory

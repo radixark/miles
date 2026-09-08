@@ -9,11 +9,17 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
-from sglang.srt.entrypoints.anthropic.serving import convert_response, convert_to_chat_completion_request
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionResponse
 from sglang.srt.parser.template_detection import detect_inline_system_support
 from starlette.responses import Response
+
+try:
+    from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
+    from sglang.srt.entrypoints.anthropic.serving import convert_response, convert_to_chat_completion_request
+except ImportError:
+    anthropic_utils = None
+    convert_response = None
+    convert_to_chat_completion_request = None
 
 from miles.rollout.session.anthropic_adapter import (
     _ANTHROPIC_ERROR_HEADER_ALLOWLIST as _ANTHROPIC_ERROR_HEADER_ALLOWLIST,
@@ -32,7 +38,7 @@ from miles.rollout.session.anthropic_adapter import (
 from miles.rollout.session.anthropic_adapter import (
     _validate_anthropic_content_block as _validate_anthropic_content_block,
 )
-from miles.rollout.session.anthropic_adapter import _validate_anthropic_features
+from miles.rollout.session.anthropic_adapter import _validate_anthropic_features, anthropic_adapter_available
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import JSON_MEDIA_TYPE, SessionCore, _render_json
 from miles.rollout.session.errors import SessionError
@@ -120,6 +126,25 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
     @app.post("/sessions/{session_id}/v1/messages")
     async def anthropic_messages(request: Request, session_id: str):
         """Serve Anthropic Messages through the OpenAI session path."""
+        if (
+            anthropic_utils is None
+            or convert_response is None
+            or convert_to_chat_completion_request is None
+            or not anthropic_adapter_available()
+        ):
+            # _anthropic_error_response depends on the very helpers that are
+            # missing, so write the wire envelope out literally: this route
+            # always speaks Anthropic error shapes, 501 included.
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": "The installed SGLang does not support the Anthropic Messages adapter",
+                    },
+                },
+            )
         body = await request.body()
         try:
             anthropic_request = _parse_anthropic_request(body)

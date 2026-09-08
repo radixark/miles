@@ -11,7 +11,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
-| Behavior label | `rebuild-ci-image` | rebuild this PR's image even though its inputs are unchanged; removed once consumed (see [Docker build](/ci/02-docker-build)) |
+| Behavior label | `rebuild-ci-image` | rebuild this PR's image even though its inputs are unchanged; removed once consumed (see [Docker build](/developer/ci/02-docker-build)) |
 
 Only domain labels are declared in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below.
 
@@ -44,7 +44,7 @@ After the command App is enabled, post `/<label>` as the entire comment on an op
 
 A label command permits leading and trailing whitespace only; it cannot include arguments, prose, or a second command. Only `/rerun-test` takes an argument, and that argument must be a single test-file path. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
 
-Who may run each command — the identity bindings, the access groups in `.github/workflows/policies/comment-command-access.json`, the tier constraints, and the fork containment rule — is specified in [Command Identity](/ci/05-command-identity). One label-specific resource fact stays here: the policy's `commands.add_label.allowed_labels` array controls which exact labels can be added through comments, and adding a `KNOWN_LABELS` entry does not expose it automatically.
+Who may run each command — the identity bindings, the access groups in `.github/workflows/policies/comment-command-access.json`, the tier constraints, and the fork containment rule — is specified in [Command Identity](/developer/ci/05-command-identity). One label-specific resource fact stays here: the policy's `commands.add_label.allowed_labels` array controls which exact labels can be added through comments, and adding a `KNOWN_LABELS` entry does not expose it automatically.
 
 Unrecognized comments exit after trusted parsing with capability `none`; they do not load the access policy, call the GitHub API, or mint an App token. A malformed comment containing one of the recognized command markers still fails instead of being treated as an unrelated comment.
 
@@ -84,7 +84,7 @@ GitHub's recursion guard suppresses `GITHUB_TOKEN`-triggered events with the doc
 
 Label commands are the exception: a label added with `GITHUB_TOKEN` would never fire the `pull_request(labeled)` CI workflows, so they stay off until workflow owners complete the following steps and set the repository variable `CI_COMMAND_APP_ENABLED=true`. A label command posted before that fails loudly with a pointer to this document instead of skipping silently.
 
-1. Create a GitHub App, install it only on `radixark/miles`, and grant `Issues: write` and `Pull requests: write`; do not grant `Actions: write` or `Contents: write`. [Command Identity](/ci/05-command-identity) explains why the label token needs `Pull requests: write`. When a permission is added to an already installed App, an organization administrator must also accept it on the installation, or minting the token fails. The App token is minted only for label commands; the actions-capability and feedback jobs never receive it.
+1. Create a GitHub App, install it only on `radixark/miles`, and grant `Issues: write` and `Pull requests: write`; do not grant `Actions: write` or `Contents: write`. [Command Identity](/developer/ci/05-command-identity) explains why the label token needs `Pull requests: write`. When a permission is added to an already installed App, an organization administrator must also accept it on the installation, or minting the token fails. The App token is minted only for label commands; the actions-capability and feedback jobs never receive it.
 2. Store the App client ID in the repository variable `CI_COMMAND_APP_CLIENT_ID` and its private key in the repository secret `CI_COMMAND_APP_PRIVATE_KEY`.
 3. Protect the final bytes under `.github/workflows/` that implement the command gateway—its workflows, handler, and policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
 4. In the target repository, compare manually adding a test label with adding the same label through the App. Confirm that both trigger the expected CUDA, ROCm, and held-run approval consumers.
@@ -94,7 +94,7 @@ To validate the App-free commands, create a disposable failed run on the current
 
 Then post `/rerun-test` with one registered test file and confirm the dispatched run uses that file as the command entrypoint from the recorded PR head SHA on its registered suite's runner. The original command must receive a 👍 reaction only after dispatch succeeds, a separate comment must show the run in progress, the job logs must contain the test invocation and result, and that same comment ID must be updated with the correct final result and elapsed time.
 
-Caller evaluation points and the token identities each command executes under are specified in [Command Identity](/ci/05-command-identity).
+Caller evaluation points and the token identities each command executes under are specified in [Command Identity](/developer/ci/05-command-identity).
 Actions command comments for one PR are serialized in GitHub's queued concurrency mode. Up to GitHub's 100-pending limit, commands wait instead of replacing an older pending comment.
 Before each rerun request, the handler rechecks the permission, PR head, and latest run of that workflow. Each lookup is a point-in-time result, so a small race remains between the final check and the mutation request.
 
@@ -126,7 +126,7 @@ The workflow's `resolve-ci-policy` job forwards trigger-specific facts or a call
 | nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long` and `ft-long`, incl. `ft-short` | `long`, `ft-long` | disabled on both levels (within-stage only for local runs) |
 | image | `run-ci-image` label | every enabled tag except `long` and FT tags | `long`, `ft-short`, `ft-long` | determined by cadence |
 
-Release and weekly have the same selection and fast-fail policy. Release is separate because frozen release refs must never write the rolling performance baseline; see [Metric history & regression gate](/ci/03-metric-history-gate#trust-cleanup-who-writes).
+Release and weekly have the same selection and fast-fail policy. Release is separate because frozen release refs must never write the rolling performance baseline; see [Metric history & regression gate](/developer/ci/03-metric-history-gate#trust-cleanup-who-writes).
 
 Rows are in precedence order: when scope signals overlap, the higher row wins (`run-ci-all` > weekly/release full scope > nightly > `run-ci-image`, the branch order of `resolve_policy`). `run-ci-all` widens only the domain scope; regular cadence still does not admit `nightly=True` registrations.
 

@@ -25,6 +25,7 @@ def make_args(**overrides) -> Namespace:
         eval_uses_snapshots=True,
         eval_function_path=None,
         debug_train_only=False,
+        ci_test=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
@@ -178,6 +179,17 @@ async def test_eval_checkpoint_skip_reason_propagates(controller_env, tmp_path):
 
     assert controller_env.logged["skip"] == (5, "pin_violation")
     assert "eval" not in controller_env.logged
+
+
+@pytest.mark.parametrize("reason", ["busy", "export_failed", "ckpt_missing", "unhealthy", "crashed"])
+def test_report_eval_skip_fails_ci_after_logging(controller_env, reason):
+    """Every attributable eval problem logs its reason and then fails a CI run."""
+    mgr = make_manager(make_args(ci_test=True))
+
+    with pytest.raises(RuntimeError, match=rf"CI eval 5 skipped: {reason}"):
+        mgr.report_eval_skip(5, reason)
+
+    assert controller_env.logged["skip"] == (5, reason)
 
 
 async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
