@@ -4,7 +4,7 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.utils.workers.argv_utils import render_cli_argv
 
-_ALWAYS_RENDER_FIELDS = ("trust_remote_code", "model_path", "host", "port", "device")
+_ALWAYS_RENDER_FIELDS = ("trust_remote_code", "model_path", "host", "port")
 
 
 def server_args_to_argv(server_args_dict: dict) -> list[str]:
