@@ -522,6 +522,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     register_replay_list_func=m.register_replay_list_func,
                     if_sp_region=m.if_sp_region,
                     indices_are_token_positions=m.replay_indices_are_token_positions,
+                    sequence_first=m is routing_replay_manager,
                 )
 
         with inverse_timer("train_wait"), timer("train"):
