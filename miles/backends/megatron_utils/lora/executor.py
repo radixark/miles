@@ -14,6 +14,7 @@ from megatron.core.optimizer import MegatronOptimizer
 
 from miles.backends.megatron_utils.lora.optimizer import (
     _slot_children,
+    reload_adapter_slot_params,
     reset_grad_metadata_keep_grads,
     step_adapter_slots,
     zero_adapter_slot_grads,
@@ -98,7 +99,7 @@ def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, ran
     init_adapter_slot(model, slot, rank=rank, alpha=alpha)
     zero_adapter_slot_grads(model, slot)
     zero_optimizer_state_for_adapter(optimizer, model, slot)
-    optimizer.reload_model_params()
+    reload_adapter_slot_params(optimizer, slot)
 
 
 def unload_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int) -> None:
@@ -107,4 +108,4 @@ def unload_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int) -
     clear_adapter_slot(model, slot)
     zero_adapter_slot_grads(model, slot)
     zero_optimizer_state_for_adapter(optimizer, model, slot)
-    optimizer.reload_model_params()
+    reload_adapter_slot_params(optimizer, slot)

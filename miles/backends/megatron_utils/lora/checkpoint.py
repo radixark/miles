@@ -5,6 +5,7 @@ expose_adapter_slot). Optimizer state is per global rank because LayerWise
 scatters whole params across ranks; resume requires the same world topology.
 """
 
+import logging
 import os
 import shutil
 from collections.abc import Sequence
@@ -15,11 +16,12 @@ import torch.distributed as dist
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer import MegatronOptimizer
 
+from miles.backends.megatron_utils.lora.optimizer import _slot_children, reload_adapter_slot_params
+from miles.backends.megatron_utils.lora.slots import adapter_shard_topology, megatron_shard_name
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
-from .optimizer import _slot_children
-from .slots import adapter_shard_topology, megatron_shard_name
+logger = logging.getLogger(__name__)
 
 
 def _barrier() -> None:
@@ -84,7 +86,7 @@ def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
     state_dict = torch.load(checkpoint_dir / _weight_shard_name(), map_location="cpu", weights_only=True)
     loaded = load_adapter(model, slot, state_dict)
     assert loaded > 0, f"loaded 0 adapter tensors from {checkpoint_dir / _weight_shard_name()}"
-    optimizer.reload_model_params()
+    reload_adapter_slot_params(optimizer, slot)
 
     if load_optimizer:
         optim_state = torch.load(checkpoint_dir / _optim_shard_name(), map_location="cpu", weights_only=True)
@@ -106,10 +108,13 @@ def _optimizer_slot_state(optimizer: MegatronOptimizer, slot: int) -> dict:
             # a never-stepped slot has no per-param state yet
             state = inner.state[main_param] if main_param in inner.state else {}
             params.append({key: value.cpu() if torch.is_tensor(value) else value for key, value in state.items()})
-        children_states.append({"group_steps": group_steps, "params": params})
+        # Adam moments do not contain the FP32 masters behind BF16 model weights.
+        main_params = [param.detach().to(device="cpu", copy=True) for param in child.get_parameters()]
+        children_states.append({"group_steps": group_steps, "params": params, "main_params": main_params})
     return {"world_size": _world_size(), "children": children_states}
 
 
+@torch.no_grad()
 def _load_optimizer_slot_state(optimizer: MegatronOptimizer, slot: int, saved: dict) -> None:
     assert saved["world_size"] == _world_size(), (
         f"optimizer state was saved with world_size={saved['world_size']}; "
@@ -117,8 +122,19 @@ def _load_optimizer_slot_state(optimizer: MegatronOptimizer, slot: int, saved: d
     )
     children = _slot_children(optimizer, slot)
     assert len(children) == len(saved["children"]), "optimizer layout changed since save"
+    if any("main_params" not in child_state for child_state in saved["children"]):
+        logger.warning(
+            "Legacy slot checkpoint has no optimizer master parameters; restoring Adam state with masters "
+            "reconstructed from model weights. Exact optimizer continuation is unavailable."
+        )
     for child, child_state in zip(children, saved["children"], strict=True):
         inner = child.optimizer
+        if "main_params" in child_state:
+            main_params = child.get_parameters()
+            assert len(main_params) == len(child_state["main_params"]), "optimizer parameter layout changed since save"
+            for param, value in zip(main_params, child_state["main_params"], strict=True):
+                assert param.shape == value.shape, "optimizer parameter shape changed since save"
+                param.copy_(value)
         # FusedAdam clocks steps on the param group, not in per-param state
         for group, step in zip(inner.param_groups, child_state["group_steps"], strict=True):
             existing = group.get("step")
