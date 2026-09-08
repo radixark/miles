@@ -48,5 +48,10 @@ class ModelRecord:
     lora_rank: int
     lora_alpha: float
     session_id: str
+    # Latest published version; next_sampler_version is the mint counter. They
+    # differ while a publication is in flight or after one failed: a version
+    # number is burned on failure, never reused.
     sampler_version: int = 0
+    next_sampler_version: int = 1
+    published_sampler_versions: set = field(default_factory=set)
     user_metadata: dict = field(default_factory=dict)

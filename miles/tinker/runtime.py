@@ -67,8 +67,13 @@ class MilesBackend(ExecutorBackend):
     async def save_slot(self, slot: int, path: str) -> None:
         await self.trainer.save_slot(slot=slot, path=path)
 
-    async def push_slot(self, slot: int, lora_name: str, rank: int, alpha: float) -> None:
-        await self.trainer.push_slot(slot=slot, lora_name=lora_name, rank=rank, alpha=alpha)
+    async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
+        await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path)
+
+    async def push_slot(
+        self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
+    ) -> None:
+        await self.trainer.push_slot(slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path)
 
     async def _run_unit(self, method: str, unit_id: int, train_data: dict) -> list:
         store = object_store.get_instance()
@@ -80,8 +85,8 @@ class MilesBackend(ExecutorBackend):
 
     # -------- sampling --------
 
-    async def sample(self, payload: dict, lora_name: str | None) -> dict:
-        request = self._generate_request(payload, lora_name)
+    async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
+        request = self._generate_request(payload, lora_name, lora_path)
         responses = await asyncio.gather(
             *[post(f"{self.router_url}/generate", dict(request)) for _ in range(payload["num_samples"])]
         )
@@ -92,7 +97,7 @@ class MilesBackend(ExecutorBackend):
             result["topk_prompt_logprobs"] = _topk_prompt_logprobs(responses[0], payload["topk_prompt_logprobs"])
         return result
 
-    def _generate_request(self, payload: dict, lora_name: str | None) -> dict:
+    def _generate_request(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
         params = payload["sampling_params"]
         max_tokens = params.get("max_tokens")
         if max_tokens is None:
@@ -118,6 +123,9 @@ class MilesBackend(ExecutorBackend):
             request["top_logprobs_num"] = payload["topk_prompt_logprobs"]
         if lora_name is not None:
             request["lora_path"] = lora_name
+            if lora_path is not None:
+                # request-carried backfill source: the engine refills an evicted version itself
+                request["lora_backfill_paths"] = {lora_name: lora_path}
         return request
 
 

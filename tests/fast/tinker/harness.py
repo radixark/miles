@@ -60,11 +60,14 @@ class FakeBackend(ExecutorBackend):
     async def save_slot(self, slot, path):
         self._record("save_slot", slot=slot, path=path)
 
-    async def push_slot(self, slot, lora_name, rank, alpha):
-        self._record("push_slot", slot=slot, lora_name=lora_name, rank=rank, alpha=alpha)
+    async def export_slot(self, slot, rank, alpha, path):
+        self._record("export_slot", slot=slot, rank=rank, alpha=alpha, path=path)
 
-    async def sample(self, payload, lora_name):
-        self._record("sample", payload=payload, lora_name=lora_name)
+    async def push_slot(self, slot, lora_name, rank, alpha, lora_path=None):
+        self._record("push_slot", slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path)
+
+    async def sample(self, payload, lora_name, lora_path=None):
+        self._record("sample", payload=payload, lora_name=lora_name, lora_path=lora_path)
         return {
             "sequences": [
                 {"sequence_id": f"seq-{i}", "tokens": [1, 2], "logprobs": [0.0, 0.0], "stop_reason": "stop"}

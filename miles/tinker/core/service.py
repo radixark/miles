@@ -46,10 +46,16 @@ class ExecutorBackend:
     async def save_slot(self, slot: int, path: str) -> None:
         raise NotImplementedError
 
-    async def push_slot(self, slot: int, lora_name: str, rank: int, alpha: float) -> None:
+    async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
+        """Write the slot's adapter as an engine-loadable PEFT dir."""
         raise NotImplementedError
 
-    async def sample(self, payload: dict, lora_name: str | None) -> dict:
+    async def push_slot(
+        self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
+    ) -> None:
+        raise NotImplementedError
+
+    async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
         """-> {"sequences": [{"tokens", "logprobs", "stop_reason"}],
         "prompt_logprobs"?, "topk_prompt_logprobs"?}"""
         raise NotImplementedError
@@ -219,17 +225,19 @@ class TinkerService:
             if session["tenant"] != tenant:
                 raise OwnershipError("sampling session does not belong to this tenant")
             model_path = model_path or session["model_path"]
-        lora_name = self._resolve_sampler(tenant, model_path) if model_path else None
+        lora_name, lora_path = self._resolve_sampler(tenant, model_path) if model_path else (None, None)
         promise = self.promises.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
-        task = asyncio.create_task(self._run_sample(promise.request_id, payload, lora_name))
+        task = asyncio.create_task(self._run_sample(promise.request_id, payload, lora_name, lora_path))
         self._sample_tasks[promise.request_id] = (task, tenant)
         task.add_done_callback(lambda _t, rid=promise.request_id: self._sample_tasks.pop(rid, None))
         return promise.request_id, sequence_ids
 
-    async def _run_sample(self, request_id: str, payload: dict, lora_name: str | None) -> None:
+    async def _run_sample(
+        self, request_id: str, payload: dict, lora_name: str | None, lora_path: str | None = None
+    ) -> None:
         try:
-            result = await self.backend.sample(payload, lora_name)
+            result = await self.backend.sample(payload, lora_name, lora_path)
             self.promises.resolve(request_id, {"kind": "sample", **result})
         except asyncio.CancelledError:
             self.promises.fail(request_id, "cancelled", "user")
@@ -248,13 +256,16 @@ class TinkerService:
         if entry is not None:
             entry[0].cancel()
 
-    def _resolve_sampler(self, tenant: str, model_path: str) -> str:
+    def _resolve_sampler(self, tenant: str, model_path: str) -> tuple[str, str]:
+        """-> (engine lora_name, PEFT dir): the request carries both, so the
+        engine can backfill an evicted version from disk on its own."""
         model_id, kind, name = _parse_tinker_path(model_path)
         record = self.get_model(tenant, model_id)
         if kind != "sampler_weights":
             raise UserInputError(f"cannot sample from {model_path!r}: not a sampler_weights path")
-        assert int(name) <= record.sampler_version, f"unknown sampler version {name} for {model_id}"
-        return f"{model_id}@{name}"
+        if not name.isdecimal() or int(name) not in record.published_sampler_versions:
+            raise UserInputError(f"unknown sampler version {name} for {model_id}")
+        return f"{model_id}@{name}", self._checkpoint_dir(model_id, "sampler_weights", name)
 
     async def sweep_leases(self) -> None:
         """Reclaim from stale tenants: cancel sampling, unload models, free
@@ -391,13 +402,21 @@ class TinkerService:
             )
             return [{"kind": "load_state"}]
         if unit.kind == "save_weights_for_sampler":
-            record.sampler_version += 1
-            version = str(record.sampler_version)
+            candidate = record.next_sampler_version
+            record.next_sampler_version += 1
+            version = str(candidate)
             path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
-            await self.backend.save_slot(record.slot, path)
-            await self.backend.push_slot(
-                record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha
-            )
+            # disk is the commit point: the export makes the version exist; the
+            # push only warms the engine cache
+            await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
+            record.sampler_version = candidate
+            record.published_sampler_versions.add(candidate)
+            try:
+                await self.backend.push_slot(
+                    record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha, lora_path=path
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("adapter warm push failed; version %s will backfill from disk", version)
             return [
                 {
                     "kind": "save_weights_for_sampler",
