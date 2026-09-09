@@ -12,12 +12,12 @@ from contextlib import ExitStack
 from pathlib import Path
 
 import torch
+from megatron.bridge import AutoBridge
 from safetensors import safe_open
 from tap import Tap
 
-from miles_plugins.megatron_bridge.nemotron_h import install
-from megatron.bridge import AutoBridge
 from miles.utils.megatron_bridge_utils import patch_megatron_model
+from miles_plugins.megatron_bridge.nemotron_h import install
 
 
 class Args(Tap):
