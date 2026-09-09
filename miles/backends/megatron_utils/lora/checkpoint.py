@@ -123,11 +123,15 @@ def _optimizer_slot_state(optimizer: MegatronOptimizer, slot: int) -> dict:
             step = group.get("step", 0)
             group_steps.append(step.cpu() if torch.is_tensor(step) else step)
         params = []
+        masters = []
         for main_param in child.get_parameters():
             # a never-stepped slot has no per-param state yet
             state = inner.state[main_param] if main_param in inner.state else {}
             params.append({key: value.cpu() if torch.is_tensor(value) else value for key, value in state.items()})
-        children_states.append({"group_steps": group_steps, "params": params})
+            # the FP32 master, not the BF16 model copy: reload_model_params would
+            # rebuild masters from BF16 and lose the low bits on every resume
+            masters.append(main_param.data.cpu())
+        children_states.append({"group_steps": group_steps, "params": params, "masters": masters})
     return {"world_size": _world_size(), "children": children_states}
 
 
@@ -147,7 +151,13 @@ def _load_optimizer_slot_state(optimizer: MegatronOptimizer, slot: int, saved: d
                 existing.copy_(torch.as_tensor(step))
             elif "step" in group or step:
                 group["step"] = step
-        for main_param, param_state in zip(child.get_parameters(), child_state["params"], strict=True):
+        # checkpoints written before masters were saved restore from BF16 as before
+        masters = child_state.get("masters") or [None] * len(child_state["params"])
+        for main_param, param_state, master in zip(
+            child.get_parameters(), child_state["params"], masters, strict=True
+        ):
+            if master is not None:
+                main_param.data.copy_(master.to(main_param.device))
             state = inner.state[main_param]
             for key, value in param_state.items():
                 if not torch.is_tensor(value):
