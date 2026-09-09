@@ -85,6 +85,19 @@ class TestRolloutServerPureFunctions:
         assert by_name["eval"].server_groups[0].overrides["mem_fraction_static"] == 0.95
         assert "mem_fraction_static" not in by_name["default"].server_groups[0].overrides
 
+    def test_debug_train_only_builds_only_the_eval_model(self):
+        args = make_args(debug_train_only=True, rollout_num_gpus=None, eval_num_gpus=8, eval_num_gpus_per_engine=1)
+
+        config = resolve_sglang_config(args)
+
+        assert [model.name for model in config.models] == ["eval"]
+        assert sum(group.num_gpus for model in config.models for group in model.server_groups) == 8
+
+    def test_debug_train_only_without_eval_fleet_builds_no_model(self):
+        args = make_args(debug_train_only=True, rollout_num_gpus=None, eval_num_gpus=0)
+
+        assert resolve_sglang_config(args).models == []
+
     def test_yaml_eval_model_is_filled_from_cli_without_clobbering(self, tmp_path):
         """Anything the YAML leaves unset falls through to the eval CLI args."""
         cfg_path = tmp_path / "cfg.yaml"

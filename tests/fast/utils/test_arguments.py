@@ -625,6 +625,42 @@ class TestSessionServerPauseGenerationMode:
         assert warned is expect_warning
 
 
+class TestSnapshotEvalValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def _snapshot_eval_args(self, tmp_path, *extra):
+        prompts = tmp_path / "eval.jsonl"
+        prompts.write_text("{}\n")
+        return self._parse(
+            [
+                "--eval-num-gpus",
+                "1",
+                "--eval-interval",
+                "5",
+                "--eval-hf-dir",
+                str(tmp_path / "snapshots"),
+                "--eval-prompt-data",
+                "dummy",
+                str(prompts),
+                *extra,
+            ]
+        )
+
+    def test_snapshot_eval_rejects_load_debug_rollout_data(self, tmp_path):
+        """The replay path loads no rollout functions, so there is nothing to run the eval with."""
+        args = self._snapshot_eval_args(tmp_path, "--load-debug-rollout-data", "/tmp/rollout_{rollout_id}.pt")
+        with pytest.raises(AssertionError, match="load-debug-rollout-data"):
+            miles_validate_args(args)
+
+    def test_train_only_snapshot_eval_needs_its_own_eval_function(self, tmp_path):
+        args = self._snapshot_eval_args(tmp_path, "--debug-train-only")
+        with pytest.raises(AssertionError, match="eval-function-path"):
+            miles_validate_args(args)
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
