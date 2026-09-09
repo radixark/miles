@@ -104,6 +104,9 @@ def harbor_worker_env() -> dict[str, str]:
     """The rollout workers' Harbor environment, assembled by the launcher's own code."""
     if os.environ.get("E2B_API_KEY", "").strip():
         os.environ.setdefault("AGENT_TRIAL_TIMEOUT", "1200")
+    # a small model can loop on terminus's XML format for dozens of turns until
+    # the engine's context limit; bound the trial so the smoke stays a smoke
+    os.environ.setdefault("HARBOR_AGENT_MAX_ITERATIONS", "8")
     args = SimpleNamespace(
         harbor_env_type="e2b",
         harbor_env_kwargs="",
