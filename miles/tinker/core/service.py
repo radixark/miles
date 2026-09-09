@@ -424,24 +424,34 @@ class TinkerService:
             return await self._publish_sampler_version(record)
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
-    async def _step_optimizers(self, entries: list) -> list[dict]:
-        grad_norms = await self.backend.optim_step(
+    async def _step_optimizers(self, entries: list) -> None:
+        """Merged optim barriers settle per slot: one slot's failure must not
+        mask another slot's completed step."""
+        outcomes = await self.backend.optim_step(
             {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
         )
-        return [
-            {"op": "optim_step", "metrics": {"grad_norm": float(grad_norms[stream.slot])}} for stream, _ in entries
-        ]
+        for stream, pending in entries:
+            outcome = outcomes[stream.slot]
+            if "error" in outcome:
+                self.futures.fail(pending.command.request_id, outcome["error"], "server")
+            else:
+                metrics = {key: float(value) for key, value in outcome.items()}
+                self.futures.resolve(pending.command.request_id, {"op": "optim_step", "metrics": metrics})
+            stream.finish(pending)
 
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> list[dict]:
         name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
-        await self.backend.save_slot(record.slot, self._checkpoint_dir(record.model_id, "weights", name))
+        _validate_checkpoint_segment(name)
+        checkpoint_dir = self._checkpoint_dir(record.model_id, "weights", name)
+        if not payload["overwrite"] and os.path.exists(checkpoint_dir):
+            raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
+        await self.backend.save_slot(record.slot, checkpoint_dir)
+        self._stamp_owner(checkpoint_dir, record.tenant)
         return [{"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}]
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> list[dict]:
         source_id, kind, name = _parse_tinker_path(payload["path"])
-        source = self.models.get(source_id)
-        if source is None or source.tenant != record.tenant:
-            raise OwnershipError(f"checkpoint {payload['path']} does not belong to this tenant")
+        self._check_checkpoint_owner(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
         await self.backend.load_slot(
             record.slot,
             record.lora_rank,
@@ -458,6 +468,7 @@ class TinkerService:
         # disk is the commit point: the export makes the version exist; the
         # push only warms the engine cache
         await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
+        self._stamp_owner(path, record.tenant)
         record.published_sampler_versions.add(version)
         try:
             await self.backend.push_slot(
@@ -472,8 +483,24 @@ class TinkerService:
             }
         ]
 
+    def _stamp_owner(self, checkpoint_dir: str, tenant: str) -> None:
+        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        (Path(checkpoint_dir) / "OWNER").write_text(tenant)
+
+    def _check_checkpoint_owner(self, checkpoint_dir: str, tenant: str, shown_path: str) -> None:
+        """Ownership travels with the checkpoint: it must outlive the source
+        model's lease and gateway restarts."""
+        owner_file = Path(checkpoint_dir) / "OWNER"
+        if not owner_file.exists():
+            raise UserInputError(f"unknown checkpoint {shown_path!r}")
+        if owner_file.read_text() != tenant:
+            raise OwnershipError(f"checkpoint {shown_path!r} does not belong to this tenant")
+
     def _checkpoint_dir(self, model_id: str, kind: str, name: str) -> str:
-        return f"{self.config.checkpoint_root}/{model_id}/{kind}/{name}"
+        root = os.path.realpath(self.config.checkpoint_root)
+        path = os.path.realpath(f"{root}/{model_id}/{kind}/{name}")
+        assert path.startswith(root + os.sep), f"checkpoint path {path!r} escapes {root!r}"
+        return path
 
 
 def _parse_tinker_path(path: str) -> tuple[str, str, str]:
@@ -482,4 +509,13 @@ def _parse_tinker_path(path: str) -> tuple[str, str, str]:
     parts = path.removeprefix("tinker://").split("/")
     if len(parts) != 3 or parts[1] not in ("weights", "sampler_weights"):
         raise UserInputError(f"malformed tinker path: {path!r}")
+    for segment in parts:
+        _validate_checkpoint_segment(segment)
     return parts[0], parts[1], parts[2]
+
+
+def _validate_checkpoint_segment(segment: str) -> None:
+    """Client-provided segments become directory names under checkpoint_root;
+    anything that could traverse out of it is rejected at the protocol edge."""
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", segment) is None:
+        raise UserInputError(f"invalid checkpoint path segment {segment!r}")
