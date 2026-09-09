@@ -14,6 +14,7 @@ import os
 import re
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
 from miles.tinker.core.future import PENDING, Future, FutureStore
@@ -400,18 +401,23 @@ class TinkerService:
     # -------- dispatch loop --------
 
     async def run(self) -> None:
-        self._sweep_task = asyncio.create_task(self.sweep_leases())
-        while True:
-            unit = self.planner.next_to_run()
-            if unit is None:
-                await self._wake.wait()
-                self._wake.clear()
-                continue
-            async with self._backend_lock:
-                if isinstance(unit, BatchUnit):
-                    await self._run_batch(unit)
-                else:
-                    await self._run_barrier(unit)
+        sweep_task = asyncio.create_task(self.sweep_leases())
+        try:
+            while True:
+                unit = self.planner.next_to_run()
+                if unit is None:
+                    await self._wake.wait()
+                    self._wake.clear()
+                    continue
+                async with self._backend_lock:
+                    if isinstance(unit, BatchUnit):
+                        await self._run_batch(unit)
+                    else:
+                        await self._run_barrier(unit)
+        finally:
+            sweep_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sweep_task
 
     async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
