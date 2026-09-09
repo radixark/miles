@@ -165,14 +165,9 @@ def step_adapter_slots(
     step_batch_sizes: dict[int, int],
     clip_grad: float,
 ) -> dict[int, dict]:
-    """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients.
+    """Consume the requested slots' gradients and return each slot's outcome on every rank.
 
-    Returns one outcome per slot: ``{"grad_norm": x}`` for a completed step,
-    ``{"skipped_nonfinite": 1.0}`` when the grads were not finite, ``{"error":
-    msg}`` when the step raised. The slot's accumulated grads are consumed in
-    every case, and every branch is decided identically on every rank: the grad
-    norm is all-reduced, and rank-local errors are merged across ranks before
-    any collective depends on them.
+    Outcomes contain `grad_norm`, `skipped_nonfinite`, or `error`; other slots retain their gradients.
     """
     outcomes: dict[int, dict] = {}
     for slot, batch_size in step_batch_sizes.items():
@@ -194,21 +189,19 @@ def _step_one_slot(optimizer, slot: int, batch_size: int, clip_grad: float) -> d
     for child in children:
         child.prepare_grads()
 
-    # Scale the accumulated grad sum to the adapter-batch mean.
     for child in children:
         for main_param in child.get_parameters():
             if main_param.grad is not None:
                 main_param.grad.mul_(1.0 / batch_size)
 
-    # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
+    # whole-param DP scatter requires the slot's grad norm over all ranks
     grads_for_norm = []
     slot_params = []
     for child in children:
         grads_for_norm += child.get_grads_for_grad_norm()
         slot_params += child.get_parameters()
     slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
-    # BF16 runs carry no grad scaler, so prepare_grads() cannot flag inf/nan;
-    # the all-reduced norm is the finiteness check, identical on every rank.
+    # BF16 has no grad scaler; the all-reduced norm detects inf/nan on every rank
     if not math.isfinite(slot_norm):
         return {"skipped_nonfinite": 1.0}
     if clip_grad > 0.0 and slot_params:
@@ -220,8 +213,7 @@ def _step_one_slot(optimizer, slot: int, batch_size: int, clip_grad: float) -> d
 
 
 def _merge_outcomes_across_ranks(outcomes: dict[int, dict]) -> dict[int, dict]:
-    """A rank-local failure must fail the slot on every rank, or the healthy
-    ranks would enter the parameter allgather without the failed one."""
+    """Propagate slot failures before any rank enters the parameter allgather."""
     if not dist.is_initialized():
         return outcomes
     per_rank: list[dict | None] = [None] * dist.get_world_size()

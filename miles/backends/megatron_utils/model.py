@@ -537,25 +537,7 @@ def train_one_step(
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
-    """Execute a single pipeline-parallel training step.
-
-    Runs forward/backward over ``num_microbatches``, applies optimizer step and
-    one scheduler step when gradients are valid.
-
-    Args:
-        args: Runtime arguments.
-        rollout_id: Rollout identifier.
-        step_id: Step index within the current rollout.
-        data_iterator: Iterable(s) yielding training batches.
-        model: Sequence of DDP-wrapped model chunks.
-        optimizer: Optimizer instance.
-        opt_param_scheduler: LR/WD scheduler.
-        num_microbatches: Number of microbatches to process.
-        num_rollouts: This step's rollout count (loss normalizer + LR increment).
-
-    Returns:
-        Tuple of (reduced loss dict, gradient norm, step outcome).
-    """
+    """Run pipeline forward/backward, then step the optimizer and scheduler when gradients are valid."""
     args = get_args()
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
@@ -663,8 +645,7 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
 
 
 def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
-    """Wire DDP grad/param sync hooks into the model config. Idempotent so
-    command-grained callers can run it per invocation."""
+    """Set the DDP gradient and parameter sync hooks for this training iteration."""
     config = get_model_config(model[0])
     config.grad_scale_func = None if disable_optimizer else optimizer.scale_loss
     config.timers = None

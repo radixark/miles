@@ -1,9 +1,4 @@
-"""Command-grained training primitives over the multi-LoRA slot machinery.
-
-forward_backward accumulates slot gradients across calls; optim_step consumes
-them for the requested slots only. Hyperparameters arrive per optim_step call;
-there is no scheduler.
-"""
+"""Accumulate gradients across commands and step only the requested LoRA slots."""
 
 import logging
 from argparse import Namespace
@@ -75,7 +70,6 @@ def optim_step(
 
 
 def _apply_adam_params(optimizer: MegatronOptimizer, slot: int, adam_params: dict) -> None:
-    # AdamParams is materialized at the boundary; a missing key is an encoder bug
     for child in _slot_children(optimizer, slot):
         for group in child.param_groups:
             group["lr"] = adam_params["learning_rate"]
