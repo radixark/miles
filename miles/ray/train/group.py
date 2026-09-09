@@ -425,6 +425,9 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)
 
+    async def multi_lora_memory_probe(self, phase: str) -> list[dict]:
+        return await self._execute_slots("multi_lora_memory_probe", phase=phase)
+
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
