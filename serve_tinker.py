@@ -55,7 +55,7 @@ async def serve(args):
         trains_unembed="output_layer" in target_modules,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-    service = TinkerService(MilesBackend(args, trainer, router_url), config)
+    service = TinkerService(MilesBackend(trainer, router_url), config)
 
     server = uvicorn.Server(
         uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
