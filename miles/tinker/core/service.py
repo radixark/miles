@@ -97,6 +97,9 @@ class TinkerService:
         self._create_tasks: set = set()
         self._arrival_counter = 0
         self._batch_counter = 0
+        # slot -> (error, category) of a discarded accumulation window; the next
+        # optim barrier on the slot must fail instead of stepping ghost gradients
+        self._poisoned_slots: dict[int, tuple[str, str]] = {}
 
     # -------- control plane --------
 
@@ -409,6 +412,7 @@ class TinkerService:
                 stream.finish(pending)
         if batch.op == CommandOp.FORWARD_BACKWARD:
             for slot in sorted({stream.slot for stream in streams}):
+                self._poisoned_slots[slot] = (error, category)
                 await self.backend.zero_grads(slot)
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
@@ -444,12 +448,15 @@ class TinkerService:
         if barrier.op == CommandOp.LOAD_STATE:
             return await self._load_state(record, payload)
         if barrier.op == CommandOp.SAVE_WEIGHTS_FOR_SAMPLER:
-            return await self._publish_sampler_version(record)
+            return await self._publish_sampler_version(record, payload)
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
     async def _step_optimizers(self, entries: list) -> None:
         """Merged optim barriers settle per slot: one slot's failure must not
         mask another slot's completed step."""
+        entries = [entry for entry in entries if not self._fail_if_poisoned(*entry)]
+        if not entries:
+            return
         outcomes = await self.backend.optim_step(
             {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
         )
@@ -461,6 +468,22 @@ class TinkerService:
                 metrics = {key: float(value) for key, value in outcome.items()}
                 self.futures.resolve(pending.command.request_id, {"op": "optim_step", "metrics": metrics})
             stream.finish(pending)
+
+    def _fail_if_poisoned(self, stream, pending) -> bool:
+        """Earlier batches of the window may have resolved before a later one
+        failed and their gradients were discarded; the step must not silently
+        run on the remainder."""
+        poison = self._poisoned_slots.pop(stream.slot, None)
+        if poison is None:
+            return False
+        error, category = poison
+        self.futures.fail(
+            pending.command.request_id,
+            f"the gradient accumulation was discarded after a failed batch ({error}); resubmit the window",
+            category,
+        )
+        stream.finish(pending)
+        return True
 
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> list[dict]:
         name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
