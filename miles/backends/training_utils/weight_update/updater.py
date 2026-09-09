@@ -116,27 +116,13 @@ class WeightUpdater:
         lora_path: str | None = None,
     ) -> None:
         protocol = self.protocol
-        driver = dist.get_rank() == 0
-        # a driver-only failure here must fail every rank, not strand them at the sync point
-        prologue_failure = [None]
-        if protocol.use_weight_update_session and driver:
-            try:
-                if not staged:
-                    pause_engines(self.args, protocol.rollout_engines)
-                self._register_new_lora_adapters(
-                    protocol.rollout_engines, adapters, defer_publish=staged, lora_path=lora_path
-                )
-                begin_weight_update(
-                    protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-                )
-            except Exception as exc:
-                prologue_failure[0] = f"{type(exc).__name__}: {exc}"
-        dist.broadcast_object_list(prologue_failure, src=0, group=get_gloo_group())
-        if prologue_failure[0] is not None:
-            raise RuntimeError(f"weight-update session setup failed on the driver: {prologue_failure[0]}")
-        abort_guard = self._discard_staged_session_on_failure() if staged and driver else nullcontext()
+        self._call_engines_from_rank0(
+            lambda: self._open_engine_session(adapters, sync_base=sync_base, staged=staged, lora_path=lora_path)
+        )
+        abort_guard = self._discard_staged_session_on_failure() if staged and dist.get_rank() == 0 else nullcontext()
         with abort_guard:
             checksums = self._checksum_manifest(adapters, staged)
+            records_manifest = checksums is not None and dist.get_rank() == 0
             with timer("update_weights_implementation"):
                 pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
                 for bucket in self._hf_weight_iterator.iter_hf_weights(
@@ -146,7 +132,7 @@ class WeightUpdater:
                     materialize=protocol.is_sender,
                 ):
                     if protocol.is_sender:
-                        if driver and checksums is not None:
+                        if records_manifest:
                             record_lora_checksums(bucket, checksums)
                         protocol.send_bucket(bucket)
                         pbar.update(1)
@@ -155,14 +141,42 @@ class WeightUpdater:
 
             with timer("finalize_and_resume_engines"):
                 protocol.finalize(self.weight_version)
-                if protocol.use_weight_update_session and driver:
-                    end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                    if weight_version is not None:
-                        set_weight_version(protocol.rollout_engines, weight_version)
-                    if not staged:
-                        resume_engines(protocol.rollout_engines)
-                dist.barrier(group=get_gloo_group())
+                self._call_engines_from_rank0(
+                    lambda: self._close_engine_session(checksums, weight_version=weight_version, staged=staged)
+                )
             protocol.after_engines_resumed()
+
+    def _open_engine_session(self, adapters: list, *, sync_base: bool, staged: bool, lora_path: str | None) -> None:
+        if not staged:
+            pause_engines(self.args, self.protocol.rollout_engines)
+        self._register_new_lora_adapters(
+            self.protocol.rollout_engines, adapters, defer_publish=staged, lora_path=lora_path
+        )
+        begin_weight_update(
+            self.protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
+        )
+
+    def _close_engine_session(self, checksums: dict | None, *, weight_version: int | None, staged: bool) -> None:
+        end_weight_update(self.protocol.rollout_engines, expected_lora_checksums=checksums)
+        if weight_version is not None:
+            set_weight_version(self.protocol.rollout_engines, weight_version)
+        if not staged:
+            resume_engines(self.protocol.rollout_engines)
+
+    def _call_engines_from_rank0(self, rpcs: Callable[[], None]) -> None:
+        """Session RPCs run on one rank; the outcome is broadcast so a refused
+        engine call fails every rank together instead of stranding the
+        collectives ahead. A no-op sync point without a weight-update session."""
+        failure = [None]
+        if self.protocol.use_weight_update_session and dist.get_rank() == 0:
+            try:
+                rpcs()
+            except Exception as exc:
+                logger.exception("engine weight-update RPCs failed")
+                failure[0] = f"{type(exc).__name__}: {exc}"
+        dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
+        if failure[0] is not None:
+            raise RuntimeError(f"engine weight-update RPCs failed: {failure[0]}")
 
     @contextmanager
     def _discard_staged_session_on_failure(self):
