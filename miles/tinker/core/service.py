@@ -412,7 +412,9 @@ class TinkerService:
         refs = sorted(batch.datums, key=lambda ref: ref.stream.slot)
         slot_datums = [(ref.stream.slot, ref.datum) for ref in refs]
         self._batch_counter += 1
-        execute_batch = self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
+        execute_batch = (
+            self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
+        )
         try:
             outputs = await execute_batch(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
         except UserInputError as error:
