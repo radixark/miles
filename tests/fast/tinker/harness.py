@@ -1,10 +1,11 @@
 """Shared fakes for the tinker gateway suite."""
 
 import asyncio
+import tempfile
 
 from miles.tinker.core.future import PENDING, Future
 from miles.tinker.core.service import ExecutorBackend, TinkerService
-from miles.tinker.core.types import Command, GatewayConfig
+from miles.tinker.core.types import Command, CommandOp, GatewayConfig
 
 ADAM = {
     "learning_rate": 1e-4,
@@ -23,6 +24,7 @@ class FakeBackend(ExecutorBackend):
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.fail_next: Exception | None = None
+        self.optim_outcomes: dict[int, dict] = {}
         self.fail_on: dict[str, Exception] = {}
 
     def _record(self, name: str, **kwargs) -> None:
@@ -63,7 +65,10 @@ class FakeBackend(ExecutorBackend):
 
     async def optim_step(self, adam_params_by_slot):
         self._record("optim_step", adam_params_by_slot=adam_params_by_slot)
-        return {slot: 0.5 + slot for slot in adam_params_by_slot}
+        return {slot: self.optim_outcomes.get(slot, {"grad_norm": 0.5 + slot}) for slot in adam_params_by_slot}
+
+    async def zero_grads(self, slot):
+        self._record("zero_grads", slot=slot)
 
     async def save_slot(self, slot, path):
         self._record("save_slot", slot=slot, path=path)
@@ -85,7 +90,7 @@ class FakeBackend(ExecutorBackend):
 
 
 def make_config(**overrides) -> GatewayConfig:
-    defaults = dict(base_model="base", n_slots=2, checkpoint_root="/tmp/tinker-test")
+    defaults = dict(base_model="base", n_slots=2, checkpoint_root=tempfile.mkdtemp(prefix="tinker-test-"))
     return GatewayConfig(**{**defaults, **overrides})
 
 
@@ -94,7 +99,8 @@ def make_service(**config_overrides) -> TinkerService:
 
 
 def datum(tokens: int = 3) -> dict:
-    return {"tokens": list(range(tokens + 1)), "target_len": tokens}
+    # weights ride along like the SDK always sends them for cross_entropy
+    return {"tokens": list(range(tokens + 1)), "target_len": tokens, "weights": [1.0] * tokens}
 
 
 def fb_payload(model_id: str, seq_id: int, datums: list[dict], loss_fn: str = "cross_entropy") -> dict:
@@ -103,7 +109,12 @@ def fb_payload(model_id: str, seq_id: int, datums: list[dict], loss_fn: str = "c
 
 def command(model_id: str, seq_id: int, op: str, payload: dict, arrival: int) -> Command:
     return Command(
-        model_id=model_id, seq_id=seq_id, op=op, payload=payload, request_id=f"req-{seq_id}", arrival=arrival
+        model_id=model_id,
+        seq_id=seq_id,
+        op=CommandOp(op),
+        payload=payload,
+        request_id=f"req-{seq_id}",
+        arrival=arrival,
     )
 
 
