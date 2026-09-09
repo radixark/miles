@@ -141,3 +141,17 @@ shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto the Megatron
 - [Backends Beyond Megatron](/advanced/architecture-support)
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
 - [Low Precision RL](/advanced/low-precision)
+
+## Checkpoint compatibility
+
+Megatron versions that expose Mamba convolution parameters as
+`mixer.conv1d_weight` and `mixer.conv1d_bias` require the corresponding bridge
+mappings. The Miles Nemotron-H shim supports these names as well as the older
+`mixer.conv1d.weight` and `mixer.conv1d.bias` names. Missing mappings leave those
+parameters unloaded and omit them from rollout weight updates.
+
+To audit a staged checkpoint without training, run
+`tools/debug_nemotron_h_roundtrip.py` with `--model_dir` and `--output_dir`.
+The audit compares exported tensors against the original checkpoint and records
+missing names in `summary.json`. For a distributed layout, use `torchrun` with
+the appropriate process count and pass `--tp`, `--pp`, `--ep`, and `--etp`.
