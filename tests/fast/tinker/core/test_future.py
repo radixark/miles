@@ -1,5 +1,4 @@
-"""The future store is the submit-then-poll ledger: tenant-scoped reads,
-410 semantics for the expired."""
+"""Future reads enforce tenant ownership and expire finished results."""
 
 import pytest
 

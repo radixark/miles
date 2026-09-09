@@ -1,5 +1,4 @@
-"""runtime.py is the miles translator: datums -> RolloutBatch keys, neutral
-sampling payloads -> sglang /generate requests, engine responses -> sequences."""
+"""Runtime translation preserves datum order, sampling parameters, and token logprobs."""
 
 import pytest
 import torch

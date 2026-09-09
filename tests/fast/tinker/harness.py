@@ -17,8 +17,7 @@ ADAM = {
 
 
 class FakeBackend(ExecutorBackend):
-    """Records every call; returns deterministic shapes. Set ``fail_next`` to
-    make the next backend call raise it."""
+    """Record calls with deterministic outputs and configurable failures."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
@@ -98,7 +97,6 @@ def make_service(checkpoint_root, **config_overrides) -> TinkerService:
 
 
 def datum(tokens: int = 3) -> dict:
-    # weights ride along like the SDK always sends them for cross_entropy
     return {"tokens": list(range(tokens + 1)), "target_len": tokens, "weights": [1.0] * tokens}
 
 
