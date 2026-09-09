@@ -1,11 +1,14 @@
-"""One GRPO step with Harbor trials on real e2b sandboxes: the full training path.
+"""Harbor trials on real e2b sandboxes, through the full rollout path.
 
 What the sandbox smoke (scripts/sandbox_smoke) cannot see, this covers: the
 launcher wiring delivering the Harbor environment to rollout workers, the
-session server + TITO recording a real model's turns, terminus-2 driving the
-sandbox from the trainer host, the reward flowing back through
-generate.reward_func, and one optimizer step. Deliberately fixed to
-harbor x e2b x terminus-2 x TB2 fix-git -- one combination, the one we run.
+session server + TITO recording a real model's turns under the strict gate,
+terminus-2 driving the sandbox from the trainer host, and the reward flowing
+back through generate.reward_func. Rollout only (``--debug-rollout-only``):
+everything Harbor-specific runs before the optimizer step, and skipping that
+step lets the recipe's own model, GLM-4.7-Flash, fit on 2 GPUs. Deliberately
+fixed to harbor x e2b x terminus-2 x TB2 fix-git -- one combination, the one
+we run.
 
 Registered ``disabled`` because it needs what CI runners do not have yet: a
 network route to an E2B-compatible sandbox service and the platform key on
@@ -17,7 +20,7 @@ the machine. Until then, run it manually on a GPU devbox that has both:
     export E2B_API_URL=http://<your-e2b-service>
     export E2B_SANDBOX_URL=$E2B_API_URL
     # key at ~/.config/e2b/api_key
-    python tests/e2e/agentic/test_harbor_e2b_training.py
+    PYTHONPATH=. python tests/e2e/agentic/test_harbor_e2b_rollout.py
 
 terminus-2 is a host-process agent: the sandboxes never call back into the
 trainer, so the only network requirement is this machine -> control plane.
@@ -36,7 +39,7 @@ from tests.ci.ci_register import register_cuda_ci
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
-    est_time=900,
+    est_time=1200,
     suite="stage-c-2-gpu-h200",
     labels=["agentic"],
     disabled="needs a network route to the sandbox service and its key on the runner; run manually on a GPU devbox that has both",
@@ -51,7 +54,8 @@ TB2_REPO = "https://github.com/laude-institute/terminal-bench-2.git"
 TASKS_DIR = "/root/datasets/terminal-bench-2"  # native Harbor task dirs; cloned in prepare()
 SMOKE_TASK = "fix-git"
 
-MODEL_NAME = "Qwen3-0.6B"
+MODEL_REPO = "zai-org/GLM-4.7-Flash"  # the recipe's model (examples/experimental/harbor/run.py)
+MODEL_DIR = "/root/models/GLM-4.7-Flash"
 NUM_GPUS = 2
 PROMPT_DATA = "/root/datasets/harbor_tb2_smoke.jsonl"
 TRIALS_DIR = "/tmp/harbor_trials_e2e"
@@ -85,7 +89,8 @@ def prepare():
     # a stale trial dir from a prior manual run must not vouch for this one
     shutil.rmtree(TRIALS_DIR, ignore_errors=True)
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    if not (Path(MODEL_DIR) / "config.json").is_file():
+        U.exec_command_cpu(f"hf download {MODEL_REPO} --local-dir {MODEL_DIR}")
     if not (Path(TASKS_DIR) / SMOKE_TASK).is_dir():
         # clear any partial clone (an interrupted one leaves a non-empty dir git refuses)
         shutil.rmtree(TASKS_DIR, ignore_errors=True)
@@ -102,11 +107,11 @@ def prepare():
 
 def harbor_worker_env() -> dict[str, str]:
     """The rollout workers' Harbor environment, assembled by the launcher's own code."""
-    if os.environ.get("E2B_API_KEY", "").strip():
-        os.environ.setdefault("AGENT_TRIAL_TIMEOUT", "1200")
-    # a small model can loop on terminus's XML format for dozens of turns until
-    # the engine's context limit; bound the trial so the smoke stays a smoke
-    os.environ.setdefault("HARBOR_AGENT_MAX_ITERATIONS", "8")
+    # bound each trial so the smoke stays a smoke: a looping agent would
+    # otherwise run to the engine's context limit. fix-git takes terminus
+    # well over 12 of its one-command turns, so the cap leaves room to solve.
+    os.environ.setdefault("AGENT_TRIAL_TIMEOUT", "1200")
+    os.environ.setdefault("HARBOR_AGENT_MAX_ITERATIONS", "30")
     args = SimpleNamespace(
         harbor_env_type="e2b",
         harbor_env_kwargs="",
@@ -123,7 +128,7 @@ def harbor_worker_env() -> dict[str, str]:
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} "
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR} "
     rollout_args = (
         f"--prompt-data {PROMPT_DATA} "
         "--input-key prompt "
@@ -132,44 +137,26 @@ def execute():
         "--rollout-batch-size 1 "
         "--n-samples-per-prompt 2 "
         "--over-sampling-batch-size 1 "
-        "--rollout-max-response-len 1024 "
+        "--rollout-max-response-len 8192 "
         "--rollout-temperature 0.8 "
-        "--max-seq-len 8192 "
+        "--max-seq-len 65536 "
         "--global-batch-size 2 "
     )
-    # the recipes' own wiring, so the flags tested here are the flags shipped
-    agent_args = agentic_train_args(tito_model="qwen3", session_server_workers=4)
-    grpo_args = (
-        "--advantage-estimator grpo "
-        "--kl-loss-coef 0.00 "
-        "--kl-loss-type low_var_kl "
-        "--kl-coef 0.00 "
-        "--entropy-coef 0.00 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
-    )
-    optimizer_args = (
-        "--optimizer adam --lr 1e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
-    )
-    # the family's parsers: with them the engine emits reasoning_content, which
-    # terminus (interleaved_thinking) carries back in history, so the qwen3
-    # template re-renders each think block instead of an empty skeleton
+    # the recipe's own wiring and engine settings (run.py), so the flags tested
+    # here are the flags shipped; only the scale differs
+    agent_args = agentic_train_args(tito_model="glm47", session_server_workers=4)
     sglang_args = (
-        "--rollout-num-gpus-per-engine 2 --sglang-decode-log-interval 1000 "
-        "--sglang-reasoning-parser qwen3 --sglang-tool-call-parser qwen25 "
+        "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.7 --sglang-decode-log-interval 1000 "
+        "--sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
     )
-    perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 32768 "
-    # strict TITO gate off: Qwen3-0.6B sometimes ends a turn with <|endoftext|>
-    # (its second EOS) where the template puts <|im_end|>; the qwen3 TITO
-    # boundary handling assumes <|im_end|>, so the comparator reports a hard
-    # mismatch for a model choice, not a bug. Tracked in #3113; the rate is
-    # still logged.
-    ci_args = "--ci-test --ci-disable-kl-checker --ci-disable-tito-strict-checker "
-    misc_args = f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate --train-backend fsdp "
-
+    # rollout only; fsdp + megatron_model_type=None is the pair execute_train
+    # accepts for skipping megatron init
+    misc_args = (
+        f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate "
+        "--train-backend fsdp --debug-rollout-only --ci-test "
+    )
     train_args = (
-        f"{ckpt_args} {rollout_args} {agent_args} {optimizer_args} {grpo_args} "
-        f"{sglang_args} {U.get_default_wandb_args(__file__)} {perf_args} {ci_args} {misc_args}"
+        f"{ckpt_args} {rollout_args} {agent_args} {sglang_args} {U.get_default_wandb_args(__file__)} {misc_args}"
     )
 
     extra_env_vars = {
@@ -185,7 +172,7 @@ def execute():
 
 
 def check_trials():
-    """The training job finishing is not enough: at least one Harbor trial must
+    """The rollout finishing is not enough: at least one Harbor trial must
     have reached its verifier (a reward, no exception)."""
     trial_dirs = sorted(Path(TRIALS_DIR).glob(f"{SMOKE_TASK}__*"))
     assert trial_dirs, f"no Harbor trial directories under {TRIALS_DIR}"
