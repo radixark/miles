@@ -1,8 +1,6 @@
 """runtime.py is the miles translator: datums -> RolloutBatch keys, neutral
 sampling payloads -> sglang /generate requests, engine responses -> sequences."""
 
-from argparse import Namespace
-
 import pytest
 import torch
 
@@ -10,13 +8,13 @@ from miles.tinker.core.types import UserInputError
 from miles.tinker.runtime import MilesBackend, _build_train_data, _prompt_logprobs, _to_sequence, _topk_prompt_logprobs
 
 
-def _row(tokens: list[int], **extra) -> dict:
+def _datum(tokens: list[int], **extra) -> dict:
     return {"tokens": tokens, "target_len": len(tokens) - 1, **extra}
 
 
 class TestBuildTrainData:
-    def test_rows_become_rollout_batch_keys(self):
-        train_data = _build_train_data([(3, _row([1, 2, 3])), (5, _row([4, 5]))])
+    def test_datums_become_rollout_batch_keys(self):
+        train_data = _build_train_data([(3, _datum([1, 2, 3])), (5, _datum([4, 5]))])
         assert train_data["tokens"] == [[1, 2, 3], [4, 5]]
         assert train_data["response_lengths"] == [2, 1]
         assert train_data["total_lengths"] == [3, 2]
@@ -26,14 +24,14 @@ class TestBuildTrainData:
         assert train_data["dynamic_global_batch_size"] == 2
 
     def test_optional_datum_keys_map_to_batch_names(self):
-        train_data = _build_train_data([(0, _row([1, 2], weights=[1.0], advantages=[2.0], sampling_logprobs=[-0.5]))])
+        train_data = _build_train_data([(0, _datum([1, 2], weights=[1.0], advantages=[2.0], sampling_logprobs=[-0.5]))])
         assert train_data["loss_weights"] == [[1.0]]
         assert train_data["advantages"] == [[2.0]]
         assert train_data["rollout_log_probs"] == [[-0.5]]
 
 
 async def test_forward_backward_merges_worker_replicas():
-    backend = MilesBackend(Namespace(), trainer=None, router_url="http://router")
+    backend = MilesBackend(trainer=None, router_url="http://router")
     per_datum = [
         {"sample_index": 1, "loss": 2.0, "logprobs": torch.tensor([-0.2])},
         {"sample_index": 0, "loss": 1.0, "logprobs": torch.tensor([-0.1])},
@@ -43,7 +41,7 @@ async def test_forward_backward_merges_worker_replicas():
         return [{"per_datum": per_datum}, {"per_datum": per_datum}]  # two ranks report the same datums
 
     backend._run_batch = fake_run_batch
-    outputs = await backend.forward_backward(1, [(0, _row([1, 2])), (0, _row([3, 4]))], "cross_entropy", {})
+    outputs = await backend.forward_backward(1, [(0, _datum([1, 2])), (0, _datum([3, 4]))], "cross_entropy", {})
     assert outputs == [
         {"loss": 1.0, "logprobs": [pytest.approx(-0.1)]},
         {"loss": 2.0, "logprobs": [pytest.approx(-0.2)]},
@@ -60,7 +58,7 @@ class TestGenerateRequest:
             "topk_prompt_logprobs": 0,
             **payload_extra,
         }
-        return MilesBackend(Namespace(), None, "http://router")._generate_request(payload, lora_name="m@1")
+        return MilesBackend(None, "http://router")._generate_request(payload, lora_name="m@1")
 
     def test_max_tokens_is_required(self):
         with pytest.raises(UserInputError, match="max_tokens"):
@@ -115,7 +113,7 @@ class TestEngineResponseParsing:
 
 
 async def test_forward_only_runs_the_requested_loss():
-    backend = MilesBackend(Namespace(), trainer=None, router_url="http://router")
+    backend = MilesBackend(trainer=None, router_url="http://router")
     captured = {}
 
     async def fake_run_batch(method, batch_id, train_data):
@@ -124,15 +122,15 @@ async def test_forward_only_runs_the_requested_loss():
         return [{"per_datum": [{"sample_index": 0, "loss": 3.0, "logprobs": torch.tensor([-0.3])}]}]
 
     backend._run_batch = fake_run_batch
-    outputs = await backend.forward_only(1, [(0, _row([1, 2]))], "importance_sampling", {})
+    outputs = await backend.forward_only(1, [(0, _datum([1, 2]))], "importance_sampling", {})
     assert captured == {"method": "forward_only", "loss_fn": "importance_sampling"}
     assert outputs == [{"loss": 3.0, "logprobs": [pytest.approx(-0.3)]}]
 
 
 def test_a_pinned_seed_still_gets_one_stream_per_sample():
-    from miles.tinker.runtime import _seeded
+    from miles.tinker.runtime import _with_sample_seed
 
     request = {"sampling_params": {"sampling_seed": 7, "temperature": 0.0}}
-    assert [_seeded(request, i)["sampling_params"]["sampling_seed"] for i in range(3)] == [7, 8, 9]
+    assert [_with_sample_seed(request, i)["sampling_params"]["sampling_seed"] for i in range(3)] == [7, 8, 9]
     assert request["sampling_params"]["sampling_seed"] == 7
-    assert "sampling_seed" not in _seeded({"sampling_params": {}}, 2)["sampling_params"]
+    assert "sampling_seed" not in _with_sample_seed({"sampling_params": {}}, 2)["sampling_params"]
