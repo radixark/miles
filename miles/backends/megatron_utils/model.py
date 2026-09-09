@@ -413,7 +413,9 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
-def run_forward_backward_pass(args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts):
+def run_forward_backward_pass(
+    args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts, forward_only=False
+):
     """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
 
     @dumper_phase_util.wrap_forward_step
@@ -521,7 +523,7 @@ def run_forward_backward_pass(args, dumper_phase_util, data_iterator, model, num
         seq_length=args.seq_length,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
-        forward_only=False,
+        forward_only=forward_only,
     )
 
 

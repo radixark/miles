@@ -433,26 +433,31 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
             stack.enter_context(store_get_result)
-            return lora_executor.forward_backward(self.args, batch_id, self.model, self.optimizer, rollout_data)
+            return lora_executor.run_loss_pass(self.args, batch_id, self.model, self.optimizer, rollout_data)
 
     @with_logs
-    def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, float]:
+    def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
         assert self.args.multi_lora, "optim_step is a multi-LoRA slot command"
         self._heartbeat.bump()
         return lora_executor.optim_step(self.model, self.optimizer, adam_params_by_slot)
 
     @with_logs
-    def forward_only_logprobs(self, batch_id: int, rollout_data_ref: Box) -> Box | None:
-        assert self.args.multi_lora, "forward_only_logprobs is a multi-LoRA slot command"
+    def zero_grads(self, slot: int) -> None:
+        assert self.args.multi_lora, "zero_grads is a multi-LoRA slot command"
+        lora_executor.zero_grads(self.model, slot)
+
+    @with_logs
+    def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
+        """Same loss pass as forward_backward, without the backward: the Tinker
+        forward() contract returns the requested loss per datum."""
+        assert self.args.multi_lora, "forward_only is a multi-LoRA slot command"
         self._heartbeat.bump()
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
             stack.enter_context(store_get_result)
-            data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
-            outputs = self.compute_log_prob(data_iterator, num_microbatches, rollout_id=batch_id)
-        if not get_parallel_state().is_pp_last_stage:
-            return None
-        return Box(ray.put({key: [t.cpu() for t in tensors] for key, tensors in outputs.items()}))
+            return lora_executor.run_loss_pass(
+                self.args, batch_id, self.model, self.optimizer, rollout_data, forward_only=True
+            )
 
     @with_logs
     def load_slot(self, slot: int, rank: int, alpha: float) -> None:
