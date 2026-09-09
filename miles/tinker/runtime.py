@@ -46,7 +46,10 @@ class MilesBackend(ExecutorBackend):
             for datum_output in worker_result["per_datum"]:
                 index = int(datum_output["sample_index"])
                 if index not in by_index:
-                    by_index[index] = {"loss": float(datum_output["loss"]), "logprobs": datum_output["logprobs"].tolist()}
+                    by_index[index] = {
+                        "loss": float(datum_output["loss"]),
+                        "logprobs": datum_output["logprobs"].tolist(),
+                    }
         return [by_index[index] for index in range(len(slot_datums))]
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
@@ -80,7 +83,10 @@ class MilesBackend(ExecutorBackend):
     async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
         request = self._generate_request(payload, lora_name, lora_path)
         responses = await asyncio.gather(
-            *[post(f"{self.router_url}/generate", _with_sample_seed(request, index)) for index in range(payload["num_samples"])]
+            *[
+                post(f"{self.router_url}/generate", _with_sample_seed(request, index))
+                for index in range(payload["num_samples"])
+            ]
         )
         result = {"sequences": [_to_sequence(response) for response in responses]}
         if payload["prompt_logprobs"]:
