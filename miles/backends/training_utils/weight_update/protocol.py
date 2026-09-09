@@ -62,6 +62,9 @@ class WeightTransferProtocol(ABC):
     def finalize(self, weight_version: int) -> None:  # noqa: B027 — optional hook
         """Hook after all sends (e.g. publish + engine reload)."""
 
+    def after_engines_resumed(self) -> None:  # noqa: B027 — optional hook
+        """Hook once the engines have applied every bucket and resumed generation."""
+
     def pop_metrics(self) -> dict[str, float]:
         metrics, self.update_weight_metrics = self.update_weight_metrics, {}
         return metrics

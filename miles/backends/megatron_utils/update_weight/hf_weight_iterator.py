@@ -53,7 +53,8 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             )
         if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
             raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
-        for hf_name, tensor in named_tensors:
+        while named_tensors:
+            hf_name, tensor = named_tensors.pop(0)
             yield [(f"{lora_name}:{hf_name}", tensor)]
 
     @abstractmethod

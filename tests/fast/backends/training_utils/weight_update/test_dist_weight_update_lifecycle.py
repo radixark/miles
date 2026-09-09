@@ -84,6 +84,7 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
         send_bucket=MagicMock(),
         after_base_weights=MagicMock(),
         finalize=MagicMock(),
+        after_engines_resumed=MagicMock(),
     )
     iterator = MagicMock()
     iterator.iter_hf_weights.return_value = iter([])
