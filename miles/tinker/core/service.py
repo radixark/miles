@@ -8,6 +8,7 @@ see a single totally ordered stream of batches and barriers.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -333,12 +334,32 @@ class TinkerService:
         """-> (engine lora_name, adapter dir): the request carries both, so the
         engine can backfill an evicted version from disk on its own."""
         model_id, kind, name = _parse_tinker_path(model_path)
-        record = self.get_model(tenant, model_id)
         if kind != "sampler_weights":
             raise UserInputError(f"cannot sample from {model_path!r}: not a sampler_weights path")
-        if not name.isdecimal() or int(name) not in record.published_sampler_versions:
-            raise UserInputError(f"unknown sampler version {name} for {model_id}")
-        return f"{model_id}@{name}", self._checkpoint_dir(model_id, "sampler_weights", name)
+        checkpoint_dir = self._checkpoint_dir(model_id, "sampler_weights", name)
+        record = self.models.get(model_id)
+        if record is not None:
+            if record.tenant != tenant:
+                raise OwnershipError(f"model {model_id} does not belong to this tenant")
+            if not name.isdecimal() or int(name) not in record.published_sampler_versions:
+                raise UserInputError(f"unknown sampler version {name} for {model_id}")
+        else:
+            # the training lease is gone; the checkpoint on disk is the record
+            self._checkpoint_meta(checkpoint_dir, tenant, model_path)
+        return f"{model_id}@{name}", checkpoint_dir
+
+    def weights_info(self, tenant: str, tinker_path: str) -> dict:
+        """What the SDK needs to rebuild a training client from a checkpoint."""
+        model_id, kind, name = _parse_tinker_path(tinker_path)
+        meta = self._checkpoint_meta(self._checkpoint_dir(model_id, kind, name), tenant, tinker_path)
+        return {
+            "base_model": meta["base_model"],
+            "is_lora": True,
+            "lora_rank": meta["lora_rank"],
+            "train_attn": self.config.trains_attn,
+            "train_mlp": self.config.trains_mlp,
+            "train_unembed": self.config.trains_unembed,
+        }
 
     async def sweep_leases(self) -> None:
         """Reclaim from stale tenants: cancel sampling, unload models, free
@@ -511,12 +532,12 @@ class TinkerService:
         if not payload["overwrite"] and os.path.exists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
         await self.backend.save_slot(record.slot, checkpoint_dir)
-        self._stamp_owner(checkpoint_dir, record.tenant)
+        self._stamp_checkpoint_meta(checkpoint_dir, record)
         return [{"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}]
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> list[dict]:
         source_id, kind, name = _parse_tinker_path(payload["path"])
-        self._check_checkpoint_owner(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
+        self._checkpoint_meta(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
         await self.backend.load_slot(
             record.slot,
             record.lora_rank,
@@ -526,14 +547,14 @@ class TinkerService:
         )
         return [{"op": "load_state"}]
 
-    async def _publish_sampler_version(self, record: ModelRecord) -> list[dict]:
+    async def _publish_sampler_version(self, record: ModelRecord, payload: dict) -> list[dict]:
         version = record.next_sampler_version
         record.next_sampler_version += 1
         path = self._checkpoint_dir(record.model_id, "sampler_weights", str(version))
         # disk is the commit point: the export makes the version exist; the
         # push only warms the engine cache
         await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
-        self._stamp_owner(path, record.tenant)
+        self._stamp_checkpoint_meta(path, record)
         record.published_sampler_versions.add(version)
         try:
             await self.backend.push_slot(
@@ -541,25 +562,36 @@ class TinkerService:
             )
         except Exception:  # noqa: BLE001
             logger.exception("adapter warm push failed; version %s will backfill from disk", version)
-        return [
-            {
-                "op": "save_weights_for_sampler",
-                "path": f"tinker://{record.model_id}/sampler_weights/{version}",
-            }
-        ]
+        result = {
+            "op": "save_weights_for_sampler",
+            "path": f"tinker://{record.model_id}/sampler_weights/{version}",
+        }
+        if payload.get("sampler_path") is None:
+            # the SDK's save-and-get-sampling-client convenience sends no path and
+            # expects a session bound to the fresh version instead
+            result["sampling_session_id"] = self.create_sampling_session(record.tenant, {"model_path": result["path"]})
+        return [result]
 
-    def _stamp_owner(self, checkpoint_dir: str, tenant: str) -> None:
+    def _stamp_checkpoint_meta(self, checkpoint_dir: str, record: ModelRecord) -> None:
+        """Ownership and shape travel with the checkpoint: they must outlive the
+        source model's lease and gateway restarts."""
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-        (Path(checkpoint_dir) / "OWNER").write_text(tenant)
+        meta = {
+            "tenant": record.tenant,
+            "base_model": record.base_model,
+            "lora_rank": record.lora_rank,
+            "lora_alpha": record.lora_alpha,
+        }
+        (Path(checkpoint_dir) / "META.json").write_text(json.dumps(meta, indent=2))
 
-    def _check_checkpoint_owner(self, checkpoint_dir: str, tenant: str, shown_path: str) -> None:
-        """Ownership travels with the checkpoint: it must outlive the source
-        model's lease and gateway restarts."""
-        owner_file = Path(checkpoint_dir) / "OWNER"
-        if not owner_file.exists():
+    def _checkpoint_meta(self, checkpoint_dir: str, tenant: str, shown_path: str) -> dict:
+        meta_file = Path(checkpoint_dir) / "META.json"
+        if not meta_file.exists():
             raise UserInputError(f"unknown checkpoint {shown_path!r}")
-        if owner_file.read_text() != tenant:
+        meta = json.loads(meta_file.read_text())
+        if meta["tenant"] != tenant:
             raise OwnershipError(f"checkpoint {shown_path!r} does not belong to this tenant")
+        return meta
 
     def _checkpoint_dir(self, model_id: str, kind: str, name: str) -> str:
         root = os.path.realpath(self.config.checkpoint_root)
