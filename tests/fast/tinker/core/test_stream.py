@@ -1,5 +1,4 @@
-"""ModelStream must rectify HTTP arrival order into seq order and compile
-batch-run|barrier structure."""
+"""Streams order commands and hold barriers until all preceding datums finish."""
 
 from tests.fast.tinker.harness import command, datum, fb_payload
 
