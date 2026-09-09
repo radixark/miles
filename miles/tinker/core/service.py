@@ -119,6 +119,7 @@ class TinkerService:
         if base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
         lora_config = payload.get("lora_config") or {}
+        self._reject_unsupported_lora_config(lora_config)
         rank = lora_config.get("rank", 32)
         alpha = self.config.lora_alpha if self.config.lora_alpha is not None else float(2 * rank)
         if not self.free_slots:
@@ -144,6 +145,24 @@ class TinkerService:
         self._create_tasks.add(task)
         task.add_done_callback(self._create_tasks.discard)
         return future.request_id, model_id
+
+    def _reject_unsupported_lora_config(self, lora_config: dict) -> None:
+        """The adapter layout is fixed at server start; a request the layout
+        cannot honor must fail here, not silently train a different model."""
+        if lora_config.get("seed") is not None:
+            raise UserInputError("lora_config.seed is not supported: adapter initialization is not per-model seedable")
+        layout = {
+            "train_attn": self.config.trains_attn,
+            "train_mlp": self.config.trains_mlp,
+            "train_unembed": self.config.trains_unembed,
+        }
+        for field, layout_trains in layout.items():
+            requested = lora_config.get(field)
+            if requested is not None and requested != layout_trains:
+                raise UserInputError(
+                    f"lora_config.{field}={requested} conflicts with this gateway's adapter layout "
+                    f"({field}={layout_trains}); the layout is fixed by --target-modules at server start"
+                )
 
     async def _run_create_model(self, request_id: str, record: ModelRecord) -> None:
         try:
