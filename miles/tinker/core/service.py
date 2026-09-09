@@ -401,31 +401,31 @@ class TinkerService:
     async def run(self) -> None:
         self._sweep_task = asyncio.create_task(self.sweep_leases())
         while True:
-            item = self.planner.next_to_run()
-            if item is None:
+            unit = self.planner.next_to_run()
+            if unit is None:
                 await self._wake.wait()
                 self._wake.clear()
                 continue
             async with self._backend_lock:
-                if isinstance(item, BatchUnit):
-                    await self._run_batch(item)
+                if isinstance(unit, BatchUnit):
+                    await self._run_batch(unit)
                 else:
-                    await self._run_barrier(item)
+                    await self._run_barrier(unit)
 
     async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
         refs = sorted(batch.datums, key=lambda ref: ref.stream.slot)
         slot_datums = [(ref.stream.slot, ref.datum) for ref in refs]
         self._batch_counter += 1
-        run = self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
+        execute_batch = self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
         try:
-            outputs = await run(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
+            outputs = await execute_batch(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
         except UserInputError as error:
-            await self._discard_windows(batch, str(error), "user")
+            await self._discard_batch_runs(batch, str(error), "user")
             return
         except Exception as error:  # noqa: BLE001  infra failure: fail the affected windows, keep serving
             logger.exception(f"{batch.op} batch {self._batch_counter} failed")
-            await self._discard_windows(batch, f"{type(error).__name__}: {error}", "server")
+            await self._discard_batch_runs(batch, f"{type(error).__name__}: {error}", "server")
             return
 
         assert len(outputs) == len(refs), f"unit returned {len(outputs)} outputs for {len(refs)} datums"
@@ -437,7 +437,7 @@ class TinkerService:
                 )
                 ref.stream.finish(request)
 
-    async def _discard_windows(self, batch: BatchUnit, error: str, category: str) -> None:
+    async def _discard_batch_runs(self, batch: BatchUnit, error: str, category: str) -> None:
         """A failed batch poisons the gradient accumulation of every slot it
         touched, and that accumulation is shared with the other requests of the
         same window — so the whole open window of each affected stream fails
@@ -516,7 +516,7 @@ class TinkerService:
         error, category = poison
         self.futures.fail(
             pending.command.request_id,
-            f"the gradient accumulation was discarded after a failed batch ({error}); resubmit the window",
+            f"the gradient accumulation was discarded after a failed batch ({error}); resubmit the forward/backward requests and optimizer step",
             category,
         )
         stream.finish(pending)
