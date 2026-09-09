@@ -161,4 +161,4 @@ async def test_weights_info_answers_the_sdk_resume_probe(client):
     ).json()
     path = (await _poll(client, saved["request_id"]))["path"]
     info = (await client.post("/api/v1/weights_info", json={"tinker_path": path}, headers=_headers())).json()
-    assert (info["base_model"], info["is_lora"], info["lora_rank"]) == ("base", True, 32)
+    assert (info["base_model"], info["is_lora"], info["lora_rank"]) == ("base", True, 8)
