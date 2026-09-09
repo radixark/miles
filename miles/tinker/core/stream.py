@@ -9,7 +9,7 @@ stream never touches the trainer: the planner decides what runs when.
 from collections import deque
 from dataclasses import dataclass, field
 
-from miles.tinker.core.types import Command, CommandOp
+from miles.tinker.core.types import Command
 
 
 @dataclass
@@ -34,10 +34,8 @@ class PendingRequest:
 
     def pack_key(self) -> tuple:
         """Datums pack into one BatchUnit only within the same (op, loss_fn, config)."""
-        if self.command.op == CommandOp.FORWARD_ONLY:
-            return ("forward_only",)
         config = self.command.payload.get("loss_fn_config") or {}
-        return ("forward_backward", self.command.payload["loss_fn"], tuple(sorted(config.items())))
+        return (self.command.op, self.command.payload["loss_fn"], tuple(sorted(config.items())))
 
 
 class ModelStream:
