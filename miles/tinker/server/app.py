@@ -3,7 +3,7 @@
 All wire translation happens here (encoding.py for JSON, proto_codec.py for
 protobuf); the service only ever sees decoded commands and returns internal
 results. Auth is a bearer API key used as the tenant identity; authorization
-(ownership of models, promises, checkpoints) is enforced in the service.
+(ownership of models, futures, checkpoints) is enforced in the service.
 """
 
 import logging
@@ -11,7 +11,7 @@ import logging
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, Response
 
-from miles.tinker.core.promise import FAILED, PENDING
+from miles.tinker.core.future import FAILED, PENDING
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.server.encoding import decode_command, decode_sample_request, render_result
@@ -125,17 +125,17 @@ def build_app(service: TinkerService) -> FastAPI:
     @app.post("/api/v1/retrieve_future")
     async def retrieve_future(request: Request, authorization: str | None = Header(default=None)):
         payload = await request.json()
-        promise = service.retrieve(_tenant(authorization), payload["request_id"])
-        if promise is None:
-            return JSONResponse(status_code=410, content={"error": "unknown or expired promise"})
-        if promise.state == PENDING:
+        future = service.retrieve_future(_tenant(authorization), payload["request_id"])
+        if future is None:
+            return JSONResponse(status_code=410, content={"error": "unknown or expired request"})
+        if future.state == PENDING:
             return {"type": "try_again", "queue_state": "active"}
-        if promise.state == FAILED:
-            return {"error": promise.error, "category": promise.error_category}
-        encoder = PROTO_ENCODERS.get(promise.result["op"])
+        if future.state == FAILED:
+            return {"error": future.error, "category": future.error_category}
+        encoder = PROTO_ENCODERS.get(future.result["op"])
         if encoder is not None and PROTO_CONTENT_TYPE in request.headers.get("accept", ""):
-            return Response(content=encoder(promise.result), media_type=PROTO_CONTENT_TYPE)
-        return render_result(promise.result)
+            return Response(content=encoder(future.result), media_type=PROTO_CONTENT_TYPE)
+        return render_result(future.result)
 
     @app.post("/api/v1/cancel_future")
     async def cancel_future(request: Request, authorization: str | None = Header(default=None)):
