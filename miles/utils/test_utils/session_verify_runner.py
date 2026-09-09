@@ -28,16 +28,19 @@ import logging
 import os
 import shutil
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 import miles.utils.external_utils.command_utils as U
 from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
+from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
+SessionWireFormat = Literal["openai", "anthropic"]
+
 # Soft cap on how many samples may report any assistant_text mismatch.  Hard
 # mismatch types (special_token_count / special_token_type / non_assistant_text)
-# are asserted per-sample inside the agent wrapper — those must be 0.
+# are journaled per sample and rejected by the run-level gate — those must be 0.
 ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.2
 
 PROMPT_DATA_PATH = "/root/datasets/session_multi_role_verify.jsonl"
@@ -66,6 +69,7 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "custom_generate_function_path": "miles.utils.test_utils.session_verify_agent.generate",
     "custom_agent_function_path": "miles.utils.test_utils.session_verify_agent.run_agent",
     "use_session_server": "v2",
+    "session_message_matcher": "strict",
     "debug_rollout_only": True,
     "ci_test": True,
     "colocate": True,
@@ -153,6 +157,7 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         f"--session-verify-cycles {ns.session_verify_cycles}",
         f"--tool-call-failure-mode {ns.tool_call_failure_mode}",
         f"--tito-model {ns.tito_model}",
+        f"--session-message-matcher {ns.session_message_matcher}",
         f"--rollout-num-gpus-per-engine {ns.rollout_num_gpus_per_engine}",
         f"--sglang-reasoning-parser {ns.sglang_reasoning_parser}",
         f"--rm-type {ns.rm_type}",
@@ -164,6 +169,10 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append(f"--sglang-tool-call-parser {ns.sglang_tool_call_parser}")
     if ns.sglang_context_length is not None:
         parts.append(f"--sglang-context-length {ns.sglang_context_length}")
+    if ns.sglang_kv_cache_dtype is not None:
+        parts.append(f"--sglang-kv-cache-dtype {ns.sglang_kv_cache_dtype}")
+    if ns.sglang_mamba_full_memory_ratio is not None:
+        parts.append(f"--sglang-mamba-full-memory-ratio {ns.sglang_mamba_full_memory_ratio}")
     if ns.sglang_cuda_graph_backend_prefill is not None:
         parts.append(f"--sglang-cuda-graph-backend-prefill {ns.sglang_cuda_graph_backend_prefill}")
     # DeepSeek V3.2 (and other NSA/MoE archs) requires expert-parallel > 1 in
@@ -180,6 +189,8 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
                 "--sglang-speculative-num-draft-tokens 3",
             ]
         )
+    if getattr(ns, "anthropic_intermediate_system_expectation", None) is not None:
+        parts.append("--anthropic-intermediate-system-expectation " f"{ns.anthropic_intermediate_system_expectation}")
     if ns.use_session_server:
         # Preserve an explicit version string ("v2"); a bare True stays the bare flag.
         if isinstance(ns.use_session_server, str):
@@ -195,12 +206,25 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     return " ".join(parts) + " "
 
 
-def run_session_verify(args: argparse.Namespace) -> None:
-    """Boot ``miles`` rollout pipeline and run the multi-role driver.
+def _session_verify_env(
+    args: argparse.Namespace, metrics_path: str, *, wire_format: SessionWireFormat
+) -> dict[str, str]:
+    env = {
+        "MILES_TITO_MODEL": args.tito_model,
+        "MILES_SESSION_VERIFY_METRICS_PATH": metrics_path,
+    }
+    if wire_format == "anthropic":
+        # This run still uses the local metrics file, but must not overwrite
+        # another endpoint's CI-history series under the same v2 metric key.
+        env[RECORD_DIR_ENV] = ""
+    return env
+
+
+def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireFormat = "openai") -> None:
+    """Boot ``miles`` rollout pipeline and run the session-verification driver.
 
     Returns nothing on success; raises ``AssertionError`` on TITO mismatch
-    (HTTP 500 from server-side prefix check) or coverage shortfall (raised by
-    ``session_verify_agent.generate``).
+    (HTTP 500 from server-side prefix check) or coverage shortfall raised by the selected generate wrapper.
 
     ``args`` MUST be a fully-shaped Namespace carrying miles-canonical field
     names plus the session-verify-specific fields (``session_verify_cycles``,
@@ -218,6 +242,9 @@ def run_session_verify(args: argparse.Namespace) -> None:
     - ``args.hf_checkpoint`` is replaced with the local download path so the
       composed train_args points at the downloaded model, not the HF id.
     """
+    if wire_format not in ("openai", "anthropic"):
+        raise ValueError(f"unsupported session verification wire format: {wire_format}")
+
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
     )
@@ -228,29 +255,32 @@ def run_session_verify(args: argparse.Namespace) -> None:
     train_args = namespace_to_train_args(args)
 
     # Per-sample token-seq metrics file: rollout workers append one JSONL line
-    # per sample inside session_verify_agent.generate; we aggregate after
+    # per sample inside the selected generate wrapper; we aggregate after
     # execute_train returns to apply the assistant_text soft threshold.
     metrics_fd, metrics_path = tempfile.mkstemp(prefix="session_verify_metrics_", suffix=".jsonl")
     os.close(metrics_fd)
 
-    preserved_metrics_path = None
     try:
         U.execute_train(
             train_args=train_args,
             num_gpus_per_node=args.actor_num_gpus_per_node,
             megatron_model_type=None,
-            extra_env_vars={
-                "MILES_TITO_MODEL": args.tito_model,
-                "MILES_SESSION_VERIFY_METRICS_PATH": metrics_path,
-            },
+            extra_env_vars=_session_verify_env(args, metrics_path, wire_format=wire_format),
         )
+        assert_session_verify_metrics(
+            metrics_path,
+            assistant_text_threshold=args.assistant_text_threshold,
+            require_append_tool=wire_format == "openai",
+        )
+    except Exception:
+        preserved_metrics_path = metrics_path + ".failed"
         try:
-            assert_session_verify_metrics(metrics_path, assistant_text_threshold=args.assistant_text_threshold)
-        except AssertionError:
-            preserved_metrics_path = metrics_path + ".failed"
             shutil.copy(metrics_path, preserved_metrics_path)
+        except Exception:
+            logger.exception("Failed to preserve per-sample mismatch payloads at %s", preserved_metrics_path)
+        else:
             logger.error("Preserved per-sample mismatch payloads at %s for post-mortem", preserved_metrics_path)
-            raise
+        raise
     finally:
         try:
             os.unlink(metrics_path)
@@ -258,30 +288,77 @@ def run_session_verify(args: argparse.Namespace) -> None:
             pass
 
 
-def assert_session_verify_metrics(metrics_path: str, *, assistant_text_threshold: float) -> None:
+def assert_session_verify_metrics(
+    metrics_path: str, *, assistant_text_threshold: float, require_append_tool: bool = True
+) -> None:
     """Read per-sample JSONL metrics and assert cross-sample verifier gates.
 
-    Forbidden mismatch types (special_*, non_assistant_text) are caught
-    per-sample in the agent wrapper and would have already raised by now.
-    Here we only cross-check the soft assistant_text rate against the
-    caller-provided threshold (per-model: some upstream sglang reasoning
-    parsers — notably ``nemotron_3`` — leave a trailing ``\\n`` in
-    ``reasoning_content`` that breaks the canonical roundtrip until the
-    parser is patched, so those families ride at threshold=1.0).
+    Forbidden mismatch types (special_*, non_assistant_text) are recorded by
+    the agent wrapper and hard-failed here so the rollout loop cannot discard
+    their assertion as a retryable sample failure.  The assistant_text tier
+    remains soft and is checked only against the caller-provided ratio
+    threshold.
     """
     samples_with_mismatch = 0
     total_samples = 0
     has_append_tool = False
+    samples_with_hard_mismatch = 0
+    hard_mismatch_count = 0
+    hard_mismatch_types = set()
+    hard_mismatch_example = None
+    verification_error_count = 0
+    verification_error_stages = set()
+    verification_error_example = None
     with open(metrics_path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             entry = json.loads(line)
+            if "verification_error" in entry:
+                verification_error_count += 1
+                error = entry["verification_error"]
+                if isinstance(error, dict):
+                    stage = error.get("stage")
+                    if stage:
+                        verification_error_stages.add(stage)
+                    if verification_error_example is None:
+                        verification_error_example = {
+                            "stage": stage,
+                            "type": error.get("type"),
+                            "message": str(error.get("message") or "")[:1000],
+                        }
+                elif verification_error_example is None:
+                    verification_error_example = str(error)[:1000]
+                continue
             total_samples += 1
             has_append_tool = has_append_tool or "append_tool" in entry.get("driver_events", [])
             if entry.get("had_assistant_mismatch"):
                 samples_with_mismatch += 1
+            entry_hard_types = entry.get("hard_mismatch_types", [])
+            entry_hard_count = entry.get("hard_mismatch_count", len(entry_hard_types))
+            if entry_hard_count or entry_hard_types:
+                samples_with_hard_mismatch += 1
+                hard_mismatch_count += entry_hard_count
+                hard_mismatch_types.update(entry_hard_types)
+                if hard_mismatch_example is None:
+                    entry_example = entry.get("hard_mismatch_example")
+                    if isinstance(entry_example, dict):
+                        hard_mismatch_example = {
+                            "type": entry_example.get("type"),
+                            "segment_index": entry_example.get("segment_index"),
+                            "detail": str(entry_example.get("detail") or "")[:500],
+                        }
+                    elif entry_example is not None:
+                        hard_mismatch_example = str(entry_example)[:500]
+
+    if verification_error_count:
+        raise AssertionError(
+            "Session multi-role e2e: verifier assertions failed in "
+            f"{verification_error_count} attempted trajectories "
+            f"(completed_samples={total_samples}, stages={sorted(verification_error_stages)}, "
+            f"first={verification_error_example})."
+        )
 
     if total_samples == 0:
         raise AssertionError(
@@ -290,21 +367,32 @@ def assert_session_verify_metrics(metrics_path: str, *, assistant_text_threshold
             "run before any sample completed.  Check rollout logs."
         )
 
-    if not has_append_tool:
+    ratio = samples_with_mismatch / total_samples
+    logger.info(
+        "Token-seq metric summary: samples=%d, with_hard_mismatch=%d, "
+        "with_assistant_text_mismatch=%d, ratio=%.3f, threshold=%.3f",
+        total_samples,
+        samples_with_hard_mismatch,
+        samples_with_mismatch,
+        ratio,
+        assistant_text_threshold,
+    )
+    if samples_with_hard_mismatch:
+        raise AssertionError(
+            f"Session multi-role e2e: hard TITO mismatches found in "
+            f"{samples_with_hard_mismatch}/{total_samples} attempted samples "
+            f"({hard_mismatch_count} mismatches, types={sorted(hard_mismatch_types)}, "
+            f"first={hard_mismatch_example}).  These types must be 0 for any "
+            "TITO-correct setup."
+        )
+
+    if require_append_tool and not has_append_tool:
         raise AssertionError(
             "Session multi-role e2e: no sample produced an append_tool action — "
             "the model may not be tool-calling.  Check sampling temperature, "
             "the tool spec, or parser configuration."
         )
 
-    ratio = samples_with_mismatch / total_samples
-    logger.info(
-        "Token-seq metric summary: samples=%d, with_assistant_text_mismatch=%d, ratio=%.3f, threshold=%.3f",
-        total_samples,
-        samples_with_mismatch,
-        ratio,
-        assistant_text_threshold,
-    )
     if ratio > assistant_text_threshold:
         raise AssertionError(
             f"Session multi-role e2e: assistant_text mismatch ratio "

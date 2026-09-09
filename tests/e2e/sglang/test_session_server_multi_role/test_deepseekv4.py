@@ -2,7 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
-register_cuda_ci(est_time=1400, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=2100, suite="stage-c-4-gpu-h200", labels=["sglang"])
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text")
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text")
 
@@ -25,6 +25,7 @@ CONFIG = ModelConfig(
     # order, so a sentinel tool_call_id would not roundtrip; use the
     # universal rollback recovery when the model emits no tool_calls.
     tool_call_failure_mode="rollback",
+    anthropic_intermediate_system_expectation="forbidden",
 )
 
 

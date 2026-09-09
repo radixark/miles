@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """Declare and parse metric-history regression gates.
 
 * `register_ci_gate(...)` is the marker a test file uses to declare a gate.

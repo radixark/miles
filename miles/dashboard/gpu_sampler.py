@@ -126,8 +126,8 @@ class GpuSampler:
 
     def __init__(
         self,
-        push: Callable[[str, list[GpuSample]], None],
         *,
+        push: Callable[[str, list[GpuSample]], None],
         node: str,
         interval: float = 1.0,
         nvml=None,

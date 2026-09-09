@@ -4,12 +4,14 @@ This file is not for miles framework itself, but as an optional utility to easil
 
 import base64
 import datetime
+import fcntl
 import json
 import os
 import platform
 import random
 import shlex
 import socket
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -49,33 +51,37 @@ def convert_checkpoint(
 
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
     path_dst = f"{dir_dst}/{model_name}_torch_dist"
-    tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
-    if tracker.exists() and tracker.read_text().strip() == "release":
-        print(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
-        return
+    with _exclusive_path_lock(path_dst):
+        tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
+        if tracker.exists() and tracker.read_text().strip() == "release":
+            print(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
+            return
 
-    multinode_args = ""
-    if multinode:
-        multinode_args = (
-            "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
+        multinode_args = ""
+        if multinode:
+            multinode_args = (
+                "--master-addr {{master_addr}} "
+                "--master-port 23456 "
+                "--nnodes={{nnodes}} "
+                "--node-rank {{node_rank}} "
+            )
+
+        if multinode:
+            fn = partial(exec_command_multi_node, num_nodes=num_nodes)
+        else:
+            fn = exec_command_gpu
+        pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
+        fn(
+            f"PYTHONPATH={pythonpath} "
+            f"torchrun "
+            f"--nproc-per-node {num_gpus_per_node} "
+            f"{multinode_args}"
+            f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
+            f"{shell_safe_model_args(megatron_model_type)} "
+            f"--hf-checkpoint {hf_checkpoint} "
+            f"--save {path_dst} "
+            f"{extra_args}"
         )
-
-    if multinode:
-        fn = partial(exec_command_multi_node, num_nodes=num_nodes)
-    else:
-        fn = exec_command_gpu
-    pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
-    fn(
-        f"PYTHONPATH={pythonpath} "
-        f"torchrun "
-        f"--nproc-per-node {num_gpus_per_node} "
-        f"{multinode_args}"
-        f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
-        f"{shell_safe_model_args(megatron_model_type)} "
-        f"--hf-checkpoint {hf_checkpoint} "
-        f"--save {path_dst} "
-        f"{extra_args}"
-    )
 
 
 def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
@@ -114,17 +120,28 @@ def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
 
-def fp8_cast_bf16(path_src, path_dst):
-    sentinel = Path(path_dst) / "model.safetensors.index.json"
-    if sentinel.exists():
-        print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
-        return
+@contextmanager
+def _exclusive_path_lock(path_dst: str):
+    """Serialize prepare steps racing on a cache dir shared between runners on one host."""
+    path = Path(path_dst)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        yield
 
-    exec_command_gpu(
-        f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
-        f"--input-fp8-hf-path {path_src} "
-        f"--output-bf16-hf-path {path_dst} "
-    )
+
+def fp8_cast_bf16(path_src, path_dst):
+    with _exclusive_path_lock(path_dst):
+        sentinel = Path(path_dst) / "model.safetensors.index.json"
+        if sentinel.exists():
+            print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
+            return
+
+        exec_command_gpu(
+            f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
+            f"--input-fp8-hf-path {path_src} "
+            f"--output-bf16-hf-path {path_dst} "
+        )
 
 
 # This class can be extended by concrete scripts

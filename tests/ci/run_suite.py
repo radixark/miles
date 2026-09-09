@@ -17,6 +17,7 @@ from tests.ci.ci_utils import (
     CI_GATE_RECORD_DIR_ENV,
     build_store_from_env,
     gate_provenance_from_env,
+    reaping_is_isolated,
     run_unittest_files,
 )
 from tests.ci.labels import KNOWN_LABELS
@@ -31,10 +32,12 @@ HW_MAPPING = {
 # suite, not a second suite inventory.
 #
 # CUDA suites: each is served by a matching workflow job in
-# .github/workflows/pr-test.yml. `stage-c-8-gpu-h100` and `stage-c-8-gpu-h200`
-# run on full-node 8-GPU hosts; the split H200 fleet is one 8-GPU node divided
-# into 2+2+4 workers via per-runner CUDA_VISIBLE_DEVICES (see pr-test.yml
-# stage-c-4-gpu-h200 / stage-b-2-gpu-h200 / stage-c-2-gpu-h200 job comments).
+# .github/workflows/pr-test.yml. `stage-c-8-gpu-h100`, `stage-c-8-gpu-h200` and
+# `stage-c-8-gpu-b200` run on full-node 8-GPU hosts; the split H200 fleet is one
+# 8-GPU node divided into 2+2+4 workers via per-runner CUDA_VISIBLE_DEVICES (see
+# pr-test.yml stage-c-4-gpu-h200 / stage-b-2-gpu-h200 / stage-c-2-gpu-h200 job
+# comments). The single Blackwell host is not partitioned, so 2- and 4-GPU
+# Blackwell tests also register against the 8-GPU suite.
 CI_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
@@ -46,6 +49,7 @@ CI_SUITES = {
         "stage-c-8-gpu-h200",
         "stage-c-4-gpu-h200",
         "stage-c-2-gpu-h200",
+        "stage-c-8-gpu-b200",
     ],
     HWBackend.ROCM: [
         # Consumed by pr-test-rocm.yml.
@@ -257,6 +261,7 @@ def run_a_suite(args):
         gate_store=gate_store,
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
+        reap_leftovers=reaping_is_isolated(),
     )
 
 

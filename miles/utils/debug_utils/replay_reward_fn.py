@@ -5,7 +5,7 @@ import ray
 import torch
 import typer
 
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
 

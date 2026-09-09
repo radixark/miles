@@ -6,8 +6,12 @@ import asyncio
 from argparse import Namespace
 
 import pytest
+import torch
+from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 import miles.rollout.inference_rollout.inference_rollout_train as train
+from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
+from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
 from miles.rollout.submission_scheduler import (
     GroupLevelSubmission,
     SampleBackfillSubmission,
@@ -27,6 +31,7 @@ def make_args(**overrides) -> Namespace:
         rollout_submission_granularity=None,
         sglang_router_policy="round_robin",
         dynamic_sampling_filter_path=None,
+        reward_key=None,
         rollout_sample_filter_path=None,
         rollout_all_samples_process_path=None,
         sglang_router_ip="127.0.0.1",
@@ -71,6 +76,7 @@ class Harness:
         self.args = args
         self.state = FakeGenerateState(args)
         self.submitted_group_indices: list[int] = []
+        self.submitted_groups: list[list[Sample]] = []
         self.callbacks: list = []
         self._next_group_index = 0
         self._blockers: list[asyncio.Event] = []
@@ -79,6 +85,7 @@ class Harness:
             tasks = []
             for group in samples:
                 self.submitted_group_indices.append(group[0].group_index)
+                self.submitted_groups.append(group)
                 blocker = asyncio.Event()
                 self._blockers.append(blocker)
                 self.callbacks.append(sample_done_callback)
@@ -112,7 +119,11 @@ class Harness:
         groups = []
         for _ in range(num_groups):
             self._next_group_index += 1
-            groups.append(make_group(self._next_group_index))
+            group = make_group(self._next_group_index)
+            if self.args.reward_key is not None:
+                for sample in group:
+                    sample.reward = {self.args.reward_key: 1.0}
+            groups.append(group)
         return groups
 
     def run(self):
@@ -142,6 +153,65 @@ async def test_sync_driver_defaults_to_group_granularity(monkeypatch):
     harness.finish_group(1)
     output, _ = await task
     assert [group[0].group_index for group in output.samples] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("reward_key", "missing_reward"),
+    [(None, None), ("score", None), ("score", {"score": None})],
+)
+async def test_missing_reward_group_is_refilled_before_default_conversion(monkeypatch, reward_key, missing_reward):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1, reward_key=reward_key))
+    task = harness.run()
+    await asyncio.sleep(0)
+
+    harness.submitted_groups[0][0].reward = missing_reward
+    harness.finish_group(0)
+    await asyncio.sleep(0.01)
+
+    assert harness.submitted_group_indices == [1, 2]
+    harness.finish_group(1)
+    output, _ = await task
+    assert [group[0].group_index for group in output.samples] == [2]
+
+    args = make_rollout_args(
+        rollout_batch_size=1,
+        n_samples_per_prompt=GROUP_SIZE,
+        global_batch_size=GROUP_SIZE,
+        rewards_normalization=False,
+        reward_key=reward_key,
+    )
+    samples, metadata = postprocess_rollout_data(args, output.samples, train_parallel_config={"dp_size": 1})
+    train_data = convert_samples_to_train_data(
+        args,
+        samples,
+        metadata=metadata,
+        custom_convert_samples_to_train_data_func=None,
+        custom_reward_post_process_func=None,
+    )
+
+    assert len(samples) == GROUP_SIZE
+    assert all(reward is not None for reward in train_data["rewards"])
+    assert torch.isfinite(torch.tensor(train_data["rewards"], dtype=torch.float32)).all()
+    assert output.metrics["rollout/dynamic_filter/drop_group_has_missing_reward"] == 1
+
+
+async def test_aborted_group_is_classified_before_missing_reward(monkeypatch):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1))
+    task = harness.run()
+    await asyncio.sleep(0)
+
+    for sample in harness.submitted_groups[0]:
+        sample.status = Sample.Status.ABORTED
+        sample.reward = None
+    harness.finish_group(0)
+    await asyncio.sleep(0.01)
+
+    harness.finish_group(1)
+    output, _ = await task
+
+    assert [group[0].group_index for group in output.samples] == [2]
+    assert output.metrics["rollout/dynamic_filter/drop_group_has_aborted"] == 1
+    assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
 
 
 async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):

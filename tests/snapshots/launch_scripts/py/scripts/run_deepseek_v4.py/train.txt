@@ -57,15 +57,14 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-aux-loss-coeff 0
   --moe-grouped-gemm
   --moe-router-topk-scaling-factor 1.5
-  --experimental-attention-variant dsv4
-  --dsv4-hc-mult 4
-  --dsv4-hc-sinkhorn-iters 20
-  --dsv4-compress-ratios 0 0 4 128
-  --dsv4-compress-rope-theta 160000
-  --dsv4-o-groups 8
-  --dsv4-o-lora-rank 1024
-  --dsv4-n-hash-layers 3
-  --dsv4-window-size 128
+  --num-residual-streams 4
+  --mhc-sinkhorn-iterations 20
+  --csa-compress-ratios '[0,0,4,128]'
+  --csa-compress-rotary-base 160000
+  --o-groups 8
+  --o-lora-rank 1024
+  --moe-n-hash-layers 3
+  --csa-window-size 128
   --dsa-indexer-n-heads 64
   --dsa-indexer-head-dim 128
   --dsa-indexer-topk 512
@@ -113,8 +112,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
   --disable-wandb-random-suffix 
-  --tensor-model-parallel-size 8
-  --sequence-parallel
+  --tensor-model-parallel-size 1
   --pipeline-model-parallel-size 1
   --context-parallel-size 1
   --expert-model-parallel-size 8
@@ -122,8 +120,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-granularity full
   --recompute-method uniform
   --recompute-num-layers 1
-  --micro-batch-size 1
-  --max-tokens-per-gpu 2048 
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 4096 
   --eval-interval 20
   --eval-top-p 0.7
   --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
@@ -148,8 +146,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --train-memory-margin-bytes 3221225472
   --sglang-mem-fraction-static 0.7
   --accumulate-allreduce-grads-in-fp32
+  --dsv4-impl megatron
   --model-name deepseekv4
-  --qkv-format bshd
+  --qkv-format thd
   --moe-router-freeze-gate
   --freeze-e-score-correction-bias
   --rollout-health-check-interval 300
