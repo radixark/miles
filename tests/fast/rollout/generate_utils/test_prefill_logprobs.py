@@ -14,7 +14,7 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
         rollout_log_probs=[-9.0, -9.0, -9.0],
         status=Sample.Status.COMPLETED,
     )
-    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False)
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False, rollout_temperature=0.7)
     seen = {}
 
     async def fake_post(url, payload, headers=None):
@@ -50,13 +50,13 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
     assert seen["payload"]["return_logprob"] is True
     assert seen["payload"]["logprob_start_len"] == 2
     assert seen["payload"]["sampling_params"]["max_new_tokens"] == 0
-    assert seen["payload"]["sampling_params"]["temperature"] == 0
+    assert seen["payload"]["sampling_params"]["temperature"] == 0.7
 
 
 @pytest.mark.asyncio
 async def test_recompute_rollout_logprobs_via_prefill_checks_token_alignment(monkeypatch):
     sample = Sample(tokens=[10, 11, 20], response_length=1, status=Sample.Status.COMPLETED)
-    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False)
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False, rollout_temperature=1.0)
 
     async def fake_post(url, payload, headers=None):
         return {"meta_info": {"input_token_logprobs": [(None, 11), (-0.1, 999)]}}
@@ -82,6 +82,7 @@ async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(mo
         recompute_logprobs_via_prefill=True,
         sglang_enable_lora=False,
         sglang_router_policy="round_robin",
+        rollout_temperature=1.0,
     )
     calls = []
 
@@ -124,7 +125,7 @@ async def test_recompute_uses_per_sample_adapter_lora_path(monkeypatch):
         adapter=AdapterRef(name="run-a", slot=3),
     )
     # Multi-LoRA forces lora_rank > 0, so is_lora_enabled(args) is always true.
-    args = SimpleNamespace(recompute_logprobs_via_prefill=True, lora_rank=8)
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, lora_rank=8, rollout_temperature=1.0)
     seen = {}
 
     async def fake_post(url, payload, headers=None):
@@ -172,6 +173,7 @@ async def test_recompute_samples_batches_group_by_adapter(monkeypatch):
         recompute_logprobs_via_prefill=True,
         lora_rank=8,
         sglang_router_policy="round_robin",
+        rollout_temperature=1.0,
     )
     generate_payloads = []
 
@@ -206,7 +208,7 @@ def test_batch_payload_rejects_mixed_lora_paths():
         Sample(tokens=[10, 11, 20], response_length=1, adapter=AdapterRef(name="run-a", slot=0)),
         Sample(tokens=[10, 11, 21], response_length=1, adapter=AdapterRef(name="run-b", slot=1)),
     ]
-    args = SimpleNamespace(lora_rank=8)
+    args = SimpleNamespace(lora_rank=8, rollout_temperature=1.0)
 
     with pytest.raises(ValueError, match="shared lora_path"):
         prefill_logprobs._build_batch_prefill_scoring_payload(args, samples, {})
@@ -223,6 +225,7 @@ async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
         recompute_logprobs_via_prefill=True,
         sglang_enable_lora=False,
         sglang_router_policy="round_robin",
+        rollout_temperature=1.0,
     )
     calls = []
 
