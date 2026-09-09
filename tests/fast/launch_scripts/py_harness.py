@@ -71,7 +71,7 @@ class PyLaunchScript:
 
 
 def iter_py_launch_scripts() -> list[PyLaunchScript]:
-    paths = sorted((REPO_ROOT / "scripts").rglob("run_*.py"))
+    paths = sorted([*(REPO_ROOT / "scripts").rglob("run_*.py"), REPO_ROOT / "examples/multi_lora/run_gateway.py"])
     return [PyLaunchScript(path=path, entrypoints=tuple(_entrypoint_names(path))) for path in paths]
 
 
