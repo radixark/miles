@@ -44,7 +44,7 @@ def decode_command(op: str, payload: dict) -> tuple[str, dict]:
     if op == "optim_step":
         return op, decoded | {"adam_params": materialize_adam_params(payload["adam_params"])}
     if op == "save_state":
-        return op, decoded | {"name": payload.get("path")}
+        return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
     if op == "load_state":
         return op, decoded | {"path": payload["path"], "optimizer": payload["optimizer"]}
     if op == "save_weights_for_sampler":
