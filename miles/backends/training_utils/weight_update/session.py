@@ -41,13 +41,16 @@ def begin_weight_update(
 
 
 def end_weight_update(
-    rollout_engines: Sequence[SGLangApiClient], *, expected_lora_checksums: Mapping | None = None
+    rollout_engines: Sequence[SGLangApiClient],
+    *,
+    expected_lora_checksums: Mapping | None = None,
+    abort: bool = False,
 ) -> None:
-    """Close the session: re-finalize base weights (sync_base sessions) and apply
-    the streamed LoRA stash (optionally verified against a sha256 manifest)."""
+    """Close the session: finalize base weights and apply the streamed LoRA
+    stash under the manifest; ``abort`` discards both instead."""
     results = async_utils.wait_futures(
         [
-            async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums))
+            async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums, abort=abort))
             for client in rollout_engines
         ]
     )
@@ -57,17 +60,34 @@ def end_weight_update(
 
 
 def register_lora_adapter(
-    rollout_engines: Sequence[SGLangApiClient], *, lora_name: str, lora_config: Mapping, pinned: bool = False
+    rollout_engines: Sequence[SGLangApiClient],
+    *,
+    lora_name: str,
+    lora_config: Mapping,
+    pinned: bool = False,
+    lora_path: str | None = None,
+    defer_publish: bool = False,
 ) -> None:
-    """Create-or-refresh an adapter's identity and config on every engine
-    (weights zeroed; the bytes follow in the update stream)."""
+    """Create-or-refresh an adapter's identity on every engine; the bytes follow
+    in the update stream. ``defer_publish`` keeps the name unservable until the
+    session commits; ``lora_path`` makes it evictable (refill from disk)."""
     futures = [
         async_utils.submit(
-            client.register_lora_adapter(lora_name=lora_name, config_dict=dict(lora_config), pinned=pinned)
+            client.register_lora_adapter(
+                lora_name=lora_name,
+                config_dict=dict(lora_config),
+                pinned=pinned,
+                lora_path=lora_path,
+                defer_publish=defer_publish,
+            )
         )
         for client in rollout_engines
     ]
-    check_weight_sync_results(async_utils.wait_futures(futures), is_lora=True)
+    results = async_utils.wait_futures(futures)
+    check_weight_sync_results(results, is_lora=True)
+    if defer_publish and any(not isinstance(result, Mapping) or not result.get("pending") for result in results):
+        # an engine that ignored defer_publish would serve the name while its weights stream
+        raise RuntimeError("the rollout engines must support deferred LoRA publication")
 
 
 def set_weight_version(rollout_engines: Sequence[SGLangApiClient], weight_version: int) -> None:
