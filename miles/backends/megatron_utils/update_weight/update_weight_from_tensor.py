@@ -74,6 +74,39 @@ def _pp_assemble_full_adapter(
     return sorted(merged.items())
 
 
+_INKLING_MM_PROVIDER = "inkling_mm_model_provider"
+_INKLING_MM_TOWERS = ("visual", "audio")
+_warned_implicit_mm_tower_sync = False
+
+
+def mm_tower_names(args) -> tuple[str, ...]:
+    """Module names of the frozen multimodal towers re-sent on every weight
+    update; empty when tower sync is off. `--mm-tower-sync` decides. The
+    Inkling MM provider implies its two towers so launches that predate the
+    flag keep syncing. Backport of radixark/miles#3159."""
+    global _warned_implicit_mm_tower_sync
+    names = getattr(args, "mm_tower_sync", None)
+    if names is not None:
+        return tuple(names)
+    if _INKLING_MM_PROVIDER in (getattr(args, "custom_model_provider_path", None) or ""):
+        if not _warned_implicit_mm_tower_sync:
+            logger.warning(
+                "mm tower sync: enabled implicitly by the %s provider; pass --mm-tower-sync %s",
+                _INKLING_MM_PROVIDER,
+                " ".join(_INKLING_MM_TOWERS),
+            )
+            _warned_implicit_mm_tower_sync = True
+        return _INKLING_MM_TOWERS
+    return ()
+
+
+def is_mm_tower_key(key: str, tower_names: Sequence[str]) -> bool:
+    """`model.visual.blocks.0.attn.proj.weight` and `visual.merger.ln_q.weight`
+    both belong to the `visual` tower."""
+    dotted = f".{key}"
+    return any(f".{name}." in dotted for name in tower_names)
+
+
 class UpdateWeightFromTensor:
     """
     Update rollout engines from tensor dict:
@@ -328,8 +361,8 @@ class UpdateWeightFromTensor:
         send requires homogeneous per-rank bucket counts (num_dtypes is taken from
         rank 0 and indexed into every rank's list), so a src-only contribution
         breaks assembly. The duplicates are ~15MB/rank and load idempotently."""
-        provider = getattr(self.args, "custom_model_provider_path", None) or ""
-        if "inkling_mm_model_provider" not in provider:
+        tower_names = mm_tower_names(self.args)
+        if not tower_names:
             return None
         if self._mm_tower_cache is None:
             if self._ipc_gather_group is not None:
@@ -340,11 +373,7 @@ class UpdateWeightFromTensor:
                 ckpt_dir = self.args.hf_checkpoint
                 with open(os.path.join(ckpt_dir, "model.safetensors.index.json"), encoding="utf-8") as f:
                     weight_map = json.load(f)["weight_map"]
-                tower_keys = sorted(
-                    k
-                    for k in weight_map
-                    if ".visual." in f".{k}" or ".audio." in f".{k}" or k.startswith(("visual.", "audio."))
-                )
+                tower_keys = sorted(k for k in weight_map if is_mm_tower_key(k, tower_names))
                 by_shard: dict[str, list[str]] = {}
                 for k in tower_keys:
                     by_shard.setdefault(weight_map[k], []).append(k)
