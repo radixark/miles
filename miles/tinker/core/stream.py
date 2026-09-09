@@ -1,18 +1,15 @@
-"""Per-model command stream: ordering, idempotency, window compilation.
+"""Per-model command stream: ordering, idempotency, batch/barrier structure.
 
-Rectifies the HTTP world (out-of-order arrival, retries) into the stream's
-semantic structure: runs of forward commands form commutative windows whose
-datums may execute in any order, in any grouping, interleaved with other
-models; every other command is a barrier that waits for its window. The
+Rectifies the HTTP world (out-of-order arrival, retries) into runs of batch
+ops — whose datums may execute in any order, grouping, or interleaving —
+separated by barriers that each wait for every batch op ahead of it. The
 stream never touches the trainer: the planner decides what runs when.
 """
 
 from collections import deque
 from dataclasses import dataclass, field
 
-from miles.tinker.core.types import Command
-
-WINDOW_OPS = ("forward_backward", "forward_only")
+from miles.tinker.core.types import Command, CommandOp
 
 
 @dataclass
@@ -20,14 +17,14 @@ class PendingRequest:
     """One submitted command and its completion accounting."""
 
     command: Command
-    datums: list[dict] = field(default_factory=list)  # window commands only
+    datums: list[dict] = field(default_factory=list)  # batch ops only
     issued: int = 0
     outputs: list[dict | None] = field(default_factory=list)
     remaining: int = 0
 
     @property
-    def is_window(self) -> bool:
-        return self.command.op in WINDOW_OPS
+    def is_batch_op(self) -> bool:
+        return self.command.op.is_batch()
 
     def record_output(self, local_index: int, output: dict) -> bool:
         """Store one datum's result; True once every datum has reported."""
@@ -36,8 +33,8 @@ class PendingRequest:
         return self.remaining == 0
 
     def pack_key(self) -> tuple:
-        """Rows pack into one BatchOp only within the same (op, loss_fn, config)."""
-        if self.command.op == "forward_only":
+        """Datums pack into one BatchUnit only within the same (op, loss_fn, config)."""
+        if self.command.op == CommandOp.FORWARD_ONLY:
             return ("forward_only",)
         config = self.command.payload.get("loss_fn_config") or {}
         return ("forward_backward", self.command.payload["loss_fn"], tuple(sorted(config.items())))
@@ -60,7 +57,7 @@ class ModelStream:
         while (next_command := self.arrivals.pop(self.watermark + 1, None)) is not None:
             self.watermark += 1
             pending = PendingRequest(command=next_command)
-            if pending.is_window:
+            if pending.is_batch_op:
                 pending.datums = next_command.payload["datums"]
                 pending.remaining = len(pending.datums)
                 pending.outputs = [None] * len(pending.datums)
@@ -68,18 +65,18 @@ class ModelStream:
                     continue  # admission-rejected: the position is consumed, nothing runs
             self.queue.append(pending)
 
-    def open_window(self) -> list[PendingRequest]:
-        """The leading run of window commands; their datums are all issuable."""
-        window = []
+    def open_batch_run(self) -> list[PendingRequest]:
+        """The leading run of batch-op commands; their datums are all issuable."""
+        run = []
         for pending in self.queue:
-            if not pending.is_window:
+            if not pending.is_batch_op:
                 break
-            window.append(pending)
-        return window
+            run.append(pending)
+        return run
 
     def ready_barrier(self) -> PendingRequest | None:
-        """The head barrier, executable once its window fully completed."""
-        if self.queue and not self.queue[0].is_window:
+        """The head barrier, executable once every batch op ahead of it completed."""
+        if self.queue and not self.queue[0].is_batch_op:
             return self.queue[0]
         return None
 
