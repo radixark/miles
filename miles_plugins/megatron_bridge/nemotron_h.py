@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 
 import torch
-from megatron.bridge.models.conversion.param_mapping import MambaConv1dMapping
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +62,7 @@ def _build_bridge_subclass():
     """
     from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
     from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge
-    from megatron.bridge.models.conversion.param_mapping import AutoMapping
+    from megatron.bridge.models.conversion.param_mapping import AutoMapping, MambaConv1dMapping
     from megatron.bridge.models.nemotronh.nemotron_h_bridge import NemotronHBridge
     from megatron.core.models.mamba import MambaModel
 
