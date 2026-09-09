@@ -344,7 +344,7 @@ def test_tag_vocabulary_is_the_only_source_of_the_schema_enum():
 
 
 def test_grounded_analysis_keeps_tags_test_name_and_cause_pull_request():
-    analysis = validate_grounded()[10]
+    analysis = validate_grounded()[10][0]
     assert analysis.tags == ("weight-update", "megatron")
     assert analysis.test_name == "tests/fast/ray/test_layout.py"
     assert analysis.related_pull_request == 2754
@@ -380,7 +380,7 @@ def test_a_broken_core_contract_still_rejects_the_whole_response(overrides):
     ],
 )
 def test_an_ungrounded_decoration_drops_itself_and_keeps_the_row(overrides, field, expected):
-    analysis = validate_grounded(**overrides)[10]
+    analysis = validate_grounded(**overrides)[10][0]
     assert getattr(analysis, field) == expected
     assert analysis.reason.startswith("Collection failed")
 
@@ -428,6 +428,73 @@ def test_a_runner_path_resolves_past_the_repeated_repository_name(raw, expected)
     assert ANALYZER._safe_path(raw) == expected
 
 
+SUITE_SUMMARY = """2026-09-09T15:00:00.0Z FAILED:
+2026-09-09T15:00:00.0Z   tests/e2e/a/test_one.py (exit code 1)
+2026-09-09T15:00:00.0Z   tests/e2e/b/test_two.py (exit code 1)
+2026-09-09T15:00:00.0Z ============================================================
+"""
+
+
+def two_failure_jobs():
+    return [
+        {
+            "job_id": 10,
+            "evidence_refs": ["job:10:log:1-2"],
+            "failing_tests": ["tests/e2e/a/test_one.py", "tests/e2e/b/test_two.py"],
+        }
+    ]
+
+
+def analysis_item(test_name, **overrides):
+    item = {
+        "job_id": 10,
+        "tags": [],
+        "test_name": test_name,
+        "reason": "Collection failed because the module is gone.",
+        "category": "test_failure",
+        "confidence": "high",
+        "evidence_refs": ["job:10:log:1-2"],
+        "related_pull_request": None,
+    }
+    item.update(overrides)
+    return item
+
+
+def validate_two(items):
+    return ANALYZER.validate_response(
+        json.dumps({"schema_version": "1", "analyses": items}),
+        two_failure_jobs(),
+        280,
+        ANALYZER.load_tags(),
+        {10: GROUNDING},
+    )
+
+
+def test_the_suite_summary_names_every_failing_test_in_a_job():
+    assert ANALYZER.extract_failed_tests(SUITE_SUMMARY, 5) == [
+        "tests/e2e/a/test_one.py",
+        "tests/e2e/b/test_two.py",
+    ]
+
+
+def test_a_job_with_two_failures_keeps_both_analyses():
+    analyses = validate_two([analysis_item("tests/e2e/a/test_one.py"), analysis_item("tests/e2e/b/test_two.py")])
+    assert [a.test_name for a in analyses[10]] == ["tests/e2e/a/test_one.py", "tests/e2e/b/test_two.py"]
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [analysis_item("tests/e2e/a/test_one.py")],
+        [analysis_item("tests/e2e/a/test_one.py"), analysis_item("tests/e2e/a/test_one.py")],
+        [analysis_item("tests/e2e/a/test_one.py"), analysis_item("tests/e2e/c/test_invented.py")],
+    ],
+)
+def test_a_response_must_cover_exactly_the_tests_the_suite_named(items):
+    with pytest.raises(ValueError):
+        validate_two(items)
+
+
 def test_missing_module_paths_cover_deleted_packages_and_module_files():
     text = (
         "ModuleNotFoundError: No module named 'miles.backends.megatron_utils.update_weight'\n"
@@ -441,7 +508,7 @@ def test_missing_module_paths_cover_deleted_packages_and_module_files():
 
 
 def test_absent_test_name_and_cause_pull_request_are_allowed():
-    analysis = validate_grounded(tags=[], test_name=None, related_pull_request=None)[10]
+    analysis = validate_grounded(tags=[], test_name=None, related_pull_request=None)[10][0]
     assert analysis.tags == () and analysis.test_name is None and analysis.related_pull_request is None
 
 
@@ -477,8 +544,8 @@ def test_validate_response_accepts_exact_job_and_evidence_contract():
         ],
     }
     analyses = ANALYZER.validate_response(json.dumps(raw), jobs, 280, ANALYZER.load_tags(), {10: ""})
-    assert analyses[10].reason.startswith("The assertion")
-    assert analyses[10].tags == () and analyses[10].related_pull_request is None
+    assert analyses[10][0].reason.startswith("The assertion")
+    assert analyses[10][0].tags == () and analyses[10][0].related_pull_request is None
 
 
 def test_strict_response_schema_uses_only_supported_structured_output_keywords():
@@ -601,7 +668,7 @@ def test_missing_analysis_app_token_preserves_base_card_contract(tmp_path):
 def test_all_missing_logs_get_per_row_fallback_without_model_call(tmp_path):
     client = FakeClient(response=valid_response)
     outcome, emitted = analyze(tmp_path, [job(10), job(11)], FakeGitHub(), client)
-    assert {key: value.reason for key, value in outcome.reasons.items()} == {
+    assert {key: value[0].reason for key, value in outcome.reasons.items()} == {
         10: ANALYZER.UNAVAILABLE_REASON,
         11: ANALYZER.UNAVAILABLE_REASON,
     }
@@ -685,8 +752,8 @@ def test_policy_cap_omits_hidden_jobs_and_records_count(tmp_path):
         max_jobs=2,
     )
     assert set(outcome.reasons) == {10, 11, 12, 13}
-    assert outcome.reasons[12].reason == ANALYZER.UNAVAILABLE_REASON
-    assert outcome.reasons[13].reason == ANALYZER.UNAVAILABLE_REASON
+    assert outcome.reasons[12][0].reason == ANALYZER.UNAVAILABLE_REASON
+    assert outcome.reasons[13][0].reason == ANALYZER.UNAVAILABLE_REASON
     assert outcome.omitted_count == 2
     assert [item["job_id"] for item in json.loads(client.responses.calls[0]["input"])["jobs"]] == [10, 11]
 

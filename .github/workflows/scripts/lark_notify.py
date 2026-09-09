@@ -358,8 +358,7 @@ def list_jobs_md(
     lines = []
     for job in jobs[:limit]:
         lines.append(f"- [{job['name']}]({job['html_url']})")
-        analysis = (reasons or {}).get(job.get("id"))
-        if analysis:
+        for analysis in (reasons or {}).get(job.get("id")) or ():
             lines.extend(analysis_md(analysis, repo))
     if len(jobs) > limit:
         lines.append(f"- ... and {len(jobs) - limit} more")

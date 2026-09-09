@@ -69,12 +69,14 @@ def test_validated_reason_is_directly_beneath_its_existing_job_link():
     outcome = HANDLER.AnalysisOutcome(
         enabled=True,
         reasons={
-            10: ANALYSIS(
-                reason="The assertion expected 4 but received 3.",
-                tags=("megatron", "lora"),
-                test_name="tests/fast/test_thing.py",
-                related_pull_request=2754,
-            )
+            10: [
+                ANALYSIS(
+                    reason="The assertion expected 4 but received 3.",
+                    tags=("megatron", "lora"),
+                    test_name="tests/fast/test_thing.py",
+                    related_pull_request=2754,
+                )
+            ]
         },
     )
     content = markdown(HANDLER.render_ci_status(run(), [job()], None, outcome))
@@ -93,9 +95,9 @@ def test_rerun_reasons_apply_only_to_current_failures():
     outcome = HANDLER.AnalysisOutcome(
         enabled=True,
         reasons={
-            10: ANALYSIS(reason="Wrong old reason."),
-            20: ANALYSIS(reason="The same assertion still fails."),
-            30: ANALYSIS(reason="A new timeout occurred."),
+            10: [ANALYSIS(reason="Wrong old reason.")],
+            20: [ANALYSIS(reason="The same assertion still fails.")],
+            30: [ANALYSIS(reason="A new timeout occurred.")],
         },
     )
     content = markdown(HANDLER.render_ci_status(run(run_attempt=2), current, previous, outcome))
@@ -114,7 +116,7 @@ def test_model_failure_adds_one_note_without_removing_original_rows():
 def test_per_job_missing_log_reason_and_omitted_footer_render_compactly():
     outcome = HANDLER.AnalysisOutcome(
         enabled=True,
-        reasons={10: ANALYSIS(reason=HANDLER.analyze_failures.__globals__["UNAVAILABLE_REASON"])},
+        reasons={10: [ANALYSIS(reason=HANDLER.analyze_failures.__globals__["UNAVAILABLE_REASON"])]},
         omitted_count=2,
     )
     content = markdown(HANDLER.render_ci_status(run(), [job()], None, outcome))

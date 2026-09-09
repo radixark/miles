@@ -1,5 +1,5 @@
 {
-  "$id": "ci-failure-response-v2",
+  "$id": "ci-failure-response-v3",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,7 +13,7 @@
     },
     "analyses": {
       "type": "array",
-      "maxItems": 15,
+      "maxItems": 30,
       "items": {
         "type": "object",
         "additionalProperties": false,
