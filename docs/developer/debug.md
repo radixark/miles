@@ -152,6 +152,42 @@ The trainer's offload and reload cycle is colliding with the engine's static mem
 `--sglang-mem-fraction-static` to 0.7 or 0.6. See
 [Training Backends](/user-guide/training-backend) for the layout and offload knobs.
 
+### Does the first train step hang under multi-node colocate?
+
+Look at the ranks before you look at NCCL. `py-spy dump --pid <ray worker>` one trainer
+rank per node, or launch with `MILES_DEBUG_PYSPY_DUMP_INTERVAL=60` and every Python, Ray
+and SGLang process on the driver's node dumps its own stack once a minute. A stall that
+looks like a deadlock at the first `ref_log_probs` or `actor_train` after a rollout is
+usually two stacks:
+
+* the first pipeline stage inside `triton/.../compiler.py`, reached from a Triton kernel
+  such as `fla/ops/gated_delta_rule`: that is JIT compilation and autotuning, not a deadlock;
+* the next stage in `recv_forward` → `_communicate_shapes` → `cuda.synchronize`, waiting
+  for it. It is that stage's NCCL watchdog that fires if the compile outlasts the
+  process-group timeout.
+
+Triton caches under `~/.triton/cache` inside the container, so every fresh node starts
+cold, and a single-node smoke run on the same node is what makes a later multi-node run
+"work". On a 2-node Qwen3.6-35B-A3B run the cold `ref_log_probs` took 394 s and the cold
+`actor_train` 639 s; warm, the same passes took 13 s and 60 s. Warm the cache before the
+multi-node launch, or size `--distributed-timeout-minutes` to cover the first step.
+
+Where that cache lives is a genuine trade-off, and the recipes in this repo lean node-local:
+`examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py` pins
+`TRITON_CACHE_DIR` to `/tmp` because the NFS defaults "race across nodes under many-process
+cold compiles", and the Qwen3.8-Flash-Next recipe pins it the same way. Node-local keeps
+compilation off a shared filesystem but pays for it again on every fresh node; a shared
+`TRITON_CACHE_DIR` pays a slower, contended first compile and then costs nothing. One
+measurement of the case the node-local pin guards against — 16 ranks across two nodes
+compiling the same GDN kernels concurrently into a single NFS directory — did not reproduce
+the races: no errors, and a second run on both nodes read the cache back in 0.7 s rather
+than 145 s, adding no new entries. That is one filesystem and one kernel set, so measure
+yours before sharing a cache. Colocate rebuilds every process
+group on each rollout→train switch, and images older than #1594 rebuilt them with the
+default 10-minute timeout regardless of the flag, so a hang that "ignores"
+`--distributed-timeout-minutes` and dies at 600 s is this pitfall on an old image, not a
+deadlock.
+
 ## Common kernel pitfalls
 
 | Symptom | Likely culprit |
@@ -163,6 +199,7 @@ The trainer's offload and reload cycle is colliding with the engine's static mem
 | `illegal memory access` in SGLang | OOM in disguise; lower `--sglang-mem-fraction-static` |
 | `JSONDecodeError` from inductor | Corrupt compile cache; set `TORCHINDUCTOR_FORCE_DISABLE_CACHES=1` |
 | NCCL hang during weight sync | Raise the NCCL timeout and re-run with `NCCL_DEBUG=INFO` |
+| Trainer stalls at the first step after a rollout, multi-node colocate only | A cold Triton cache compiling on one pipeline stage while the next waits; `py-spy` the ranks first, see the colocate question above |
 
 ## Reading logs
 
@@ -180,6 +217,7 @@ RAY_DEDUP_LOGS=0                       # every rank's line, not one deduplicated
 NCCL_DEBUG=INFO
 NCCL_DEBUG_SUBSYS=COLL,P2P
 TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
+MILES_DEBUG_PYSPY_DUMP_INTERVAL=60      # every worker on the driver's node dumps a py-spy stack each minute
 ```
 
 The per-step metrics are the real signal, and they are the same numbers the checkers above
