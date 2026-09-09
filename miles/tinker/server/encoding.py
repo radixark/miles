@@ -47,7 +47,7 @@ def decode_command(op: str, payload: dict) -> tuple[str, dict]:
     if op == "load_state":
         return op, decoded | {"path": payload["path"], "optimizer": payload["optimizer"]}
     if op == "save_weights_for_sampler":
-        return op, decoded
+        return op, decoded | {"sampler_path": payload.get("path")}
     raise UserInputError(f"unknown command op {op!r}")
 
 
@@ -150,7 +150,10 @@ def render_result(result: dict) -> dict:
     if op == "save_state":
         return {"type": "save_weights", "path": result["path"]}
     if op == "save_weights_for_sampler":
-        return {"type": "save_weights_for_sampler", "path": result["path"]}
+        rendered = {"type": "save_weights_for_sampler", "path": result["path"]}
+        if "sampling_session_id" in result:
+            rendered["sampling_session_id"] = result["sampling_session_id"]
+        return rendered
     if op == "load_state":
         return {"type": "load_weights"}
     if op == "optim_step":
