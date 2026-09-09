@@ -1,11 +1,7 @@
-"""Execution planning: turn ready work from all streams into the next unit.
+"""Turns ready work from all streams into the next trainer call, one at a time.
 
-The single decision point between streams and the trainer. Policy is
-arrival-order greedy: the oldest ready item goes first; a datum pulls every
-compatible ready datum (same kind / loss_fn / config) across all models into
-one WorkUnit up to the token budget — cross-tenant packing and large-request
-splitting are both just this bin-packer at datum granularity. Ready optim
-barriers of different models merge into one BarrierUnit.
+Arrival-order greedy: the oldest ready item goes first; datums pack across
+requests and models up to the token budget, ready optim barriers merge.
 """
 
 from dataclasses import dataclass
@@ -14,14 +10,16 @@ from miles.tinker.core.stream import ModelStream, PendingRequest
 
 
 @dataclass
-class RowRef:
+class DatumRef:
+    """Pointer to ``request.datums[local_index]``; the datum's output is written back through it."""
+
     stream: ModelStream
     request: PendingRequest
     local_index: int
 
     @property
-    def row(self) -> dict:
-        return self.request.rows[self.local_index]
+    def datum(self) -> dict:
+        return self.request.datums[self.local_index]
 
     @property
     def arrival(self) -> int:
@@ -29,22 +27,26 @@ class RowRef:
 
 
 @dataclass
-class WorkUnit:
-    kind: str  # forward_backward | forward_only
+class BatchOp:
+    """One forward pass on the trainer: datums packed from any number of requests."""
+
+    op: str  # forward_backward | forward_only
     loss_fn: str | None
     loss_fn_config: dict | None
-    rows: list[RowRef]
+    datums: list[DatumRef]
 
 
 @dataclass
-class BarrierUnit:
-    kind: str  # optim_step | save_state | load_state | save_weights_for_sampler
+class BarrierOp:
+    """One non-forward trainer call, run only after its stream's window drained."""
+
+    op: str  # optim_step | save_state | load_state | save_weights_for_sampler
     entries: list[tuple[ModelStream, PendingRequest]]
 
 
 class Planner:
-    def __init__(self, unit_token_budget: int) -> None:
-        self.unit_token_budget = unit_token_budget
+    def __init__(self, batch_token_budget: int) -> None:
+        self.batch_token_budget = batch_token_budget
         self._streams: dict[str, ModelStream] = {}
 
     def add_stream(self, stream: ModelStream) -> None:
@@ -56,65 +58,65 @@ class Planner:
     def stream(self, model_id: str) -> ModelStream:
         return self._streams[model_id]
 
-    def next_unit(self) -> WorkUnit | BarrierUnit | None:
-        rows = self._ready_rows()
+    def next_to_run(self) -> BatchOp | BarrierOp | None:
+        datums = self._ready_datums()
         barriers = self._ready_barriers()
 
-        oldest_row = min(rows, key=lambda ref: ref.arrival) if rows else None
+        oldest_datum = min(datums, key=lambda ref: ref.arrival) if datums else None
         oldest_barrier = min(barriers, key=lambda e: e[1].command.arrival) if barriers else None
-        if oldest_row is None and oldest_barrier is None:
+        if oldest_datum is None and oldest_barrier is None:
             return None
         if oldest_barrier is not None and (
-            oldest_row is None or oldest_barrier[1].command.arrival < oldest_row.arrival
+            oldest_datum is None or oldest_barrier[1].command.arrival < oldest_datum.arrival
         ):
-            return self._build_barrier(oldest_barrier, barriers)
-        return self._build_work(oldest_row, rows)
+            return self._merge_barriers(oldest_barrier, barriers)
+        return self._pack_batch(oldest_datum, datums)
 
-    def _ready_rows(self) -> list[RowRef]:
-        rows = []
+    def _ready_datums(self) -> list[DatumRef]:
+        datums = []
         for stream in self._streams.values():
             for request in stream.open_window():
-                rows.extend(RowRef(stream, request, index) for index in range(request.issued, len(request.rows)))
-        return rows
+                datums.extend(DatumRef(stream, request, index) for index in range(request.issued, len(request.datums)))
+        return datums
 
     def _ready_barriers(self) -> list[tuple[ModelStream, PendingRequest]]:
         return [
             (stream, barrier) for stream in self._streams.values() if (barrier := stream.ready_barrier()) is not None
         ]
 
-    def _build_work(self, seed: RowRef, rows: list[RowRef]) -> WorkUnit:
-        loss_class = seed.request.loss_class()
+    def _pack_batch(self, seed: DatumRef, datums: list[DatumRef]) -> BatchOp:
+        pack_key = seed.request.pack_key()
         compatible = sorted(
-            (ref for ref in rows if ref.request.loss_class() == loss_class),
+            (ref for ref in datums if ref.request.pack_key() == pack_key),
             key=lambda ref: (ref.arrival, ref.local_index),
         )
-        picked: list[RowRef] = []
+        picked: list[DatumRef] = []
         tokens = 0
         for ref in compatible:
-            row_tokens = len(ref.row["tokens"])
-            if picked and tokens + row_tokens > self.unit_token_budget:
+            datum_tokens = len(ref.datum["tokens"])
+            if picked and tokens + datum_tokens > self.batch_token_budget:
                 break
             picked.append(ref)
-            tokens += row_tokens
+            tokens += datum_tokens
         for ref in picked:
             ref.request.issued += 1
         command = seed.request.command
-        return WorkUnit(
-            kind=command.kind,
+        return BatchOp(
+            op=command.op,
             loss_fn=command.payload.get("loss_fn"),
             loss_fn_config=command.payload.get("loss_fn_config"),
-            rows=picked,
+            datums=picked,
         )
 
-    def _build_barrier(
+    def _merge_barriers(
         self,
         oldest: tuple[ModelStream, PendingRequest],
         barriers: list[tuple[ModelStream, PendingRequest]],
-    ) -> BarrierUnit:
-        kind = oldest[1].command.kind
-        if kind == "optim_step":
+    ) -> BarrierOp:
+        op = oldest[1].command.op
+        if op == "optim_step":
             # optim barriers of different models step in one trainer call
-            entries = [(stream, barrier) for stream, barrier in barriers if barrier.command.kind == kind]
+            entries = [(stream, barrier) for stream, barrier in barriers if barrier.command.op == op]
         else:
             entries = [oldest]
-        return BarrierUnit(kind=kind, entries=entries)
+        return BarrierOp(op=op, entries=entries)

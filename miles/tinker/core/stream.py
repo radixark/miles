@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from miles.tinker.core.types import Command
 
-WINDOW_KINDS = ("forward_backward", "forward_only")
+WINDOW_OPS = ("forward_backward", "forward_only")
 
 
 @dataclass
@@ -20,14 +20,14 @@ class PendingRequest:
     """One submitted command and its completion accounting."""
 
     command: Command
-    rows: list[dict] = field(default_factory=list)  # window commands only
+    datums: list[dict] = field(default_factory=list)  # window commands only
     issued: int = 0
     outputs: list[dict | None] = field(default_factory=list)
     remaining: int = 0
 
     @property
     def is_window(self) -> bool:
-        return self.command.kind in WINDOW_KINDS
+        return self.command.op in WINDOW_OPS
 
     def record_output(self, local_index: int, output: dict) -> bool:
         """Store one datum's result; True once every datum has reported."""
@@ -35,8 +35,9 @@ class PendingRequest:
         self.remaining -= 1
         return self.remaining == 0
 
-    def loss_class(self) -> tuple:
-        if self.command.kind == "forward_only":
+    def pack_key(self) -> tuple:
+        """Rows pack into one BatchOp only within the same (op, loss_fn, config)."""
+        if self.command.op == "forward_only":
             return ("forward_only",)
         config = self.command.payload.get("loss_fn_config") or {}
         return ("forward_backward", self.command.payload["loss_fn"], tuple(sorted(config.items())))
@@ -60,10 +61,10 @@ class ModelStream:
             self.watermark += 1
             pending = PendingRequest(command=next_command)
             if pending.is_window:
-                pending.rows = next_command.payload["rows"]
-                pending.remaining = len(pending.rows)
-                pending.outputs = [None] * len(pending.rows)
-                if not pending.rows:
+                pending.datums = next_command.payload["datums"]
+                pending.remaining = len(pending.datums)
+                pending.outputs = [None] * len(pending.datums)
+                if not pending.datums:
                     continue  # admission-rejected: the position is consumed, nothing runs
             self.queue.append(pending)
 
