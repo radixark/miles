@@ -44,11 +44,15 @@ async def serve(args):
 
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
+    target_modules = set(args.target_modules or ())
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=checkpoint_root,
         lora_alpha=args.lora_alpha,
+        trains_attn=bool(target_modules & {"linear_qkv", "linear_proj"}),
+        trains_mlp=bool(target_modules & {"linear_fc1", "linear_fc2"}),
+        trains_unembed="output_layer" in target_modules,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     service = TinkerService(MilesBackend(args, trainer, router_url), config)
