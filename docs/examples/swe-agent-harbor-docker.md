@@ -145,4 +145,6 @@ settings. The launcher reuses Nano's base model dimensions, loads HF weights
 through Megatron Bridge, and enables routing replay. MTP is disabled. Authenticate
 W&B before launching; the launcher reads saved credentials rather than embedding
 keys in command arguments. The default validation is 10 rollouts with checkpoints
-every 5, a 65,536-token sequence limit, and a 16,384-token response cap.
+every 5, a 65,536-token sequence limit for both SGLang inference and training,
+and a 16,384-token response cap. Matching the inference limit prevents agents
+from spending time on trajectory tokens that training would discard.

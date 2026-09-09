@@ -157,6 +157,7 @@ def _rollout_argv(args: ScriptArgs) -> list[str]:
         "--rollout-temperature": args.rollout_temperature,
         "--rollout-max-response-len": args.rollout_max_response_len,
         "--max-seq-len": args.max_seq_len,
+        "--sglang-context-length": args.max_seq_len,
         "--global-batch-size": args.global_batch_size,
         "--rollout-num-gpus-per-engine": 1,
         "--sglang-mem-fraction-static": 0.7,
