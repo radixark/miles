@@ -10,7 +10,7 @@ supervision). The encoded datum is x + [t[-1]] with T supervised positions, so
 the trainer scores exactly logprob(t[i] | x[0..i]).
 """
 
-from miles.tinker.core.types import UserInputError
+from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 
 # materialized at the boundary so core and the executor can require every key
 ADAM_PARAM_DEFAULTS = {
@@ -22,8 +22,7 @@ ADAM_PARAM_DEFAULTS = {
     "grad_clip_norm": 0.0,
 }
 
-# wire loss_fn_inputs key -> internal datum key
-INPUT_ROW_KEYS = {"weights": "weights", "advantages": "advantages", "logprobs": "sampling_logprobs"}
+INPUT_ROW_KEYS = LOSS_INPUT_KEYS
 
 
 def decode_command(op: str, payload: dict) -> tuple[str, dict]:
