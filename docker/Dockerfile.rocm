@@ -145,8 +145,7 @@ RUN pip install "numba==0.65.1"
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
 
-# Temporary fork pin; back to upstream once fzyzcjy/torch_memory_saver#109 merges.
-RUN pip install git+https://github.com/XinyuJiangCMU/torch_memory_saver.git@b8e5b35ad2349a60afd5f183fbdaf62f6b2ed89e --no-cache-dir --force-reinstall --no-build-isolation
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@06caa534822c5b980b61733a5d79ac731f9a5f9c --no-cache-dir --force-reinstall --no-build-isolation
 
 # Fix the ROCm 7.2 ROCr VMM-pause leak.
 RUN if [ "$APPLY_ROCR_VMMFIX" = "1" ]; then \
