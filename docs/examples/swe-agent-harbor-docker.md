@@ -17,6 +17,7 @@ the Harbor task.
 | File | Purpose |
 | --- | --- |
 | `run.py` | Validated synchronous GLM-4.7-Flash launcher. |
+| `run_nemotron3_moe_tb21.py` | Nemotron-H 30B-A3B BF16 recipe for Nano / Lightning validation, with routing replay and MTP disabled. |
 | `run-glm47-flash-agentic-async.py` | Disaggregated fully asynchronous launcher. |
 | `run_glm52_lora_tb2_daytona.py` | Multi-node GLM-5.2 744B-A40B LoRA launcher (bf16 trainer, fp8 rollout). |
 | `swe_agent_function.py` | Sends each rollout to the Harbor agent server. |
@@ -135,3 +136,13 @@ are written by the trainer itself and are the authoritative progress signal.
 
 The synchronous launcher uses GLM-4.7 tool-call and reasoning parsers, TITO,
 the Miles session server, and the Megatron backend.
+
+## Nemotron 3.5 Lightning validation
+
+Stage `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` and use
+`run_nemotron3_moe_tb21.py --help` for explicit run, data, artifact, and server
+settings. The launcher reuses Nano's base model dimensions, loads HF weights
+through Megatron Bridge, and enables routing replay. MTP is disabled. Authenticate
+W&B before launching; the launcher reads saved credentials rather than embedding
+keys in command arguments. The default validation is 10 rollouts with checkpoints
+every 5, a 65,536-token sequence limit, and a 16,384-token response cap.
