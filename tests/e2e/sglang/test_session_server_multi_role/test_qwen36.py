@@ -16,7 +16,12 @@ CONFIG = ModelConfig(
     tp_size=2,
     enable_spec=True,
     cycles=2,
-    tool_call_failure_mode="append_tool",
+    # Qwen3.6 loops on the APPEND_TOOL sentinel: told "the previous turn did
+    # not emit a tool_call, retry" after it already called and answered, it
+    # re-derives that contradiction until max_tokens instead of retrying or
+    # answering.  ROLLBACK re-samples the turn instead; a genuine no-tool-call
+    # failure still surfaces after MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS.
+    tool_call_failure_mode="rollback",
     # Anthropic tool-call conversion changes raw assistant serialization;
     # keep this endpoint-only formatting mismatch soft while hard gates stay at 0.
     anthropic_assistant_text_threshold=1.0,
