@@ -5,22 +5,17 @@ import asyncio
 
 import httpx
 import pytest
-from tests.fast.tinker.harness import ADAM, make_service
+from tests.fast.tinker.harness import ADAM
 
 from miles.tinker.server.app import build_app
 
 
 @pytest.fixture
-async def client():
-    service = make_service()
-    run_task = asyncio.create_task(service.run())
+async def client(service):
     transport = httpx.ASGITransport(app=build_app(service))
     async with httpx.AsyncClient(transport=transport, base_url="http://gateway") as http:
         http.service = service
         yield http
-    for task in (run_task, getattr(service, "_sweep_task", None)):
-        if task is not None:
-            task.cancel()
 
 
 def _headers(tenant: str = "tenant-a") -> dict:
