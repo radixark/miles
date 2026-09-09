@@ -454,7 +454,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
-        """Write the slot's adapter as an engine-loadable adapter dir."""
+        """Write the slot's adapter as an engine-loadable dir."""
         assert self.args.multi_lora, "export_slot is a multi-LoRA slot command"
         self._heartbeat.bump()
         self.weight_updater.export_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path)

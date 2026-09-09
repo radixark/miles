@@ -47,7 +47,7 @@ class ExecutorBackend:
         raise NotImplementedError
 
     async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
-        """Write the slot's adapter as an engine-loadable adapter dir."""
+        """Write the slot's adapter as an engine-loadable dir."""
         raise NotImplementedError
 
     async def push_slot(

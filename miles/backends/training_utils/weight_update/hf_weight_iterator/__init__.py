@@ -119,9 +119,8 @@ class HfWeightIteratorBase(ABC):
         return []
 
     def materialize_adapter(self, adapter, *, materialize: bool = True) -> dict[str, torch.Tensor]:
-        """One adapter as ``{hf_key: tensor}`` — the unit stream without the
-        transport bucketing. Collective: every rank must call; ``materialize=False``
-        joins the gathers and returns an empty dict."""
+        """One adapter as ``{hf_key: tensor}``, skipping the transport bucketing.
+        Collective: ``materialize=False`` joins the gathers, returns {}."""
         return {
             name: tensor
             for unit in self._iter_hf_adapter_units(adapter, materialize=materialize)

@@ -215,21 +215,18 @@ class WeightUpdater:
 
     @torch.no_grad()
     def push_adapter(self, lora_name: str, adapter, lora_path: str | None = None) -> None:
-        """Push one adapter as a staged session under a fresh engine-side name:
-        no pause, no weight-version move — the name has no readers until
-        `end_weight_update` commits it under a checksum manifest. ``lora_path``
-        names a adapter dir holding the same adapter, letting the engine evict and
-        refill it from disk."""
+        """Publish one adapter under a fresh engine-side name without pausing:
+        the name has no readers until the session commits. ``lora_path`` lets
+        the engine refill the adapter from disk after eviction."""
         self._run_weight_update_session(
             [(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path
         )
 
     @torch.no_grad()
     def export_adapter(self, adapter, out_dir: str) -> None:
-        """Write one adapter as a adapter dir the rollout engine can load from disk.
-        Tensor names are the streamed ``hf_key`` names, so disk load and
-        streamed apply feed the engine identically. Collective: every rank
-        must call; rank 0 writes."""
+        """Write one adapter as an engine-loadable dir, named like the streamed
+        tensors so disk load and streamed apply feed the engine identically.
+        Collective: every rank must call; rank 0 writes."""
         should_save_adapter = dist.get_rank() == 0
         assert (
             self._hf_weight_iterator.placement.is_full_gather
