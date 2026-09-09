@@ -377,7 +377,7 @@ def test_policy_prompt_and_schema_are_git_versioned_and_strict():
     policy = json.loads((ROOT / ".github/workflows/policies/ci-failure-analysis.json").read_text())
     schema = json.loads((ROOT / ".github/workflows/policies/ci-failure-response-schema.json").read_text())
     prompt = (ROOT / ".github/workflows/prompts/ci-failure-analysis.md").read_text()
-    assert policy["enabled"] is False and policy["max_model_calls"] == 1
+    assert policy["enabled"] is True and policy["max_model_calls"] == 1
     assert schema["additionalProperties"] is False
     assert schema["properties"]["analyses"]["items"]["additionalProperties"] is False
     assert "untrusted" in prompt and "exactly one factual sentence" in prompt

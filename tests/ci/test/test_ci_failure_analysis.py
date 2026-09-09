@@ -200,9 +200,9 @@ def analyze(tmp_path, jobs, gh, client, **policy_overrides):
     return outcome, emitted
 
 
-def test_checked_in_policy_is_valid_and_disabled():
+def test_checked_in_policy_is_valid_and_enabled():
     policy = ANALYZER.load_policy(POLICY_PATH)
-    assert policy.enabled is False
+    assert policy.enabled is True
     assert policy.max_jobs == 15
     assert policy.max_model_calls == 1
 
@@ -587,14 +587,7 @@ def test_validate_response_rejects_untrusted_or_unverifiable_output(mutation):
 def test_disabled_policy_makes_no_github_or_model_call(tmp_path):
     client = FakeClient(response=valid_response)
     gh = FakeGitHub(logs={10: "AssertionError: no"})
-    outcome = ANALYZER.analyze_failures(
-        run=run(),
-        jobs=[job()],
-        repo="radixark/miles",
-        gh=gh,
-        policy_path=POLICY_PATH,
-        client_factory=lambda timeout: client,
-    )
+    outcome, _ = analyze(tmp_path, [job()], gh, client, enabled=False)
     assert outcome == ANALYZER.AnalysisOutcome(enabled=False, reasons={})
     assert gh.calls == [] and client.responses.calls == []
 

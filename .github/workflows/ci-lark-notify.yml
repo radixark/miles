@@ -30,6 +30,7 @@ jobs:
         (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'schedule') ||
         github.event_name == 'workflow_dispatch'
       )
+    environment: ci-lark-ai
     permissions:
       contents: read
       actions: read
