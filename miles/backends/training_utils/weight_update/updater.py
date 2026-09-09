@@ -9,6 +9,7 @@ LoRA adapter pushes.
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 
 import torch
 import torch.distributed as dist
@@ -126,17 +127,9 @@ class WeightUpdater:
                 protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
             )
         dist.barrier(group=get_gloo_group())
-        try:
-            # a staged push commits only under a manifest: a lost bucket must not publish
-            checksums = (
-                {name: {} for name, _ in adapters}
-                if adapters and (staged or self.args.check_lora_weight_equal)
-                else None
-            )
-            if checksums is not None:
-                assert (
-                    self._hf_weight_iterator.placement.is_full_gather
-                ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
+        abort_guard = self._discard_staged_session_on_failure() if staged and driver else nullcontext()
+        with abort_guard:
+            checksums = self._checksum_manifest(adapters, staged)
             with timer("update_weights_implementation"):
                 pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
                 for bucket in self._hf_weight_iterator.iter_hf_weights(
@@ -163,13 +156,29 @@ class WeightUpdater:
                         resume_engines(protocol.rollout_engines)
                 dist.barrier(group=get_gloo_group())
             protocol.after_engines_resumed()
+
+    @contextmanager
+    def _discard_staged_session_on_failure(self):
+        """Engine-side cleanup for a failed staged push; the failure still propagates."""
+        try:
+            yield
         except Exception:
-            if staged and driver:
-                try:
-                    end_weight_update(protocol.rollout_engines, abort=True)
-                except Exception:
-                    logger.exception("Failed to discard the staged adapter session")
+            try:
+                end_weight_update(self.protocol.rollout_engines, abort=True)
+            except Exception:
+                # the abort usually shares the failure's root cause; it must not mask it
+                logger.exception("Failed to discard the staged adapter session")
             raise
+
+    def _checksum_manifest(self, adapters: list, staged: bool) -> dict | None:
+        """Per-adapter checksums recorded while streaming; a staged push commits
+        only under a manifest — a lost bucket must not publish."""
+        if not adapters or not (staged or self.args.check_lora_weight_equal):
+            return None
+        assert (
+            self._hf_weight_iterator.placement.is_full_gather
+        ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
+        return {name: {} for name, _ in adapters}
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
