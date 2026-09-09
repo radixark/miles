@@ -1,9 +1,4 @@
-"""The trainer's end of an engine weight-update session.
-
-``EngineWeightUpdateSession`` owns the frame: pause -> register -> begin on
-entry, end -> set version -> resume on ``commit``, engine-side abort when a
-staged scope fails. The module functions below are the RPC verbs it drives.
-"""
+"""Own the trainer side of the engine weight-update session."""
 
 import logging
 from argparse import Namespace
@@ -19,11 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class EngineWeightUpdateSession:
-    """Collective on every training rank: engine RPCs run on rank 0 and their
-    outcome is broadcast, so a refused call fails every rank together instead
-    of stranding the collectives ahead. A staged session (fresh adapter names,
-    no readers) skips the pause frame and discards the engine-side stash when
-    the scope fails; the success path must call ``commit``."""
+    """Broadcast engine RPC outcomes to every training rank.
+
+    Staged sessions skip pausing and abort on failure; successful scopes must call `commit`.
+    """
 
     def __init__(
         self,
