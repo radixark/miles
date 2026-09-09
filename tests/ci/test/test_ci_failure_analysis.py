@@ -410,6 +410,20 @@ def test_every_validation_message_is_declared_safe_for_the_audit():
     assert raised and raised <= ANALYZER.SAFE_VALIDATION_REASONS
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("__w/miles/miles/miles/utils/test_utils/runner.py", "miles/utils/test_utils/runner.py"),
+        ("__w/miles/miles/tests/e2e/sglang/test_qwen36.py", "tests/e2e/sglang/test_qwen36.py"),
+        ("home/runner/work/miles/miles/tests/fast/ray/test_layout.py", "tests/fast/ray/test_layout.py"),
+        ("miles/utils/misc.py", "miles/utils/misc.py"),
+        ("opt/hostedtoolcache/Python/3.11/site-packages/_pytest/python.py", None),
+    ],
+)
+def test_a_runner_path_resolves_past_the_repeated_repository_name(raw, expected):
+    assert ANALYZER._safe_path(raw) == expected
+
+
 def test_missing_module_paths_cover_deleted_packages_and_module_files():
     text = (
         "ModuleNotFoundError: No module named 'miles.backends.megatron_utils.update_weight'\n"

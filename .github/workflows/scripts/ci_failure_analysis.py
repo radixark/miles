@@ -421,10 +421,16 @@ def _safe_path(path: str) -> str | None:
     if not SAFE_PATH_RE.fullmatch(path) or ".." in path.split("/"):
         return None
     roots = ("miles/", "miles_plugins/", "tests/", "scripts/", "tools/", ".github/", "examples/")
+    # A runner path repeats the repository name -- /__w/miles/miles/miles/utils/x.py -- so the first
+    # match of a root is the workspace, not the source tree. The shortest candidate is the real path.
+    candidates = []
     for root in roots:
         position = path.find(root)
-        if position >= 0:
-            return path[position:]
+        while position >= 0:
+            candidates.append(path[position:])
+            position = path.find(root, position + 1)
+    if candidates:
+        return min(candidates, key=len)
     return path if "/" in path and not path.startswith(("tmp/", "home/", "opt/", "usr/")) else None
 
 
