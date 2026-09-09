@@ -26,7 +26,8 @@ def test_stateful_recipe_metadata_reaches_harness_runtime() -> None:
         request_kwargs=chess_agent._request_with_thinking({"max_tokens": 16384}),
     )
     assert runtime.eval_config.harness_mode == "stateful"
-    assert runtime.eval_config.max_llm_retries_per_move == 0
+    # The evaluator stores total attempts: the first attempt plus zero retries.
+    assert runtime.eval_config.max_llm_attempts_per_move == 1
     assert runtime.eval_config.max_response_tokens == 16384
     assert metadata["chess"]["repetition_reward_penalty"] == 0.5
 
