@@ -148,10 +148,19 @@ def execute():
     optimizer_args = (
         "--optimizer adam --lr 1e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
     )
-    sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-decode-log-interval 1000 "
+    # the family's parsers: with them the engine emits reasoning_content, which
+    # terminus (interleaved_thinking) carries back in history, so the qwen3
+    # template re-renders each think block instead of an empty skeleton
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 2 --sglang-decode-log-interval 1000 "
+        "--sglang-reasoning-parser qwen3 --sglang-tool-call-parser qwen25 "
+    )
     perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 32768 "
-    # tito strict check off: qwen3's template re-renders history with an empty
-    # think skeleton (known false positive; engine-recorded tokens train losslessly)
+    # strict TITO gate off: Qwen3-0.6B sometimes ends a turn with <|endoftext|>
+    # (its second EOS) where the template puts <|im_end|>; the qwen3 TITO
+    # boundary handling assumes <|im_end|>, so the comparator reports a hard
+    # mismatch for a model choice, not a bug. Tracked in #3113; the rate is
+    # still logged.
     ci_args = "--ci-test --ci-disable-kl-checker --ci-disable-tito-strict-checker "
     misc_args = f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate --train-backend fsdp "
 
