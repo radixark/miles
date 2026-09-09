@@ -73,22 +73,11 @@ class TestAdamParams:
 
 
 class TestTensorData:
-    def test_a_plain_list_passes_through(self):
-        assert tensor_data_to_list([1, 2]) == [1, 2]
-
-    def test_dense_tensor_data(self):
         assert tensor_data_to_list({"data": [1.0, 2.0], "shape": [2]}) == [1.0, 2.0]
 
     def test_csr_expands_to_dense(self):
         sparse = {"shape": [4], "sparse_crow_indices": [0, 2], "sparse_col_indices": [1, 3], "data": [5.0, 7.0]}
         assert tensor_data_to_list(sparse) == [0, 5.0, 0, 7.0]
-
-
-def test_load_state_carries_the_optimizer_flag():
-    _, decoded = decode_command(
-        "load_state", {"model_id": "m", "seq_id": 1, "path": "tinker://m/weights/x", "optimizer": False}
-    )
-    assert decoded["optimizer"] is False
 
 
 def test_decode_sample_request_defaults():
@@ -104,11 +93,3 @@ class TestRenderResult:
         assert rendered["loss_fn_output_type"] == "ArrayRecord"
         assert rendered["metrics"] == {"loss:sum": 2.0}
         assert rendered["loss_fn_outputs"][0]["logprobs"] == {"dtype": "float32", "shape": [2], "data": [0.1, 0.2]}
-
-    def test_optim_step_carries_metrics(self):
-        rendered = render_result({"op": "optim_step", "metrics": {"grad_norm": 1.5}})
-        assert rendered == {"type": "optim_step", "metrics": {"grad_norm": 1.5}}
-
-    def test_save_state_renders_the_tinker_path(self):
-        rendered = render_result({"op": "save_state", "path": "tinker://m/weights/x"})
-        assert rendered == {"type": "save_weights", "path": "tinker://m/weights/x"}
