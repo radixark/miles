@@ -70,9 +70,9 @@ def save_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
                 shutil.rmtree(final_dir)
             os.replace(tmp_dir, final_dir)
 
-    _run_on_every_rank(make_tmp_dir)
-    _run_on_every_rank(write_shards)
-    _run_on_every_rank(publish_dir)
+    _run_checkpoint_phase(make_tmp_dir)
+    _run_checkpoint_phase(write_shards)
+    _run_checkpoint_phase(publish_dir)
 
 
 def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, path: str, load_optimizer: bool) -> None:
@@ -90,13 +90,11 @@ def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
             _load_optimizer_slot_state(optimizer, slot, optim_state)
         # weights-only load keeps the fresh Adam state the slot init just zeroed
 
-    _run_on_every_rank(load_shards)
+    _run_checkpoint_phase(load_shards)
 
 
-def _run_on_every_rank(operation) -> None:
-    """Run one checkpoint phase, then meet at a barrier that carries every
-    rank's outcome: a disk error on any rank raises on all of them instead of
-    stranding the others."""
+def _run_checkpoint_phase(operation) -> None:
+    """Run a checkpoint phase and propagate any rank's failure to every rank."""
     error = None
     try:
         operation()
@@ -127,8 +125,7 @@ def _optimizer_slot_state(optimizer: MegatronOptimizer, slot: int) -> dict:
             # a never-stepped slot has no per-param state yet
             state = inner.state[main_param] if main_param in inner.state else {}
             params.append({key: value.cpu() if torch.is_tensor(value) else value for key, value in state.items()})
-            # the FP32 master, not the BF16 model copy: reload_model_params would
-            # rebuild masters from BF16 and lose the low bits on every resume
+            # rebuilding FP32 masters from BF16 would lose low bits on resume
             masters.append(main_param.data.cpu())
         children_states.append({"group_steps": group_steps, "params": params, "masters": masters})
     return {"world_size": _world_size(), "children": children_states}
