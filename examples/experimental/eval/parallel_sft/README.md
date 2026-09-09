@@ -189,6 +189,29 @@ python examples/experimental/eval/parallel_sft/hle_eval.py \
     --judge_max_tokens 16384
 ```
 
+For a GPT-5.6 Luna grader, use `--judge_model gpt-5.6-luna`,
+`--judge_base_url https://api.openai.com/v1`,
+`--judge_max_tokens_param max_completion_tokens`,
+`--judge_reasoning_effort medium`, and `--judge_omit_temperature`.
+The completion budget includes the grader's hidden reasoning. Credentials still
+come from the environment; never embed them in a configuration or launch command.
+
+`--max_tokens` is an output-only cap. To impose a total prompt-plus-output budget,
+also supply `--max_context_length 81920 --tokenizer_path /path/to/checkpoint-tokenizer`.
+The tokenizer directory must contain the same tokenizer and chat template used by
+the endpoint. The evaluator counts the fully templated prompt, including the
+assistant generation prefix, and subtracts that count from the context budget.
+It checks the endpoint's reported token usage against that calculation. This does
+not change the serving endpoint's global context length or other clients' limits.
+The tokenizer uses the existing `transformers` dependency in `requirements.txt`.
+
+For standalone long-running evaluations, `--incremental` flushes completed trials
+to `--output_jsonl` and writes a small adjacent `*.progress.json` next to the
+summary. It refuses to overwrite an existing output. Optional
+`--generations_jsonl /path/to/generations.jsonl` preserves model responses before
+grading, so a grader outage does not discard them. This is not automatic resume;
+use fresh paths for a new run. The final summary retains the existing schema.
+
 Without `--judge_base_url`, the script retains its judge-free smoke behavior:
 multiple-choice rows can be scored from an explicit final answer, while
 free-form rows remain ungraded.

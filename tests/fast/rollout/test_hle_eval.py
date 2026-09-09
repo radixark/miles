@@ -1,10 +1,9 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from aiohttp import web
-from pytest import MonkeyPatch
-
 from examples.experimental.eval.parallel_sft import hle_eval
 from examples.experimental.eval.parallel_sft.hle_eval import (
     Args,
@@ -15,8 +14,10 @@ from examples.experimental.eval.parallel_sft.hle_eval import (
     judge_payload,
     main_async,
     parse_judgment,
+    prepare_context_budgets,
     summarize,
 )
+from pytest import MonkeyPatch, raises
 
 
 def test_hle_default_output_limit_is_128k() -> None:
@@ -213,6 +214,8 @@ def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
         args.judge_base_url = f"http://127.0.0.1:{port}/v1"
         args.judge_model = "grader-model"
         args.judge_max_retries = 1
+        args.incremental = True
+        args.generations_jsonl = str(tmp_path / "generations.jsonl")
 
         try:
             await main_async(args)
@@ -226,9 +229,10 @@ def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
         assert summary["metrics"]["judge_completed"] == 2
         assert summary["metrics"]["judge_completion_tokens"] == 18
         assert len(output_path.read_text().splitlines()) == 2
-        checkpoint_requests = [
-            request for request in requests if request["model"] == "checkpoint-model"
-        ]
+        assert len(Path(args.generations_jsonl).read_text().splitlines()) == 2
+        progress = json.loads(summary_path.with_suffix(".progress.json").read_text())
+        assert progress["finished_trials"] == progress["planned_trials"] == 2
+        checkpoint_requests = [request for request in requests if request["model"] == "checkpoint-model"]
         assert len(checkpoint_requests) == 2
         assert checkpoint_requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
         judge_requests = [request for request in requests if request["model"] == "grader-model"]
@@ -240,3 +244,55 @@ def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
         assert "confidence" not in judge_prompt.lower()
 
     asyncio.run(run_test())
+
+
+def test_luna_grader_uses_reasoning_model_parameters() -> None:
+    args = Args()
+    args.judge_model = "gpt-5.6-luna"
+    args.judge_max_tokens_param = "max_completion_tokens"
+    args.judge_reasoning_effort = "medium"
+    args.judge_omit_temperature = True
+    payload = judge_payload(args, {"answer": "4"}, "4")
+    assert payload["max_completion_tokens"] == 16384
+    assert "max_tokens" not in payload
+    assert "temperature" not in payload
+    assert payload["reasoning_effort"] == "medium"
+    assert payload["response_format"]["json_schema"]["strict"] is True
+
+
+def test_context_budget_reserves_templated_prompt(monkeypatch: MonkeyPatch) -> None:
+    calls = []
+
+    def template(messages: list[dict], **kwargs: object) -> list[int]:
+        calls.append((messages, kwargs))
+        return [0] * 100
+
+    monkeypatch.setattr(
+        hle_eval.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(apply_chat_template=template),
+    )
+    args = Args()
+    args.max_context_length = 81920
+    args.tokenizer_path = "/local/checkpoint-tokenizer"
+    row = {"id": "one", "question": "Question", "answer_type": "exactMatch"}
+    prepared = prepare_context_budgets(args, [row])[0]
+    assert prepared["_prompt_tokens"] == 100
+    assert prepared["_max_tokens"] == 81820
+    assert "_max_tokens" not in row
+    assert calls[0][1]["add_generation_prompt"] is True
+    assert calls[0][1]["enable_thinking"] is True
+    args.max_context_length = 100
+    with raises(ValueError, match="no output budget"):
+        prepare_context_budgets(args, [row])
+
+
+def test_incremental_output_refuses_to_overwrite(tmp_path: Path) -> None:
+    output = tmp_path / "results.jsonl"
+    output.write_text("preserved\n")
+    args = Args()
+    args.incremental = True
+    args.output_jsonl = str(output)
+    with raises(FileExistsError):
+        asyncio.run(main_async(args))
+    assert output.read_text() == "preserved\n"

@@ -5,6 +5,7 @@ blobfile
 datasets
 httpx[http2]
 hypothesis>=5.40
+jinja2>=3.1.0  # Hugging Face chat-template rendering for exact HLE context budgeting
 kubernetes_asyncio
 mcp[cli]
 memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
