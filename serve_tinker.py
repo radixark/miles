@@ -4,6 +4,11 @@ from contextlib import suppress
 
 import uvicorn
 
+from miles.backends.megatron_utils.lora.slot_capacity import (
+    AUTO_SLOT_CAPACITY,
+    probe_slot_capacity,
+    resolve_slot_capacity,
+)
 from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_megatron
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.train.group import TrainerController
@@ -22,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 async def serve(args):
-    assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
+    assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters (a count, or 'auto')"
     configure_logger(args, source=MainProcessIdentity())
 
     init_http_client(args)
@@ -31,7 +36,6 @@ async def serve(args):
     object_store.init_instance(args, contribute_segment=False)
 
     inference_controller = InferenceController(args)
-    await inference_controller.init()
 
     trainer = TrainerController(
         args=args,
@@ -43,8 +47,20 @@ async def serve(args):
     )
     await trainer.init()
 
+    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+    dp_size = actor_world_size // (
+        args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
+    )
+    backend = MilesBackend(trainer, router_url, dp_size=dp_size)
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
+    if args.multi_lora_n_adapters == AUTO_SLOT_CAPACITY:
+        # resolved before the engines launch: they read the slot count from args
+        probes = await probe_slot_capacity(args, backend, trainer)
+        args.multi_lora_n_adapters = resolve_slot_capacity(args, probes, GatewayConfig.sampler_versions_in_engine)
+    await inference_controller.init()
+
     # args.target_modules holds HF names (q_proj, ...); classify on the megatron names
     target_modules = set(convert_target_modules_to_megatron(args.target_modules or ()))
     config = GatewayConfig(
@@ -57,12 +73,7 @@ async def serve(args):
         trains_mlp=bool(target_modules & {"linear_fc1", "linear_fc2"}),
         trains_unembed="output_layer" in target_modules,
     )
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-    actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-    dp_size = actor_world_size // (
-        args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
-    )
-    service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
+    service = TinkerService(backend, config)
 
     server = uvicorn.Server(
         uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
