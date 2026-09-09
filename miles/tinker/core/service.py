@@ -18,7 +18,16 @@ from pathlib import Path
 from miles.tinker.core.future import PENDING, Future, FutureStore
 from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
 from miles.tinker.core.stream import ModelStream
-from miles.tinker.core.types import Command, CommandOp, GatewayConfig, ModelRecord, OwnershipError, UserInputError
+from miles.tinker.core.types import (
+    LOSS_FN_INPUTS,
+    LOSS_INPUT_KEYS,
+    Command,
+    CommandOp,
+    GatewayConfig,
+    ModelRecord,
+    OwnershipError,
+    UserInputError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +223,9 @@ class TinkerService:
             raise UserInputError(
                 f"{len(datums)} datums exceeds max_datums_per_request={self.config.max_datums_per_request}"
             )
+        required_inputs = LOSS_FN_INPUTS.get(payload["loss_fn"])
+        if required_inputs is None:
+            raise UserInputError(f"unknown loss_fn {payload['loss_fn']!r}; known: {sorted(LOSS_FN_INPUTS)}")
         total_tokens = 0
         for index, datum in enumerate(datums):
             if len(datum["tokens"]) > self.config.max_tokens_per_datum:
@@ -221,6 +233,17 @@ class TinkerService:
                     f"datum {index}: {len(datum['tokens'])} tokens exceeds {self.config.max_tokens_per_datum}"
                 )
             total_tokens += len(datum["tokens"])
+            for wire_key in required_inputs:
+                values = datum.get(LOSS_INPUT_KEYS[wire_key])
+                if values is None:
+                    raise UserInputError(
+                        f"datum {index}: loss_fn {payload['loss_fn']!r} needs loss_fn_inputs[{wire_key!r}]"
+                    )
+                if len(values) != datum["target_len"]:
+                    raise UserInputError(
+                        f"datum {index}: loss_fn_inputs[{wire_key!r}] has {len(values)} values "
+                        f"for {datum['target_len']} target tokens"
+                    )
         if total_tokens > self.config.max_tokens_per_request:
             raise UserInputError(
                 f"{total_tokens} tokens exceeds max_tokens_per_request={self.config.max_tokens_per_request}"
