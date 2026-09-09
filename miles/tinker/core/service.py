@@ -13,9 +13,9 @@ import time
 import uuid
 
 from miles.tinker.core.future import PENDING, Future, FutureStore
-from miles.tinker.core.planner import BarrierOp, BatchOp, Planner
+from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
 from miles.tinker.core.stream import ModelStream
-from miles.tinker.core.types import Command, GatewayConfig, ModelRecord, OwnershipError, UserInputError
+from miles.tinker.core.types import Command, CommandOp, GatewayConfig, ModelRecord, OwnershipError, UserInputError
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,10 @@ class TinkerService:
     def submit(self, tenant: str, op: str, payload: dict) -> str:
         """payload is server-decoded; content errors here are admission
         rejections and fail the future (the SDK sees RequestFailedError)."""
+        try:
+            op = CommandOp(op)
+        except ValueError:
+            raise UserInputError(f"unknown command op {op!r}") from None
         model_id = payload["model_id"]
         self.get_model(tenant, model_id)
         seq_id = payload["seq_id"]
@@ -183,8 +187,8 @@ class TinkerService:
         self._wake.set()
         return future.request_id
 
-    def _admit(self, op: str, payload: dict) -> None:
-        if op not in ("forward_backward", "forward_only"):
+    def _admit(self, op: CommandOp, payload: dict) -> None:
+        if not op.is_batch():
             return
         datums = payload["datums"]
         if not datums:
@@ -318,17 +322,17 @@ class TinkerService:
                 self._wake.clear()
                 continue
             async with self._backend_lock:
-                if isinstance(item, BatchOp):
+                if isinstance(item, BatchUnit):
                     await self._run_batch(item)
                 else:
                     await self._run_barrier(item)
 
-    async def _run_batch(self, batch: BatchOp) -> None:
+    async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
         refs = sorted(batch.datums, key=lambda ref: ref.stream.slot)
         slot_datums = [(ref.stream.slot, ref.datum) for ref in refs]
         self._batch_counter += 1
-        run = self.backend.forward_backward if batch.op == "forward_backward" else self.backend.forward_only
+        run = self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
         try:
             outputs = await run(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
         except UserInputError as error:
@@ -357,7 +361,7 @@ class TinkerService:
             self.futures.fail(ref.request.command.request_id, error, category)
             ref.stream.finish(ref.request)
 
-    async def _run_barrier(self, barrier: BarrierOp) -> None:
+    async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
             results = await self._execute_barrier(barrier)
         except (UserInputError, OwnershipError) as error:
@@ -371,22 +375,22 @@ class TinkerService:
             self.futures.resolve(pending.command.request_id, result)
             stream.finish(pending)
 
-    def _fail_barrier(self, barrier: BarrierOp, error: str, category: str) -> None:
+    def _fail_barrier(self, barrier: BarrierUnit, error: str, category: str) -> None:
         for stream, pending in barrier.entries:
             self.futures.fail(pending.command.request_id, error, category)
             stream.finish(pending)
 
-    async def _execute_barrier(self, barrier: BarrierOp) -> list[dict]:
-        if barrier.op == "optim_step":
+    async def _execute_barrier(self, barrier: BarrierUnit) -> list[dict]:
+        if barrier.op == CommandOp.OPTIM_STEP:
             return await self._step_optimizers(barrier.entries)
         ((stream, pending),) = barrier.entries  # every other barrier is single-entry
         record = self.models[stream.model_id]
         payload = pending.command.payload
-        if barrier.op == "save_state":
+        if barrier.op == CommandOp.SAVE_STATE:
             return await self._save_state(record, pending, payload)
-        if barrier.op == "load_state":
+        if barrier.op == CommandOp.LOAD_STATE:
             return await self._load_state(record, payload)
-        if barrier.op == "save_weights_for_sampler":
+        if barrier.op == CommandOp.SAVE_WEIGHTS_FOR_SAMPLER:
             return await self._publish_sampler_version(record)
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
