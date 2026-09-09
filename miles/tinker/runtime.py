@@ -17,7 +17,7 @@ from miles.utils import object_store
 from miles.utils.http_utils import post
 
 # internal datum key -> trainer batch key
-ROW_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sampling_logprobs": "rollout_log_probs"}
+DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sampling_logprobs": "rollout_log_probs"}
 
 
 class MilesBackend(ExecutorBackend):
@@ -49,11 +49,11 @@ class MilesBackend(ExecutorBackend):
         train_data["loss_fn_config"] = loss_fn_config
         worker_results = await self._run_batch(method, batch_id, train_data)
         by_index: dict[int, dict] = {}
-        for result in worker_results:
-            for item in result["per_datum"]:
-                index = int(item["sample_index"])
+        for worker_result in worker_results:
+            for datum_output in worker_result["per_datum"]:
+                index = int(datum_output["sample_index"])
                 if index not in by_index:
-                    by_index[index] = {"loss": float(item["loss"]), "logprobs": item["logprobs"].tolist()}
+                    by_index[index] = {"loss": float(datum_output["loss"]), "logprobs": datum_output["logprobs"].tolist()}
         return [by_index[index] for index in range(len(slot_datums))]
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
@@ -87,7 +87,7 @@ class MilesBackend(ExecutorBackend):
     async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
         request = self._generate_request(payload, lora_name, lora_path)
         responses = await asyncio.gather(
-            *[post(f"{self.router_url}/generate", _seeded(request, index)) for index in range(payload["num_samples"])]
+            *[post(f"{self.router_url}/generate", _with_sample_seed(request, index)) for index in range(payload["num_samples"])]
         )
         result = {"sequences": [_to_sequence(response) for response in responses]}
         if payload["prompt_logprobs"]:
@@ -128,7 +128,7 @@ class MilesBackend(ExecutorBackend):
         return request
 
 
-def _seeded(request: dict, index: int) -> dict:
+def _with_sample_seed(request: dict, index: int) -> dict:
     """num_samples are independent samples: a caller-pinned seed still gets a
     distinct stream per sample."""
     request = dict(request)
@@ -150,7 +150,7 @@ def _build_train_data(slot_datums: list) -> dict:
         "adapter_slots": [slot for slot, _ in slot_datums],
         "dynamic_global_batch_size": len(datums),
     }
-    for datum_key, batch_key in ROW_TO_BATCH_KEYS.items():
+    for datum_key, batch_key in DATUM_TO_BATCH_KEYS.items():
         if datum_key in datums[0]:
             train_data[batch_key] = [datum[datum_key] for datum in datums]
     return train_data
@@ -165,10 +165,10 @@ def _topk_prompt_logprobs(response: dict, k: int) -> dict:
     token_ids, logprobs = [], []
     for position in response["meta_info"]["input_top_logprobs"]:
         candidates = position or []
-        datum_tokens = [entry[1] for entry in candidates][:k]
-        row_logprobs = [float(entry[0]) for entry in candidates][:k]
-        token_ids.append(datum_tokens + [0] * (k - len(datum_tokens)))
-        logprobs.append(row_logprobs + [float("nan")] * (k - len(row_logprobs)))
+        candidate_token_ids = [entry[1] for entry in candidates][:k]
+        candidate_logprobs = [float(entry[0]) for entry in candidates][:k]
+        token_ids.append(candidate_token_ids + [0] * (k - len(candidate_token_ids)))
+        logprobs.append(candidate_logprobs + [float("nan")] * (k - len(candidate_logprobs)))
     return {"token_ids": token_ids, "logprobs": logprobs}
 
 
