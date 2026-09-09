@@ -25,14 +25,18 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
   <Tab title="AMD MI300X / MI350X">
 
     ```bash
-    docker pull rlsys/miles:MI350-355-latest    # or MI300-latest
+    # Pick the tag that matches your GPU and ROCm version:
+    #   miles-rocm720-mi35x   MI350X / MI355X, ROCm 7.2
+    #   miles-rocm700-mi35x   MI350X / MI355X, ROCm 7.0
+    #   miles-rocm700-mi30x   MI300X,          ROCm 7.0
+    docker pull rocm/sgl-dev:miles-rocm720-mi35x
 
     docker run --rm \
       --device /dev/dri --device /dev/kfd \
       --group-add video --ipc=host --shm-size=32g \
       --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
       --privileged \
-      -it rlsys/miles:MI350-355-latest /bin/bash
+      -it rocm/sgl-dev:miles-rocm720-mi35x /bin/bash
     ```
 
   </Tab>
@@ -46,6 +50,10 @@ The image ships with:
 - Ray, uv, and Miles installed editable at `/root/miles`
 
 See [Hardware requirements](#hardware-requirements) for per-GPU status.
+
+ROCm images are published to
+[`rocm/sgl-dev`](https://hub.docker.com/r/rocm/sgl-dev/tags?name=miles), which AMD rebuilds daily.
+Each rebuild also pushes a dated sibling (`miles-rocm720-mi35x-<YYYYMMDD>`) to pin against.
 
 ## Method 2: From source
 
