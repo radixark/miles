@@ -842,11 +842,18 @@ class MegatronTrainRayActor(TrainRayActor):
     def unload_adapter(self, info: "UpdatableEngines", lora_name: str) -> None:
         assert self.args.multi_lora, "unload_adapter is a multi-LoRA slot command"
         self._heartbeat.bump()
+        # rank 0's RPC failure must fail every rank together, not strand a barrier
+        failure = [None]
         if dist.get_rank() == 0:
-            async_utils.wait_futures(
-                [async_utils.submit(client.unload_lora_adapter(lora_name)) for client in info.rollout_engines]
-            )
-        dist.barrier(group=get_gloo_group())
+            try:
+                async_utils.wait_futures(
+                    [async_utils.submit(client.unload_lora_adapter(lora_name)) for client in info.rollout_engines]
+                )
+            except Exception as error:  # noqa: BLE001
+                failure[0] = f"{type(error).__name__}: {error}"
+        dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
+        if failure[0] is not None:
+            raise RuntimeError(f"unload_adapter({lora_name!r}) failed: {failure[0]}")
 
     @with_logs
     @timer
