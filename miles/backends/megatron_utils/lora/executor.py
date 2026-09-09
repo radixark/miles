@@ -25,12 +25,14 @@ from miles.utils.types import RolloutBatch
 logger = logging.getLogger(__name__)
 
 
-def forward_backward(
+def run_loss_pass(
     args: Namespace,
     batch_id: int,
     model: Sequence[DDP],
     optimizer: MegatronOptimizer,
     rollout_data: RolloutBatch,
+    *,
+    forward_only: bool = False,
 ) -> dict:
     data_iterator, num_microbatches = get_data_iterator(args, model, rollout_data)
     assert len(num_microbatches) == 1, "a work unit is a single forward/backward pass"
@@ -40,13 +42,20 @@ def forward_backward(
     for model_chunk in model:
         model_chunk.train()
     setup_train_iteration_config(args, model, optimizer, disable_optimizer=False)
-    reset_grad_metadata_keep_grads(model)
+    if not forward_only:
+        reset_grad_metadata_keep_grads(model)
 
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=batch_id)
     start_per_datum_outputs()
     try:
         losses_reduced = run_forward_backward_pass(
-            args, dumper_phase_util, data_iterator, model, num_microbatches[0], num_rollouts=None
+            args,
+            dumper_phase_util,
+            data_iterator,
+            model,
+            num_microbatches[0],
+            num_rollouts=None,
+            forward_only=forward_only,
         )
     finally:
         per_datum_outputs = drain_per_datum_outputs()
@@ -61,12 +70,12 @@ def optim_step(
     model: Sequence[DDP],
     optimizer: MegatronOptimizer,
     adam_params_by_slot: dict[int, dict],
-) -> dict[int, float]:
-    grad_norms: dict[int, float] = {}
+) -> dict[int, dict]:
+    outcomes: dict[int, dict] = {}
     for slot, adam_params in adam_params_by_slot.items():
         _apply_adam_params(optimizer, slot, adam_params)
         # batch size 1: grads step as accumulated; normalization is the client's loss weights
-        grad_norms.update(
+        outcomes.update(
             step_adapter_slots(
                 optimizer,
                 model,
@@ -74,7 +83,7 @@ def optim_step(
                 clip_grad=adam_params["grad_clip_norm"],
             )
         )
-    return grad_norms
+    return outcomes
 
 
 def _apply_adam_params(optimizer: MegatronOptimizer, slot: int, adam_params: dict) -> None:
@@ -84,6 +93,10 @@ def _apply_adam_params(optimizer: MegatronOptimizer, slot: int, adam_params: dic
             group["betas"] = (adam_params["beta1"], adam_params["beta2"])
             group["eps"] = adam_params["eps"]
             group["weight_decay"] = adam_params["weight_decay"]
+
+
+def zero_grads(model: Sequence[DDP], slot: int) -> None:
+    zero_adapter_slot_grads(model, slot)
 
 
 def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, rank: int, alpha: float) -> None:
