@@ -425,3 +425,49 @@ class TestGlm47BoundaryTokens:
         assert len(result) == 1
         assert result[0].type == MismatchType.SPECIAL_TOKEN_TYPE
         assert result[0].segment_index == 2
+
+
+# ---------------------------------------------------------------------------
+# EOS alias groups
+#
+# Qwen3 lists two EOS ids in its generation config; a model may end a turn
+# with <|endoftext|> where the template can only render <|im_end|>.  A family
+# declares such ids as one alias group, and a swap inside the group is the
+# non-severe EOS_ALIAS mismatch instead of SPECIAL_TOKEN_TYPE.
+# ---------------------------------------------------------------------------
+
+
+class TestEosAlias:
+    def _make(self, env: TokenizerEnv, groups) -> TokenSeqComparator:
+        return TokenSeqComparator(
+            env.tokenizer, assistant_start_str=env.config.assistant_start_str, eos_alias_groups=groups
+        )
+
+    def test_swap_inside_group_is_eos_alias(self, qwen3_env: TokenizerEnv):
+        im_start = qwen3_env.token_id("<|im_start|>")
+        im_end = qwen3_env.token_id("<|im_end|>")
+        endoftext = qwen3_env.token_id("<|endoftext|>")
+        text = qwen3_env.encode("assistant\nHi")
+        expected = [im_start] + text + [im_end]
+        actual = [im_start] + text + [endoftext]
+
+        comp = self._make(qwen3_env, [frozenset({im_end, endoftext})])
+        mismatches = comp.compare_sequences(expected, actual)
+        assert [m.type for m in mismatches] == [MismatchType.EOS_ALIAS]
+        assert mismatches[0].expected_text == "<|im_end|>" and mismatches[0].actual_text == "<|endoftext|>"
+
+    def test_swap_outside_group_stays_structural(self, qwen3_env: TokenizerEnv):
+        im_start = qwen3_env.token_id("<|im_start|>")
+        im_end = qwen3_env.token_id("<|im_end|>")
+        endoftext = qwen3_env.token_id("<|endoftext|>")
+        text = qwen3_env.encode("assistant\nHi")
+        expected = [im_start] + text + [im_end]
+        actual = [im_start] + text + [endoftext]
+
+        # no groups declared: the swap is a structural mismatch
+        assert [m.type for m in qwen3_env.comparator.compare_sequences(expected, actual)] == [
+            MismatchType.SPECIAL_TOKEN_TYPE
+        ]
+        # a group that does not contain both ids does not soften it either
+        comp = self._make(qwen3_env, [frozenset({im_end, im_start})])
+        assert [m.type for m in comp.compare_sequences(expected, actual)] == [MismatchType.SPECIAL_TOKEN_TYPE]

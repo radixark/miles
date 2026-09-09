@@ -233,6 +233,7 @@ class TestTitoMismatchMetrics:
             f"{metric_prefix}/special_token_type",
             f"{metric_prefix}/non_assistant_text",
             f"{metric_prefix}/assistant_text",
+            f"{metric_prefix}/eos_alias",
         }
         assert {key for key in out if key.startswith("tito_session_mismatch_rate")} == tito_keys
         assert all(out[key] == 0.0 for key in tito_keys)
@@ -256,6 +257,23 @@ class TestTitoMismatchMetrics:
             match=r"tito_session_mismatch_rate/v1/special_token_count=0\.2500",
         ):
             _compute_metrics_from_samples(args, samples)
+
+    def test_eos_alias_mismatch_is_logged_but_not_strict(self):
+        """eos_alias (the model ended a turn with an alias EOS) is a model choice,
+        not a TITO bug: logged per type, never part of the ci_test assertion."""
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=True,
+            log_passrate=False,
+            use_session_server="v1",
+        )
+        samples = make_samples_grouped(1, 4)
+        samples[0].metadata = {"tito_session_mismatch": [{"type": "eos_alias"}]}
+        for s in samples[1:]:
+            s.metadata = {"tito_session_mismatch": []}
+        out = _compute_metrics_from_samples(args, samples)
+        assert out["tito_session_mismatch_rate/v1/eos_alias"] == 0.25
+        assert out["tito_session_mismatch_rate/v1/special_token_type"] == 0.0
 
     def test_assistant_text_mismatch_does_not_raise_under_ci_test(self):
         """assistant_text mismatch is non-critical (tokens inherited from the

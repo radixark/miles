@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -32,6 +33,13 @@ class MismatchType(Enum):
     # are inherited directly from the pretokenized prefix across turns,
     # so they may not match the chat template's canonical tokenization.
     ASSISTANT_TEXT = "assistant_text"
+
+    # A special-token segment where both sides hold an end-of-turn token from
+    # the same family-declared alias group: the model stopped with one EOS
+    # (Qwen3's ``<|endoftext|>``) where the template can only render another
+    # (``<|im_end|>``).  A model choice, not a template or algorithm bug, so
+    # it is non-severe.
+    EOS_ALIAS = "eos_alias"
 
 
 @dataclass
@@ -76,6 +84,11 @@ class TokenSeqComparator:
         (see :func:`_trim_trailing`).  Stored as a default; callers of
         :meth:`compare_sequences` may supply additional IDs that are
         **unioned** with this set.
+    eos_alias_groups : Iterable[Iterable[int]] | None
+        Groups of special-token IDs the model may emit interchangeably at a
+        turn end (Qwen3's ``<|im_end|>`` / ``<|endoftext|>``).  Two aligned
+        special segments that differ but fall inside one group are reported as
+        :attr:`MismatchType.EOS_ALIAS` instead of ``SPECIAL_TOKEN_TYPE``.
     """
 
     def __init__(
@@ -84,6 +97,7 @@ class TokenSeqComparator:
         assistant_start_str: str,
         special_token_ids: set[int] | None = None,
         trim_trailing_ids: set[int] | None = None,
+        eos_alias_groups: Iterable[Iterable[int]] | None = None,
     ):
         self.tokenizer = tokenizer
         if special_token_ids is not None:
@@ -92,6 +106,7 @@ class TokenSeqComparator:
             self._special_ids = self.collect_special_ids(tokenizer)
         self._assistant_start_str = assistant_start_str
         self._trim_trailing_ids: set[int] | None = set(trim_trailing_ids) if trim_trailing_ids else None
+        self._eos_alias_groups: list[frozenset[int]] = [frozenset(g) for g in (eos_alias_groups or [])]
 
     @staticmethod
     def collect_special_ids(tokenizer) -> set[int]:
@@ -219,8 +234,9 @@ class TokenSeqComparator:
         """
         if exp.is_special:
             if exp.token_ids != act.token_ids:
+                aliased = self._same_eos_alias_group(exp.token_ids, act.token_ids)
                 return Mismatch(
-                    type=MismatchType.SPECIAL_TOKEN_TYPE,
+                    type=MismatchType.EOS_ALIAS if aliased else MismatchType.SPECIAL_TOKEN_TYPE,
                     segment_index=idx,
                     expected_text=self._decode(exp.token_ids),
                     actual_text=self._decode(act.token_ids),
@@ -240,6 +256,12 @@ class TokenSeqComparator:
             expected_text=exp_text,
             actual_text=act_text,
         )
+
+    def _same_eos_alias_group(self, exp_ids: list[int], act_ids: list[int]) -> bool:
+        """True when both single special tokens sit in one declared EOS alias group."""
+        if len(exp_ids) != 1 or len(act_ids) != 1:
+            return False
+        return any(exp_ids[0] in group and act_ids[0] in group for group in self._eos_alias_groups)
 
     def _is_assistant_content(self, segments: list[Segment], idx: int) -> bool:
         """Check if the content segment at *idx* belongs to an assistant message.

@@ -88,6 +88,10 @@ class TITOTokenizer:
 
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
+    # Special tokens the model may emit interchangeably at a turn end (Qwen3's
+    # two EOS ids).  The comparator reports a swap inside one group as the
+    # non-severe ``eos_alias`` mismatch instead of ``special_token_type``.
+    eos_alias_groups: tuple[frozenset[int], ...] = ()
     chat_template_kwarg_aliases: frozenset[str] = frozenset()
 
     # The family's fixed renderer contract. DEFAULT uses the model's native
@@ -140,6 +144,7 @@ class TITOTokenizer:
             assistant_start_str=self._assistant_start_str,
             special_token_ids=self.special_token_ids,
             trim_trailing_ids=self.trailing_token_ids or None,
+            eos_alias_groups=self.eos_alias_groups or None,
         )
 
     def apply_chat_template(
@@ -266,12 +271,17 @@ class TITOTokenizer:
 
 
 class Qwen3TITOTokenizer(TITOTokenizer):
-    """Qwen3 variant: handles missing newline at the boundary.
+    """Qwen3 variant: handles the missing newline at the turn boundary.
 
     The Qwen3 chat template emits ``<|im_end|>\\n`` after every message, but
-    the model stops at ``<|im_end|>`` without generating the trailing ``\\n``.
-    ``merge_tokens`` inserts the missing newline so that the pretokenized
-    prefix matches the canonical template output.
+    the model stops at an EOS token without generating the trailing ``\\n``.
+    Qwen3's generation config lists two EOS ids, ``<|im_end|>`` and
+    ``<|endoftext|>``, and small models do end some turns with the latter;
+    ``merge_tokens`` inserts the missing newline after either, so the
+    pretokenized prefix keeps the template's structure.  The two ids form an
+    EOS alias group for the comparator: the template can only render
+    ``<|im_end|>``, so a turn the model ended with ``<|endoftext|>`` is a
+    non-severe ``eos_alias`` mismatch, not a structural one.
     """
 
     reasoning_parser = "qwen3"
@@ -299,6 +309,12 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         assert len(nl_ids) == 1, f"Expected single newline token, got {nl_ids}"
         self._newline_id: int = nl_ids[0]
         self._im_end_id: int = tokenizer.convert_tokens_to_ids("<|im_end|>")
+        eos_ids = {self._im_end_id}
+        endoftext_id = tokenizer.convert_tokens_to_ids("<|endoftext|>")
+        if endoftext_id is not None and endoftext_id != tokenizer.unk_token_id:
+            eos_ids.add(endoftext_id)
+        self._eos_ids: frozenset[int] = frozenset(eos_ids)
+        self.eos_alias_groups = (self._eos_ids,)
         self.trailing_token_ids = frozenset({self._newline_id})
 
     def merge_tokens(
@@ -310,7 +326,7 @@ class Qwen3TITOTokenizer(TITOTokenizer):
     ) -> list[int]:
         incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
         prefix = list(pretokenized_token_ids)
-        if prefix and prefix[-1] == self._im_end_id:
+        if prefix and prefix[-1] in self._eos_ids:
             prefix.append(self._newline_id)
         return prefix + incremental
 

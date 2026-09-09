@@ -227,6 +227,10 @@ class TestConfig:
     def test_qwen3(self, qwen3_tito: Qwen3TITOTokenizer):
         assert qwen3_tito._assistant_start_str == "<|im_start|>assistant"
         assert qwen3_tito._newline_id in qwen3_tito.trailing_token_ids
+        # both EOS ids form the alias group the comparator softens
+        endoftext = qwen3_tito.tokenizer.convert_tokens_to_ids("<|endoftext|>")
+        assert qwen3_tito.eos_alias_groups == (frozenset({qwen3_tito._im_end_id, endoftext}),)
+        assert qwen3_tito.create_comparator()._eos_alias_groups == [frozenset({qwen3_tito._im_end_id, endoftext})]
 
     def test_glm47(self, glm47_tito: GLM47TITOTokenizer):
         assert glm47_tito._assistant_start_str == "<|assistant|>"
@@ -560,6 +564,37 @@ class TestMergeTokensBoundary:
         incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
         result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
         assert result == [100, 200, 300] + incremental
+
+    def test_qwen3_inserts_newline_after_endoftext(self, qwen3_tito: Qwen3TITOTokenizer):
+        """Qwen3's second EOS: a turn the model ended with <|endoftext|> gets the same
+        missing newline, so the next turn's <|im_start|> keeps the template's structure."""
+        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        endoftext = qwen3_tito.tokenizer.convert_tokens_to_ids("<|endoftext|>")
+        nl = qwen3_tito._newline_id
+
+        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, endoftext], _BND_TOOLS)
+        assert result == [100, 200, endoftext, nl] + incremental
+
+    def test_qwen3_endoftext_turn_is_only_an_eos_alias_mismatch(self, qwen3_tito: Qwen3TITOTokenizer):
+        """End to end through the family's comparator: an accumulated stream whose
+        assistant turn ended with <|endoftext|> differs from the canonical render
+        by exactly that token, classified eos_alias, once merged with the next turn."""
+        old = [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Say hi."},
+            {"role": "assistant", "content": "Hi."},
+        ]
+        new = old + [{"role": "user", "content": "Again."}]
+        canonical_old = qwen3_tito.apply_chat_template(old, add_generation_prompt=False)
+        assert canonical_old.endswith("<|im_end|>\n")
+        # what the engine recorded: the model stopped with <|endoftext|>, no trailing newline
+        endoftext = qwen3_tito.tokenizer.convert_tokens_to_ids("<|endoftext|>")
+        recorded = qwen3_tito._encode_text(canonical_old[: -len("<|im_end|>\n")]) + [endoftext]
+
+        merged = qwen3_tito.merge_tokens(old, new, recorded)
+        expected = qwen3_tito.apply_chat_template(new, add_generation_prompt=True, tokenize=True)
+        mismatches = qwen3_tito.create_comparator().compare_sequences(expected, merged)
+        assert [m.type.value for m in mismatches] == ["eos_alias"]
 
     # -- GLM47: strip ambiguous boundary tokens --
 
