@@ -94,3 +94,23 @@ def test_issued_rows_are_not_reissued():
 
     assert len(planner.next_to_run().datums) == 1
     assert planner.next_to_run() is None
+
+
+def test_forward_only_packs_only_within_one_loss():
+    planner = Planner(batch_token_budget=1 << 20)
+    for index, (model, loss_fn) in enumerate([("m1", "cross_entropy"), ("m2", "dro")], start=1):
+        stream = ModelStream(model, "tenant", slot=index)
+        planner.add_stream(stream)
+        stream.submit(
+            command(
+                model,
+                1,
+                "forward_only",
+                {"datums": [{"tokens": [1, 2], "target_len": 1}], "loss_fn": loss_fn, "loss_fn_config": {}},
+                arrival=index,
+            )
+        )
+    first = planner.next_to_run()
+    assert [ref.request.command.payload["loss_fn"] for ref in first.datums] == [
+        "cross_entropy"
+    ], "a DRO request must not execute under another request's loss"
