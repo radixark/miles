@@ -1,6 +1,6 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
@@ -11,10 +11,14 @@ import miles.utils.external_utils.command_utils as U
 
 
 register_cuda_ci(est_time=1600, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts", "lora"])
+register_rocm_ci(est_time=1600, suite="stage-c-4-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
 NUM_GPUS = 4
+
+# aiter ships no batch-prefill kernel for this model's sink and page-size combination.
+_PLATFORM_EXTRA_ARGS = "--sglang-attention-backend triton " if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else ""
 
 # (name, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
@@ -93,7 +97,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
     )
 
     misc_args = (
-        "--attention-dropout 0.0 "
+        _PLATFORM_EXTRA_ARGS + "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--qkv-format bshd "
         "--attention-backend auto "

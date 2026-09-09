@@ -18,7 +18,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["lora"])
-register_rocm_ci(est_time=300, suite="nightly-stage-c-4-gpu-mi350", labels=["lora"])
+register_rocm_ci(est_time=500, suite="nightly-stage-c-4-gpu-mi350", labels=["lora"])
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))

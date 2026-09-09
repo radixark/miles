@@ -1,8 +1,9 @@
 """FSDP2 gradient parity across r1s4, r2s2, and r4s1."""
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=90, suite="stage-c-4-gpu-h200", labels=["fsdp"])
+register_rocm_ci(est_time=90, suite="stage-c-4-gpu-mi350", labels=["fsdp"])
 
 import os
 import subprocess

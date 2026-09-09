@@ -13,7 +13,7 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 register_rocm_ci(
-    est_time=900, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "weight-update", "short", "mooncake"]
+    est_time=1400, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "weight-update", "short", "mooncake"]
 )
 
 CASE = CaseConfig(
