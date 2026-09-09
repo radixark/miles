@@ -136,7 +136,7 @@ def end_weight_update(
     abort: bool = False,
 ) -> None:
     """Close the session: finalize base weights and apply the streamed LoRA
-    stash under the manifest; ``abort`` discards both instead."""
+    stash after verifying ``expected_lora_checksums``; ``abort`` discards both."""
     results = async_utils.wait_futures(
         [
             async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums, abort=abort))
