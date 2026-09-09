@@ -144,9 +144,6 @@ def _build_bridge_subclass():
             registry = super().mapping_registry()
             base = list(registry.mappings if hasattr(registry, "mappings") else registry._mappings)
             extras = [AutoMapping(megatron_param=m, hf_param=h) for m, h in _NEMOTRONH_MOE_MAPPINGS.items()]
-            # Recent Megatron versions register the convolution parameters
-            # directly on the mixer. Retain the legacy dotted names from the
-            # upstream registry and use the same x/B/C-aware TP conversion.
             known_names = {mapping.megatron_param for mapping in base}
             mamba = [
                 MambaConv1dMapping(
