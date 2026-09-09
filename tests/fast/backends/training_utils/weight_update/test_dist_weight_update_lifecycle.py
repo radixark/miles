@@ -107,8 +107,11 @@ def _run(updater: WeightUpdater, *, rank: int = 0) -> None:
     with (
         patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
         patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+        patch(f"{_SESSION_MODULE}.dist") as session_dist_mock,
+        patch(f"{_SESSION_MODULE}.get_gloo_group", return_value=MagicMock()),
     ):
         dist_mock.get_rank.return_value = rank
+        session_dist_mock.get_rank.return_value = rank
         updater.update_weights()
 
 
