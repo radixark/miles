@@ -4,7 +4,7 @@ dispatch loop.
 Speaks only the internal language: server/ hands it decoded commands and
 renders its results; runtime.py turns units into trainer batches. All backend
 calls go through one loop / one lock: the trainer is an SPMD domain and must
-see a single totally ordered unit stream.
+see a single totally ordered stream of batches and barriers.
 """
 
 import asyncio
@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 
-from miles.tinker.core.planner import BarrierUnit, Planner, WorkUnit
+from miles.tinker.core.planner import BarrierOp, BatchOp, Planner
 from miles.tinker.core.promise import PENDING, Promise, PromiseStore
 from miles.tinker.core.stream import ModelStream
 from miles.tinker.core.types import Command, GatewayConfig, ModelRecord, OwnershipError, UserInputError
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExecutorBackend:
-    """What runtime.py implements. Speaks rows and plain lists; core stays
+    """What runtime.py implements. Speaks datums and plain lists; core stays
     torch-free and miles-free."""
 
     async def load_slot(
@@ -32,12 +32,14 @@ class ExecutorBackend:
     async def unload_slot(self, slot: int) -> None:
         raise NotImplementedError
 
-    async def forward_backward(self, unit_id: int, slot_rows: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
-        """slot_rows: slot-sorted [(slot, row)]. Returns one
-        {"loss": float, "logprobs": [float]} per row, in order."""
+    async def forward_backward(
+        self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
+    ) -> list[dict]:
+        """slot_datums: slot-sorted [(slot, datum)]. Returns one
+        {"loss": float, "logprobs": [float]} per datum, in order."""
         raise NotImplementedError
 
-    async def forward_only(self, unit_id: int, slot_rows: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
+    async def forward_only(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
         raise NotImplementedError
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, float]:
@@ -66,7 +68,7 @@ class TinkerService:
         self.backend = backend
         self.config = config
         self.promises = PromiseStore()
-        self.planner = Planner(config.unit_token_budget)
+        self.planner = Planner(config.batch_token_budget)
         self.models: dict[str, ModelRecord] = {}
         self.sessions: dict[str, dict] = {}
         self.sampling_sessions: dict[str, dict] = {}
@@ -76,7 +78,7 @@ class TinkerService:
         self._sample_tasks: dict[str, tuple] = {}  # request_id -> (task, tenant)
         self._create_tasks: set = set()
         self._arrival_counter = 0
-        self._unit_counter = 0
+        self._batch_counter = 0
 
     # -------- control plane --------
 
@@ -132,7 +134,7 @@ class TinkerService:
             self.free_slots.add(record.slot)
             self.promises.fail(request_id, str(error), "internal")
             return
-        self.promises.resolve(request_id, {"kind": "create_model", "model_id": record.model_id})
+        self.promises.resolve(request_id, {"op": "create_model", "model_id": record.model_id})
 
     def get_model(self, tenant: str, model_id: str) -> ModelRecord:
         record = self.models.get(model_id)
@@ -144,7 +146,7 @@ class TinkerService:
 
     # -------- command plane --------
 
-    def submit(self, tenant: str, kind: str, payload: dict) -> str:
+    def submit(self, tenant: str, op: str, payload: dict) -> str:
         """payload is server-decoded; content errors here are admission
         rejections and fail the promise (the SDK sees RequestFailedError)."""
         model_id = payload["model_id"]
@@ -160,19 +162,19 @@ class TinkerService:
         promise = self.promises.create(model_id, tenant)
         stream.request_id_by_seq[seq_id] = promise.request_id
         try:
-            self._admit(kind, payload)
+            self._admit(op, payload)
         except UserInputError as error:
             self.promises.fail(promise.request_id, str(error), "user")
             # the rejected command still consumes its seq position, or the
             # stream would wait for it forever
-            payload = {**payload, "rows": []}
+            payload = {**payload, "datums": []}
 
         self._arrival_counter += 1
         stream.submit(
             Command(
                 model_id=model_id,
                 seq_id=seq_id,
-                kind=kind,
+                op=op,
                 payload=payload,
                 request_id=promise.request_id,
                 arrival=self._arrival_counter,
@@ -181,23 +183,23 @@ class TinkerService:
         self._wake.set()
         return promise.request_id
 
-    def _admit(self, kind: str, payload: dict) -> None:
-        if kind not in ("forward_backward", "forward_only"):
+    def _admit(self, op: str, payload: dict) -> None:
+        if op not in ("forward_backward", "forward_only"):
             return
-        rows = payload["rows"]
-        if not rows:
+        datums = payload["datums"]
+        if not datums:
             raise UserInputError("forward_backward with no data")
-        if len(rows) > self.config.max_datums_per_request:
+        if len(datums) > self.config.max_datums_per_request:
             raise UserInputError(
-                f"{len(rows)} datums exceeds max_datums_per_request={self.config.max_datums_per_request}"
+                f"{len(datums)} datums exceeds max_datums_per_request={self.config.max_datums_per_request}"
             )
         total_tokens = 0
-        for index, row in enumerate(rows):
-            if len(row["tokens"]) > self.config.max_tokens_per_datum:
+        for index, datum in enumerate(datums):
+            if len(datum["tokens"]) > self.config.max_tokens_per_datum:
                 raise UserInputError(
-                    f"datum {index}: {len(row['tokens'])} tokens exceeds {self.config.max_tokens_per_datum}"
+                    f"datum {index}: {len(datum['tokens'])} tokens exceeds {self.config.max_tokens_per_datum}"
                 )
-            total_tokens += len(row["tokens"])
+            total_tokens += len(datum["tokens"])
         if total_tokens > self.config.max_tokens_per_request:
             raise UserInputError(
                 f"{total_tokens} tokens exceeds max_tokens_per_request={self.config.max_tokens_per_request}"
@@ -238,7 +240,7 @@ class TinkerService:
     ) -> None:
         try:
             result = await self.backend.sample(payload, lora_name, lora_path)
-            self.promises.resolve(request_id, {"kind": "sample", **result})
+            self.promises.resolve(request_id, {"op": "sample", **result})
         except asyncio.CancelledError:
             self.promises.fail(request_id, "cancelled", "user")
         except UserInputError as error:
@@ -310,43 +312,43 @@ class TinkerService:
     async def run(self) -> None:
         self._sweep_task = asyncio.create_task(self.sweep_leases())
         while True:
-            unit = self.planner.next_unit()
-            if unit is None:
+            item = self.planner.next_to_run()
+            if item is None:
                 await self._wake.wait()
                 self._wake.clear()
                 continue
             async with self._backend_lock:
-                if isinstance(unit, WorkUnit):
-                    await self._run_work(unit)
+                if isinstance(item, BatchOp):
+                    await self._run_batch(item)
                 else:
-                    await self._run_barrier(unit)
+                    await self._run_barrier(item)
 
-    async def _run_work(self, unit: WorkUnit) -> None:
+    async def _run_batch(self, batch: BatchOp) -> None:
         # slot-contiguous order; outputs come back aligned to it
-        refs = sorted(unit.rows, key=lambda ref: ref.stream.slot)
-        slot_rows = [(ref.stream.slot, ref.row) for ref in refs]
-        self._unit_counter += 1
-        run = self.backend.forward_backward if unit.kind == "forward_backward" else self.backend.forward_only
+        refs = sorted(batch.datums, key=lambda ref: ref.stream.slot)
+        slot_datums = [(ref.stream.slot, ref.datum) for ref in refs]
+        self._batch_counter += 1
+        run = self.backend.forward_backward if batch.op == "forward_backward" else self.backend.forward_only
         try:
-            outputs = await run(self._unit_counter, slot_rows, unit.loss_fn, unit.loss_fn_config)
+            outputs = await run(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
         except UserInputError as error:
-            self._fail_unit_requests(refs, str(error), "user")
+            self._fail_batch_requests(refs, str(error), "user")
             return
         except Exception as error:  # noqa: BLE001  infra failure: fail the riders, keep serving
-            logger.exception(f"{unit.kind} unit {self._unit_counter} failed")
-            self._fail_unit_requests(refs, f"{type(error).__name__}: {error}", "server")
+            logger.exception(f"{batch.op} batch {self._batch_counter} failed")
+            self._fail_batch_requests(refs, f"{type(error).__name__}: {error}", "server")
             return
 
-        assert len(outputs) == len(refs), f"unit returned {len(outputs)} outputs for {len(refs)} rows"
+        assert len(outputs) == len(refs), f"unit returned {len(outputs)} outputs for {len(refs)} datums"
         for ref, output in zip(refs, outputs, strict=True):
             request = ref.request
             if request.record_output(ref.local_index, output):
                 self.promises.resolve(
-                    request.command.request_id, {"kind": request.command.kind, "outputs": request.outputs}
+                    request.command.request_id, {"op": request.command.op, "outputs": request.outputs}
                 )
                 ref.stream.finish(request)
 
-    def _fail_unit_requests(self, refs, error: str, category: str) -> None:
+    def _fail_batch_requests(self, refs, error: str, category: str) -> None:
         seen: set[int] = set()
         for ref in refs:
             if id(ref.request) in seen:
@@ -355,51 +357,51 @@ class TinkerService:
             self.promises.fail(ref.request.command.request_id, error, category)
             ref.stream.finish(ref.request)
 
-    async def _run_barrier(self, unit: BarrierUnit) -> None:
+    async def _run_barrier(self, barrier: BarrierOp) -> None:
         try:
-            results = await self._execute_barrier(unit)
+            results = await self._execute_barrier(barrier)
         except (UserInputError, OwnershipError) as error:
-            self._fail_barrier(unit, str(error), "user")
+            self._fail_barrier(barrier, str(error), "user")
             return
         except Exception as error:  # noqa: BLE001
-            logger.exception(f"{unit.kind} barrier failed")
-            self._fail_barrier(unit, f"{type(error).__name__}: {error}", "server")
+            logger.exception(f"{barrier.op} barrier failed")
+            self._fail_barrier(barrier, f"{type(error).__name__}: {error}", "server")
             return
-        for (stream, pending), result in zip(unit.entries, results, strict=True):
+        for (stream, pending), result in zip(barrier.entries, results, strict=True):
             self.promises.resolve(pending.command.request_id, result)
             stream.finish(pending)
 
-    def _fail_barrier(self, unit: BarrierUnit, error: str, category: str) -> None:
-        for stream, pending in unit.entries:
+    def _fail_barrier(self, barrier: BarrierOp, error: str, category: str) -> None:
+        for stream, pending in barrier.entries:
             self.promises.fail(pending.command.request_id, error, category)
             stream.finish(pending)
 
-    async def _execute_barrier(self, unit: BarrierUnit) -> list[dict]:
-        if unit.kind == "optim_step":
-            return await self._step_optimizers(unit.entries)
-        ((stream, pending),) = unit.entries  # every other barrier is single-entry
+    async def _execute_barrier(self, barrier: BarrierOp) -> list[dict]:
+        if barrier.op == "optim_step":
+            return await self._step_optimizers(barrier.entries)
+        ((stream, pending),) = barrier.entries  # every other barrier is single-entry
         record = self.models[stream.model_id]
         payload = pending.command.payload
-        if unit.kind == "save_state":
+        if barrier.op == "save_state":
             return await self._save_state(record, pending, payload)
-        if unit.kind == "load_state":
+        if barrier.op == "load_state":
             return await self._load_state(record, payload)
-        if unit.kind == "save_weights_for_sampler":
+        if barrier.op == "save_weights_for_sampler":
             return await self._publish_sampler_version(record)
-        raise UserInputError(f"unknown barrier kind {unit.kind!r}")
+        raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
     async def _step_optimizers(self, entries: list) -> list[dict]:
         grad_norms = await self.backend.optim_step(
             {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
         )
         return [
-            {"kind": "optim_step", "metrics": {"grad_norm": float(grad_norms[stream.slot])}} for stream, _ in entries
+            {"op": "optim_step", "metrics": {"grad_norm": float(grad_norms[stream.slot])}} for stream, _ in entries
         ]
 
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> list[dict]:
         name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
         await self.backend.save_slot(record.slot, self._checkpoint_dir(record.model_id, "weights", name))
-        return [{"kind": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}]
+        return [{"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}]
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> list[dict]:
         source_id, kind, name = _parse_tinker_path(payload["path"])
@@ -413,7 +415,7 @@ class TinkerService:
             ckpt_path=self._checkpoint_dir(source_id, kind, name),
             load_optimizer=payload["optimizer"],
         )
-        return [{"kind": "load_state"}]
+        return [{"op": "load_state"}]
 
     async def _publish_sampler_version(self, record: ModelRecord) -> list[dict]:
         version = record.next_sampler_version
@@ -431,7 +433,7 @@ class TinkerService:
             logger.exception("adapter warm push failed; version %s will backfill from disk", version)
         return [
             {
-                "kind": "save_weights_for_sampler",
+                "op": "save_weights_for_sampler",
                 "path": f"tinker://{record.model_id}/sampler_weights/{version}",
             }
         ]
