@@ -1,16 +1,4 @@
-"""Tinker gateway example: concurrent LoRA clients on one shared base model.
-
-Launches ``serve_tinker.py`` with Qwen3-30B-A3B on one node, split into
-``actor_num_gpus`` training GPUs and ``rollout_num_gpus`` sampling GPUs
-(multi-LoRA forbids ``--colocate``). Adapters cover attention and the
-per-expert MoE projections; sequences pack as thd. The gateway speaks the
-Tinker protocol on ``--tinker-port``; drive it with ``client.py`` and the
-official ``tinker`` SDK.
-
-Usage:
-  python examples/multi_lora/run_gateway.py prepare   # download Qwen3-30B-A3B (once per node)
-  python examples/multi_lora/run_gateway.py serve     # gateway on :10613
-"""
+"""Prepare Qwen3-30B-A3B and serve the Tinker gateway on separate training and sampling GPUs."""
 
 from dataclasses import dataclass, field
 
@@ -30,7 +18,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_dir: str | None = None
     megatron_path: str = "/root/Megatron-LM"
 
-    # Disaggregated split on one node.
     num_gpus_per_node: int = 8
     actor_num_gpus: int = 4
     rollout_num_gpus: int = 4

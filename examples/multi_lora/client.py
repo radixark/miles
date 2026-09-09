@@ -1,17 +1,4 @@
-"""Marker-memorization smoke client for the Tinker gateway.
-
-Each client is its own tenant (distinct api_key): it trains a LoRA adapter to
-memorize a private marker phrase, then samples greedily and checks the model
-completes with its marker. In multi mode all clients train concurrently on the
-same prompt with different markers, so a passing run demonstrates adapter
-isolation end to end.
-
-Needs only the official SDK: ``pip install tinker``.
-
-Usage:
-  python examples/multi_lora/client.py --base-model /root/models/Qwen3-30B-A3B --mode single
-  python examples/multi_lora/client.py --base-model /root/models/Qwen3-30B-A3B --mode multi --clients 4
-"""
+"""Check marker memorization and concurrent adapter isolation through the Tinker SDK."""
 
 import argparse
 import asyncio
