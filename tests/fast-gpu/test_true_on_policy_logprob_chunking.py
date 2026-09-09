@@ -144,6 +144,106 @@ def _correctness_worker(rank: int, world_size: int, port: int) -> None:
         dist.destroy_process_group()
 
 
+def _values_and_separate_gradients(
+    logits: torch.Tensor, log_probs: torch.Tensor, entropy: torch.Tensor, weights: torch.Tensor
+) -> dict[str, torch.Tensor]:
+    (log_prob_gradient,) = torch.autograd.grad(log_probs, logits, grad_outputs=weights, retain_graph=True)
+    (entropy_gradient,) = torch.autograd.grad(entropy, logits, grad_outputs=weights)
+    return {
+        "log_probs": log_probs.detach(),
+        "entropy": entropy.detach(),
+        "log_prob_gradient": log_prob_gradient,
+        "entropy_gradient": entropy_gradient,
+    }
+
+
+def _reduction_error(actual: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+    delta = (actual.double() - reference.double()).reshape(actual.shape[0], -1)
+    reference = reference.double().reshape(actual.shape[0], -1)
+    # Row-wise L2 avoids dividing each near-zero vocabulary gradient by itself.
+    relative_l2 = delta.norm(dim=-1) / reference.norm(dim=-1).clamp_min(torch.finfo(torch.float64).tiny)
+    return torch.stack((delta.abs().max(), relative_l2.max()))
+
+
+def _assert_low_precision_reductions(rank: int, device: torch.device, dtype: torch.dtype, masked: bool) -> None:
+    rows = 17
+    real_vocab_size = _MEMORY_REAL_VOCAB_SIZE
+    local_vocab_size = _MEMORY_LOCAL_PADDED_VOCAB_SIZE
+    generator = torch.Generator(device=device).manual_seed(2825)
+    row_ids = torch.arange(rows, device=device)
+    vocab_ids = torch.arange(local_vocab_size * _WORLD_SIZE, device=device)
+    scales = torch.linspace(2.0, 6.0, rows, device=device).unsqueeze(-1)
+    full_logits = (torch.randn(rows, vocab_ids.numel(), generator=generator, device=device) * scales).to(dtype)
+    full_logits[:, real_vocab_size:] = 100
+    tokens = (row_ids * 104729 + 17) % real_vocab_size
+    weights = ((row_ids % 4 + 1) / 4 * torch.where(row_ids % 2 == 0, 1, -1)).to(dtype)
+    full_mask = None
+    if masked:
+        full_mask = (vocab_ids.unsqueeze(0) + row_ids.unsqueeze(-1)) % 3 != 0
+        full_mask[row_ids, tokens] = True
+
+    # Promote the same quantized inputs, so this measures arithmetic, not input quantization.
+    reference_logits = full_logits.double().requires_grad_(True)
+    real_logits = reference_logits[:, :real_vocab_size]
+    scoring_logits = (
+        real_logits if full_mask is None else real_logits.masked_fill(~full_mask[:, :real_vocab_size], -torch.inf)
+    )
+    reference_log_probs = scoring_logits.log_softmax(dim=-1).gather(-1, tokens.unsqueeze(-1)).squeeze(-1)
+    reference_full_log_probs = real_logits.log_softmax(dim=-1)
+    reference_entropy = -(reference_full_log_probs.exp() * reference_full_log_probs).sum(dim=-1)
+    reference = _values_and_separate_gradients(
+        reference_logits, reference_log_probs, reference_entropy, weights.double()
+    )
+    shard = slice(rank * local_vocab_size, (rank + 1) * local_vocab_size)
+    for name in ("log_prob_gradient", "entropy_gradient"):
+        reference[name] = reference[name][:, shard]
+
+    baseline = None
+    for chunk_size in (-1, 1, 4):
+        local_logits = full_logits[:, shard].clone().requires_grad_(True)
+        log_probs, entropy = calculate_log_probs_and_entropy(
+            local_logits,
+            tokens,
+            dist.group.WORLD,
+            with_entropy=True,
+            entropy_requires_grad=True,
+            chunk_size=chunk_size,
+            true_on_policy=True,
+            vocab_size=real_vocab_size,
+            sampling_mask=None if full_mask is None else full_mask[:, shard],
+            temperature=1.0,
+        )
+        actual = _values_and_separate_gradients(local_logits, log_probs, entropy, weights)
+        if baseline is None:
+            baseline = actual
+        for name, value in actual.items():
+            errors = torch.stack((_reduction_error(value, baseline[name]), _reduction_error(value, reference[name])))
+            dist.all_reduce(errors, op=dist.ReduceOp.MAX)
+            if rank == 0:
+                print(
+                    f"TP2 reduction_error dtype={dtype} masked={masked} chunk_size={chunk_size} quantity={name} "
+                    f"vs_unchunked(max_abs={errors[0, 0].item():.8e}, max_row_rel_l2={errors[0, 1].item():.8e}) "
+                    f"vs_fp64(max_abs={errors[1, 0].item():.8e}, max_row_rel_l2={errors[1, 1].item():.8e})",
+                    flush=True,
+                )
+            assert torch.isfinite(value).all(), (dtype, masked, chunk_size, name)
+            # FP64 errors characterize the existing dtype path; chunking must add none.
+            torch.testing.assert_close(value, baseline[name], rtol=0, atol=0)
+            if name.endswith("gradient") and rank == _WORLD_SIZE - 1:
+                assert torch.count_nonzero(value[:, real_vocab_size - rank * local_vocab_size :]).item() == 0
+
+
+def _low_precision_worker(rank: int, world_size: int, port: int) -> None:
+    device = _init_worker(rank, world_size, port)
+    try:
+        for dtype in (torch.bfloat16, torch.float16):
+            for masked in (False, True):
+                _assert_low_precision_reductions(rank, device, dtype, masked)
+        dist.barrier()
+    finally:
+        dist.destroy_process_group()
+
+
 def _memory_args(chunk_size: int, vocab_size: int) -> Namespace:
     return Namespace(
         qkv_format="thd",
@@ -279,6 +379,12 @@ def test_true_on_policy_chunking_tp2_correctness_and_gradients() -> None:
     mp.spawn(_correctness_worker, args=(_WORLD_SIZE, _free_port()), nprocs=_WORLD_SIZE, join=True)
 
 
+def test_true_on_policy_chunking_tp2_low_precision_reduction_errors() -> None:
+    if torch.cuda.device_count() < _WORLD_SIZE:
+        raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
+    mp.spawn(_low_precision_worker, args=(_WORLD_SIZE, _free_port()), nprocs=_WORLD_SIZE, join=True)
+
+
 def test_true_on_policy_chunking_reduces_8192_row_peak_memory() -> None:
     if torch.cuda.device_count() < _WORLD_SIZE:
         raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
@@ -286,4 +392,4 @@ def test_true_on_policy_chunking_reduces_8192_row_peak_memory() -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
+    sys.exit(pytest.main([__file__, "-v", "-s"]))
