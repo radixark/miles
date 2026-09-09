@@ -6,6 +6,20 @@ miles (trainer batches). Each foreign language lives only at its boundary.
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class CommandOp(str, Enum):
+    FORWARD_BACKWARD = "forward_backward"
+    FORWARD_ONLY = "forward_only"
+    OPTIM_STEP = "optim_step"
+    SAVE_STATE = "save_state"
+    LOAD_STATE = "load_state"
+    SAVE_WEIGHTS_FOR_SAMPLER = "save_weights_for_sampler"
+
+    def is_batch(self) -> bool:
+        """Batch ops pack into BatchUnits; every other op is a barrier."""
+        return self in (CommandOp.FORWARD_BACKWARD, CommandOp.FORWARD_ONLY)
 
 
 class UserInputError(Exception):
@@ -26,14 +40,14 @@ class GatewayConfig:
     max_tokens_per_request: int = 4_000_000
     lora_alpha: float | None = None  # None: 2 * rank
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
-    batch_token_budget: int = 262_144  # packing bound per BatchOp
+    batch_token_budget: int = 262_144  # packing bound per BatchUnit
 
 
 @dataclass
 class Command:
     model_id: str
     seq_id: int
-    op: str
+    op: CommandOp
     payload: dict
     request_id: str
     arrival: int  # global submit order, the planner's FCFS key
