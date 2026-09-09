@@ -28,7 +28,7 @@ def _submit_optim(stream: ModelStream, seq_id: int, arrival: int):
     stream.submit(command(stream.model_id, seq_id, "optim_step", payload, arrival))
 
 
-def test_same_pack_key_rows_pack_across_streams():
+def test_same_pack_key_datums_pack_across_streams():
     planner, (a, b) = _planner_with_streams(2)
     _submit_fb(a, 1, arrival=1, datums=[datum(), datum()])
     _submit_fb(b, 1, arrival=2, datums=[datum()])
@@ -39,7 +39,7 @@ def test_same_pack_key_rows_pack_across_streams():
     assert {ref.stream.model_id for ref in unit.datums} == {"model-0", "model-1"}
 
 
-def test_different_loss_config_does_not_pack():
+def test_different_loss_functions_do_not_pack():
     planner, (a, b) = _planner_with_streams(2)
     _submit_fb(a, 1, arrival=1, datums=[datum()], loss_fn="cross_entropy")
     _submit_fb(b, 1, arrival=2, datums=[datum()], loss_fn="ppo")
@@ -88,7 +88,7 @@ def test_optim_barriers_merge_and_save_does_not():
     assert len(save.entries) == 1
 
 
-def test_issued_rows_are_not_reissued():
+def test_issued_datums_are_not_reissued():
     planner, (a,) = _planner_with_streams(1)
     _submit_fb(a, 1, arrival=1, datums=[datum()])
 

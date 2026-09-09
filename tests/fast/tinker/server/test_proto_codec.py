@@ -35,7 +35,7 @@ def _sdk_request(loss_fn_inputs: dict) -> bytes:
     return forward_backward_request_to_proto(request).SerializeToString()
 
 
-def test_an_sdk_proto_request_decodes_to_internal_rows():
+def test_an_sdk_proto_request_decodes_to_internal_datums():
     op, decoded = decode_forward_backward_request(_sdk_request({"weights": [1.0, 0.0, 1.0, 1.0]}))
 
     assert (op, decoded["model_id"], decoded["seq_id"]) == ("forward_backward", "model-x", 7)
@@ -43,8 +43,8 @@ def test_an_sdk_proto_request_decodes_to_internal_rows():
     assert decoded["datums"] == [{"tokens": TOKENS, "target_len": 4, "weights": [1.0, 0.0, 1.0, 1.0]}]
 
 
-def test_both_wire_halves_produce_the_same_rows():
-    proto_rows = decode_forward_backward_request(_sdk_request({"weights": [1.0, 1.0, 1.0, 1.0]}))[1]["datums"]
+def test_both_wire_halves_produce_the_same_datums():
+    proto_datums = decode_forward_backward_request(_sdk_request({"weights": [1.0, 1.0, 1.0, 1.0]}))[1]["datums"]
     _, json_decoded = decode_command(
         "forward_backward",
         {
@@ -61,7 +61,7 @@ def test_both_wire_halves_produce_the_same_rows():
             },
         },
     )
-    assert proto_rows == json_decoded["datums"]
+    assert proto_datums == json_decoded["datums"]
 
 
 def test_a_sparse_tensor_decodes_dense():
