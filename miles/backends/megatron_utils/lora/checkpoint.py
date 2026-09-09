@@ -16,15 +16,9 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer import MegatronOptimizer
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.distributed_utils import get_gloo_group
 
 from .optimizer import _slot_children
 from .slots import adapter_shard_topology, megatron_shard_name
-
-
-def _barrier() -> None:
-    if dist.is_initialized():
-        dist.barrier(group=get_gloo_group())
 
 
 def _rank() -> int:
@@ -52,45 +46,72 @@ def save_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
     is_shard_writer, _ = adapter_shard_topology()
     final_dir = Path(path)
     tmp_dir = final_dir.parent / f"_tmp_{final_dir.name}"
-    if _rank() == 0:
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-    _barrier()
 
-    if is_shard_writer:
-        with expose_adapter_slot(model, slot):
-            shard = {
-                name: param.data.cpu()
-                for model_chunk in model
-                for name, param in model_chunk.named_parameters()
-                if ".adapter." in name
-            }
-        assert shard, f"slot {slot} exposed no adapter tensors"
-        torch.save(shard, tmp_dir / _weight_shard_name())
-    torch.save(_optimizer_slot_state(optimizer, slot), tmp_dir / _optim_shard_name())
-    _barrier()
+    def make_tmp_dir():
+        if _rank() == 0:
+            tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    # write-then-rename so readers never see a partial checkpoint
-    if _rank() == 0:
-        if final_dir.exists():
-            shutil.rmtree(final_dir)
-        os.replace(tmp_dir, final_dir)
-    _barrier()
+    def write_shards():
+        if is_shard_writer:
+            with expose_adapter_slot(model, slot):
+                shard = {
+                    name: param.data.cpu()
+                    for model_chunk in model
+                    for name, param in model_chunk.named_parameters()
+                    if ".adapter." in name
+                }
+            assert shard, f"slot {slot} exposed no adapter tensors"
+            torch.save(shard, tmp_dir / _weight_shard_name())
+        torch.save(_optimizer_slot_state(optimizer, slot), tmp_dir / _optim_shard_name())
+
+    def publish_dir():
+        # write-then-rename so readers never see a partial checkpoint
+        if _rank() == 0:
+            if final_dir.exists():
+                shutil.rmtree(final_dir)
+            os.replace(tmp_dir, final_dir)
+
+    _run_on_every_rank(make_tmp_dir)
+    _run_on_every_rank(write_shards)
+    _run_on_every_rank(publish_dir)
 
 
 def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, path: str, load_optimizer: bool) -> None:
     from megatron.bridge.peft.multi_lora_layers import load_adapter
 
     checkpoint_dir = Path(path)
-    state_dict = torch.load(checkpoint_dir / _weight_shard_name(), map_location="cpu", weights_only=True)
-    loaded = load_adapter(model, slot, state_dict)
-    assert loaded > 0, f"loaded 0 adapter tensors from {checkpoint_dir / _weight_shard_name()}"
-    optimizer.reload_model_params()
 
-    if load_optimizer:
-        optim_state = torch.load(checkpoint_dir / _optim_shard_name(), map_location="cpu", weights_only=True)
-        _load_optimizer_slot_state(optimizer, slot, optim_state)
-    # weights-only load keeps the fresh Adam state the slot init just zeroed
-    _barrier()
+    def load_shards():
+        state_dict = torch.load(checkpoint_dir / _weight_shard_name(), map_location="cpu", weights_only=True)
+        loaded = load_adapter(model, slot, state_dict)
+        assert loaded > 0, f"loaded 0 adapter tensors from {checkpoint_dir / _weight_shard_name()}"
+        optimizer.reload_model_params()
+        if load_optimizer:
+            optim_state = torch.load(checkpoint_dir / _optim_shard_name(), map_location="cpu", weights_only=True)
+            _load_optimizer_slot_state(optimizer, slot, optim_state)
+        # weights-only load keeps the fresh Adam state the slot init just zeroed
+
+    _run_on_every_rank(load_shards)
+
+
+def _run_on_every_rank(operation) -> None:
+    """Run one checkpoint phase, then meet at a barrier that carries every
+    rank's outcome: a disk error on any rank raises on all of them instead of
+    stranding the others."""
+    error = None
+    try:
+        operation()
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+    if not dist.is_initialized():
+        if error is not None:
+            raise RuntimeError(error)
+        return
+    errors = [None] * _world_size()
+    dist.all_gather_object(errors, error)
+    failed = [e for e in errors if e is not None]
+    if failed:
+        raise RuntimeError(f"slot checkpoint failed on {len(failed)} rank(s): {failed[0]}")
 
 
 def _optimizer_slot_state(optimizer: MegatronOptimizer, slot: int) -> dict:
