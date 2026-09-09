@@ -9,8 +9,11 @@ see a single totally ordered stream of batches and barriers.
 
 import asyncio
 import logging
+import os
+import re
 import time
 import uuid
+from pathlib import Path
 
 from miles.tinker.core.future import PENDING, Future, FutureStore
 from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
@@ -42,7 +45,13 @@ class ExecutorBackend:
     async def forward_only(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
         raise NotImplementedError
 
-    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, float]:
+    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
+        """-> per-slot outcome: {"grad_norm": x} stepped, {"skipped_nonfinite": 1.0}
+        dropped non-finite grads, {"error": msg} failed."""
+        raise NotImplementedError
+
+    async def zero_grads(self, slot: int) -> None:
+        """Drop the slot's accumulated gradients."""
         raise NotImplementedError
 
     async def save_slot(self, slot: int, path: str) -> None:
@@ -161,7 +170,15 @@ class TinkerService:
         # idempotency: the SDK resends the same seq_id after timeouts/410;
         # re-executing forward_backward would double-accumulate gradients
         if seq_id in stream.request_id_by_seq:
-            return stream.request_id_by_seq[seq_id]
+            request_id = stream.request_id_by_seq[seq_id]
+            if self.futures.get(request_id, tenant) is not None:
+                return request_id
+            # the result aged out of retention; the command already executed, so
+            # re-running it is unsafe — answer with a terminal failure instead of 410 forever
+            replacement = self.futures.create(model_id, tenant)
+            self.futures.fail(replacement.request_id, "result expired after retention", "user")
+            stream.request_id_by_seq[seq_id] = replacement.request_id
+            return replacement.request_id
 
         future = self.futures.create(model_id, tenant)
         stream.request_id_by_seq[seq_id] = future.request_id
@@ -231,6 +248,11 @@ class TinkerService:
             if session["tenant"] != tenant:
                 raise OwnershipError("sampling session does not belong to this tenant")
             model_path = model_path or session["model_path"]
+        if payload.get("num_samples", 1) > self.config.max_samples_per_request:
+            raise UserInputError(
+                f"num_samples {payload['num_samples']} exceeds max_samples_per_request="
+                f"{self.config.max_samples_per_request}"
+            )
         lora_name, lora_path = self._resolve_sampler(tenant, model_path) if model_path else (None, None)
         future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
@@ -336,11 +358,11 @@ class TinkerService:
         try:
             outputs = await run(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
         except UserInputError as error:
-            self._fail_batch_requests(refs, str(error), "user")
+            await self._discard_windows(batch, str(error), "user")
             return
-        except Exception as error:  # noqa: BLE001  infra failure: fail the riders, keep serving
+        except Exception as error:  # noqa: BLE001  infra failure: fail the affected windows, keep serving
             logger.exception(f"{batch.op} batch {self._batch_counter} failed")
-            self._fail_batch_requests(refs, f"{type(error).__name__}: {error}", "server")
+            await self._discard_windows(batch, f"{type(error).__name__}: {error}", "server")
             return
 
         assert len(outputs) == len(refs), f"unit returned {len(outputs)} outputs for {len(refs)} datums"
@@ -352,14 +374,19 @@ class TinkerService:
                 )
                 ref.stream.finish(request)
 
-    def _fail_batch_requests(self, refs, error: str, category: str) -> None:
-        seen: set[int] = set()
-        for ref in refs:
-            if id(ref.request) in seen:
-                continue
-            seen.add(id(ref.request))
-            self.futures.fail(ref.request.command.request_id, error, category)
-            ref.stream.finish(ref.request)
+    async def _discard_windows(self, batch: BatchUnit, error: str, category: str) -> None:
+        """A failed batch poisons the gradient accumulation of every slot it
+        touched, and that accumulation is shared with the other requests of the
+        same window — so the whole open window of each affected stream fails
+        and its slot's gradients are dropped."""
+        streams = {ref.stream for ref in batch.datums}
+        for stream in streams:
+            for pending in list(stream.open_batch_run()):
+                self.futures.fail(pending.command.request_id, error, category)
+                stream.finish(pending)
+        if batch.op == CommandOp.FORWARD_BACKWARD:
+            for slot in sorted({stream.slot for stream in streams}):
+                await self.backend.zero_grads(slot)
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
@@ -371,6 +398,8 @@ class TinkerService:
             logger.exception(f"{barrier.op} barrier failed")
             self._fail_barrier(barrier, f"{type(error).__name__}: {error}", "server")
             return
+        if results is None:
+            return
         for (stream, pending), result in zip(barrier.entries, results, strict=True):
             self.futures.resolve(pending.command.request_id, result)
             stream.finish(pending)
@@ -380,9 +409,10 @@ class TinkerService:
             self.futures.fail(pending.command.request_id, error, category)
             stream.finish(pending)
 
-    async def _execute_barrier(self, barrier: BarrierUnit) -> list[dict]:
+    async def _execute_barrier(self, barrier: BarrierUnit) -> list[dict] | None:
         if barrier.op == CommandOp.OPTIM_STEP:
-            return await self._step_optimizers(barrier.entries)
+            await self._step_optimizers(barrier.entries)
+            return None  # settled per slot
         ((stream, pending),) = barrier.entries  # every other barrier is single-entry
         record = self.models[stream.model_id]
         payload = pending.command.payload
