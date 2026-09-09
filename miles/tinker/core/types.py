@@ -80,9 +80,7 @@ class ModelRecord:
     base_model: str
     lora_rank: int
     lora_alpha: float
-    session_id: str
     # The mint counter: a failed publication burns its number, never reuses it,
     # so published_sampler_versions can have gaps.
     next_sampler_version: int = 1
     published_sampler_versions: set[int] = field(default_factory=set)
-    user_metadata: dict = field(default_factory=dict)
