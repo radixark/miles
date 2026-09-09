@@ -422,8 +422,7 @@ class TrainerController:
 
     @asynccontextmanager
     async def _updatable_engines(self):
-        """end_update_weights must run even when the slot command fails: the
-        inference controller's context lock is held until it does."""
+        """Release the inference controller's update lock even when the slot command fails."""
         info = await self._inference_controller.start_update_weights()
         try:
             yield info

@@ -1,5 +1,4 @@
-"""Versioned adapter pushes run as staged sessions: no pause frame, no weight
-version, commit gated on the expected checksums and the deferred-publish ack."""
+"""Staged adapter pushes require deferred publication and checksums without pausing generation."""
 
 from types import SimpleNamespace
 from unittest.mock import patch
