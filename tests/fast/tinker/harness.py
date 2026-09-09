@@ -116,7 +116,9 @@ def command(model_id: str, seq_id: int, op: str, payload: dict, arrival: int) ->
 
 
 async def created_model(service: TinkerService, tenant: str = "tenant") -> str:
-    request_id, model_id = service.create_model(tenant, {"base_model": service.config.base_model, "lora_config": {"rank": 8}})
+    request_id, model_id = service.create_model(
+        tenant, {"base_model": service.config.base_model, "lora_config": {"rank": 8}}
+    )
     future = await await_settled(service, tenant, request_id)
     assert future.state == DONE, future.error
     return model_id
