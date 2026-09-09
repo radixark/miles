@@ -184,9 +184,7 @@ class WeightUpdater:
 
     @torch.no_grad()
     def export_adapter(self, adapter, out_dir: str) -> None:
-        """Write one adapter as an engine-loadable dir, named like the streamed
-        tensors so disk load and streamed apply feed the engine identically.
-        Collective: every rank must call; rank 0 writes."""
+        """Export an engine-loadable adapter directory collectively; rank 0 writes."""
         should_save_adapter = dist.get_rank() == 0
         assert (
             self._hf_weight_iterator.placement.is_full_gather
