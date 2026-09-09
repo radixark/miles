@@ -1,5 +1,4 @@
-"""TinkerService over a FakeBackend: the protocol properties end to end —
-idempotent resubmit, two-phase create, barrier ordering, lease reclamation."""
+"""The service preserves request ordering, tenant isolation, and failure recovery."""
 
 import asyncio
 
@@ -154,9 +153,8 @@ async def test_sampling_resolves_against_the_pushed_version(service):
     assert service.backend.named("sample")[0]["lora_name"] == f"{model_id}@1"
 
 
-async def test_sampler_publication_commits_on_disk_and_rides_requests(service):
-    """The adapter export is the commit point; the push and every sample request
-    carry the dir so the engine can backfill the version from disk."""
+async def test_sampler_requests_carry_the_published_checkpoint_path(service):
+    """Push and sample requests must carry the export path for engine backfill."""
     model_id = await created_model(service)
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     path = (await await_settled(service, "tenant", request_id)).result["path"]
@@ -181,8 +179,7 @@ async def test_sampler_publication_commits_on_disk_and_rides_requests(service):
 
 
 async def test_warm_push_failure_still_publishes_the_version(service):
-    """The engine push only warms the cache: with the export on disk the
-    version exists, and sample requests backfill it from the carried path."""
+    """A failed warm push must not invalidate an exported sampler version."""
     model_id = await created_model(service)
     service.backend.fail_on["push_slot"] = RuntimeError("engine down")
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
@@ -205,9 +202,7 @@ async def test_warm_push_failure_still_publishes_the_version(service):
 
 
 async def test_failed_export_burns_the_version_number(service):
-    """A failed export leaves no version behind: the number is burned, the
-    next save publishes under the next one, and sampling the burned number is
-    a user error."""
+    """A failed export must leave its version unpublished and never reuse its number."""
     model_id = await created_model(service)
     service.backend.fail_on["export_slot"] = RuntimeError("disk full")
     failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
