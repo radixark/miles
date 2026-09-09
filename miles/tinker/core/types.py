@@ -38,6 +38,7 @@ class GatewayConfig:
     max_datums_per_request: int = 1024
     max_tokens_per_datum: int = 32768
     max_tokens_per_request: int = 4_000_000
+    max_samples_per_request: int = 64
     lora_alpha: float | None = None  # None: 2 * rank
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
     batch_token_budget: int = 262_144  # packing bound per BatchUnit
