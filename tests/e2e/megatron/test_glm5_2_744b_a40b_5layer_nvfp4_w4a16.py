@@ -249,7 +249,10 @@ def execute():
         "--use-fault-tolerance "
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
-        f"--dump-details /root/shared_data/{RUN_ID}/dump_details "
+        # Event logging requests weight checksums that SGLang does not support for NVFP4.
+        f"--save-debug-rollout-data /root/shared_data/{RUN_ID}/dump_details/rollout_data/{{rollout_id}}.pt "
+        f"--save-debug-train-data /root/shared_data/{RUN_ID}/dump_details/train_data/{{rollout_id}}_{{rank}}.pt "
+        f"--save-debug-trajectory-data /root/shared_data/{RUN_ID}/dump_details/trajectory/{{rollout_id}}.jsonl "
     )
 
     train_args = (
