@@ -1,14 +1,103 @@
-"""Engine-side RPCs for a weight-update session.
+"""The trainer's end of an engine weight-update session.
 
-The session frame is: pause -> begin -> (transfer) -> set version -> end ->
-resume. Callers run these on one rank (typically global rank 0) themselves.
+``EngineWeightUpdateSession`` owns the frame: pause -> register -> begin on
+entry, end -> set version -> resume on ``commit``, engine-side abort when a
+staged scope fails. The module functions below are the RPC verbs it drives.
 """
 
+import logging
 from argparse import Namespace
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+
+import torch.distributed as dist
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils import async_utils
+from miles.utils.distributed_utils import get_gloo_group
+
+logger = logging.getLogger(__name__)
+
+
+class EngineWeightUpdateSession:
+    """Collective on every training rank: engine RPCs run on rank 0 and their
+    outcome is broadcast, so a refused call fails every rank together instead
+    of stranding the collectives ahead. A staged session (fresh adapter names,
+    no readers) skips the pause frame and discards the engine-side stash when
+    the scope fails; the success path must call ``commit``."""
+
+    def __init__(
+        self,
+        protocol,
+        args: Namespace,
+        *,
+        staged: bool,
+        sync_base: bool,
+        selector: str,
+        registrations: Sequence[tuple[str, Mapping]] = (),
+        lora_path: str | None = None,
+    ) -> None:
+        self._protocol = protocol
+        self._args = args
+        self._staged = staged
+        self._sync_base = sync_base
+        self._selector = selector
+        self._registrations = registrations
+        self._lora_path = lora_path
+        self._committed = False
+
+    def __enter__(self) -> "EngineWeightUpdateSession":
+        self._rpcs_from_rank0(self._open)
+        return self
+
+    def commit(self, expected_lora_checksums: Mapping | None, weight_version: int | None) -> None:
+        self._rpcs_from_rank0(lambda: self._close(expected_lora_checksums, weight_version))
+        self._committed = True
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if exc_type is None:
+            assert self._committed, "the session scope exited without commit()"
+            return
+        if self._staged and dist.get_rank() == 0:
+            try:
+                end_weight_update(self._protocol.rollout_engines, abort=True)
+            except Exception:
+                # the abort usually shares the failure's root cause; it must not mask it
+                logger.exception("Failed to discard the staged adapter session")
+
+    def _open(self) -> None:
+        engines = self._protocol.rollout_engines
+        if not self._staged:
+            pause_engines(self._args, engines)
+        # eager registration: the engine validates the rank before any bytes move
+        for lora_name, lora_config in self._registrations:
+            register_lora_adapter(
+                engines,
+                lora_name=lora_name,
+                lora_config=lora_config,
+                lora_path=self._lora_path,
+                defer_publish=self._staged,
+            )
+        begin_weight_update(engines, self._selector, sync_base=self._sync_base)
+
+    def _close(self, checksums: Mapping | None, weight_version: int | None) -> None:
+        engines = self._protocol.rollout_engines
+        end_weight_update(engines, expected_lora_checksums=checksums)
+        if weight_version is not None:
+            set_weight_version(engines, weight_version)
+        if not self._staged:
+            resume_engines(engines)
+
+    def _rpcs_from_rank0(self, rpcs: Callable[[], None]) -> None:
+        failure = [None]
+        if self._protocol.use_weight_update_session and dist.get_rank() == 0:
+            try:
+                rpcs()
+            except Exception as exc:
+                logger.exception("engine weight-update RPCs failed")
+                failure[0] = f"{type(exc).__name__}: {exc}"
+        dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
+        if failure[0] is not None:
+            raise RuntimeError(f"engine weight-update RPCs failed: {failure[0]}")
 
 
 def pause_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClient]) -> None:
