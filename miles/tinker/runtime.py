@@ -9,7 +9,6 @@ place allowed to import miles.ray / miles.backends.
 
 import asyncio
 import uuid
-from argparse import Namespace
 
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.service import ExecutorBackend
@@ -22,8 +21,7 @@ ROW_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sam
 
 
 class MilesBackend(ExecutorBackend):
-    def __init__(self, args: Namespace, trainer, router_url: str) -> None:
-        self.args = args
+    def __init__(self, trainer, router_url: str) -> None:
         self.trainer = trainer
         self.router_url = router_url
 
