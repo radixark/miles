@@ -12,7 +12,7 @@ Usage:
   python examples/multi_lora/run_gateway.py serve     # gateway on :10613
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import typer
 
@@ -23,11 +23,11 @@ app = typer.Typer()
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+    run_id: str = field(default_factory=U.create_run_id)
 
     hf_checkpoint: str | None = None
     model_dir: str = "/root/models"
-    save_dir: str = "/personal/checkpoints"
+    save_dir: str | None = None
     megatron_path: str = "/root/Megatron-LM"
 
     # Disaggregated split on one node.
@@ -50,6 +50,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
 
     def __post_init__(self):
+        if self.save_dir is None:
+            self.save_dir = f"{self.output_dir}/checkpoints"
         if self.hf_checkpoint is None:
             self.hf_checkpoint = f"{self.model_dir}/Qwen3-30B-A3B"
 
