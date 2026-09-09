@@ -201,8 +201,11 @@ def _install_mamba_model_loss_mask_shim() -> None:
         # process_mtp_loss expects next-token-shifted labels; miles passes raw tokens.
         mtp_labels = (mtp_kwargs or {}).get("mtp_labels")
         if mtp_labels is not None:
-            mtp_labels = torch.roll(mtp_labels, shifts=-1, dims=-1)
-        return _orig_forward(self, *args, loss_mask=loss_mask, mtp_labels=mtp_labels, **kwargs)
+            # Only forward the kwarg when MTP is live: HybridModel.forward (what
+            # this Megatron builds for nemotron_h) has no mtp_labels parameter,
+            # so passing even None is a TypeError.
+            kwargs["mtp_labels"] = torch.roll(mtp_labels, shifts=-1, dims=-1)
+        return _orig_forward(self, *args, loss_mask=loss_mask, **kwargs)
 
     MambaModel.forward = forward
     MambaModel._miles_loss_mask_shim_installed = True
