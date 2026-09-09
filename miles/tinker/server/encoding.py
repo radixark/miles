@@ -22,8 +22,6 @@ ADAM_PARAM_DEFAULTS = {
     "grad_clip_norm": 0.0,
 }
 
-INPUT_ROW_KEYS = LOSS_INPUT_KEYS
-
 
 def decode_command(op: str, payload: dict) -> tuple[str, dict]:
     """One JSON command body -> (op, internal payload)."""
@@ -79,7 +77,7 @@ def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) ->
             f"datum {index}: target_tokens must be model_input shifted by one (next-token supervision)"
         )
     datum = {"tokens": input_tokens + targets[-1:], "target_len": len(targets)}
-    for wire_key, datum_key in INPUT_ROW_KEYS.items():
+    for wire_key, datum_key in LOSS_INPUT_KEYS.items():
         if wire_key in inputs:
             datum[datum_key] = [float(value) for value in inputs[wire_key]]
     return datum

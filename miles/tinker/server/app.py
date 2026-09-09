@@ -115,7 +115,7 @@ def build_app(service: TinkerService) -> FastAPI:
 
     for route, route_op in COMMAND_ROUTES.items():
 
-        def _make(route_op: str):
+        def _command_handler(route_op: str):
             async def command(request: Request):
                 op, payload = decode_command(route_op, await request.json())
                 request_id = service.submit(_tenant(request), op, payload)
@@ -123,7 +123,7 @@ def build_app(service: TinkerService) -> FastAPI:
 
             return command
 
-        app.post(route)(_make(route_op))
+        app.post(route)(_command_handler(route_op))
 
     @app.post("/api/v1/weights_info")
     async def weights_info(request: Request):

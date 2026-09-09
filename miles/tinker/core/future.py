@@ -67,9 +67,9 @@ class FutureStore:
     def _sweep(self) -> None:
         now = time.monotonic()
         expired = [
-            rid
-            for rid, p in self._futures.items()
-            if p.finished_at is not None and now - p.finished_at > _FINISHED_TTL_S
+            request_id
+            for request_id, future in self._futures.items()
+            if future.finished_at is not None and now - future.finished_at > _FINISHED_TTL_S
         ]
-        for rid in expired:
-            del self._futures[rid]
+        for request_id in expired:
+            del self._futures[request_id]
