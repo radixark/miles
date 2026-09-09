@@ -361,7 +361,10 @@ def _train(args: ScriptArgs):
     if args.is_mm:
         # The mm provider wires the frozen HF vision/audio towers; it overrides the
         # text provider from the model sh (MODEL_ARGS precede train_args; last one wins).
-        inkling_args = "--custom-model-provider-path miles_plugins.models.inkling.model.inkling_mm_model_provider "
+        inkling_args = (
+            "--custom-model-provider-path miles_plugins.models.inkling.model.inkling_mm_model_provider "
+            "--mm-tower-sync visual audio "
+        )
 
     misc_args = (
         "--transformer-impl transformer_engine "
