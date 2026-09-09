@@ -2,17 +2,21 @@
 requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
 
 import logging
+import math
 from argparse import Namespace
 from collections.abc import Sequence
 from contextlib import contextmanager
 
 import torch
+import torch.distributed as dist
 from megatron.core.optimizer import get_megatron_optimizer
 from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32, get_grad_norm_fp32
 from megatron.core.optimizer.layer_wise_optimizer import LayerWiseDistributedOptimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer.optimizer_config import OptimizerConfig
 from megatron.core.process_groups_config import ProcessGroupCollection
+
+from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
 
@@ -160,37 +164,71 @@ def step_adapter_slots(
     model,
     step_batch_sizes: dict[int, int],
     clip_grad: float,
-) -> dict[int, float]:
-    """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients;
-    scales each slot's accumulated grad sum by 1/batch_size and returns the grad norm per stepped slot."""
-    grad_norms: dict[int, float] = {}
+) -> dict[int, dict]:
+    """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients.
 
+    Returns one outcome per slot: ``{"grad_norm": x}`` for a completed step,
+    ``{"skipped_nonfinite": 1.0}`` when the grads were not finite, ``{"error":
+    msg}`` when the step raised. The slot's accumulated grads are consumed in
+    every case, and every branch is decided identically on every rank: the grad
+    norm is all-reduced, and rank-local errors are merged across ranks before
+    any collective depends on them.
+    """
+    outcomes: dict[int, dict] = {}
     for slot, batch_size in step_batch_sizes.items():
-        children = _slot_children(optimizer, slot)
-        # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the adapter-batch mean.
-        for child in children:
-            child.prepare_grads()
-            for main_param in child.get_parameters():
-                if main_param.grad is not None:
-                    main_param.grad.mul_(1.0 / batch_size)
-
-        # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
-        grads_for_norm = []
-        slot_params = []
-        for child in children:
-            grads_for_norm += child.get_grads_for_grad_norm()
-            slot_params += child.get_parameters()
-        slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
-        if clip_grad > 0.0 and slot_params:
-            clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
-        grad_norms[slot] = float(slot_norm)
-
-        for child in children:
-            child.step_with_ready_grads()
-
+        try:
+            outcomes[slot] = _step_one_slot(optimizer, model, slot, batch_size, clip_grad)
+        except Exception as error:  # noqa: BLE001  one slot's failure must not skip the others
+            logger.exception(f"optim step failed for slot {slot}")
+            outcomes[slot] = {"error": f"{type(error).__name__}: {error}"}
         zero_adapter_slot_grads(model, slot)
 
-    if step_batch_sizes:
+    outcomes = _merge_outcomes_across_ranks(outcomes)
+    if any("grad_norm" in outcome for outcome in outcomes.values()):
         optimizer.allgather_params()
+    return outcomes
 
-    return grad_norms
+
+def _step_one_slot(optimizer, model, slot: int, batch_size: int, clip_grad: float) -> dict:
+    children = _slot_children(optimizer, slot)
+    for child in children:
+        child.prepare_grads()
+
+    # Scale the accumulated grad sum to the adapter-batch mean.
+    for child in children:
+        for main_param in child.get_parameters():
+            if main_param.grad is not None:
+                main_param.grad.mul_(1.0 / batch_size)
+
+    # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
+    grads_for_norm = []
+    slot_params = []
+    for child in children:
+        grads_for_norm += child.get_grads_for_grad_norm()
+        slot_params += child.get_parameters()
+    slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
+    # BF16 runs carry no grad scaler, so prepare_grads() cannot flag inf/nan;
+    # the all-reduced norm is the finiteness check, identical on every rank.
+    if not math.isfinite(slot_norm):
+        return {"skipped_nonfinite": 1.0}
+    if clip_grad > 0.0 and slot_params:
+        clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
+
+    for child in children:
+        child.step_with_ready_grads()
+    return {"grad_norm": float(slot_norm)}
+
+
+def _merge_outcomes_across_ranks(outcomes: dict[int, dict]) -> dict[int, dict]:
+    """A rank-local failure must fail the slot on every rank, or the healthy
+    ranks would enter the parameter allgather without the failed one."""
+    if not dist.is_initialized():
+        return outcomes
+    per_rank: list[dict | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(per_rank, outcomes, group=get_gloo_group())
+    merged = dict(outcomes)
+    for rank_outcomes in per_rank:
+        for slot, outcome in rank_outcomes.items():
+            if "error" in outcome and "error" not in merged[slot]:
+                merged[slot] = outcome
+    return merged
