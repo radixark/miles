@@ -410,12 +410,19 @@ class TrainerController:
     async def save_slot(self, slot: int, path: str) -> None:
         await self._execute_slots("save_slot", slot=slot, path=path)
 
+    async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
+        await self._execute_slots("export_slot", slot=slot, rank=rank, alpha=alpha, path=path)
+
     async def unload_slot(self, slot: int) -> None:
         await self._execute_slots("unload_slot", slot=slot)
 
-    async def push_slot(self, slot: int, lora_name: str, rank: int, alpha: float) -> None:
+    async def push_slot(
+        self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
+    ) -> None:
         info = await self._inference_controller.start_update_weights()
-        await self._execute_slots("push_slot", info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha)
+        await self._execute_slots(
+            "push_slot", info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
+        )
         await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
     async def unload_adapter(self, lora_name: str) -> None:

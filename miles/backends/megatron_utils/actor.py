@@ -447,6 +447,13 @@ class MegatronTrainRayActor(TrainRayActor):
         lora_checkpoint.save_slot(self.model, self.optimizer, slot, path)
 
     @with_logs
+    def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
+        """Write the slot's adapter as an engine-loadable dir."""
+        assert self.args.multi_lora, "export_slot is a multi-LoRA slot command"
+        self._heartbeat.bump()
+        self.weight_updater.export_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path)
+
+    @with_logs
     def unload_slot(self, slot: int) -> None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
         lora_executor.unload_slot(self.model, self.optimizer, slot)
@@ -770,13 +777,21 @@ class MegatronTrainRayActor(TrainRayActor):
         dist.barrier(group=get_gloo_group())
 
     @with_logs
-    def push_slot(self, info: "UpdatableEngines", slot: int, lora_name: str, rank: int, alpha: float) -> None:
+    def push_slot(
+        self,
+        info: "UpdatableEngines",
+        slot: int,
+        lora_name: str,
+        rank: int,
+        alpha: float,
+        lora_path: str | None = None,
+    ) -> None:
         assert self.args.multi_lora, "push_slot is a multi-LoRA slot command"
         self._heartbeat.bump()
         self._ensure_engines_connected(
             info.rollout_engines, info.snapshot_cell_id_to_hashes, info.engine_gpu_counts, info.engine_gpu_offsets
         )
-        self.weight_updater.push_adapter(lora_name, AdapterSpec(slot=slot, rank=rank, alpha=alpha))
+        self.weight_updater.push_adapter(lora_name, AdapterSpec(slot=slot, rank=rank, alpha=alpha), lora_path)
 
     @with_logs
     def unload_adapter(self, info: "UpdatableEngines", lora_name: str) -> None:
