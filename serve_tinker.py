@@ -23,7 +23,6 @@ async def serve(args):
     assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
     configure_logger(args, source=MainProcessIdentity())
 
-    # no RolloutExecutor here; the gateway posts /generate itself
     init_http_client(args)
 
     _worker_manager = launch_worker_manager(args)
