@@ -177,7 +177,7 @@ def step_adapter_slots(
     outcomes: dict[int, dict] = {}
     for slot, batch_size in step_batch_sizes.items():
         try:
-            outcomes[slot] = _step_one_slot(optimizer, model, slot, batch_size, clip_grad)
+            outcomes[slot] = _step_one_slot(optimizer, slot, batch_size, clip_grad)
         except Exception as error:  # noqa: BLE001  one slot's failure must not skip the others
             logger.exception(f"optim step failed for slot {slot}")
             outcomes[slot] = {"error": f"{type(error).__name__}: {error}"}
@@ -189,7 +189,7 @@ def step_adapter_slots(
     return outcomes
 
 
-def _step_one_slot(optimizer, model, slot: int, batch_size: int, clip_grad: float) -> dict:
+def _step_one_slot(optimizer, slot: int, batch_size: int, clip_grad: float) -> dict:
     children = _slot_children(optimizer, slot)
     for child in children:
         child.prepare_grads()
