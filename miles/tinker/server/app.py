@@ -104,23 +104,23 @@ def build_app(service: TinkerService) -> FastAPI:
     async def forward_backward(request: Request, authorization: str | None = Header(default=None)):
         if PROTO_CONTENT_TYPE in request.headers.get("content-type", ""):
             body = maybe_decompress(await request.body(), request.headers.get("content-encoding"))
-            kind, payload = decode_forward_backward_request(body)
+            op, payload = decode_forward_backward_request(body)
         else:
-            kind, payload = decode_command("forward_backward", await request.json())
-        request_id = service.submit(_tenant(authorization), kind, payload)
+            op, payload = decode_command("forward_backward", await request.json())
+        request_id = service.submit(_tenant(authorization), op, payload)
         return {"request_id": request_id, "model_id": payload["model_id"]}
 
-    for route, route_kind in COMMAND_ROUTES.items():
+    for route, route_op in COMMAND_ROUTES.items():
 
-        def _make(route_kind: str):
+        def _make(route_op: str):
             async def command(request: Request, authorization: str | None = Header(default=None)):
-                kind, payload = decode_command(route_kind, await request.json())
-                request_id = service.submit(_tenant(authorization), kind, payload)
+                op, payload = decode_command(route_op, await request.json())
+                request_id = service.submit(_tenant(authorization), op, payload)
                 return {"request_id": request_id, "model_id": payload["model_id"]}
 
             return command
 
-        app.post(route)(_make(route_kind))
+        app.post(route)(_make(route_op))
 
     @app.post("/api/v1/retrieve_future")
     async def retrieve_future(request: Request, authorization: str | None = Header(default=None)):
@@ -132,7 +132,7 @@ def build_app(service: TinkerService) -> FastAPI:
             return {"type": "try_again", "queue_state": "active"}
         if promise.state == FAILED:
             return {"error": promise.error, "category": promise.error_category}
-        encoder = PROTO_ENCODERS.get(promise.result["kind"])
+        encoder = PROTO_ENCODERS.get(promise.result["op"])
         if encoder is not None and PROTO_CONTENT_TYPE in request.headers.get("accept", ""):
             return Response(content=encoder(promise.result), media_type=PROTO_CONTENT_TYPE)
         return render_result(promise.result)
