@@ -117,16 +117,23 @@ class WeightUpdater:
     ) -> None:
         protocol = self.protocol
         driver = dist.get_rank() == 0
+        # a driver-only failure here must fail every rank, not strand them at the sync point
+        prologue_failure = [None]
         if protocol.use_weight_update_session and driver:
-            if not staged:
-                pause_engines(self.args, protocol.rollout_engines)
-            self._register_new_lora_adapters(
-                protocol.rollout_engines, adapters, defer_publish=staged, lora_path=lora_path
-            )
-            begin_weight_update(
-                protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-            )
-        dist.barrier(group=get_gloo_group())
+            try:
+                if not staged:
+                    pause_engines(self.args, protocol.rollout_engines)
+                self._register_new_lora_adapters(
+                    protocol.rollout_engines, adapters, defer_publish=staged, lora_path=lora_path
+                )
+                begin_weight_update(
+                    protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
+                )
+            except Exception as exc:
+                prologue_failure[0] = f"{type(exc).__name__}: {exc}"
+        dist.broadcast_object_list(prologue_failure, src=0, group=get_gloo_group())
+        if prologue_failure[0] is not None:
+            raise RuntimeError(f"weight-update session setup failed on the driver: {prologue_failure[0]}")
         abort_guard = self._discard_staged_session_on_failure() if staged and driver else nullcontext()
         with abort_guard:
             checksums = self._checksum_manifest(adapters, staged)
