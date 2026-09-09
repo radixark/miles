@@ -22,6 +22,20 @@ class CommandOp(str, Enum):
         return self in (CommandOp.FORWARD_BACKWARD, CommandOp.FORWARD_ONLY)
 
 
+# wire loss_fn_inputs key -> internal datum key
+LOSS_INPUT_KEYS = {"weights": "weights", "advantages": "advantages", "logprobs": "sampling_logprobs"}
+
+# the wire inputs each loss_fn reads from every datum; admission rejects what
+# execution would trip over, before the datum can poison a shared batch
+LOSS_FN_INPUTS = {
+    "cross_entropy": ("weights",),
+    "importance_sampling": ("logprobs", "advantages"),
+    "ppo": ("logprobs", "advantages"),
+    "cispo": ("logprobs", "advantages"),
+    "dro": ("logprobs", "advantages"),
+}
+
+
 class UserInputError(Exception):
     """Rejected request content; fails the future with category User."""
 
