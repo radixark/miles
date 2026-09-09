@@ -15,10 +15,9 @@ import torch.distributed as dist
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer import MegatronOptimizer
 
+from miles.backends.megatron_utils.lora.optimizer import _slot_children
+from miles.backends.megatron_utils.lora.slots import adapter_shard_topology, megatron_shard_name
 from miles.backends.training_utils.parallel import get_parallel_state
-
-from .optimizer import _slot_children
-from .slots import adapter_shard_topology, megatron_shard_name
 
 
 def _rank() -> int:
