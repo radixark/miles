@@ -38,10 +38,18 @@ class MilesBackend(ExecutorBackend):
     async def forward_backward(
         self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
     ) -> list[dict]:
+        return await self._run_loss_pass("forward_backward", batch_id, slot_datums, loss_fn, loss_fn_config)
+
+    async def forward_only(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
+        return await self._run_loss_pass("forward_only", batch_id, slot_datums, loss_fn, loss_fn_config)
+
+    async def _run_loss_pass(
+        self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
+    ) -> list[dict]:
         train_data = _build_train_data(slot_datums)
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
-        worker_results = await self._run_batch("forward_backward", batch_id, train_data)
+        worker_results = await self._run_batch(method, batch_id, train_data)
         by_index: dict[int, dict] = {}
         for result in worker_results:
             for item in result["per_datum"]:
@@ -50,21 +58,12 @@ class MilesBackend(ExecutorBackend):
                     by_index[index] = {"loss": float(item["loss"]), "logprobs": item["logprobs"].tolist()}
         return [by_index[index] for index in range(len(slot_datums))]
 
-    async def forward_only(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
-        worker_results = await self._run_batch("forward_only_logprobs", batch_id, _build_train_data(slot_datums))
-        by_index: dict[int, dict] = {}
-        for box in worker_results:
-            if box is None:
-                continue
-            value = _box_get(box)
-            for index, logprobs in zip(value["sample_indices"], value["logprobs"], strict=True):
-                if index not in by_index:
-                    by_index[index] = {"loss": 0.0, "logprobs": logprobs.tolist()}
-        return [by_index[index] for index in range(len(slot_datums))]
-
-    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, float]:
+    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
         return worker_results[0]
+
+    async def zero_grads(self, slot: int) -> None:
+        await self.trainer.zero_grads(slot=slot)
 
     async def save_slot(self, slot: int, path: str) -> None:
         await self.trainer.save_slot(slot=slot, path=path)
@@ -90,7 +89,7 @@ class MilesBackend(ExecutorBackend):
     async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
         request = self._generate_request(payload, lora_name, lora_path)
         responses = await asyncio.gather(
-            *[post(f"{self.router_url}/generate", dict(request)) for _ in range(payload["num_samples"])]
+            *[post(f"{self.router_url}/generate", _seeded(request, index)) for index in range(payload["num_samples"])]
         )
         result = {"sequences": [_to_sequence(response) for response in responses]}
         if payload["prompt_logprobs"]:
@@ -131,6 +130,17 @@ class MilesBackend(ExecutorBackend):
         return request
 
 
+def _seeded(request: dict, index: int) -> dict:
+    """num_samples are independent samples: a caller-pinned seed still gets a
+    distinct stream per sample."""
+    request = dict(request)
+    params = dict(request["sampling_params"])
+    if (seed := params.get("sampling_seed")) is not None:
+        params["sampling_seed"] = seed + index
+    request["sampling_params"] = params
+    return request
+
+
 def _build_train_data(slot_datums: list) -> dict:
     datums = [datum for _, datum in slot_datums]
     train_data = {
@@ -146,12 +156,6 @@ def _build_train_data(slot_datums: list) -> dict:
         if datum_key in datums[0]:
             train_data[batch_key] = [datum[datum_key] for datum in datums]
     return train_data
-
-
-def _box_get(box):
-    import ray
-
-    return ray.get(box.inner)
 
 
 def _prompt_logprobs(response: dict) -> list[float]:
