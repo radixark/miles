@@ -145,7 +145,6 @@ class WeightUpdater:
             protocol.after_engines_resumed()
 
     def _expected_lora_checksums(self, adapters: list, staged: bool) -> dict | None:
-        # a staged push commits only under checksums: a lost bucket must not publish
         if not adapters or not (staged or self.args.check_lora_weight_equal):
             return None
         assert (
