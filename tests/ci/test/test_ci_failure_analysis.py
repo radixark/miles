@@ -11,6 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+
 ROOT = Path(__file__).parents[3]
 SCRIPT_DIR = ROOT / ".github/workflows/scripts"
 ANALYZER_PATH = SCRIPT_DIR / "ci_failure_analysis.py"
