@@ -311,6 +311,68 @@ class TestTitoMismatchMetrics:
 
 
 class TestComputePassrateFromSamples:
+    def test_fanned_out_rollouts_still_report(self):
+        """Regression for #2579.
+
+        Compaction splits one logical rollout across sibling Samples that share a
+        rollout_id, so a group holds more rows than n_samples_per_prompt. Counting
+        rows made every such group look incomplete and pass@k reported nothing.
+        """
+        args = make_args(n_samples_per_prompt=2, log_passrate=True, reward_key=None)
+        samples = []
+        for g in range(2):
+            # rollout 0 of each group fans out into two siblings sharing a reward
+            samples.append(make_sample(group_index=g, index=0, rollout_id=10 * g + 0, reward=0.0))
+            samples.append(make_sample(group_index=g, index=0, rollout_id=10 * g + 0, reward=0.0))
+            samples.append(make_sample(group_index=g, index=1, rollout_id=10 * g + 1, reward=1.0))
+
+        assert _compute_passrate_from_samples(args, samples) == {
+            "pass@1": pytest.approx(0.5),
+            "pass@2": pytest.approx(1.0),
+        }
+
+    def test_fanned_out_matches_unfanned_equivalent(self):
+        """Fanning a rollout out must not change the metric it contributes to."""
+        args = make_args(n_samples_per_prompt=2, log_passrate=True, reward_key=None)
+        flat = [
+            make_sample(group_index=g, index=i, rollout_id=10 * g + i, reward=float(i))
+            for g in range(2)
+            for i in range(2)
+        ]
+        fanned = [
+            make_sample(group_index=g, index=i, rollout_id=10 * g + i, reward=float(i))
+            for g in range(2)
+            for i in range(2)
+            for _ in range(3 if i == 0 else 1)
+        ]
+
+        assert _compute_passrate_from_samples(args, fanned) == _compute_passrate_from_samples(args, flat)
+
+    def test_group_short_of_rollouts_is_still_excluded(self):
+        """Collapsing siblings must not mask a group that genuinely lost a rollout."""
+        args = make_args(n_samples_per_prompt=3, log_passrate=True, reward_key=None)
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=1, reward=1.0),
+            make_sample(group_index=0, index=0, rollout_id=1, reward=1.0),
+            make_sample(group_index=0, index=1, rollout_id=2, reward=0.0),
+        ]
+
+        assert _compute_passrate_from_samples(args, samples) == {}
+
+    def test_samples_without_rollout_id_fall_back_to_index(self):
+        """rollout_id is optional; index is the documented fallback."""
+        args = make_args(n_samples_per_prompt=2, log_passrate=True, reward_key=None)
+        samples = [
+            make_sample(group_index=g, index=i, rollout_id=None, reward=float(i))
+            for g in range(2)
+            for i in range(2)
+        ]
+
+        assert _compute_passrate_from_samples(args, samples) == {
+            "pass@1": pytest.approx(0.5),
+            "pass@2": pytest.approx(1.0),
+        }
+
     def test_returns_empty_when_group_size_is_one(self):
         args = make_args(n_samples_per_prompt=1)
         samples = make_samples_grouped(4, 1, rewards=[1.0, 0.0, 1.0, 0.0])
