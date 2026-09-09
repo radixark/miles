@@ -1,6 +1,4 @@
-"""The binary half round-trips against the real SDK converters: requests the
-SDK encodes must decode to the same datums as the JSON half, and our responses
-must parse with the SDK's own deserializers."""
+"""Protobuf and JSON preserve the same datums and SDK result shapes."""
 
 import pytest
 
