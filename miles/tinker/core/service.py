@@ -309,7 +309,6 @@ class TinkerService:
     ) -> None:
         try:
             result = await self.backend.sample(payload, lora_name, lora_path)
-            self.futures.resolve(request_id, {"op": "sample", **result})
         except asyncio.CancelledError:
             self.futures.fail(request_id, "cancelled", "user")
         except UserInputError as error:
@@ -317,6 +316,8 @@ class TinkerService:
         except Exception as error:  # noqa: BLE001
             logger.exception("sample failed")
             self.futures.fail(request_id, f"{type(error).__name__}: {error}", "server")
+        else:
+            self.futures.resolve(request_id, {"op": "sample", **result})
 
     def cancel(self, tenant: str, request_id: str) -> None:
         """Cancel an in-flight sampling future; training commands have no
