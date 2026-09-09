@@ -1,7 +1,7 @@
 """Engine-side RPCs for a weight-update session.
 
 The session frame is: pause -> begin -> (transfer) -> set version -> end ->
-resume. Callers gate driver-only calls (typically global rank 0) themselves.
+resume. Callers run these on one rank (typically global rank 0) themselves.
 """
 
 from argparse import Namespace
