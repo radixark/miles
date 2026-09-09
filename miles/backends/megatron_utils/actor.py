@@ -385,10 +385,11 @@ class MegatronTrainRayActor(TrainRayActor):
             return
         if target_tag not in self.weights_backuper.backup_tags:
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
-        if target_tag == self._active_model_tag and not self.weights_backuper.restore_required_when_active(target_tag):
-            # A value-copy restore of the already-active tag is a no-op; a
-            # rebuilding restore (main-cast) must still run every cycle.
-            return
+        # Deliberately no same-tag shortcut: --offload-train disables the param
+        # buffers' memory-saver backup, so sleep() discards their contents and
+        # wake_up() reallocates the storage without values -- even the
+        # already-active tag needs its values copied back. The main-cast
+        # backuper likewise rebuilds the actor every cycle.
         self.weights_backuper.restore(target_tag)
         self._active_model_tag = target_tag
 

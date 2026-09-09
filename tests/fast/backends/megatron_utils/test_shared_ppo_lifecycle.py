@@ -702,18 +702,20 @@ def test_offloading_keeps_weight_backup_without_reference_model(
 
 
 @pytest.mark.parametrize("active_tag", ["actor", "ref", "teacher", "old_actor"])
-def test_switch_model_skips_already_active_weights(
+def test_switch_model_restores_the_already_active_tag(
     actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str
 ) -> None:
+    """The active tag's live storage may have been discarded by an offload
+    cycle since the last switch (--offload-train disables the param buffers'
+    memory-saver backup), so a same-tag switch must still restore."""
     worker = _weight_update_worker(actor_module, monkeypatch)
     monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
     worker._active_model_tag = active_tag
-    # A value-copy backuper: restoring the active tag would be a no-op.
-    worker.weights_backuper = Mock(backup_tags={active_tag}, restore_required_when_active=Mock(return_value=False))
+    worker.weights_backuper = Mock(backup_tags={active_tag})
 
     worker._switch_model(active_tag)
 
-    worker.weights_backuper.restore.assert_not_called()
+    worker.weights_backuper.restore.assert_called_once_with(active_tag)
     assert worker._active_model_tag == active_tag
 
 
@@ -721,19 +723,21 @@ def test_switch_model_skips_already_active_weights(
     ("active_tag", "target_tag"),
     [(None, "actor"), ("ref", "actor"), ("teacher", "actor"), ("old_actor", "actor"), ("actor", "ref")],
 )
-def test_switch_model_restores_different_weights_once(
+def test_switch_model_restores_on_every_switch(
     actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str | None, target_tag: str
 ) -> None:
     worker = _weight_update_worker(actor_module, monkeypatch)
     monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
     worker._active_model_tag = active_tag
-    # A value-copy backuper: the second, already-active switch must be skipped.
-    worker.weights_backuper = Mock(backup_tags={target_tag}, restore_required_when_active=Mock(return_value=False))
+    worker.weights_backuper = Mock(backup_tags={target_tag})
 
     worker._switch_model(target_tag)
     worker._switch_model(target_tag)
 
-    worker.weights_backuper.restore.assert_called_once_with(target_tag)
+    # No same-tag skip: the repeated switch restores again, because an offload
+    # cycle between the two calls may have dropped the live storage.
+    assert worker.weights_backuper.restore.call_count == 2
+    worker.weights_backuper.restore.assert_called_with(target_tag)
     assert worker._active_model_tag == target_tag
 
 
@@ -825,34 +829,53 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     assert len(updater.connect_calls) == 2
 
 
-def test_switch_model_still_rebuilds_the_active_tag_for_main_cast(
+def test_switch_model_restores_discarded_values_with_the_normal_backuper(
     actor_module: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """--rematerialize-param-from-master-weight: restore('actor') rebuilds the
-    params update_weights paused, so the per-cycle call must never be skipped."""
+    """--offload-train disables the param buffers' memory-saver backup: sleep()
+    discards their contents and wake_up() reallocates the storage without
+    values. The same-tag switch after wake must copy the host backup back into
+    the live tensors -- value-level, not merely 'restore was called'."""
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    live = {"w": torch.arange(4, dtype=torch.float32)}
+    backuper = TensorBackuper.create(lambda: iter(live.items()))
+    # The host backup a training step took; unpinned so the test runs on CPU CI.
+    backuper._backups["actor"] = {"w": live["w"].clone()}
+
     worker = _weight_update_worker(actor_module, monkeypatch)
     monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
     worker._active_model_tag = "actor"
-    worker.weights_backuper = Mock(backup_tags={"actor"}, restore_required_when_active=Mock(return_value=True))
+    worker.weights_backuper = backuper
 
+    live["w"].zero_()  # the storage an offload cycle discarded and reallocated
     worker._switch_model("actor")
 
-    worker.weights_backuper.restore.assert_called_once_with("actor")
+    assert torch.equal(live["w"], torch.arange(4, dtype=torch.float32))
 
 
-def test_restore_required_when_active_is_declared_per_backend() -> None:
-    normal = TensorBackuper.create(lambda: iter(()))
-    main_cast = TensorBackuper.create(
+def test_switch_model_rebuilds_the_active_actor_for_main_cast(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--rematerialize-param-from-master-weight: restore('actor') replays the
+    master-weight cast, rebuilding the params update_weights paused -- the
+    per-cycle call must never be skipped for the already-active tag."""
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    cast_main_to_params = Mock()
+    backuper = TensorBackuper.create(
         lambda: iter(()),
         MainCastContext(
-            cast_main_to_params=Mock(),
+            cast_main_to_params=cast_main_to_params,
             model_chunks=[],
             extras_getter=lambda: iter(()),
             rematerializable_ids=set(),
             check=False,
         ),
     )
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "actor"
+    worker.weights_backuper = backuper
 
-    assert normal.restore_required_when_active("actor") is False
-    assert main_cast.restore_required_when_active("actor") is True
-    assert main_cast.restore_required_when_active("ref") is False
+    worker._switch_model("actor")
+
+    cast_main_to_params.assert_called_once_with()

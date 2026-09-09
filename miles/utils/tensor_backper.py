@@ -49,14 +49,6 @@ class TensorBackuper(ABC):
     def restore(self, tag: str):
         raise NotImplementedError
 
-    def restore_required_when_active(self, tag: str) -> bool:
-        """Whether restore(*tag*) must run even when *tag* is already active.
-
-        True when restore reconstructs the live tensors (whose storage may have
-        been dropped since the last cycle) rather than copying saved values back.
-        """
-        return False
-
 
 class _TensorBackuperNormal(TensorBackuper):
     def __init__(self, source_getter):
@@ -133,11 +125,6 @@ class _TensorBackuperMainCast(TensorBackuper):
             self._expected_hashes = self._compute_hashes()
         else:
             self._expected_hashes = None
-
-    def restore_required_when_active(self, tag: str) -> bool:
-        # The actor restore replays the master-weight cast: it REBUILDS live
-        # params that update_weights paused, so it must run every cycle.
-        return tag == "actor"
 
     @torch.no_grad()
     def restore(self, tag: str) -> None:
