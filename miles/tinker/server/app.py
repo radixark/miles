@@ -130,6 +130,11 @@ def build_app(service: TinkerService) -> FastAPI:
 
         app.post(route)(_make(route_op))
 
+    @app.post("/api/v1/weights_info")
+    async def weights_info(request: Request):
+        payload = await request.json()
+        return service.weights_info(_tenant(request), payload["tinker_path"])
+
     @app.post("/api/v1/retrieve_future")
     async def retrieve_future(request: Request):
         payload = await request.json()
