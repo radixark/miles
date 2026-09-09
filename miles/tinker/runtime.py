@@ -1,11 +1,4 @@
-"""The miles-bound half of the gateway.
-
-Implements ExecutorBackend over TrainerController (training commands) and the
-sglang router (sampling). This is where the gateway's internal language turns
-into miles vocabulary: datums become RolloutBatch keys, neutral sampling params
-become /generate payloads. Together with serve_tinker.py this is the only
-place allowed to import miles.ray / miles.backends.
-"""
+"""Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
 import uuid
@@ -129,8 +122,7 @@ class MilesBackend(ExecutorBackend):
 
 
 def _with_sample_seed(request: dict, index: int) -> dict:
-    """num_samples are independent samples: a caller-pinned seed still gets a
-    distinct stream per sample."""
+    """Give each sample a distinct seed when the caller pins the request seed."""
     request = dict(request)
     params = dict(request["sampling_params"])
     if (seed := params.get("sampling_seed")) is not None:
