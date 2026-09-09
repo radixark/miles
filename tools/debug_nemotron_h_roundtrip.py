@@ -84,7 +84,11 @@ def audit_export(bridge: AutoBridge, model: list, args: Args) -> None:
                 print("PROGRESS", dict(counts), flush=True)
         if rank == 0:
             missing = sorted(set(index) - seen)
-            summary = {"layout": {"tp": args.tp, "pp": args.pp, "ep": args.ep, "etp": args.etp}, "counts": dict(counts), "missing": missing}
+            summary = {
+                "layout": {"tp": args.tp, "pp": args.pp, "ep": args.ep, "etp": args.etp},
+                "counts": dict(counts),
+                "missing": missing,
+            }
             (output / "summary.json").write_text(json.dumps(summary, indent=2))
             print("SUMMARY", json.dumps(summary), flush=True)
 
