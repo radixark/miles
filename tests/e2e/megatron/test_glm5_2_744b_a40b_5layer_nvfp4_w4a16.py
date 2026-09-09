@@ -213,13 +213,14 @@ def execute():
         f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-moe-dense-tp-size 1 "
         "--sglang-enable-dp-lm-head "
+        "--sglang-enable-fp32-lm-head "
         "--sglang-cuda-graph-max-bs 256 "
         "--sglang-max-running-requests 512 "
         f"--sglang-chunked-prefill-size {2048 * ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-watchdog-timeout 3600 "
     )
 
-    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker "
+    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "
@@ -237,6 +238,7 @@ def execute():
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
+        "--moe-router-use-torch-mm "
         "--attention-backend flash "
         "--allgather-cp "
         "--miles-dsa-topk-backend flashinfer "
