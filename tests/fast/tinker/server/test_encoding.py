@@ -72,6 +72,7 @@ class TestAdamParams:
 
 
 class TestTensorData:
+    def test_dense_tensor_data(self):
         assert tensor_data_to_list({"data": [1.0, 2.0], "shape": [2]}) == [1.0, 2.0]
 
     def test_csr_expands_to_dense(self):
