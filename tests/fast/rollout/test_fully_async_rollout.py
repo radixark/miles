@@ -12,7 +12,7 @@ import pytest
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
@@ -83,6 +83,7 @@ def make_args(**overrides) -> Namespace:
         custom_async_data_buffer_path=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
+        reward_key=None,
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
@@ -196,6 +197,8 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
 
 async def test_aborted_group_recycled(monkeypatch):
     aborted = make_group(1, status=Sample.Status.ABORTED)
+    for sample in aborted:
+        sample.reward = None
     data_source = FakeDataSource(scripted=[aborted])
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source)
@@ -207,6 +210,21 @@ async def test_aborted_group_recycled(monkeypatch):
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
     assert output.samples[0][0].group_index != 1
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+    assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
+
+
+async def test_missing_reward_group_dropped_without_recycling(monkeypatch):
+    missing_reward = make_group(1)
+    missing_reward[0].reward = None
+    data_source = FakeDataSource(scripted=[missing_reward])
+    args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, data_source)
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert data_source.recycled == []
+    assert output.samples[0][0].group_index != 1
+    assert output.metrics["rollout/dynamic_filter/drop_group_has_missing_reward"] == 1
 
 
 async def test_stale_group_recycled(monkeypatch):
@@ -347,7 +365,7 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
 
 def reject_group_1(args, group, **kwargs):
     keep = group[0].group_index != 1
-    return DynamicFilterOutput(keep=keep, reason=None if keep else "rejected")
+    return FilterOutput(keep=keep, reason=None if keep else "rejected")
 
 
 async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
@@ -447,7 +465,7 @@ async def test_buffer_get_skips_groups_stale_at_consumption_time():
     buffer, unused = make_buffer(max_staleness=2)
     stale = make_group(1, weight_versions=["5"])
     await put_group(buffer, stale)
-    await put_group(buffer, make_group(2, weight_versions=["9"]))
+    await put_group(buffer, make_group(2, weight_versions=["8"]))
 
     assert (await buffer.get(current_version=10)).group[0].group_index == 2
     assert unused == [stale]

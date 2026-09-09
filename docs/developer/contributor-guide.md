@@ -33,7 +33,7 @@ miles/
 ├── tools/                    # checkpoint converters, quantizers, profilers
 ├── tests/                    # fast / fast-gpu / e2e / ci / manual (see Running CI)
 ├── docker/                   # Dockerfile, Dockerfile.rocm, build.py, patches
-├── docs/                     # the source of this site, plus docs/ci internals
+├── docs/                     # the source of this site, plus docs/developer/ci internals
 └── .claude/                  # rules and skills (see What lives in .claude)
 ```
 
@@ -116,17 +116,17 @@ binds that central document. Editing such a file means updating its documentatio
 same change, and editing the document means finding the files that name it.
 
 ```python
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 ```
 
 Current sentinels, so you know when you have walked into one:
 
 | File | Governing document |
 |---|---|
-| `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/ci/00-stage.md`, `docs/ci/01-label.md` |
-| `.github/workflows/bot-bump-miles-version.yml`, `bot-cherry-pick.yml`, `release-*.yml` | `docs/ci/04-release.md` |
-| `docker/build.py` | `docs/ci/02-docker-build.md` |
-| `tests/ci/metric_history/**` | `docs/ci/03-metric-history-gate.md` |
+| `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/developer/ci/00-stage.md`, `docs/developer/ci/01-label.md` |
+| `.github/workflows/bot-bump-miles-version.yml`, `bot-cherry-pick.yml`, `release-*.yml` | `docs/developer/ci/04-release.md` |
+| `docker/build.py` | `docs/developer/ci/02-docker-build.md` |
+| `tests/ci/metric_history/**` | `docs/developer/ci/03-metric-history-gate.md` |
 
 Grep for `doc-dev:` before editing anything under `.github/workflows/` or `docker/`. A
 change that lands the code and leaves the document stale is the failure mode this
@@ -272,7 +272,7 @@ map it to a host.
 
 * **Quick questions:** the `#miles-rl` channel of the [SGLang Slack](https://slack.sglang.ai).
 * **Design discussions:** a GitHub Discussion, or an Issue labeled `discussion`.
-* **CI internals:** [Stage](/ci/00-stage) (stages), [Labels](/ci/01-label) (label
-  semantics), [Docker build](/ci/02-docker-build) (images),
-  [Metric history & regression gate](/ci/03-metric-history-gate) (metric gate), and the
-  [CI Contributor Guide](/ci/contributor-guide) for the long-form version of this section.
+* **CI internals:** [Stage](/developer/ci/00-stage) (stages), [Labels](/developer/ci/01-label) (label
+  semantics), [Docker build](/developer/ci/02-docker-build) (images),
+  [Metric history & regression gate](/developer/ci/03-metric-history-gate) (metric gate), and the
+  [CI Contributor Guide](/developer/ci/contributor-guide) for the long-form version of this section.

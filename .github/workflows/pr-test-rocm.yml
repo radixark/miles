@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/00-stage.md
+# doc-dev: docs/developer/ci/00-stage.md
 name: PR Test (ROCm)
 
 # ROCm counterpart to pr-test.yml. Same structure, different GPU stage:

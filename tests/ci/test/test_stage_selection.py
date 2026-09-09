@@ -77,7 +77,7 @@ def test_docs_tooling_and_cpu_only_tests_skip_every_gpu_stage():
         CIRegistry(HWBackend.CPU, cpu_test, 1, "stage-a-cpu"),
     ]
     changed_files = (
-        ChangedFile("M", ("docs/ci/00-stage.md",)),
+        ChangedFile("M", ("docs/developer/ci/00-stage.md",)),
         ChangedFile("M", ("examples/README.md",)),
         ChangedFile("M", (".pre-commit-config.yaml",)),
         ChangedFile("M", ("scripts/tools/sync_example_docs.py",)),
@@ -174,7 +174,7 @@ def test_changed_labeled_test_without_its_label_keeps_current_selection_semantic
 def test_cli_publishes_all_gpu_stages_for_docs_diff(tmp_path):
     repo_root = Path(__file__).resolve().parents[3]
     diff_path = tmp_path / "changed-files.z"
-    diff_path.write_bytes(b"M\0docs/ci/00-stage.md\0")
+    diff_path.write_bytes(b"M\0docs/developer/ci/00-stage.md\0")
     output_path = tmp_path / "github-output"
     env = os.environ.copy()
     env.update(
