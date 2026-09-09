@@ -49,6 +49,7 @@ class ScriptArgs(Tap):
     wandb_project: str
     wandb_team: str
 
+    model_label: Literal["nemotron3-nano", "nemotron35-lightning"] = "nemotron35-lightning"
     mode: Literal["normal", "debug_rollout_only"] = "normal"
     megatron_model_type: str = "nemotron-3-nano-30b-a3b"
     megatron_path: str = "/root/Megatron-LM"
@@ -85,7 +86,7 @@ class ScriptArgs(Tap):
 
     @property
     def wandb_run_name(self) -> str:
-        return f"{self.run_id}-nemotron35-lightning-tb21"
+        return f"{self.run_id}-{self.model_label}-tb21"
 
 
 def _flag_values(values: dict[str, object]) -> list[str]:
@@ -185,6 +186,7 @@ def _tracking_argv(args: ScriptArgs) -> list[str]:
     return _flag_values(
         {
             "--wandb-project": args.wandb_project,
+            "--wandb-dir": str(Path(args.save_traces_dir).parent / "wandb"),
             "--wandb-team": args.wandb_team,
             "--wandb-group": args.wandb_run_name,
             "--prometheus-port": args.prometheus_port,
