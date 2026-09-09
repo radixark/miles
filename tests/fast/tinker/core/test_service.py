@@ -7,7 +7,7 @@ import pytest
 from tests.fast.tinker.harness import ADAM, await_settled, created_model, datum, fb_payload
 
 from miles.tinker.core.future import DONE, FAILED
-from miles.tinker.core.types import UserInputError
+from miles.tinker.core.types import OwnershipError, UserInputError
 
 
 def _optim_payload(model_id: str, seq_id: int) -> dict:
@@ -43,7 +43,7 @@ async def test_failed_slot_init_returns_the_slot(service):
     request_id, model_id = service.create_model("tenant", {"base_model": "base"})
 
     future = await await_settled(service, "tenant", request_id)
-    assert (future.state, future.error_category) == (FAILED, "internal")
+    assert (future.state, future.error_category) == (FAILED, "server")
     assert model_id not in service.models
     assert service.free_slots == free_before
 
@@ -108,7 +108,9 @@ async def test_optim_step_returns_the_slot_grad_norm(service):
 
 async def test_save_then_load_roundtrip_paths(service):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ckpt"})
+    save = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ckpt", "overwrite": False}
+    )
     saved_path = (await await_settled(service, "tenant", save)).result["path"]
     assert saved_path == f"tinker://{model_id}/weights/ckpt"
 
@@ -268,3 +270,270 @@ async def test_a_fresh_heartbeat_keeps_the_model(service):
     await service._sweep_once()
 
     assert model_id in service.models
+
+
+async def test_traversal_checkpoint_names_are_rejected(service):
+    model_id = await created_model(service)
+    for name in ("../evil", "a/b", "..", ".hidden"):
+        request_id = service.submit(
+            "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": name, "overwrite": False}
+        )
+        promise = await await_settled(service, "tenant", request_id)
+        assert (promise.state, promise.error_category) == (FAILED, "user")
+        assert not service.backend.named("save_slot"), "nothing may touch the disk for a rejected name"
+    with pytest.raises(UserInputError):
+        service.submit_sample(
+            "tenant",
+            {
+                "model_path": f"tinker://{model_id}/weights/../../etc",
+                "num_samples": 1,
+                "prompt_tokens": [1],
+                "sampling_params": {"max_tokens": 2},
+                "prompt_logprobs": False,
+                "topk_prompt_logprobs": 0,
+            },
+        )
+
+
+async def test_expired_result_on_resubmit_fails_instead_of_410(service, monkeypatch):
+    from miles.tinker.core import future as future_module
+
+    model_id = await created_model(service)
+    first = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
+    await await_settled(service, "tenant", first)
+    monkeypatch.setattr(future_module, "_FINISHED_TTL_S", -1.0)
+    assert service.retrieve_future("tenant", first) is None, "the result must have aged out"
+
+    resubmitted = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
+    assert resubmitted != first
+    monkeypatch.setattr(future_module, "_FINISHED_TTL_S", 3600.0)  # only the first result aged out
+    promise = service.retrieve_future("tenant", resubmitted)
+    assert (promise.state, promise.error_category) == (FAILED, "user")
+    assert "expired" in promise.error
+    assert len(service.backend.named("forward_backward")) == 1, "an executed command must never re-run"
+
+
+async def test_save_state_refuses_to_overwrite_unless_asked(service):
+    model_id = await created_model(service)
+    payload = {"model_id": model_id, "name": "ckpt", "overwrite": False}
+    first = service.submit("tenant", "save_state", payload | {"seq_id": 1})
+    assert (await await_settled(service, "tenant", first)).state == DONE
+
+    clobber = service.submit("tenant", "save_state", payload | {"seq_id": 2})
+    promise = await await_settled(service, "tenant", clobber)
+    assert (promise.state, promise.error_category) == (FAILED, "user")
+    assert "overwrite" in promise.error
+
+    replace = service.submit("tenant", "save_state", payload | {"seq_id": 3, "overwrite": True})
+    assert (await await_settled(service, "tenant", replace)).state == DONE
+
+
+async def test_checkpoints_outlive_the_lease(service):
+    session_id = service.create_session("tenant", {})
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "kept", "overwrite": False}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+
+    service.sessions[session_id]["last_heartbeat"] = -1e9
+    await service._sweep_once()
+    assert model_id not in service.models, "the lease sweep must reclaim the model"
+
+    service.create_session("tenant", {})
+    fresh_id = await created_model(service)
+    load = service.submit("tenant", "load_state", {"model_id": fresh_id, "seq_id": 1, "path": path, "optimizer": True})
+    assert (await await_settled(service, "tenant", load)).state == DONE
+
+
+async def test_a_foreign_tenants_checkpoint_does_not_load(service):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "mine", "overwrite": False}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+
+    thief_model = await created_model(service, tenant="thief")
+    load = service.submit(
+        "thief", "load_state", {"model_id": thief_model, "seq_id": 1, "path": path, "optimizer": True}
+    )
+    promise = await await_settled(service, "thief", load)
+    assert (promise.state, promise.error_category) == (FAILED, "user")
+    assert "belong" in promise.error
+
+
+async def test_a_failed_batch_discards_the_whole_window(service):
+    model_id = await created_model(service)
+    first = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum(), datum()]))
+    second = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
+    service.backend.fail_next = RuntimeError("cuda died")
+    assert (await await_settled(service, "tenant", first)).state == FAILED
+    assert (
+        await await_settled(service, "tenant", second)
+    ).state == FAILED, "the window shares one gradient accumulation; a sibling's failure poisons it"
+    assert service.backend.named("zero_grads"), "the poisoned accumulation must be dropped"
+
+
+async def test_merged_optim_settles_each_slot_on_its_own(service):
+    model_a = await created_model(service)
+    model_b = await created_model(service)
+    slot_b = service.models[model_b].slot
+    service.backend.optim_outcomes[slot_b] = {"error": "boom"}
+
+    ok = service.submit("tenant", "optim_step", _optim_payload(model_a, 1))
+    bad = service.submit("tenant", "optim_step", _optim_payload(model_b, 1))
+    resolved = await await_settled(service, "tenant", ok)
+    failed = await await_settled(service, "tenant", bad)
+    assert resolved.state == DONE and "grad_norm" in resolved.result["metrics"]
+    assert (failed.state, failed.error, failed.error_category) == (FAILED, "boom", "server")
+
+
+async def test_a_nonfinite_step_reports_the_skip(service):
+    model_id = await created_model(service)
+    slot = service.models[model_id].slot
+    service.backend.optim_outcomes[slot] = {"skipped_nonfinite": 1.0}
+    request_id = service.submit("tenant", "optim_step", _optim_payload(model_id, 1))
+    promise = await await_settled(service, "tenant", request_id)
+    assert promise.state == DONE
+    assert promise.result["metrics"] == {"skipped_nonfinite": 1.0}
+
+
+async def test_num_samples_is_capped(service):
+    model_id = await created_model(service)
+    version = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", version)).result["path"]
+    with pytest.raises(UserInputError):
+        service.submit_sample(
+            "tenant",
+            {
+                "model_path": path,
+                "num_samples": service.config.max_samples_per_request + 1,
+                "prompt_tokens": [1],
+                "sampling_params": {"max_tokens": 2},
+                "prompt_logprobs": False,
+                "topk_prompt_logprobs": 0,
+            },
+        )
+
+
+async def test_malformed_loss_inputs_are_rejected_at_admission(service):
+    model_id = await created_model(service)
+    cases = {
+        "unknown loss_fn": {"loss_fn": "made_up", "datums": [datum()]},
+        "missing input": {"loss_fn": "importance_sampling", "datums": [datum()]},
+        "wrong length": {
+            "loss_fn": "importance_sampling",
+            "datums": [datum() | {"sampling_logprobs": [0.0], "advantages": [1.0, 2.0, 3.0, 4.0]}],
+        },
+    }
+    for seq_id, payload in enumerate(cases.values(), start=1):
+        request_id = service.submit(
+            "tenant",
+            "forward_backward",
+            {"model_id": model_id, "seq_id": seq_id, "loss_fn_config": {}, **payload},
+        )
+        promise = await await_settled(service, "tenant", request_id)
+        assert (promise.state, promise.error_category) == (FAILED, "user")
+    assert not service.backend.named("forward_backward"), "rejected datums must never reach the trainer"
+
+    healthy = service.submit(
+        "tenant",
+        "forward_backward",
+        {
+            "model_id": model_id,
+            "seq_id": 4,
+            "loss_fn": "importance_sampling",
+            "loss_fn_config": {},
+            "datums": [datum() | {"sampling_logprobs": [0.0] * 3, "advantages": [1.0] * 3}],
+        },
+    )
+    assert (await await_settled(service, "tenant", healthy)).state == DONE
+
+
+async def test_a_discarded_window_poisons_the_next_optim_step(service):
+    model_id = await created_model(service)
+    early = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
+    assert (await await_settled(service, "tenant", early)).state == DONE, "the early batch resolves before the failure"
+
+    service.backend.fail_next = RuntimeError("cuda died")
+    late = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
+    assert (await await_settled(service, "tenant", late)).state == FAILED
+
+    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 3))
+    promise = await await_settled(service, "tenant", step)
+    assert (
+        promise.state == FAILED and "discarded" in promise.error
+    ), "the early batch's gradients were dropped with the window; stepping would be a silent no-op"
+    assert not service.backend.named("optim_step")
+
+    retry = service.submit("tenant", "forward_backward", fb_payload(model_id, 4, [datum()]))
+    assert (await await_settled(service, "tenant", retry)).state == DONE
+    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 5))
+    assert (await await_settled(service, "tenant", step)).state == DONE, "a fresh window steps normally"
+
+
+async def test_unsupported_lora_configs_are_rejected(service):
+    for lora_config in ({"rank": 8, "seed": 7}, {"rank": 8, "train_unembed": True}, {"rank": 8, "train_mlp": False}):
+        with pytest.raises(UserInputError):
+            service.create_model("tenant", {"base_model": service.config.base_model, "lora_config": lora_config})
+    _, model_id = service.create_model(
+        "tenant",
+        {
+            "base_model": service.config.base_model,
+            "lora_config": {"rank": 8, "train_attn": True, "train_mlp": True, "train_unembed": False},
+        },
+    )
+    assert model_id in service.models
+
+
+async def test_sampler_paths_resolve_after_the_lease_died(service):
+    session_id = service.create_session("tenant", {})
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+
+    service.sessions[session_id]["last_heartbeat"] = -1e9
+    await service._sweep_once()
+    assert model_id not in service.models
+
+    service.create_session("tenant", {})
+    lora_name, lora_path = service._resolve_sampler("tenant", path)
+    assert lora_name == f"{model_id}@1" and lora_path.endswith("/sampler_weights/1")
+    with pytest.raises((UserInputError, OwnershipError)):
+        service._resolve_sampler("thief", path)
+
+
+async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
+    model_id = await created_model(service)
+    unnamed = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": None}
+    )
+    result = (await await_settled(service, "tenant", unnamed)).result
+    session = service.sampling_sessions[result["sampling_session_id"]]
+    assert (session["tenant"], session["model_path"]) == ("tenant", result["path"])
+
+    named = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "ckpt"}
+    )
+    assert "sampling_session_id" not in (await await_settled(service, "tenant", named)).result
+
+
+async def test_weights_info_reads_the_checkpoint_not_the_lease(service):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    del service.models[model_id]
+
+    info = service.weights_info("tenant", path)
+    assert info == {
+        "base_model": "base",
+        "is_lora": True,
+        "lora_rank": 8,
+        "train_attn": True,
+        "train_mlp": True,
+        "train_unembed": False,
+    }
+    with pytest.raises(OwnershipError):
+        service.weights_info("thief", path)
