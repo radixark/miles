@@ -2,7 +2,7 @@
 binary half; both produce and consume the same internal shapes).
 
 Decode errors are protocol violations and answer HTTP 400; size admission
-happens later in core and fails the promise instead.
+happens later in core and fails the future instead.
 
 Sequence mapping: a datum's model_input tokens x[0..T-1] and target_tokens
 t[0..T-1] must satisfy t[i] == x[i+1] for i < T-1 (standard next-token

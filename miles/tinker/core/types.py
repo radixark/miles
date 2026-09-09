@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 
 class UserInputError(Exception):
-    """Rejected request content; fails the promise with category User."""
+    """Rejected request content; fails the future with category User."""
 
 
 class OwnershipError(Exception):
