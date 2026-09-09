@@ -37,13 +37,14 @@ import statistics
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # No miles imports at module level, deliberately: multiprocessing "spawn"
 # children (the load generators and the mock backend) re-import this script as
 # __mp_main__, and the miles chain drags in transformers (~10s per child). All
 # miles imports live inside the driver-side functions that use them.
+if TYPE_CHECKING:
+    from miles.rollout.session.config import SessionServerConfig
 
 DEFAULT_HF_CHECKPOINT = "Qwen/Qwen3-0.6B"
 DEFAULT_TITO_MODEL = "qwen3"
@@ -317,7 +318,7 @@ def _write_json(result: dict[str, Any], path: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_server_args(
+def _build_server_config(
     bench_args,
     *,
     chat_template_path,
@@ -325,28 +326,47 @@ def _build_server_args(
     ip: str,
     port: int,
     instance_idx: int,
-) -> SimpleNamespace:
-    """A Miles-args namespace carrying exactly what one session-server instance reads.
+    backend_url: str,
+) -> SessionServerConfig:
+    """The config carrying exactly what one session-server instance reads.
 
     `use_rollout_routing_replay=True` makes the server inject
     `return_routed_experts=True` upstream and exercise the R3-strip path, i.e.
     the production-shaped large-R3 scenario the overhead doc is about.
+
     `pause_generation_mode` follows `--incremental-r3` so the delta-shaped
     payloads run against a server that actually requests additional R3
     (`routed_experts_start_len` on every upstream chat request).
+
+    `use_session_server` selects which implementation is measured, so it comes
+    from the command line rather than being pinned here; the sample picker and
+    postprocessor stay unset, matching `SessionServerConfig.from_args` defaults.
     """
-    return SimpleNamespace(
+    from miles.rollout.session.config import SessionServerConfig
+
+    return SessionServerConfig(
         hf_checkpoint=bench_args.hf_checkpoint,
         chat_template_path=chat_template_path,
         apply_chat_template_kwargs=chat_template_kwargs,
         tito_model=bench_args.tito_model,
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
+        sglang_speculative_algorithm=None,
+        num_layers=None,
+        moe_router_topk=None,
+        save_debug_trajectory_data=None,
+        lora_rank=0,
+        lora_adapter_path=None,
+        timeout=600.0,
+        backend_url=backend_url,
+        host=ip,
+        port=port,
+        instance_id=f"bench-i{instance_idx}",
+        use_session_server=bench_args.use_session_server,
+        session_message_matcher="strict",
         pause_generation_mode="in_place" if bench_args.incremental_r3 else "retract",
-        miles_router_timeout=600.0,
-        session_server_ip=ip,
-        session_server_port=port,
-        session_server_instance_id=f"bench-i{instance_idx}",
+        session_sample_picker_path=None,
+        session_sample_postprocessor_path=None,
     )
 
 
@@ -584,21 +604,22 @@ def run_http_bench(args) -> dict[str, Any]:
         base_urls = [f"http://{ip}:{port}" for port in ports]
 
         # Spawn every instance before waiting on any (matches
-        # start_session_server): N instances pay ~one transformers import of
+        # wait_session_server_ready): N instances pay ~one transformers import of
         # wall-time, not N.
         ctx = multiprocessing.get_context("spawn")
         for idx, port in enumerate(ports):
-            server_args = _build_server_args(
+            server_config = _build_server_config(
                 args,
                 chat_template_path=chat_template_path,
                 chat_template_kwargs=chat_template_kwargs,
                 ip=ip,
                 port=port,
                 instance_idx=idx,
+                backend_url=backend_url,
             )
             proc = ctx.Process(
                 target=run_session_server,
-                args=(server_args, backend_url),
+                args=(server_config,),
                 name=f"bench-session-server-{idx}",
                 daemon=False,
             )
@@ -786,6 +807,12 @@ def main() -> None:
     )
     parser.add_argument("--hf-checkpoint", default=DEFAULT_HF_CHECKPOINT, help="tokenizer checkpoint or local path")
     parser.add_argument("--tito-model", default=DEFAULT_TITO_MODEL, help="TITO tokenizer family")
+    parser.add_argument(
+        "--use-session-server",
+        choices=["v1", "v2"],
+        default="v2",
+        help="session server implementation to measure",
+    )
     parser.add_argument(
         "--append-role",
         choices=["user", "tool"],

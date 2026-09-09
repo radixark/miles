@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """Step selection for the CI regression gate.
 
 * `select(series, steps)` pulls the comparison value(s) out of one metric's

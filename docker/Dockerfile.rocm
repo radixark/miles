@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 # ROCm / gfx950 image for Miles (built on a prebuilt sglang base):
 #
 # 1. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X, Python 3.10 base)

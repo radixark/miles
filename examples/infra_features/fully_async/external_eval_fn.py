@@ -38,6 +38,7 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
     """Launch (or attach to) a standalone sglang server and eval snapshots on it."""
 
     def __init__(self, input: RolloutFnConstructorInput):
+        super().__init__(input)
         args = input.args
         url = os.environ.get("MILES_EXTERNAL_EVAL_URL")
         gpus = os.environ.get("MILES_EXTERNAL_EVAL_GPUS")

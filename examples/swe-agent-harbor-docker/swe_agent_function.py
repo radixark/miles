@@ -15,10 +15,10 @@ import logging
 import os
 import socket
 from typing import Any
-from urllib.parse import urlparse, urlsplit, urlunparse
+from urllib.parse import urlsplit
 
 import httpx
-
+from miles.rollout.agentic.session import resolve_session_url
 from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
@@ -80,13 +80,8 @@ async def run(
         os.getenv("SWE_AGENT_MODEL_NAME", "model"),
     )
 
-    session_url = f"{base_url}/v1"
+    session_url = resolve_session_url(base_url)
     external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
-    if external_host:
-        parsed = urlparse(session_url)
-        port = parsed.port
-        netloc = f"{external_host}:{port}" if port else external_host
-        session_url = urlunparse(parsed._replace(netloc=netloc))
 
     request: dict[str, Any] = {
         **metadata,

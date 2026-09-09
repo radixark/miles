@@ -56,7 +56,13 @@ function parseRoute() {
     }
     const rolloutId = Number(segments[1]);
     if (segments[2] === "sample" && segments.length === 4) {
-      return { view: "tokens", rolloutId, sampleIndex: Number(segments[3]), evaluation };
+      return {
+        view: "tokens",
+        rolloutId,
+        sampleIndex: Number(segments[3]),
+        sampleOccurrence: Number(params.get("occurrence") || 0),
+        evaluation,
+      };
     }
     return { view: "rollout", rolloutId, evaluation };
   }
@@ -92,7 +98,8 @@ function crumbs(route, meta) {
     );
   }
   if (route.view === "tokens") {
-    parts.push(el("span", { class: "crumb" }, [`› sample ${route.sampleIndex}`]));
+    const occurrence = route.sampleOccurrence ? ` · leaf ${route.sampleOccurrence + 1}` : "";
+    parts.push(el("span", { class: "crumb" }, [`› sample ${route.sampleIndex}${occurrence}`]));
   }
   document.getElementById("crumbs").replaceChildren(...parts);
 }

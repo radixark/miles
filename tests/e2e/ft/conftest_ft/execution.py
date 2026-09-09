@@ -110,7 +110,7 @@ def get_common_train_args(
             "--deterministic-mode "
             f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
             f"--rollout-num-gpus {mode.total_rollout_gpus} "
-            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} "
+            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} " + ("--colocate " if mode.colocate else "")
         )
 
     event_logger_args = f"--save-debug-event-data {dump_dir}/events "
@@ -155,7 +155,7 @@ def get_common_train_args(
 
 
 def get_ft_args(mode: FTTestMode) -> str:
-    return "--use-fault-tolerance " "--ft-components train " "--control-server-port 0 "
+    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
 
 
 # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
@@ -166,13 +166,6 @@ _DETERMINISTIC_ENV_VARS: dict[str, str] = {
     # The default 4096 split overflows FlashInfer's fixed 2 GiB deterministic workspace
     # while capturing the 8192-token prefill graph for the 5-layer Qwen3 MoE model.
     "SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE": "8192",
-}
-
-# Selects v2 RayTrainGroup (miles.ray.train.group). Required because
-# --ft-components train depends on cell-based indep_dp; the v1 default path
-# does not support it.
-_TRAINER_FT_ENV_VARS: dict[str, str] = {
-    "MILES_EXPERIMENTAL_FT_TRAINER": "1",
 }
 
 
@@ -198,7 +191,6 @@ def run_training(
         shutil.rmtree(dump_dir)
     merged_env_vars = {
         **_DETERMINISTIC_ENV_VARS,
-        **_TRAINER_FT_ENV_VARS,
         # Run eager (no torch.compile). A cell respawned after a crash cold-recompiles its first
         # forward; under dynamic batch sizes that is a per-shape Inductor compile that is slow
         # (observed 124s..1510s, growing) and memory-heavy enough to OOM-kill the actor. That

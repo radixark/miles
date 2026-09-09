@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 """Content hash of everything that feeds a Miles Docker image build.
 
 Single source of truth for "what changes the image". CI compares this hash against

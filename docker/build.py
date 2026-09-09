@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 """Build and push Miles Docker images.
 
 Usage:
@@ -46,7 +46,7 @@ VARIANTS = {
         "tag_postfix": "-cu12",
         "build_args": {
             "ENABLE_CUDA_13": "0",
-            "SGLANG_IMAGE_TAG": "v0.5.18-cu129",
+            "SGLANG_IMAGE_TAG": "v0.5.19-cu129",
             "WHEELS_TAG_X86": "cu129-x86_64",
         },
     },
