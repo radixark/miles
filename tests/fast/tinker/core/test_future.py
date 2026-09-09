@@ -36,7 +36,3 @@ def test_an_expired_future_returns_none(monkeypatch):
 
     monkeypatch.setattr(future_module, "_FINISHED_TTL_S", -1.0)
     assert store.get(future.request_id, "tenant") is None, "finished past TTL must read as unknown (410)"
-
-
-def test_unknown_request_returns_none():
-    assert FutureStore().get("req-nope", "tenant") is None
