@@ -17,7 +17,6 @@ from miles.backends.megatron_utils.lora.slots import zero_optimizer_state_for_ad
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data import get_data_iterator
 from miles.backends.training_utils.log_utils import aggregate_train_losses
-from miles.backends.training_utils.loss_hub.tinker_losses import drain_per_datum_outputs, start_per_datum_outputs
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.types import RolloutBatch
@@ -46,19 +45,16 @@ def run_loss_pass(
         reset_grad_metadata_keep_grads(model)
 
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=batch_id)
-    start_per_datum_outputs()
-    try:
-        losses_reduced = run_forward_backward_pass(
-            args,
-            dumper_phase_util,
-            data_iterator,
-            model,
-            num_microbatches[0],
-            num_rollouts=None,
-            forward_only=forward_only,
-        )
-    finally:
-        per_datum_outputs = drain_per_datum_outputs()
+    losses_reduced = run_forward_backward_pass(
+        args,
+        dumper_phase_util,
+        data_iterator,
+        model,
+        num_microbatches[0],
+        num_rollouts=None,
+        forward_only=forward_only,
+    )
+    per_datum_outputs = [output for microbatch in losses_reduced for output in microbatch["per_datum"]]
     dumper_phase_util.finalize(model)
 
     if get_parallel_state().is_pp_last_stage:

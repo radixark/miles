@@ -24,33 +24,6 @@ PPO_DEFAULTS = {"clip_low_threshold": 0.8, "clip_high_threshold": 1.2}
 CISPO_DEFAULTS = {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
 DRO_DEFAULTS = {"beta": 0.05}
 
-# Per-datum outputs collected across microbatches for protocol reassembly;
-# active only between start/drain (the slot executor's forward_backward).
-_per_datum_outputs: list[dict] | None = None
-
-
-def start_per_datum_outputs() -> None:
-    global _per_datum_outputs
-    _per_datum_outputs = []
-
-
-def drain_per_datum_outputs() -> list[dict]:
-    global _per_datum_outputs
-    outputs, _per_datum_outputs = _per_datum_outputs, None
-    return outputs or []
-
-
-def _record_per_datum(batch: RolloutBatch, log_probs: list[torch.Tensor], per_sample_loss: list[torch.Tensor]) -> None:
-    if _per_datum_outputs is None:
-        return
-    sample_indices = batch.get("sample_indices")
-    assert sample_indices is not None, "per-datum outputs need sample_indices in the batch"
-    for index, log_prob, loss in zip(sample_indices, log_probs, per_sample_loss, strict=True):
-        _per_datum_outputs.append(
-            {"sample_index": index, "logprobs": log_prob.detach().cpu(), "loss": loss.detach().cpu()}
-        )
-
-
 def _target_logprobs(args: Namespace, batch: RolloutBatch, logits: torch.Tensor) -> list[torch.Tensor]:
     outputs = get_log_probs_and_entropy(
         logits,
@@ -73,14 +46,17 @@ def _finish(
     logits: torch.Tensor,
     log_probs: list[torch.Tensor],
     per_sample_loss: list[torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict]:
     if per_sample_loss:
         loss = torch.stack(per_sample_loss).sum()
     else:
         # a microbatch with no supervised tokens still needs the graph alive; fp32 sum avoids fp16 inf -> nan
         loss = logits.sum(dtype=torch.float32) * 0
-    _record_per_datum(batch, log_probs, per_sample_loss)
-    return loss, {"loss": loss.clone().detach()}
+    per_datum = [
+        {"sample_index": index, "logprobs": log_prob.detach().cpu(), "loss": sample_loss.detach().cpu()}
+        for index, log_prob, sample_loss in zip(batch["sample_indices"], log_probs, per_sample_loss, strict=True)
+    ]
+    return loss, {"loss": loss.detach(), "per_datum": per_datum}
 
 
 def cross_entropy_loss_function(
@@ -88,7 +64,7 @@ def cross_entropy_loss_function(
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict]:
     log_probs = _target_logprobs(args, batch, logits)
     per_sample = [
         -(_like(weights, lp) * lp).sum() for lp, weights in zip(log_probs, batch["loss_weights"], strict=True)
@@ -101,7 +77,7 @@ def importance_sampling_loss_function(
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict]:
     log_probs = _target_logprobs(args, batch, logits)
     per_sample = []
     for lp, sampling, adv in zip(log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True):
@@ -115,7 +91,7 @@ def ppo_loss_function(
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict]:
     config = batch.get("loss_fn_config") or {}
     clip_low = config.get("clip_low_threshold", PPO_DEFAULTS["clip_low_threshold"])
     clip_high = config.get("clip_high_threshold", PPO_DEFAULTS["clip_high_threshold"])
@@ -134,7 +110,7 @@ def cispo_loss_function(
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict]:
     config = batch.get("loss_fn_config") or {}
     clip_low = config.get("clip_low_threshold", CISPO_DEFAULTS["clip_low_threshold"])
     clip_high = config.get("clip_high_threshold", CISPO_DEFAULTS["clip_high_threshold"])
@@ -152,7 +128,7 @@ def dro_loss_function(
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict]:
     config = batch.get("loss_fn_config") or {}
     beta = config.get("beta", DRO_DEFAULTS["beta"])
     log_probs = _target_logprobs(args, batch, logits)
