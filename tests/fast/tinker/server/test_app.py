@@ -24,7 +24,8 @@ async def client():
 
 
 def _headers(tenant: str = "tenant-a") -> dict:
-    return {"Authorization": f"Bearer {tenant}"}
+    # the pinned SDK authenticates with X-API-Key, not Authorization
+    return {"X-API-Key": tenant}
 
 
 async def _poll(client, request_id: str, tenant: str = "tenant-a") -> dict:
@@ -129,10 +130,36 @@ async def test_a_failed_future_reports_the_category(client):
     client.service.backend.fail_next = RuntimeError("boom")
     created = (await client.post("/api/v1/create_model", json={"base_model": "base"}, headers=_headers())).json()
     body = await _poll(client, created["request_id"])
-    assert (body["category"], "boom" in body["error"]) == ("internal", True)
+    assert (body["category"], "boom" in body["error"]) == ("server", True)
 
 
 async def test_capabilities_and_telemetry_shapes(client):
     capabilities = (await client.get("/api/v1/get_server_capabilities")).json()
     assert capabilities["supported_models"][0]["model_name"] == "base"
     assert (await client.post("/api/v1/telemetry", json={})).json() == {"status": "accepted"}
+
+
+async def test_a_request_without_an_api_key_is_rejected(client):
+    response = await client.post("/api/v1/create_session", json={})
+    assert response.status_code == 400
+    assert "X-API-Key" in response.json()["error"]
+
+
+async def test_a_bearer_authorization_still_authenticates(client):
+    response = await client.post("/api/v1/create_session", json={}, headers={"Authorization": "Bearer tenant-b"})
+    assert response.status_code == 200
+
+
+async def test_weights_info_answers_the_sdk_resume_probe(client):
+    created = (await client.post("/api/v1/create_model", json={"base_model": "base"}, headers=_headers())).json()
+    await _poll(client, created["request_id"])
+    saved = (
+        await client.post(
+            "/api/v1/save_weights",
+            json={"model_id": created["model_id"], "seq_id": 1, "path": "ck", "overwrite": False},
+            headers=_headers(),
+        )
+    ).json()
+    path = (await _poll(client, saved["request_id"]))["path"]
+    info = (await client.post("/api/v1/weights_info", json={"tinker_path": path}, headers=_headers())).json()
+    assert (info["base_model"], info["is_lora"], info["lora_rank"]) == ("base", True, 8)

@@ -112,3 +112,27 @@ class TestEngineResponseParsing:
         assert topk["token_ids"] == [[0, 0], [5, 0]]
         assert topk["logprobs"][1][0] == -0.1
         assert topk["logprobs"][0][0] != topk["logprobs"][0][0]
+
+
+async def test_forward_only_runs_the_requested_loss():
+    backend = MilesBackend(Namespace(), trainer=None, router_url="http://router")
+    captured = {}
+
+    async def fake_run_batch(method, batch_id, train_data):
+        captured["method"] = method
+        captured["loss_fn"] = train_data["loss_fn"]
+        return [{"per_datum": [{"sample_index": 0, "loss": 3.0, "logprobs": torch.tensor([-0.3])}]}]
+
+    backend._run_batch = fake_run_batch
+    outputs = await backend.forward_only(1, [(0, _row([1, 2]))], "importance_sampling", {})
+    assert captured == {"method": "forward_only", "loss_fn": "importance_sampling"}
+    assert outputs == [{"loss": 3.0, "logprobs": [pytest.approx(-0.3)]}]
+
+
+def test_a_pinned_seed_still_gets_one_stream_per_sample():
+    from miles.tinker.runtime import _seeded
+
+    request = {"sampling_params": {"sampling_seed": 7, "temperature": 0.0}}
+    assert [_seeded(request, i)["sampling_params"]["sampling_seed"] for i in range(3)] == [7, 8, 9]
+    assert request["sampling_params"]["sampling_seed"] == 7
+    assert "sampling_seed" not in _seeded({"sampling_params": {}}, 2)["sampling_params"]
