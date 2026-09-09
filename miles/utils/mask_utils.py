@@ -30,32 +30,22 @@ class MultiTurnLossMaskGenerator:
             {"role": "user", "content": test_string},
         ]
         raw_token_ids = self.tokenizer(test_string, add_special_tokens=False)["input_ids"]
-        chat_template_token = self.tokenizer.apply_chat_template(
-            test_messages, add_special_tokens=False, tokenize=False
-        )
+        chat_template_token = self.tokenizer.apply_chat_template(test_messages, add_special_tokens=False, tokenize=False)
         chat_template_token_ids = self.tokenizer(chat_template_token, add_special_tokens=False)["input_ids"]
         idx_1, idx_2 = self.find_all_sublist_indices(chat_template_token_ids, raw_token_ids)
         end_interval = len(chat_template_token_ids) - len(raw_token_ids) - idx_2
-        gen_token_length = len(
-            self.tokenizer.apply_chat_template(
-                test_messages, add_special_tokens=False, tokenize=True, return_dict=False, add_generation_prompt=True
-            )
-        ) - len(chat_template_token_ids)
+        gen_token_length = len(self.tokenizer.apply_chat_template(test_messages, add_special_tokens=False, tokenize=True, return_dict=False, add_generation_prompt=True)) - len(chat_template_token_ids)
 
         system_message_length = idx_1 - ((idx_2 - idx_1) - end_interval - len(raw_token_ids))
         return system_message_length, gen_token_length
 
-    def gen_multi_turn_loss_mask_qwen(
-        self, messages: list[dict], tools: list[dict] = None
-    ) -> tuple[list[int], list[int]]:
+    def gen_multi_turn_loss_mask_qwen(self, messages: list[dict], tools: list[dict] = None) -> tuple[list[int], list[int]]:
         all_loss_masks = []
         all_token_ids = []
 
         for i, message in enumerate(messages):
             if i == 0:
-                message_ids = self.tokenizer.apply_chat_template(
-                    [message], tokenize=True, return_dict=False, tools=tools
-                )
+                message_ids = self.tokenizer.apply_chat_template([message], tokenize=True, return_dict=False, tools=tools)
             else:
                 message_ids = self.tokenizer.apply_chat_template([message], tokenize=True, return_dict=False)
 
@@ -75,25 +65,28 @@ class MultiTurnLossMaskGenerator:
 
         return all_token_ids, all_loss_masks
 
-    def gen_multi_turn_loss_mask_qwen3(
-        self, messages: list[dict], tools: list[dict] = None
-    ) -> tuple[list[int], list[int]]:
+    def gen_multi_turn_loss_mask_qwen3(self, messages: list[dict], tools: list[dict] = None) -> tuple[list[int], list[int]]:
         all_loss_masks = []
         all_token_ids = []
 
         prefix_message = {"role": "user", "content": "FOR CALCULATING LOSS MASK ONLY"}
         prefix_token_ids = self.tokenizer.apply_chat_template([prefix_message], tokenize=True, return_dict=False)
 
-        for i, message in enumerate(messages):
+        i = 0
+        while i < len(messages):
+            message = messages[i]
+            end = i + 1
+            # Qwen renders consecutive tool responses inside one shared user turn.
+            # Rendering them independently would insert extra turn boundaries.
+            if message["role"] == "tool":
+                while end < len(messages) and messages[end]["role"] == "tool":
+                    end += 1
+            message_group = messages[i:end]
             if i == 0:
-                tailed_message_ids = self.tokenizer.apply_chat_template(
-                    [message, prefix_message], tokenize=True, return_dict=False, tools=tools
-                )
+                tailed_message_ids = self.tokenizer.apply_chat_template([*message_group, prefix_message], tokenize=True, return_dict=False, tools=tools)
                 message_ids = tailed_message_ids[: -len(prefix_token_ids)]
             else:
-                prefixed_message_ids = self.tokenizer.apply_chat_template(
-                    [prefix_message, message], tokenize=True, return_dict=False
-                )
+                prefixed_message_ids = self.tokenizer.apply_chat_template([prefix_message, *message_group], tokenize=True, return_dict=False)
                 message_ids = prefixed_message_ids[len(prefix_token_ids) :]
 
             if message["role"] != "system" and i > 0:
@@ -109,15 +102,12 @@ class MultiTurnLossMaskGenerator:
 
             all_loss_masks.extend(loss_mask)
             all_token_ids.extend(message_ids)
+            i = end
 
         return all_token_ids, all_loss_masks
 
-    def gen_multi_turn_loss_mask_distill_qwen(
-        self, messages: list[dict], tools: list[dict] = None
-    ) -> tuple[list[int], list[int]]:
-        prompt = self.tokenizer.apply_chat_template(
-            messages[:1], tokenize=False, add_generation_prompt=True, tools=tools
-        )
+    def gen_multi_turn_loss_mask_distill_qwen(self, messages: list[dict], tools: list[dict] = None) -> tuple[list[int], list[int]]:
+        prompt = self.tokenizer.apply_chat_template(messages[:1], tokenize=False, add_generation_prompt=True, tools=tools)
         response = messages[-1]["content"]
         prompt_tokens = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
         response_tokens = self.tokenizer(response, add_special_tokens=False)["input_ids"]
@@ -143,9 +133,7 @@ class MultiTurnLossMaskGenerator:
         else:
             raise ValueError(f"Unsupported tokenizer type: {self.tokenizer_type}")
 
-    def get_loss_mask_with_multimodal_alignment(
-        self, messages: list[dict], input_ids: list[int], tools: list[dict] = None
-    ) -> tuple[list[int], list[int]]:
+    def get_loss_mask_with_multimodal_alignment(self, messages: list[dict], input_ids: list[int], tools: list[dict] = None) -> tuple[list[int], list[int]]:
         text = []
         for msg in messages:
             if isinstance(msg.get("content"), list):
@@ -162,10 +150,7 @@ class MultiTurnLossMaskGenerator:
         _, loss_mask_text = self.get_loss_mask(text, tools=tools)
 
         diff = len(input_ids) - len(loss_mask_text)
-        assert diff >= 0, (
-            f"input_ids (length={len(input_ids)}) is shorter than text loss_mask (length={len(loss_mask_text)}) "
-            f"Please check if processor and tokenizer tokenization are consistent."
-        )
+        assert diff >= 0, f"input_ids (length={len(input_ids)}) is shorter than text loss_mask (length={len(loss_mask_text)}) Please check if processor and tokenizer tokenization are consistent."
         loss_mask = [0] * diff + loss_mask_text
 
         return input_ids, loss_mask
