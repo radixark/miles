@@ -121,8 +121,8 @@ class WeightUpdater:
         )
         with session:
             self._registered_adapters.update(lora_name for lora_name, _ in registrations)
-            checksums = self._checksum_manifest(adapters, staged)
-            records_manifest = checksums is not None and dist.get_rank() == 0
+            checksums = self._expected_lora_checksums(adapters, staged)
+            records_checksums = checksums is not None and dist.get_rank() == 0
             with timer("update_weights_implementation"):
                 pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
                 for bucket in self._hf_weight_iterator.iter_hf_weights(
@@ -132,7 +132,7 @@ class WeightUpdater:
                     materialize=protocol.is_sender,
                 ):
                     if protocol.is_sender:
-                        if records_manifest:
+                        if records_checksums:
                             record_lora_checksums(bucket, checksums)
                         protocol.send_bucket(bucket)
                         pbar.update(1)
@@ -144,14 +144,13 @@ class WeightUpdater:
                 session.commit(checksums, weight_version)
             protocol.after_engines_resumed()
 
-    def _checksum_manifest(self, adapters: list, staged: bool) -> dict | None:
-        """Per-adapter checksums recorded while streaming; a staged push commits
-        only under a manifest — a lost bucket must not publish."""
+    def _expected_lora_checksums(self, adapters: list, staged: bool) -> dict | None:
+        # a staged push commits only under checksums: a lost bucket must not publish
         if not adapters or not (staged or self.args.check_lora_weight_equal):
             return None
         assert (
             self._hf_weight_iterator.placement.is_full_gather
-        ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
+        ), "checksums are recorded on one rank, which must hold the full adapter"
         return {name: {} for name, _ in adapters}
 
     def _iter_base_buckets(self, *, materialize: bool):
