@@ -1,10 +1,4 @@
-"""Per-model command stream: ordering, idempotency, batch/barrier structure.
-
-Rectifies the HTTP world (out-of-order arrival, retries) into runs of batch
-ops — whose datums may execute in any order, grouping, or interleaving —
-separated by barriers that each wait for every batch op ahead of it. The
-stream never touches the trainer: the planner decides what runs when.
-"""
+"""Per-model command ordering, deduplication, and batch runs separated by barriers."""
 
 from collections import deque
 from dataclasses import dataclass, field

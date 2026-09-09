@@ -1,11 +1,4 @@
-"""HTTP skin over TinkerService: the endpoints the Tinker SDK calls.
-
-All wire translation happens here (encoding.py for JSON, proto_codec.py for
-protobuf); the service only ever sees decoded commands and returns internal
-results. Auth is the SDK's X-API-Key header used as the tenant identity;
-authorization (ownership of models, futures, checkpoints) is enforced in the
-service.
-"""
+"""Tinker SDK endpoints with JSON/protobuf translation and tenant authentication."""
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
@@ -30,9 +23,7 @@ COMMAND_ROUTES = {
 
 
 def _tenant(request: Request) -> str:
-    """The pinned SDK authenticates with X-API-Key; a bearer Authorization is
-    accepted for hand-rolled clients. No key, no tenant — an anonymous fallback
-    would silently void tenant isolation."""
+    """Require X-API-Key or a bearer token to establish the tenant identity."""
     key = (
         request.headers.get("x-api-key")
         or (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()

@@ -1,14 +1,7 @@
-"""SDK wire <-> gateway internal language, JSON half (proto_codec.py is the
-binary half; both produce and consume the same internal shapes).
+"""Translate SDK JSON requests and results.
 
-Decode errors are protocol violations and answer HTTP 400; size admission
-happens later in core and fails the future instead.
-
-Sequence mapping: a datum's model_input tokens x[0..T-1] and target_tokens
-t[0..T-1] must satisfy t[i] == x[i+1] for i < T-1 (standard next-token
-supervision). The encoded datum is x + [t[-1]] with T supervised positions, so
-the trainer scores exactly logprob(t[i] | x[0..i]).
-"""
+Next-token datums encode input x and shifted targets t as x + [t[-1]],
+so each output scores logprob(t[i] | x[0..i])."""
 
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 

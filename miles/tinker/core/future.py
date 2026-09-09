@@ -1,10 +1,4 @@
-"""Future store: the ledger behind submit-then-poll.
-
-The HTTP side reads, the execution side writes; this is the only interface
-between the two worlds. Futures live in memory: a gateway restart answers
-410 and the SDK resubmits the original request, which the stream dedup makes
-safe.
-"""
+"""In-memory future results. Request deduplication lasts only for the current process."""
 
 import time
 import uuid
@@ -54,8 +48,7 @@ class FutureStore:
         future.finished_at = time.monotonic()
 
     def get(self, request_id: str, tenant: str) -> Future | None:
-        """None means unknown/expired: the HTTP layer answers 410 and the SDK
-        resubmits the original request."""
+        """Return None for unknown or expired futures; enforce tenant ownership otherwise."""
         self._sweep()
         future = self._futures.get(request_id)
         if future is None:

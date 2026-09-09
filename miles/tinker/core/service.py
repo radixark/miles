@@ -1,11 +1,6 @@
-"""The gateway service: sessions, models, streams, futures, and the single
-dispatch loop.
+"""Sessions, models, futures, and ordered trainer dispatch.
 
-Speaks only the internal language: server/ hands it decoded commands and
-renders its results; runtime.py turns units into trainer batches. All backend
-calls go through one loop / one lock: the trainer is an SPMD domain and must
-see a single totally ordered stream of batches and barriers.
-"""
+The backend lock serializes trainer calls across dispatch, model creation, and lease expiry."""
 
 import asyncio
 import json
@@ -35,8 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExecutorBackend:
-    """What runtime.py implements. Speaks datums and plain lists; core stays
-    torch-free and miles-free."""
+    """Backend contract using datums and plain lists, without torch or trainer dependencies."""
 
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
@@ -99,8 +93,7 @@ class TinkerService:
         self._create_tasks: set = set()
         self._arrival_counter = 0
         self._batch_counter = 0
-        # slot -> (error, category) of a discarded accumulation window; the next
-        # optim barrier on the slot must fail instead of stepping ghost gradients
+        # discarded slot gradients must fail the next optimizer step
         self._poisoned_slots: dict[int, tuple[str, str]] = {}
 
     # -------- control plane --------
@@ -147,8 +140,7 @@ class TinkerService:
         return future.request_id, model_id
 
     def _reject_unsupported_lora_config(self, lora_config: dict) -> None:
-        """The adapter layout is fixed at server start; a request the layout
-        cannot honor must fail here, not silently train a different model."""
+        """Reject per-model settings that conflict with the fixed server adapter layout."""
         if lora_config.get("seed") is not None:
             raise UserInputError("lora_config.seed is not supported: adapter initialization is not per-model seedable")
         layout = {
@@ -187,8 +179,7 @@ class TinkerService:
     # -------- command plane --------
 
     def submit(self, tenant: str, op: str, payload: dict) -> str:
-        """payload is server-decoded; content errors here are admission
-        rejections and fail the future (the SDK sees RequestFailedError)."""
+        """Admit a decoded command; content errors settle its future as a user failure."""
         try:
             op = CommandOp(op)
         except ValueError:
@@ -198,14 +189,12 @@ class TinkerService:
         seq_id = payload["seq_id"]
         stream = self.planner.stream(model_id)
 
-        # idempotency: the SDK resends the same seq_id after timeouts/410;
-        # re-executing forward_backward would double-accumulate gradients
+        # retries must not accumulate gradients twice
         if seq_id in stream.request_id_by_seq:
             request_id = stream.request_id_by_seq[seq_id]
             if self.futures.get(request_id, tenant) is not None:
                 return request_id
-            # the result aged out of retention; the command already executed, so
-            # re-running it is unsafe — answer with a terminal failure instead of 410 forever
+            # expired results must fail terminally without re-executing the command
             replacement = self.futures.create(model_id, tenant)
             self.futures.fail(replacement.request_id, "result expired after retention", "user")
             stream.request_id_by_seq[seq_id] = replacement.request_id
@@ -217,8 +206,7 @@ class TinkerService:
             self._admit(op, payload)
         except UserInputError as error:
             self.futures.fail(future.request_id, str(error), "user")
-            # the rejected command still consumes its seq position, or the
-            # stream would wait for it forever
+            # consume rejected sequence positions so the stream can advance
             payload = {**payload, "datums": []}
 
         self._arrival_counter += 1
@@ -430,7 +418,7 @@ class TinkerService:
         except UserInputError as error:
             await self._discard_batch_runs(batch, str(error), "user")
             return
-        except Exception as error:  # noqa: BLE001  infra failure: fail the affected windows, keep serving
+        except Exception as error:  # noqa: BLE001  infra failure: fail the affected batch runs, keep serving
             logger.exception(f"{batch.op} batch {self._batch_counter} failed")
             await self._discard_batch_runs(batch, f"{type(error).__name__}: {error}", "server")
             return
@@ -445,10 +433,7 @@ class TinkerService:
                 ref.stream.finish(request)
 
     async def _discard_batch_runs(self, batch: BatchUnit, error: str, category: str) -> None:
-        """A failed batch poisons the gradient accumulation of every slot it
-        touched, and that accumulation is shared with the other requests of the
-        same window — so the whole open window of each affected stream fails
-        and its slot's gradients are dropped."""
+        """Fail each affected batch run and discard its gradients after a backward failure."""
         streams = {ref.stream for ref in batch.datums}
         for stream in streams:
             for pending in list(stream.open_batch_run()):
@@ -514,9 +499,7 @@ class TinkerService:
             stream.finish(pending)
 
     def _fail_if_poisoned(self, stream, pending) -> bool:
-        """Earlier batches of the window may have resolved before a later one
-        failed and their gradients were discarded; the step must not silently
-        run on the remainder."""
+        """Fail the next optimizer step when a batch discarded its accumulated gradients."""
         poison = self._poisoned_slots.pop(stream.slot, None)
         if poison is None:
             return False
@@ -555,8 +538,7 @@ class TinkerService:
         version = record.next_sampler_version
         record.next_sampler_version += 1
         path = self._checkpoint_dir(record.model_id, "sampler_weights", str(version))
-        # disk is the commit point: the export makes the version exist; the
-        # push only warms the engine cache
+        # export commits the version; push only warms the engine cache
         await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
         self._stamp_checkpoint_meta(path, record)
         record.published_sampler_versions.add(version)
@@ -571,14 +553,12 @@ class TinkerService:
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
         }
         if payload.get("sampler_path") is None:
-            # the SDK's save-and-get-sampling-client convenience sends no path and
-            # expects a session bound to the fresh version instead
+            # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self.create_sampling_session(record.tenant, {"model_path": result["path"]})
         return [result]
 
     def _stamp_checkpoint_meta(self, checkpoint_dir: str, record: ModelRecord) -> None:
-        """Ownership and shape travel with the checkpoint: they must outlive the
-        source model's lease and gateway restarts."""
+        """Persist checkpoint ownership and shape beyond the model lease and gateway process."""
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
         meta = {
             "tenant": record.tenant,
@@ -616,7 +596,6 @@ def _parse_tinker_path(path: str) -> tuple[str, str, str]:
 
 
 def _validate_checkpoint_segment(segment: str) -> None:
-    """Client-provided segments become directory names under checkpoint_root;
-    anything that could traverse out of it is rejected at the protocol edge."""
+    """Reject client path segments that could escape the checkpoint root."""
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", segment) is None:
         raise UserInputError(f"invalid checkpoint path segment {segment!r}")
