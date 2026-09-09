@@ -8,7 +8,7 @@ safe.
 
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from miles.tinker.core.types import OwnershipError
 
@@ -29,7 +29,6 @@ class Future:
     error: str | None = None
     error_category: str | None = None
     finished_at: float | None = None
-    created_at: float = field(default_factory=time.monotonic)
 
 
 class FutureStore:
