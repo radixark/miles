@@ -23,7 +23,9 @@ class TestBuildTrainData:
         assert train_data["dynamic_global_batch_size"] == 2
 
     def test_optional_datum_keys_map_to_batch_names(self):
-        train_data = _build_train_data([(0, _datum([1, 2], weights=[1.0], advantages=[2.0], sampling_logprobs=[-0.5]))])
+        train_data = _build_train_data(
+            [(0, _datum([1, 2], weights=[1.0], advantages=[2.0], sampling_logprobs=[-0.5]))]
+        )
         assert train_data["loss_weights"] == [[1.0]]
         assert train_data["advantages"] == [[2.0]]
         assert train_data["rollout_log_probs"] == [[-0.5]]
