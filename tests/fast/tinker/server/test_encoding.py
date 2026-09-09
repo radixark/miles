@@ -1,5 +1,4 @@
-"""The JSON half of the wire: decode enforces next-token supervision and the
-AdamParams schema; render produces the SDK response shapes."""
+"""JSON decoding validates next-token inputs and renders SDK result shapes."""
 
 import pytest
 

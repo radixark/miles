@@ -1,5 +1,4 @@
-"""One HTTP conversation over the real FastAPI app, plus the error mapping the
-SDK's retry loop depends on (400/403/410/try_again)."""
+"""HTTP responses preserve the SDK conversation and retry/error contract."""
 
 import asyncio
 
@@ -19,7 +18,6 @@ async def client(service):
 
 
 def _headers(tenant: str = "tenant-a") -> dict:
-    # the pinned SDK authenticates with X-API-Key, not Authorization
     return {"X-API-Key": tenant}
 
 
@@ -64,7 +62,7 @@ async def test_the_training_conversation(client):
 
     fb = (await client.post("/api/v1/forward_backward", json=_fb_body(model_id, 1), headers=_headers())).json()
     fb_result = await _poll(client, fb["request_id"])
-    assert [len(o["logprobs"]["data"]) for o in [fb_result["loss_fn_outputs"][0]]] == [3]
+    assert len(fb_result["loss_fn_outputs"][0]["logprobs"]["data"]) == 3
 
     optim = (
         await client.post(
