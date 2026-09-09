@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
@@ -423,19 +423,29 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)
 
+    @asynccontextmanager
+    async def _updatable_engines(self):
+        """end_update_weights must run even when the slot command fails: the
+        inference controller's context lock is held until it does."""
+        info = await self._inference_controller.start_update_weights()
+        try:
+            yield info
+        finally:
+            await self._inference_controller.end_update_weights(
+                snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
+            )
+
     async def push_slot(
         self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
     ) -> None:
-        info = await self._inference_controller.start_update_weights()
-        await self._execute_slots(
-            "push_slot", info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
-        )
-        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        async with self._updatable_engines() as info:
+            await self._execute_slots(
+                "push_slot", info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
+            )
 
     async def unload_adapter(self, lora_name: str) -> None:
-        info = await self._inference_controller.start_update_weights()
-        await self._execute_slots("unload_adapter", info=info, lora_name=lora_name)
-        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        async with self._updatable_engines() as info:
+            await self._execute_slots("unload_adapter", info=info, lora_name=lora_name)
 
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
