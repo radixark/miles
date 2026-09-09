@@ -54,6 +54,10 @@ class GatewayConfig:
     max_tokens_per_request: int = 4_000_000
     max_samples_per_request: int = 64
     lora_alpha: float | None = None  # None: 2 * rank
+    # what the server-wide adapter layout trains; create_model rejects deviations
+    trains_attn: bool = True
+    trains_mlp: bool = True
+    trains_unembed: bool = False
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
     batch_token_budget: int = 262_144  # packing bound per BatchUnit
 
