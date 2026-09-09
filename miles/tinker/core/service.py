@@ -104,9 +104,9 @@ class TinkerService:
 
     # -------- control plane --------
 
-    def create_session(self, tenant: str, payload: dict) -> str:
+    def create_session(self, tenant: str) -> str:
         session_id = f"session-{uuid.uuid4().hex}"
-        self.sessions[session_id] = {"tenant": tenant, "last_heartbeat": time.monotonic(), "payload": payload}
+        self.sessions[session_id] = {"tenant": tenant, "last_heartbeat": time.monotonic()}
         return session_id
 
     def heartbeat(self, session_id: str) -> None:
@@ -136,8 +136,6 @@ class TinkerService:
             base_model=base_model,
             lora_rank=rank,
             lora_alpha=alpha,
-            session_id=payload.get("session_id", ""),
-            user_metadata=payload.get("user_metadata") or {},
         )
         self.models[model_id] = record
         self.planner.add_stream(ModelStream(model_id, tenant, slot))
@@ -282,7 +280,6 @@ class TinkerService:
         sampling_session_id = f"sampling-{uuid.uuid4().hex}"
         self.sampling_sessions[sampling_session_id] = {
             "tenant": tenant,
-            "base_model": payload.get("base_model"),
             "model_path": payload.get("model_path"),
         }
         return sampling_session_id

@@ -7,8 +7,6 @@ authorization (ownership of models, futures, checkpoints) is enforced in the
 service.
 """
 
-import logging
-
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
@@ -22,8 +20,6 @@ from miles.tinker.server.proto_codec import (
     decode_forward_backward_request,
     maybe_decompress,
 )
-
-logger = logging.getLogger(__name__)
 
 COMMAND_ROUTES = {
     "/api/v1/optim_step": "optim_step",
@@ -77,8 +73,7 @@ def build_app(service: TinkerService) -> FastAPI:
 
     @app.post("/api/v1/create_session")
     async def create_session(request: Request):
-        payload = await request.json()
-        session_id = service.create_session(_tenant(request), payload)
+        session_id = service.create_session(_tenant(request))
         return {"type": "create_session", "session_id": session_id}
 
     @app.post("/api/v1/session_heartbeat")
