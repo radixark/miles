@@ -6,7 +6,7 @@ happens later in core and fails the promise instead.
 
 Sequence mapping: a datum's model_input tokens x[0..T-1] and target_tokens
 t[0..T-1] must satisfy t[i] == x[i+1] for i < T-1 (standard next-token
-supervision). The encoded row is x + [t[-1]] with T supervised positions, so
+supervision). The encoded datum is x + [t[-1]] with T supervised positions, so
 the trainer scores exactly logprob(t[i] | x[0..i]).
 """
 
@@ -22,34 +22,34 @@ ADAM_PARAM_DEFAULTS = {
     "grad_clip_norm": 0.0,
 }
 
-# wire loss_fn_inputs key -> internal row key
+# wire loss_fn_inputs key -> internal datum key
 INPUT_ROW_KEYS = {"weights": "weights", "advantages": "advantages", "logprobs": "sampling_logprobs"}
 
 
-def decode_command(kind: str, payload: dict) -> tuple[str, dict]:
-    """One JSON command body -> (kind, internal payload)."""
+def decode_command(op: str, payload: dict) -> tuple[str, dict]:
+    """One JSON command body -> (op, internal payload)."""
     decoded = {"model_id": payload["model_id"], "seq_id": payload["seq_id"]}
-    if kind == "forward_backward":
+    if op == "forward_backward":
         fb_input = payload["forward_backward_input"]
         datums = [
             (model_input_tokens(datum["model_input"]), _decode_inputs(datum["loss_fn_inputs"]))
             for datum in fb_input["data"]
         ]
         decoded |= {
-            "rows": [build_row(tokens, inputs, i) for i, (tokens, inputs) in enumerate(datums)],
+            "datums": [build_datum(tokens, inputs, i) for i, (tokens, inputs) in enumerate(datums)],
             "loss_fn": fb_input["loss_fn"],
             "loss_fn_config": fb_input.get("loss_fn_config") or {},
         }
-        return ("forward_only" if payload.get("forward_only") else kind), decoded
-    if kind == "optim_step":
-        return kind, decoded | {"adam_params": materialize_adam_params(payload["adam_params"])}
-    if kind == "save_state":
-        return kind, decoded | {"name": payload.get("path")}
-    if kind == "load_state":
-        return kind, decoded | {"path": payload["path"], "optimizer": payload["optimizer"]}
-    if kind == "save_weights_for_sampler":
-        return kind, decoded
-    raise UserInputError(f"unknown command kind {kind!r}")
+        return ("forward_only" if payload.get("forward_only") else op), decoded
+    if op == "optim_step":
+        return op, decoded | {"adam_params": materialize_adam_params(payload["adam_params"])}
+    if op == "save_state":
+        return op, decoded | {"name": payload.get("path")}
+    if op == "load_state":
+        return op, decoded | {"path": payload["path"], "optimizer": payload["optimizer"]}
+    if op == "save_weights_for_sampler":
+        return op, decoded
+    raise UserInputError(f"unknown command op {op!r}")
 
 
 def materialize_adam_params(raw: dict) -> dict:
@@ -68,8 +68,8 @@ def model_input_tokens(model_input: dict) -> list[int]:
     return tokens
 
 
-def build_row(input_tokens: list[int], inputs: dict[str, list], index: int) -> dict:
-    """One decoded datum (token list + loss_fn_inputs lists) -> internal row."""
+def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) -> dict:
+    """One decoded datum (token list + loss_fn_inputs lists) -> internal datum."""
     targets = [int(t) for t in inputs["target_tokens"]]
     if len(targets) != len(input_tokens):
         raise UserInputError(
@@ -79,11 +79,11 @@ def build_row(input_tokens: list[int], inputs: dict[str, list], index: int) -> d
         raise UserInputError(
             f"datum {index}: target_tokens must be model_input shifted by one (next-token supervision)"
         )
-    row = {"tokens": input_tokens + targets[-1:], "target_len": len(targets)}
-    for wire_key, row_key in INPUT_ROW_KEYS.items():
+    datum = {"tokens": input_tokens + targets[-1:], "target_len": len(targets)}
+    for wire_key, datum_key in INPUT_ROW_KEYS.items():
         if wire_key in inputs:
-            row[row_key] = [float(value) for value in inputs[wire_key]]
-    return row
+            datum[datum_key] = [float(value) for value in inputs[wire_key]]
+    return datum
 
 
 def _decode_inputs(loss_fn_inputs: dict) -> dict[str, list]:
@@ -128,8 +128,8 @@ def decode_sample_request(payload: dict) -> dict:
 
 
 def render_result(result: dict) -> dict:
-    kind = result["kind"]
-    if kind in ("forward_backward", "forward_only"):
+    op = result["op"]
+    if op in ("forward_backward", "forward_only"):
         outputs = result["outputs"]
         return {
             "type": "forward_backward",
@@ -140,23 +140,23 @@ def render_result(result: dict) -> dict:
             ],
             "metrics": {"loss:sum": float(sum(output["loss"] for output in outputs))},
         }
-    if kind == "sample":
+    if op == "sample":
         rendered = {"type": "sample", "sequences": result["sequences"]}
         for key in ("prompt_logprobs", "topk_prompt_logprobs"):
             if result.get(key) is not None:
                 rendered[key] = result[key]
         return rendered
-    if kind == "create_model":
+    if op == "create_model":
         return {"type": "create_model", "model_id": result["model_id"]}
-    if kind == "save_state":
+    if op == "save_state":
         return {"type": "save_weights", "path": result["path"]}
-    if kind == "save_weights_for_sampler":
+    if op == "save_weights_for_sampler":
         return {"type": "save_weights_for_sampler", "path": result["path"]}
-    if kind == "load_state":
+    if op == "load_state":
         return {"type": "load_weights"}
-    if kind == "optim_step":
+    if op == "optim_step":
         return {"type": "optim_step", "metrics": result["metrics"]}
-    raise AssertionError(f"unrenderable result kind {kind!r}")
+    raise AssertionError(f"unrenderable result op {op!r}")
 
 
 def _tensor_json(values: list[float]) -> dict:

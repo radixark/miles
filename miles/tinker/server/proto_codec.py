@@ -10,7 +10,7 @@ JSON floats. The schema ships with the tinker pip package.
 import numpy as np
 
 from miles.tinker.core.types import UserInputError
-from miles.tinker.server.encoding import build_row
+from miles.tinker.server.encoding import build_datum
 from tinker.proto import tinker_public_pb2 as public_pb
 
 PROTO_CONTENT_TYPE = "application/x-protobuf"
@@ -35,11 +35,11 @@ def maybe_decompress(body: bytes, content_encoding: str | None) -> bytes:
 
 
 def decode_forward_backward_request(body: bytes) -> tuple[str, dict]:
-    """ForwardBackwardRequest proto -> (kind, internal payload)."""
+    """ForwardBackwardRequest proto -> (op, internal payload)."""
     message = public_pb.ForwardBackwardRequest()
     message.ParseFromString(body)
 
-    rows = []
+    datums = []
     for index, datum in enumerate(message.data):
         tokens: list[int] = []
         for chunk in datum.model_input:
@@ -47,12 +47,12 @@ def decode_forward_backward_request(body: bytes) -> tuple[str, dict]:
                 raise UserInputError(f"unsupported model_input chunk type: {chunk.WhichOneof('chunk')}")
             tokens.extend(np.frombuffer(chunk.encoded_text.tokens, dtype=np.int32).tolist())
         inputs = {name: _decode_tensor(name, tensor) for name, tensor in datum.loss_fn_inputs.items()}
-        rows.append(build_row(tokens, inputs, index))
+        datums.append(build_datum(tokens, inputs, index))
 
     decoded = {
         "model_id": message.model_id,
         "seq_id": message.seq_id,
-        "rows": rows,
+        "datums": datums,
         "loss_fn": message.loss_fn,
         "loss_fn_config": dict(message.loss_fn_config),
     }
