@@ -1,4 +1,4 @@
-"""The gateway service: sessions, models, streams, promises, and the single
+"""The gateway service: sessions, models, streams, futures, and the single
 dispatch loop.
 
 Speaks only the internal language: server/ hands it decoded commands and
@@ -12,8 +12,8 @@ import logging
 import time
 import uuid
 
+from miles.tinker.core.future import PENDING, Future, FutureStore
 from miles.tinker.core.planner import BarrierOp, BatchOp, Planner
-from miles.tinker.core.promise import PENDING, Promise, PromiseStore
 from miles.tinker.core.stream import ModelStream
 from miles.tinker.core.types import Command, GatewayConfig, ModelRecord, OwnershipError, UserInputError
 
@@ -67,7 +67,7 @@ class TinkerService:
     def __init__(self, backend: ExecutorBackend, config: GatewayConfig) -> None:
         self.backend = backend
         self.config = config
-        self.promises = PromiseStore()
+        self.futures = FutureStore()
         self.planner = Planner(config.batch_token_budget)
         self.models: dict[str, ModelRecord] = {}
         self.sessions: dict[str, dict] = {}
@@ -93,7 +93,7 @@ class TinkerService:
             session["last_heartbeat"] = time.monotonic()
 
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
-        """Two-phase like every command: allocate now, initialize the slot behind the promise."""
+        """Two-phase like every command: allocate now, initialize the slot behind the future."""
         base_model = payload["base_model"]
         if base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
@@ -118,11 +118,11 @@ class TinkerService:
         )
         self.models[model_id] = record
         self.planner.add_stream(ModelStream(model_id, tenant, slot))
-        promise = self.promises.create(model_id, tenant)
-        task = asyncio.create_task(self._run_create_model(promise.request_id, record))
+        future = self.futures.create(model_id, tenant)
+        task = asyncio.create_task(self._run_create_model(future.request_id, record))
         self._create_tasks.add(task)
         task.add_done_callback(self._create_tasks.discard)
-        return promise.request_id, model_id
+        return future.request_id, model_id
 
     async def _run_create_model(self, request_id: str, record: ModelRecord) -> None:
         try:
@@ -132,9 +132,9 @@ class TinkerService:
             self.models.pop(record.model_id, None)
             self.planner.remove_stream(record.model_id)
             self.free_slots.add(record.slot)
-            self.promises.fail(request_id, str(error), "internal")
+            self.futures.fail(request_id, str(error), "internal")
             return
-        self.promises.resolve(request_id, {"op": "create_model", "model_id": record.model_id})
+        self.futures.resolve(request_id, {"op": "create_model", "model_id": record.model_id})
 
     def get_model(self, tenant: str, model_id: str) -> ModelRecord:
         record = self.models.get(model_id)
@@ -148,7 +148,7 @@ class TinkerService:
 
     def submit(self, tenant: str, op: str, payload: dict) -> str:
         """payload is server-decoded; content errors here are admission
-        rejections and fail the promise (the SDK sees RequestFailedError)."""
+        rejections and fail the future (the SDK sees RequestFailedError)."""
         model_id = payload["model_id"]
         self.get_model(tenant, model_id)
         seq_id = payload["seq_id"]
@@ -159,12 +159,12 @@ class TinkerService:
         if seq_id in stream.request_id_by_seq:
             return stream.request_id_by_seq[seq_id]
 
-        promise = self.promises.create(model_id, tenant)
-        stream.request_id_by_seq[seq_id] = promise.request_id
+        future = self.futures.create(model_id, tenant)
+        stream.request_id_by_seq[seq_id] = future.request_id
         try:
             self._admit(op, payload)
         except UserInputError as error:
-            self.promises.fail(promise.request_id, str(error), "user")
+            self.futures.fail(future.request_id, str(error), "user")
             # the rejected command still consumes its seq position, or the
             # stream would wait for it forever
             payload = {**payload, "datums": []}
@@ -176,12 +176,12 @@ class TinkerService:
                 seq_id=seq_id,
                 op=op,
                 payload=payload,
-                request_id=promise.request_id,
+                request_id=future.request_id,
                 arrival=self._arrival_counter,
             )
         )
         self._wake.set()
-        return promise.request_id
+        return future.request_id
 
     def _admit(self, op: str, payload: dict) -> None:
         if op not in ("forward_backward", "forward_only"):
@@ -205,11 +205,11 @@ class TinkerService:
                 f"{total_tokens} tokens exceeds max_tokens_per_request={self.config.max_tokens_per_request}"
             )
 
-    def retrieve(self, tenant: str, request_id: str) -> Promise | None:
+    def retrieve_future(self, tenant: str, request_id: str) -> Future | None:
         """None -> the HTTP layer answers 410 and the SDK resubmits."""
-        return self.promises.get(request_id, tenant)
+        return self.futures.get(request_id, tenant)
 
-    # -------- sampling plane (promise-based but never queues) --------
+    # -------- sampling plane (future-based but never queues) --------
 
     def create_sampling_session(self, tenant: str, payload: dict) -> str:
         sampling_session_id = f"sampling-{uuid.uuid4().hex}"
@@ -228,31 +228,31 @@ class TinkerService:
                 raise OwnershipError("sampling session does not belong to this tenant")
             model_path = model_path or session["model_path"]
         lora_name, lora_path = self._resolve_sampler(tenant, model_path) if model_path else (None, None)
-        promise = self.promises.create(model_path or "base", tenant)
+        future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
-        task = asyncio.create_task(self._run_sample(promise.request_id, payload, lora_name, lora_path))
-        self._sample_tasks[promise.request_id] = (task, tenant)
-        task.add_done_callback(lambda _t, rid=promise.request_id: self._sample_tasks.pop(rid, None))
-        return promise.request_id, sequence_ids
+        task = asyncio.create_task(self._run_sample(future.request_id, payload, lora_name, lora_path))
+        self._sample_tasks[future.request_id] = (task, tenant)
+        task.add_done_callback(lambda _t, rid=future.request_id: self._sample_tasks.pop(rid, None))
+        return future.request_id, sequence_ids
 
     async def _run_sample(
         self, request_id: str, payload: dict, lora_name: str | None, lora_path: str | None = None
     ) -> None:
         try:
             result = await self.backend.sample(payload, lora_name, lora_path)
-            self.promises.resolve(request_id, {"op": "sample", **result})
+            self.futures.resolve(request_id, {"op": "sample", **result})
         except asyncio.CancelledError:
-            self.promises.fail(request_id, "cancelled", "user")
+            self.futures.fail(request_id, "cancelled", "user")
         except UserInputError as error:
-            self.promises.fail(request_id, str(error), "user")
+            self.futures.fail(request_id, str(error), "user")
         except Exception as error:  # noqa: BLE001
             logger.exception("sample failed")
-            self.promises.fail(request_id, f"{type(error).__name__}: {error}", "server")
+            self.futures.fail(request_id, f"{type(error).__name__}: {error}", "server")
 
     def cancel(self, tenant: str, request_id: str) -> None:
-        """Cancel an in-flight sampling promise; training commands have no
+        """Cancel an in-flight sampling future; training commands have no
         cancel in the protocol and are ignored."""
-        if self.promises.get(request_id, tenant) is None:
+        if self.futures.get(request_id, tenant) is None:
             return
         entry = self._sample_tasks.get(request_id)
         if entry is not None:
@@ -300,9 +300,9 @@ class TinkerService:
             self.planner.remove_stream(model_id)
             del self.models[model_id]
             for request_id in stream.request_id_by_seq.values():
-                promise = self.promises.get(request_id, record.tenant)
-                if promise is not None and promise.state == PENDING:
-                    self.promises.fail(request_id, "lease expired", "user")
+                future = self.futures.get(request_id, record.tenant)
+                if future is not None and future.state == PENDING:
+                    self.futures.fail(request_id, "lease expired", "user")
             async with self._backend_lock:
                 await self.backend.unload_slot(record.slot)
             self.free_slots.add(record.slot)
@@ -343,7 +343,7 @@ class TinkerService:
         for ref, output in zip(refs, outputs, strict=True):
             request = ref.request
             if request.record_output(ref.local_index, output):
-                self.promises.resolve(
+                self.futures.resolve(
                     request.command.request_id, {"op": request.command.op, "outputs": request.outputs}
                 )
                 ref.stream.finish(request)
@@ -354,7 +354,7 @@ class TinkerService:
             if id(ref.request) in seen:
                 continue
             seen.add(id(ref.request))
-            self.promises.fail(ref.request.command.request_id, error, category)
+            self.futures.fail(ref.request.command.request_id, error, category)
             ref.stream.finish(ref.request)
 
     async def _run_barrier(self, barrier: BarrierOp) -> None:
@@ -368,12 +368,12 @@ class TinkerService:
             self._fail_barrier(barrier, f"{type(error).__name__}: {error}", "server")
             return
         for (stream, pending), result in zip(barrier.entries, results, strict=True):
-            self.promises.resolve(pending.command.request_id, result)
+            self.futures.resolve(pending.command.request_id, result)
             stream.finish(pending)
 
     def _fail_barrier(self, barrier: BarrierOp, error: str, category: str) -> None:
         for stream, pending in barrier.entries:
-            self.promises.fail(pending.command.request_id, error, category)
+            self.futures.fail(pending.command.request_id, error, category)
             stream.finish(pending)
 
     async def _execute_barrier(self, barrier: BarrierOp) -> list[dict]:
