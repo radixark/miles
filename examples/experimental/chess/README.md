@@ -16,6 +16,12 @@ Set `--system-prompt-variant random` to select one of the chess harness's five
 UCI-only system prompts independently for every rollout. The selected prompt
 stays fixed for the complete game, including retries and context compaction.
 
+Set `--harness-mode stateful` to rebuild each move request from the current board,
+full UCI move history, side to move, and legal UCI moves. Earlier model reasoning
+is not included in subsequent requests, but all generations remain available in
+the replay journal and TITO training samples. The default `conversation` mode
+retains the existing multi-turn context behavior.
+
 ## Default smoke configuration
 
 - One node with eight H200 GPUs.
@@ -164,6 +170,10 @@ TITO v2 returns the trainable trajectory segments created around compaction.
 Set `--kl-loss-coef` to a positive value to regularize the policy toward the
 reference model. The default is `0.0`, preserving the original unregularized
 recipe.
+
+Set `--kl-loss-type k3` to use the unclamped k3 estimator. The existing
+`low_var_kl` choice remains the launcher default for backward compatibility;
+both the selected estimator and harness mode are recorded in the run manifest.
 
 Set `--learning-rate` to control the constant Adam learning rate. Its default is
 `1e-6`, preserving the original recipe.

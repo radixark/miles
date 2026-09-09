@@ -63,6 +63,38 @@ def test_grpo_args_uses_configured_kl_loss_coefficient() -> None:
     assert "--kl-loss-coef 0.01 " in _grpo_args(args)
 
 
+@pytest.mark.parametrize("kl_loss_type", ["low_var_kl", "k3"])
+def test_grpo_args_forward_kl_estimator(kl_loss_type: str) -> None:
+    args = ScriptArgs(hardware="H200", num_gpus_per_node=8, kl_loss_type=kl_loss_type)
+    grpo_args = _grpo_args(args)
+    assert f"--kl-loss-type {kl_loss_type} " in grpo_args
+    assert grpo_args.count("--kl-loss-type ") == 1
+
+
+def test_invalid_kl_estimator_is_rejected() -> None:
+    with pytest.raises(ValueError, match="kl_loss_type"):
+        ScriptArgs(hardware="H200", num_gpus_per_node=8, kl_loss_type="unknown")
+
+
+@pytest.mark.parametrize("harness_mode", ["conversation", "stateful"])
+def test_prompt_rows_forward_harness_mode(harness_mode: str) -> None:
+    args = ScriptArgs(
+        hardware="H200", num_gpus_per_node=8, rollout_batch_size=3, harness_mode=harness_mode
+    )
+    assert all(row["metadata"]["chess"]["harness_mode"] == harness_mode for row in _prompt_rows(args))
+
+
+def test_harness_and_kl_defaults_preserve_existing_behavior() -> None:
+    args = ScriptArgs(hardware="H200", num_gpus_per_node=8)
+    assert args.harness_mode == "conversation"
+    assert args.kl_loss_type == "low_var_kl"
+
+
+def test_invalid_harness_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="harness_mode"):
+        ScriptArgs(hardware="H200", num_gpus_per_node=8, harness_mode="unknown")
+
+
 def test_script_args_rejects_negative_kl_loss_coefficient() -> None:
     with pytest.raises(ValueError, match="kl_loss_coef must be nonnegative"):
         ScriptArgs(

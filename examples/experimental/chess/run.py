@@ -12,7 +12,9 @@ Args:
     run_id: Reproducible identifier for outputs and telemetry.
     tito_model: Native TITO tokenizer family matching the selected checkpoint.
     learning_rate: Constant Adam learning rate used for policy updates.
-    kl_loss_coef: Coefficient for the low-variance KL regularization loss.
+    kl_loss_coef: Coefficient for the KL regularization loss.
+    kl_loss_type: KL estimator, including unclamped ``k3`` regularization.
+    harness_mode: Retain a conversation or rebuild each move from board state.
     repetition_reward_penalty: Reward subtracted once from repetitive rollouts.
     max_llm_retries_per_move: Retries after an invalid answer; training defaults to zero.
     fully_async: Run rollout generation continuously on disaggregated nodes.
@@ -82,6 +84,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     max_seq_len: int = 65536
     learning_rate: float = 1e-6
     kl_loss_coef: float = 0.0
+    kl_loss_type: Literal["low_var_kl", "k3"] = "low_var_kl"
     repetition_reward_penalty: float = 0.1
     fully_async: bool = False
     train_num_nodes: int = 1
@@ -89,6 +92,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     stockfish_elo: int = 1320
     max_model_turns: int = 8
     max_llm_retries_per_move: int = 0
+    harness_mode: Literal["conversation", "stateful"] = "conversation"
     system_prompt_variant: Literal[
         "grandmaster",
         "position_analyst",
@@ -140,6 +144,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("max_llm_retries_per_move must be a non-negative integer")
         if self.kl_loss_coef < 0:
             raise ValueError("kl_loss_coef must be nonnegative")
+        if self.kl_loss_type not in ("low_var_kl", "k3"):
+            raise ValueError("kl_loss_type must be low_var_kl or k3")
+        if self.harness_mode not in ("conversation", "stateful"):
+            raise ValueError("harness_mode must be conversation or stateful")
         if self.repetition_reward_penalty < 0:
             raise ValueError("repetition_reward_penalty must be nonnegative")
         if self.learning_rate <= 0:
@@ -243,6 +251,7 @@ def _prompt_rows(args: ScriptArgs) -> list[dict[str, object]]:
                         "llm_side": llm_side,
                         "max_model_turns": args.max_model_turns,
                         "max_llm_retries_per_move": args.max_llm_retries_per_move,
+                        "harness_mode": args.harness_mode,
                         "repetition_reward_penalty": args.repetition_reward_penalty,
                         "system_prompt_variant": args.system_prompt_variant,
                         "max_plies": args.max_plies,
@@ -349,8 +358,8 @@ def _performance_args(args: ScriptArgs) -> str:
 
 def _grpo_args(args: ScriptArgs) -> str:
     tis_args = "--use-tis " if args.fully_async else ""
-    # The chess postprocessor owns shaping so invalid-move trajectories stay at zero.
-    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty 0 {tis_args}"
+    # The chess postprocessor owns both base rewards and additive repetition shaping.
+    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type {args.kl_loss_type} --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty 0 {tis_args}"
 
 
 def _optimizer_args(args: ScriptArgs) -> str:

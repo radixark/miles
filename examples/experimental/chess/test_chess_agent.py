@@ -4,9 +4,31 @@ import asyncio
 from typing import Any
 
 import pytest
+from chess_eval.tito_v2 import build_runtime
 
 import chess_agent
 import run as chess_run
+
+
+def test_stateful_recipe_metadata_reaches_harness_runtime() -> None:
+    args = chess_run.ScriptArgs(
+        hardware="H200",
+        harness_mode="stateful",
+        kl_loss_type="k3",
+        max_llm_retries_per_move=0,
+        repetition_reward_penalty=0.5,
+        system_prompt_variant="random",
+    )
+    metadata = chess_run._prompt_rows(args)[0]["metadata"]
+    runtime = build_runtime(
+        base_url="http://session-server/sessions/test",
+        metadata=metadata,
+        request_kwargs=chess_agent._request_with_thinking({"max_tokens": 16384}),
+    )
+    assert runtime.eval_config.harness_mode == "stateful"
+    assert runtime.eval_config.max_llm_retries_per_move == 0
+    assert runtime.eval_config.max_response_tokens == 16384
+    assert metadata["chess"]["repetition_reward_penalty"] == 0.5
 
 
 def test_training_recipe_uses_native_qwen38_tito() -> None:
