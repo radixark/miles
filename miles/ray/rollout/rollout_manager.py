@@ -50,6 +50,15 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def _get_rollout_offload_tags(levels: list[str]) -> tuple[str, ...]:
+    tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+    if "kv_cache" in levels:
+        tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+    if "weight" in levels:
+        tags.append(GPU_MEMORY_TYPE_WEIGHTS)
+    return tuple(tags)
+
+
 @ray.remote
 class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
@@ -60,6 +69,7 @@ class RolloutManager:
 
         self.pg = pg
         self.args = args
+        self._offload_tags = _get_rollout_offload_tags(args.offload_rollout_level)
         # set by the training actor after each weight update
         self.weight_version: int | None = None
         # TODO make args immutable
@@ -285,6 +295,7 @@ class RolloutManager:
     # TODO may parallelly execute offload/onload across services
     async def offload(self, tags: list[str] | None = None):
         self.health_monitoring_pause()
+        tags = list(self._offload_tags) if tags is None else tags
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -293,10 +304,14 @@ class RolloutManager:
             await srv.onload(tags)
 
     async def onload_weights(self):
-        await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+        if GPU_MEMORY_TYPE_WEIGHTS in self._offload_tags:
+            await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     async def onload_kv(self):
-        await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+        tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+        if GPU_MEMORY_TYPE_KV_CACHE in self._offload_tags:
+            tags.insert(0, GPU_MEMORY_TYPE_KV_CACHE)
+        await self.onload(tags=tags)
 
     # -------------------------- engine management -----------------------------
 
