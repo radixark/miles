@@ -281,12 +281,17 @@ class TinkerService:
             for session in self.sessions.values()
             if now - session["last_heartbeat"] < self.config.lease_timeout_s
         }
+
+        def lease_expired(tenant: str) -> bool:
+            # with no sessions at all there is no lease to expire
+            return bool(self.sessions) and tenant not in fresh_tenants
+
         for request_id, (task, tenant) in list(self._sample_tasks.items()):
-            if self.sessions and tenant not in fresh_tenants:
+            if lease_expired(tenant):
                 logger.warning(f"lease expired for tenant of sample {request_id}; cancelling")
                 task.cancel()
         for model_id, record in list(self.models.items()):
-            if not self.sessions or record.tenant in fresh_tenants:
+            if not lease_expired(record.tenant):
                 continue
             logger.warning(f"lease expired for {model_id}; freeing slot {record.slot}")
             stream = self.planner.stream(model_id)
@@ -325,25 +330,23 @@ class TinkerService:
         try:
             outputs = await run(self._unit_counter, slot_rows, unit.loss_fn, unit.loss_fn_config)
         except UserInputError as error:
-            self._fail_riders(refs, str(error), "user")
+            self._fail_unit_requests(refs, str(error), "user")
             return
         except Exception as error:  # noqa: BLE001  infra failure: fail the riders, keep serving
             logger.exception(f"{unit.kind} unit {self._unit_counter} failed")
-            self._fail_riders(refs, f"{type(error).__name__}: {error}", "server")
+            self._fail_unit_requests(refs, f"{type(error).__name__}: {error}", "server")
             return
 
         assert len(outputs) == len(refs), f"unit returned {len(outputs)} outputs for {len(refs)} rows"
         for ref, output in zip(refs, outputs, strict=True):
             request = ref.request
-            request.outputs[ref.local_index] = output
-            request.remaining -= 1
-            if request.remaining == 0:
+            if request.record_output(ref.local_index, output):
                 self.promises.resolve(
                     request.command.request_id, {"kind": request.command.kind, "outputs": request.outputs}
                 )
                 ref.stream.finish(request)
 
-    def _fail_riders(self, refs, error: str, category: str) -> None:
+    def _fail_unit_requests(self, refs, error: str, category: str) -> None:
         seen: set[int] = set()
         for ref in refs:
             if id(ref.request) in seen:
@@ -373,56 +376,65 @@ class TinkerService:
 
     async def _execute_barrier(self, unit: BarrierUnit) -> list[dict]:
         if unit.kind == "optim_step":
-            grad_norms = await self.backend.optim_step(
-                {stream.slot: pending.command.payload["adam_params"] for stream, pending in unit.entries}
-            )
-            return [
-                {"kind": "optim_step", "metrics": {"grad_norm": float(grad_norms[stream.slot])}}
-                for stream, _ in unit.entries
-            ]
-
-        ((stream, pending),) = unit.entries
+            return await self._step_optimizers(unit.entries)
+        ((stream, pending),) = unit.entries  # every other barrier is single-entry
         record = self.models[stream.model_id]
         payload = pending.command.payload
         if unit.kind == "save_state":
-            name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
-            await self.backend.save_slot(record.slot, self._checkpoint_dir(record.model_id, "weights", name))
-            return [{"kind": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}]
+            return await self._save_state(record, pending, payload)
         if unit.kind == "load_state":
-            source_id, kind, name = _parse_tinker_path(payload["path"])
-            source = self.models.get(source_id)
-            if source is None or source.tenant != record.tenant:
-                raise OwnershipError(f"checkpoint {payload['path']} does not belong to this tenant")
-            await self.backend.load_slot(
-                record.slot,
-                record.lora_rank,
-                record.lora_alpha,
-                ckpt_path=self._checkpoint_dir(source_id, kind, name),
-                load_optimizer=payload["optimizer"],
-            )
-            return [{"kind": "load_state"}]
+            return await self._load_state(record, payload)
         if unit.kind == "save_weights_for_sampler":
-            candidate = record.next_sampler_version
-            record.next_sampler_version += 1
-            version = str(candidate)
-            path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
-            # disk is the commit point: the export makes the version exist; the
-            # push only warms the engine cache
-            await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
-            record.published_sampler_versions.add(candidate)
-            try:
-                await self.backend.push_slot(
-                    record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha, lora_path=path
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("adapter warm push failed; version %s will backfill from disk", version)
-            return [
-                {
-                    "kind": "save_weights_for_sampler",
-                    "path": f"tinker://{record.model_id}/sampler_weights/{version}",
-                }
-            ]
+            return await self._publish_sampler_version(record)
         raise UserInputError(f"unknown barrier kind {unit.kind!r}")
+
+    async def _step_optimizers(self, entries: list) -> list[dict]:
+        grad_norms = await self.backend.optim_step(
+            {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
+        )
+        return [
+            {"kind": "optim_step", "metrics": {"grad_norm": float(grad_norms[stream.slot])}} for stream, _ in entries
+        ]
+
+    async def _save_state(self, record: ModelRecord, pending, payload: dict) -> list[dict]:
+        name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
+        await self.backend.save_slot(record.slot, self._checkpoint_dir(record.model_id, "weights", name))
+        return [{"kind": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}]
+
+    async def _load_state(self, record: ModelRecord, payload: dict) -> list[dict]:
+        source_id, kind, name = _parse_tinker_path(payload["path"])
+        source = self.models.get(source_id)
+        if source is None or source.tenant != record.tenant:
+            raise OwnershipError(f"checkpoint {payload['path']} does not belong to this tenant")
+        await self.backend.load_slot(
+            record.slot,
+            record.lora_rank,
+            record.lora_alpha,
+            ckpt_path=self._checkpoint_dir(source_id, kind, name),
+            load_optimizer=payload["optimizer"],
+        )
+        return [{"kind": "load_state"}]
+
+    async def _publish_sampler_version(self, record: ModelRecord) -> list[dict]:
+        version = record.next_sampler_version
+        record.next_sampler_version += 1
+        path = self._checkpoint_dir(record.model_id, "sampler_weights", str(version))
+        # disk is the commit point: the export makes the version exist; the
+        # push only warms the engine cache
+        await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
+        record.published_sampler_versions.add(version)
+        try:
+            await self.backend.push_slot(
+                record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha, lora_path=path
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("adapter warm push failed; version %s will backfill from disk", version)
+        return [
+            {
+                "kind": "save_weights_for_sampler",
+                "path": f"tinker://{record.model_id}/sampler_weights/{version}",
+            }
+        ]
 
     def _checkpoint_dir(self, model_id: str, kind: str, name: str) -> str:
         return f"{self.config.checkpoint_root}/{model_id}/{kind}/{name}"
