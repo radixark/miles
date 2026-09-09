@@ -197,6 +197,13 @@ class WeightUpdater:
                 adapter, materialize=should_save_adapter
             ).items()
         }
+        # rank 0's disk failure must fail every rank together, not strand the barrier
+        failure = [None]
         if should_save_adapter:
-            save_adapter_to_disk(out_dir, self._adapter_config(adapter), tensors)
-        dist.barrier(group=get_gloo_group())
+            try:
+                save_adapter_to_disk(out_dir, self._adapter_config(adapter), tensors)
+            except Exception as error:  # noqa: BLE001
+                failure[0] = f"{type(error).__name__}: {error}"
+        dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
+        if failure[0] is not None:
+            raise RuntimeError(f"adapter export to {out_dir!r} failed: {failure[0]}")
