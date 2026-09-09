@@ -104,9 +104,7 @@ def execute():
         f"{ci_args} "
         f"{misc_args} "
     )
-    U.execute_train(
-        train_args=train_args, num_gpus_per_node=TRAIN_GPUS + ROLLOUT_GPUS, megatron_model_type=MODEL_TYPE
-    )
+    U.execute_train(train_args=train_args, num_gpus_per_node=TRAIN_GPUS + ROLLOUT_GPUS, megatron_model_type=MODEL_TYPE)
 
 
 if __name__ == "__main__":
