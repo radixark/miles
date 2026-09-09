@@ -7,6 +7,7 @@ requests and models up to the token budget, ready optim barriers merge.
 from dataclasses import dataclass
 
 from miles.tinker.core.stream import ModelStream, PendingRequest
+from miles.tinker.core.types import CommandOp
 
 
 @dataclass
@@ -27,20 +28,20 @@ class DatumRef:
 
 
 @dataclass
-class BatchOp:
+class BatchUnit:
     """One forward pass on the trainer: datums packed from any number of requests."""
 
-    op: str  # forward_backward | forward_only
+    op: CommandOp  # FORWARD_BACKWARD | FORWARD_ONLY
     loss_fn: str | None
     loss_fn_config: dict | None
     datums: list[DatumRef]
 
 
 @dataclass
-class BarrierOp:
+class BarrierUnit:
     """One non-forward trainer call, run only after its stream's window drained."""
 
-    op: str  # optim_step | save_state | load_state | save_weights_for_sampler
+    op: CommandOp  # OPTIM_STEP | SAVE_STATE | LOAD_STATE | SAVE_WEIGHTS_FOR_SAMPLER
     entries: list[tuple[ModelStream, PendingRequest]]
 
 
@@ -58,7 +59,7 @@ class Planner:
     def stream(self, model_id: str) -> ModelStream:
         return self._streams[model_id]
 
-    def next_to_run(self) -> BatchOp | BarrierOp | None:
+    def next_to_run(self) -> BatchUnit | BarrierUnit | None:
         datums = self._ready_datums()
         barriers = self._ready_barriers()
 
@@ -75,7 +76,7 @@ class Planner:
     def _ready_datums(self) -> list[DatumRef]:
         datums = []
         for stream in self._streams.values():
-            for request in stream.open_window():
+            for request in stream.open_batch_run():
                 datums.extend(DatumRef(stream, request, index) for index in range(request.issued, len(request.datums)))
         return datums
 
@@ -84,7 +85,7 @@ class Planner:
             (stream, barrier) for stream in self._streams.values() if (barrier := stream.ready_barrier()) is not None
         ]
 
-    def _pack_batch(self, seed: DatumRef, datums: list[DatumRef]) -> BatchOp:
+    def _pack_batch(self, seed: DatumRef, datums: list[DatumRef]) -> BatchUnit:
         pack_key = seed.request.pack_key()
         compatible = sorted(
             (ref for ref in datums if ref.request.pack_key() == pack_key),
@@ -101,7 +102,7 @@ class Planner:
         for ref in picked:
             ref.request.issued += 1
         command = seed.request.command
-        return BatchOp(
+        return BatchUnit(
             op=command.op,
             loss_fn=command.payload.get("loss_fn"),
             loss_fn_config=command.payload.get("loss_fn_config"),
@@ -112,11 +113,11 @@ class Planner:
         self,
         oldest: tuple[ModelStream, PendingRequest],
         barriers: list[tuple[ModelStream, PendingRequest]],
-    ) -> BarrierOp:
+    ) -> BarrierUnit:
         op = oldest[1].command.op
-        if op == "optim_step":
+        if op == CommandOp.OPTIM_STEP:
             # optim barriers of different models step in one trainer call
             entries = [(stream, barrier) for stream, barrier in barriers if barrier.command.op == op]
         else:
             entries = [oldest]
-        return BarrierOp(op=op, entries=entries)
+        return BarrierUnit(op=op, entries=entries)
