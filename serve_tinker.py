@@ -3,6 +3,11 @@ import logging
 
 import uvicorn
 
+from miles.backends.megatron_utils.lora.slot_capacity import (
+    AUTO_SLOT_CAPACITY,
+    probe_slot_capacity,
+    resolve_slot_capacity,
+)
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
@@ -20,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 async def serve(args):
-    assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
+    assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters (a count, or 'auto')"
     configure_logger(args, source=MainProcessIdentity())
 
     # no RolloutExecutor here; the gateway posts /generate itself
@@ -30,7 +35,6 @@ async def serve(args):
     object_store.init_instance(args, contribute_segment=False)
 
     inference_controller = InferenceController(args)
-    await inference_controller.init()
 
     trainer = TrainerController(
         args=args,
@@ -42,8 +46,16 @@ async def serve(args):
     )
     await trainer.init()
 
+    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    backend = MilesBackend(args, trainer, router_url)
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
+    if args.multi_lora_n_adapters == AUTO_SLOT_CAPACITY:
+        # resolved before the engines launch: they read the slot count from args
+        probes = await probe_slot_capacity(args, backend, trainer)
+        args.multi_lora_n_adapters = resolve_slot_capacity(args, probes, GatewayConfig.sampler_versions_in_engine)
+    await inference_controller.init()
+
     target_modules = set(args.target_modules or ())
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
@@ -54,8 +66,7 @@ async def serve(args):
         trains_mlp=bool(target_modules & {"linear_fc1", "linear_fc2"}),
         trains_unembed="output_layer" in target_modules,
     )
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-    service = TinkerService(MilesBackend(args, trainer, router_url), config)
+    service = TinkerService(backend, config)
 
     server = uvicorn.Server(
         uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
