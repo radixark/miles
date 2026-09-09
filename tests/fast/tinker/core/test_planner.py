@@ -1,5 +1,4 @@
-"""The planner must pack compatible ready datums across streams, split on the
-token budget, and serve strictly by arrival."""
+"""The planner packs compatible datums within its token budget and preserves arrival order."""
 
 from tests.fast.tinker.harness import ADAM, command, datum, fb_payload
 
