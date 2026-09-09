@@ -175,7 +175,25 @@ From `scripts/models/qwen3.6-35B-A3B.py` and `scripts/run_qwen3_6_35b_a3b_mtp.py
 
 See [Backends Beyond Megatron](/advanced/architecture-support) for FP32 parameter handling and how miles wires the spec.
 
-## 6. Pairs Well With
+## 6. SFT data preflight
+
+Before training a new JSONL corpus, compare the SFT tokenizer and assistant-only loss
+mask against the complete chat template with `preserve_thinking=True`:
+
+```bash
+python tools/check_qwen_sft_masks.py \
+    --data /data/sft.jsonl \
+    --tokenizer /models/Qwen3.6-35B-A3B \
+    --output /data/mask-audit.json \
+    --workers 8
+```
+
+The audit checks every row, includes top-level tool definitions, and rejects token
+mismatches, empty loss targets, and sequences beyond 262,144 tokens. It writes numeric
+diagnostics without conversation text. For corpora with a top-level `tools` field,
+also pass `--tool-key tools` to training so the data loader forwards those definitions.
+
+## 7. Pairs Well With
 
 - [Speculative Decoding](/advanced/speculative-decoding)
 - [Backends Beyond Megatron](/advanced/architecture-support)

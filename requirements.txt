@@ -27,6 +27,7 @@ sglang-router>=0.2.3
 tensorboard
 torchft-nightly==2026.4.3; platform_system == "Linux" and platform_machine == "x86_64"
 tqdm
+typed-argument-parser  # CLI for the thinking-preserving SFT mask audit
 transformers==5.12.1  # Required by HF-native weight conversion; also avoids SGLang's qwen3_asr collision in 5.13.
 typing_extensions>=4.5
 wandb
