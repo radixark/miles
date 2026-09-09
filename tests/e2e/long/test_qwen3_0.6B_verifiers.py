@@ -1,6 +1,7 @@
 import math
 import os
 import shutil
+import site
 import sys
 from collections import Counter
 from pathlib import Path
@@ -31,7 +32,8 @@ CODE_GOLF_DIR = RUN_DIR / "environments" / "code_golf_v1"
 def prepare():
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {RUN_DIR}")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
-    U.exec_command_cpu(f"uv venv --clear --python {sys.executable} --system-site-packages {VERIFIERS_VENV}")
+    U.exec_command_cpu(f"uv venv --clear --seed --python {sys.executable} --system-site-packages {VERIFIERS_VENV}")
+    (VERIFIERS_SITE_PACKAGES / "launcher-site.pth").write_text("\n".join(site.getsitepackages()) + "\n")
     U.exec_command_cpu(
         f"{VERIFIERS_VENV}/bin/python -m pip install "
         f"-r {U.repo_base_dir}/examples/experimental/verifiers/requirements.txt"

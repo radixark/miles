@@ -873,7 +873,8 @@ class DumpReader:
     def _visible(self, path: Path, rollout_id: int, *, evaluation: bool, now: float) -> bool:
         if now - path.stat().st_mtime > self.MIN_AGE_SECONDS:
             return True
-        return not evaluation and (self.train_dir / f"{rollout_id}_0.pt").exists()
+        # any rank number: with pp > 1 the dumping ranks no longer include global rank 0
+        return not evaluation and any(self.train_dir.glob(f"{rollout_id}_*.pt"))
 
     def _torch_load(self, path: Path, *, mmap: bool = False):
         try:

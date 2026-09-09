@@ -4,6 +4,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
 
 _POLICY_LOSS_DUMP_COUNTER = 0
@@ -23,6 +24,9 @@ def maybe_dump_policy_loss_debug(
 ) -> None:
     dump_dir = getattr(args, "dump_details", None)
     if dump_dir is None:
+        return
+    # TP peers compute the loss on identical data; CP ranks hold distinct token slices
+    if get_parallel_state().tp.rank != 0:
         return
 
     global _POLICY_LOSS_DUMP_COUNTER

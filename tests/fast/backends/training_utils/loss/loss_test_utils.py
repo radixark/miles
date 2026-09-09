@@ -40,7 +40,7 @@ ARTIFACTS_CACHE = Path.home() / ".cache" / "miles-test-artifacts"
 # ---------------------------------------------------------------------------
 
 
-def make_parallel_state() -> ParallelState:
+def make_parallel_state(is_pp_last_stage: bool = True) -> ParallelState:
     def _trivial_group() -> GroupInfo:
         return GroupInfo(rank=0, size=1, group=None)
 
@@ -52,11 +52,11 @@ def make_parallel_state() -> ParallelState:
         intra_dp_cp=_trivial_group(),
         cp=_trivial_group(),
         tp=GroupInfo(rank=0, size=1, group=tp_group),
-        pp=_trivial_group(),
+        pp=_trivial_group() if is_pp_last_stage else GroupInfo(rank=0, size=2, group=None),
         ep=_trivial_group(),
         etp=_trivial_group(),
         indep_dp=_trivial_group(),
-        is_pp_last_stage=True,
+        is_pp_last_stage=is_pp_last_stage,
     )
     set_parallel_state(state)
     return state
