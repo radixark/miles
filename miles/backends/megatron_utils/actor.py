@@ -15,6 +15,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
+from miles.backends.megatron_utils.lora import slot_capacity
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.training_utils.checkpoint_io import NonGlobalFatalError, run_with_failure_collective
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
@@ -500,6 +501,11 @@ class MegatronTrainRayActor(TrainRayActor):
         except NonGlobalFatalError as error:
             return {"error": str(error)}
         return None
+
+    @with_logs
+    def multi_lora_memory_probe(self, phase: str) -> dict:
+        assert self.args.multi_lora, "multi_lora_memory_probe is a multi-LoRA slot command"
+        return slot_capacity.memory_snapshot(self.args, self.model, phase)
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:
