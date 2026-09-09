@@ -132,7 +132,7 @@ def loss_function(
     logits: torch.Tensor,
     apply_megatron_loss_scaling: bool = False,
     num_rollouts: int | None = None,
-) -> tuple[torch.Tensor, int | torch.Tensor, dict[str, list[str] | torch.Tensor]]:
+) -> tuple[torch.Tensor, int | torch.Tensor, dict]:
     """Dispatch to the configured loss and rescale for Megatron integration.
 
     Selects one of "policy_loss", "value_loss", "sft_loss", or a custom loss
@@ -215,10 +215,12 @@ def loss_function(
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp.size
 
+    per_datum = log.pop("per_datum", None)
     return (
         loss,
         torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
         {
+            **({"per_datum": per_datum} if per_datum is not None else {}),
             "keys": list(log.keys()),
             "values": torch.tensor(
                 [num_samples if not args.calculate_per_token_loss else num_tokens] + list(log.values()),
