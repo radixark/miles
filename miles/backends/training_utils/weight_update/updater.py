@@ -28,7 +28,7 @@ from miles.backends.training_utils.weight_update.session import (
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora import LORA_ADAPTER_NAME, save_adapter_to_disk
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.timer import timer
 
@@ -101,56 +101,75 @@ class WeightUpdater:
             return
         self.weight_version += 1
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
-        self._sync(self._get_updated_adapters(), sync_base=sync_base, weight_version=self.weight_version)
+        self._run_weight_update_session(
+            self._get_updated_adapters(), sync_base=sync_base, weight_version=self.weight_version
+        )
 
-    @torch.no_grad()
-    def push_adapter(self, lora_name: str, adapter) -> None:
-        """Push one adapter under an explicit engine-side name. The base weights
-        and the weight version stay put: versioning lives in the name, so
-        in-flight sampling against an older name is never disturbed."""
-        self._sync([(lora_name, adapter)], sync_base=False, weight_version=None)
-
-    def _sync(self, adapters: list, *, sync_base: bool, weight_version: int | None) -> None:
+    def _run_weight_update_session(
+        self,
+        adapters: list,
+        *,
+        sync_base: bool,
+        weight_version: int | None,
+        staged: bool = False,
+        lora_path: str | None = None,
+    ) -> None:
         protocol = self.protocol
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
-            self._register_new_lora_adapters(protocol.rollout_engines, adapters)
+            if not staged:
+                pause_engines(self.args, protocol.rollout_engines)
+            self._register_new_lora_adapters(
+                protocol.rollout_engines, adapters, defer_publish=staged, lora_path=lora_path
+            )
             begin_weight_update(
                 protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
             )
         dist.barrier(group=get_gloo_group())
+        try:
+            # a staged push commits only under a manifest: a lost bucket must not publish
+            checksums = (
+                {name: {} for name, _ in adapters}
+                if adapters and (staged or self.args.check_lora_weight_equal)
+                else None
+            )
+            if checksums is not None:
+                assert (
+                    self._hf_weight_iterator.placement.is_full_gather
+                ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
+            with timer("update_weights_implementation"):
+                pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
+                for bucket in self._hf_weight_iterator.iter_hf_weights(
+                    self.weights_getter() if sync_base else None,
+                    include_base=sync_base,
+                    adapters=adapters,
+                    materialize=protocol.is_sender,
+                ):
+                    if protocol.is_sender:
+                        if driver and checksums is not None:
+                            record_lora_checksums(bucket, checksums)
+                        protocol.send_bucket(bucket)
+                        pbar.update(1)
+                protocol.after_base_weights()
+                dist.barrier(group=get_gloo_group())
 
-        checksums = {name: {} for name, _ in adapters} if adapters and self.args.check_lora_weight_equal else None
-        if checksums is not None:
-            assert (
-                self._hf_weight_iterator.placement.gather_pp
-            ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
-        with timer("update_weights_implementation"):
-            pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
-            for bucket in self._hf_weight_iterator.iter_hf_weights(
-                self.weights_getter() if sync_base else None,
-                include_base=sync_base,
-                adapters=adapters,
-                materialize=protocol.is_sender,
-            ):
-                if protocol.is_sender:
-                    if driver and checksums is not None:
-                        record_lora_checksums(bucket, checksums)
-                    protocol.send_bucket(bucket)
-                    pbar.update(1)
-            protocol.after_base_weights()
-            dist.barrier(group=get_gloo_group())
-
-        with timer("finalize_and_resume_engines"):
-            protocol.finalize(self.weight_version)
-            if protocol.use_weight_update_session and driver:
-                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                if weight_version is not None:
-                    set_weight_version(protocol.rollout_engines, weight_version)
-                resume_engines(protocol.rollout_engines)
-            dist.barrier(group=get_gloo_group())
-        protocol.after_engines_resumed()
+            with timer("finalize_and_resume_engines"):
+                protocol.finalize(self.weight_version)
+                if protocol.use_weight_update_session and driver:
+                    end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
+                    if weight_version is not None:
+                        set_weight_version(protocol.rollout_engines, weight_version)
+                    if not staged:
+                        resume_engines(protocol.rollout_engines)
+                dist.barrier(group=get_gloo_group())
+            protocol.after_engines_resumed()
+        except Exception:
+            if staged and driver:
+                try:
+                    end_weight_update(protocol.rollout_engines, abort=True)
+                except Exception:
+                    logger.exception("Failed to discard the staged adapter session")
+            raise
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
@@ -165,14 +184,60 @@ class WeightUpdater:
             return []
         return [(LORA_ADAPTER_NAME, None)]
 
-    def _register_new_lora_adapters(self, rollout_engines, adapters: list[tuple[str, object]]) -> None:
+    def _adapter_config(self, adapter) -> dict:
+        config = dict(self._lora_sync_config)
+        if adapter is not None:
+            config |= {"r": adapter.rank, "lora_alpha": adapter.alpha}
+        return config
+
+    def _register_new_lora_adapters(
+        self,
+        rollout_engines,
+        adapters: list[tuple[str, object]],
+        *,
+        defer_publish: bool = False,
+        lora_path: str | None = None,
+    ) -> None:
         """Register adapters the current engine set has not seen, with their
         per-adapter config; eager so the engine validates rank before any bytes move."""
         for lora_name, adapter in adapters:
             if lora_name in self._registered_adapters:
                 continue
-            config = self._lora_sync_config
-            if adapter is not None:
-                config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-            register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
+            register_lora_adapter(
+                rollout_engines,
+                lora_name=lora_name,
+                lora_config=self._adapter_config(adapter),
+                lora_path=lora_path,
+                defer_publish=defer_publish,
+            )
             self._registered_adapters.add(lora_name)
+
+    # -------- multi-LoRA adapter publication --------
+
+    @torch.no_grad()
+    def push_adapter(self, lora_name: str, adapter, lora_path: str | None = None) -> None:
+        """Publish one adapter under a fresh engine-side name without pausing:
+        the name has no readers until the session commits. ``lora_path`` lets
+        the engine refill the adapter from disk after eviction."""
+        self._run_weight_update_session(
+            [(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path
+        )
+
+    @torch.no_grad()
+    def export_adapter(self, adapter, out_dir: str) -> None:
+        """Write one adapter as an engine-loadable dir, named like the streamed
+        tensors so disk load and streamed apply feed the engine identically.
+        Collective: every rank must call; rank 0 writes."""
+        should_save_adapter = dist.get_rank() == 0
+        assert (
+            self._hf_weight_iterator.placement.is_full_gather
+        ), "the exported dir must hold the full adapter, which this placement never gathers onto one rank"
+        tensors = {
+            name: tensor.detach().contiguous().cpu()
+            for name, tensor in self._hf_weight_iterator.materialize_adapter(
+                adapter, materialize=should_save_adapter
+            ).items()
+        }
+        if should_save_adapter:
+            save_adapter_to_disk(out_dir, self._adapter_config(adapter), tensors)
+        dist.barrier(group=get_gloo_group())
