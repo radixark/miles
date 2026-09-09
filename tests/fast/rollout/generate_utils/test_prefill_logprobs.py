@@ -103,6 +103,15 @@ async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(mo
         sampling_params={"max_new_tokens": 32},
     )
 
+    assert [sample.rollout_log_probs for sample in samples] == [[-20.0], [-21.0]]
+    assert [call[0] for call in calls] == [
+        "http://localhost/flush_cache",
+        "http://localhost/generate",
+    ]
+    assert [call[2] for call in calls] == ["post", "post"]
+    assert calls[1][1]["input_ids"] == [[10, 11, 20], [10, 11, 21]]
+    assert calls[1][1]["logprob_start_len"] == 1
+
 
 @pytest.mark.asyncio
 async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
