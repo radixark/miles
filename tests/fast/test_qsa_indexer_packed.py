@@ -111,6 +111,10 @@ def test_layout_block_local_positions_restart_per_sequence():
 
     expected = torch.cat([torch.arange(-(-length // RATIO)) for length in LENS])
     torch.testing.assert_close(layout.block_local, expected)
+    expected_starts = torch.cat(
+        [int(cu[i]) + torch.arange(-(-length // RATIO)) * RATIO for i, length in enumerate(LENS)]
+    )
+    torch.testing.assert_close(layout.block_token_start, expected_starts)
     assert layout.num_blocks == sum(-(-length // RATIO) for length in LENS)
 
 

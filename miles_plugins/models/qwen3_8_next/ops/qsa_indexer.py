@@ -3,22 +3,22 @@
 Runs on the full-attention layers (12 of 48) and picks, per query token, which
 ``indexer_budget`` key tokens the sparse attention will actually look at.
 
-Reimplemented from sglang's ``QSAIndexer`` rather than imported -- miles takes no
+Reimplemented from sglang's ``QSAIndexer`` because Miles training does not depend
+on SGLang internals.
 """
 
 import math
 
 import torch
-
-
-def _indexer_acc_dtype(x):
-    return x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
-
-
 from megatron.core.extensions.transformer_engine import TELinear
+from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
+
+
+def _indexer_acc_dtype(x: Tensor) -> torch.dtype:
+    return x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
 
 
 def gemma_rmsnorm_last_dim(x: Tensor, weight: Tensor, eps: float) -> Tensor:
@@ -83,6 +83,7 @@ class PackedBlockLayout:
         # per block
         self.block_seq = torch.repeat_interleave(torch.arange(blocks_per_seq.numel(), device=device), blocks_per_seq)
         self.block_local = torch.arange(self.num_blocks, device=device) - seq_block_start[self.block_seq]
+        self.block_token_start = seq_token_start[self.block_seq] + self.block_local * compress_ratio
 
 
 def compress_keys_by_mean_packed(token_k: Tensor, layout: PackedBlockLayout) -> Tensor:
@@ -112,7 +113,7 @@ def packed_block_causal_mask(query_positions: Tensor, layout: PackedBlockLayout,
 class Qwen38NextQSAIndexer(MegatronModule):
     """Selects the sparse-attention budget for one full-attention layer."""
 
-    def __init__(self, config: TransformerConfig, layer_number: int, rotary_emb=None):
+    def __init__(self, config: TransformerConfig, layer_number: int):
         super().__init__(config)
         self.layer_number = layer_number
         self.n_heads = config.qwen3_8_next_indexer_n_heads
@@ -122,8 +123,6 @@ class Qwen38NextQSAIndexer(MegatronModule):
         self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
         self.block_topk = self.token_topk // self.compress_ratio
         self.norm_eps = config.layernorm_epsilon
-        self.rotary_emb = rotary_emb
-
         self.index_qk_proj = TELinear(
             config.hidden_size,
             (self.n_heads + self.kv_heads) * self.head_dim,
@@ -140,7 +139,12 @@ class Qwen38NextQSAIndexer(MegatronModule):
         for p in (self.q_layernorm, self.k_layernorm):
             p.sequence_parallel = config.sequence_parallel
 
-    def project_qk(self, hidden_states: Tensor, positions: Tensor, layout: PackedBlockLayout | None = None):
+    def project_qk(
+        self,
+        hidden_states: Tensor,
+        rotary_pos_emb: Tensor | None = None,
+        layout: PackedBlockLayout | None = None,
+    ):
         """``[T, hidden] -> (q [T, n_heads, head_dim], block_k [B, head_dim])``."""
         qk, _ = self.index_qk_proj(hidden_states)
         split = self.n_heads * self.head_dim
@@ -157,24 +161,21 @@ class Qwen38NextQSAIndexer(MegatronModule):
             block_k = compress_keys_by_mean_packed(token_k, layout)
         block_k = gemma_rmsnorm_last_dim(block_k, self.k_layernorm, self.norm_eps)
 
-        if self.rotary_emb is not None:
+        if rotary_pos_emb is not None:
+            q = self._apply_rope(q, rotary_pos_emb[: q.shape[0]])
             if layout is None:
-                block_local = torch.arange(block_k.shape[0], device=positions.device)
+                block_freqs = rotary_pos_emb[:: self.compress_ratio][: block_k.shape[0]]
             else:
-                block_local = layout.block_local
-            block_positions = block_local * self.compress_ratio
-            q = self._apply_rope(positions, q)
-            block_k = self._apply_rope(block_positions, block_k.unsqueeze(1)).squeeze(1)
+                block_freqs = rotary_pos_emb[layout.block_token_start]
+            block_k = self._apply_rope(block_k.unsqueeze(1), block_freqs).squeeze(1)
         return q, block_k
 
-    def _apply_rope(self, positions: Tensor, x: Tensor) -> Tensor:
-        """Partial RoPE on the leading ``rotary_dim`` of each head."""
-        rotary_dim = getattr(self.rotary_emb, "rotary_dim", x.shape[-1])
-        if rotary_dim >= x.shape[-1]:
-            return self.rotary_emb(positions, x)
-        head = x[..., :rotary_dim]
-        rest = x[..., rotary_dim:]
-        return torch.cat([self.rotary_emb(positions, head), rest], dim=-1)
+    def _apply_rope(self, x: Tensor, rotary_pos_emb: Tensor) -> Tensor:
+        return apply_rotary_pos_emb(
+            x.unsqueeze(1),
+            rotary_pos_emb,
+            config=self.config,
+        ).squeeze(1)
 
     def score_blocks(
         self,
@@ -192,7 +193,13 @@ class Qwen38NextQSAIndexer(MegatronModule):
             valid = packed_block_causal_mask(query_positions, layout, self.compress_ratio)
         return logits.masked_fill(~valid, float("-inf"))
 
-    def forward(self, hidden_states: Tensor, positions: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        hidden_states: Tensor,
+        positions: Tensor,
+        cu_seqlens: Tensor | None = None,
+        rotary_pos_emb: Tensor | None = None,
+    ) -> Tensor:
         """``[T, hidden] -> [T, token_topk]`` int32 token indices, ``-1`` where unused.
 
         ``positions`` restart at 0 per sequence; the returned indices are absolute in
@@ -205,7 +212,7 @@ class Qwen38NextQSAIndexer(MegatronModule):
         if cu_seqlens is not None and cu_seqlens.numel() > 2:
             layout = PackedBlockLayout(cu_seqlens, positions, self.compress_ratio)
 
-        q, block_k = self.project_qk(hidden_states, positions, layout=layout)
+        q, block_k = self.project_qk(hidden_states, rotary_pos_emb=rotary_pos_emb, layout=layout)
         logits = self.score_blocks(q, block_k, positions, layout=layout)
 
         k = min(self.block_topk, logits.shape[-1])

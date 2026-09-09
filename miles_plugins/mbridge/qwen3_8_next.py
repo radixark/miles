@@ -144,59 +144,6 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         # tensors along with it.
     }
 
-    # Vision tower. A standard ViT, so this is a plain name translation rather than
-    # anything structural: Megatron prefixes its vision params ``vision_model.``
-    # where HF uses ``model.visual.`` (megatron-bridge documents the same pair for
-    # Qwen3-VL). Declared here in mbridge because mbridge is the conversion path --
-    # tools/convert_hf_to_torch_dist.py goes through mbridge.AutoBridge -- so this is
-    # where the mapping has to live regardless of what the training-time model
-    # provider uses.
-    #
-    # A text-only RL run never instantiates the tower, and mbridge only resolves
-    # names for parameters the model actually creates, so declaring these costs
-    # nothing when they are unused; leaving them undeclared, on the other hand,
-    # means 333 checkpoint tensors silently absent from the converted checkpoint.
-    _VISION_DIRECT_MAPPING = {
-        "vision_model.patch_embed.proj.weight": "model.visual.patch_embed.proj.weight",
-        "vision_model.patch_embed.proj.bias": "model.visual.patch_embed.proj.bias",
-        "vision_model.pos_embed.weight": "model.visual.pos_embed.weight",
-        "vision_model.merger.linear_fc1.weight": "model.visual.merger.linear_fc1.weight",
-        "vision_model.merger.linear_fc1.bias": "model.visual.merger.linear_fc1.bias",
-        "vision_model.merger.linear_fc2.weight": "model.visual.merger.linear_fc2.weight",
-        "vision_model.merger.linear_fc2.bias": "model.visual.merger.linear_fc2.bias",
-        "vision_model.merger.norm.weight": "model.visual.merger.norm.weight",
-        "vision_model.merger.norm.bias": "model.visual.merger.norm.bias",
-    }
-
-    _VISION_LAYER_MAPPING = {
-        "attn.qkv.weight": ["model.visual.blocks.{layer_number}.attn.qkv.weight"],
-        "attn.qkv.bias": ["model.visual.blocks.{layer_number}.attn.qkv.bias"],
-        "attn.proj.weight": ["model.visual.blocks.{layer_number}.attn.proj.weight"],
-        "attn.proj.bias": ["model.visual.blocks.{layer_number}.attn.proj.bias"],
-        "mlp.linear_fc1.weight": ["model.visual.blocks.{layer_number}.mlp.linear_fc1.weight"],
-        "mlp.linear_fc1.bias": ["model.visual.blocks.{layer_number}.mlp.linear_fc1.bias"],
-        "mlp.linear_fc2.weight": ["model.visual.blocks.{layer_number}.mlp.linear_fc2.weight"],
-        "mlp.linear_fc2.bias": ["model.visual.blocks.{layer_number}.mlp.linear_fc2.bias"],
-        "norm1.weight": ["model.visual.blocks.{layer_number}.norm1.weight"],
-        "norm1.bias": ["model.visual.blocks.{layer_number}.norm1.bias"],
-        "norm2.weight": ["model.visual.blocks.{layer_number}.norm2.weight"],
-        "norm2.bias": ["model.visual.blocks.{layer_number}.norm2.bias"],
-    }
-
-    def _weight_name_mapping_vision(self, mcore_weights_name: str) -> list[str]:
-        """``vision_model.*`` -> ``model.visual.*``."""
-        if mcore_weights_name in self._VISION_DIRECT_MAPPING:
-            return [self._VISION_DIRECT_MAPPING[mcore_weights_name]]
-
-        prefix = "vision_model.blocks."
-        if mcore_weights_name.startswith(prefix):
-            rest = mcore_weights_name[len(prefix) :]
-            layer_number, _, tail = rest.partition(".")
-            if tail in self._VISION_LAYER_MAPPING:
-                return [t.format(layer_number=int(layer_number)) for t in self._VISION_LAYER_MAPPING[tail]]
-
-        raise NotImplementedError(f"Unsupported vision parameter name: {mcore_weights_name}")
-
     def _ple_layer_ids(self) -> list[int]:
         """0-based decoder layer indices carrying PLE.
 
@@ -253,8 +200,6 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         raise NotImplementedError(f"Unsupported parameter name: {mcore_weights_name}")
 
     def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
-        if mcore_weights_name.startswith("vision_model."):
-            return self._weight_name_mapping_vision(mcore_weights_name)
         try:
             return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
         except NotImplementedError:
