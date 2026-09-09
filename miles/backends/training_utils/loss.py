@@ -133,30 +133,9 @@ def loss_function(
     apply_megatron_loss_scaling: bool = False,
     num_rollouts: int | None = None,
 ) -> tuple[torch.Tensor, int | torch.Tensor, dict]:
-    """Dispatch to the configured loss and rescale for Megatron integration.
+    """Compute the batch-selected loss and apply Megatron scaling.
 
-    Selects one of "policy_loss", "value_loss", "sft_loss", or a custom loss
-    function based on `args.loss_type`, computes the loss and metrics, then
-    rescales the loss by micro-batch and parallelism factors to integrate with
-    Megatron's gradient accumulation.
-
-    Args:
-        args: Configuration specifying `loss_type`, `calculate_per_token_loss`,
-            `global_batch_size`, and optionally `custom_loss_function_path`.
-        batch: Mini-batch with "loss_masks", "response_lengths", and other
-            keys required by the selected loss function.
-        num_microbatches: Number of gradient accumulation steps.
-        logits: Model outputs (policy or value head).
-        num_rollouts: This step's rollout count (total across DP), used as
-            the loss normalizer; None falls back to the legacy batch/args value.
-
-    Returns:
-        Tuple of `(scaled_loss, normalizer, logging_dict)` where:
-        - `scaled_loss` is the loss tensor (scalar) rescaled for Megatron.
-        - `normalizer` is `num_tokens` (scalar tensor) if
-          `args.calculate_per_token_loss` is True, else `1` (int).
-        - `logging_dict` has keys "keys" (list of str metric names) and
-          "values" (1D tensor: [count, metric1, metric2, ...]).
+    The logging result carries scalar `keys`/`values` and any per-datum outputs returned by the loss.
     """
     parallel_state = get_parallel_state()
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
@@ -196,9 +175,7 @@ def loss_function(
     else:
         assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
         global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
-    # Multi-LoRA: samples enter the gradient buffers with weight 1; per-adapter
-    # normalization (1/adapter_global_batch_size, a constant known in advance)
-    # is applied to the accumulated slot gradient at optimizer-step time.
+    # Tinker clients normalize via loss weights; slot gradients accumulate as raw sums
     if is_multi_lora_enabled(args):
         global_batch_size = 1
     if not args.calculate_per_token_loss:
