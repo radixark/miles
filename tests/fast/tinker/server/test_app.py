@@ -144,7 +144,13 @@ async def test_a_bearer_authorization_still_authenticates(client):
 
 
 async def test_weights_info_answers_the_sdk_resume_probe(client):
-    created = (await client.post("/api/v1/create_model", json={"base_model": "base"}, headers=_headers())).json()
+    created = (
+        await client.post(
+            "/api/v1/create_model",
+            json={"base_model": "base", "lora_config": {"rank": 8}},
+            headers=_headers(),
+        )
+    ).json()
     await _poll(client, created["request_id"])
     saved = (
         await client.post(
