@@ -1,6 +1,6 @@
 """Shared types of the Tinker gateway.
 
-Core speaks only the gateway's internal language (commands, rows, results).
+Core speaks only the gateway's internal language (commands, datums, results).
 server/ translates the SDK wire (JSON and proto); runtime.py translates
 miles (trainer batches). Each foreign language lives only at its boundary.
 """
@@ -26,14 +26,14 @@ class GatewayConfig:
     max_tokens_per_request: int = 4_000_000
     lora_alpha: float | None = None  # None: 2 * rank
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
-    unit_token_budget: int = 262_144  # packing bound per work unit
+    batch_token_budget: int = 262_144  # packing bound per BatchOp
 
 
 @dataclass
 class Command:
     model_id: str
     seq_id: int
-    kind: str
+    op: str
     payload: dict
     request_id: str
     arrival: int  # global submit order, the planner's FCFS key
