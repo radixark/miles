@@ -1,9 +1,8 @@
 """Shared fakes for the tinker gateway suite."""
 
 import asyncio
-import tempfile
 
-from miles.tinker.core.future import PENDING, Future
+from miles.tinker.core.future import DONE, PENDING, Future
 from miles.tinker.core.service import ExecutorBackend, TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
 
@@ -89,13 +88,13 @@ class FakeBackend(ExecutorBackend):
         }
 
 
-def make_config(**overrides) -> GatewayConfig:
-    defaults = dict(base_model="base", n_slots=2, checkpoint_root=tempfile.mkdtemp(prefix="tinker-test-"))
+def make_config(checkpoint_root, **overrides) -> GatewayConfig:
+    defaults = dict(base_model="base", n_slots=2, checkpoint_root=str(checkpoint_root))
     return GatewayConfig(**{**defaults, **overrides})
 
 
-def make_service(**config_overrides) -> TinkerService:
-    return TinkerService(FakeBackend(), make_config(**config_overrides))
+def make_service(checkpoint_root, **config_overrides) -> TinkerService:
+    return TinkerService(FakeBackend(), make_config(checkpoint_root, **config_overrides))
 
 
 def datum(tokens: int = 3) -> dict:
@@ -119,8 +118,9 @@ def command(model_id: str, seq_id: int, op: str, payload: dict, arrival: int) ->
 
 
 async def created_model(service: TinkerService, tenant: str = "tenant") -> str:
-    _, model_id = service.create_model(tenant, {"base_model": service.config.base_model, "lora_config": {"rank": 8}})
-    await asyncio.sleep(0.01)  # let the slot-init task run against the fake backend
+    request_id, model_id = service.create_model(tenant, {"base_model": service.config.base_model, "lora_config": {"rank": 8}})
+    future = await await_settled(service, tenant, request_id)
+    assert future.state == DONE, future.error
     return model_id
 
 
