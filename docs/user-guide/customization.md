@@ -161,8 +161,8 @@ Hook to normalize rewards differently from the default GRPO normalization.
 Per-group filter; runs after scoring, before queueing for training.
 
 ```python
-def filter_function(args, samples: list[Sample], **kwargs) -> DynamicFilterOutput:
-    return DynamicFilterOutput(keep=True, reason=None)
+def filter_function(args, samples: list[Sample], **kwargs) -> FilterOutput:
+    return FilterOutput(keep=True, reason=None)
 ```
 
 **Stock implementation:** `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std`.

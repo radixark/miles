@@ -6,8 +6,10 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -150,6 +152,28 @@ def _kill_process_tree(pgid: int):
         pass
     except Exception as e:
         logger.warning(f"Error killing process group {pgid}: {e}")
+
+
+FAILURE_TAIL_BYTES = 8_192
+FAILURE_TAIL_LINES = 60
+
+
+def _drain_child_output(stream, tail: deque) -> None:
+    """Pass a child's output straight through, keeping only its last bytes for the failure summary."""
+    held = 0
+    while chunk := stream.read(65_536):
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+        tail.append(chunk)
+        held += len(chunk)
+        while tail and held - len(tail[0]) >= FAILURE_TAIL_BYTES:
+            held -= len(tail.popleft())
+
+
+def _failure_tail(chunks: deque) -> str:
+    text = b"".join(chunks)[-FAILURE_TAIL_BYTES:].decode("utf-8", errors="replace")
+    lines = [line for line in text.splitlines() if line.strip()]
+    return "\n".join(lines[-FAILURE_TAIL_LINES:])
 
 
 def run_with_timeout(
@@ -437,9 +461,11 @@ def run_unittest_files(
 
         process = None
         output_lines = []
+        output_tail: deque = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
         def run_one_file(filename, capture_output=False, record_dir=None, _i=i, _estimated_time=estimated_time):
-            nonlocal process, output_lines
+            nonlocal process, output_lines, output_tail
+            output_tail = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
             full_path = os.path.join(os.getcwd(), filename)
             logger.info(f".\n.\nBegin ({_i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n")
@@ -467,15 +493,19 @@ def run_unittest_files(
                 for line in process.stdout:
                     logger.info(line.rstrip())
                     output_lines.append(line)
+                    output_tail.append(line.encode("utf-8", errors="replace"))
                 process.wait()
             else:
+                # Chunked pass-through, not a line loop: a GPU suite writes over a hundred megabytes
+                # here and the runner's own stdout stays the destination.
                 process = subprocess.Popen(
                     ["python3", full_path],
-                    stdout=None,
-                    stderr=None,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     start_new_session=True,
                     env=child_env,
                 )
+                _drain_child_output(process.stdout, output_tail)
                 process.wait()
 
             elapsed = time.perf_counter() - file_tic
@@ -568,7 +598,7 @@ def run_unittest_files(
                         logger.info(f"\nFAILED: {filename} returned exit code {ret_code}\n")
                         if was_retried:
                             retried_tests.append((filename, attempt, "failed"))
-                        failed_tests.append((filename, f"exit code {ret_code}"))
+                        failed_tests.append((filename, f"exit code {ret_code}", _failure_tail(output_tail)))
                         break
 
                 except TimeoutError:
@@ -580,7 +610,7 @@ def run_unittest_files(
                     logger.info(f"\nTIMEOUT: {filename} after {effective_timeout} seconds\n")
                     if was_retried:
                         retried_tests.append((filename, attempt, "timeout"))
-                    failed_tests.append((filename, f"timeout after {effective_timeout}s"))
+                    failed_tests.append((filename, f"timeout after {effective_timeout}s", _failure_tail(output_tail)))
                     break
                 except Exception:
                     attempt_elapsed = time.perf_counter() - attempt_tic
@@ -644,8 +674,13 @@ def run_unittest_files(
             logger.info(f"  {test}")
     if failed_tests:
         logger.info("\nFAILED:")
-        for test, reason in failed_tests:
+        for test, reason, _ in failed_tests:
             logger.info(f"  {test} ({reason})")
+        for test, _, tail in failed_tests:
+            if tail:
+                logger.info(f"\nLast output of {test}:")
+                for line in tail.splitlines():
+                    logger.info(f"  | {line}")
     if retried_tests:
         logger.info("\nRETRIED:")
         for test, attempts, result in retried_tests:

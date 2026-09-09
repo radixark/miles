@@ -13,7 +13,7 @@ from typing import Any
 
 from miles.ray.multi_lora.controller import AdaptersCache, get_multi_lora_controller
 from miles.rollout.base_types import RolloutFnTrainOutput
-from miles.rollout.filter_hub.base_types import call_dynamic_filter
+from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, get_model_url
 from miles.utils.async_utils import run
@@ -359,10 +359,10 @@ class AsyncMultiLoRAWorker:
         if result is None:
             return
 
-        filter_result = call_dynamic_filter(self.dynamic_filter, self.args, result)
-        if not filter_result.keep:
-            if filter_result.reason:
-                self.metrics.record_dynamic_filter_drop(filter_result.reason)
+        filter_output = apply_preput_filters(self.args, self.dynamic_filter, result)
+        if not filter_output.keep:
+            if filter_output.reason:
+                self.metrics.record_dynamic_filter_drop(filter_output.reason)
             return
 
         adapter_name = group_adapter_name(result)
