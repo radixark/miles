@@ -6,10 +6,8 @@ buckets (senders transmit, other ranks join the gathers), and orchestrates
 LoRA adapter pushes.
 """
 
-import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager, nullcontext
 
 import torch
 import torch.distributed as dist
@@ -19,21 +17,12 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
-from miles.backends.training_utils.weight_update.session import (
-    begin_weight_update,
-    end_weight_update,
-    pause_engines,
-    register_lora_adapter,
-    resume_engines,
-    set_weight_version,
-)
+from miles.backends.training_utils.weight_update.session import EngineWeightUpdateSession
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME, save_adapter_to_disk
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.timer import timer
-
-logger = logging.getLogger(__name__)
 
 
 class WeightUpdater:
@@ -116,11 +105,22 @@ class WeightUpdater:
         lora_path: str | None = None,
     ) -> None:
         protocol = self.protocol
-        self._call_engines_from_rank0(
-            lambda: self._open_engine_session(adapters, sync_base=sync_base, staged=staged, lora_path=lora_path)
+        registrations = [
+            (lora_name, self._adapter_config(adapter))
+            for lora_name, adapter in adapters
+            if lora_name not in self._registered_adapters
+        ]
+        session = EngineWeightUpdateSession(
+            protocol,
+            self.args,
+            staged=staged,
+            sync_base=sync_base,
+            selector=self._hf_weight_iterator.weight_update_selector,
+            registrations=registrations,
+            lora_path=lora_path,
         )
-        abort_guard = self._discard_staged_session_on_failure() if staged and dist.get_rank() == 0 else nullcontext()
-        with abort_guard:
+        with session:
+            self._registered_adapters.update(lora_name for lora_name, _ in registrations)
             checksums = self._checksum_manifest(adapters, staged)
             records_manifest = checksums is not None and dist.get_rank() == 0
             with timer("update_weights_implementation"):
@@ -141,55 +141,8 @@ class WeightUpdater:
 
             with timer("finalize_and_resume_engines"):
                 protocol.finalize(self.weight_version)
-                self._call_engines_from_rank0(
-                    lambda: self._close_engine_session(checksums, weight_version=weight_version, staged=staged)
-                )
+                session.commit(checksums, weight_version)
             protocol.after_engines_resumed()
-
-    def _open_engine_session(self, adapters: list, *, sync_base: bool, staged: bool, lora_path: str | None) -> None:
-        if not staged:
-            pause_engines(self.args, self.protocol.rollout_engines)
-        self._register_new_lora_adapters(
-            self.protocol.rollout_engines, adapters, defer_publish=staged, lora_path=lora_path
-        )
-        begin_weight_update(
-            self.protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-        )
-
-    def _close_engine_session(self, checksums: dict | None, *, weight_version: int | None, staged: bool) -> None:
-        end_weight_update(self.protocol.rollout_engines, expected_lora_checksums=checksums)
-        if weight_version is not None:
-            set_weight_version(self.protocol.rollout_engines, weight_version)
-        if not staged:
-            resume_engines(self.protocol.rollout_engines)
-
-    def _call_engines_from_rank0(self, rpcs: Callable[[], None]) -> None:
-        """Session RPCs run on one rank; the outcome is broadcast so a refused
-        engine call fails every rank together instead of stranding the
-        collectives ahead. A no-op sync point without a weight-update session."""
-        failure = [None]
-        if self.protocol.use_weight_update_session and dist.get_rank() == 0:
-            try:
-                rpcs()
-            except Exception as exc:
-                logger.exception("engine weight-update RPCs failed")
-                failure[0] = f"{type(exc).__name__}: {exc}"
-        dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
-        if failure[0] is not None:
-            raise RuntimeError(f"engine weight-update RPCs failed: {failure[0]}")
-
-    @contextmanager
-    def _discard_staged_session_on_failure(self):
-        """Engine-side cleanup for a failed staged push; the failure still propagates."""
-        try:
-            yield
-        except Exception:
-            try:
-                end_weight_update(self.protocol.rollout_engines, abort=True)
-            except Exception:
-                # the abort usually shares the failure's root cause; it must not mask it
-                logger.exception("Failed to discard the staged adapter session")
-            raise
 
     def _checksum_manifest(self, adapters: list, staged: bool) -> dict | None:
         """Per-adapter checksums recorded while streaming; a staged push commits
@@ -219,28 +172,6 @@ class WeightUpdater:
         if adapter is not None:
             config |= {"r": adapter.rank, "lora_alpha": adapter.alpha}
         return config
-
-    def _register_new_lora_adapters(
-        self,
-        rollout_engines,
-        adapters: list[tuple[str, object]],
-        *,
-        defer_publish: bool = False,
-        lora_path: str | None = None,
-    ) -> None:
-        """Register adapters the current engine set has not seen, with their
-        per-adapter config; eager so the engine validates rank before any bytes move."""
-        for lora_name, adapter in adapters:
-            if lora_name in self._registered_adapters:
-                continue
-            register_lora_adapter(
-                rollout_engines,
-                lora_name=lora_name,
-                lora_config=self._adapter_config(adapter),
-                lora_path=lora_path,
-                defer_publish=defer_publish,
-            )
-            self._registered_adapters.add(lora_name)
 
     # -------- multi-LoRA adapter publication --------
 

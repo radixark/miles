@@ -17,6 +17,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 _MODULE = "miles.backends.training_utils.weight_update.updater"
+_SESSION = "miles.backends.training_utils.weight_update.session"
 
 
 class _PendingAckClient(_RecordingApiClient):
@@ -49,8 +50,13 @@ def _updater(calls, client_type=_PendingAckClient, failing_method=None):
 
 
 def _push(updater, name="A@2", lora_path="/ckpt/run/sampler_weights/2"):
-    with patch(f"{_MODULE}.dist") as dist, patch(f"{_MODULE}.get_gloo_group"):
-        dist.get_rank.return_value = 0
+    with (
+        patch(f"{_MODULE}.dist") as dist,
+        patch(f"{_MODULE}.get_gloo_group"),
+        patch(f"{_SESSION}.dist") as session_dist,
+        patch(f"{_SESSION}.get_gloo_group"),
+    ):
+        dist.get_rank.return_value = session_dist.get_rank.return_value = 0
         updater.push_adapter(name, SimpleNamespace(rank=8, alpha=16), lora_path)
 
 
@@ -72,8 +78,13 @@ def test_fixed_name_single_lora_keeps_the_pause_frame():
     calls = []
     updater = _updater(calls)
     updater.is_lora = True
-    with patch(f"{_MODULE}.dist") as dist, patch(f"{_MODULE}.get_gloo_group"):
-        dist.get_rank.return_value = 0
+    with (
+        patch(f"{_MODULE}.dist") as dist,
+        patch(f"{_MODULE}.get_gloo_group"),
+        patch(f"{_SESSION}.dist") as session_dist,
+        patch(f"{_SESSION}.get_gloo_group"),
+    ):
+        dist.get_rank.return_value = session_dist.get_rank.return_value = 0
         updater.update_weights()
     assert _phases(calls) == [
         "pause_generation",
