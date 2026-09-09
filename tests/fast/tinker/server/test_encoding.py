@@ -32,12 +32,12 @@ class TestDecodeForwardBackward:
         }
         return decode_command("forward_backward", payload)
 
-    def test_a_shifted_datum_becomes_one_row(self):
+    def test_a_shifted_datum_becomes_one_datum(self):
         op, decoded = self._decode(_datum([1, 2, 3, 4], weights=[1.0, 1.0, 1.0]))
         assert op == "forward_backward"
         assert decoded["datums"] == [{"tokens": [1, 2, 3, 4], "target_len": 3, "weights": [1.0, 1.0, 1.0]}]
 
-    def test_forward_only_reroutes_the_kind(self):
+    def test_forward_only_selects_the_op(self):
         op, _ = self._decode(_datum([1, 2, 3]), forward_only=True)
         assert op == "forward_only"
 
