@@ -1,14 +1,11 @@
 """step_adapter_slots settles each slot identically on every rank and always consumes its grads."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 from miles.backends.megatron_utils.lora import optimizer as optimizer_module
 
-_MOD = "miles.backends.megatron_utils.lora.optimizer"
 
-
-class _Child:
+class _FakeChild:
     def __init__(self, step_error=None):
         self._step_error = step_error
         self.stepped = False
@@ -28,53 +25,58 @@ class _Child:
         self.stepped = True
 
 
-def _run(children_by_slot, grad_norm=1.5):
-    optimizer = SimpleNamespace(allgather_params=MagicMock())
+class _FakeOptimizer:
+    def __init__(self):
+        self.param_gathers = 0
+
+    def allgather_params(self):
+        self.param_gathers += 1
+
+
+def _step_slots(monkeypatch, children_by_slot, grad_norm=1.5):
+    optimizer = _FakeOptimizer()
     zeroed = []
-    with (
-        patch(f"{_MOD}._slot_children", side_effect=lambda _opt, slot: children_by_slot[slot]),
-        patch(f"{_MOD}.zero_adapter_slot_grads", side_effect=lambda _model, slot: zeroed.append(slot)),
-        patch(f"{_MOD}.get_grad_norm_fp32", return_value=grad_norm),
-        patch(f"{_MOD}.clip_grad_by_total_norm_fp32"),
-    ):
-        outcomes = optimizer_module.step_adapter_slots(
-            optimizer, model=None, step_batch_sizes={slot: 1 for slot in children_by_slot}, clip_grad=1.0
-        )
+    monkeypatch.setattr(optimizer_module, "_slot_children", lambda _optimizer, slot: children_by_slot[slot])
+    monkeypatch.setattr(optimizer_module, "zero_adapter_slot_grads", lambda _model, slot: zeroed.append(slot))
+    monkeypatch.setattr(optimizer_module, "get_grad_norm_fp32", lambda *_args, **_kwargs: grad_norm)
+    monkeypatch.setattr(optimizer_module, "clip_grad_by_total_norm_fp32", lambda *_args: None)
+    monkeypatch.setattr(optimizer_module.dist, "is_initialized", lambda: False)
+    outcomes = optimizer_module.step_adapter_slots(
+        optimizer, model=None, step_batch_sizes={slot: 1 for slot in children_by_slot}, clip_grad=1.0
+    )
     return outcomes, zeroed, optimizer
 
 
-def test_each_slot_settles_on_its_own():
-    ok, bad = _Child(), _Child(step_error=RuntimeError("boom"))
-    outcomes, zeroed, optimizer = _run({0: [ok], 1: [bad]})
-    assert outcomes[0] == {"grad_norm": 1.5} and ok.stepped
+def test_each_slot_settles_on_its_own(monkeypatch):
+    healthy, failing = _FakeChild(), _FakeChild(step_error=RuntimeError("boom"))
+    outcomes, zeroed, optimizer = _step_slots(monkeypatch, {0: [healthy], 1: [failing]})
+    assert outcomes[0] == {"grad_norm": 1.5} and healthy.stepped
     assert outcomes[1] == {"error": "RuntimeError: boom"}
     assert zeroed == [0, 1], "grads are consumed whether or not the step landed"
-    optimizer.allgather_params.assert_called_once()
+    assert optimizer.param_gathers == 1
 
 
-def test_a_nonfinite_grad_norm_skips_the_step():
+def test_a_nonfinite_grad_norm_skips_the_step(monkeypatch):
     """BF16 has no grad scaler, so the all-reduced norm is the only inf/nan gate."""
-    child = _Child()
-    outcomes, zeroed, optimizer = _run({0: [child]}, grad_norm=float("inf"))
+    child = _FakeChild()
+    outcomes, zeroed, optimizer = _step_slots(monkeypatch, {0: [child]}, grad_norm=float("inf"))
     assert outcomes[0] == {"skipped_nonfinite": 1.0}
     assert not child.stepped and zeroed == [0]
-    optimizer.allgather_params.assert_not_called()
+    assert optimizer.param_gathers == 0
 
 
-def test_a_rank_local_error_fails_the_slot_on_every_rank():
+def test_a_rank_local_error_fails_the_slot_on_every_rank(monkeypatch):
     """The healthy rank must not enter the parameter allgather alone."""
-    remote = {0: {"error": "RuntimeError: died on rank 1"}}
-    with (
-        patch(f"{_MOD}.dist") as dist,
-        patch(f"{_MOD}.get_gloo_group"),
-    ):
-        dist.is_initialized.return_value = True
-        dist.get_world_size.return_value = 2
+    remote_outcomes = {0: {"error": "RuntimeError: died on rank 1"}}
 
-        def fake_gather(out, _local, group=None):
-            out[0] = {0: {"grad_norm": 1.5}}  # this rank succeeded
-            out[1] = remote
+    def gather_outcomes(per_rank, local_outcomes, group):
+        per_rank[:] = [local_outcomes, remote_outcomes]
 
-        dist.all_gather_object.side_effect = fake_gather
-        merged = optimizer_module._merge_outcomes_across_ranks({0: {"grad_norm": 1.5}})
-    assert merged == remote
+    monkeypatch.setattr(
+        optimizer_module,
+        "dist",
+        SimpleNamespace(is_initialized=lambda: True, get_world_size=lambda: 2, all_gather_object=gather_outcomes),
+    )
+    monkeypatch.setattr(optimizer_module, "get_gloo_group", lambda: None)
+    merged = optimizer_module._merge_outcomes_across_ranks({0: {"grad_norm": 1.5}})
+    assert merged == remote_outcomes
