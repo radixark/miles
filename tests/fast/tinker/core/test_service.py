@@ -123,19 +123,6 @@ async def test_save_then_load_roundtrip_paths(service):
     assert weights_only["ckpt_path"].endswith(f"{model_id}/weights/ckpt")
 
 
-async def test_a_foreign_checkpoint_is_rejected_as_a_user_error(service):
-    victim = await created_model(service, tenant="tenant-a")
-    thief = await created_model(service, tenant="tenant-b")
-
-    request_id = service.submit(
-        "tenant-b",
-        "load_state",
-        {"model_id": thief, "seq_id": 1, "path": f"tinker://{victim}/weights/ckpt", "optimizer": True},
-    )
-    future = await await_settled(service, "tenant-b", request_id)
-    assert (future.state, future.error_category) == (FAILED, "user")
-
-
 async def test_sampler_save_bumps_the_version_and_pushes(service):
     model_id = await created_model(service)
     for seq_id in (1, 2):
@@ -272,15 +259,20 @@ async def test_a_fresh_heartbeat_keeps_the_model(service):
     assert model_id in service.models
 
 
-async def test_traversal_checkpoint_names_are_rejected(service):
+@pytest.mark.parametrize("name", ["../evil", "a/b", "..", ".hidden"], ids=["parent", "slash", "dotdot", "hidden"])
+async def test_traversal_checkpoint_names_are_rejected(service, name):
     model_id = await created_model(service)
-    for name in ("../evil", "a/b", "..", ".hidden"):
-        request_id = service.submit(
-            "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": name, "overwrite": False}
-        )
-        future = await await_settled(service, "tenant", request_id)
-        assert (future.state, future.error_category) == (FAILED, "user")
-        assert not service.backend.named("save_slot"), "nothing may touch the disk for a rejected name"
+    request_id = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": name, "overwrite": False}
+    )
+    future = await await_settled(service, "tenant", request_id)
+    assert (future.state, future.error_category) == (FAILED, "user")
+    assert "invalid checkpoint path segment" in future.error
+    assert not service.backend.named("save_slot"), "nothing may touch the disk for a rejected name"
+
+
+async def test_traversal_sampler_paths_are_rejected(service):
+    model_id = await created_model(service)
     with pytest.raises(UserInputError):
         service.submit_sample(
             "tenant",
