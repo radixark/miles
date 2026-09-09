@@ -1,9 +1,4 @@
-"""Shared types of the Tinker gateway.
-
-Core speaks only the gateway's internal language (commands, datums, results).
-server/ translates the SDK wire (JSON and proto); runtime.py translates
-miles (trainer batches). Each foreign language lives only at its boundary.
-"""
+"""Shared commands, datums, and configuration for the Tinker gateway."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -25,8 +20,7 @@ class CommandOp(str, Enum):
 # wire loss_fn_inputs key -> internal datum key
 LOSS_INPUT_KEYS = {"weights": "weights", "advantages": "advantages", "logprobs": "sampling_logprobs"}
 
-# the wire inputs each loss_fn reads from every datum; admission rejects what
-# execution would trip over, before the datum can poison a shared batch
+# reject missing loss inputs before they enter a shared batch
 LOSS_FN_INPUTS = {
     "cross_entropy": ("weights",),
     "importance_sampling": ("logprobs", "advantages"),
@@ -37,7 +31,7 @@ LOSS_FN_INPUTS = {
 
 
 class UserInputError(Exception):
-    """Rejected request content; fails the future with category User."""
+    """Rejected request content; fails the future with category user."""
 
 
 class OwnershipError(Exception):
@@ -80,7 +74,6 @@ class ModelRecord:
     base_model: str
     lora_rank: int
     lora_alpha: float
-    # The mint counter: a failed publication burns its number, never reuses it,
-    # so published_sampler_versions can have gaps.
+    # failed publications burn their version number, leaving gaps
     next_sampler_version: int = 1
     published_sampler_versions: set[int] = field(default_factory=set)
