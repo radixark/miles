@@ -29,6 +29,12 @@ class PendingRequest:
     def is_window(self) -> bool:
         return self.command.kind in WINDOW_KINDS
 
+    def record_output(self, local_index: int, output: dict) -> bool:
+        """Store one datum's result; True once every datum has reported."""
+        self.outputs[local_index] = output
+        self.remaining -= 1
+        return self.remaining == 0
+
     def loss_class(self) -> tuple:
         if self.command.kind == "forward_only":
             return ("forward_only",)
