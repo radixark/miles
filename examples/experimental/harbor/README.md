@@ -102,11 +102,11 @@ next to the code that reads it.
 ## Validation
 
 The platform round trip (golden agent, real sandbox APIs) passes on e2b and
-Daytona via the sandbox smoke, `scripts/sandbox_smoke`. The GPU e2e — one GRPO
-step with terminus-2 on real e2b sandboxes,
-`tests/e2e/agentic/test_harbor_e2b_training.py` — **passed 2026-09-04** on a
-2×H200 devbox against a self-hosted E2B-compatible service (2 trials
-submitted, optimizer step completed). `run.py` itself **ran 2026-09-04** on 8×H200
+Daytona via the sandbox smoke, `scripts/sandbox_smoke`. The GPU e2e —
+terminus-2 on real e2b sandboxes through the full rollout path with the TITO
+strict gate armed, `tests/e2e/agentic/test_harbor_e2b_rollout.py` — **passed
+2026-09-09** on a 2×H200 devbox against a self-hosted E2B-compatible service
+(2 trials, both reward 1.0, no TITO mismatches). `run.py` itself **ran 2026-09-04** on 8×H200
 with this README's exact command (data via the documented pipeline, real
 training mode, batch dials reduced to 1×2×1 rollout): both trials scored
 **reward 1.0**, one GRPO step completed. The end-of-run checkpoint save needs
