@@ -1,11 +1,4 @@
-"""SDK wire <-> gateway internal language, binary half.
-
-Requests: /forward_backward arrives as a ForwardBackwardRequest protobuf
-(optionally zstd-compressed). Responses: forward_backward and sample results
-encode as ForwardBackwardOutput / SampleResponse protos when the client asks
-(Accept: application/x-protobuf), so logprobs travel as raw bytes instead of
-JSON floats. The schema ships with the tinker pip package.
-"""
+"""Translate Tinker SDK protobuf requests and results, including compressed requests."""
 
 import numpy as np
 

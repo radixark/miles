@@ -1,8 +1,4 @@
-"""Turns ready work from all streams into the next trainer call, one at a time.
-
-Arrival-order greedy: the oldest ready item goes first; datums pack across
-requests and models up to the token budget, ready optim barriers merge.
-"""
+"""Pack compatible datums and merge ready optimizer barriers in arrival order."""
 
 from dataclasses import dataclass
 
@@ -39,7 +35,7 @@ class BatchUnit:
 
 @dataclass
 class BarrierUnit:
-    """One non-forward trainer call, run only after its stream's window drained."""
+    """One barrier call after all preceding batch requests in its stream finish."""
 
     op: CommandOp  # OPTIM_STEP | SAVE_STATE | LOAD_STATE | SAVE_WEIGHTS_FOR_SAMPLER
     entries: list[tuple[ModelStream, PendingRequest]]
