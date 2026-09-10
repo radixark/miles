@@ -321,8 +321,6 @@ def _execute_train(args: ScriptArgs) -> None:
         "--sglang-lora-strict-loading "
         f"--sglang-max-lora-rank {args.lora_rank} "
         "--use-miles-router "
-        # /health is slow under long generations and weight-sync sleeps; 3 failures quarantined live engines
-        "--miles-router-health-check-failure-threshold 10 "
     )
     if args.model_variant == "full" and args.rollout_tp_size > 8:
         # above TP8 the Marlin MoE intermediate is tile-padded, which the virtual-experts LoRA kernel rejects
