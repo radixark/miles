@@ -91,13 +91,14 @@ class HfWeightIteratorBase(ABC):
         whose tensors join the stream under ``{lora_name}:{hf_key}`` names.
         ``materialize=False`` joins every collective but yields nothing.
         """
+
+        def prefixed_units(lora_name, adapter):
+            for unit in self._iter_hf_adapter_units(adapter, materialize=materialize):
+                yield [(f"{lora_name}:{name}", tensor) for name, tensor in unit]
+
         hf_param_units = self._iter_hf_param_units(weights, materialize=materialize) if include_base else iter(())
         for lora_name, adapter in adapters:
-            prefixed = (
-                [(f"{lora_name}:{name}", tensor) for name, tensor in unit]
-                for unit in self._iter_hf_adapter_units(adapter, materialize=materialize)
-            )
-            hf_param_units = itertools.chain(hf_param_units, prefixed)
+            hf_param_units = itertools.chain(hf_param_units, prefixed_units(lora_name, adapter))
         atomic_update_groups = self._hf_atomic_update_groups() if include_base and materialize else []
         hf_param_units = assemble_atomic_update_groups(hf_param_units, atomic_update_groups)
         yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
