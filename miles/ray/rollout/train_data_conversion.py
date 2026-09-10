@@ -49,6 +49,22 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
 }
 
 
+def mask_truncated_completions(args, samples: list[Sample] | list[list[Sample]]) -> None:
+    """Apply --mask-truncated-completions in place.
+
+    Marks every truncated sample as ``remove_sample`` so it gets an all-zero loss
+    mask while its reward still enters advantage normalization, the same thing a
+    --rollout-sample-filter-path function does. Runs before the debug dump, the
+    rollout metrics and the (possibly custom) train-data conversion see the batch.
+    """
+    if not args.mask_truncated_completions:
+        return
+    for item in samples:
+        for sample in item if isinstance(item, list) else [item]:
+            if sample.status == Sample.Status.TRUNCATED:
+                sample.remove_sample = True
+
+
 def convert_samples_to_train_data(
     args,
     samples: list[Sample] | list[list[Sample]],
