@@ -118,7 +118,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --distributed-timeout-minutes 10 
   --rollout-num-gpus-per-engine 8
   --sglang-tp-size 8
-  --sglang-ep-size 8
+  --sglang-ep-size 1
   --sglang-server-concurrency 16
   --sglang-max-running-requests 16
   --sglang-max-mamba-cache-size 16
@@ -126,9 +126,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-lora-backend triton
   --sglang-lora-strict-loading
   --sglang-max-lora-rank 16
+  --sglang-moe-runner-backend marlin
   --sglang-cuda-graph-bs 1 2 4 8 16
   --sglang-mem-fraction-static 0.7
-  --sglang-moe-runner-backend triton
   --sglang-disable-shared-experts-fusion
   --sglang-context-length 8192 
   --attention-dropout 0.0

@@ -51,17 +51,14 @@ def test_full_model_off_the_validated_gpu_count_needs_an_explicit_layout():
         run_kimi_k3.ScriptArgs(model_name="Kimi-K3", hardware="H200", num_nodes=4, num_gpus_per_node=8)
 
 
-@pytest.mark.parametrize(
-    "num_gpus_per_node,expected_tp,expected_rollout_tp",
-    [(8, 8, 8), (4, 4, 4)],
-    ids=["8-gpu-node", "4-gpu-node"],
-)
-def test_four_layer_layout_follows_the_gpu_count(num_gpus_per_node, expected_tp, expected_rollout_tp):
+@pytest.mark.parametrize("num_gpus_per_node,expected_tp", [(8, 8), (4, 4)], ids=["8-gpu-node", "4-gpu-node"])
+def test_four_layer_layout_follows_the_gpu_count(num_gpus_per_node, expected_tp):
+    """The rollout serves the experts replicated (EP1): Marlin is the only MXFP4 MoE runner with a LoRA path."""
     args = _four_layer(num_gpus_per_node=num_gpus_per_node)
     assert args.tensor_parallel_size == expected_tp
     assert args.expert_parallel_size == expected_tp
-    assert args.rollout_tp_size == expected_rollout_tp
-    assert args.rollout_ep_size == expected_rollout_tp
+    assert args.rollout_tp_size == expected_tp
+    assert args.rollout_ep_size == 1
 
 
 def test_four_layer_rollout_tp_can_span_nodes():

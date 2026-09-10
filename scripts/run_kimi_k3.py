@@ -115,8 +115,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.rollout_tp_size is None:
             self.rollout_tp_size = min(8, self.num_gpus)
         if self.rollout_ep_size is None:
-            # the 4-layer recipe serves with triton grouped GEMM, which wants the experts sharded
-            self.rollout_ep_size = self.rollout_tp_size if self.is_4layer else 1
+            # the Marlin LoRA MoE runner serves the experts replicated across the TP group
+            self.rollout_ep_size = 1
 
         if self.train_mode == "lora" and self.lora_rank <= 0:
             raise ValueError(f"LoRA rank must be positive, got {self.lora_rank}")
@@ -442,16 +442,16 @@ def _train(args: ScriptArgs) -> None:
         if not args.is_4layer:
             # the adapter is re-streamed every step; a host copy per TP rank (~45 GB) is never read
             sglang_args += "--sglang-lora-no-cpu-backup "
+    # Marlin is the one MXFP4 MoE runner with a LoRA path (Mxfp4MoEMethod has no triton quant info)
+    sglang_args += "--sglang-moe-runner-backend marlin "
     if args.is_4layer:
         sglang_args += (
             "--sglang-cuda-graph-bs 1 2 4 8 16 "
             "--sglang-mem-fraction-static 0.7 "
-            "--sglang-moe-runner-backend triton "
             "--sglang-disable-shared-experts-fusion "
         )
     else:
         sglang_args += (
-            "--sglang-moe-runner-backend marlin "
             "--sglang-decode-attention-backend trtllm_mla "
             "--sglang-mamba-radix-cache-strategy extra_buffer "
             f"--sglang-cuda-graph-bs-decode {graph_bs} "
