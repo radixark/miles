@@ -169,6 +169,67 @@ class SlotOptimizer:
         """Refresh this slot's FP32 masters from its model parameters."""
         self._inner.reload_model_params()
 
+    def state(self) -> dict:
+        """Checkpoint payload: per-child group steps, Adam moments, and FP32 masters."""
+        children_states = []
+        for child in self._inner.chained_optimizers:
+            inner = child.optimizer
+            group_steps = []
+            for group in inner.param_groups:
+                step = group.get("step", 0)
+                group_steps.append(step.cpu() if torch.is_tensor(step) else step)
+            params = []
+            masters = []
+            for main_param in child.get_parameters():
+                # a never-stepped slot has no per-param state yet
+                state = inner.state[main_param] if main_param in inner.state else {}
+                params.append({key: value.cpu() if torch.is_tensor(value) else value for key, value in state.items()})
+                # rebuilding FP32 masters from BF16 would lose low bits on resume
+                masters.append(main_param.data.cpu())
+            children_states.append({"group_steps": group_steps, "params": params, "masters": masters})
+        return {"world_size": _world_size(), "children": children_states}
+
+    def validate_state(self, saved: dict) -> None:
+        """Validate the saved layout against this slot before any state is touched."""
+        assert saved["world_size"] == _world_size(), (
+            f"optimizer state was saved with world_size={saved['world_size']}; "
+            f"resume requires the same topology (got {_world_size()})"
+        )
+        children = self._inner.chained_optimizers
+        assert len(children) == len(saved["children"])
+        for child, child_state in zip(children, saved["children"], strict=True):
+            assert len(child_state["group_steps"]) == len(child.optimizer.param_groups)
+            params = child.get_parameters()
+            assert len(child_state["params"]) == len(params)
+            masters = child_state.get("masters")
+            assert masters is None or len(masters) == len(params)
+
+    def load_state(self, saved: dict) -> None:
+        for child, child_state in zip(self._inner.chained_optimizers, saved["children"], strict=True):
+            inner = child.optimizer
+            # FusedAdam clocks steps on the param group, not in per-param state
+            for group, step in zip(inner.param_groups, child_state["group_steps"], strict=True):
+                existing = group.get("step")
+                if torch.is_tensor(existing):
+                    existing.copy_(torch.as_tensor(step))
+                elif "step" in group or step:
+                    group["step"] = step
+            # checkpoints written before masters were saved restore from BF16 as before
+            masters = child_state.get("masters") or [None] * len(child_state["params"])
+            for main_param, param_state, master in zip(
+                child.get_parameters(), child_state["params"], masters, strict=True
+            ):
+                if master is not None:
+                    main_param.data.copy_(master.to(main_param.device))
+                state = inner.state[main_param]
+                for key, value in param_state.items():
+                    if not torch.is_tensor(value):
+                        state[key] = value
+                    elif torch.is_tensor(state.get(key)):
+                        state[key].copy_(value.to(state[key].device))
+                    else:
+                        state[key] = value.to(main_param.device)
+
     def zero_grads(self) -> None:
         """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
         buffer views and any lingering ``grad``/``main_param.grad`` references."""
@@ -178,6 +239,10 @@ class SlotOptimizer:
             param.grad = None
             if (main_param := getattr(param, "main_param", None)) is not None:
                 main_param.grad = None
+
+
+def _world_size() -> int:
+    return dist.get_world_size() if dist.is_initialized() else 1
 
 
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
