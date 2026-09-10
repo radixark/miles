@@ -1,0 +1,11 @@
+### 0
+mkdir -p <SANDBOX>/models /root/datasets
+
+### 1
+hf download Pinaster/Kimi-K3-4layer
+  --local-dir <SANDBOX>/models/Kimi-K3-4layer
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/gsm8k
+  --local-dir /root/datasets/gsm8k
