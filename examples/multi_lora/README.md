@@ -25,8 +25,8 @@ pip install "tinker==0.26.2"
 Start the gateway:
 
 ```bash
-python examples/multi_lora/run_gateway.py prepare   # once per node
-python examples/multi_lora/run_gateway.py serve     # Tinker API on :10613
+python examples/multi_lora/run_qwen3_30b_a3b_tinker_server.py prepare   # once per node
+python examples/multi_lora/run_qwen3_30b_a3b_tinker_server.py serve     # Tinker API on :10613
 ```
 
 Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to choose another root.

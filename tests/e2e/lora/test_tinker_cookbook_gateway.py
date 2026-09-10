@@ -54,7 +54,7 @@ def _wait_for_gateway(server: subprocess.Popen) -> None:
 
 def execute():
     serve_cmd = (
-        "python examples/multi_lora/run_gateway.py serve "
+        "python examples/multi_lora/run_qwen3_30b_a3b_tinker_server.py serve "
         f"--hf-checkpoint /root/models/{MODEL_NAME} "
         "--tp 1 --ep 1 --lora-rank 8 --lora-alpha 16 "
         f'--extra-args "--tinker-base-model {BASE_MODEL}"'
@@ -63,7 +63,7 @@ def execute():
     try:
         _wait_for_gateway(server)
         U.exec_command_cpu(
-            "python examples/multi_lora/run_qwen3_sft_rl_recipe.py "
+            "python examples/multi_lora/run_client_recipes.py "
             f"--base-url http://127.0.0.1:{GATEWAY_PORT} --base-model {BASE_MODEL} --mode both --steps 2"
         )
     finally:
