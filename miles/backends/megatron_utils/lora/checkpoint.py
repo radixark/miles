@@ -5,8 +5,6 @@ expose_adapter_slot). Optimizer state is per global rank because LayerWise
 scatters whole params across ranks; resume requires the same world topology.
 """
 
-import os
-import shutil
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -17,6 +15,7 @@ from megatron.core.optimizer import MegatronOptimizer
 
 from miles.backends.megatron_utils.lora.optimizer import _slot_children
 from miles.backends.megatron_utils.lora.slots import adapter_shard_topology, megatron_shard_name
+from miles.backends.training_utils.checkpoint_io import run_checkpoint_phase, write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 
 
@@ -43,14 +42,8 @@ def save_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
     from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
     is_shard_writer, _ = adapter_shard_topology()
-    final_dir = Path(path)
-    tmp_dir = final_dir.parent / f"_tmp_{final_dir.name}"
 
-    def make_tmp_dir():
-        if _rank() == 0:
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    def write_shards():
+    def write_shards(tmp_dir: Path):
         if is_shard_writer:
             with expose_adapter_slot(model, slot):
                 shard = {
@@ -63,23 +56,7 @@ def save_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
             torch.save(shard, tmp_dir / _weight_shard_name())
         torch.save(_optimizer_slot_state(optimizer, slot), tmp_dir / _optim_shard_name())
 
-    def publish_dir():
-        # write-then-rename so readers never see a partial checkpoint; on overwrite
-        # the old version survives (as _old_<name>) until the replacement is in place
-        if _rank() == 0:
-            if final_dir.exists():
-                old_dir = final_dir.parent / f"_old_{final_dir.name}"
-                if old_dir.exists():
-                    shutil.rmtree(old_dir)
-                os.replace(final_dir, old_dir)
-                os.replace(tmp_dir, final_dir)
-                shutil.rmtree(old_dir)
-            else:
-                os.replace(tmp_dir, final_dir)
-
-    _run_checkpoint_phase(make_tmp_dir)
-    _run_checkpoint_phase(write_shards)
-    _run_checkpoint_phase(publish_dir)
+    write_checkpoint_dir(path, write_shards)
 
 
 def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, path: str, load_optimizer: bool) -> None:
@@ -105,26 +82,8 @@ def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
 
     # every rank reads and validates its shards before any rank touches the live slot,
     # so a missing or mismatched checkpoint cannot leave mixed or rank-divergent state
-    _run_checkpoint_phase(read_shards)
-    _run_checkpoint_phase(apply_shards)
-
-
-def _run_checkpoint_phase(operation) -> None:
-    """Run a checkpoint phase and propagate any rank's failure to every rank."""
-    error = None
-    try:
-        operation()
-    except Exception as exc:  # noqa: BLE001
-        error = f"{type(exc).__name__}: {exc}"
-    if not dist.is_initialized():
-        if error is not None:
-            raise RuntimeError(error)
-        return
-    errors = [None] * _world_size()
-    dist.all_gather_object(errors, error)
-    failed = [e for e in errors if e is not None]
-    if failed:
-        raise RuntimeError(f"slot checkpoint failed on {len(failed)} rank(s): {failed[0]}")
+    run_checkpoint_phase(read_shards)
+    run_checkpoint_phase(apply_shards)
 
 
 def _optimizer_slot_state(optimizer: MegatronOptimizer, slot: int) -> dict:
