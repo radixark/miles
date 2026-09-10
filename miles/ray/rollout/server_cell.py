@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
+from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, probe_server_healthy
 from miles.backends.sglang_utils.sglang_engine import build_server_url
@@ -174,8 +174,9 @@ class ServerCell:
 
         if self.meta.needs_offload:
             api_client = SGLangApiClient(server_url=addr_info.server_url)
-            await api_client.release_memory_occupation()
-            await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+            # Keep the weights resident for the initial update. Offloading and
+            # immediately reloading a full model can exceed the cell tick timeout.
+            await api_client.release_memory_occupation(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
 
         serve_without_weight_update: bool = not self.meta.update_weights or self.args.debug_rollout_only
         if not serve_without_weight_update and self.args.check_weight_update_equal:
