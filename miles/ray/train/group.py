@@ -16,6 +16,7 @@ from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
+    TrainerWitnessCohortEvent,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
@@ -215,6 +216,7 @@ class TrainerController:
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
+            self._log_witness_cohort(rollout_id=rollout_id, worker_results=worker_results)
 
             return worker_results
 
@@ -223,6 +225,22 @@ class TrainerController:
         await self._test_action_executor.run_after_step(rollout_id=rollout_id)
 
         return worker_results
+
+    def _log_witness_cohort(self, *, rollout_id: int, worker_results: list[TrainStepOutput]) -> None:
+        if not is_event_logger_initialized():
+            return
+        replica_ids = sorted(
+            {
+                result.witness_replica_id
+                for result in worker_results
+                if result.outcome == TrainStepOutcome.NORMAL and result.witness_replica_id is not None
+            }
+        )
+        get_event_logger().log(
+            TrainerWitnessCohortEvent,
+            {"rollout_id": rollout_id, "replica_ids": replica_ids},
+            print_log=False,
+        )
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:

@@ -19,9 +19,14 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
-from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.event_logger.logger import (
+    event_logger_context,
+    get_event_logger,
+    is_event_logger_initialized,
+)
+from miles.utils.audit_utils.event_logger.models import TrainerCpuWitnessEvent
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.audit_utils.witness.cpu import preserve_cpu_witness
+from miles.utils.audit_utils.witness.cpu import preserve_cpu_witness, snapshot_cpu_witness
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -113,6 +118,7 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
+        self._cell_index = indep_dp_info.cell_index
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -754,7 +760,43 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
 
         self._heartbeat.bump()
-        return TrainStepOutput(outcome=train_step_outcome)
+        witness_replica_id = None
+        if (
+            train_step_outcome == TrainStepOutcome.NORMAL
+            and not self.args.multi_lora
+            and is_first_replica_megatron_main_rank()
+        ):
+            witness_replica_id = f"cell-{self._cell_index}"
+            if is_event_logger_initialized():
+                sample_counts = [
+                    {
+                        "identity": {
+                            "source_sample_index": identity.source_sample_index,
+                            "row_index": identity.row_index,
+                            "row_count": identity.row_count,
+                        },
+                        "count": count,
+                    }
+                    for identity, count in sorted(
+                        snapshot_cpu_witness(self.model).items(),
+                        key=lambda item: (
+                            item[0].source_sample_index,
+                            item[0].row_index,
+                            item[0].row_count,
+                        ),
+                    )
+                ]
+                get_event_logger().log(
+                    TrainerCpuWitnessEvent,
+                    {
+                        "replica_id": witness_replica_id,
+                        "rollout_id": rollout_id,
+                        "sample_counts": sample_counts,
+                        "reason": "train_end",
+                    },
+                    print_log=False,
+                )
+        return TrainStepOutput(outcome=train_step_outcome, witness_replica_id=witness_replica_id)
 
     @with_logs
     @timer

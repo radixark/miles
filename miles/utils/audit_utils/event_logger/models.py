@@ -145,6 +145,31 @@ class MetricEvent(EventBase):
     metrics: dict[str, Any]
 
 
+class TrainingSampleIdentity(FrozenStrictBaseModel):
+    source_sample_index: int
+    row_index: int
+    row_count: int
+
+
+class TrainingSampleCount(FrozenStrictBaseModel):
+    identity: TrainingSampleIdentity
+    count: int
+
+
+class TrainerCpuWitnessEvent(EventBase):
+    type: Literal["trainer_cpu_witness"] = "trainer_cpu_witness"
+    replica_id: str
+    rollout_id: int
+    sample_counts: list[TrainingSampleCount]
+    reason: Literal["train_end", "save", "transfer", "load"]
+
+
+class TrainerWitnessCohortEvent(EventBase):
+    type: Literal["trainer_witness_cohort"] = "trainer_witness_cohort"
+    rollout_id: int
+    replica_ids: list[str]
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -155,7 +180,9 @@ Event = Annotated[
     | TrainAdvantageComputationEvent
     | EnvReportEvent
     | EngineEnvReportEvent
-    | MetricEvent,
+    | MetricEvent
+    | TrainerCpuWitnessEvent
+    | TrainerWitnessCohortEvent,
     Discriminator("type"),
 ]
 
