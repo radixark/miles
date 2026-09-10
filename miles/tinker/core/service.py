@@ -104,9 +104,9 @@ class TinkerService:
         self.sessions[session_id] = {"tenant": tenant, "last_heartbeat": time.monotonic()}
         return session_id
 
-    def heartbeat(self, session_id: str) -> None:
+    def heartbeat(self, tenant: str, session_id: str) -> None:
         session = self.sessions.get(session_id)
-        if session is not None:
+        if session is not None and session["tenant"] == tenant:
             session["last_heartbeat"] = time.monotonic()
 
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
