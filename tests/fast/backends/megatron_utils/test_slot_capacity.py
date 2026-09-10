@@ -36,6 +36,12 @@ def test_bytes_per_train_param_follows_the_precision_flags(bf16, fp16, accum_fp3
     assert bytes_per_train_param(args) == expected
 
 
+def test_optimizer_state_is_split_across_data_parallel_ranks():
+    # bf16 weight + fp32 grad on every rank; the fp32 master and moments (12 B) are scattered over DP=2
+    args = Namespace(bf16=True, fp16=False, accumulate_allreduce_grads_in_fp32=True)
+    assert bytes_per_train_param(args, dp_size=2) == 12
+
+
 def _probe(free=100 * GIB, slot=2 * GIB, act_peak=10 * GIB) -> RankProbe:
     return RankProbe(free=free, slot_bytes=slot, act_peak=act_peak, adapter_local_params=slot // 18)
 
@@ -105,7 +111,7 @@ def _backend(calls, step_outcome) -> SimpleNamespace:
 
 async def test_the_probe_warms_up_then_measures_one_max_size_step():
     calls = []
-    snapshot = {"free": 50 * GIB, "slot_bytes": 2 * GIB, "act_peak": 10 * GIB, "adapter_local_params": 2 * GIB // 18}
+    snapshot = {"free": 50 * GIB, "slot_bytes": 2 * GIB, "act_peak": 10 * GIB, "adapter_local_params": 2 * GIB // 12}
     trainer = SimpleNamespace(
         multi_lora_memory_probe=AsyncMock(
             side_effect=lambda phase: calls.append(phase) or ([{}] if phase == "reset" else [snapshot])
@@ -116,7 +122,7 @@ async def test_the_probe_warms_up_then_measures_one_max_size_step():
         bf16=True, fp16=False, accumulate_allreduce_grads_in_fp32=True, lora_alpha=None, max_tokens_per_gpu=8192
     )
 
-    probes = await probe_slot_capacity(args, backend, trainer)
+    probes = await probe_slot_capacity(args, backend, trainer, dp_size=2)
 
     assert calls == ["load", "fb", "step", "reset", "fb", "step", "measure", "unload"]
     assert probes == [RankProbe(**snapshot)]

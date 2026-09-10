@@ -46,8 +46,9 @@ async def serve(args):
         probe_trainer = _trainer_controller(args, inference_controller)
         await probe_trainer.init()
         # the probe only trains; the router address exists once the engines launch
-        probe_backend = MilesBackend(probe_trainer, router_url="", dp_size=_data_parallel_size(args))
-        probes = await probe_slot_capacity(args, probe_backend, probe_trainer)
+        dp_size = _data_parallel_size(args)
+        probe_backend = MilesBackend(probe_trainer, router_url="", dp_size=dp_size)
+        probes = await probe_slot_capacity(args, probe_backend, probe_trainer, dp_size)
         args.multi_lora_n_adapters = resolve_slot_capacity(args, probes)
         await probe_trainer.dispose()
         # fresh worker processes rebuild the pool at the resolved size; the engine specs read it from args

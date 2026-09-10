@@ -51,13 +51,17 @@ class RankProbe:
         return max((self.free + self.slot_bytes - self.act_peak - margin_bytes) // self.slot_bytes, 0)
 
 
-def bytes_per_train_param(args: Namespace) -> int:
-    """Per-slot resident bytes per LoRA param, from the precision flags."""
+def bytes_per_train_param(args: Namespace, dp_size: int = 1) -> float:
+    """Per-slot resident bytes per LoRA param on one rank, from the precision flags.
+
+    The weights are replicated and DDP all-reduces full gradients, but the LayerWise
+    optimizer scatters whole params across data-parallel ranks, so each rank keeps the
+    fp32 master and the Adam moments for only its share of the slot."""
     weight = 2 if (args.bf16 or args.fp16) else 4
     grad = 4 if args.accumulate_allreduce_grads_in_fp32 else weight
     master = 4 if weight < 4 else 0  # mixed precision keeps an fp32 master; pure fp32 does not
-    moments = 8  # per-slot torch Adam: fp32 exp_avg + exp_avg_sq (not precision-aware)
-    return weight + grad + master + moments
+    moments = 8  # per-slot Adam: fp32 exp_avg + exp_avg_sq
+    return weight + grad + (master + moments) / dp_size
 
 
 def memory_snapshot(model, optimizer, phase: str) -> dict:
@@ -101,7 +105,7 @@ def resident_slot_bytes(model, optimizer, slot: int) -> int:
     return sum(storages.values())
 
 
-async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankProbe]:
+async def probe_slot_capacity(args: Namespace, backend, trainer, dp_size: int = 1) -> list[RankProbe]:
     """Load one max-rank probe slot and run two max-size steps through the real
     executor path: the first materializes the Adam moments and the process-wide
     workspaces every later step shares, the second is measured. Every rank reports
@@ -115,12 +119,14 @@ async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankPro
     await backend.unload_slot(PROBE_SLOT)
 
     probes = [RankProbe(**snapshot) for snapshot in snapshots]
-    predicted = probes[0].adapter_local_params * bytes_per_train_param(args)
+    predicted = probes[0].adapter_local_params * bytes_per_train_param(args, dp_size)
     if abs(probes[0].slot_bytes - predicted) > 0.2 * max(predicted, 1):
         logger.warning(
-            f"measured slot bytes {probes[0].slot_bytes} diverge from predicted {predicted}: "
+            f"measured slot bytes {probes[0].slot_bytes} diverge from predicted {predicted:.0f}: "
             "unaccounted per-slot memory; trust the measurement"
         )
+    else:
+        logger.info(f"measured slot bytes {probes[0].slot_bytes} agree with predicted {predicted:.0f}")
     return probes
 
 
