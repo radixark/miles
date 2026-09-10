@@ -12,6 +12,8 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
+from miles.backends.training_utils.weight_version_checkpoint import read_weight_version, write_weight_version
+
 logger = logging.getLogger(__name__)
 
 
@@ -156,6 +158,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         "rng": rng_state,
         "metadata": metadata,
         "iteration": target_step,
+        "weight_version": read_weight_version(checkpoint_dir=root_path, iteration=target_step),
     }
 
 
@@ -163,6 +166,8 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
     if checkpoint_payload is None:
         dist.barrier()
         return
+
+    actor.weight_updater.weight_version = checkpoint_payload["weight_version"]
 
     if checkpoint_payload.get("rng") is not None and not getattr(actor.args, "no_load_rng", False):
         rng_state = checkpoint_payload["rng"]
@@ -242,6 +247,12 @@ def save(actor: Any, iteration: int) -> None:
             "timestamp": time.time(),
         }
         _write_checkpoint_metadata(checkpoint_dir / "meta.json", metadata)
+
+        write_weight_version(
+            checkpoint_dir=base_dir,
+            iteration=step_id,
+            weight_version=actor.weight_updater.weight_version,
+        )
 
         tracker_file = base_dir / "latest_checkpointed_iteration.txt"
         tracker_file.write_text(str(step_id))

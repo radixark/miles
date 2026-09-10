@@ -30,6 +30,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.weight_version_checkpoint import read_weight_version
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.cpu import TrainingSampleIdentity, record_cpu_witness
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -1016,6 +1017,7 @@ def build_model_and_optimizer(
 class LoadCheckpointOutput:
     loaded_rollout_id: int
     start_rollout_id: int
+    weight_version: int = 0
 
 
 def load_model_state(
@@ -1087,4 +1089,8 @@ def load_model_state(
     else:
         start_rollout_id = iteration + 1
 
-    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
+    return LoadCheckpointOutput(
+        loaded_rollout_id=iteration,
+        start_rollout_id=start_rollout_id,
+        weight_version=read_weight_version(checkpoint_dir=Path(load_dir), iteration=iteration) if load_dir else 0,
+    )

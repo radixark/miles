@@ -495,7 +495,7 @@ async def test_stale_group_reports_the_reason_to_the_unused_policy() -> None:
     await put_group(buffer, stale)
     await put_group(buffer, fresh)
 
-    assert (await buffer.get(current_version=2)).group == fresh
+    assert (await buffer.get(num_groups=1, current_version=2))[0].group == fresh
     assert calls == [(stale, data_buffer.UnusedReason.STALE)]
 
 
@@ -509,10 +509,10 @@ async def test_buffer_blocks_producer_when_full():
     assert not blocked.done()
     assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 2
 
-    assert (await buffer.get()).group[0].group_index == 1
+    assert (await buffer.get(num_groups=1))[0].group[0].group_index == 1
     await blocked
-    assert (await buffer.get()).group[0].group_index == 2
-    assert (await buffer.get()).group[0].group_index == 3
+    assert (await buffer.get(num_groups=1))[0].group[0].group_index == 2
+    assert (await buffer.get(num_groups=1))[0].group[0].group_index == 3
 
 
 async def test_buffer_get_ignores_unknown_context_keys():
@@ -520,7 +520,7 @@ async def test_buffer_get_ignores_unknown_context_keys():
     buffer, _ = make_buffer()
     await put_group(buffer, make_group(1))
 
-    assert (await buffer.get(current_version=1, some_future_key=2)).group[0].group_index == 1
+    assert (await buffer.get(num_groups=1, current_version=1, some_future_key=2))[0].group[0].group_index == 1
 
 
 async def test_buffer_get_skips_groups_stale_at_consumption_time():
@@ -530,7 +530,7 @@ async def test_buffer_get_skips_groups_stale_at_consumption_time():
     await put_group(buffer, stale)
     await put_group(buffer, make_group(2, weight_versions=["9"]))
 
-    assert (await buffer.get(current_version=10)).group[0].group_index == 2
+    assert (await buffer.get(num_groups=1, current_version=10))[0].group[0].group_index == 2
     assert unused == [stale]
     assert buffer.get_metrics()["rollout/fully_async/stale_groups_filtered"] == 1
 
@@ -542,7 +542,7 @@ async def test_buffer_staleness_metrics():
 
     await put_group(buffer, make_group(2, weight_versions=["6"]))
     await put_group(buffer, make_group(3, weight_versions=["8"]))
-    await buffer.get(current_version=10)  # pops group 1 and tracks the engine version clock
+    await buffer.get(num_groups=1, current_version=10)  # pops group 1 and tracks the engine version clock
     metrics = buffer.get_metrics()
     assert metrics["rollout/fully_async/avg_staleness"] == 6.0  # consumed group 1: 10 - 4
     assert metrics["rollout/fully_async/buffer_avg_staleness"] == 3.0  # buffered groups 2, 3: (4 + 2) / 2
@@ -587,7 +587,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
         await put_group(buffer, make_multi_policy_group(1, "solver", "verifier"))
 
-        entry = await buffer.get(trainer_model_id="verifier")
+        [entry] = await buffer.get(num_groups=1, trainer_model_id="verifier")
 
         assert [sample.trainer_model_id for sample in data_buffer.iter_samples(entry.group)] == ["verifier"]
 
@@ -596,7 +596,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
         await put_group(buffer, make_multi_policy_group(1, "solver", "solver"))
 
-        waiting = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+        waiting = asyncio.create_task(buffer.get(num_groups=1, trainer_model_id="verifier"))
         await asyncio.sleep(0.01)
 
         assert not waiting.done()
@@ -623,7 +623,7 @@ class TestPerPolicyQueues:
         group[0].trainer_model_id, group[1].trainer_model_id = "solver", "verifier"
 
         await put_group(buffer, group)
-        drained = asyncio.create_task(buffer.get(current_version=9, trainer_model_id="solver"))
+        drained = asyncio.create_task(buffer.get(num_groups=1, current_version=9, trainer_model_id="solver"))
         await asyncio.sleep(0.01)
 
         assert unused == [group]
@@ -634,7 +634,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
 
         with pytest.raises(AssertionError, match="trains no policy of this run"):
-            await buffer.get(trainer_model_id="reviewer")
+            await buffer.get(num_groups=1, trainer_model_id="reviewer")
 
     async def test_every_policy_of_the_config_gets_a_queue_of_its_own(self):
         """The queues are built from --megatron-config, so a policy missing one has nowhere to put its groups."""
@@ -665,7 +665,7 @@ class TestPerPolicyQueues:
 
         buffer._inners["solver"] = _RecordingInner()
 
-        assert await buffer.get(current_version=4, trainer_model_id="solver") == "entry"
+        assert await buffer.get(num_groups=1, current_version=4, trainer_model_id="solver") == ["entry"]
         assert seen == [{"current_version": 4, "trainer_model_id": "solver"}]
 
 
@@ -901,7 +901,7 @@ class WedgedBuffer(data_buffer.DataBuffer):
     async def put(self, input: data_buffer.DataBufferInput) -> None:
         await self._never.wait()
 
-    async def get(self, **context) -> data_buffer.DataBufferInput:
+    async def get(self, *, num_groups: int, **context) -> list[data_buffer.DataBufferInput]:
         await self._never.wait()
         raise AssertionError("the wedged buffer never hands out a group")
 

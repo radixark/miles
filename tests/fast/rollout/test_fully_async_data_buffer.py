@@ -22,7 +22,7 @@ class _RecordingBuffer(DataBuffer):
     async def put(self, input: DataBufferInput) -> None:
         raise NotImplementedError
 
-    async def get(self, **context) -> DataBufferInput:
+    async def get(self, *, num_groups: int, **context) -> list[DataBufferInput]:
         raise NotImplementedError
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
