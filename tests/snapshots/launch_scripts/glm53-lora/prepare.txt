@@ -1,0 +1,15 @@
+### 0
+mkdir -p /root/datasets /root/models
+
+### 1
+hf download zai-org/GLM-5.3-BF16
+  --local-dir /root/models/GLM-5.3-BF16
+
+### 2
+hf download zai-org/GLM-5.3
+  --local-dir /root/models/GLM-5.3
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/gsm8k
+  --local-dir /root/datasets/gsm8k
