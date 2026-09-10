@@ -25,7 +25,7 @@ class AsyncDataSourceFake:
 class TestRunLoop:
     async def test_run_loop_awaits_the_async_data_source_before_processing_a_group(self) -> None:
         """The producer awaits sample retrieval before processing the returned group."""
-        group = [Sample(prompt="prompt")]
+        group = [Sample(prompt="prompt", reward=1.0)]
         data_source = AsyncDataSourceFake(group)
         worker = AsyncMultiLoRAWorker.__new__(AsyncMultiLoRAWorker)
 
@@ -36,7 +36,7 @@ class TestRunLoop:
             worker.running = False
             return received
 
-        worker.args = SimpleNamespace()
+        worker.args = SimpleNamespace(reward_key=None)
         worker.data_source = data_source
         worker.generate_fn = generate
         worker.concurrency = 1
