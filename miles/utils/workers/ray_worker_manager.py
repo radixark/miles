@@ -75,15 +75,6 @@ class RayWorkerManager:
     async def stop_cells(self, cell_ids: list[str]) -> None:
         await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
 
-    async def restart_with_specs(self, specs: list[BaseWorkerSpec]) -> None:
-        """Replace a startup probe's workers, retaining its placement groups.
-
-        Callers must dispose their cell watchers first. Fresh worker processes
-        release the probe's CUDA context, optimizer and DDP hooks completely.
-        """
-        await self.stop_cells([cell.cell_id for cell in self._all_cells()])
-        await self.init(specs, self.pgs)
-
     def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
         cell = self._find_cell(cell_id)
         if not cell.alive:

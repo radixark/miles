@@ -1,187 +1,145 @@
-# Multi-LoRA DAPO pressure test
+# Standalone Tinker multi-LoRA pressure test
 
-The experiment compares the GPU slot probe against the largest client count
-that completes the configured DAPO workload. A passing count is qualified by
-the number of completed steps, sequence limit, adapter targets and topology;
-it is not a guarantee that every possible future workload fits.
+This PR adds example tools only, on top of #2846 at
+`3b97ddc308bf10581d803617aa42f75bf7b88831`. It does not change Miles runtime,
+`serve_tinker.py`, the original multi-LoRA example, or CI/unit-test files.
+The scripts are submitted for review **before running the N-user experiment**.
+The standalone GPU probe and N-user E2E are not yet validated on hardware.
 
-This PR is based on Miles PR #2846 at
-`3b97ddc308bf10581d803617aa42f75bf7b88831`, integrating PR #3170 at
-`f159f9baa3cf9433c6b31d9f155bebdb721afe26`. The GPU environment uses SGLang
-PR #38165 at `c27edd9949f079c07ab66091219865af454b5cad`.
+## Scripts to review
 
-## GPU E2E acceptance
+- [Single Tinker user](tinker_e2e_user.py): `run_user()` / `_train_step()`.
+- [N concurrent users](pressure_client.py): starts N tasks running that exact user flow.
+- [Capacity estimate](slot_capacity.py): `_probe()` / `_report()`; inspired by #3170.
+- [Probe worker](slot_probe_actor.py): uses the existing `worker_class` extension;
+  inherits the real training implementation and only adds memory observation.
+- [Probe/serve launcher](run_pressure.py): selects the independent probe program
+  or the **unchanged** `serve_tinker.py` with an integer slot count.
+- [DAPO preparation and checks](pressure_dapo.py), [step timing](pressure_timing.py),
+  and [optional telemetry uploader](pressure_telemetry.py).
 
-`pressure_client.py` uses real Tinker SDK clients against `serve_tinker.py`.
-Each client creates a separate LoRA model, publishes its sampler weights,
-samples through SGLang, builds DAPO training data, and awaits both GPU
-forward/backward and an Adam update. Subsequent steps publish the updated
-weights and repeat the same loop. No fake backend is used in this path.
+The user flow follows the official
+[Tinker cookbook RL loop](https://github.com/thinking-machines-lab/tinker-cookbook/blob/1f962eda3a2cec8de284725f2adc9978e93dfcd3/tinker_cookbook/recipes/rl_loop.py).
+Its SDK sequence is adapted to DAPO/PPO, the DAPO math dataset and 8K context.
+It does not call trainer methods directly; only the separate capacity probe does.
 
-Clients synchronize before each step and after collecting their rollout batch.
-A client that has finished sampling therefore waits for the slowest client
-before submitting forward/backward. Phase files expose that wait.
+## Workload and pass criteria
 
-All N clients must complete three full steps before N passes. The one-slot
-memory probe, CPU unit tests and launcher snapshots do not satisfy that gate.
-Checkpoint saving during continuous training is included; checkpoint restore
-correctness is covered separately by the gateway tests, not by this pressure loop.
-The earlier GPU source estimated 121 slots but has not completed qualification;
-it is not evidence that this rebased PR passes GPU E2E.
+Each user owns a distinct SDK session, tenant key, LoRA model and Adam stream:
 
-## Workload
+1. Create the training client; publish its current weights and get a sampler.
+2. Sample eight responses per prompt. Prompt plus response is at most **8192**
+   tokens. Retain four groups with mixed correct/incorrect responses, with at
+   most 64 prompt attempts per step. Use group-normalized advantages, response
+   token normalization, DAPO's overlength penalty, and PPO bounds 0.8 / 1.28.
+3. Submit `forward_backward_async(..., loss_fn="ppo")` and `optim_step_async()`;
+   await both and check finite loss/logprobs and a positive, finite gradient norm.
+4. Repeat for three optimizer steps by default. Finally publish the last update
+   and sample again, so the final optimizer update also reaches inference.
 
-- Default: full Qwen3-30B-A3B BF16, matching `run_gateway.py`. Four nodes with
-  eight H200 each: 16 training GPUs (TP2, DP8, EP8, expert TP1), and 16 rollout
-  GPUs (eight TP2/EP2 engines).
-- `--model-name glm5.2` selects the original 78-layer GLM-5.2 recipe: training
-  TP16/EP16 and one rollout TP16/EP16 engine on the same 16 + 16 GPU split.
-- Both recipes use PP1, CP1, packed sequences and full activation recomputation.
-- LoRA rank 16, alpha 32, attention and per-expert MLP adapters.
-- DAPO math with 8192 **total** prompt and response tokens; prompts at most 2048.
-- Each client uses four accepted prompt groups, eight samples per prompt,
-  accuracy-based dynamic sampling, reward standardization, response-token-mean
-  loss, asymmetric PPO clipping `[0.8, 1.28]` and a 1024-token overlength buffer.
-- Clients use a common step boundary and a common forward/backward boundary.
-  Every client must complete three optimizer steps to pass a default trial.
+The concurrent launcher uses **N independent SDK users in one process**, sharing
+only tokenized input data. A one-time start gate ensures all N models exist before
+rollout; an end gate keeps their sessions alive until everyone finishes. There
+are **no cross-user barriers between training steps or before forward/backward**.
+Each user trains as soon as its own batch is ready.
 
-The SDK loop uses the async submission/future pattern in this directory's
-`client.py`, with the publish/sample/train cycle from the official
-[minimal Tinker Cookbook RL recipe](https://github.com/thinking-machines-lab/tinker-cookbook/blob/1f962eda3a2cec8de284725f2adc9978e93dfcd3/tinker_cookbook/recipes/rl_loop.py).
-It is adapted for DAPO, each model's tokenizer and concurrent tenants, using the
-official `tinker==0.26.2` SDK and the Miles DAPO answer grader.
+A trial passes only when every distinct model completes every requested step and
+final sampling. An exception or deadline fails the trial and cancels the other
+users. Filtering exhaustion, timeouts and RPC failures are not classified as OOM.
+A passing N is a tested count, **not a confirmed maximum**. To find the memory
+boundary later, restart with larger explicit N and repeat; retain GPU logs showing
+CUDA OOM at the failing count. Engine request concurrency can still be smaller
+than N without changing the number of resident adapters.
 
-## Probe and startup
+## Capacity estimate
 
-`--n-adapters auto` first starts one trainer slot without rollout engines.
-The current Bridge model and LayerWise optimizer have fixed pools, so startup
-must give them a positive count. The probe includes their preallocated CUDA
-storages in the residency measurement. A zero-learning-rate warmup materializes
-Adam state and shared runtime workspaces; a second maximum-size loss pass and
-optimizer step through `MilesBackend` measures steady-state activation memory.
-The global probe batch has one maximum-length row per data-parallel replica,
-so DP > 1 also exercises every rank.
-Inactive allocator cache is released
-before reading resident memory. The precision-derived byte model is only a
-cross-check.
+The separate probe starts one trainer slot, warms up a maximum-token
+forward/backward plus zero-learning-rate Adam step, then measures a second pass.
+Every DP replica receives a full row. It launches no rollout engines or SDK users.
+It writes raw per-rank measurements, stops its own workers and exits.
 
-`slot-capacity.json` records every rank's memory measurements. The smallest
-rank capacity wins, with a default 2 GiB margin. An optional host budget caps
-the count using two BF16 engine versions per slot; the engine registry is
-configured to that same limit. The host budget is per engine process, not a
-whole-node RAM budget shared by all TP processes.
+For rank `r`, with measured slot storage `S`, warmed free memory `F`, transient
+activation peak `A` and margin `M`:
 
-Once measured, the probe workers are stopped and rebuilt with the resolved
-count. This releases their optimizer/DDP state completely and **reloads the
-base checkpoint**. Engine launch specs are generated after resolution. An
-explicit count skips both the probe and this rebuild.
-
-For GLM only, the first hardware attempt found that the installed GLM TileLang absorption
-path assumes a fused norm and a single LoRA. The pressure recipe uses the
-Megatron DSA backend so each token's adapter goes through the normal projection
-forward path. It does not drop the KV adapter to make TileLang run.
-
-The experiment hook selects Core's packed DSA and cross-layer index sharing
-(runtime Core commit `8c1e05747eb612b382df2632783df5c83a853646`), bypassing the
-older Bridge compatibility implementation. It uses memory-efficient SDPA
-with exactly the indexer's selected-key mask: Core's unfused reference gathers
-large per-key tensors for backward. This computes dense attention with a
-sparse mask and **does not measure fused sparse-kernel throughput**. Run
-`python -m examples.multi_lora.verify_glm52_dsa` on a GPU to check output and
-gradient parity, packed sequence isolation, and 8K forward/backward memory.
-
-## Run
-
-Install `tinker==0.26.2` in the client environment (`wandb` is optional). Place the same
-Miles, SGLang and Megatron sources on every node, with a shared model cache and
-a shared checkpoint directory that supports atomic directory rename. Join a
-dedicated four-node Ray cluster before starting this recipe.
-
-```bash
-export MILES_SCRIPT_EXTERNAL_RAY=1
-export MASTER_ADDR=<head-ip>
-export RAY_ADDRESS=http://<head-ip>:8265
+```text
+N_measured[r] = floor(max(0, F[r] + S[r] - A[r] - M) / S[r])
+N_gpu         = min_r N_measured[r]
+N_host        = floor(per_engine_host_budget / (keep_K * full_adapter_bytes))
+N             = min(N_gpu, N_host)   # host constraint optional; keep_K defaults to 2
 ```
 
-Create `launcher.json` containing a JSON argv list, for example:
+The closed-form cross-check accounts for LayerWise optimizer ownership:
+`P_local * (weight_bytes + gradient_bytes) + P_optimizer_owned * (master_bytes + moment_bytes)`.
+It is separately reported as `n_theoretical_trainer`; it does not replace the
+storage measurement. `n_slots` is the measured estimate after the optional host
+constraint. The report identifies the limiting rank/constraint.
 
-```json
-["python", "examples/multi_lora/run_pressure.py",
- "--model-name", "qwen3-30B-A3B",
- "--hf-checkpoint", "/models/Qwen3-30B-A3B",
- "--sglang-pythonpath", "/sources/sglang/python",
- "--max-running-requests", "128",
- "--sglang-mem-fraction-static", "0.95",
- "--output-dir", "/shared/pressure/runs",
- "--extra-env-vars", "{\"RAY_ADDRESS\":\"<head-ip>:6379\"}"]
-```
+This is a **capacity estimate**, not a proven worst-case bound: allocator padding,
+MoE routing, batching, and engine GPU LoRA/KV memory can change the actual limit.
+The synthetic CE probe is not the DAPO E2E. `engine_gpu_capacity_checked` is false
+and `e2e_max_n` remains null until an actual sweep provides evidence. An optional
+host budget is **per engine**, so divide node RAM appropriately when multiple
+engines share a node. The server uses N GPU LoRA buffers per engine and up to 2N
+host adapter versions, through #2846's existing arguments.
+
+## Run after script review
+
+Use the Miles GPU environment (including `tinker`, `transformers` and math reward
+dependencies); the clients need Python 3.11+. Start from this repository's root.
+Have an existing four-node H200 Ray cluster and the full BF16
+`Qwen3-30B-A3B` checkpoint on shared storage. The default placement is 16 trainer
+GPUs (TP2/EP8) plus 16 rollout GPUs (eight TP2/EP2 engines), rank16/alpha32.
+The launcher uses the repository's standard `execute_train` process preamble;
+run it on the dedicated experiment cluster with the previous trial stopped.
+It does not acquire or release devbox leases.
+
+Pass the same checkpoint, topology, precision, recompute and token settings to
+both jobs. If using separate source checkouts, pass `--sglang-pythonpath`, and
+provide the cluster's Ray/network environment as with other Miles launchers.
+`MILES_SCRIPT_EXTERNAL_RAY=1` preserves the already joined Ray cluster.
 
 ```bash
-python examples/multi_lora/pressure_test.py \
-  --experiment-dir /shared/pressure --launcher-command-file launcher.json \
-  --dashboard-address http://<head-ip>:8265 --ray-address <head-ip>:6379 \
+# 1. Trainer-only probe; exits after writing /shared/probe/slot-capacity.json.
+MILES_SCRIPT_EXTERNAL_RAY=1 python examples/multi_lora/run_pressure.py \
+  --mode probe --hf-checkpoint /models/Qwen3-30B-A3B --output-dir /shared/probe
+
+# 2. Start the unmodified gateway with N from that report; no users start here.
+MILES_SCRIPT_EXTERNAL_RAY=1 python examples/multi_lora/run_pressure.py \
+  --mode serve --hf-checkpoint /models/Qwen3-30B-A3B --output-dir /shared/server \
+  --capacity-report /shared/probe/slot-capacity.json
+
+# 3. Single-user E2E, after the gateway is ready (use a fresh output directory).
+python -m examples.multi_lora.tinker_e2e_user \
   --model /models/Qwen3-30B-A3B --dataset /datasets/dapo-math-17k.jsonl \
-  --run-id qwen3-pressure
+  --steps 3 --output-dir /shared/one-user
+
+# 4. On a fresh gateway with the same N slots, run the N-user workload.
+python -m examples.multi_lora.pressure_client \
+  --capacity-report /shared/probe/slot-capacity.json \
+  --model /models/Qwen3-30B-A3B --dataset /datasets/dapo-math-17k.jsonl \
+  --steps 3 --output-dir /shared/n-users
 ```
 
-After each trial, the supervisor waits for the Ray job to stop and then reaps
-remaining processes on every GPU node. Both the exact Ray job ID and source
-checkout must match; a cleanup failure stops the search. This prevents orphaned
-SGLang schedulers from contaminating the next trial's memory measurement.
+Restart the serving job between trials to remove the preceding users/models.
+For a later sweep, replace the server's `--capacity-report` with `--n-adapters N`
+and the client's with `--clients N`; they must agree. No automatic search or
+background client supervisor runs from these scripts. For sustained training,
+use `--steps 0` and an appropriate `--timeout-seconds`; interruption is not a pass.
+Sampler exports accumulate in the server checkpoint directory, so a long run
+also needs sufficient disk space and a separately reviewed retention policy.
 
-N always means N concurrent clients, N training slots, and N GPU LoRA buffers
-on every rollout engine. Miles derives the GPU LoRA pool from the resolved
-training count; do not override it with a smaller pool during this experiment.
-The CPU registry keeps two published versions per slot. The Qwen command above
-allows 128 running requests per engine and reserves 95% of GPU memory for
-weights, LoRA buffers and KV cache. These settings do not establish that N fits:
-the complete 8K rollout and training workload must still pass. Record the
-request and memory settings alongside any capacity result.
+## Results and timing
 
-The search begins at the measured count, moves downward after a confirmed CUDA
-OOM or upward after a pass, and requires a passing N plus an OOM at N+1. A
-timeout, slot-admission rejection, nonfinite update or non-OOM exception stops
-the search for investigation; none of those is a memory-capacity result.
+`result.json` records aggregate pass/fail and completed users. Each LoRA has its
+own phase, progress, error (on failure), result, raw step-time and timing-summary
+files, plus an aggregate `timing-comparison.json` after a passing finite trial.
+Summaries include mean, P50/P90/P95 and standard deviation. Raw timings
+split publication, rollout/batch preparation, SDK submission, forward/backward
+wait and optimizer wait. These waits include server queueing and execution;
+they do not separately measure scheduler wait and GPU computation.
 
-W&B is disabled by default; local metrics and error records are always retained.
-To enable uploads, install `wandb`, set `WANDB_API_KEY` and `WANDB_ENTITY`, then
-add `--wandb` to the supervisor or standalone client command.
-
-After qualification it launches fresh clients at N with unlimited steps.
-With uploads enabled, each LoRA has its own W&B run with loss, reward, accuracy, gradient norm,
-lengths, throughput and train/rollout log-prob difference. `wandb.json` contains
-the capacity run URL; `clients/<trial>/lora_*-wandb.json` contains each LoRA URL.
-
-Clients write metrics to local `*-telemetry.jsonl` journals. A separate uploader
-owns W&B, with per-run console capture and system metrics disabled. Network
-backpressure cannot block sampling or training. Upload failures are visible in
-`telemetry-upload.log`; restart the uploader on the same experiment with
-`python -m examples.multi_lora.pressure_telemetry --root /shared/pressure`.
-Stop the previous uploader before replaying; the journals retain each run ID.
-Per-client `lora_*-phase.json` files show sampling attempts, accepted groups,
-barrier waits and forward/backward progress. Failures write `lora_*-error.json`
-and abort the shared barrier before any telemetry cleanup.
-Sampler exports created by this harness are pruned to its two latest completed
-versions after all older sampling finishes. Training checkpoints are saved
-every 100 steps; the harness keeps its latest two completed training checkpoints.
-On a later CUDA OOM, the supervisor reduces N, requalifies it, and resumes
-continuous training. Credentials stay in process environments, not launch argv.
-
-## Per-LoRA step-time distribution
-
-After N is qualified, each continuous-training LoRA records every completed
-step's elapsed time, running mean, P50/P90/P95, min/max, population standard
-deviation and a W&B histogram. The capacity run also compares the LoRA means.
-These summaries contain only that continuous trial, including its first step;
-capacity-search trials and failed larger-N trials are kept separate.
-
-A step starts after the common start barrier, just before publication, and
-ends when its optimizer result arrives. Timings split publication, rollout
-and batch construction, the client barrier, forward/backward, and optimizer
-wait. They are client-observed wall times including server queueing; checkpoint
-saving, metric logging and waiting for the next step's start are outside this
-interval. Raw rows are in `lora_*-step-times.jsonl`, per-LoRA summaries in
-`lora_*-timing-summary.json`, and the comparison in `timing-summary.json`.
-
-Stopping the controller does not release GPU allocations. Capacity renewal is
-the allocation owner's responsibility, separate from this experiment.
+**W&B is off by default**, regardless of whether an API key exists in the
+environment. `--wandb` opts into a separate uploader, with one run per LoRA;
+`WANDB_ENTITY` and `WANDB_PROJECT` select the destination. Local journals remain
+the primary results and are written without network access. Credentials are
+never added to launcher arguments or committed scripts.
