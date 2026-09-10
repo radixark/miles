@@ -6,17 +6,20 @@ test_samples_codec.py (wire codec), next to the functions.
 The collect_samples tests here lock the client's HTTP behavior deltas vs the
 old collect_records path: single POST with no retries, non-2xx raises with the
 body text, timeout raises (instead of silently ABORTing), and the session
-DELETE is attempted on every path.
+DELETE is scheduled only after the caller accepts a decoded snapshot.
 """
 
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
+import miles.rollout.generate_utils.openai_endpoint_utils as endpoint
 import miles.utils.http_utils as http_utils
-from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
+from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer, SessionCollectError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, COMPUTED_FIELDS_V2, encode_samples
+from miles.rollout.session.types import SESSION_GENERATION_HEADER, SESSION_RECORD_ERROR_CODE
 from miles.utils.http_utils import post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -72,12 +75,18 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
             return {"session_id": f"session-{len(calls)}"}
         return {}
 
-    async def fake_post_bytes(url, payload, *, timeout):
-        calls.append(("post_bytes", url))
-        return encode_samples([], {}, "no_records")
+    async def fake_request(url, payload, *, method, timeout, headers=None):
+        calls.append((method, url))
+        return (
+            httpx.Response(204)
+            if method == "DELETE"
+            else httpx.Response(
+                200, content=encode_samples([], {}, "no_records"), headers={SESSION_GENERATION_HEADER: "1"}
+            )
+        )
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
-    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+    monkeypatch.setattr(endpoint, "request_no_retry", fake_request)
 
     ports = [12345, 12346, 12347, 12348]
     args = SimpleNamespace(session_server_addrs=[f"127.0.0.1:{port}" for port in ports])
@@ -90,7 +99,9 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
         assert port in ports
         chosen_ports.add(port)
 
-        await tracer.collect_samples(Sample(), max_seq_len=None)
+        collected = await tracer.collect_samples(Sample(), max_seq_len=None)
+        tracer.schedule_cleanup(collected.generation)
+        await asyncio.gather(*endpoint._cleanup_tasks)
         prefix = f"http://127.0.0.1:{port}"
         assert [url for _, url in calls] == [
             f"{prefix}/sessions",
@@ -164,66 +175,107 @@ def _computed_reply_payload() -> bytes:
 
 
 class _CollectCalls:
-    """Patches the two HTTP primitives collect_samples uses and records order."""
-
     def __init__(self, monkeypatch, *, post_outcome, delete_outcome=None):
-        self.calls: list[str] = []
+        self.calls = []
+        self.headers = []
 
-        async def fake_post_bytes(url, payload, *, timeout):
-            self.calls.append(f"POST {url}")
-            assert payload == {"max_seq_len": 7}
-            if isinstance(post_outcome, Exception):
-                raise post_outcome
-            return post_outcome
-
-        async def fake_post(url, payload, action="post"):
-            assert action == "delete"
-            self.calls.append(f"DELETE {url}")
+        async def request(url, payload, *, method, timeout, headers=None):
+            self.calls.append(f"{method} {url}")
+            self.headers.append(headers)
+            if method == "POST":
+                assert payload == {"max_seq_len": 7}
+                if isinstance(post_outcome, BaseException):
+                    raise post_outcome
+                return (
+                    post_outcome
+                    if isinstance(post_outcome, httpx.Response)
+                    else httpx.Response(200, content=post_outcome, headers={SESSION_GENERATION_HEADER: "17"})
+                )
             if isinstance(delete_outcome, Exception):
                 raise delete_outcome
-            return {}
+            return httpx.Response(delete_outcome or 204)
 
-        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
-        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        monkeypatch.setattr(endpoint, "request_no_retry", request)
 
 
 @pytest.mark.asyncio
-async def test_collect_samples_single_post_then_delete(monkeypatch):
+async def test_collect_decodes_then_caller_schedules_guarded_cleanup(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
-    result = await _tracer().collect_samples(Sample(), max_seq_len=7)
-
-    assert calls.calls == [
-        "POST http://127.0.0.1:12345/sessions/sid-1/samples",
-        "DELETE http://127.0.0.1:12345/sessions/sid-1",
-    ]
-    (sample,) = result.samples
+    tracer = _tracer()
+    result = await tracer.collect_samples(Sample(), max_seq_len=7)
+    assert len(calls.calls) == 1
+    (sample,) = result.reply.samples
     assert sample.tokens == [1, 2, 10] and sample.status == Sample.Status.COMPLETED
-    assert result.session_metadata == {"max_trim_tokens": 1}
-
-
-@pytest.mark.asyncio
-async def test_collect_samples_non_2xx_raises_with_body_and_still_deletes(monkeypatch):
-    calls = _CollectCalls(monkeypatch, post_outcome=RuntimeError("422: trim_count 2 exceeds allowed=1"))
-    with pytest.raises(RuntimeError, match="trim_count 2 exceeds allowed=1"):
-        await _tracer().collect_samples(Sample(), max_seq_len=7)
+    assert result.reply.session_metadata == {"max_trim_tokens": 1}
+    tracer.schedule_cleanup(result.generation)
+    assert len(calls.calls) == 1
+    await asyncio.gather(*endpoint._cleanup_tasks)
     assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    assert calls.headers[-1] == {SESSION_GENERATION_HEADER: "17"}
 
 
 @pytest.mark.asyncio
-async def test_collect_samples_timeout_raises_and_still_deletes(monkeypatch):
-    # The old collect_records swallowed the timeout and returned empty records
-    # (silently ABORTing the sample); the samples path must raise it.
-    calls = _CollectCalls(monkeypatch, post_outcome=asyncio.TimeoutError())
-    with pytest.raises(asyncio.TimeoutError):
+@pytest.mark.parametrize(
+    "outcome,exception",
+    [
+        (httpx.Response(422, text="trim_count exceeds allowed"), RuntimeError),
+        (httpx.Response(503, json={"error": "other failure"}), RuntimeError),
+        (httpx.Response(503, text="not JSON"), RuntimeError),
+        (httpx.Response(503, json={"error": {"code": SESSION_RECORD_ERROR_CODE}}), SessionCollectError),
+        (TimeoutError(), TimeoutError),
+        (httpx.ReadError("broken"), httpx.ReadError),
+        (asyncio.CancelledError(), asyncio.CancelledError),
+        (b"bad payload", Exception),
+    ],
+)
+async def test_collect_failure_never_deletes(monkeypatch, outcome, exception):
+    calls = _CollectCalls(monkeypatch, post_outcome=outcome)
+    with pytest.raises(exception) as raised:
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    if exception is RuntimeError:
+        assert type(raised.value) is RuntimeError
+    assert len(calls.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_collect_samples_delete_failure_is_tolerated(monkeypatch):
-    _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload(), delete_outcome=RuntimeError("delete boom"))
-    result = await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert len(result.samples) == 1
+@pytest.mark.parametrize("outcome", [204, 404, 412, 500, RuntimeError("delete boom"), TimeoutError()])
+async def test_cleanup_outcomes_do_not_change_collected_output(monkeypatch, outcome):
+    calls = _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload(), delete_outcome=outcome)
+    tracer = _tracer()
+    result = await tracer.collect_samples(Sample(), max_seq_len=7)
+    tracer.schedule_cleanup(result.generation)
+    await asyncio.gather(*endpoint._cleanup_tasks)
+    assert len(result.reply.samples) == 1 and len(calls.calls) == 2
+    assert not endpoint._cleanup_tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header", [None, "bad", "0", "-1"])
+async def test_missing_cleanup_guard_never_sends_delete(monkeypatch, header):
+    response = httpx.Response(
+        200, content=_computed_reply_payload(), headers={} if header is None else {SESSION_GENERATION_HEADER: header}
+    )
+    calls = _CollectCalls(monkeypatch, post_outcome=response)
+    tracer = _tracer()
+    collected = await tracer.collect_samples(Sample(), max_seq_len=7)
+    tracer.schedule_cleanup(collected.generation)
+    assert collected.generation is None and len(calls.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_saturation_and_scheduling_failure_are_nonthrowing(monkeypatch):
+    calls = _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
+    monkeypatch.setattr(endpoint, "_MAX_CLEANUPS", 0)
+    _tracer().schedule_cleanup(17)
+    assert not endpoint._cleanup_tasks
+    monkeypatch.setattr(endpoint, "_MAX_CLEANUPS", 32)
+
+    def failed(coroutine):
+        raise RuntimeError("loop unavailable")
+
+    monkeypatch.setattr(asyncio, "create_task", failed)
+    _tracer().schedule_cleanup(17)
+    assert not endpoint._cleanup_tasks and not calls.calls
 
 
 # ── post_bytes_no_retry primitive ──
@@ -299,15 +351,15 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
 
     seen = []
 
-    async def fake_post_bytes(url, body, *, timeout):
+    async def fake_request(url, body, *, method, timeout, headers=None):
         seen.append(body)
-        return payload
+        return httpx.Response(200, content=payload, headers={SESSION_GENERATION_HEADER: "2"})
 
     async def fake_post(url, body, action="post"):
         assert action == "delete"
         return {}
 
-    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+    monkeypatch.setattr(endpoint, "request_no_retry", fake_request)
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
     tracer = OpenAIEndpointTracer(
@@ -318,7 +370,7 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
     result = await tracer.collect_samples(input_sample, max_seq_len=7, agent_metadata={"reward": 0.75})
 
     assert seen == [{"max_seq_len": 7, "metadata": {"reward": 0.75}}]
-    (decoded,) = result.samples
+    (decoded,) = result.reply.samples
     assert decoded.reward == 0.75
     assert decoded.metadata == {"env": "keep-me", "leaf": {"node_id": 1}}
 
@@ -335,3 +387,47 @@ async def test_create_selects_wire_fields_by_session_server_version(monkeypatch)
 
     assert (await OpenAIEndpointTracer.create(args(True))).samples_wire_fields == COMPUTED_FIELDS
     assert (await OpenAIEndpointTracer.create(args("v2"))).samples_wire_fields == COMPUTED_FIELDS_V2
+
+
+@pytest.mark.asyncio
+async def test_request_no_retry_preserves_response_and_bounds_total_time(monkeypatch):
+    seen = []
+
+    async def handle(request):
+        seen.append(request)
+        if request.method == "DELETE":
+            await asyncio.Event().wait()
+        return httpx.Response(503, content=b"disk", headers={"x-test": "present"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr(http_utils, "_http_client", client)
+        response = await http_utils.request_no_retry("http://x/samples", {}, method="POST", timeout=1)
+        assert response.status_code == 503 and response.content == b"disk" and response.headers["x-test"] == "present"
+        with pytest.raises(TimeoutError):
+            await http_utils.request_no_retry(
+                "http://x/session", {}, method="DELETE", timeout=0.01, headers={SESSION_GENERATION_HEADER: "17"}
+            )
+    assert [r.method for r in seen] == ["POST", "DELETE"]
+    assert seen[-1].headers[SESSION_GENERATION_HEADER] == "17"
+
+
+@pytest.mark.asyncio
+async def test_slow_cleanup_is_bounded_and_does_not_block_scheduling(monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def slow(url, body, *, method, timeout, headers=None):
+        calls.append(url)
+        entered.set()
+        await release.wait()
+        return httpx.Response(204)
+
+    monkeypatch.setattr(endpoint, "request_no_retry", slow)
+    monkeypatch.setattr(endpoint, "_MAX_CLEANUPS", 1)
+    _tracer().schedule_cleanup(17)
+    await entered.wait()
+    _tracer().schedule_cleanup(18)
+    assert len(endpoint._cleanup_tasks) == 1 and len(calls) == 1
+    release.set()
+    await asyncio.gather(*endpoint._cleanup_tasks)
+    assert not endpoint._cleanup_tasks

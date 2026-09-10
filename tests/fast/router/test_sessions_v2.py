@@ -40,6 +40,9 @@ def _serve_router(extra_args: dict | None = None):
 
     with with_mock_server(process_fn=process_fn) as backend:
         args_values = {
+            "run_uuid": "test-run",
+            "disable_session_server_disk_offload": True,
+            "session_server_disk_offload_dir": None,
             "miles_router_timeout": 30,
             "hf_checkpoint": "Qwen/Qwen3-0.6B",
             "chat_template_path": None,

@@ -12,6 +12,7 @@ import pytest
 
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.recording import commit_record
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES, FixedTemplate, TITOTokenizer
 
@@ -53,6 +54,12 @@ class _MockTITOTokenizer(TITOTokenizer):
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
         return list(pretokenized_token_ids)
+
+
+def _append_record(session, record):
+    with commit_record(session.record_store, session.session_id, record) as checkpoint:
+        session.record_checkpoints.append(checkpoint)
+    return checkpoint.ref
 
 
 def _make_registry(allowed_append_roles: frozenset[str] = ALL_APPEND_ROLES) -> SessionRegistry:
@@ -105,7 +112,7 @@ class TestSessionCRUD:
     def test_get_session(self, registry: SessionRegistry):
         session_id = registry.create_session()
         session = registry.get_session(session_id)
-        assert session.records == []
+        assert session.record_refs == []
 
     def test_get_session_not_found(self, registry: SessionRegistry):
         with pytest.raises(SessionNotFoundError):
@@ -118,7 +125,7 @@ class TestSessionCRUD:
         with pytest.raises(SessionNotFoundError):
             registry.remove_session(session_id)
 
-    def test_append_record(self, registry: SessionRegistry):
+    async def test_append_record(self, registry: SessionRegistry):
         session_id = registry.create_session()
         record = SessionRecord(
             timestamp=0.0,
@@ -130,10 +137,10 @@ class TestSessionCRUD:
         )
 
         session = registry.get_session(session_id)
-        session.append_record(record)
+        _append_record(session, record)
 
-        assert len(session.records) == 1
-        assert session.records[0].path == record.path
+        assert len(session.record_refs) == 1
+        assert await registry.record_store.get_many(session.record_refs) == [record]
 
     def test_append_record_missing_session(self, registry: SessionRegistry):
         with pytest.raises(SessionNotFoundError):
@@ -539,7 +546,7 @@ class TestRollback:
         # Snapshot state before attempted rollback
         prev_messages = list(session.messages)
         prev_token_ids = list(session.trajectory_token_ids)
-        prev_records = list(session.records)
+        prev_records = list(session.record_refs)
         prev_num_assistant = session.num_assistant
 
         # Attempt rollback to checkpoint 0 (discard 2 assistants) — should fail
@@ -552,7 +559,7 @@ class TestRollback:
         # State must be unchanged
         assert session.messages == prev_messages
         assert session.trajectory_token_ids == prev_token_ids
-        assert session.records == prev_records
+        assert session.record_refs == prev_records
         assert session.num_assistant == prev_num_assistant
 
     def test_rollback_then_continue_full_trajectory(self, registry: SessionRegistry):
@@ -666,7 +673,7 @@ class TestRollback:
         assert result == _MOCK_FIRST_TURN_TOKENS
         assert session.messages == []
         assert session.trajectory_token_ids == []
-        assert session.records == []
+        assert session.record_refs == []
         assert session.num_assistant == 0
 
     def test_rollback_regenerates_verbatim_first_turn(self, registry: SessionRegistry):
@@ -717,7 +724,7 @@ class TestRollback:
         assert session.num_assistant == 2
         assert session.token_ids == [1, 2, 10, 20, 30]
 
-    def test_rollback_records_truncated(self, registry: SessionRegistry):
+    async def test_rollback_records_truncated(self, registry: SessionRegistry):
         """Records are truncated in sync with trajectory_token_ids on rollback."""
         sid = registry.create_session()
         session = registry.get_session(sid)
@@ -727,7 +734,7 @@ class TestRollback:
         r1 = SessionRecord(
             timestamp=1.0, method="POST", path="/v1/chat/completions", status_code=200, request={}, response={}
         )
-        session.append_record(r1)
+        _append_record(session, r1)
 
         # Turn 2
         t2 = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
@@ -736,9 +743,9 @@ class TestRollback:
         r2 = SessionRecord(
             timestamp=2.0, method="POST", path="/v1/chat/completions", status_code=200, request={}, response={}
         )
-        session.append_record(r2)
+        _append_record(session, r2)
 
-        assert len(session.records) == 2
+        assert len(session.record_refs) == 2
 
         # Rollback to checkpoint 0
         new_tool = {"role": "tool", "content": '{"alt": 1}', "tool_call_id": "call_1"}
@@ -746,8 +753,8 @@ class TestRollback:
             [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool], tito_tokenizer=registry.tito_tokenizer
         )
 
-        assert len(session.records) == 1
-        assert session.records[0].timestamp == 1.0
+        assert len(session.record_refs) == 1
+        assert [record.timestamp for record in await registry.record_store.get_many(session.record_refs)] == [1.0]
 
     def test_injected_assistants_are_not_generated_checkpoints(self, registry_with_assistant: SessionRegistry):
         """Only backend-generated responses create checkpoints: injected
@@ -773,7 +780,7 @@ class TestRollback:
             request={"messages": first_request},
             response={"message": ASSISTANT_MSG_1},
         )
-        session.append_record(first_record)
+        first_record_ref = _append_record(session, first_record)
 
         injected_assistant_1 = {"role": "assistant", "content": "Injected context one."}
         injected_assistant_2 = {"role": "assistant", "content": "Injected context two."}
@@ -806,11 +813,11 @@ class TestRollback:
             request={"messages": injected_request},
             response={"message": ASSISTANT_MSG_2},
         )
-        session.append_record(second_record)
+        second_record_ref = _append_record(session, second_record)
 
         assert session.messages == injected_request + [ASSISTANT_MSG_2]
         assert session.trajectory_token_ids == [first_tokens, second_prompt_tokens + [30, 31]]
-        assert session.records == [first_record, second_record]
+        assert session.record_refs == [first_record_ref, second_record_ref]
         assert session.generated_checkpoint_message_ends == [3, 7]
         assert session.num_assistant == 2
 
@@ -824,7 +831,7 @@ class TestRollback:
 
         assert session.messages == first_request + [ASSISTANT_MSG_1]
         assert session.trajectory_token_ids == [first_tokens]
-        assert session.records == [first_record]
+        assert session.record_refs == [first_record_ref]
         assert session.generated_checkpoint_message_ends == [3]
         assert session.num_assistant == 1
 
@@ -845,12 +852,12 @@ class TestRollback:
             request={"messages": injected_request},
             response={"message": regenerated_assistant},
         )
-        session.append_record(regenerated_record)
+        regenerated_record_ref = _append_record(session, regenerated_record)
 
         assert session.messages == injected_request + [regenerated_assistant]
         assert session.trajectory_token_ids == [first_tokens, regenerated_tokens]
         assert session.token_ids == regenerated_tokens
-        assert session.records == [first_record, regenerated_record]
+        assert session.record_refs == [first_record_ref, regenerated_record_ref]
         assert session.generated_checkpoint_message_ends == [3, 7]
         assert session.num_assistant == 2
 
@@ -943,7 +950,7 @@ class TestComputeSessionMismatch:
             request={"tools": tools},
             response={},
         )
-        session.append_record(record)
+        _append_record(session, record)
 
         mock_tokenize = MagicMock(return_value=[1, 2, 10])
         registry.tito_tokenizer.apply_chat_template = mock_tokenize

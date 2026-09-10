@@ -8,7 +8,7 @@ concurrency, and tokenization live one layer up in ``session_state``.
 from dataclasses import dataclass, field
 from typing import Any
 
-from miles.rollout.session.types import SessionRecord
+from miles.rollout.session.recording import RecordCheckpoint
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
 MAX_NODES = 1024
@@ -24,7 +24,7 @@ class TrajectoryNode:
     seq: int  # per-session logical commit order — THE ordering key
     committed_at: float  # wall clock, decoration only (NTP-unsafe; never order by this)
     response_id: str  # upstream response id: the agent-branch <-> leaf join key
-    record: SessionRecord
+    record_checkpoint: RecordCheckpoint
     finish_reason: str
     parent: "TrajectoryNode | None" = None
     children: list["TrajectoryNode"] = field(default_factory=list, repr=False)
@@ -74,7 +74,7 @@ class SessionTree:
         completion_span: tuple[int, int],
         committed_at: float,
         response_id: str,
-        record: SessionRecord,
+        record_checkpoint: RecordCheckpoint,
         finish_reason: str,
     ) -> TrajectoryNode:
         if len(self.nodes) >= MAX_NODES:
@@ -90,7 +90,7 @@ class SessionTree:
             seq=len(self.nodes),
             committed_at=committed_at,
             response_id=response_id,
-            record=record,
+            record_checkpoint=record_checkpoint,
             finish_reason=finish_reason,
             parent=parent,
         )

@@ -129,7 +129,7 @@ class TestSessionCRUD:
     def test_get_session(self, registry: SessionRegistryV2):
         session_id = registry.create_session()
         session = registry.get_session(session_id)
-        assert session.active_records() == []
+        assert session.record_refs == []
 
     def test_get_session_not_found(self, registry: SessionRegistryV2):
         with pytest.raises(SessionNotFoundError):
@@ -142,14 +142,14 @@ class TestSessionCRUD:
         with pytest.raises(SessionNotFoundError):
             registry.remove_session(session_id)
 
-    def test_committed_generation_carries_its_record(self, registry: SessionRegistryV2):
+    async def test_committed_generation_carries_its_record(self, registry: SessionRegistryV2):
         session_id = registry.create_session()
         session = registry.get_session(session_id)
         node = _commit(session, [{"role": "user", "content": "hello"}], ASSISTANT_MSG_1, [1, 2], [10])
 
-        assert len(session.active_records()) == 1
-        assert session.active_records()[0] is node.record
-        assert session.active_records()[0].path == "/v1/chat/completions"
+        assert len(session.record_refs) == 1
+        assert session.record_refs[0] is node.record_checkpoint.ref
+        assert (await registry.record_store.get_many(session.record_refs))[0].path == "/v1/chat/completions"
 
     def test_append_record_missing_session(self, registry: SessionRegistryV2):
         with pytest.raises(SessionNotFoundError):
@@ -580,7 +580,7 @@ class TestRollback:
         # Snapshot state before attempted rollback
         prev_messages = list(session.active_messages())
         prev_token_ids = list([n.token_ids for n in session.active_path()])
-        prev_records = list(session.active_records())
+        prev_records = list(session.record_refs)
         prev_num_assistant = len(session.active_path())
 
         # Deep divergence: the view positions at the deep anchor (node 0) and
@@ -590,7 +590,7 @@ class TestRollback:
         assert state.active_leaf is state.tree.nodes[0]
         assert len(state.tree.nodes) == prev_num_assistant  # nothing destroyed
         assert [n.token_ids for n in state.tree.nodes] == prev_token_ids
-        assert [n.record for n in state.tree.nodes] == prev_records
+        assert [n.record_checkpoint.ref for n in state.tree.nodes] == prev_records
         assert state.tree.nodes[2].path_messages() == prev_messages
 
     def test_rollback_then_continue_full_trajectory(self, registry: SessionRegistryV2):
@@ -726,13 +726,13 @@ class TestRollback:
         prepare_pretokenized(session, t2, tools=None, tito_tokenizer=registry.tito_tokenizer)
         _commit(session, t2, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
 
-        assert len(session.active_records()) == 2
+        assert len(session.record_refs) == 2
 
         new_tool = {"role": "tool", "content": '{"alt": 1}', "tool_call_id": "call_1"}
         self._dispatch_and_apply(state, [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool])
 
-        assert len(session.active_records()) == 1
-        assert session.active_records()[0] is state.tree.nodes[0].record
+        assert len(session.record_refs) == 1
+        assert session.record_refs[0] is state.tree.nodes[0].record_checkpoint.ref
 
 
 class TestJudgmentCountingMatrix:

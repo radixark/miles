@@ -5,6 +5,7 @@ import pytest
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
 from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.generate_utils.openai_endpoint_utils import CollectedSamples, SessionCollectError
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.utils.types import Sample
 
@@ -19,12 +20,16 @@ class _Tracer:
         self.reply = reply
         self.error = error
         self.agent_metadata = None
+        self.cleanups = []
 
     async def collect_samples(self, input_sample, *, max_seq_len, agent_metadata=None):
         self.agent_metadata = agent_metadata
         if self.error is not None:
             raise self.error
-        return self.reply
+        return CollectedSamples(self.reply, 17)
+
+    def schedule_cleanup(self, generation):
+        self.cleanups.append(generation)
 
 
 def _generate_input(**args_kwargs) -> GenerateFnInput:
@@ -67,6 +72,7 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
 
     output = await agentic_tool_call.generate(_generate_input())
 
+    assert tracer.cleanups == [17]
     assert output.samples == [sample]
     assert output.samples[0].rollout_id is None
     assert tracer.agent_metadata == {"agent_result": "done"}
@@ -104,6 +110,7 @@ async def test_v2_requires_input_rollout_identity(monkeypatch):
 
     with pytest.raises(AssertionError, match="require input Sample.rollout_id or Sample.index"):
         await agentic_tool_call.generate(generate_input)
+    assert tracer.cleanups == []
 
 
 @pytest.mark.asyncio
@@ -115,6 +122,7 @@ async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
 
     output = await agentic_tool_call.generate(generate_input)
 
+    assert tracer.cleanups == [17]
     assert isinstance(output.samples, list)
     assert len(output.samples) == 1
     assert output.samples[0] is not generate_input.sample
@@ -157,3 +165,46 @@ async def test_collection_error_propagates(monkeypatch):
 
     with pytest.raises(RuntimeError, match="samples unavailable"):
         await agentic_tool_call.generate(_generate_input())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TimeoutError(), SessionCollectError("disk unavailable")])
+async def test_collect_unavailable_aborts_without_cleanup(monkeypatch, error):
+    tracer = _Tracer(error=error)
+    _patch_agent(monkeypatch, tracer)
+    output = await agentic_tool_call.generate(_generate_input())
+    assert output.samples[0].status == Sample.Status.ABORTED
+    assert tracer.cleanups == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["v1", "v2"])
+async def test_fallible_output_assembly_precedes_cleanup(monkeypatch, version):
+    tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    async def bad_metadata(**kwargs):
+        return {"agent_metrics": "invalid"}
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: bad_metadata)
+    input = _generate_input()
+    input.args.use_session_server = version
+    with pytest.raises(AttributeError):
+        await agentic_tool_call.generate(input)
+    assert tracer.cleanups == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_agent_does_not_cleanup_even_if_final_collect_succeeds(monkeypatch):
+    import asyncio
+
+    tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    async def cancelled(**kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await agentic_tool_call.generate(_generate_input())
+    assert tracer.cleanups == []

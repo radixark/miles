@@ -21,7 +21,7 @@ from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import agentic_tool_call
-from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
+from miles.rollout.generate_utils.openai_endpoint_utils import CollectedSamples, OpenAIEndpointTracer, _cleanup_tasks
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.server import SessionServer
 from miles.utils import http_utils
@@ -110,7 +110,7 @@ async def _run_and_collect(
                 *,
                 max_seq_len: int | None,
                 agent_metadata: dict | None = None,
-            ) -> SamplesReply:
+            ) -> CollectedSamples:
                 response = await client.get(tracer.base_url)
                 assert response.status_code == 200, response.text
                 reply = await original_collect(
@@ -119,7 +119,7 @@ async def _run_and_collect(
                     max_seq_len=max_seq_len,
                     agent_metadata=agent_metadata,
                 )
-                collected[id(collected_input_sample)] = (response.json(), reply)
+                collected[id(collected_input_sample)] = (response.json(), reply.reply)
                 return reply
 
             async def generate_one(input_sample: Sample):
@@ -146,6 +146,7 @@ async def _run_and_collect(
 
             with patch.object(OpenAIEndpointTracer, "collect_samples", collect_with_snapshot):
                 outputs = await asyncio.gather(*(generate_one(sample) for sample in input_samples))
+                await asyncio.gather(*_cleanup_tasks)
 
     results = []
     for input_sample, output in outputs:

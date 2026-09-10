@@ -7,7 +7,8 @@ import sys
 
 import pytest
 
-from miles.rollout.session.types import SessionRecord
+from miles.rollout.session.record.types import RecordRef
+from miles.rollout.session.recording import RecordCheckpoint
 from miles.rollout.session.v2 import tree_trajectory
 from miles.rollout.session.v2.tree_trajectory import SessionTree
 
@@ -24,9 +25,7 @@ def _commit(tree, parent, delta, *, finish_reason="stop", committed_at=None):
     seq = len(tree.nodes)
     prefix = parent.token_ids if parent is not None else []
     tokens = prefix + [100 + seq]
-    record = SessionRecord(
-        timestamp=0.0, method="POST", path="/v1/chat/completions", request={}, response={}, status_code=200
-    )
+    ref = RecordRef(("run", "slot", "session", str(seq)))
     return tree.create_node(
         parent,
         delta_messages=delta,
@@ -34,7 +33,7 @@ def _commit(tree, parent, delta, *, finish_reason="stop", committed_at=None):
         completion_span=(len(tokens) - 1, len(tokens)),
         committed_at=committed_at if committed_at is not None else float(seq),
         response_id=f"resp-{seq}",
-        record=record,
+        record_checkpoint=RecordCheckpoint(ref),
         finish_reason=finish_reason,
     )
 
@@ -178,7 +177,7 @@ class TestModel:
             completion_span=(len(n0.token_ids), len(token_ids)),
             committed_at=3.0,
             response_id="resp-copy",
-            record=n0.record,
+            record_checkpoint=n0.record_checkpoint,
             finish_reason="stop",
         )
 

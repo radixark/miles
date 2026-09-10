@@ -28,6 +28,7 @@ from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.rollout.session.test_samples import _make_record
 
 from miles.rollout.session.errors import TokenizationError
+from miles.rollout.session.recording import RecordCheckpoint
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
@@ -156,7 +157,9 @@ async def _make_session(core, records, accumulated) -> str:
             completion_span=(0, 0),
             committed_at=record.timestamp,
             response_id="",
-            record=record,
+            record_checkpoint=RecordCheckpoint(
+                state.record_store.put(state.session_id, record), record.request.get("tools")
+            ),
             finish_reason="",
         )
     return sid
@@ -423,7 +426,9 @@ def _fabricate_node(state, parent, record, token_ids, *, completion_span, respon
         completion_span=completion_span,
         committed_at=float(len(state.tree.nodes)) if committed_at is None else committed_at,
         response_id=response_id,
-        record=record,
+        record_checkpoint=RecordCheckpoint(
+            state.record_store.put(state.session_id, record), record.request.get("tools")
+        ),
         finish_reason="stop",
     )
 

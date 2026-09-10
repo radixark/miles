@@ -7,8 +7,9 @@ from pydantic import ValidationError
 
 from miles.rollout.session.config import SessionServerConfig, compute_session_server_config
 
-
 _ARGS_TO_CONFIG_FIELD = {
+    "run_uuid": "run_id",
+    "session_server_disk_offload_dir": "disk_offload_dir",
     "miles_router_timeout": "timeout",
     "hf_checkpoint": "hf_checkpoint",
     "chat_template_path": "chat_template_path",
@@ -41,6 +42,9 @@ _OPTIONAL_ARGS_ATTRS = (
 )
 
 _DISTINCT_ARGS_VALUES = dict(
+    run_uuid="test-config-run",
+    session_server_disk_offload_dir="/tmp/records",
+    disable_session_server_disk_offload=False,
     miles_router_timeout=31.5,
     hf_checkpoint="/fake/model",
     chat_template_path="/fake/chat_template.jinja",
@@ -71,7 +75,7 @@ def _make_args(**overrides) -> Namespace:
 class TestComputeSessionServerConfig:
     def test_every_config_field_has_a_known_source(self):
         """Adding a config field without extending this test's mapping must fail here."""
-        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values())
+        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values()) | {"disk_offload"}
         assert covered == set(SessionServerConfig.model_fields)
 
     def test_call_site_fields_are_copied(self):
@@ -114,6 +118,9 @@ class TestComputeSessionServerConfig:
 
 
 _COMPLETE_CONFIG_KWARGS = dict(
+    run_id="test-run",
+    disk_offload=False,
+    disk_offload_dir=None,
     host="127.0.0.1",
     port=5001,
     instance_id=None,
@@ -187,3 +194,37 @@ class TestSessionServerConfig:
         config = SessionServerConfig(**_COMPLETE_CONFIG_KWARGS)
         with pytest.raises(ValidationError):
             config.port = 5002
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_disk_offload_switch(disabled):
+    config = compute_session_server_config(
+        _make_args(disable_session_server_disk_offload=disabled),
+        host="localhost",
+        port=1,
+        instance_id=None,
+        backend_url="http://localhost:2",
+    )
+    assert config.disk_offload is not disabled
+
+
+@pytest.mark.parametrize(
+    "argv,disabled,directory",
+    [
+        ([], False, None),
+        (
+            ["--disable-session-server-disk-offload", "--session-server-disk-offload-dir", "/tmp/test-records"],
+            True,
+            "/tmp/test-records",
+        ),
+    ],
+)
+def test_cli_disk_offload_defaults_and_overrides(argv, disabled, directory):
+    from argparse import ArgumentParser
+
+    from miles.utils.arguments import get_miles_extra_args_provider
+
+    parser = get_miles_extra_args_provider()(ArgumentParser())
+    args = parser.parse_args(["--rollout-batch-size", "1", *argv])
+    assert args.disable_session_server_disk_offload is disabled
+    assert args.session_server_disk_offload_dir == directory

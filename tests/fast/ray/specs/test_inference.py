@@ -139,9 +139,12 @@ class TestComputeSpecRouterLaunchCommand:
 
 
 class TestComputeSpecSessionServer:
-    def test_launch_command_wires_the_router_backend_and_roundtrips(self):
+    @pytest.mark.parametrize("disabled", [False, True])
+    def test_launch_command_wires_the_router_backend_and_roundtrips(self, disabled):
         """The session server command targets the router addr from pool_addrs and its config parses back losslessly."""
         args = make_args(
+            disable_session_server_disk_offload=disabled,
+            session_server_disk_offload_dir="/tmp/worker-records",
             use_session_server="v1",
             hf_checkpoint="/fake/model",
             session_server_workers=2,
@@ -178,6 +181,9 @@ class TestComputeSpecSessionServer:
         assert config.host == "127.0.0.1"
         assert config.port == 5006
         assert config.instance_id == f"{args.run_uuid}-1"
+        assert config.run_id == args.run_uuid
+        assert config.disk_offload is not disabled
+        assert config.disk_offload_dir == "/tmp/worker-records"
 
     def test_it_reserves_no_cpu_on_the_head_node(self):
         """Pinned to the head unconditionally, a CPU reservation would leave it pending forever on a head started with --num-cpus=0."""

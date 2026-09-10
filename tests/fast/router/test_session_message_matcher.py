@@ -13,8 +13,14 @@ import pytest
 
 from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
+from miles.rollout.session.recording import RecordCheckpoint
 from miles.rollout.session.types import SessionRecord
-from miles.rollout.session.v2.session_state import SessionStateV2, position_for_request, prepare_pretokenized
+from miles.rollout.session.v2.session_state import (
+    SessionRegistryV2,
+    SessionStateV2,
+    position_for_request,
+    prepare_pretokenized,
+)
 from miles.utils.chat_template_utils.message_matcher_hub import (
     loose_tool_call_message_matches,
     role_content_only_message_matches,
@@ -194,7 +200,8 @@ class TestV1ReplayMatching:
 
 
 def _state_with_one_node() -> tuple[SessionStateV2, Any]:
-    state = SessionStateV2()
+    registry = SessionRegistryV2(tokenizer=None, tito_tokenizer=_RecordingTITOTokenizer())
+    state = registry.get_session(registry.create_session())
     record = SessionRecord(
         timestamp=0.0, method="POST", path="/v1/chat/completions", request={}, response={}, status_code=200
     )
@@ -205,7 +212,9 @@ def _state_with_one_node() -> tuple[SessionStateV2, Any]:
         completion_span=(1, 2),
         committed_at=0.0,
         response_id="resp-0",
-        record=record,
+        record_checkpoint=RecordCheckpoint(
+            state.record_store.put(state.session_id, record), record.request.get("tools")
+        ),
         finish_reason="stop",
     )
     state.active_leaf = node

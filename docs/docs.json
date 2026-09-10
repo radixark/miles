@@ -272,6 +272,7 @@
      "developer/index",
      "developer/contributor-guide",
      "developer/architecture",
+     "developer/session_server/00-disk_offload",
      "developer/versions",
      "developer/debug",
      {

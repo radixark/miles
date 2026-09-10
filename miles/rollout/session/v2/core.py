@@ -1,15 +1,14 @@
 import json
 import logging
 import time
+from copy import deepcopy
 
 from starlette.responses import Response
 
 from miles.rollout.session.core import (
-    JSON_MEDIA_TYPE,
     ProxyRequest,
     SessionCore,
     _chat_client_response,
-    _render_json,
     _samples_response,
     extract_completion,
     prepare_chat_request,
@@ -17,14 +16,14 @@ from miles.rollout.session.core import (
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
-from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.rollout.session.types import SESSION_GENERATION_HEADER, SessionRecord
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
     commit_generation,
     position_for_request,
     prepare_pretokenized,
 )
-from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
+from miles.rollout.session.v2.utils import build_leaf_material, snapshot_leaves, tree_metadata
 from miles.utils.function_registry import load_function
 
 logger = logging.getLogger(__name__)
@@ -54,19 +53,10 @@ class SessionCoreV2(SessionCore):
             mismatch = None
         if mismatch is not None:
             metadata["tito_session_mismatch"] = mismatch
-        metadata["accumulated_token_ids"] = session.active_token_ids()
+        metadata["accumulated_token_ids"] = list(session.active_token_ids())
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
         return metadata
-
-    async def get_session(self, session_id: str) -> Response:
-        """Mirrors ``core.SessionCore.get_session``, serving ``active_records()``."""
-        session = self.registry.get_session(session_id)
-        metadata = self._session_metadata(session_id, session)
-        payload = GetSessionResponse(session_id=session_id, records=session.active_records(), metadata=metadata)
-        return Response(
-            content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
-        )
 
     async def collect_samples(
         self, session_id: str, *, max_seq_len: int | None, agent_metadata: dict | None = None
@@ -74,15 +64,36 @@ class SessionCoreV2(SessionCore):
         """Samples op: assemble one raw sample per leaf, then run the
         pick/post-process hook pipeline and encode the result.
 
-        Synchronous on the server loop (no await), so the session read cannot
-        interleave with chat commits. Deterministic assembly/hook failures map
-        to 422; unknown exceptions propagate.
+        Snapshot paths and metadata under the lock, then hydrate outside it.
+        Assembly and hooks use only that snapshot. Deterministic assembly/hook
+        failures map to 422; unknown assembly exceptions propagate.
         """
         session = self.registry.get_session(session_id)
-        metadata = self._session_metadata(session_id, session)
-        if agent_metadata is not None:
-            metadata["agent"] = agent_metadata
-        if not session.tree.nodes:
+        accepted = False
+        try:
+            async with session.lock:
+                if session.closing:
+                    raise SessionNotFoundError(f"session not found: session_id={session_id}")
+                self.lifecycle.accept(session, collect=True)
+                accepted = True
+                generation = session.activity.generation
+                metadata = self._session_metadata(session_id, session)
+                if agent_metadata is not None:
+                    metadata["agent"] = deepcopy(agent_metadata)
+                leaves = snapshot_leaves(session, self.registry, session_id=session_id)
+                refs = tuple(dict.fromkeys(ref for leaf in leaves for ref in leaf.record_refs))
+                read = self.registry.record_store.get_many(refs)
+            records = dict(zip(refs, await self._read_records(read), strict=True))
+            response = self._assemble_leaf_samples(leaves, records, metadata, max_seq_len=max_seq_len)
+            if response.status_code == 200:
+                response.headers[SESSION_GENERATION_HEADER] = str(generation)
+            return response
+        finally:
+            if accepted:
+                self.lifecycle.finish(session)
+
+    def _assemble_leaf_samples(self, leaves, records, metadata: dict, *, max_seq_len: int | None) -> Response:
+        if not leaves:
             return _samples_response(
                 encode_samples([], metadata, empty_reason="no_records", fields=COMPUTED_FIELDS_V2)
             )
@@ -90,9 +101,9 @@ class SessionCoreV2(SessionCore):
         try:
             material = build_leaf_material(
                 self.config,
-                session,
+                leaves,
+                records,
                 self.registry,
-                session_id=session_id,
                 max_seq_len=max_seq_len,
                 use_addition_r3=self.use_addition_r3,
             )
@@ -141,77 +152,85 @@ class SessionCoreV2(SessionCore):
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-        # --- Phase 1: prepare request (lock held briefly) ---
-        async with session.lock:
-            if session.closing:
-                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+        accepted = False
+        try:
+            # --- Phase 1: prepare request (lock held briefly) ---
+            async with session.lock:
+                self.lifecycle.check_open()
+                if session.closing:
+                    raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.config, self.registry.tito_tokenizer
+                request_body, client_stream, tito_tokenizer = prepare_chat_request(
+                    body, self.config, self.registry.tito_tokenizer
+                )
+
+                request_messages = request_body.get("messages", [])
+                position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
+                prompt_token_ids = prepare_pretokenized(
+                    session,
+                    request_messages,
+                    tools=request_body.get("tools"),
+                    tito_tokenizer=tito_tokenizer,
+                )
+                request_body["input_ids"] = prompt_token_ids
+                logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
+
+                self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
+
+                proxy_body = json.dumps(request_body).encode()
+                attach_parent = session.active_leaf
+                self.lifecycle.accept(session)
+                accepted = True
+            # --- lock released ---
+
+            # --- Phase 2: proxy to backend (NO lock held) ---
+            headers = {**headers, "X-SMG-Routing-Key": session_id}
+            result = await self.backend.do_proxy(
+                ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
             )
 
-            request_messages = request_body.get("messages", [])
-            position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
-            prompt_token_ids = prepare_pretokenized(
-                session,
-                request_messages,
-                tools=request_body.get("tools"),
-                tito_tokenizer=tito_tokenizer,
-            )
-            request_body["input_ids"] = prompt_token_ids
-            logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
+            # Non-200 (e.g. 400 context too long) passes through unrecorded so the
+            # agent can retry or handle the error.
+            if result["status_code"] != 200:
+                return proxy_result_to_response(result)
 
-            self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
-
-            proxy_body = json.dumps(request_body).encode()
-            attach_parent = session.active_leaf
-        # --- lock released ---
-
-        # --- Phase 2: proxy to backend (NO lock held) ---
-        headers = {**headers, "X-SMG-Routing-Key": session_id}
-        result = await self.backend.do_proxy(
-            ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
-        )
-
-        # Non-200 (e.g. 400 context too long) passes through unrecorded so the
-        # agent can retry or handle the error.
-        if result["status_code"] != 200:
-            return proxy_result_to_response(result)
-
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
-        assistant_message = tito_tokenizer.postprocess_completion(
-            choice=choice,
-            assistant_message=assistant_message,
-            completion_token_ids=completion_token_ids,
-        )
-
-        # --- Phase 3: update state (lock held briefly) ---
-        async with session.lock:
-            if session.closing:
-                logger.warning(f"Session {session_id} closed during proxy, skipping state update")
-                return _chat_client_response(result, response, client_stream)
-
-            record = SessionRecord(
-                timestamp=time.time(),
-                request_timestamp=request_timestamp,
-                method=method,
-                path="/v1/chat/completions",
-                status_code=result["status_code"],
-                request=request_body,
-                response=response,
-            )
-            commit_generation(
-                session,
-                parent=attach_parent,
-                request_messages=request_messages,
+            response, choice, assistant_message, completion_token_ids = extract_completion(result)
+            assistant_message = tito_tokenizer.postprocess_completion(
+                choice=choice,
                 assistant_message=assistant_message,
-                prompt_token_ids=prompt_token_ids,
                 completion_token_ids=completion_token_ids,
-                max_trim_tokens=tito_tokenizer.max_trim_tokens,
-                record=record,
-                response_id=response.get("id", ""),
-                finish_reason=choice.get("finish_reason") or "",
             )
-        # --- lock released ---
 
-        return _chat_client_response(result, response, client_stream)
+            # --- Phase 3: update state (lock held briefly) ---
+            async with session.lock:
+                if session.closing:
+                    logger.warning(f"Session {session_id} closed during proxy, skipping state update")
+                    return _chat_client_response(result, response, client_stream)
+
+                record = SessionRecord(
+                    timestamp=time.time(),
+                    request_timestamp=request_timestamp,
+                    method=method,
+                    path="/v1/chat/completions",
+                    status_code=result["status_code"],
+                    request=request_body,
+                    response=response,
+                )
+                commit_generation(
+                    session,
+                    parent=attach_parent,
+                    request_messages=request_messages,
+                    assistant_message=assistant_message,
+                    prompt_token_ids=prompt_token_ids,
+                    completion_token_ids=completion_token_ids,
+                    max_trim_tokens=tito_tokenizer.max_trim_tokens,
+                    record=record,
+                    response_id=response.get("id", ""),
+                    finish_reason=choice.get("finish_reason") or "",
+                )
+            # --- lock released ---
+
+            return _chat_client_response(result, response, client_stream)
+        finally:
+            if accepted:
+                self.lifecycle.finish(session)
