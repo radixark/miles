@@ -93,8 +93,6 @@ class HfWeightIteratorBase(ABC):
         """
 
         def prefixed_units(lora_name, adapter):
-            # a generator function binds the name per call; a genexp here would
-            # late-bind the loop variable and stamp every adapter with the last name
             for unit in self._iter_hf_adapter_units(adapter, materialize=materialize):
                 yield [(f"{lora_name}:{name}", tensor) for name, tensor in unit]
 

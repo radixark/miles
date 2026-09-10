@@ -259,7 +259,6 @@ class TinkerService:
                         f"datum {index}: loss_fn_inputs[{wire_key!r}] has {len(values)} values "
                         f"for {datum['target_len']} target tokens"
                     )
-            # an input the loss never reads would train with different semantics than the caller expects
             unread = [
                 wire_key
                 for wire_key, datum_key in LOSS_INPUT_KEYS.items()
