@@ -1,6 +1,8 @@
 import asyncio
 from collections.abc import Iterator
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample
@@ -31,6 +33,15 @@ class _GenerateState:
         pass
 
 
+class _LegacyGenerateState:
+    def __init__(self) -> None:
+        self.aborted = False
+        self.semaphore = asyncio.Semaphore(1)
+
+    def dp_rank_context(self):
+        return nullcontext()
+
+
 async def _no_op(*args, **kwargs) -> None:
     pass
 
@@ -50,6 +61,62 @@ def _drop_events(event_dir: Path) -> list[ExplicitlyDroppedSamplesEvent]:
 
 
 class TestLegacyRolloutSampleOwnership:
+    async def test_generate_stamps_compact_rows_with_the_issued_source(self, monkeypatch) -> None:
+        """The legacy generate boundary preserves one issued source across compact rows."""
+        source = make_sample(index=7, reward=0.0)
+        rows = [make_sample(index=7, reward=0.0), make_sample(index=7, reward=0.0)]
+        args = make_args(
+            partial_rollout=False,
+            mask_offpolicy_in_partial_rollout=False,
+            group_rm=True,
+            custom_generate_function_path="compact",
+        )
+        monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: _LegacyGenerateState())
+
+        async def generate(_input):
+            return SimpleNamespace(samples=rows)
+
+        monkeypatch.setattr(sglang_rollout, "load_generate_function", lambda _path: generate)
+
+        output = await sglang_rollout.generate_and_rm(args, source, {}, evaluation=False)
+
+        assert [(row.source_sample_index, row.sample_row_index, row.sample_row_count) for row in output] == [
+            (7, 0, 2),
+            (7, 1, 2),
+        ]
+
+    @pytest.mark.parametrize("partial_rollout", [False, True])
+    async def test_abort_resolves_only_groups_that_will_not_retry(
+        self, monkeypatch, tmp_path: Path, partial_rollout: bool
+    ) -> None:
+        """Abort records terminal groups while preserving partial groups for retry."""
+        group = [make_sample(index=7, reward=0.0)]
+        task = asyncio.get_running_loop().create_future()
+        task.set_result(group)
+        state = SimpleNamespace(aborted=False, pendings={task})
+        args = make_args(
+            partial_rollout=partial_rollout,
+            use_miles_router=True,
+            sglang_router_ip="127.0.0.1",
+            sglang_router_port=30000,
+        )
+        monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)
+        monkeypatch.setattr(sglang_rollout, "get", lambda _url: _return({"urls": []}))
+        monkeypatch.setattr(sglang_rollout, "call_agent_abort_hook", _no_op)
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor")))
+
+        recovered = await sglang_rollout.abort(args, rollout_id=4)
+
+        events = _drop_events(tmp_path)
+        if partial_rollout:
+            assert recovered == [group]
+            assert events == []
+        else:
+            assert recovered == []
+            [event] = events
+            assert event.sample_indices == [7]
+            assert event.reason == "abort"
+
     async def test_oversampling_records_the_finished_group_not_selected(self, monkeypatch, tmp_path: Path) -> None:
         """The legacy oversampling branch resolves a completed group beyond the target."""
         groups = [[make_sample(index=0, reward=0.0)], [make_sample(index=1, reward=1.0)]]
@@ -134,3 +201,7 @@ class TestLegacyRolloutSampleOwnership:
         [event] = _drop_events(tmp_path)
         assert event.sample_indices == [1]
         assert event.reason == "sample_filter"
+
+
+async def _return(value):
+    return value
