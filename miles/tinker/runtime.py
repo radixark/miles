@@ -14,9 +14,10 @@ DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "s
 
 
 class MilesBackend(ExecutorBackend):
-    def __init__(self, trainer, router_url: str) -> None:
+    def __init__(self, trainer, router_url: str, dp_size: int = 1) -> None:
         self.trainer = trainer
         self.router_url = router_url
+        self.dp_size = dp_size
 
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
@@ -37,7 +38,7 @@ class MilesBackend(ExecutorBackend):
     async def _run_loss_pass(
         self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
     ) -> list[dict]:
-        train_data = _build_train_data(slot_datums)
+        train_data = _build_train_data(_pad_to_dp_multiple(slot_datums, self.dp_size))
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
         worker_results = await self._run_batch(method, batch_id, train_data)
@@ -135,6 +136,21 @@ def _with_sample_seed(request: dict, index: int) -> dict:
         params["sampling_seed"] = seed + index
     request["sampling_params"] = params
     return request
+
+
+def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
+    """The trainer splits the batch evenly across data-parallel ranks; pad with
+    zero-weight copies of the last datum so every rank gets the same share.
+    Padding contributes no gradient and its outputs are dropped by the caller."""
+    remainder = len(slot_datums) % dp_size
+    if remainder == 0:
+        return slot_datums
+    slot, datum = slot_datums[-1]
+    filler = dict(datum)
+    for key in ("weights", "advantages"):
+        if key in filler:
+            filler[key] = [0.0] * len(filler[key])
+    return slot_datums + [(slot, filler)] * (dp_size - remainder)
 
 
 def _build_train_data(slot_datums: list) -> dict:
