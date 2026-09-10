@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,14 +42,11 @@ from miles.utils import object_store
 from miles.utils.async_utils import maybe_await, run, submit
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
-from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger, read_events
-from miles.utils.audit_utils.event_logger.models import (
-    TrainerCpuWitnessEvent,
-    TrainerWitnessCohortEvent,
-    TrainerWitnessCohortPayload,
-)
+from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
+from miles.utils.audit_utils.event_logger.models import TrainerWitnessCohortPayload
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_flow import log_dropped_groups, record_data_source_issues
+from miles.utils.audit_utils.sample_ownership_store import SampleOwnershipEventStore
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.file_utils import atomic_write_text
@@ -124,8 +121,7 @@ class RolloutExecutor:
         self._inference_controller_provider = inference_controller_provider
         self._sample_ownership_task: asyncio.Task[None] | None = None
         self._sample_ownership_started_at: datetime | None = None
-        self._sample_ownership_busy_since: float | None = None
-        self._sample_ownership_has_cohort = False
+        self._sample_ownership_store: SampleOwnershipEventStore | None = None
         self._actor_controller: BaseWorkerHandle | None = None
         self._last_batch: LastBatch | None = None
         self._replay: LastBatch | None = None
@@ -414,10 +410,7 @@ class RolloutExecutor:
             trainer_id=actor_config.trainer_id,
         )
         self._sample_ownership_started_at = datetime.now(timezone.utc)
-        self._sample_ownership_has_cohort = any(
-            isinstance(event, TrainerWitnessCohortEvent)
-            for event in read_events(Path(self.args.save_debug_event_data))
-        )
+        self._sample_ownership_store = SampleOwnershipEventStore(get_event_logger())
         self._sample_ownership_task = asyncio.create_task(self._run_sample_ownership_checker())
 
     async def _run_sample_ownership_checker(self) -> None:
@@ -431,53 +424,36 @@ class RolloutExecutor:
     async def _run_one_sample_ownership_check(self) -> None:
         assert self._actor_controller is not None
         assert self._sample_ownership_started_at is not None
-        timeout = self.args.sample_ownership_check_timeout_seconds
-        busy = await asyncio.wait_for(self._actor_controller.is_cpu_witness_snapshot_busy(), timeout=timeout)
-        if not busy:
-            try:
-                payload = await asyncio.wait_for(
-                    self._actor_controller.log_current_cpu_witness(rollout_id=self.rollout_id),
-                    timeout=timeout,
-                )
-            except WorkerStillBusyError:
-                busy = True
-            else:
-                self._log_current_cpu_witness(payload)
-                self._sample_ownership_has_cohort = True
-
-        self._update_sample_ownership_busy_state(busy=busy)
-        if busy and not self._sample_ownership_has_cohort:
-            return
-
-        await asyncio.wait_for(
-            asyncio.to_thread(
-                event_analyzer.run_sample_ownership_analysis_from_args,
-                self.args,
-                process_started_at=self._sample_ownership_started_at,
-            ),
-            timeout=timeout,
+        assert self._sample_ownership_store is not None
+        timeout = max(
+            self.args.sample_ownership_grace_period_seconds,
+            self.args.sample_ownership_check_timeout_seconds,
         )
+        payload, now = await self._collect_current_cpu_witness(timeout=timeout)
+        analysis_timeout = self.args.sample_ownership_check_timeout_seconds
+        async with asyncio.timeout(analysis_timeout):
+            await asyncio.to_thread(self._sample_ownership_store.replace_current, payload)
+            events = await asyncio.to_thread(self._sample_ownership_store.read_events)
+            await asyncio.to_thread(
+                event_analyzer.run_sample_ownership_analysis,
+                events,
+                grace_period=timedelta(seconds=self.args.sample_ownership_grace_period_seconds),
+                process_started_at=self._sample_ownership_started_at,
+                now=now,
+                event_source=str(self.args.save_debug_event_data),
+            )
 
-    @staticmethod
-    def _log_current_cpu_witness(payload: TrainerWitnessCohortPayload) -> None:
-        event_logger = get_event_logger()
-        for snapshot in payload["snapshots"]:
-            event_logger.log_event(TrainerCpuWitnessEvent.model_validate(snapshot), print_log=False)
-        event_logger.log_event(TrainerWitnessCohortEvent.model_validate(payload["marker"]), print_log=False)
-
-    def _update_sample_ownership_busy_state(self, *, busy: bool) -> None:
-        if not busy:
-            self._sample_ownership_busy_since = None
-            return
-
-        now = time.monotonic()
-        if self._sample_ownership_busy_since is None:
-            self._sample_ownership_busy_since = now
-            return
-
-        stall_timeout = max(self.args.sample_ownership_grace_period_seconds, 60.0)
-        if now - self._sample_ownership_busy_since >= stall_timeout:
-            raise TimeoutError(f"trainer remained busy for {stall_timeout} seconds without a fresh CPU witness cohort")
+    async def _collect_current_cpu_witness(self, *, timeout: float) -> tuple[TrainerWitnessCohortPayload, datetime]:
+        assert self._actor_controller is not None
+        async with asyncio.timeout(timeout):
+            while True:
+                now = datetime.now(timezone.utc)
+                try:
+                    payload = await self._actor_controller.log_current_cpu_witness(rollout_id=self.rollout_id)
+                except WorkerStillBusyError:
+                    await asyncio.sleep(min(self.args.sample_ownership_check_interval_seconds, 1.0))
+                    continue
+                return payload, now
 
     async def _stop_sample_ownership_checker(self) -> BaseException | None:
         if (task := self._sample_ownership_task) is None:

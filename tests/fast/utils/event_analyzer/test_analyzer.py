@@ -8,11 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from miles.utils.audit_utils.event_analyzer import analyzer as analyzer_module
 from miles.utils.audit_utils.event_analyzer.analyzer import (
     _apply_process_startup_grace,
     _partition_by_model_id,
     run_analysis,
     run_analysis_from_args,
+    run_sample_ownership_analysis,
 )
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import (
@@ -245,3 +247,26 @@ class TestProcessStartupGrace:
         )
 
         assert events == [old, new]
+
+    def test_analysis_uses_the_snapshot_request_cutoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The analyzer passes its explicit request-time cutoff unchanged to the ownership rule."""
+        started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        cutoff = started_at + timedelta(seconds=300)
+        issued = self._issued(started_at, 1)
+        observed: list[datetime] = []
+
+        def check(_events, *, grace_period: timedelta, now: datetime) -> list:
+            observed.append(now)
+            return []
+
+        monkeypatch.setattr(analyzer_module.sample_ownership_check, "check", check)
+
+        run_sample_ownership_analysis(
+            [issued],
+            grace_period=timedelta(seconds=300),
+            process_started_at=started_at,
+            now=cutoff,
+            event_source="active and restored event stream",
+        )
+
+        assert observed == [cutoff]

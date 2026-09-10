@@ -772,7 +772,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if not is_local_replica_megatron_main_rank():
             return None
         witness_replica_id = f"cell-{self._cell_index}"
-        event = self._log_cpu_witness_snapshot(
+        event = self._make_cpu_witness_event(
             rollout_id=rollout_id,
             cohort_id=cohort_id,
             witness_replica_id=witness_replica_id,
@@ -780,7 +780,7 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         return event.model_dump(mode="json")
 
-    def _log_cpu_witness_snapshot(
+    def _make_cpu_witness_event(
         self,
         *,
         rollout_id: int,

@@ -20,7 +20,6 @@ from miles.utils.audit_utils.event_logger.models import (
     DataSourceIssuedSamplesEvent,
     IssuedSampleGroup,
     MetricEvent,
-    TrainerCpuWitnessEvent,
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
@@ -232,8 +231,8 @@ class TestEventLoggerKeepsNonFiniteMetrics:
 
 
 class TestWithContext:
-    def test_accounting_events_accept_their_real_call_context(self, tmp_path: Path) -> None:
-        """Issued and train-end accounting events accept their decorator context fields."""
+    def test_issued_events_accept_their_real_call_context(self, tmp_path: Path) -> None:
+        """Issued events accept the rollout executor decorator context."""
         logger = _make_logger(tmp_path)
         with logger.with_context({"rollout_id": 5}):
             logger.log(
@@ -241,22 +240,9 @@ class TestWithContext:
                 {"groups": [IssuedSampleGroup(group_index=1, sample_indices=[10])]},
                 print_log=False,
             )
-        with logger.with_context({"rollout_id": 5, "attempt": 2}):
-            logger.log(
-                TrainerCpuWitnessEvent,
-                {
-                    "replica_id": "cell-0",
-                    "cohort_id": "attempt-2",
-                    "sample_counts": [],
-                    "reason": "train_end",
-                },
-                print_log=False,
-            )
 
-        issued, witness = read_events(tmp_path)
+        [issued] = read_events(tmp_path)
         assert issued.rollout_id == 5
-        assert witness.rollout_id == 5
-        assert witness.attempt == 2
 
     def test_injects_context_fields_into_logged_event(self, tmp_path: Path) -> None:
         """Fields from with_context are merged into events logged inside the scope."""

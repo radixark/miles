@@ -181,7 +181,6 @@ class TrainerCpuWitnessEvent(EventBase):
     cohort_id: str
     sample_counts: list[TrainingSampleCount]
     reason: Literal["train_end", "current", "save", "transfer", "load"]
-    attempt: int = 0
 
 
 class TrainerWitnessCohortEvent(EventBase):

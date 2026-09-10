@@ -1,6 +1,5 @@
 import asyncio
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -8,13 +7,7 @@ import pytest
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import TrainerCpuWitnessEvent, TrainerWitnessCohortEvent
-from miles.utils.audit_utils.process_identity import (
-    SimpleProcessIdentity,
-    TrainerControllerProcessIdentity,
-    TrainProcessIdentity,
-)
+from miles.utils.workers.worker_handle import WorkerStillBusyError
 
 
 class TestRolloutWaitsForSampleOwnership:
@@ -70,217 +63,130 @@ class TestPeriodicSampleOwnershipCheck:
     async def test_checks_continue_without_any_rollout_completion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The periodic loop refreshes witnesses and analyzes events without depending on get completion."""
         calls: list[str] = []
-        payloads: list[dict[str, Any]] = []
 
         class Controller:
-            async def is_cpu_witness_snapshot_busy(self) -> bool:
-                return False
-
             async def log_current_cpu_witness(self, *, rollout_id: int) -> dict[str, Any]:
                 calls.append(f"witness:{rollout_id}")
-                return {"snapshots": [], "marker": {"cohort": len(calls)}}
+                return {"snapshots": [], "marker": {"cohort_id": str(len(calls))}}
 
-        def analyze(_args, *, process_started_at: datetime) -> None:
-            assert process_started_at.tzinfo is timezone.utc
+        class Store:
+            def replace_current(self, payload: dict[str, Any]) -> None:
+                calls.append(f"replace:{payload['marker']['cohort_id']}")
+
+            def read_events(self) -> list[Any]:
+                calls.append("read")
+                return []
+
+        def analyze(_events: list[Any], **_kwargs: Any) -> None:
             calls.append("analyze")
             if calls.count("analyze") == 2:
                 raise ValueError("periodic failure")
 
-        monkeypatch.setattr(
-            rollout_executor_module.event_analyzer,
-            "run_sample_ownership_analysis_from_args",
-            analyze,
-        )
-        monkeypatch.setattr(RolloutExecutor, "_log_current_cpu_witness", staticmethod(payloads.append))
-        executor = RolloutExecutor.__new__(RolloutExecutor)
-        executor.args = SimpleNamespace(
-            sample_ownership_check_interval_seconds=0.0,
-            sample_ownership_check_timeout_seconds=1.0,
-            sample_ownership_grace_period_seconds=300.0,
-        )
-        executor.rollout_id = 7
-        executor._actor_controller = Controller()
-        executor._sample_ownership_started_at = datetime.now(timezone.utc)
-        executor._sample_ownership_busy_since = None
+        monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", analyze)
+        executor = self._executor(controller=Controller(), store=Store(), interval=0.0)
 
         with pytest.raises(ValueError, match="periodic failure"):
             await executor._run_sample_ownership_checker()
 
-        assert calls == ["witness:7", "analyze", "witness:7", "analyze"]
-        assert payloads == [
-            {"snapshots": [], "marker": {"cohort": 1}},
-            {"snapshots": [], "marker": {"cohort": 3}},
+        assert calls == [
+            "witness:7",
+            "replace:1",
+            "read",
+            "analyze",
+            "witness:7",
+            "replace:5",
+            "read",
+            "analyze",
         ]
 
-    async def test_witness_rpc_timeout_is_fatal(self) -> None:
-        """A bounded witness refresh cannot leave the checker silently hung forever."""
+    async def test_snapshot_request_time_is_the_analysis_cutoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Samples maturing while a queued snapshot waits are checked against the request-time weights."""
+        request_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        response_time = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        clock = iter((request_time, response_time))
+        observed: list[datetime] = []
+
+        class Clock:
+            @classmethod
+            def now(cls, tz: timezone) -> datetime:
+                assert tz is timezone.utc
+                return next(clock)
 
         class Controller:
-            async def is_cpu_witness_snapshot_busy(self) -> bool:
-                return False
+            async def log_current_cpu_witness(self, *, rollout_id: int) -> dict[str, Any]:
+                Clock.now(timezone.utc)
+                return {"snapshots": [], "marker": {}}
 
-            async def log_current_cpu_witness(self, *, rollout_id: int) -> str:
+        class Store:
+            def replace_current(self, payload: dict[str, Any]) -> None:
+                return None
+
+            def read_events(self) -> list[Any]:
+                return []
+
+        def analyze(_events: list[Any], **kwargs: Any) -> None:
+            observed.append(kwargs["now"])
+
+        monkeypatch.setattr(rollout_executor_module, "datetime", Clock)
+        monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", analyze)
+        executor = self._executor(controller=Controller(), store=Store())
+
+        await executor._run_one_sample_ownership_check()
+
+        assert observed == [request_time]
+
+    async def test_queued_snapshot_timeout_is_fatal(self) -> None:
+        """A trainer lock wait cannot leave the ownership checker silently hung forever."""
+
+        class Controller:
+            async def log_current_cpu_witness(self, *, rollout_id: int) -> None:
                 await asyncio.Event().wait()
-                return "unreachable"
 
-        executor = RolloutExecutor.__new__(RolloutExecutor)
-        executor.args = SimpleNamespace(
-            sample_ownership_check_interval_seconds=0.0,
-            sample_ownership_check_timeout_seconds=0.001,
-            sample_ownership_grace_period_seconds=300.0,
-        )
-        executor.rollout_id = 7
-        executor._actor_controller = Controller()
-        executor._sample_ownership_started_at = datetime.now(timezone.utc)
-        executor._sample_ownership_busy_since = None
+        executor = self._executor(controller=Controller(), store=SimpleNamespace(), grace=0.001, timeout=0.001)
 
         with pytest.raises(TimeoutError):
-            await executor._run_sample_ownership_checker()
-
-
-class TestCurrentWitnessCollection:
-    def test_remote_snapshots_are_written_before_their_completion_marker(self, tmp_path: Path) -> None:
-        """The local accounting stream receives complete remote evidence in commit order."""
-        timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        payload = {
-            "snapshots": [
-                {
-                    "type": "trainer_cpu_witness",
-                    "timestamp": timestamp.isoformat(),
-                    "source": TrainProcessIdentity(
-                        component="actor",
-                        cell_index=0,
-                        rank_within_cell=0,
-                    ).model_dump(mode="json"),
-                    "replica_id": "cell-0",
-                    "rollout_id": 4,
-                    "cohort_id": "cohort-4",
-                    "sample_counts": [],
-                    "reason": "current",
-                }
-            ],
-            "marker": {
-                "type": "trainer_witness_cohort",
-                "timestamp": timestamp.isoformat(),
-                "source": TrainerControllerProcessIdentity(trainer_id="actor").model_dump(mode="json"),
-                "rollout_id": 4,
-                "cohort_id": "cohort-4",
-                "replica_ids": ["cell-0"],
-            },
-        }
-        event_logger = EventLogger(
-            log_dir=tmp_path,
-            source=SimpleProcessIdentity(component="rollout_executor"),
-        )
-        set_event_logger(event_logger)
-        try:
-            RolloutExecutor._log_current_cpu_witness(payload)
-        finally:
-            set_event_logger(None)
-
-        events = read_events(tmp_path)
-        assert [type(event) for event in events] == [TrainerCpuWitnessEvent, TrainerWitnessCohortEvent]
-        assert events[0].source.component == "actor"
-        assert events[1].source.component == "trainer_controller"
-
-
-class TestBusyTrainerSampleOwnershipCheck:
-    async def test_first_busy_training_waits_for_a_completed_cohort(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The first long optimizer mutation gets its stall bound before current-cohort analysis begins."""
-
-        class Controller:
-            async def is_cpu_witness_snapshot_busy(self) -> bool:
-                return True
-
-        monkeypatch.setattr(
-            rollout_executor_module.event_analyzer,
-            "run_sample_ownership_analysis_from_args",
-            lambda *_args, **_kwargs: pytest.fail("analysis requires a completed witness cohort"),
-        )
-        executor = RolloutExecutor.__new__(RolloutExecutor)
-        executor.args = SimpleNamespace(
-            sample_ownership_check_timeout_seconds=1.0,
-            sample_ownership_grace_period_seconds=300.0,
-        )
-        executor.rollout_id = 7
-        executor._actor_controller = Controller()
-        executor._sample_ownership_started_at = datetime.now(timezone.utc)
-        executor._sample_ownership_busy_since = None
-        executor._sample_ownership_has_cohort = False
-
-        await executor._run_one_sample_ownership_check()
-
-        assert executor._sample_ownership_busy_since is not None
-
-    async def test_busy_training_uses_existing_evidence_until_the_stall_bound(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A normal in-flight optimizer mutation does not block periodic analysis or trigger a snapshot race."""
-        analyzed: list[datetime] = []
-
-        class Controller:
-            async def is_cpu_witness_snapshot_busy(self) -> bool:
-                return True
-
-            async def log_current_cpu_witness(self, *, rollout_id: int) -> str:
-                raise AssertionError("a busy trainer must not be snapshotted")
-
-        def analyze(_args, *, process_started_at: datetime) -> None:
-            analyzed.append(process_started_at)
-
-        monkeypatch.setattr(
-            rollout_executor_module.event_analyzer,
-            "run_sample_ownership_analysis_from_args",
-            analyze,
-        )
-        executor = RolloutExecutor.__new__(RolloutExecutor)
-        executor.args = SimpleNamespace(
-            sample_ownership_check_timeout_seconds=1.0,
-            sample_ownership_grace_period_seconds=300.0,
-        )
-        executor.rollout_id = 7
-        executor._actor_controller = Controller()
-        executor._sample_ownership_started_at = datetime.now(timezone.utc)
-        executor._sample_ownership_busy_since = None
-        executor._sample_ownership_has_cohort = True
-
-        await executor._run_one_sample_ownership_check()
-        await executor._run_one_sample_ownership_check()
-
-        assert len(analyzed) == 2
-
-    async def test_a_continuously_busy_trainer_eventually_fails_the_main_checker(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Busy state cannot suppress fresh current-weight evidence forever."""
-
-        class Controller:
-            async def is_cpu_witness_snapshot_busy(self) -> bool:
-                return True
-
-        monkeypatch.setattr(
-            rollout_executor_module.event_analyzer,
-            "run_sample_ownership_analysis_from_args",
-            lambda _args, *, process_started_at: None,
-        )
-        executor = RolloutExecutor.__new__(RolloutExecutor)
-        executor.args = SimpleNamespace(
-            sample_ownership_check_timeout_seconds=1.0,
-            sample_ownership_grace_period_seconds=30.0,
-        )
-        executor.rollout_id = 7
-        executor._actor_controller = Controller()
-        executor._sample_ownership_started_at = datetime.now(timezone.utc)
-        executor._sample_ownership_busy_since = rollout_executor_module.time.monotonic() - 60.0
-        executor._sample_ownership_has_cohort = False
-
-        with pytest.raises(TimeoutError, match="remained busy"):
             await executor._run_one_sample_ownership_check()
+
+    async def test_transient_cohort_changes_retry_within_one_deadline(self) -> None:
+        """A fleet transition retries fresh collection without resetting the overall timeout."""
+        calls = 0
+
+        class Controller:
+            async def log_current_cpu_witness(self, *, rollout_id: int) -> dict[str, Any]:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise WorkerStillBusyError("trainer cell cohort changed")
+                return {"snapshots": [], "marker": {}}
+
+        executor = self._executor(controller=Controller(), store=SimpleNamespace(), interval=0.0)
+
+        payload, _ = await executor._collect_current_cpu_witness(timeout=1.0)
+
+        assert payload == {"snapshots": [], "marker": {}}
+        assert calls == 2
+
+    @staticmethod
+    def _executor(
+        *,
+        controller: Any,
+        store: Any,
+        interval: float = 30.0,
+        grace: float = 300.0,
+        timeout: float = 1.0,
+    ) -> RolloutExecutor:
+        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor.args = SimpleNamespace(
+            save_debug_event_data="/events",
+            sample_ownership_check_interval_seconds=interval,
+            sample_ownership_check_timeout_seconds=timeout,
+            sample_ownership_grace_period_seconds=grace,
+        )
+        executor.rollout_id = 7
+        executor._actor_controller = controller
+        executor._sample_ownership_started_at = datetime.now(timezone.utc)
+        executor._sample_ownership_store = store
+        return executor
 
 
 class TestStopSampleOwnershipChecker:

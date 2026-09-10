@@ -3,7 +3,7 @@
 import logging
 import time
 from argparse import Namespace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -47,26 +47,24 @@ def run_analysis(event_dir: Path) -> list[Any]:
     return [issue for model_events in _partition_by_model_id(events) for issue in _check_one_model_id(model_events)]
 
 
-def run_sample_ownership_analysis_from_args(args: Namespace, *, process_started_at: datetime) -> None:
-    event_dir = Path(args.save_debug_event_data)
-    started_at = time.monotonic()
-    try:
-        events = read_events(event_dir)
-        now = datetime.now(timezone.utc)
-        grace_period = timedelta(seconds=args.sample_ownership_grace_period_seconds)
-        events = _apply_process_startup_grace(
-            events,
-            process_started_at=process_started_at,
-            now=now,
-            grace_period=grace_period,
-        )
-        if not any(isinstance(event, DataSourceIssuedSamplesEvent) for event in events):
-            logger.warning("Sample ownership check has no issued-sample evidence in %s", event_dir)
-            return
-        issues = sample_ownership_check.check(events, grace_period=grace_period, now=now)
-    finally:
-        logger.info("Sample ownership analysis of %s took %.3f seconds", event_dir, time.monotonic() - started_at)
-
+def run_sample_ownership_analysis(
+    events: list[Event],
+    *,
+    grace_period: timedelta,
+    process_started_at: datetime,
+    now: datetime,
+    event_source: str,
+) -> None:
+    events = _apply_process_startup_grace(
+        events,
+        process_started_at=process_started_at,
+        now=now,
+        grace_period=grace_period,
+    )
+    if not any(isinstance(event, DataSourceIssuedSamplesEvent) for event in events):
+        logger.warning("Sample ownership check has no issued-sample evidence in %s", event_source)
+        return
+    issues = sample_ownership_check.check(events, grace_period=grace_period, now=now)
     if issues:
         raise ValueError(f"Sample ownership analysis found issues: {issues}")
 
