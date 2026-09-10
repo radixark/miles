@@ -56,6 +56,8 @@ def _decode_tensor(name: str, tensor) -> list:
     np_dtype = _PROTO_DTYPE_TO_NUMPY.get(tensor.dtype)
     if np_dtype is None:
         raise UserInputError(f"loss_fn_inputs[{name!r}]: unsupported tensor dtype {tensor.dtype}")
+    if len(tensor.shape) > 1:
+        raise UserInputError(f"loss_fn_inputs[{name!r}]: shape {list(tensor.shape)} is not supported (1-D only)")
     encoding = tensor.WhichOneof("encoding")
     if encoding == "dense":
         return np.frombuffer(tensor.dense, dtype=np_dtype).tolist()
