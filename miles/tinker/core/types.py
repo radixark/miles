@@ -47,6 +47,7 @@ class GatewayConfig:
     max_tokens_per_datum: int = 32768
     max_tokens_per_request: int = 4_000_000
     max_samples_per_request: int = 64
+    max_lora_rank: int = 32  # the slot capacity the server was built with (--lora-rank)
     lora_alpha: float | None = None  # None: 2 * rank
     # what the server-wide adapter layout trains; create_model rejects deviations
     trains_attn: bool = True
