@@ -50,3 +50,23 @@ def test_loss_passes_return_independent_detached_outputs(monkeypatch, recompute)
         assert outputs[0]["logprobs"].tolist() == [-0.5, -0.25]
         assert not outputs[0]["loss"].requires_grad
         assert not outputs[0]["logprobs"].requires_grad
+
+
+@pytest.mark.parametrize("loss_fn", sorted(tinker_losses.TINKER_LOSS_FUNCTIONS))
+def test_a_zero_loss_mask_removes_the_datum_from_every_objective(monkeypatch, loss_fn):
+    logprobs = torch.tensor([-0.5, -0.25], requires_grad=True)
+    monkeypatch.setattr(tinker_losses, "_target_logprobs", lambda _args, _batch, logits: [logits])
+    batch = {
+        "loss_fn": loss_fn,
+        "loss_weights": [[2.0, 3.0]],
+        "advantages": [[1.0, 1.0]],
+        "rollout_log_probs": [[-1.5, -1.25]],  # differs from logprobs so the DRO divergence term is nonzero
+        "loss_masks": [torch.zeros(2)],
+        "total_lengths": [3],
+        "response_lengths": [2],
+        "sample_indices": [0],
+    }
+    loss, _ = tinker_losses.TINKER_LOSS_FUNCTIONS[loss_fn](Namespace(), batch, logprobs, None)
+    loss.backward()
+    assert loss.item() == 0.0
+    assert logprobs.grad.abs().sum().item() == 0.0, "a DP-padding datum must contribute no gradient"
