@@ -423,6 +423,9 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> None:
         await self._execute_slots("unload_slot", slot=slot)
 
+    async def multi_lora_memory_probe(self, phase: str) -> list[dict]:
+        return await self._execute_slots("multi_lora_memory_probe", phase=phase)
+
     @asynccontextmanager
     async def _updatable_engines(self):
         """Release the inference controller's update lock even when the slot command fails."""

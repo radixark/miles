@@ -52,9 +52,12 @@ def targets_expert_leaves(target_modules: Any) -> bool:
 def validate_multi_lora_args(args: Any) -> None:
     """Set ``args.multi_lora``, then validate the trainer-side constraints of
     the slot machinery. A no-op for normal runs."""
-    args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
+    args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) != 0
     if not args.multi_lora:
         return
+
+    if args.multi_lora_n_adapters == -1:
+        assert args.entry == "serve", "--multi-lora-n-adapters auto needs the probe in serve_tinker"
 
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
