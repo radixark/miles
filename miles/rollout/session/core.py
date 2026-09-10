@@ -294,7 +294,7 @@ class SessionCore:
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)
         if session.closing:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            raise SessionNotFoundError(f"session not found (closing): session_id={session_id}")
         session.closing = True
         # Acquire the lock so an in-flight chat finishes before we drop the session.
         await session.lock.acquire()
@@ -317,12 +317,12 @@ class SessionCore:
         request_timestamp = time.time()
         session = self.registry.get_session(session_id)
         if session.closing:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            raise SessionNotFoundError(f"session not found (closing): session_id={session_id}")
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
             if session.closing:
-                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+                raise SessionNotFoundError(f"session not found (closing): session_id={session_id}")
 
             client_args = parse_chat_request(body)
             prepared = session.prepare_token_ids_and_request_args(

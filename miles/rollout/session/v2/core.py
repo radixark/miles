@@ -148,12 +148,12 @@ class SessionCoreV2(SessionCore):
         request_timestamp = time.time()
         session = self.registry.get_session(session_id)
         if session.closing:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            raise SessionNotFoundError(f"session not found (closing): session_id={session_id}")
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
             if session.closing:
-                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+                raise SessionNotFoundError(f"session not found (closing): session_id={session_id}")
 
             client_args = parse_chat_request(body)
             prepared, attach_parent = prepare_token_ids_and_request_args(
