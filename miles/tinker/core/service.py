@@ -347,9 +347,9 @@ class TinkerService:
             "base_model": meta["base_model"],
             "is_lora": True,
             "lora_rank": meta["lora_rank"],
-            "train_attn": self.config.trains_attn,
-            "train_mlp": self.config.trains_mlp,
-            "train_unembed": self.config.trains_unembed,
+            "train_attn": meta["train_attn"],
+            "train_mlp": meta["train_mlp"],
+            "train_unembed": meta["train_unembed"],
         }
 
     async def sweep_leases(self) -> None:
@@ -557,7 +557,8 @@ class TinkerService:
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> list[dict]:
         source_id, kind, name = _parse_tinker_path(payload["path"])
-        self._checkpoint_meta(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
+        meta = self._checkpoint_meta(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
+        self._reject_checkpoint_mismatch(meta, record, payload["path"])
         try:
             await self.backend.load_slot(
                 record.slot,
@@ -597,6 +598,23 @@ class TinkerService:
             result["sampling_session_id"] = self.create_sampling_session(record.tenant, {"model_path": result["path"]})
         return [result]
 
+    def _reject_checkpoint_mismatch(self, meta: dict, record: ModelRecord, shown_path: str) -> None:
+        """The tensors only keep their meaning under the config that wrote them (alpha scales them,
+        the target layout names them); a restore under different settings would be silent corruption."""
+        expected = {
+            "base_model": record.base_model,
+            "lora_rank": record.lora_rank,
+            "lora_alpha": record.lora_alpha,
+            "train_attn": self.config.trains_attn,
+            "train_mlp": self.config.trains_mlp,
+            "train_unembed": self.config.trains_unembed,
+        }
+        for key, value in expected.items():
+            if meta[key] != value:
+                raise UserInputError(
+                    f"checkpoint {shown_path!r} was saved with {key}={meta[key]!r}; this model expects {key}={value!r}"
+                )
+
     def _stamp_checkpoint_meta(self, checkpoint_dir: str, record: ModelRecord) -> None:
         """Persist checkpoint ownership and shape beyond the model lease and gateway process."""
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
@@ -606,6 +624,9 @@ class TinkerService:
             "base_model": record.base_model,
             "lora_rank": record.lora_rank,
             "lora_alpha": record.lora_alpha,
+            "train_attn": self.config.trains_attn,
+            "train_mlp": self.config.trains_mlp,
+            "train_unembed": self.config.trains_unembed,
         }
         (Path(checkpoint_dir) / "META.json").write_text(json.dumps(meta, indent=2))
 
