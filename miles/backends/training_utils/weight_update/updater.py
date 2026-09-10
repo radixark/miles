@@ -7,8 +7,10 @@ LoRA adapter pushes.
 """
 
 import logging
+import random
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -27,10 +29,14 @@ from miles.backends.training_utils.weight_update.session import (
     set_weight_version,
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
+from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.multi_lora import is_multi_lora_enabled, slot_lora_name
 from miles.utils.timer import timer
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.inference_controller import UpdatableEngines
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +95,28 @@ class WeightUpdater:
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
+
+    def reconnect_if_needed(self, info: "UpdatableEngines") -> bool:
+        """Reconnect when the engine cell snapshot differs from the one connected to."""
+        if not self.conn_status.needs_reconnect(info.snapshot_cell_id_to_hashes):
+            return False
+        self.connect_rollout_engines(
+            info.rollout_engines,
+            engine_gpu_counts=info.engine_gpu_counts,
+            engine_gpu_offsets=info.engine_gpu_offsets,
+        )
+        self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
+        dist.barrier(group=get_gloo_group())
+        return True
+
+    def verify_engine_version(self, rollout_engines: Sequence[SGLangApiClient]) -> None:
+        """Fail if a random engine disagrees with the last published version; version 0 means none yet."""
+        if not rollout_engines or self.weight_version == 0:
+            return
+        engine = random.choice(list(rollout_engines))
+        engine_version = async_utils.run(engine.get_weight_version())
+        if str(engine_version) != str(self.weight_version):
+            raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_version}")
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear the protocol's metrics; the actor drains them onto the step log."""
