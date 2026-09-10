@@ -14,6 +14,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
@@ -189,19 +190,15 @@ class WeightUpdater:
         assert (
             self._hf_weight_iterator.placement.is_full_gather
         ), "the exported dir must hold the full adapter, which this placement never gathers onto one rank"
-        tensors = {
-            name: tensor.detach().contiguous().cpu()
-            for name, tensor in self._hf_weight_iterator.materialize_adapter(
-                adapter, materialize=should_save_adapter
-            ).items()
-        }
-        # rank 0's disk failure must fail every rank together, not strand the barrier
-        failure = [None]
-        if should_save_adapter:
-            try:
-                save_adapter_to_disk(out_dir, self._adapter_config(adapter), tensors)
-            except Exception as error:  # noqa: BLE001
-                failure[0] = f"{type(error).__name__}: {error}"
-        dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
-        if failure[0] is not None:
-            raise RuntimeError(f"adapter export to {out_dir!r} failed: {failure[0]}")
+
+        def write_shards(tmp_dir):
+            tensors = {
+                name: tensor.detach().contiguous().cpu()
+                for name, tensor in self._hf_weight_iterator.materialize_adapter(
+                    adapter, materialize=should_save_adapter
+                ).items()
+            }
+            if should_save_adapter:
+                save_adapter_to_disk(tmp_dir, self._adapter_config(adapter), tensors)
+
+        write_checkpoint_dir(out_dir, write_shards)
