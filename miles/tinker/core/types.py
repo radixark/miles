@@ -76,4 +76,4 @@ class ModelRecord:
     lora_alpha: float
     # failed publications burn their version number, leaving gaps
     next_sampler_version: int = 1
-    published_sampler_versions: set[int] = field(default_factory=set)
+    published_sampler_versions: set[str] = field(default_factory=set)
