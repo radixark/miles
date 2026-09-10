@@ -3,6 +3,7 @@ import copy
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -32,13 +33,13 @@ class DataSource(abc.ABC):
         """
 
     @abc.abstractmethod
-    def save(self, rollout_id):
+    def save(self, rollout_id: int) -> None:
         """
         Save the state of the data source
         """
 
     @abc.abstractmethod
-    def load(self, rollout_id=None):
+    def load(self, rollout_id: int | None = None) -> None:
         """
         Load the state of the data source
         """
@@ -122,46 +123,45 @@ class RolloutDataSource(DataSource):
             samples.append(group)
         return samples
 
-    def save(self, rollout_id):
-        if not self.args.rollout_global_dataset:
-            return
-
-        state_dict = {
-            "sample_offset": self.sample_offset,
-            "epoch_id": self.epoch_id,
-            "sample_group_index": self.sample_group_index,
-            "sample_index": self.sample_index,
-            "metadata": self.metadata,
-        }
+    def save(self, rollout_id: int) -> None:
+        state_dict = self._state_dict()
         path = compute_global_dataset_state_path(self.args.save, rollout_id=rollout_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(state_dict, path)
 
-    def load(self, rollout_id=None):
-        if not self.args.rollout_global_dataset:
-            logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
-            return
-
+    def load(self, rollout_id: int | None = None) -> None:
         if self.args.load is None:
-            logger.warning("no --load: the dataset starts where a fresh run's would")
+            logger.warning("no --load: the data source starts where a fresh run's would")
             return
 
         path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
         if not os.path.exists(path):
-            logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
+            logger.warning(f"no data source state under {path}: the data source starts where a fresh run's would")
             return
 
-        logger.info(f"load metadata from {path}")
-        logger.info(f"load metadata: {self.metadata}")
-        state_dict = torch.load(path)
+        logger.info(f"load data source state from {path}")
+        state_dict = torch.load(path, weights_only=False)
+        self._load_state_dict(state_dict)
+
+        if self.args.rollout_global_dataset and self.args.rollout_shuffle:
+            self.dataset.shuffle(self.epoch_id)
+
+    def _state_dict(self) -> dict[str, Any]:
+        state_dict = {
+            "sample_group_index": self.sample_group_index,
+            "sample_index": self.sample_index,
+            "metadata": self.metadata,
+        }
+        if self.args.rollout_global_dataset:
+            state_dict.update(sample_offset=self.sample_offset, epoch_id=self.epoch_id)
+        return state_dict
+
+    def _load_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
         self.sample_index = state_dict.get("sample_index", 0)
         self.metadata = state_dict.get("metadata", {})
-
-        if self.args.rollout_global_dataset and self.args.rollout_shuffle:
-            self.dataset.shuffle(self.epoch_id)
 
 
 class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
@@ -219,6 +219,13 @@ class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
 
     def get_buffer_length(self):
         return len(self.buffer)
+
+    def _state_dict(self) -> dict[str, Any]:
+        return {**super()._state_dict(), "buffer": self.buffer}
+
+    def _load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        super()._load_state_dict(state_dict)
+        self.buffer = state_dict.get("buffer", [])
 
 
 def pop_first(args, rollout_id, buffer: list[list[Sample]], num_samples: int) -> list[list[Sample]]:

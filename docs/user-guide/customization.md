@@ -107,9 +107,11 @@ class CustomDataSource(DataSource):
 
 **Default:** `miles.rollout.data_source.RolloutDataSource`.
 
-- `--partial-rollout` selects `LegacyRolloutDataSourceWithBuffer` when using the default source.
+- `--partial-rollout` selects the legacy buffered data source when using the default source.
 - Custom sources used with partial rollout must implement `add_samples` to retain aborted groups.
 - Fully async rollout owns its retry buffer and does not require `add_samples`.
+- The built-in source checkpoints sample identity cursors even when the global dataset is disabled.
+- The legacy buffered source also checkpoints pending partial-rollout groups.
 
 ### `--eval-function-path`
 

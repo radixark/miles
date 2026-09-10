@@ -48,11 +48,6 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 logger = logging.getLogger(__name__)
 
 
-def _resolve_data_source_path(args: argparse.Namespace) -> None:
-    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
-        args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
-
-
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
     """The (rollout, eval) function paths the arguments select."""
     if use_legacy_rollout_v1():
@@ -4305,3 +4300,9 @@ def hf_validate_args(args, hf_config):
 
     if len(errors) > 0:
         raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
+
+
+def _resolve_data_source_path(args: argparse.Namespace) -> None:
+    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+        args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
+        logger.info("Partial rollout uses the legacy buffered data source by default")

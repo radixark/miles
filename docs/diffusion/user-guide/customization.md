@@ -64,7 +64,7 @@ unset.
 
 **Class** (not a function). Default:
 `miles.rollout.data_source.RolloutDataSource`. Partial rollout selects
-`LegacyRolloutDataSourceWithBuffer` unless a custom source is configured.
+the legacy buffered data source unless a custom source is configured.
 
 ```python
 class CustomDataSource:
@@ -75,6 +75,8 @@ class CustomDataSource:
 ```
 
 Custom sources used with partial rollout must also implement `add_samples`.
+The built-in source checkpoints sample identity cursors even when the global
+dataset is disabled. The legacy buffered source also checkpoints pending groups.
 
 ### `--custom-generate-function-path`
 

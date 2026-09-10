@@ -1983,6 +1983,17 @@ class TestDataSourceSelection:
 
         assert args.data_source_path == expected
 
+    def test_partial_rollout_logs_the_default_buffered_source(self, caplog) -> None:
+        """Operators can see when partial rollout changes the default data source."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args([*REQUIRED_ARGS, "--num-rollout", "1", "--partial-rollout"])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert "legacy buffered data source" in caplog.text
+
 
 class TestMultiLoRAValidation:
     def _parse(self, extra):
