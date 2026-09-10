@@ -29,7 +29,6 @@ class KimiK3LoRAAdapter(nn.Module):
         super().__init__()
         self.kind = kind
         self.hf_prefix = hf_prefix
-        self.load_meta: dict[str, int] = {}
         self.include_fc2 = True  # experts only: _apply_expert_lora overrides per target set
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
@@ -139,7 +138,7 @@ def _enable_full_recompute_input_grads(model) -> None:
     model.embedding.register_forward_hook(enable_grad)
 
 
-def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout: float, a_init: str) -> None:
+def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout: float) -> None:
     from megatron.core.tensor_parallel.mappings import reduce_from_tensor_model_parallel_region
 
     rank = int(args.lora_rank)
@@ -154,7 +153,7 @@ def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout
         "o_lora_A",
         attention.o_proj.weight,
         (rank, attention.o_proj.weight.shape[1]),
-        init=a_init,
+        init="xavier",
     )
     _register_param(
         adapter,
@@ -188,7 +187,7 @@ def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout
                 f"{prefix}_lora_A",
                 module.weight,
                 (rank, hidden_size),
-                init=a_init,
+                init="xavier",
             )
             _register_param(
                 adapter,
@@ -226,7 +225,6 @@ def _apply_dense_mlp_lora(
     layer_idx: int,
     scale: float,
     dropout: float,
-    a_init: str,
     *,
     adapter_kind: str = "dense_mlp",
     hf_prefix: str | None = None,
@@ -251,7 +249,7 @@ def _apply_dense_mlp_lora(
         "fc1_lora_A",
         fc1.weight,
         (rank, mlp.config.hidden_size),
-        init=a_init,
+        init="xavier",
         grad_sum_group="tp",
     )
     _register_param(
@@ -266,7 +264,7 @@ def _apply_dense_mlp_lora(
         "fc2_lora_A",
         fc2.weight,
         (rank, fc2.weight.shape[1]),
-        init=a_init,
+        init="xavier",
     )
     _register_param(
         adapter,
@@ -312,7 +310,6 @@ def _apply_expert_lora(
     layer_idx: int,
     scale: float,
     dropout: float,
-    a_init: str,
     *,
     include_fc2: bool,
 ) -> None:
@@ -336,7 +333,7 @@ def _apply_expert_lora(
         "w1_lora_A",
         ref_fc1,
         (rank, latent_size),
-        init=a_init,
+        init="xavier",
         expert=True,
         grad_sum_group="ep",
     )
@@ -345,7 +342,7 @@ def _apply_expert_lora(
         "w3_lora_A",
         ref_fc1,
         (rank, latent_size),
-        init=a_init,
+        init="xavier",
         expert=True,
         grad_sum_group="ep",
     )
@@ -371,7 +368,7 @@ def _apply_expert_lora(
             "w2_lora_A",
             ref_fc2,
             (num_local_experts, rank, intermediate_size),
-            init=a_init,
+            init="xavier",
             expert=True,
         )
         _register_param(
@@ -383,7 +380,6 @@ def _apply_expert_lora(
             grad_sum_group="ep",
             expert=True,
         )
-    adapter.load_meta = {"num_local_experts": num_local_experts}
 
     fc1 = experts.linear_fc1
     original_fc1 = fc1.forward
@@ -432,7 +428,6 @@ def apply_kimi_k3_lora(model, args):
         raise ValueError("apply_kimi_k3_lora requires --lora-rank > 0")
     scale = float(args.lora_alpha) / rank
     dropout = float(args.lora_dropout or 0.0)
-    a_init = "xavier"
 
     for parameter in model.parameters():
         parameter.requires_grad = False
@@ -442,10 +437,10 @@ def apply_kimi_k3_lora(model, args):
         layer_idx = layer.layer_number - 1
         if not isinstance(layer.self_attention, KimiK3Attention):
             raise TypeError(f"Kimi K3 layer {layer_idx} has unexpected attention type {type(layer.self_attention)}")
-        _apply_attention_lora(layer.self_attention, args, layer_idx, scale, dropout, a_init)
+        _apply_attention_lora(layer.self_attention, args, layer_idx, scale, dropout)
 
         if isinstance(layer.mlp, MLP):
-            _apply_dense_mlp_lora(layer.mlp, args, layer_idx, scale, dropout, a_init)
+            _apply_dense_mlp_lora(layer.mlp, args, layer_idx, scale, dropout)
         elif isinstance(layer.mlp, MoELayer):
             _apply_expert_lora(
                 layer.mlp,
@@ -453,7 +448,6 @@ def apply_kimi_k3_lora(model, args):
                 layer_idx,
                 scale,
                 dropout,
-                a_init,
                 include_fc2=any(target.endswith("mlp.experts.linear_fc2") for target in args.target_modules),
             )
             if layer.mlp.shared_experts is None:
@@ -464,7 +458,6 @@ def apply_kimi_k3_lora(model, args):
                 layer_idx,
                 scale,
                 dropout,
-                a_init,
                 adapter_kind="shared_experts",
                 hf_prefix=(f"language_model.model.layers.{layer_idx}.block_sparse_moe.shared_experts."),
             )
