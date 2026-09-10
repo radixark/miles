@@ -5,6 +5,26 @@ import pytest
 from tests.utils.soak.training_events import _read_events
 
 
+def test_live_observation_preserves_actual_sender_assignments(tmp_path: Path) -> None:
+    """The scheduler must observe actual target partitions rather than infer them from cell order."""
+    event = {
+        "type": "weight_update_assignment",
+        "timestamp": "2026-09-11T00:00:00Z",
+        "source": {"component": "trainer_controller", "trainer_id": "actor"},
+        "update_id": "update",
+        "candidate_version": 7,
+        "trainer_incarnations": {"actor-1": "trainer-generation"},
+        "targets_by_trainer": {"actor-1": {"rollout-9": "engine-generation"}},
+    }
+    (tmp_path / "trainer_controller_actor.jsonl").write_text(json.dumps(event) + "\n")
+
+    [observed] = _read_events(tmp_path)
+
+    assert observed.update_id == "update"
+    assert observed.trainer_incarnations == event["trainer_incarnations"]
+    assert observed.targets_by_trainer == event["targets_by_trainer"]
+
+
 def test_live_eval_read_preserves_the_evaluated_rollout_and_start_identity(tmp_path: Path) -> None:
     """Evaluation evidence must survive capture outside the trainer-controller event files."""
     event = {

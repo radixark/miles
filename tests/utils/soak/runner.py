@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import httpx
-from tests.utils.soak.action import SoakActionForm
+from tests.utils.soak.action import SoakActionError, SoakActionForm
 from tests.utils.soak.config import SoakTailPolicy, SoakTimeouts
 from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler
 from tests.utils.soak.fault_forms import CellFaultForms
@@ -140,7 +140,12 @@ class SoakRunner:
             raise
         except Exception as error:
             self._event_log.note_action_result(
-                SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
+                SoakActionResultEvent(
+                    request_id=request.request_id,
+                    returned=False,
+                    error=repr(error),
+                    evidence=error.evidence if isinstance(error, SoakActionError) else {},
+                )
             )
             logger.info("Action %s failed", request.request_id, exc_info=True)
             if not isinstance(error, (httpx.HTTPError, subprocess.SubprocessError, TimeoutError)):

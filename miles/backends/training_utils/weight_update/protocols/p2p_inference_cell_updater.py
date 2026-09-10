@@ -8,6 +8,7 @@ import torch
 from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
 from miles.backends.training_utils.weight_update.protocols.p2p_cell_executor import _CellWriteExecutor
 from miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils import RemoteWeightInfo
+from miles.utils.test_utils.fault_hooks import reach_fault_hook
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,7 @@ def _write_one_target(
         f"source: {len(source_ptrs)}, target: {len(target_ptrs)}"
     )
 
+    reach_fault_hook("trainer_before_weight_send")
     ret = transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
     if ret < 0:
         raise RuntimeError(f"[P2P-Shared] Transfer failed for session {session_id}, error: {ret}")

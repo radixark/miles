@@ -58,9 +58,9 @@ def _install(monkeypatch, seen: _Seen) -> None:
 
 
 class TestOneConfigPerSoak:
-    @pytest.mark.parametrize("precise", [False, True])
+    @pytest.mark.parametrize("scenario", ["random", "all_gather", "all_targets"])
     def test_the_random_soak_builds_one_config_and_aims_every_step_at_it(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, precise: bool
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scenario: str
     ) -> None:
         """Regression: a second default_config gave the injector a run_id no release was ever installed under."""
         seen = _Seen()
@@ -76,7 +76,6 @@ class TestOneConfigPerSoak:
             scenario_random_crash, "materialize_cyclic_debug_rollout_data", lambda count: str(tmp_path / "rollout")
         )
         monkeypatch.setattr(scenario_random_crash, "get_common_train_args", lambda mode, **kwargs: "")
-        monkeypatch.setattr(scenario_random_crash, "get_ft_args", lambda mode, **kwargs: "")
         spawns: list[dict] = []
         launches: list[dict] = []
         hook_checks: list[str] = []
@@ -97,11 +96,26 @@ class TestOneConfigPerSoak:
         monkeypatch.setattr(
             scenario_random_crash, "assert_hook_survivors", lambda events, **kwargs: hook_checks.append("survivors")
         )
+        monkeypatch.setattr(
+            scenario_random_crash, "assert_remote_p2p_failures", lambda events, **kwargs: hook_checks.append("p2p")
+        )
+        monkeypatch.setattr(
+            scenario_random_crash,
+            "assert_batch_trainers_recovered",
+            lambda events, **kwargs: hook_checks.append("batch_recovery"),
+        )
 
         scenario_random_crash.run_ci(
-            "kill_train__dp2_tp2" if precise else "kill_train__dp4_cp2__fake_rollout__moe_5layer",
+            {
+                "random": "kill_train__dp4_cp2__fake_rollout__moe_5layer",
+                "all_gather": "kill_train__dp2_tp2",
+                "all_targets": "kill_rollout__dp2_tp2",
+            }[scenario],
             num_steps=60,
-            precise_all_gather=precise,
+            precise_all_gather=scenario == "all_gather",
+            precise_p2p=scenario == "all_targets",
+            all_p2p_targets=scenario == "all_targets",
+            min_survivors=2 if scenario == "all_targets" else 1,
         )
 
         assert [config.run_id for config in seen.created] == ["sentinel-0"]
@@ -114,8 +128,15 @@ class TestOneConfigPerSoak:
         assert [config is run_config for config in seen.trained] == [True]
         assert len(spawns) == len(launches) == 1
         assert spawns[0]["config"] is run_config
-        assert hook_checks == (["effects", "survivors"] if precise else [])
-        if precise:
+        assert (
+            hook_checks
+            == {
+                "random": [],
+                "all_gather": ["effects", "survivors"],
+                "all_targets": ["effects", "p2p", "batch_recovery"],
+            }[scenario]
+        )
+        if scenario != "random":
             mode = launches[0]["mode"]
             assert mode.has_real_rollout and not mode.colocate
             assert mode.num_cells == 2
@@ -130,13 +151,22 @@ class TestOneConfigPerSoak:
                 assert argv.count(flag) == 1
                 assert argv[argv.index(flag) + 1] == value
             forms = spawns[0]["cell_fault_forms"]
-            assert set(forms) == {"actor"}
-            assert all(isinstance(form, HookFaultForm) for form in forms["actor"])
-            assert {form.name for form in forms["actor"]} == {
-                "hook:trainer_before_all_gather:sigkill:0ms",
-                "hook:trainer_before_all_gather:deadlock:0ms",
-                "hook:trainer_before_all_gather:thread_deadlock:0ms",
-            }
+            if scenario == "all_targets":
+                assert set(forms) == {"rollout"}
+                assert all(isinstance(form, HookFaultForm) and form.all_targets for form in forms["rollout"])
+                assert argv[argv.index("--ft-components") + 1 : argv.index("--ft-components") + 3] == [
+                    "train",
+                    "rollout",
+                ]
+                assert set(spawns[0]["mean_interval_seconds_of_cell_type"]) == {"rollout"}
+            else:
+                assert set(forms) == {"actor"}
+                assert all(isinstance(form, HookFaultForm) for form in forms["actor"])
+                assert {form.name for form in forms["actor"]} == {
+                    "hook:trainer_before_all_gather:sigkill:0ms",
+                    "hook:trainer_before_all_gather:deadlock:0ms",
+                    "hook:trainer_before_all_gather:thread_deadlock:0ms",
+                }
 
     def test_the_gsm8k_soak_builds_one_config_and_aims_every_step_at_it(self, monkeypatch, tmp_path: Path) -> None:
         """The same bug here would point the injector at one release while training ran under another."""

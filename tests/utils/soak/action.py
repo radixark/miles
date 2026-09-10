@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
+class SoakActionError(RuntimeError):
+    def __init__(self, message: str, *, evidence: dict) -> None:
+        super().__init__(message)
+        self.evidence = evidence
+
+
 class SoakActionForm(abc.ABC):
     @property
     @abc.abstractmethod

@@ -31,6 +31,7 @@ class FaultHookRequest(FrozenStrictBaseModel):
     instance_id: str = Field(min_length=1)
     hook: FaultHookName
     mode: Literal["sigkill", "exit", "segfault", "sigstop", "deadlock", "thread_deadlock"]
+    action: Literal["inject", "observe"] = "inject"
     lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
     delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)
     receipt_url: str | None = None
@@ -52,6 +53,8 @@ class FaultHookRecord(FrozenStrictBaseModel):
     rollout_id: int | None = None
     attempt: int | None = None
     weight_version: int | None = None
+    update_id: str | None = None
+    target_incarnations: dict[str, str] = Field(default_factory=dict)
 
 
 class FaultHookCommand(FrozenStrictBaseModel):
@@ -73,9 +76,13 @@ class FaultHookRegistry:
         self._timers: dict[str, threading.Timer] = {}
 
     @contextmanager
-    def weight_update_scope(self, *, weight_version: int) -> Iterator[None]:
+    def weight_update_scope(
+        self, *, weight_version: int, update_id: str | None = None, target_incarnations: dict[str, str] | None = None
+    ) -> Iterator[None]:
         def reach(hook: FaultHookName) -> None:
-            self.reach(hook=hook, weight_version=weight_version)
+            self.reach(
+                hook=hook, weight_version=weight_version, update_id=update_id, target_incarnations=target_incarnations
+            )
 
         token = _active_hook.set(reach)
         try:
@@ -139,6 +146,8 @@ class FaultHookRegistry:
         rollout_id: int | None = None,
         attempt: int | None = None,
         weight_version: int | None = None,
+        update_id: str | None = None,
+        target_incarnations: dict[str, str] | None = None,
     ) -> None:
         with self._lock:
             self._expire()
@@ -154,6 +163,8 @@ class FaultHookRegistry:
                     "rollout_id": rollout_id,
                     "attempt": attempt,
                     "weight_version": weight_version,
+                    "update_id": update_id,
+                    "target_incarnations": dict(target_incarnations or {}),
                     "reached_at": now,
                     "due_at": now + record.request.delay_ms / 1000,
                 }
@@ -189,6 +200,8 @@ class FaultHookRegistry:
         self._execute(record)
 
     def _execute(self, record: FaultHookRecord) -> None:
+        if record.request.action == "observe":
+            return
         try:
             inject_fault(
                 mode=record.request.mode,
@@ -227,6 +240,7 @@ class FaultHookRegistry:
                 instance_id=record.request.instance_id,
                 hook=record.request.hook,
                 mode=record.request.mode,
+                action=record.request.action,
                 status=record.status,
                 monotonic_time=record.changed_at,
                 reached_at=record.reached_at,
@@ -234,6 +248,8 @@ class FaultHookRegistry:
                 rollout_id=record.rollout_id,
                 attempt=record.attempt,
                 weight_version=record.weight_version,
+                update_id=record.update_id,
+                target_incarnations=record.target_incarnations,
             ),
         )
         self._records[record.request.request_id] = record

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from tests.fast.utils.soak.utils import AsyncStubFaultForm, typed_cell
+from tests.utils.soak.action import SoakActionError
 from tests.utils.soak.config import SoakTimeouts
 from tests.utils.soak.core import SoakActionScheduler
 from tests.utils.soak.observer import SoakObserver
@@ -18,6 +19,32 @@ from tests.utils.soak.state import (
     SoakObservation,
 )
 from tests.utils.soak.views import compute_num_successful_injections_of_form
+
+
+async def test_failed_action_retains_partial_evidence_without_becoming_applied() -> None:
+    """Partial victim receipts remain auditable without turning a failed batch into successful coverage."""
+    evidence = {"victim_outcomes": {"a": {"receipt": {"exited_pids": [42]}}, "b": {"error": "stale"}}}
+
+    async def execute(request: SoakActionRequest) -> None:
+        raise SoakActionError("Partial failure", evidence=evidence)
+
+    form = AsyncStubFaultForm(name="batch", execute=execute)
+    forms = {"actor": [form]}
+    log = EventLog()
+    runner = SoakRunner(
+        observer=SoakObserver(base_url="http://control", cell_types={"actor"}),
+        scheduler=SoakActionScheduler(rng=random.Random(0), mean_intervals={"actor": 1}, forms=forms),
+        forms=forms,
+        event_log=log,
+    )
+    request = SoakActionRequest(target=typed_cell("actor-0", "actor"), form_name="batch", harms_cell=True)
+    log.note_action_requested(request)
+    with pytest.raises(SoakActionError):
+        await runner._execute(request)
+    results = [event for event in log.events if isinstance(event, SoakActionResultEvent)]
+    assert len(results) == 1 and not results[0].returned
+    assert results[0].evidence == evidence
+    assert not any(isinstance(event, SoakActionAppliedEvent) for event in log.events)
 
 
 async def test_total_budget_cancels_a_stuck_observation_and_records_the_final_snapshot() -> None:

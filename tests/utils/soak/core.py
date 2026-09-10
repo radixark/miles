@@ -9,9 +9,13 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 import requests
+from tests.utils.soak.action import SoakActionForm
+from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.config import SoakCellPolicy, SoakPolicy
 from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms, ExecSigkillFaultForm
+from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.policy import eligible_cells, pending_actions
+from tests.utils.soak.sender_assignment import choose_sender_batch
 from tests.utils.soak.state import (
     Event,
     EventLog,
@@ -23,6 +27,7 @@ from tests.utils.soak.state import (
     SoakDeploymentTarget,
     SoakObservation,
     SoakScheduleEvent,
+    cell_is_alive,
     cell_type_of,
     target_type_of,
 )
@@ -162,6 +167,11 @@ class SoakActionScheduler:
 
         cell_type = self._rng.choice(ready_types)
         form = _draw_form(self._forms[cell_type], events=events, cell_type=cell_type, rng=self._rng)
+        reserved_triggers = {
+            (action.hook_trigger.cell_id, action.hook_trigger.workers_hash)
+            for action in pending_actions(events)
+            if action.hook_trigger is not None
+        }
         targets = cells_of_type[cell_type]
         if cell_type != "deployment" and isinstance(observation, SoakObservation):
             targets = eligible_cells(
@@ -170,42 +180,123 @@ class SoakActionScheduler:
                 policy=self.policy.cell_policies.get(cell_type, SoakCellPolicy()),
                 harms_cell=form.harms_cell,
             )
+            if form.harms_cell:
+                targets = [
+                    cell
+                    for cell in targets
+                    if (cell["metadata"]["name"], cell["status"].get("workers_hash")) not in reserved_triggers
+                ]
         if not targets:
             return None
+        if isinstance(form, HookFaultForm) and form.all_targets:
+            policy = self.policy.cell_policies.get(cell_type, SoakCellPolicy())
+            if policy.min_survivors < 1 or policy.expected_cells is None:
+                raise ValueError("All-sender-target hooks require surviving targets and an explicit fleet size")
+            if not isinstance(observation, SoakObservation):
+                return None
+            targets = eligible_cells(
+                cells=targets,
+                events=events,
+                policy=policy.model_copy(update={"require_ready_target": True}),
+                harms_cell=True,
+            )
+            if len(targets) != policy.expected_cells or len(targets) < 2:
+                return None
         target = self._rng.choice(targets)
         if self._injection_enabled is not None and not self._injection_enabled():
             return None
-        candidates = None
-        fault_target = None
-        if isinstance(observation, SoakObservation) and form.name.startswith("inject_fault:"):
-            assert isinstance(target, dict), "Fault injection requires a cell target"
-            fault_target = observation.fault_targets.get(target["metadata"]["name"])
-            if fault_target is None:
+        hook_trigger = None
+        target_form = form
+        if isinstance(form, HookFaultForm) and form.victim_form is not None:
+            target_form = form.victim_form
+            if not isinstance(observation, SoakObservation):
                 return None
-        if isinstance(observation, SoakObservation) and form.name in {"delete_pod", "exec_sigkill"}:
-            assert isinstance(target, dict), "Pod faults require a cell target"
-            candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
-            if isinstance(form, ExecSigkillFaultForm):
-                candidates = [
-                    pod
-                    for pod in candidates
-                    if all(
-                        container in pod.process_targets and pod.process_targets[container].pattern == pattern
-                        for container, pattern in form.process_patterns.items()
-                    )
-                ]
-            if not candidates:
+            reserved_victims = {
+                (event.request.target["metadata"]["name"], event.request.target["status"].get("workers_hash"))
+                for event in expand_fault_batches(events)
+                if isinstance(event, SoakActionRequestedEvent)
+                and event.request.harms_cell
+                and isinstance(event.request.target, dict)
+            }
+            triggers = [
+                identity
+                for cell in observation.cells or []
+                if cell_type_of(cell) == "actor" and cell_is_alive(cell)
+                if (identity := observation.fault_targets.get(cell["metadata"]["name"])) is not None
+                and identity.workers_hash == cell["status"].get("workers_hash")
+                and (identity.cell_id, identity.workers_hash) not in reserved_triggers | reserved_victims
+            ]
+            if not triggers:
                 return None
+            hook_trigger = self._rng.choice(triggers)
+        selected = [target]
+        if isinstance(form, HookFaultForm) and form.all_targets:
+            batch = choose_sender_batch(
+                observation=observation,
+                targets=targets,
+                triggers=triggers,
+                min_survivors=policy.min_survivors,
+                rng=self._rng,
+            )
+            if batch is None:
+                return None
+            hook_trigger, selected = batch.trigger, batch.targets
+        requests = [
+            _build_observed_request(
+                target=cell, form=target_form, harms_cell=form.harms_cell, observation=observation, rng=self._rng
+            )
+            for cell in selected
+        ]
+        if any(request is None for request in requests):
+            return None
+        request = requests[0]
         next_due_at = now + self._rng.expovariate(1.0 / self._mean_intervals[cell_type])
-        pod = self._rng.choice(candidates) if candidates is not None else None
-        return SoakActionRequest(
-            target=deepcopy(target),
-            form_name=form.name,
-            harms_cell=form.harms_cell,
-            next_due_at=next_due_at,
-            pod=pod,
-            fault_target=fault_target,
+        return request.model_copy(
+            update={
+                "form_name": form.name,
+                "next_due_at": next_due_at,
+                "hook_trigger": hook_trigger,
+                "additional_requests": requests[1:],
+            }
         )
+
+
+def _build_observed_request(
+    *,
+    target: dict | SoakDeploymentTarget,
+    form: SoakActionForm,
+    harms_cell: bool,
+    observation: SoakObservation | ObservationsEvent,
+    rng: random.Random,
+) -> SoakActionRequest | None:
+    fault_target = None
+    candidates = None
+    if isinstance(observation, SoakObservation) and form.name.startswith(("inject_fault:", "hook:")):
+        assert isinstance(target, dict), "Fault injection requires a cell target"
+        fault_target = observation.fault_targets.get(target["metadata"]["name"])
+        if fault_target is None or fault_target.workers_hash != target["status"].get("workers_hash"):
+            return None
+    if isinstance(observation, SoakObservation) and form.name in {"delete_pod", "exec_sigkill", "exec_sigstop"}:
+        assert isinstance(target, dict), "Pod faults require a cell target"
+        candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
+        if isinstance(form, ExecSigkillFaultForm):
+            candidates = [
+                pod
+                for pod in candidates
+                if all(
+                    container in pod.process_targets and pod.process_targets[container].pattern == pattern
+                    for container, pattern in form.process_patterns.items()
+                )
+            ]
+        if not candidates:
+            return None
+    return SoakActionRequest(
+        target=deepcopy(target),
+        form_name=form.name,
+        harms_cell=harms_cell,
+        pod=rng.choice(candidates) if candidates is not None else None,
+        fault_target=fault_target,
+    )
 
 
 def _execute_action(

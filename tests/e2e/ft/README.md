@@ -36,6 +36,13 @@
 - **Precise faults**: trainer all-gather hooks inject `sigkill`, GIL deadlock, and training-thread deadlock; every enabled form must produce an effect receipt and matching worker dispatch evidence.
 - **Precise recovery**: the normal healing and completed-tail assertions remain mandatory.
 - **Calibration**: the deadlines and 4800-second CI estimate have not been calibrated by a run.
+- **Precise P2P entries**: `scenario_precise_p2p` uses `kill_train__dp2_tp2` for sender faults and `kill_rollout__dp2_tp2` for receiver faults; both have explicit CI entries and reuse the shared soak runner.
+- **Receiver triggers**: an observation-only trainer hook precedes a fault through the selected backend's cell operation; worker hit evidence and the independent victim receipt are both required. Controller polling and network latency separate hook arrival from receiver failure.
+- **Receiver recovery**: single-target receiver scenarios enable only rollout FT. The all-target scenario also enables trainer FT because losing all of a sender's multiple targets retires that sender; fault injection still targets only rollout cells.
+- **All-target entry**: `scenario_precise_p2p_all_targets` waits for four ready engines and two trainers, selects one sender's actual assigned pair, and verifies that assignment again at its hook before dispatching concurrent receiver faults. Two engines remain available to the peer sender.
+- **All-target evidence**: every victim needs its own incarnation-bound receipt and recovery; the same `update_id` must report the selected sender's entire pair failed while a peer target publishes. The CI entry is registered but has not been run.
+- **Late receiver faults**: receipt-backed effects still require recovery even when transfer finishes before the fault. Each remote form must additionally achieve at least one failure in its exact triggered update; late misses cannot satisfy precise-hit coverage.
+- **Sender recovery after total failure**: the selected sender must be replaced and complete normal training alongside its original surviving peer.
 
 - **Scenario logic**: `conftest_ft/scenario_<name>.py` — a typer app plus a `run_ci(mode)` runner.
 
@@ -63,6 +70,7 @@
 | Mode | Nodes | GPUs (train + rollout) | DP cells | Parallelism | Rollout | Model | `ft_components` | Why it exists |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `kill_train__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | real weight-update tensor all-gather fault hooks |
+| `kill_rollout__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("rollout",)` | receiver faults triggered by trainer P2P hooks |
 | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 TP2 EP2 | debug data | 5-layer MoE | `("train",)` | TP + EP coverage |
 | `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 PP2 | debug data | 5-layer MoE | `("train",)` | PP coverage, via `--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2` |
 | `kill_train__dp4_cp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 4 | CP2 | debug data | 5-layer MoE | `("train",)` | multi-replica coverage (>= 4 cells) |

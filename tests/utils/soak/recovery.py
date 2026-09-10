@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.state import (
     Event,
     SoakActionAppliedEvent,
@@ -31,6 +32,7 @@ def compute_recovery_episodes(
     *,
     reconfigurations: list[CellReconfigureEvent] | None = None,
 ) -> list[RecoveryEpisode]:
+    events = expand_fault_batches(events)
     applied = _index_applied_actions(events)
     episodes: list[RecoveryEpisode] = []
     pending: dict[str, RecoveryEpisode] = {}

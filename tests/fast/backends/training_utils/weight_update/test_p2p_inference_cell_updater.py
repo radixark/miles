@@ -1,10 +1,15 @@
 import threading
 import time
 from concurrent.futures import wait
+from pathlib import Path
 
 import pytest
 
 from miles.backends.training_utils.weight_update.inference_cell_health import InferenceCellHealth
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.test_utils import fault_hooks
+from miles.utils.test_utils.fault_hooks import FaultHookRegistry, FaultHookRequest
 
 _REGISTRY = {"layer.0": (0x1000, 4, 2), "layer.1": (0x2000, 8, 2)}
 _NAMES = ["layer.0", "layer.1"]
@@ -62,6 +67,51 @@ def transfer_timeout() -> float:
 
 class TestTargetRouting:
     """One cell updater drives one inference cell across all of its engine ranks."""
+
+    def test_queued_write_reaches_its_fault_hook_before_native_transfer(
+        self, p2p_inference_cell_updater, p2p_transfer_utils, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The actual write thread dispatches the scoped hook before transferring any bytes."""
+        event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main"))
+        monkeypatch.setattr(fault_hooks, "get_event_logger", lambda: event_logger)
+        registry = FaultHookRegistry()
+        request = FaultHookRequest(
+            request_id="p2p-hit",
+            instance_id=registry.instance_id,
+            hook="trainer_before_weight_send",
+            mode="exit",
+        )
+        registry.arm(request)
+        engine = _RecordingTransferEngine()
+        updater = _cell_updater(
+            p2p_inference_cell_updater,
+            30.0,
+            engine,
+            cell_id="cell-hook",
+            targets={0: _remote_weight_info(p2p_transfer_utils, "session-hook", 0xA000)},
+        )
+        threads: list[int] = []
+
+        def terminate(**kwargs) -> None:
+            threads.append(threading.get_native_id())
+            assert engine.writes == []
+            raise RuntimeError("Injected write failure")
+
+        monkeypatch.setattr(fault_hooks, "inject_fault", terminate)
+        try:
+            with registry.weight_update_scope(weight_version=37, update_id="update-37"):
+                future = updater.submit_write(engine_rank=0, names=_NAMES, weight_memory_registry=_REGISTRY)
+            assert future is not None
+            with pytest.raises(RuntimeError, match="Injected write failure"):
+                future.result(timeout=30.0)
+            record = registry.read(request_id=request.request_id, instance_id=registry.instance_id)
+            assert record.weight_version == 37
+            assert record.update_id == "update-37"
+            assert record.status == "failed"
+            assert len(threads) == 1 and threads[0] != threading.get_native_id()
+            assert engine.writes == []
+        finally:
+            assert updater.dispose() is None
 
     def test_two_cells_at_the_same_engine_rank_write_to_their_own_sessions(
         self, p2p_inference_cell_updater, p2p_transfer_utils, transfer_timeout

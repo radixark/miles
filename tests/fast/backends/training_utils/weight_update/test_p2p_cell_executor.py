@@ -1,5 +1,6 @@
 import threading
 import time
+from contextvars import ContextVar
 
 import pytest
 
@@ -16,6 +17,28 @@ def _blocking_task(started: threading.Event, release: threading.Event):
 
 class TestPerCellIsolation:
     """A write thread belongs to one inference cell and can only ever hold up that cell."""
+
+    def test_each_write_uses_its_submission_context_without_leaking_to_the_next(self) -> None:
+        """Queued writes retain their weight-update context after the submitting thread leaves its scope."""
+        version = ContextVar("write_version", default=-1)
+        executor = _CellWriteExecutor("cell-context")
+        started, release = threading.Event(), threading.Event()
+        token = version.set(23)
+        try:
+            executor.submit(_blocking_task(started, release))
+            assert started.wait(timeout=30.0)
+            first = executor.submit(version.get)
+        finally:
+            version.reset(token)
+            release.set()
+
+        try:
+            second = executor.submit(version.get)
+            assert first.result(timeout=30.0) == 23
+            assert second.result(timeout=30.0) == -1
+            assert version.get() == -1
+        finally:
+            assert executor.close(timeout=30.0)
 
     def test_a_blocked_cell_does_not_hold_up_another_one(self) -> None:
         """A shared pool of four workers is exhausted by four stuck cells, which stalls every healthy one."""

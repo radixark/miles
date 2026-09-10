@@ -170,7 +170,7 @@ def _create_api_app(registry: _CellRegistry, *, receipt_url: str | None = None) 
             if (request := command.request) is not None:
                 request = request.model_copy(update={"receipt_url": receipt_url})
                 command = command.model_copy(update={"request": request})
-                if command.operation == "arm":
+                if command.operation == "arm" and request.action == "inject":
                     fault_receipts.register(
                         request_id=request.request_id,
                         target=body.target,

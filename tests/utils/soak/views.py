@@ -4,6 +4,7 @@ import dataclasses
 from datetime import datetime
 from typing import Literal
 
+from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.state import (
     Event,
     InjectionEvent,
@@ -22,6 +23,7 @@ STALE_STATUS_GRACE_SECONDS: float = 120.0
 
 
 def project_legacy_events(events: list[Event]) -> list[Event]:
+    events = expand_fault_batches(events)
     requests: dict[str, SoakActionRequest] = {}
     completed: set[str] = set()
     applied: set[str] = set()

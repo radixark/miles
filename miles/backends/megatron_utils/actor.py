@@ -888,6 +888,7 @@ class MegatronTrainRayActor(TrainRayActor):
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
         engine_cell_ids = info.engine_cell_ids
+        update_id = info.update_id
         del info
 
         if self.args.debug_train_only or self.args.debug_rollout_only:
@@ -930,7 +931,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            with self._fault_hooks.weight_update_scope(weight_version=weight_version):
+            with self._fault_hooks.weight_update_scope(
+                weight_version=weight_version,
+                update_id=update_id,
+                target_incarnations=snapshot_cell_id_to_hashes,
+            ):
                 report = self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
             report.validate_assignment(engine_cell_ids)

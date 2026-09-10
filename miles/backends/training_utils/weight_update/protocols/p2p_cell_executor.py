@@ -3,6 +3,7 @@ import queue
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
+from contextvars import copy_context
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class _CellWriteExecutor:
             self._thread.start()
 
         future: Future = Future()
-        self._queue.put((future, fn, args))
+        self._queue.put((future, copy_context().run, (fn, *args)))
         return future
 
     def close(self, timeout: float = _SHUTDOWN_GRACE_SECONDS) -> bool:

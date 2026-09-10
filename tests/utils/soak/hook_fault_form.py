@@ -1,7 +1,10 @@
+import asyncio
 import logging
 import random
 
 import httpx
+from tests.utils.soak.action import SoakActionError, SoakActionForm
+from tests.utils.soak.batch import validate_fault_batch
 from tests.utils.soak.fault_forms import InjectFaultForm
 from tests.utils.soak.state import SoakActionRequest
 
@@ -20,8 +23,14 @@ class HookFaultForm(InjectFaultForm):
         hook: FaultHookName,
         delay_ms: float = 0.0,
         lifetime_seconds: float = 60.0,
+        victim_form: SoakActionForm | None = None,
+        all_targets: bool = False,
     ) -> None:
         super().__init__(base_url=base_url, failure_mode=failure_mode)
+        self._victim_form = victim_form
+        if all_targets and victim_form is None:
+            raise ValueError("All-target hooks require a remote victim form")
+        self.all_targets = all_targets
         self._template = FaultHookRequest(
             request_id="template",
             instance_id="template",
@@ -29,20 +38,37 @@ class HookFaultForm(InjectFaultForm):
             mode=failure_mode.value,
             delay_ms=delay_ms,
             lifetime_seconds=lifetime_seconds,
+            action="inject" if victim_form is None else "observe",
         )
 
     @property
+    def victim_form(self) -> SoakActionForm | None:
+        return self._victim_form
+
+    @property
     def name(self) -> str:
+        if self._victim_form is not None:
+            suffix = ":all" if self.all_targets else ""
+            return f"remote_hook:{self._template.hook}:{self._victim_form.name}:{self._template.delay_ms:g}ms{suffix}"
         return f"hook:{self._template.hook}:{self._failure_mode.value}:{self._template.delay_ms:g}ms"
 
     async def execute(self, request: SoakActionRequest) -> dict:
         assert request.form_name == self.name
         assert isinstance(request.target, dict)
-        assert request.fault_target is not None
-        assert request.fault_target.cell_id == request.target["metadata"]["name"]
-        assert request.fault_target.workers_hash == request.target["status"]["workers_hash"]
-        endpoint = f"{self._base_url}/api/v1/cells/{request.fault_target.cell_id}/fault-hook"
-        target = request.fault_target.model_dump(mode="json")
+        if self.all_targets:
+            validate_fault_batch(request)
+            assert request.additional_requests, "All-target hooks require multiple victims"
+        else:
+            assert not request.additional_requests, "This hook does not accept a fault batch"
+        trigger = request.fault_target if self._victim_form is None else request.hook_trigger
+        assert trigger is not None, "Hook requires an observed trigger process"
+        if self._victim_form is None:
+            assert trigger.cell_id == request.target["metadata"]["name"]
+            assert trigger.workers_hash == request.target["status"]["workers_hash"]
+        else:
+            assert trigger.cell_id != request.target["metadata"]["name"], "Remote hook must target another cell"
+        endpoint = f"{self._base_url}/api/v1/cells/{trigger.cell_id}/fault-hook"
+        target = trigger.model_dump(mode="json")
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(
@@ -53,7 +79,10 @@ class HookFaultForm(InjectFaultForm):
             if not isinstance(instance_id, str) or not instance_id:
                 raise ValueError("Fault hook inspection did not return a process incarnation")
             hook_request = self._template.model_copy(
-                update={"request_id": request.request_id, "instance_id": instance_id}
+                update={
+                    "request_id": request.request_id if self._victim_form is None else f"{request.request_id}:trigger",
+                    "instance_id": instance_id,
+                }
             )
 
             try:
@@ -75,6 +104,24 @@ class HookFaultForm(InjectFaultForm):
                 except httpx.TransportError:
                     logger.warning("Fault hook arm outcome is unknown: %s", request.request_id, exc_info=True)
 
+                if self._victim_form is not None:
+                    hit = await self._wait_for_hit(
+                        client=client, endpoint=endpoint, target=target, request=hook_request
+                    )
+                    if self.all_targets:
+                        expected = {
+                            child.target["metadata"]["name"]: child.target["status"]["workers_hash"]
+                            for child in [request, *request.additional_requests]
+                        }
+                        assert hit.target_incarnations == expected, "Sender assignment changed before batch injection"
+                    receipt = await self._execute_victims(request)
+                    return {
+                        **receipt,
+                        "hook_request": hook_request.model_dump(mode="json"),
+                        "hook_hit": hit.model_dump(mode="json"),
+                        "hook_trigger": target,
+                        "victim_form": self._victim_form.name,
+                    }
                 receipt = await self._read_receipt(
                     client=client, request=request, timeout_seconds=hook_request.lifetime_seconds + 30.0
                 )
@@ -100,3 +147,90 @@ class HookFaultForm(InjectFaultForm):
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         raise NotImplementedError("Hook injection requires an observed asynchronous request")
+
+    async def _execute_victims(self, request: SoakActionRequest) -> dict:
+        assert self._victim_form is not None
+        assert request.hook_trigger is not None
+        requests = [request, *request.additional_requests]
+        assert all(child.form_name == self._victim_form.name for child in request.additional_requests)
+        assert all(child.target["metadata"]["name"] != request.hook_trigger.cell_id for child in requests)
+        outcomes = await asyncio.gather(
+            *[
+                self._victim_form.execute(
+                    child.model_copy(update={"form_name": self._victim_form.name, "additional_requests": []})
+                )
+                for child in requests
+            ],
+            return_exceptions=True,
+        )
+        if request.additional_requests and any(
+            outcome is None or isinstance(outcome, BaseException) for outcome in outcomes
+        ):
+            failures = [
+                child.request_id
+                for child, outcome in zip(requests, outcomes, strict=True)
+                if outcome is None or isinstance(outcome, BaseException)
+            ]
+            raise SoakActionError(
+                f"Remote hook victims failed: {failures}",
+                evidence={
+                    "victim_outcomes": {
+                        child.request_id: (
+                            {"error": repr(outcome)}
+                            if isinstance(outcome, BaseException)
+                            else {"error": "No effect receipt"} if outcome is None else {"receipt": outcome}
+                        )
+                        for child, outcome in zip(requests, outcomes, strict=True)
+                    }
+                },
+            )
+        for child, outcome in zip(requests, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if outcome is None:
+                raise RuntimeError(f"Remote hook victim supplied no effect evidence: {child.request_id}")
+        receipt = outcomes[0]
+        if request.additional_requests:
+            receipt = {
+                **receipt,
+                "batch_receipts": {
+                    child.request_id: outcome
+                    for child, outcome in zip(request.additional_requests, outcomes[1:], strict=True)
+                },
+            }
+        return receipt
+
+    async def _wait_for_hit(
+        self, *, client: httpx.AsyncClient, endpoint: str, target: dict, request: FaultHookRequest
+    ) -> FaultHookRecord:
+        async with asyncio.timeout(request.lifetime_seconds + 15.0):
+            while True:
+                try:
+                    response = await client.post(
+                        endpoint,
+                        json={
+                            "target": target,
+                            "command": FaultHookCommand(operation="read", request=request).model_dump(mode="json"),
+                        },
+                    )
+                    if response.status_code != 404 and response.status_code < 500:
+                        response.raise_for_status()
+                        record = FaultHookRecord.model_validate(response.json())
+                        if record.request.model_copy(update={"receipt_url": None}) != request:
+                            raise ValueError("Remote fault trigger belongs to another hook request")
+                        if record.status == "fired":
+                            if (
+                                not record.update_id
+                                or record.weight_version is None
+                                or record.reached_at is None
+                                or record.due_at is None
+                            ):
+                                raise ValueError("Remote fault trigger lacks weight-update timing evidence")
+                            if not record.due_at <= record.changed_at < record.armed_at + request.lifetime_seconds:
+                                raise ValueError("Remote fault trigger fired outside its valid timing window")
+                            return record
+                        if record.status in {"cancelled", "expired", "failed"}:
+                            raise RuntimeError(f"Remote fault trigger cannot fire: {record.status}")
+                except httpx.TransportError:
+                    logger.warning("Remote fault trigger read failed: %s", request.request_id, exc_info=True)
+                await asyncio.sleep(0.05)

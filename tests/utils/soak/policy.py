@@ -1,3 +1,4 @@
+from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.config import SoakCellPolicy
 from tests.utils.soak.state import (
     Event,
@@ -26,6 +27,7 @@ def pending_actions(events: list[Event]) -> list[SoakActionRequest]:
 
 
 def eligible_cells(*, cells: list[dict], events: list[Event], policy: SoakCellPolicy, harms_cell: bool) -> list[dict]:
+    events = expand_fault_batches(events)
     reserved = {
         _identity(event.request.target)
         for event in events

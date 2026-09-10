@@ -7,9 +7,17 @@ import typer
 from pydantic import Field, TypeAdapter
 from tests.utils.soak.action import run_command
 
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, MetricEvent, TrainGroupStepEndEvent
+from miles.utils.audit_utils.event_logger.models import (
+    CellReconfigureEvent,
+    MetricEvent,
+    TrainGroupStepEndEvent,
+    WeightUpdateAssignmentEvent,
+)
 
-TrainingEvent = Annotated[CellReconfigureEvent | TrainGroupStepEndEvent | MetricEvent, Field(discriminator="type")]
+TrainingEvent = Annotated[
+    CellReconfigureEvent | TrainGroupStepEndEvent | MetricEvent | WeightUpdateAssignmentEvent,
+    Field(discriminator="type"),
+]
 _adapter = TypeAdapter(list[TrainingEvent])
 app = typer.Typer()
 
@@ -40,7 +48,7 @@ def _read_events(directory: Path) -> list[TrainingEvent]:
                 if not line.strip():
                     continue
                 payload = json.loads(line)
-                if payload["type"] in {"cell_reconfigure", "train_group_step_end"}:
+                if payload["type"] in {"cell_reconfigure", "train_group_step_end", "weight_update_assignment"}:
                     events.append(payload)
                 elif payload["type"] == "metric" and any(key.startswith("eval/") for key in payload["metrics"]):
                     events.append(payload)

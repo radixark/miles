@@ -444,6 +444,7 @@ class UpdatableEngines:
     engine_gpu_offsets: list[int]
     engine_cell_ids: list[str]
     snapshot_cell_id_to_hashes: dict[str, str]
+    update_id: str | None = None
 
     def __post_init__(self) -> None:
         lengths = {

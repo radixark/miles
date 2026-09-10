@@ -26,4 +26,5 @@ def _slice_update_targets(info: UpdatableEngines, *, start: int, stop: int) -> U
         engine_gpu_offsets=list(info.engine_gpu_offsets[start:stop]),
         engine_cell_ids=cell_ids,
         snapshot_cell_id_to_hashes={cell_id: info.snapshot_cell_id_to_hashes[cell_id] for cell_id in cell_ids},
+        update_id=info.update_id,
     )

@@ -2,8 +2,10 @@ import asyncio
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.weight_update.protocol import supports_partial_target_weight_update
@@ -27,6 +29,8 @@ from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_eve
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     TrainGroupStepEndEvent,
+    WeightUpdateAssignmentEvent,
+    WeightUpdateResultEvent,
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
@@ -406,6 +410,7 @@ class TrainerController:
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         previous_version = self._last_published_weight_version
         candidate_version = previous_version + 1
+        info = replace(info, update_id=uuid4().hex)
 
         if supports_partial_target_weight_update(self.args):
             report = await self._update_weights_on_every_alive_cell(info, weight_version=candidate_version)
@@ -413,6 +418,19 @@ class TrainerController:
             report = await self._update_weights_on_first_alive_cell(info, weight_version=candidate_version)
         report.validate_assignment(info.engine_cell_ids)
         report = discard_version_nothing_serves(report)
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                WeightUpdateResultEvent,
+                dict(
+                    update_id=info.update_id,
+                    rollout_id=rollout_id,
+                    candidate_version=candidate_version,
+                    published_version=report.weight_version,
+                    target_incarnations=info.snapshot_cell_id_to_hashes,
+                    updated_cell_ids=list(report.updated_cell_ids),
+                    failed_cell_ids=list(report.failed_cell_ids),
+                ),
+            )
 
         published_version = report.weight_version
         if published_version is None:
@@ -445,6 +463,19 @@ class TrainerController:
         assignments = self._assign_update_targets(info)
         if not assignments:
             return build_untouched_targets_report(info.engine_cell_ids)
+
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                WeightUpdateAssignmentEvent,
+                dict(
+                    update_id=info.update_id,
+                    candidate_version=weight_version,
+                    trainer_incarnations={cell.cell_id: cell.workers_hash for cell, _ in assignments},
+                    targets_by_trainer={
+                        cell.cell_id: assignment.snapshot_cell_id_to_hashes for cell, assignment in assignments
+                    },
+                ),
+            )
 
         outcomes = await asyncio.gather(
             *[

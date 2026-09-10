@@ -10,6 +10,38 @@ from miles.utils.test_utils.fault_hooks import FaultHookRegistry, FaultHookReque
 
 
 class TestFaultHookRegistry:
+    def test_observation_hook_records_arrival_without_injecting_a_local_fault(
+        self, fault_hook_registry: FaultHookRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A remote-fault trigger records its trainer arrival without harming that trainer."""
+        registry = fault_hook_registry
+        request = FaultHookRequest(
+            request_id="remote-trigger",
+            instance_id=registry.instance_id,
+            hook="trainer_before_weight_send",
+            mode="sigkill",
+            action="observe",
+        )
+        injections: list[dict] = []
+        monkeypatch.setattr(fault_hooks, "inject_fault", lambda **kwargs: injections.append(kwargs))
+        registry.arm(request)
+        targets = {"engine-0": "generation-1", "engine-1": "generation-2"}
+        with registry.weight_update_scope(weight_version=41, update_id="update-41", target_incarnations=targets):
+            fault_hooks.reach_fault_hook(request.hook)
+        targets["engine-0"] = "replaced-after-dispatch"
+        registry.reach(hook=request.hook, weight_version=42, target_incarnations=targets)
+
+        record = registry.read(request_id=request.request_id, instance_id=registry.instance_id)
+        assert record.status == "fired"
+        assert record.weight_version == 41
+        assert record.target_incarnations == {"engine-0": "generation-1", "engine-1": "generation-2"}
+        assert registry.cancel(request) == record
+        assert injections == []
+        events = [event for event in read_events(tmp_path) if isinstance(event, FaultHookEvent)]
+        assert [event.status for event in events] == ["armed", "fired"]
+        assert all(event.action == "observe" for event in events)
+        assert events[-1].target_incarnations == record.target_incarnations
+
     def test_weight_update_scope_records_version_and_unwinds_after_failure(
         self, fault_hook_registry: FaultHookRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -24,15 +56,17 @@ class TestFaultHookRegistry:
         fault_hooks.reach_fault_hook(request.hook)
         assert registry.read(request_id=request.request_id, instance_id=registry.instance_id).status == "armed"
         with pytest.raises(RuntimeError, match="unexpectedly returned"):
-            with registry.weight_update_scope(weight_version=23):
+            with registry.weight_update_scope(weight_version=23, update_id="update-23"):
                 fault_hooks.reach_fault_hook(request.hook)
 
         record = registry.read(request_id=request.request_id, instance_id=registry.instance_id)
         assert record.weight_version == 23
+        assert record.update_id == "update-23"
         assert record.rollout_id is None
         assert record.attempt is None
         events = [event for event in read_events(tmp_path) if isinstance(event, FaultHookEvent)]
         assert events[-1].weight_version == 23
+        assert events[-1].update_id == "update-23"
 
         next_request = request.model_copy(update={"request_id": "next"})
         registry.arm(next_request)

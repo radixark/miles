@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,8 +18,12 @@ from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
-from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.event_logger.models import (
+    CellReconfigureEvent,
+    WeightUpdateAssignmentEvent,
+    WeightUpdateResultEvent,
+)
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.data import RolloutDataPack
 from miles.utils.object_store import _MooncakeStoreObjectRef
@@ -1224,8 +1229,15 @@ def _rank_report(weight_version: int | None, *, updated: tuple[str, ...] = ("cel
     return WeightUpdateReport(weight_version=weight_version, updated_cell_ids=updated, failed_cell_ids=failed)
 
 
-def _assigned_info(*cell_ids: str) -> MagicMock:
-    return MagicMock(engine_cell_ids=list(cell_ids or ("cell-0",)))
+def _assigned_info(*cell_ids: str) -> UpdatableEngines:
+    ids = list(cell_ids or ("cell-0",))
+    return UpdatableEngines(
+        rollout_engines=[f"client-{cell_id}" for cell_id in ids],
+        engine_cell_ids=ids,
+        engine_gpu_counts=[1] * len(ids),
+        engine_gpu_offsets=list(range(len(ids))),
+        snapshot_cell_id_to_hashes={cell_id: f"hash-{cell_id}" for cell_id in ids},
+    )
 
 
 class TestUpdateWeightsReturnsTheVersion:
@@ -1263,8 +1275,11 @@ class TestUpdateWeightsReturnsTheVersion:
 
         await group.update_weights(info=info)
 
+        sent = group._execute_first_alive.await_args.kwargs["info"]
+        assert sent.update_id
+        assert replace(sent, update_id=None) == info
         group._execute_first_alive.assert_awaited_once_with(
-            "update_weights", timeout=1800.0, info=info, weight_version=1
+            "update_weights", timeout=1800.0, info=sent, weight_version=1
         )
 
     async def test_ranks_that_disagree_on_the_outcome_are_rejected(self):
@@ -1309,6 +1324,7 @@ class _FakeTrainerCell:
     def __init__(self, cell_index: int, *, outcome=None) -> None:
         self.cell_index = cell_index
         self.cell_id = f"cell-{cell_index}"
+        self.workers_hash = f"trainer-generation-{cell_index}"
         self.is_alive = True
         self.calls: list[dict] = []
         self.retired_reasons: list[str] = []
@@ -1525,6 +1541,46 @@ class TestUpdateWeightsUsesEveryAliveCell:
         report = await controller.update_weights(info=_p2p_info(2))
 
         assert sorted(report.failed_cell_ids) == ["engine-0", "engine-1"]
+
+    async def test_all_target_failure_reuses_version_but_not_update_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repeated all-target failures retain distinct evidence even when no version is published."""
+        cells = [
+            _FakeTrainerCell(0, outcome=[_rank_report(1, updated=(), failed=("engine-0",))]),
+            _FakeTrainerCell(1, outcome=[_rank_report(1, updated=(), failed=("engine-1",))]),
+        ]
+        controller = _make_fanout_controller(cells)
+        event_logger = EventLogger(log_dir=tmp_path, source=TrainerControllerProcessIdentity(trainer_id="trainer-0"))
+        monkeypatch.setattr(group_module, "is_event_logger_initialized", lambda: True)
+        monkeypatch.setattr(group_module, "get_event_logger", lambda: event_logger)
+        info = _p2p_info(2)
+
+        for rollout_id in [3, 4]:
+            report = await controller.update_weights(info=info, rollout_id=rollout_id)
+            assert report.weight_version is None
+        results = [event for event in read_events(tmp_path) if isinstance(event, WeightUpdateResultEvent)]
+        assignments = [event for event in read_events(tmp_path) if isinstance(event, WeightUpdateAssignmentEvent)]
+
+        assert len(results) == 2
+        assert len(assignments) == 2
+        assert results[0].update_id != results[1].update_id
+        assert info.update_id is None
+        for index, result in enumerate(results):
+            assignment = assignments[index]
+            assert assignment.update_id == result.update_id
+            assert assignment.candidate_version == result.candidate_version
+            assert assignment.trainer_incarnations == {cell.cell_id: cell.workers_hash for cell in cells}
+            assert assignment.targets_by_trainer == {
+                cell.cell_id: cell.calls[index]["info"].snapshot_cell_id_to_hashes for cell in cells
+            }
+            assert result.update_id
+            assert result.candidate_version == 1 and result.published_version is None
+            assert result.rollout_id == index + 3
+            assert result.target_incarnations == info.snapshot_cell_id_to_hashes
+            assert result.updated_cell_ids == []
+            assert set(result.failed_cell_ids) == set(info.engine_cell_ids)
+            assert all(cell.calls[index]["info"].update_id == result.update_id for cell in cells)
 
     async def test_the_ordinal_is_reserved_once_for_the_whole_fan_out(self):
         """Two trainers reserving their own ordinal would put the fleet on two different versions."""
@@ -1766,9 +1822,7 @@ class TestExportHf:
 class TestUpdateWeightsReachesTheWorker:
     async def test_the_engine_snapshot_reaches_the_worker_and_its_version_comes_back(self):
         """A worker that never sees the snapshot broadcasts to engines that were not part of the update window."""
-        info = SimpleNamespace(
-            snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"}, engine_cell_ids=["cell-0"]
-        )
+        info = replace(_assigned_info(), snapshot_cell_id_to_hashes={"cell-0": "workers-hash-9"})
         group = await _make_alive_controller(num_cells=1)
         for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_update_weights_return_value.remote(_rank_report(1)))
@@ -1777,12 +1831,13 @@ class TestUpdateWeightsReachesTheWorker:
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
-            assert update_call[2]["info"].snapshot_cell_id_to_hashes == {"trainer-actor-0": "workers-hash-9"}
+            assert update_call[2]["info"].snapshot_cell_id_to_hashes == {"cell-0": "workers-hash-9"}
+            assert update_call[2]["info"].update_id
             assert update_call[2]["weight_version"] == 1
 
     async def test_reloading_the_trainer_state_does_not_rewind_the_published_version(self):
         """A hot restart reloads the cells while the controller survives, and restarting at version 1 would republish an old ordinal."""
-        info = SimpleNamespace(snapshot_cell_id_to_hashes={}, engine_cell_ids=["cell-0"])
+        info = _assigned_info()
         group = await _make_alive_controller(num_cells=1)
         handles = get_raw_actor_handles(_cell(group, 0))
         for handle in handles:

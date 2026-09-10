@@ -11,6 +11,7 @@ from typing import Any
 from tests.utils.soak.config import SoakPolicy, SoakTailPolicy, SoakTimeouts
 from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler, list_cells, run_fault_injection_loop
 from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
+from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.state import EventLog, SoakRunContextEvent
@@ -55,6 +56,24 @@ class FaultInjectorHandle:
         self._base_url = base_url
         self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
         self._get_virtual_cells: Callable[[], list[dict]] | None = get_virtual_cells
+        target_forms = {
+            kind: [
+                form.victim_form if isinstance(form, HookFaultForm) and form.victim_form is not None else form
+                for form in cell_fault_forms[kind]
+            ]
+            for kind in self._cell_types
+        }
+        fault_target_types = {
+            kind
+            for kind, forms in target_forms.items()
+            if any(form.name.startswith(("inject_fault:", "hook:")) for form in forms)
+        }
+        if any(
+            isinstance(form, HookFaultForm) and form.victim_form is not None
+            for kind in self._cell_types
+            for form in cell_fault_forms[kind]
+        ):
+            fault_target_types.add("actor")
         self._runner = (
             SoakRunner(
                 observer=(
@@ -62,18 +81,14 @@ class FaultInjectorHandle:
                     if observer is not None
                     else SoakObserver(
                         base_url=base_url,
-                        cell_types=self._cell_types,
+                        cell_types=self._cell_types | fault_target_types,
                         namespace=namespace,
                         release=release,
-                        fault_target_cell_types=frozenset(
-                            kind
-                            for kind in self._cell_types
-                            if any(form.name.startswith("inject_fault:") for form in cell_fault_forms[kind])
-                        ),
+                        fault_target_cell_types=frozenset(fault_target_types),
                         process_patterns_of_type={
                             kind: {
                                 container: pattern
-                                for form in cell_fault_forms[kind]
+                                for form in target_forms[kind]
                                 if isinstance(form, ExecSigkillFaultForm)
                                 for container, pattern in form.process_patterns.items()
                             }
