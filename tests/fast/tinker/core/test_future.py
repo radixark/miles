@@ -35,3 +35,17 @@ def test_an_expired_future_returns_none(monkeypatch):
 
     monkeypatch.setattr(future_module, "_FINISHED_TTL_S", -1.0)
     assert store.get(future.request_id, "tenant") is None, "finished past TTL must read as unknown (410)"
+
+
+def test_terminal_states_do_not_flip():
+    store = FutureStore()
+    failed = store.create("model", "tenant")
+    store.fail(failed.request_id, "lease expired", "user")
+    store.resolve(failed.request_id, {"op": "forward_backward"})
+    fetched = store.get(failed.request_id, "tenant")
+    assert (fetched.state, fetched.result) == (FAILED, None), "a unit that raced with lease expiry must not revive it"
+
+    done = store.create("model", "tenant")
+    store.resolve(done.request_id, {"op": "optim_step"})
+    store.fail(done.request_id, "late failure", "server")
+    assert store.get(done.request_id, "tenant").state == DONE
