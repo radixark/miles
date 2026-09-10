@@ -50,7 +50,11 @@ def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None])
             if old_dir.exists():
                 shutil.rmtree(old_dir)
             os.replace(final_dir, old_dir)
-            os.replace(tmp_dir, final_dir)
+            try:
+                os.replace(tmp_dir, final_dir)
+            except OSError:
+                os.replace(old_dir, final_dir)
+                raise
             shutil.rmtree(old_dir)
         else:
             os.replace(tmp_dir, final_dir)
