@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from contextlib import suppress
 
 import uvicorn
 
@@ -64,7 +65,14 @@ async def serve(args):
         uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
     )
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
-    await asyncio.gather(service.run(), server.serve())
+    service_task = asyncio.create_task(service.run())
+    try:
+        await server.serve()
+    finally:
+        # service.run() loops forever; cancel it so the gateway can exit
+        service_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await service_task
 
 
 if __name__ == "__main__":
