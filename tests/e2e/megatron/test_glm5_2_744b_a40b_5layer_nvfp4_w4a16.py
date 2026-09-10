@@ -10,6 +10,7 @@ register_cuda_ci(
     est_time=3600,
     suite="stage-c-8-gpu-b200",
     labels=["model-scripts"],
+    hardware=["blackwell"],
 )
 
 MODEL_ORG = "Pinaster"
