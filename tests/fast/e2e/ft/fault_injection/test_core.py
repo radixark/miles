@@ -1,7 +1,9 @@
 import random
 import threading
 from collections.abc import Callable
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tests.e2e.ft.conftest_ft.fault_injection import core, fault_forms, state, views
 from tests.fast.e2e.ft.fault_injection.utils import (
@@ -21,7 +23,6 @@ def _run_injection_loop(
     fake_get,
     fake_post=None,
     cell_types: tuple[str, ...] = ("actor", "rollout"),
-    quiescent_polls_required: int = 1,
     event_log: state.EventLog | None = None,
     cell_fault_forms: fault_forms.CellFaultForms | None = None,
     get_virtual_cells: Callable[[], list[dict]] | None = None,
@@ -42,59 +43,7 @@ def _run_injection_loop(
             get_virtual_cells=get_virtual_cells,
             injection_enabled=injection_enabled,
             poll_interval_seconds=1e-6,
-            quiescent_polls_required=quiescent_polls_required,
         )
-
-
-def test_no_injection_before_the_quiescence_streak_is_long_enough() -> None:
-    """The first reads after a disturbance can all be stale, so a short all-serving streak buys no kill."""
-    injected: list[str] = []
-    stop_event = threading.Event()
-    polls = {"n": 0}
-
-    def fake_get(url: str, timeout: float) -> MagicMock:
-        polls["n"] += 1
-        if polls["n"] >= 4:
-            stop_event.set()
-        return mock_response({"items": [cell("actor-0", healthy=True), cell("actor-1", healthy=True)]})
-
-    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
-        injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
-        return mock_response({})
-
-    _run_injection_loop(fake_get=fake_get, fake_post=fake_post, quiescent_polls_required=10, stop_event=stop_event)
-
-    assert injected == []
-
-
-def test_successive_injections_are_spaced_by_the_quiescence_gate() -> None:
-    """An injection resets the streak, so the next kill of that kind waits out the gate again."""
-    injection_polls: list[int] = []
-    stop_event = threading.Event()
-    required = 3
-    polls = {"n": 0}
-
-    def fake_get(url: str, timeout: float) -> MagicMock:
-        polls["n"] += 1
-        if polls["n"] >= 14:
-            stop_event.set()
-        return mock_response({"items": [cell("actor-0", healthy=True), cell("actor-1", healthy=True)]})
-
-    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
-        injection_polls.append(polls["n"])
-        return mock_response({})
-
-    _run_injection_loop(
-        fake_get=fake_get,
-        fake_post=fake_post,
-        cell_types=("actor",),
-        quiescent_polls_required=required,
-        stop_event=stop_event,
-    )
-
-    assert len(injection_polls) >= 2, injection_polls
-    gaps = [after - before for before, after in zip(injection_polls, injection_polls[1:], strict=False)]
-    assert all(gap >= required for gap in gaps), injection_polls
 
 
 def test_virtual_cells_use_the_regular_targeted_injection_path() -> None:
@@ -153,68 +102,6 @@ def test_disabled_injection_still_observes_cells_without_injecting() -> None:
 
     assert injected == []
     assert event_log.events
-
-
-def test_a_kind_with_a_dead_replica_is_not_quiescent() -> None:
-    """A kill must be followed by an observed full recovery streak before that kind is due again."""
-    injection_polls: list[int] = []
-    stop_event = threading.Event()
-    down = {"name": None, "polls_left": 0}
-    polls = {"n": 0}
-
-    def fake_get(url: str, timeout: float) -> MagicMock:
-        polls["n"] += 1
-        if len(injection_polls) >= 2 or polls["n"] >= 100:
-            stop_event.set()
-        items = [cell(n, healthy=not (down["name"] == n and down["polls_left"] > 0)) for n in ("actor-0", "actor-1")]
-        if down["polls_left"] > 0:
-            down["polls_left"] -= 1
-        return mock_response({"items": items})
-
-    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
-        injection_polls.append(polls["n"])
-        down["name"], down["polls_left"] = url.rsplit("/cells/", 1)[1].split("/")[0], 3
-        return mock_response({})
-
-    _run_injection_loop(
-        fake_get=fake_get,
-        fake_post=fake_post,
-        cell_types=("actor",),
-        quiescent_polls_required=2,
-        stop_event=stop_event,
-    )
-
-    assert len(injection_polls) >= 2, injection_polls
-    assert injection_polls[1] - injection_polls[0] >= 3 + 2, injection_polls
-
-
-def test_a_vanished_replica_blocks_its_kind_even_when_the_survivors_serve() -> None:
-    """A killed pod can disappear from the listing entirely, which must read as still recovering."""
-    injected: list[str] = []
-    stop_event = threading.Event()
-    polls = {"n": 0}
-    all_names = ("actor-0", "actor-1", "actor-2")
-
-    def fake_get(url: str, timeout: float) -> MagicMock:
-        polls["n"] += 1
-        if polls["n"] >= 20:
-            stop_event.set()
-        names = [n for n in all_names if n not in injected] if injected else list(all_names)
-        return mock_response({"items": [cell(n, healthy=True) for n in names]})
-
-    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
-        injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
-        return mock_response({})
-
-    _run_injection_loop(
-        fake_get=fake_get,
-        fake_post=fake_post,
-        cell_types=("actor",),
-        quiescent_polls_required=2,
-        stop_event=stop_event,
-    )
-
-    assert len(injected) == 1, injected
 
 
 def _run_typed_injection_loop(cells: list[dict], *, cell_types: tuple[str, ...], num_polls: int = 8) -> list[str]:
@@ -379,37 +266,6 @@ class TestFaultInjectionLoopErrorHandling:
         assert views.compute_num_injections(log.events, cell_type="rollout") == 1
 
 
-def test_a_failed_injection_forfeits_the_quiescence_streak() -> None:
-    """A lost response does not prove a lost kill, so the next attempt must wait out the gate again."""
-    attempt_polls: list[int] = []
-    stop_event = threading.Event()
-    required = 3
-    polls = {"n": 0}
-
-    def fake_get(url: str, timeout: float) -> MagicMock:
-        polls["n"] += 1
-        if polls["n"] >= 14:
-            stop_event.set()
-        return mock_response({"items": [cell("actor-0", healthy=True), cell("actor-1", healthy=True)]})
-
-    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
-        attempt_polls.append(polls["n"])
-        if len(attempt_polls) == 1:
-            raise RuntimeError("response lost after the kill may have landed")
-        return mock_response({})
-
-    _run_injection_loop(
-        fake_get=fake_get,
-        fake_post=fake_post,
-        cell_types=("actor",),
-        quiescent_polls_required=required,
-        stop_event=stop_event,
-    )
-
-    assert len(attempt_polls) >= 2, attempt_polls
-    assert attempt_polls[1] - attempt_polls[0] >= required, attempt_polls
-
-
 class TestMixedInjectionSelection:
     def test_mixed_run_injects_rollout_when_only_rollout_has_a_spare(self) -> None:
         """The mirror of the trainer case: mixed selection must not be hard-coded to actor cells."""
@@ -455,7 +311,6 @@ def test_the_loop_injects_through_the_forms_of_the_cell_it_picked() -> None:
                 ]
             ),
             poll_interval_seconds=1e-6,
-            quiescent_polls_required=1,
         )
 
         assert drawn, drawn
@@ -488,7 +343,6 @@ def test_the_loop_draws_a_form_that_has_never_worked_before_repeating_a_proven_o
                 [StubFaultForm(name, lambda cell, rng, n=name: drawn.append(n)) for name in ("a", "b", "c")]
             ),
             poll_interval_seconds=1e-6,
-            quiescent_polls_required=1,
         )
 
     assert set(drawn[:3]) == {"a", "b", "c"}, drawn
@@ -518,7 +372,6 @@ def test_a_form_that_always_refuses_keeps_being_drawn_so_the_soak_can_see_it() -
                 [StubFaultForm("works", _do_nothing), StubFaultForm("broken", _always_refuse)]
             ),
             poll_interval_seconds=1e-6,
-            quiescent_polls_required=1,
         )
 
     assert views.compute_forms_drawn_without_success(log.events) == [("actor", "broken")]
@@ -532,28 +385,55 @@ def _do_nothing(cell: dict, rng: random.Random) -> None:
     return None
 
 
-class TestRolloutQuiescence:
-    def test_an_engine_that_is_not_in_the_router_blocks_its_kind(self) -> None:
-        """A relaunched engine reads Healthy long before it can answer, so its kind is still recovering."""
-        injected = _run_typed_injection_loop(
-            [
-                typed_cell("rollout-engine-0", "rollout"),
-                typed_cell("rollout-engine-1", "rollout", serving=False),
-            ],
-            cell_types=("rollout",),
+@pytest.mark.parametrize("healthy,serving", [(True, True), (False, True), (True, False), (None, False)])
+def test_injection_does_not_wait_for_health_or_serving(healthy: bool | None, serving: bool) -> None:
+    """Weight updates and recovery do not postpone a due fault."""
+    cells = [typed_cell(f"rollout-engine-{i}", "rollout", serving=serving) for i in range(2)]
+    for item in cells:
+        for condition in item["status"]["conditions"]:
+            if condition["type"] == "Healthy":
+                condition["status"] = "Unknown" if healthy is None else str(healthy)
+
+    injected = _run_typed_injection_loop(cells, cell_types=("rollout",))
+
+    assert injected
+
+
+def test_an_unrecovered_cell_does_not_block_another_fault() -> None:
+    """A second fault may overlap the recovery of the first."""
+    injected = _run_typed_injection_loop(
+        [typed_cell(f"actor-{i}", "actor", healthy=False) for i in range(3)],
+        cell_types=("actor",),
+    )
+
+    assert len(injected) >= 2
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_each_attempt_draws_a_new_deadline(fails: bool) -> None:
+    """A failed response does not leave an overdue fault retrying every poll."""
+    stop_event = threading.Event()
+    attempts: list[str] = []
+    polls = 0
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        nonlocal polls
+        polls += 1
+        if polls == 5:
+            stop_event.set()
+        return mock_response({"items": [typed_cell(f"actor-{i}", "actor") for i in range(2)]})
+
+    def inject(target: dict, rng: random.Random) -> None:
+        attempts.append(target["metadata"]["name"])
+        if fails:
+            raise RuntimeError("response lost")
+
+    with patch.object(core, "_compute_next_injection_time", side_effect=[0.0, float("inf")]):
+        _run_injection_loop(
+            fake_get=fake_get,
+            cell_types=("actor",),
+            cell_fault_forms={"actor": [StubFaultForm("fault", inject)]},
+            stop_event=stop_event,
         )
 
-        assert injected == []
-
-    def test_two_serving_engines_still_leave_one_of_them_injectable(self) -> None:
-        """The quiescence rule must not block the case it was never meant to block."""
-        injected = _run_typed_injection_loop(
-            [typed_cell("rollout-engine-0", "rollout"), typed_cell("rollout-engine-1", "rollout")],
-            cell_types=("rollout",),
-        )
-
-        assert injected
-
-    def test_a_trainer_cell_is_judged_by_liveness_alone(self) -> None:
-        """Trainer cells carry no Serving condition, so requiring one would stop every trainer soak."""
-        assert core._cell_can_serve(typed_cell("actor-0", "actor"))
+    assert len(attempts) == 1

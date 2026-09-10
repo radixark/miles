@@ -35,8 +35,8 @@ def test_stop_and_join_takes_one_last_snapshot_before_the_log_is_read() -> None:
     assert views.compute_states_of_cell_name(handle.event_log.events) == {"rollout-engine-0": [SERVING]}
 
 
-def test_handle_forwards_the_quiescent_poll_override() -> None:
-    """A short scenario may rely on the controller's atomic injection gate."""
+def test_handle_forwards_the_poll_interval() -> None:
+    """The configured polling cadence reaches the injection loop."""
     captured: dict[str, object] = {}
     finished = threading.Event()
 
@@ -50,7 +50,6 @@ def test_handle_forwards_the_quiescent_poll_override() -> None:
         mean_interval_seconds_of_cell_type=intervals(("rollout",), 1e9),
         cell_fault_forms=api_server_fault_forms(),
         poll_interval_seconds=0.25,
-        quiescent_polls_required=1,
     )
 
     with patch.object(entrypoint, "run_fault_injection_loop", capture_loop):
@@ -58,7 +57,6 @@ def test_handle_forwards_the_quiescent_poll_override() -> None:
         assert finished.wait(timeout=30)
         handle._worker.join(timeout_seconds=30)
 
-    assert captured["quiescent_polls_required"] == 1
     assert captured["poll_interval_seconds"] == 0.25
 
 
@@ -77,7 +75,6 @@ def test_an_injector_that_outlives_the_join_fails_instead_of_racing_the_log() ->
         mean_interval_seconds_of_cell_type=intervals(("actor",), 1e-12),
         cell_fault_forms=fixed_fault_forms([StubFaultForm("slow", slow_inject)]),
         poll_interval_seconds=0,
-        quiescent_polls_required=1,
     )
 
     with (

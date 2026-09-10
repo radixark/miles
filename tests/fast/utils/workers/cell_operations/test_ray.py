@@ -4,27 +4,14 @@ import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
-from miles.ray.rollout.inference_controller import InferenceController
-from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import CellTerminationNotConfirmedError, CellTerminationOutcome
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 _TRAINER_CELL_ID = "trainer-engine-actor-00001"
-
-
-class _RecordingEngineProvider:
-    def __init__(self, *, worker_manager: _RecordingWorkerManagerHandle) -> None:
-        self._worker_manager_handle = worker_manager
-        self.stopped: list[str] = []
-
-    async def stop_cells(self, *, cell_ids: list[str]) -> None:
-        self.stopped.extend(cell_ids)
 
 
 class _RecordingRemoteMethod:
@@ -53,150 +40,73 @@ class _RecordingWorkerManagerHandle:
 
 @dataclass(frozen=True)
 class _Fixture:
-    provider: _RecordingEngineProvider
-    controller: InferenceController
     worker_manager: _RecordingWorkerManagerHandle
     operations: RayCellOperations
 
 
 def _make_fixture() -> _Fixture:
     worker_manager = _RecordingWorkerManagerHandle()
-    provider = _RecordingEngineProvider(worker_manager=worker_manager)
-    controller = InferenceController(
-        SimpleNamespace(), engine_provider=provider, router_providers=[], cell_operations=AsyncMock()
-    )
-    controller.servers = {
-        "actor": SimpleNamespace(
-            server_cells={"engine-0-2": SimpleNamespace()},
-            health_checker_activeness=ActivenessTracker(active=True),
-        )
-    }
     return _Fixture(
-        provider=provider,
-        controller=controller,
         worker_manager=worker_manager,
-        operations=RayCellOperations(
-            worker_manager_handle=worker_manager, resolve_inference_controller=lambda: controller
-        ),
+        operations=RayCellOperations(worker_manager_handle=worker_manager),
     )
 
 
-async def _hold_lock(*, lock: ContextLock, acquired: asyncio.Event, release: asyncio.Event) -> None:
-    async with lock:
-        acquired.set()
-        await release.wait()
+class TestRayCellOperationsDisruptiveOperations:
+    """Every cell kind is stopped and crashed through the worker manager, with no controller in the path."""
 
+    async def test_a_rollout_cells_suspend_reaches_the_worker_manager(self) -> None:
+        """Routing it through the inference controller would deadlock against the weight-update lock."""
+        fixture = _make_fixture()
 
-async def _settle() -> None:
-    for _ in range(5):
-        await asyncio.sleep(0)
+        await asyncio.wait_for(fixture.operations.suspend(cell_id="engine-0-2"), timeout=5.0)
 
+        assert fixture.worker_manager.calls == [("stop_cells", (["engine-0-2"],), {})]
 
-async def test_a_suspend_waits_for_the_controller_lock_instead_of_reaching_the_worker_manager() -> None:
-    """A suspend arriving mid weight update must not reach the worker manager until the update ends."""
-    fixture = _make_fixture()
-    acquired, release = asyncio.Event(), asyncio.Event()
-    holding = asyncio.create_task(_hold_lock(lock=fixture.controller.context_lock, acquired=acquired, release=release))
-    await acquired.wait()
+    async def test_a_trainer_cells_suspend_reaches_the_worker_manager(self) -> None:
+        """A trainer cell was already stopped this way, and the two kinds now take the same path."""
+        fixture = _make_fixture()
 
-    suspending = asyncio.create_task(fixture.operations.suspend(cell_id="engine-0-2"))
-    await _settle()
-    assert not suspending.done()
-    assert fixture.provider.stopped == []
-    assert fixture.worker_manager.calls == []
+        await asyncio.wait_for(fixture.operations.suspend(cell_id=_TRAINER_CELL_ID), timeout=5.0)
 
-    release.set()
-    await holding
-    await suspending
-    assert fixture.provider.stopped == ["engine-0-2"]
-    assert fixture.worker_manager.calls == []
+        assert fixture.worker_manager.calls == [("stop_cells", ([_TRAINER_CELL_ID],), {})]
 
+    async def test_a_rollout_cells_fault_reaches_the_worker_manager(self) -> None:
+        """The fault has to land while a weight update is running, which the controller detour forbade."""
+        fixture = _make_fixture()
 
-async def test_inject_fault_waits_for_the_controller_lock() -> None:
-    """A fault arriving mid weight update must wait before killing an engine worker."""
-    fixture = _make_fixture()
-    acquired, release = asyncio.Event(), asyncio.Event()
-    holding = asyncio.create_task(_hold_lock(lock=fixture.controller.context_lock, acquired=acquired, release=release))
-    await acquired.wait()
+        await asyncio.wait_for(
+            fixture.operations.inject_fault(cell_id="engine-0-2", mode=FailureMode.SIGKILL, sub_index=0), timeout=5.0
+        )
 
-    injecting = asyncio.create_task(
-        fixture.operations.inject_fault(cell_id="engine-0-2", mode=FailureMode.SIGKILL, sub_index=0)
-    )
-    await _settle()
-    assert not injecting.done()
-    assert fixture.worker_manager.calls == []
+        assert fixture.worker_manager.calls == [
+            ("inject_fault", ("engine-0-2",), {"mode": "sigkill", "worker_in_cell_index": 0})
+        ]
 
-    release.set()
-    await holding
-    await injecting
-    assert fixture.worker_manager.calls == [
-        ("inject_fault", ("engine-0-2",), {"mode": "sigkill", "worker_in_cell_index": 0})
-    ]
+    async def test_a_trainer_cells_fault_reaches_the_worker_manager(self) -> None:
+        """Regression: routing a trainer cell through the rollout controller raised, so the actor never died."""
+        fixture = _make_fixture()
 
+        await asyncio.wait_for(
+            fixture.operations.inject_fault(cell_id=_TRAINER_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0),
+            timeout=5.0,
+        )
 
-async def test_a_trainer_cells_fault_reaches_the_worker_manager() -> None:
-    """Regression: routing a trainer cell through the rollout controller raised, so the actor never died."""
-    fixture = _make_fixture()
-    acquired, release = asyncio.Event(), asyncio.Event()
-    holding = asyncio.create_task(_hold_lock(lock=fixture.controller.context_lock, acquired=acquired, release=release))
-    await acquired.wait()
+        assert fixture.worker_manager.calls == [
+            ("inject_fault", (_TRAINER_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 0})
+        ]
 
-    await asyncio.wait_for(
-        fixture.operations.inject_fault(cell_id=_TRAINER_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0),
-        timeout=5.0,
-    )
+    async def test_a_cell_the_controller_never_listed_is_still_crashed(self) -> None:
+        """A cell being replaced is exactly the one a soak wants to crash, and no membership read gates it."""
+        fixture = _make_fixture()
 
-    assert fixture.worker_manager.calls == [
-        ("inject_fault", (_TRAINER_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 0})
-    ]
-
-    release.set()
-    await holding
-
-
-async def test_a_trainer_cells_suspend_reaches_the_worker_manager() -> None:
-    """A trainer cell is none of the controller's business, and its lock would only stall the stop."""
-    fixture = _make_fixture()
-    acquired, release = asyncio.Event(), asyncio.Event()
-    holding = asyncio.create_task(_hold_lock(lock=fixture.controller.context_lock, acquired=acquired, release=release))
-    await acquired.wait()
-
-    await asyncio.wait_for(fixture.operations.suspend(cell_id=_TRAINER_CELL_ID), timeout=5.0)
-
-    assert fixture.worker_manager.calls == [("stop_cells", ([_TRAINER_CELL_ID],), {})]
-    assert fixture.provider.stopped == []
-
-    release.set()
-    await holding
-
-
-async def test_a_rollout_cell_the_controller_does_not_list_yet_still_goes_through_the_controller() -> None:
-    """Routing on live membership would kill an engine being replaced without the weight-update lock."""
-    fixture = _make_fixture()
-
-    with pytest.raises(KeyError):
         await asyncio.wait_for(
             fixture.operations.inject_fault(cell_id="engine-0-7", mode=FailureMode.SIGKILL, sub_index=0), timeout=5.0
         )
 
-    assert fixture.worker_manager.calls == []
-
-
-async def test_non_disruptive_operations_go_straight_through() -> None:
-    """Cell reads and resumes do not wait for the weight-update lock."""
-    fixture = _make_fixture()
-    acquired, release = asyncio.Event(), asyncio.Event()
-    holding = asyncio.create_task(_hold_lock(lock=fixture.controller.context_lock, acquired=acquired, release=release))
-    await acquired.wait()
-
-    await asyncio.wait_for(fixture.operations.cell_infos(pool_ids=["engine-0"]), timeout=5.0)
-    await asyncio.wait_for(fixture.operations.resume(cell_id="engine-0-2"), timeout=5.0)
-
-    assert [name for name, _, _ in fixture.worker_manager.calls] == ["get_cell_infos", "start_cells"]
-    assert fixture.provider.stopped == []
-
-    release.set()
-    await holding
+        assert fixture.worker_manager.calls == [
+            ("inject_fault", ("engine-0-7",), {"mode": "sigkill", "worker_in_cell_index": 0})
+        ]
 
 
 class TestRayCellOperationsProtocol:
@@ -219,44 +129,6 @@ class TestRayCellOperationsProtocol:
         await fixture.operations.resume(cell_id="engine-0-2")
 
         assert fixture.worker_manager.calls == [("start_cells", (["engine-0-2"],), {})]
-
-
-class TestRayCellOperationsInferenceControllerResolution:
-    async def test_the_inference_controller_is_resolved_only_when_a_disruptive_operation_needs_it(self) -> None:
-        """Construction, reads, and resumes do not resolve the controller before a suspend needs it."""
-        worker_manager = _RecordingWorkerManagerHandle()
-        controller = _FakeInferenceController()
-        ready = False
-        resolution_count = 0
-
-        def resolve_controller() -> _FakeInferenceController:
-            nonlocal resolution_count
-            assert ready, "the inference controller is not ready"
-            resolution_count += 1
-            return controller
-
-        operations = RayCellOperations(
-            worker_manager_handle=worker_manager,
-            resolve_inference_controller=resolve_controller,
-        )
-
-        await operations.cell_infos(pool_ids=["engine-0"])
-        await operations.resume(cell_id="engine-0-2")
-        assert resolution_count == 0
-
-        ready = True
-        await operations.suspend(cell_id="engine-0-2")
-
-        assert resolution_count == 1
-        assert controller.suspended_cell_ids == ["engine-0-2"]
-
-
-class _FakeInferenceController:
-    def __init__(self) -> None:
-        self.suspended_cell_ids: list[str] = []
-
-    async def stop_cell_between_weight_updates(self, *, cell_id: str) -> None:
-        self.suspended_cell_ids.append(cell_id)
 
 
 class TestRayCellOperationsTerminateIncarnation:
@@ -295,15 +167,10 @@ class TestRayCellOperationsTerminateIncarnation:
                 cell_id=_TRAINER_CELL_ID, expected_workers_hash="hash-1", timeout=0.05
             )
 
-    async def test_a_termination_does_not_wait_for_the_weight_update_lock(self) -> None:
-        """Terminating is what unblocks a stuck weight update, so queueing behind its lock would deadlock."""
+    async def test_a_rollout_cell_is_terminated_through_the_same_manager_call(self) -> None:
+        """The inference controller terminates a failed engine from inside its own lock, so nothing may re-enter it."""
         fixture = _make_fixture()
         fixture.worker_manager.stop_cell_incarnation.result = "terminated"
-        acquired, release = asyncio.Event(), asyncio.Event()
-        holding = asyncio.create_task(
-            _hold_lock(lock=fixture.controller.context_lock, acquired=acquired, release=release)
-        )
-        await acquired.wait()
 
         outcome = await asyncio.wait_for(
             fixture.operations.terminate_incarnation(cell_id="engine-0-2", expected_workers_hash="hash-1"),
@@ -311,8 +178,9 @@ class TestRayCellOperationsTerminateIncarnation:
         )
 
         assert outcome is CellTerminationOutcome.TERMINATED
-        release.set()
-        await holding
+        assert fixture.worker_manager.calls == [
+            ("stop_cell_incarnation", ("engine-0-2",), {"expected_workers_hash": "hash-1"})
+        ]
 
     async def test_a_kill_the_manager_could_not_confirm_is_not_a_termination(self) -> None:
         """The manager killed the actors but they kept answering, which is not the confirmed death it promises."""
