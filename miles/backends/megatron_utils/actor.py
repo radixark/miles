@@ -921,18 +921,20 @@ class MegatronTrainRayActor(TrainRayActor):
         del info
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
-        if process_groups_are_temporary:
-            reload_process_groups()
+        groups_outlive_the_pause = self.args.offload_train and not self.args.colocate
+        with torch_memory_saver.disable() if groups_outlive_the_pause else nullcontext():
+            if process_groups_are_temporary:
+                reload_process_groups()
 
-        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
-        if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
-            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-            dist.barrier(group=get_gloo_group())
+            needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
+            if needs_reconnect:
+                self.weight_updater.connect_rollout_engines(
+                    rollout_engines,
+                    engine_gpu_counts=engine_gpu_counts,
+                    engine_gpu_offsets=engine_gpu_offsets,
+                )
+                self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
+                dist.barrier(group=get_gloo_group())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
