@@ -31,10 +31,9 @@ from miles_plugins.models.kimi_k3.ops import KimiRMSNorm, attn_res_aggregate, kd
 from miles_plugins.models.kimi_k3.pipeline import bank_num_rows, pack_stage_boundary, unpack_stage_boundary
 
 
-def _mark_tp_replicated(module: nn.Module, *, reduction: str = "average") -> None:
-    assert reduction in ("average", "sum")
+def _mark_tp_replicated(module: nn.Module) -> None:
     for parameter in module.parameters():
-        setattr(parameter, f"{reduction}_gradients_across_tp_domain", True)
+        parameter.sum_gradients_across_tp_domain = True
 
 
 def _linear(module: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
@@ -198,7 +197,7 @@ class KimiK3Attention(MegatronModule):
             device=device,
             dtype=dtype,
         )
-        _mark_tp_replicated(self.o_norm, reduction="sum")
+        _mark_tp_replicated(self.o_norm)
         self.o_proj = self._row_linear(self.projection_size, hidden_size)
         self.gate_lower_bound = config.kimi_kda_gate_lower_bound
 
@@ -457,16 +456,16 @@ class KimiK3TransformerLayer(TransformerLayer):
         self.self_attention_res_proj = nn.Linear(hidden_size, 1, bias=False, device=device, dtype=dtype)
         self.mlp_res_norm = KimiRMSNorm(hidden_size, eps, device=device, dtype=dtype)
         self.mlp_res_proj = nn.Linear(hidden_size, 1, bias=False, device=device, dtype=dtype)
-        _mark_tp_replicated(self.self_attention_res_norm, reduction="sum")
-        _mark_tp_replicated(self.self_attention_res_proj, reduction="sum")
-        _mark_tp_replicated(self.mlp_res_norm, reduction="sum")
-        _mark_tp_replicated(self.mlp_res_proj, reduction="sum")
+        _mark_tp_replicated(self.self_attention_res_norm)
+        _mark_tp_replicated(self.self_attention_res_proj)
+        _mark_tp_replicated(self.mlp_res_norm)
+        _mark_tp_replicated(self.mlp_res_proj)
 
         if self.layer_number == self.config.num_layers:
             self.output_attn_res_norm = KimiRMSNorm(hidden_size, eps, device=device, dtype=dtype)
             self.output_attn_res_proj = nn.Linear(hidden_size, 1, bias=False, device=device, dtype=dtype)
-            _mark_tp_replicated(self.output_attn_res_norm, reduction="sum")
-            _mark_tp_replicated(self.output_attn_res_proj, reduction="sum")
+            _mark_tp_replicated(self.output_attn_res_norm)
+            _mark_tp_replicated(self.output_attn_res_proj)
 
         # stage entry/exit layers from the per-rank offsets; VPP is rejected, so vp_stage is None
         pp_size = self.config.pipeline_model_parallel_size
