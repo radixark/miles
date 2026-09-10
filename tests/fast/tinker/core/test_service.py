@@ -524,3 +524,54 @@ async def test_weights_info_reads_the_checkpoint_not_the_lease(service):
     }
     with pytest.raises(OwnershipError):
         service.weights_info("thief", path)
+
+
+async def test_a_failed_optim_step_retires_the_model(service):
+    model_id = await created_model(service)
+    slot = service.models[model_id].slot
+    service.backend.optim_outcomes[slot] = {"error": "allreduce died"}
+
+    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 1))
+    future = await await_settled(service, "tenant", step)
+    assert (future.state, future.error) == (FAILED, "allreduce died")
+    assert model_id not in service.models, "a half-applied step may have diverged the slot across ranks"
+    assert slot in service.free_slots
+    assert service.backend.named("unload_slot") == [{"slot": slot}]
+
+
+async def test_poison_consumption_discards_retried_gradients(service):
+    model_id = await created_model(service)
+    slot = service.models[model_id].slot
+    service.backend.fail_next = RuntimeError("cuda died")
+    failed = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
+    assert (await await_settled(service, "tenant", failed)).state == FAILED
+
+    retry = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
+    assert (await await_settled(service, "tenant", retry)).state == DONE
+
+    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 3))
+    assert (await await_settled(service, "tenant", step)).state == FAILED
+    assert (
+        service.backend.named("zero_grads") == [{"slot": slot}] * 2
+    ), "the retried batch accumulated on top of the discard; its gradients must go too"
+    assert not service.backend.named("optim_step")
+
+    resubmit = service.submit("tenant", "forward_backward", fb_payload(model_id, 4, [datum()]))
+    assert (await await_settled(service, "tenant", resubmit)).state == DONE
+    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 5))
+    assert (await await_settled(service, "tenant", step)).state == DONE
+
+
+async def test_sampling_for_another_base_model_is_rejected(service):
+    with pytest.raises(UserInputError):
+        service.submit_sample(
+            "tenant",
+            {
+                "base_model": "some-other-model",
+                "prompt_tokens": [1],
+                "sampling_params": {"max_tokens": 2},
+                "num_samples": 1,
+                "prompt_logprobs": False,
+                "topk_prompt_logprobs": 0,
+            },
+        )
