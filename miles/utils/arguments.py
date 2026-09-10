@@ -1862,16 +1862,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help=(
                     "Concurrent adapter slots for multi-LoRA. 0 disables multi-LoRA; "
-                    "'auto' derives the count from measured GPU memory (serve entry only)"
-                ),
-            )
-            parser.add_argument(
-                "--engine-host-lora-budget-bytes",
-                type=int,
-                default=None,
-                help=(
-                    "Host-RAM budget for the rollout engines' resident adapter copies; "
-                    "caps the auto slot capacity (default: unchecked)"
+                    "'auto' derives the count from the trainer's measured GPU memory (serve entry only)"
                 ),
             )
             return parser

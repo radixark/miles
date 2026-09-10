@@ -1,18 +1,30 @@
 """Slot capacity: how many resident LoRA tenants fit.
 
-Measurement is the authority, sglang-style: load one probe slot, run one
-max-size forward/backward and an optimizer step through the real executor
-path, and read the deltas. The closed-form prediction only cross-checks the
-measurement and explains the log line.
+Measurement is the authority, sglang-style: after the base model loads, one
+probe slot runs a max-size forward/backward and an optimizer step through the
+real executor path, and the bytes that slot owns, the activation peak, and the
+memory still free give every rank's head-room. The closed-form prediction only
+cross-checks the measurement and explains the log line.
+
+The trainer sizes its slot pool at construction (the Bridge adapter modules and
+the per-slot LayerWise optimizers), so ``auto`` probes a one-slot trainer and
+rebuilds it at the resolved count; serve_tinker owns that sequence.
 """
 
 import logging
 from argparse import Namespace
 from dataclasses import dataclass
 
+import torch
+
+from miles.backends.megatron_utils.lora.optimizer import _slot_children, adapter_slot_parameters
+
 logger = logging.getLogger(__name__)
 
 AUTO_SLOT_CAPACITY = -1  # --multi-lora-n-adapters auto
+PROBE_SLOTS = 1  # pool size of the probe trainer
+PROBE_SLOT = 0
+_PROBE_BATCH_ID = -1
 
 _PROBE_ADAM_PARAMS = {
     # lr 0: the step only materializes the Adam moments, the weights stay put
@@ -27,18 +39,16 @@ _PROBE_ADAM_PARAMS = {
 
 @dataclass(frozen=True)
 class RankProbe:
-    free_before: int  # bytes free after the base model, before the probe slot
-    free_after: int  # bytes free with the probe slot resident (weights+grad+master+moments)
-    act_peak: int  # transient peak of one max-size fb; shared across slots (single issue)
+    free: int  # bytes free with the probe slot resident, after a steady-state step
+    slot_bytes: int  # CUDA bytes the resident slot owns: weights, grad buffers, fp32 masters, Adam moments
+    act_peak: int  # transient peak of one max-size forward/backward; shared across slots (single issue)
     adapter_local_params: int  # this rank's shard of one max-rank adapter
-    adapter_full_params: int  # the unsharded adapter, for engine-side copies
-
-    @property
-    def slot_bytes(self) -> int:
-        return self.free_before - self.free_after
 
     def capacity(self, margin_bytes: int) -> int:
-        return max(int((self.free_before - self.act_peak - margin_bytes) // self.slot_bytes), 0)
+        if self.slot_bytes <= 0:
+            raise ValueError(f"probe measured a non-positive slot residency: {self.slot_bytes}")
+        # the pool is rebuilt from scratch, so the probe slot's own bytes are head-room too
+        return max((self.free + self.slot_bytes - self.act_peak - margin_bytes) // self.slot_bytes, 0)
 
 
 def bytes_per_train_param(args: Namespace) -> int:
@@ -50,67 +60,61 @@ def bytes_per_train_param(args: Namespace) -> int:
     return weight + grad + master + moments
 
 
-def memory_snapshot(args: Namespace, model, phase: str) -> dict:
-    """Actor-side measurement half of the probe; the orchestration lives in
-    probe_slot_capacity. ``before`` resets the peak tracker, ``after`` reads it."""
-    import torch
-
+def memory_snapshot(model, optimizer, phase: str) -> dict:
+    """Actor-side half of the probe; the orchestration lives in probe_slot_capacity.
+    ``reset`` arms the peak tracker before the measured step, ``measure`` reads it after."""
     torch.cuda.synchronize()
-    if phase == "before":
-        torch.cuda.empty_cache()
+    if phase == "reset":
         torch.cuda.reset_peak_memory_stats()
-        free, _ = torch.cuda.mem_get_info()
-        return {"free": free}
-    assert phase == "after", f"unknown memory_snapshot phase {phase!r}"
-    free, _ = torch.cuda.mem_get_info()
+        return {}
+    assert phase == "measure", f"unknown memory_snapshot phase {phase!r}"
     act_peak = torch.cuda.max_memory_allocated() - torch.cuda.memory_allocated()
-    local, full = _adapter_param_counts(args, model)
-    return {"free": free, "act_peak": act_peak, "adapter_local_params": local, "adapter_full_params": full}
+    torch.cuda.empty_cache()  # cached-but-unused blocks are head-room, not residency
+    free, _ = torch.cuda.mem_get_info()
+    return {
+        "free": free,
+        "slot_bytes": resident_slot_bytes(model, optimizer, PROBE_SLOT),
+        "act_peak": max(act_peak, 0),
+        "adapter_local_params": sum(param.numel() for param in adapter_slot_parameters(model, PROBE_SLOT)),
+    }
 
 
-def _adapter_param_counts(args: Namespace, model) -> tuple[int, int]:
-    """(rank-local, unsharded) params of the resident adapter. Full counts come
-    from megatron's own sharding attributes, so there is no shape table to drift."""
-    from miles.utils.lora import is_lora_weight_name
+def resident_slot_bytes(model, optimizer, slot: int) -> int:
+    """CUDA bytes one resident slot owns: the adapter weights, their grad buffers, the
+    fp32 masters and the Adam moments. Views into one allocation count it once."""
+    storages: dict[tuple[int, int], int] = {}
 
-    tp = args.tensor_model_parallel_size
-    ep = getattr(args, "expert_model_parallel_size", 1) or 1
-    local = full = 0
-    for chunk in model:
-        for name, param in chunk.named_parameters():
-            if not is_lora_weight_name(name):
-                continue
-            numel = param.numel()
-            local += numel
-            multiplier = tp if getattr(param, "tensor_model_parallel", False) else 1
-            if ".experts." in name:
-                multiplier *= ep  # expert adapters shard by EP; etp == 1 is validated at launch
-            full += numel * multiplier
-    return local, full
+    def record(tensor) -> None:
+        if tensor is not None and getattr(tensor, "is_cuda", False):
+            storage = tensor.untyped_storage()
+            storages[(tensor.device.index, storage.data_ptr())] = storage.nbytes()
+
+    for param in adapter_slot_parameters(model, slot):
+        for tensor in (param, param.grad, getattr(param, "main_grad", None), getattr(param, "main_param", None)):
+            record(tensor)
+    for child in _slot_children(optimizer, slot):
+        for param in child.get_parameters():  # the fp32 masters the mixed-precision wrapper steps
+            record(param)
+        for state in child.optimizer.state.values():
+            for value in state.values():
+                record(value)
+    return sum(storages.values())
 
 
 async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankProbe]:
-    """Load one max-rank probe slot, run one max-size fb and an optimizer step
-    through the real executor path, and measure every rank's head-room. Runs
-    before the rollout engines launch; the trainer side is self-contained."""
-    before = await trainer.multi_lora_memory_probe("before")
-    await backend.load_slot(0, args.lora_rank, float(args.lora_alpha or 2 * args.lora_rank))
+    """Load one max-rank probe slot and run two max-size steps through the real
+    executor path: the first materializes the Adam moments and the process-wide
+    workspaces every later step shares, the second is measured. Every rank reports
+    its own head-room; the trainer side is self-contained and never touches an engine."""
+    await backend.load_slot(PROBE_SLOT, args.lora_rank, float(args.lora_alpha or 2 * args.lora_rank))
     row = _probe_row(args.max_tokens_per_gpu)
-    await backend.forward_backward(-1, [(0, row)], "cross_entropy", {})
-    await backend.optim_step({0: _PROBE_ADAM_PARAMS})
-    after = await trainer.multi_lora_memory_probe("after")
-    await backend.unload_slot(0)
+    await _probe_step(backend, row)
+    await trainer.multi_lora_memory_probe("reset")
+    await _probe_step(backend, row)
+    snapshots = await trainer.multi_lora_memory_probe("measure")
+    await backend.unload_slot(PROBE_SLOT)
 
-    probes = [
-        RankProbe(
-            free_before=b["free"],
-            free_after=a["free"],
-            act_peak=a["act_peak"],
-            adapter_local_params=a["adapter_local_params"],
-            adapter_full_params=a["adapter_full_params"],
-        )
-        for b, a in zip(before, after, strict=True)
-    ]
+    probes = [RankProbe(**snapshot) for snapshot in snapshots]
     predicted = probes[0].adapter_local_params * bytes_per_train_param(args)
     if abs(probes[0].slot_bytes - predicted) > 0.2 * max(predicted, 1):
         logger.warning(
@@ -120,32 +124,32 @@ async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankPro
     return probes
 
 
+async def _probe_step(backend, row: dict) -> None:
+    await backend.forward_backward(_PROBE_BATCH_ID, [(PROBE_SLOT, row)], "cross_entropy", {})
+    outcomes = await backend.optim_step({PROBE_SLOT: _PROBE_ADAM_PARAMS})
+    assert "grad_norm" in outcomes.get(PROBE_SLOT, {}), f"probe optimizer step did not settle: {outcomes}"
+
+
 def _probe_row(tokens: int) -> dict:
-    return {"tokens": [1] * (tokens + 1), "target_len": tokens, "weights": [1.0] * tokens}
+    """One datum that fills --max-tokens-per-gpu: a one-token prompt and a max-length target."""
+    assert tokens >= 2, f"--max-tokens-per-gpu {tokens} leaves no room for a prompt and a target"
+    return {"tokens": [1] * tokens, "target_len": tokens - 1, "weights": [1.0] * (tokens - 1)}
 
 
-def resolve_slot_capacity(args: Namespace, probes: list[RankProbe], keep_k: int) -> int:
-    """min over the binding constraints; the log names which one bound."""
+def resolve_slot_capacity(args: Namespace, probes: list[RankProbe]) -> int:
+    """The worst rank rules; the log carries the numbers behind the count."""
     margin = getattr(args, "train_memory_margin_bytes", 0) or 0
-    n_gpu = min(probe.capacity(margin) for probe in probes)  # the worst rank rules
-
-    host_budget = getattr(args, "engine_host_lora_budget_bytes", None)
-    per_version_bytes = probes[0].adapter_full_params * 2  # engine CPU copies are bf16
-    n_host = host_budget // (keep_k * per_version_bytes) if host_budget else None
-
-    n = n_gpu if n_host is None else min(n_gpu, n_host)
     worst = min(probes, key=lambda probe: probe.capacity(margin))
+    n = worst.capacity(margin)
     assert n >= 1, (
-        f"no room for one rank-{args.lora_rank} adapter slot: a slot needs "
-        f"{worst.slot_bytes >> 20} MiB, free after the model and a max-size batch is "
-        f"{(worst.free_before - worst.act_peak - margin) >> 20} MiB. "
+        f"no room for one rank-{args.lora_rank} adapter slot: a slot needs {worst.slot_bytes >> 20} MiB, "
+        "free after the model, a max-size batch and the margin is "
+        f"{(worst.free + worst.slot_bytes - worst.act_peak - margin) >> 20} MiB. "
         "Lower --lora-rank or --max-tokens-per-gpu."
     )
-    binding = "trainer GPU memory" if n_host is None or n_gpu <= n_host else "engine host RAM (keep-K copies)"
     logger.info(
-        f"multi-LoRA capacity: {n} slots, bound by {binding} "
-        f"(gpu={n_gpu}, host={n_host if n_host is not None else 'unchecked'}, "
-        f"slot={worst.slot_bytes >> 20}MiB, act_peak={worst.act_peak >> 20}MiB, "
-        f"adapter={per_version_bytes >> 20}MiB/version)"
+        f"multi-LoRA capacity: {n} slots, bound by the worst trainer rank "
+        f"(slot={worst.slot_bytes >> 20}MiB, act_peak={worst.act_peak >> 20}MiB, "
+        f"free={worst.free >> 20}MiB, margin={margin >> 20}MiB)"
     )
     return n
