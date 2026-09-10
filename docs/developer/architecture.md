@@ -44,10 +44,15 @@ flowchart TB
 ```text
 miles/
 ├── backends/             # one directory per backend, plus what they share
-│   ├── megatron_utils/   # Megatron actor, update_weight/, checkpointing, fp32 markers
-│   ├── fsdp_utils/       # FSDP2 actor, adaptations/ per architecture, MoE kernels
+│   ├── megatron_utils/   # Megatron actor, update_weight/ (HF iterator), checkpointing, fp32 markers
+│   ├── fsdp_utils/       # FSDP2 actor, adaptations/ per architecture, hf_weight_iterator.py,
+│   │                     # checkpoint.py (DCP save/resume)
+│   ├── torchtitan_utils/ # torchtitan actor, Trainer config tree, weight_bridge.py (HF iterator)
 │   ├── sglang_utils/     # SGLang engine wrapper + argument glue
-│   └── training_utils/   # loss.py / loss_hub/, ParallelState, log + CI checkers
+│   └── training_utils/   # what the backends share: loss.py / loss_hub/, ParallelState,
+│                         # weight_update/ (engine session, transport protocols, WeightUpdater),
+│                         # torch_native_actor.py (the RL step FSDP and torchtitan share),
+│                         # step_runner.py (the backend seam), log + CI checkers
 ├── ray/                  # Ray actors, placement groups, train/ and rollout/ groups
 ├── rollout/
 │   ├── sglang_rollout.py # legacy v1 rollout function
@@ -108,7 +113,9 @@ from the trainer loop and uses a continuously-running worker.
 | Support a new architecture on Megatron | `miles_plugins/models/<model>.py` + a bridge in `miles_plugins/mbridge/` |
 | Support a new architecture on FSDP | `miles/backends/fsdp_utils/adaptations/specs/<arch>.py` |
 | Add a new flag | `miles/utils/arguments.py` |
-| Change weight sync | `miles/backends/megatron_utils/update_weight/` (Megatron) or `miles/backends/fsdp_utils/update_weight_utils.py` (FSDP) |
+| Change the engine handshake (pause / flush / announce / resume) | `miles/backends/training_utils/weight_update/session.py` — shared by all backends |
+| Change how weights are produced or transported | `miles/backends/training_utils/weight_update/` (transport protocols, shared), each backend's HF weight iterator beside it: `miles/backends/megatron_utils/update_weight/`, `miles/backends/fsdp_utils/hf_weight_iterator.py`, `miles/backends/torchtitan_utils/weight_bridge.py` |
+| Add a training backend | a new `miles/backends/<name>_utils/` beside the existing three, a loader + validator in `miles/utils/arguments.py`, and an entry in `_TRAINER_ACTOR_CLASSES` in `miles/ray/specs/train.py` |
 | Change rollout buffer | `miles/rollout/data_source.py` |
 
 ## Extension points (the right way)
@@ -150,6 +157,7 @@ If you have 30 minutes and want to understand Miles end-to-end:
 2. `miles/rollout/sglang_rollout.py:generate_rollout` — how prompts become samples.
 3. `miles/backends/training_utils/loss.py` — the loss and advantage computation.
 4. `miles/router/router.py` — the FastAPI proxy.
-5. `miles/backends/megatron_utils/update_weight/` — how trained weights reach the engines.
+5. `miles/backends/training_utils/weight_update/` — how trained weights reach the engines:
+   the session handshake, the transport protocols, and the per-backend HF weight iterators.
 
 That's the spine. Everything else hangs off it.

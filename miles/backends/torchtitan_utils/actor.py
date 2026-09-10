@@ -1,0 +1,138 @@
+"""TrainRayActor over torchtitan's Trainer.
+
+miles builds the config tree, instantiates the trainer, drives it through the
+shared RL loop, and streams weights to the rollout engines. Nothing here
+touches torchtitan internals.
+"""
+
+import logging
+from argparse import Namespace
+from contextlib import contextmanager
+
+import torch
+import torch.distributed as dist
+
+from miles.backends.torchtitan_utils import routing_replay
+from miles.backends.torchtitan_utils.config import build_trainer_config
+from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
+from miles.backends.torchtitan_utils.trainer import TitanTrainer
+from miles.backends.torchtitan_utils.weight_bridge import get_hf_weight_iterator
+from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+from miles.backends.training_utils.torch_native_actor import TorchNativeTrainRayActor
+from miles.utils.context_utils import with_defer
+from miles.utils.memory_utils import clear_memory
+from miles.utils.profile_utils import TrainProfiler
+from miles.utils.timer import Timer
+from miles.utils.tracking_utils.tracking import init_tracking
+
+logger = logging.getLogger(__name__)
+
+
+def _steps_per_rollout(args: Namespace) -> int:
+    return max(args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size, 1)
+
+
+class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
+    routing_replay = routing_replay
+
+    @with_defer(lambda: Timer().start("train_wait"))
+    def init(
+        self,
+        args: Namespace,
+        role: str,
+        *,
+        with_ref: bool = False,
+        with_opd_teacher: bool = False,
+        recv_ckpt_src_rank: int | None = None,
+        indep_dp_info=None,
+    ) -> int | None:  # type: ignore[override]
+        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+
+        assert recv_ckpt_src_rank is None, "torchtitan backend does not support checkpoint healing"
+        assert not with_opd_teacher, "torchtitan backend does not support on-policy distillation yet"
+
+        config = build_trainer_config(
+            args,
+            hf_assets_path=args.hf_checkpoint,
+            lr_total_steps=args.num_rollout * _steps_per_rollout(args),
+            dump_subdir="actor",
+        )
+
+        routing_replay.enable(args)
+
+        if args.debug_rollout_only:
+            set_parallel_state(create_titan_parallel_state(parallel_dims_from_config(config.parallelism)))
+            return 0
+
+        self.prof = TrainProfiler(args)
+        self.load_hf_assets()
+
+        self.trainer = TitanTrainer(config)
+        self.model_parts = self.trainer.model_parts
+        self.optimizers = self.trainer.optimizers.optimizers
+        self.align_token_side_channel = self.trainer.align_token_side_channel
+        self.trainer.enable_context_parallel_gather()
+        set_parallel_state(
+            create_titan_parallel_state(self.trainer.parallel_dims, is_pp_last_stage=self.trainer.has_last_stage())
+        )
+        routing_replay.install(self.trainer.model_parts)
+
+        cp_mesh = self.trainer.parallel_dims.get_optional_mesh("cp")
+        cp_rank0 = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
+        if cp_rank0 and get_parallel_state().is_metrics_rank:
+            init_tracking(args, primary=False)
+
+        self.trainer.checkpointer.load()
+        start_rollout_id = self.trainer.step // _steps_per_rollout(args)
+
+        if with_ref:
+            self.ref_runner = self._build_ref_runner(args)
+
+        self.weight_updater = self._build_weight_updater(self.trainer, get_hf_weight_iterator)
+
+        clear_memory()
+        if args.offload_train:
+            self.sleep()
+        self.prof.on_init_end()
+        return int(getattr(args, "start_rollout_id", None) or start_rollout_id)
+
+    def step_runner(self):
+        return self.trainer.step_runner()
+
+    def _build_ref_runner(self, args: Namespace):
+        """A frozen second trainer for reference log probs, parked on the host between passes.
+
+        Built on the device like the actor: torchtitan's fused-QKV save hooks run DTensor
+        collectives inside ``state_dict()``, which the checkpointer calls at construction, and
+        the meshes have no CPU backend, so ``enable_cpu_offload`` cannot be used here.
+        """
+        if not args.ref_load:
+            raise ValueError("--ref-load is required to build a torchtitan reference model")
+        ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
+        ref_trainer = TitanTrainer(ref_config)
+        ref_trainer.checkpointer.load()
+        for part in ref_trainer.model_parts:
+            part.eval()
+            part.requires_grad_(False)
+            part.cpu()
+        torch.cuda.empty_cache()
+        self._ref_parts = ref_trainer.model_parts
+        logger.info(f"Built a torchtitan reference trainer from {args.ref_load}; it lives on the host between passes")
+        return ref_trainer.step_runner()
+
+    @contextmanager
+    def ref_context(self):
+        for part in self._ref_parts:
+            part.cuda()
+        try:
+            yield
+        finally:
+            for part in self._ref_parts:
+                part.cpu()
+            torch.cuda.empty_cache()
+
+    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
+        if self.args.debug_rollout_only or self.args.save is None:
+            return
+        assert not self.args.async_save, "TorchtitanTrainRayActor does not support async_save yet."
+        self.trainer.checkpointer.save(self.trainer.step, last_step=True)
