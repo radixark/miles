@@ -180,12 +180,14 @@ async def _handle_over(
     call_timeout_seconds: float = 3600.0,
     ready_timeout_seconds: float = rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS,
     follow_redirects: bool = False,
+    expected_boot_uuid: str | None = None,
 ) -> AsyncIterator[RpcWorkerHandle]:
     async with httpx.AsyncClient(transport=transport, follow_redirects=follow_redirects) as http_client:
         yield RpcWorkerHandle(
             worker_cls,
             server_url="http://testserver",
             require_stable_boot_uuid=require_stable_boot_uuid,
+            expected_boot_uuid=expected_boot_uuid,
             call_timeout_seconds=call_timeout_seconds,
             ready_timeout_seconds=ready_timeout_seconds,
             http_client=http_client,
@@ -241,6 +243,26 @@ class TestTypedCalls:
 
 
 class TestSubmitWithoutResult:
+    async def test_observed_boot_is_guarded_on_the_first_submit_without_relearning_the_server(self) -> None:
+        """An old observation cannot bind to a replacement process on its first fault submission."""
+        worker = _Worker()
+        async with _running_app(worker) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport, expected_boot_uuid="observed-old-boot") as handle:
+                with pytest.raises(ServerRestartedError):
+                    await handle.submit_without_result("demo_default_arg", a=1, b=2)
+        assert worker.calls == 0
+        assert [(request.method, request.url.path) for request in transport.seen] == [("POST", "/v1/demo_default_arg")]
+        assert transport.seen[0].headers[EXPECTED_BOOT_UUID_HEADER] == "observed-old-boot"
+
+    async def test_an_observed_target_cannot_opt_into_following_a_new_server(self) -> None:
+        """Explicitly targeted handles cannot discard the process identity they were given."""
+        transport = _HookTransport(None)
+        async with _handle_over(transport, expected_boot_uuid="observed-old-boot") as handle:
+            with pytest.raises(ValueError, match="cannot follow a replacement"):
+                await handle.wait_ready(timeout=5, allow_server_uuid_change=True)
+        assert not transport.seen
+
     async def test_first_fire_and_forget_call_handshakes_before_submission(self) -> None:
         """A first stable-boot fire-and-forget call pins the server before submitting."""
 

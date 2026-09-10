@@ -1,7 +1,10 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
+import asyncio
 import logging
 import random
+
+from tests.utils.soak.state import SoakPodTarget
 
 from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS, read_objects_of_release
@@ -9,6 +12,25 @@ from miles.utils.workers.naming import parse_cell_id
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
 logger = logging.getLogger(__name__)
+
+
+async def delete_observed_pod(pod: SoakPodTarget) -> None:
+    from kubernetes_asyncio import client, config
+
+    assert pod.uid, "Pod deletion requires an observed UID"
+    async with asyncio.timeout(KUBECTL_TIMEOUT_SECONDS):
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            logger.debug("Loading kubeconfig outside a Kubernetes pod", exc_info=True)
+            await config.load_kube_config()
+
+        async with client.ApiClient() as api_client:
+            await client.CoreV1Api(api_client).delete_namespaced_pod(
+                name=pod.name,
+                namespace=pod.namespace,
+                body=client.V1DeleteOptions(preconditions=client.V1Preconditions(uid=pod.uid)),
+            )
 
 
 def delete_one_pod_of_cell(*, namespace: str, release: str, cell_id: str, rng: random.Random) -> str:

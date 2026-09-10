@@ -13,6 +13,7 @@ from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, READINES
 
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager
+from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
@@ -2003,6 +2004,38 @@ class TestSuspendedCellInfos:
 
 
 class TestInjectFault:
+    async def test_restarted_cell_rejects_the_previously_observed_target(
+        self, fake_ray_cluster: FakeRayCluster
+    ) -> None:
+        """An old request must not reach a replacement actor of the same cell."""
+        manager = await _launch([_make_spec("engine")])
+        target = manager.observe_fault_target("engine-00000", sub_index=0)
+        await manager.stop_cells(["engine-00000"])
+        await manager.start_cells(["engine-00000"])
+
+        with pytest.raises(StaleFaultTargetError):
+            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, expected_target=target)
+
+        assert fake_ray_cluster.calls_of("inject_fault") == []
+        current = manager.observe_fault_target("engine-00000", sub_index=0)
+        assert current.workers_hash != target.workers_hash
+        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, expected_target=current)
+        assert len(fake_ray_cluster.calls_of("inject_fault")) == 1
+
+    async def test_recreated_manager_does_not_reuse_generation_identity(
+        self, fake_ray_cluster: FakeRayCluster
+    ) -> None:
+        """Resetting the local generation counter cannot revive a stale request."""
+        first = await _launch([_make_spec("engine")])
+        old_target = first.observe_fault_target("engine-00000", sub_index=0)
+        await first.stop_cells(["engine-00000"])
+        second = await _launch([_make_spec("engine")])
+
+        assert second.observe_fault_target("engine-00000", sub_index=0).workers_hash != old_target.workers_hash
+        with pytest.raises(StaleFaultTargetError):
+            second.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, expected_target=old_target)
+        assert fake_ray_cluster.calls_of("inject_fault") == []
+
     async def test_the_fault_reaches_the_selected_worker(self, fake_ray_cluster: FakeRayCluster):
         """A multi-node engine is crashed by crashing one of its node ranks."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Query, Request, Response
@@ -8,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.env_vars import POD_UID_ENV_VAR
 from miles.utils.workers.rpc.common.protocol import (
     BOOT_UUID_HEADER,
     BOOT_UUID_MISMATCH_STATUS,
@@ -16,6 +18,7 @@ from miles.utils.workers.rpc.common.protocol import (
     EXPECTED_BOOT_UUID_HEADER,
     HEALTH_PATH,
     IN_FLIGHT_PATH,
+    POD_UID_HEADER,
     SUBMIT_PATH,
     CallStatusResponse,
     HealthResponse,
@@ -30,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 def create_rpc_app(worker: object) -> FastAPI:
     server = RpcServer(worker=worker)
+    pod_uid = os.environ.get(POD_UID_ENV_VAR)
 
     app = FastAPI()
 
@@ -60,6 +64,8 @@ def create_rpc_app(worker: object) -> FastAPI:
                 response = JSONResponse(status_code=500, content={"detail": "unhandled rpc server error"})
 
         response.headers[BOOT_UUID_HEADER] = server.boot_uuid
+        if pod_uid is not None:
+            response.headers[POD_UID_HEADER] = pod_uid
         return response
 
     @app.exception_handler(RequestValidationError)

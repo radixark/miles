@@ -90,6 +90,10 @@ affinity:
 - name: {{ $name | quote }}
   value: {{ $value | quote }}
 {{- end }}
+- name: MILES_POD_UID
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.uid
 {{- end }}
 
 {{- define "miles-run.labelEnv" -}}
@@ -165,4 +169,3 @@ uninstall-job.yaml
   readOnly: true
 {{- end }}
 {{- end }}
-

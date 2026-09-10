@@ -40,6 +40,7 @@ class RpcWorkerHandle(BaseWorkerHandle):
         *,
         server_url: str,
         require_stable_boot_uuid: bool = False,
+        expected_boot_uuid: str | None = None,
         call_timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
         ready_timeout_seconds: float = DEFAULT_READY_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
@@ -52,7 +53,11 @@ class RpcWorkerHandle(BaseWorkerHandle):
         self._worker_cls_name = worker_cls.__name__
         self._call_timeout_seconds = call_timeout_seconds
         self._ready_timeout_seconds = ready_timeout_seconds
-        self._boot_uuid_pin = BootUuidPin(required=require_stable_boot_uuid, worker_cls_name=worker_cls.__name__)
+        self._boot_uuid_pin = BootUuidPin(
+            required=require_stable_boot_uuid,
+            worker_cls_name=worker_cls.__name__,
+            expected=expected_boot_uuid,
+        )
         self._transport = RpcTransport(
             server_url=server_url, http_client=http_client, boot_uuid_pin=self._boot_uuid_pin
         )

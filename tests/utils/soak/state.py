@@ -12,8 +12,10 @@ from typing import Literal, get_args
 from uuid import uuid4
 
 from pydantic import Field, field_validator
+from tests.utils.soak.process_target import ProcessTarget
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.cell_operations.base import FaultTarget
 
 
 def cell_is_alive(cell: dict) -> bool:
@@ -54,6 +56,7 @@ class SoakPodTarget(FrozenStrictBaseModel):
     release: str
     name: str
     uid: str
+    process_targets: dict[str, ProcessTarget] = Field(default_factory=dict)
 
 
 class SoakDeploymentTarget(FrozenStrictBaseModel):
@@ -64,6 +67,8 @@ class SoakDeploymentTarget(FrozenStrictBaseModel):
     workload_uids: dict[str, str]
     saved_iteration: int | None
     finished_rollout_id: int | None
+    state_file: Path | None = None
+    uninstall_job_uid: str | None = None
 
 
 class SoakObservation(BaseEvent):
@@ -72,6 +77,7 @@ class SoakObservation(BaseEvent):
     deployments: list[SoakDeploymentTarget] = Field(default_factory=list)
     details: dict[str, dict] = Field(default_factory=dict)
     errors: dict[str, str] = Field(default_factory=dict)
+    fault_targets: dict[str, FaultTarget] = Field(default_factory=dict)
 
 
 class SoakActionRequest(FrozenStrictBaseModel):
@@ -81,6 +87,7 @@ class SoakActionRequest(FrozenStrictBaseModel):
     harms_cell: bool
     next_due_at: float | None = None
     pod: SoakPodTarget | None = None
+    fault_target: FaultTarget | None = None
 
     @field_validator("target", mode="before")
     @classmethod

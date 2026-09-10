@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 import requests
-from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms
+from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms, ExecSigkillFaultForm
 from tests.utils.soak.state import (
     Event,
     EventLog,
@@ -147,9 +147,24 @@ class SoakActionScheduler:
         if self._injection_enabled is not None and not self._injection_enabled():
             return None
         candidates = None
+        fault_target = None
+        if isinstance(observation, SoakObservation) and form.name.startswith("inject_fault:"):
+            assert isinstance(target, dict), "Fault injection requires a cell target"
+            fault_target = observation.fault_targets.get(target["metadata"]["name"])
+            if fault_target is None:
+                return None
         if isinstance(observation, SoakObservation) and form.name in {"delete_pod", "exec_sigkill"}:
             assert isinstance(target, dict), "Pod faults require a cell target"
             candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
+            if isinstance(form, ExecSigkillFaultForm):
+                candidates = [
+                    pod
+                    for pod in candidates
+                    if all(
+                        container in pod.process_targets and pod.process_targets[container].pattern == pattern
+                        for container, pattern in form.process_patterns.items()
+                    )
+                ]
             if not candidates:
                 return None
         next_due_at = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
@@ -160,6 +175,7 @@ class SoakActionScheduler:
             harms_cell=form.harms_cell,
             next_due_at=next_due_at,
             pod=pod,
+            fault_target=fault_target,
         )
 
 

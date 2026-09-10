@@ -49,7 +49,7 @@ def cell(
             "name": name,
             "labels": {"miles.io/cell-type": cell_type, "miles.io/workers-hash": workers_hash},
         },
-        "status": {"phase": phase, "conditions": conditions},
+        "status": {"phase": phase, "conditions": conditions, "workers_hash": workers_hash},
     }
 
 
@@ -96,7 +96,7 @@ def staged(
             "name": name,
             "labels": {"miles.io/cell-type": cell_type, "miles.io/workers-hash": workers_hash},
         },
-        "status": {"phase": phase, "conditions": conditions},
+        "status": {"phase": phase, "conditions": conditions, "workers_hash": workers_hash},
     }
 
 

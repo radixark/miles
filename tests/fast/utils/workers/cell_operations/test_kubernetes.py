@@ -8,7 +8,12 @@ import pytest
 
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
-from miles.utils.workers.cell_operations.base import CellTerminationNotConfirmedError, CellTerminationOutcome
+from miles.utils.workers.cell_operations.base import (
+    CellTerminationNotConfirmedError,
+    CellTerminationOutcome,
+    FaultTarget,
+    StaleFaultTargetError,
+)
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_info import WorkerInfo
@@ -303,6 +308,25 @@ class TestResume:
 
 
 class TestInjectFault:
+    @pytest.mark.parametrize("changed", ["hash", "pod", "gone", "boot", "cell", "index"])
+    async def test_a_stale_observed_target_is_rejected_before_rpc_dispatch(self, changed: str) -> None:
+        """An old cell or pod identity cannot be dispatched to a replacement worker."""
+        provider = IncarnationProvider(pods=[] if changed == "gone" else [make_pod("engine-0-0", uid="current-pod")])
+        operations = KubernetesCellOperations(provider=provider, namespace="ns")
+        target = FaultTarget(
+            cell_id="other-cell" if changed == "cell" else "engine-0",
+            sub_index=1 if changed == "index" else 0,
+            workers_hash="old-hash" if changed == "hash" else "hash-1",
+            pod_uid="old-pod" if changed == "pod" else "current-pod",
+            boot_uuid=None if changed == "boot" else "boot",
+        )
+
+        with pytest.raises(StaleFaultTargetError):
+            await operations.inject_fault(
+                cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0, expected_target=target
+            )
+        assert provider.submissions == []
+
     def test_submits_the_crash_without_waiting_for_a_result(self) -> None:
         """A self-crashing RPC is sent through the acknowledgement-only worker-handle operation."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})

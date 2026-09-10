@@ -6,6 +6,7 @@ from miles.utils.pydantic_utils import StrictBaseModel
 
 EXPECTED_BOOT_UUID_HEADER = "x-miles-expected-boot-uuid"
 BOOT_UUID_HEADER = "x-miles-boot-uuid"
+POD_UID_HEADER = "x-miles-pod-uid"
 
 BOOT_UUID_MISMATCH_STATUS = 412
 

@@ -420,6 +420,25 @@ class TestUninstallJob:
         assert (code, answers) == (0, [])
         assert slept == [orchestrator_wrapper._UNINSTALL_JOB_RETRY_SLEEPS[0]]
 
+    def test_takeover_during_retry_prevents_another_uninstall_job(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A takeover marker written during retry sleep prevents the next create attempt."""
+        state_file = tmp_path / "orchestrator.state"
+        calls: list[list[str]] = []
+
+        def refuse(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
+            return _refusal("Error from server: try again")
+
+        def take_over(seconds: float) -> None:
+            RunFiles.superseded_marker(state_file=state_file).write_text("new-generation\n")
+
+        monkeypatch.setattr(Kubectl, "_run", staticmethod(refuse))
+        monkeypatch.setattr(orchestrator_wrapper, "sleep", take_over)
+        orchestrator_wrapper._Runner(state_file=str(state_file), uninstall_manifest=MANIFEST)._create_uninstall_job()
+        assert len(calls) == 1
+
     def test_stops_retrying_as_soon_as_the_job_is_there(self, tmp_path, monkeypatch, slept):
         """A retry that finds the job someone else created has nothing left to do."""
         state_file = tmp_path / "orchestrator.state"

@@ -7,10 +7,12 @@ import httpx
 import pytest
 from tests.fast.utils.soak.utils import NAMESPACE, RUN_ID, api_server_fault_forms, config_of, typed_cell
 from tests.utils.soak import fault_forms
+from tests.utils.soak.process_target import ProcessIdentity, ProcessTarget
 from tests.utils.soak.state import SoakActionRequest, SoakPodTarget
 
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.cell_operations.base import FaultTarget
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 
@@ -32,7 +34,10 @@ async def test_async_http_injection_uses_the_recorded_target_and_propagates_fail
         lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs),
     )
     form = fault_forms.InjectFaultForm(base_url="http://control", failure_mode=FailureMode.SIGKILL)
-    request = SoakActionRequest(form_name=form.name, target=typed_cell("actor-7", "actor"), harms_cell=True)
+    identity = FaultTarget(cell_id="actor-7", sub_index=0, workers_hash="generation-0")
+    request = SoakActionRequest(
+        form_name=form.name, target=typed_cell("actor-7", "actor"), harms_cell=True, fault_target=identity
+    )
     if status_code == 200:
         await form.execute(request)
     else:
@@ -40,7 +45,11 @@ async def test_async_http_injection_uses_the_recorded_target_and_propagates_fail
             await form.execute(request)
     assert len(sent) == 1
     assert sent[0].url.path == "/api/v1/cells/actor-7/inject-fault"
-    assert json.loads(sent[0].content) == {"mode": "sigkill", "sub_index": 0}
+    assert json.loads(sent[0].content) == {
+        "mode": "sigkill",
+        "sub_index": 0,
+        "expected_target": identity.model_dump(mode="json"),
+    }
 
 
 @pytest.mark.parametrize("returncode", [0, 1])
@@ -56,7 +65,22 @@ async def test_async_pod_exec_uses_the_selected_pod_and_rejects_a_missing_proces
         target=typed_cell("rollout-engine-7", "rollout"),
         form_name=form.name,
         harms_cell=True,
-        pod=SoakPodTarget(namespace=NAMESPACE, release=release, name="selected-pod", uid="selected-uid"),
+        pod=SoakPodTarget(
+            namespace=NAMESPACE,
+            release=release,
+            name="selected-pod",
+            uid="selected-uid",
+            process_targets={
+                "engine": ProcessTarget(
+                    pod_uid="selected-uid",
+                    boot_id="boot",
+                    pid_namespace="pid:[1]",
+                    init_start_ticks=1,
+                    pattern="sglang::",
+                    processes=[ProcessIdentity(pid=42, start_ticks=2)],
+                )
+            },
+        ),
     )
     command = AsyncMock(return_value=subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=""))
     monkeypatch.setattr(fault_forms, "run_command", command)
@@ -69,17 +93,22 @@ async def test_async_pod_exec_uses_the_selected_pod_and_rejects_a_missing_proces
     assert command.call_args.args[0] == [
         "kubectl",
         "exec",
+        "--stdin",
         "--namespace",
         NAMESPACE,
         "selected-pod",
         "--container",
         "engine",
         "--",
-        "pkill",
-        "-9",
-        "-f",
-        "sglang::",
+        "python3",
+        "-m",
+        "tests.utils.soak.process_target",
+        "kill",
     ]
+    assert (
+        ProcessTarget.model_validate_json(command.call_args.kwargs["stdin_data"])
+        == request.pod.process_targets["engine"]
+    )
 
 
 def test_ray_draws_the_in_process_kills_for_a_trainer_cell() -> None:

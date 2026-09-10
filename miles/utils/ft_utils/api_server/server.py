@@ -14,7 +14,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -126,11 +126,25 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
 
         return await handler.get_cell(name)
 
+    @app.get("/api/v1/cells/{name}/fault-target")
+    async def get_fault_target(name: str, sub_index: int = 0) -> FaultTarget:
+        handler = await _resolve(name)
+        try:
+            return await handler.observe_fault_target(name, sub_index=sub_index)
+        except StaleFaultTargetError as err:
+            raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(err)) from err
+        except NotImplementedError as err:
+            raise _K8sError(status_code=400, reason="BadRequest", message=str(err)) from err
+
     @app.post("/api/v1/cells/{name}/inject-fault")
     async def inject_fault(name: str, body: FaultInjection) -> _OkResponse:
         handler = await _resolve(name)
         try:
-            await handler.inject_fault(name, mode=body.mode, sub_index=body.sub_index)
+            await handler.inject_fault(
+                name, mode=body.mode, sub_index=body.sub_index, expected_target=body.expected_target
+            )
+        except StaleFaultTargetError as err:
+            raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(err)) from err
         except NotImplementedError as err:
             raise _K8sError(
                 status_code=400,

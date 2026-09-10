@@ -1,8 +1,10 @@
 import asyncio
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
-from tests.e2e.deploy.conftest_deploy.hot_restart import soak_form
+from tests.e2e.deploy.conftest_deploy.hot_restart import deployment_target, soak_form
 from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_release_of_config
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
@@ -17,6 +19,7 @@ from tests.utils.soak.state import (
 from tests.utils.soak.views import compute_successful_form_names
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION
 from miles.utils.workers.types import ClusterBackend
 
 
@@ -46,7 +49,24 @@ def test_applied_take_over_is_visible_before_launcher_finishes_and_late_failure_
         log = EventLog()
         log.note_action_requested(request)
 
-        async def launch(spec: Gsm8kLaunchSpec, *, log_path: Path, timeout_seconds: float) -> int:
+        async def read_workloads(args: list[str], *, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
+            items = (
+                [
+                    {
+                        "metadata": {"name": name, "uid": f"uid-{name}", "generation": 1},
+                        "spec": {"template": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "before"}}}},
+                    }
+                    for name in workloads
+                ]
+                if args[2] == "StatefulSet"
+                else []
+            )
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=json.dumps({"items": items}), stderr="")
+
+        monkeypatch.setattr(deployment_target, "run_command", read_workloads)
+
+        async def launch(spec: Gsm8kLaunchSpec, *, log_path: Path, timeout_seconds: float, module_name: str) -> int:
+            assert module_name == "tests.e2e.deploy.conftest_deploy.hot_restart.guarded_launcher"
             assert spec.config.run_id == config.run_id
             assert spec.config.namespace == config.namespace
             assert spec.config.hot_restart

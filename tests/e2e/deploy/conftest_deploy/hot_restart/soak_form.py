@@ -3,6 +3,7 @@ import random
 from pathlib import Path
 
 from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
+from tests.e2e.deploy.conftest_deploy.hot_restart.deployment_target import validate_deployment_target
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import REPLACED_LAUNCH_EXIT_CODE, compute_hot_restart_config
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
@@ -11,6 +12,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
     TAKE_OVER_TIMEOUT_SECONDS,
     restamped_replaced_workloads,
 )
+from tests.e2e.deploy.conftest_deploy.hot_restart.guarded_launcher import HotRestartLaunchSpec
 from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.fault_forms import BaseFaultForm
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
@@ -68,7 +70,14 @@ class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
         assert request.form_name == self.name
         assert target.namespace == self._launch_spec.config.namespace
         config = compute_hot_restart_config(self._launch_spec.config, installed_release=target.release)
-        spec = self._launch_spec.model_copy(update={"config": config})
+        await validate_deployment_target(target)
+        spec = HotRestartLaunchSpec(
+            config=config,
+            train_args=self._launch_spec.train_args,
+            fully_async=self._launch_spec.fully_async,
+            target=target,
+            guard_directory=self._log_dir / f"guard-{request.request_id}",
+        )
         log_path = self._log_dir / f"launcher-{request.request_id}.log"
         launcher = asyncio.create_task(self._launch(request=request, spec=spec, log_path=log_path))
         try:
@@ -88,7 +97,12 @@ class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
         raise AssertionError("Hot restart must run through the async soak runner")
 
     async def _launch(self, *, request: SoakActionRequest, spec: Gsm8kLaunchSpec, log_path: Path) -> int:
-        result = await launch(spec, log_path=log_path, timeout_seconds=SESSION_TIMEOUT_SECONDS)
+        result = await launch(
+            spec,
+            log_path=log_path,
+            timeout_seconds=SESSION_TIMEOUT_SECONDS,
+            module_name="tests.e2e.deploy.conftest_deploy.hot_restart.guarded_launcher",
+        )
         self._event_log.note_launcher_exited(
             SoakLauncherExitedEvent(request_id=request.request_id, returncode=result, log_path=log_path)
         )

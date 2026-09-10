@@ -5,6 +5,7 @@ import logging
 import signal
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from time import sleep
 from types import FrameType
 
@@ -14,6 +15,7 @@ from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state im
     OrchestratorState,
     OrchestratorStatus,
 )
+from miles.utils.external_utils.command_utils.helm_backend.orchestrator.uninstall_lock import uninstall_lock
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.workers.process_utils import launch_bound_subprocess
 from miles.utils.workers.serving.utils import split_worker_argv
@@ -123,16 +125,16 @@ class _Runner:
         if self.uninstall_manifest is None:
             return
 
-        marker = RunFiles.superseded_marker(state_file=self.state_file)
-        if marker.exists():
-            logger.info(
-                f"{marker} says a later launch took this run over, so this generation leaves the uninstall to it"
-            )
-            return
-
         for attempt, sleep_seconds in enumerate(_UNINSTALL_JOB_RETRY_SLEEPS, start=1):
-            if self._create_uninstall_job_once(attempt=attempt):
-                return
+            with uninstall_lock(Path(self.state_file)):
+                marker = RunFiles.superseded_marker(state_file=self.state_file)
+                if marker.exists():
+                    logger.info(
+                        f"{marker} says a later launch took this run over, so this generation leaves the uninstall to it"
+                    )
+                    return
+                if self._create_uninstall_job_once(attempt=attempt):
+                    return
             sleep(sleep_seconds)
 
         logger.error(

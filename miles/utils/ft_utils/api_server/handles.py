@@ -6,7 +6,7 @@ from typing import Protocol
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
@@ -91,8 +91,18 @@ class _CellHandler:
     async def resume(self, cell_id: str) -> None:
         await self._operations.resume(cell_id=cell_id)
 
-    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        await self._operations.inject_fault(cell_id=cell_id, mode=mode, sub_index=sub_index)
+    async def observe_fault_target(self, cell_id: str, *, sub_index: int) -> FaultTarget:
+        return await self._operations.observe_fault_target(cell_id=cell_id, sub_index=sub_index)
+
+    async def inject_fault(
+        self, cell_id: str, *, mode: FailureMode, sub_index: int, expected_target: FaultTarget | None = None
+    ) -> None:
+        if expected_target is None:
+            await self._operations.inject_fault(cell_id=cell_id, mode=mode, sub_index=sub_index)
+        else:
+            await self._operations.inject_fault(
+                cell_id=cell_id, mode=mode, sub_index=sub_index, expected_target=expected_target
+            )
 
 
 def _compute_status_of_generation(status: CellStatus | None, *, workers_hash: str) -> CellStatus:

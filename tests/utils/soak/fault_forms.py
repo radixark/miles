@@ -7,6 +7,7 @@ import httpx
 import requests
 from tests.utils.soak.action import SoakActionForm, run_command
 from tests.utils.soak.pod_manipulation import (
+    delete_observed_pod,
     delete_one_pod_of_cell,
     list_pod_names_of_cell,
     sigkill_process_patterns_in_pod,
@@ -56,10 +57,17 @@ class InjectFaultForm(BaseFaultForm, SoakActionForm):
     async def execute(self, request: SoakActionRequest) -> None:
         assert request.form_name == self.name, f"Request {request.request_id} names another form: {request.form_name}"
         assert isinstance(request.target, dict), "Fault injection requires a cell target"
+        assert request.fault_target is not None, "Fault injection requires an observed process identity"
+        assert request.fault_target.cell_id == request.target["metadata"]["name"]
+        assert request.fault_target.workers_hash == request.target["status"]["workers_hash"]
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(
                 f"{self._base_url}/api/v1/cells/{request.target['metadata']['name']}/inject-fault",
-                json={"mode": self._failure_mode.value, "sub_index": 0},
+                json={
+                    "mode": self._failure_mode.value,
+                    "sub_index": request.fault_target.sub_index,
+                    "expected_target": request.fault_target.model_dump(mode="json"),
+                },
             )
             response.raise_for_status()
 
@@ -90,10 +98,7 @@ class DeletePodFaultForm(BaseFaultForm, SoakActionForm):
         pod = _validate_pod_request(
             request=request, form_name=self.name, namespace=self._namespace, release=self._release
         )
-        await run_command(
-            ["kubectl", "delete", "pod", "--namespace", pod.namespace, "--wait=false", pod.name],
-            timeout_seconds=KUBECTL_TIMEOUT_SECONDS,
-        )
+        await delete_observed_pod(pod)
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         delete_one_pod_of_cell(
@@ -117,27 +122,35 @@ class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
     def name(self) -> str:
         return EXEC_SIGKILL_FORM_NAME
 
+    @property
+    def process_patterns(self) -> dict[str, str]:
+        return {self._container: self._process_pattern}
+
     async def execute(self, request: SoakActionRequest) -> None:
         pod = _validate_pod_request(
             request=request, form_name=self.name, namespace=self._namespace, release=self._release
         )
+        target = pod.process_targets[self._container]
+        assert target.pod_uid == pod.uid and target.pattern == self._process_pattern
         result = await run_command(
             [
                 "kubectl",
                 "exec",
+                "--stdin",
                 "--namespace",
                 pod.namespace,
                 pod.name,
                 "--container",
                 self._container,
                 "--",
-                "pkill",
-                "-9",
-                "-f",
-                self._process_pattern,
+                "python3",
+                "-m",
+                "tests.utils.soak.process_target",
+                "kill",
             ],
             timeout_seconds=KUBECTL_TIMEOUT_SECONDS,
             check=False,
+            stdin_data=target.model_dump_json(),
         )
         assert result.returncode == 0, (
             f"No process matching {self._process_pattern!r} was killed inside {pod.name} (exit "
