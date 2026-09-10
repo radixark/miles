@@ -58,7 +58,12 @@ def _install(monkeypatch, seen: _Seen) -> None:
 
 
 class TestOneConfigPerSoak:
-    @pytest.mark.parametrize("scenario", ["random", "all_gather", "all_targets"])
+    def test_random_soak_rejects_colocation_before_launch(self) -> None:
+        """A colocated topology cannot silently bypass real disaggregated P2P fault coverage."""
+        with pytest.raises(AssertionError, match="disaggregated"):
+            scenario_random_crash.run_ci(mode="kill_rollout__dp4__colocate")
+
+    @pytest.mark.parametrize("scenario", ["random", "random_real", "all_gather", "all_targets"])
     def test_the_random_soak_builds_one_config_and_aims_every_step_at_it(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scenario: str
     ) -> None:
@@ -108,6 +113,7 @@ class TestOneConfigPerSoak:
         scenario_random_crash.run_ci(
             {
                 "random": "kill_train__dp4_cp2__fake_rollout__moe_5layer",
+                "random_real": "kill_rollout__dp4",
                 "all_gather": "kill_train__dp2_tp2",
                 "all_targets": "kill_rollout__dp2_tp2",
             }[scenario],
@@ -128,15 +134,24 @@ class TestOneConfigPerSoak:
         assert [config is run_config for config in seen.trained] == [True]
         assert len(spawns) == len(launches) == 1
         assert spawns[0]["config"] is run_config
+        assert spawns[0].get("injection_enabled") is None
         assert (
             hook_checks
             == {
                 "random": [],
+                "random_real": [],
                 "all_gather": ["effects", "survivors"],
                 "all_targets": ["effects", "p2p", "batch_recovery"],
             }[scenario]
         )
-        if scenario != "random":
+        if scenario == "random_real":
+            mode = launches[0]["mode"]
+            assert mode.has_real_rollout and not mode.colocate
+            assert mode.total_node_gpus == 8
+            argv = shlex.split(launches[0]["train_args"])
+            assert argv.count("--update-weight-transfer-mode") == 1
+            assert argv[argv.index("--update-weight-transfer-mode") + 1] == "p2p"
+        if scenario in {"all_gather", "all_targets"}:
             mode = launches[0]["mode"]
             assert mode.has_real_rollout and not mode.colocate
             assert mode.num_cells == 2

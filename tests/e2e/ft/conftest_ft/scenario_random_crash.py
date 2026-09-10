@@ -90,6 +90,7 @@ def run_ci(
     manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
     """
     ft_mode: FTTestMode = resolve_mode(mode)
+    assert not ft_mode.colocate, "Random fault soaks require disaggregated trainers and rollout engines"
     if all_p2p_targets:
         assert precise_p2p and mode == "kill_rollout__dp2_tp2", "All-target faults require the rollout P2P scenario"
         assert min_survivors == 2, "All-sender-target faults must preserve the other sender's two targets"
@@ -136,8 +137,10 @@ def run_ci(
         + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
+    if ft_mode.has_real_rollout:
+        train_args += "--update-weight-transfer-mode p2p "
     if precise_all_gather or precise_p2p:
-        train_args += "--update-weight-transfer-mode p2p --train-step-timeout 600 --update-weights-timeout 600 "
+        train_args += "--train-step-timeout 600 --update-weights-timeout 600 "
 
     base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     evidence_dir = evidence_directory(Path(dump_dir))

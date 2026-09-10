@@ -24,6 +24,15 @@ def _mode(
 
 
 class TestTotalNodeGpus:
+    def test_rollout_random_mode_reserves_separate_gpus_without_changing_parallelism(self) -> None:
+        """Disaggregated random rollout faults retain four trainers and four engines on eight GPUs."""
+        mode = MODES["kill_rollout__dp4"]
+        assert not mode.colocate
+        assert mode.num_cells == 4 and mode.parallel_args == ""
+        assert mode.rollout_num_engines == 4 and mode.rollout_gpus_per_engine == 1
+        assert mode.total_node_gpus == 8
+        assert mode.ft_components == ("rollout",)
+
     def test_rollout_only_colocated_mode_uses_plain_four_way_data_parallelism(self) -> None:
         """Rollout-only FT must not add context parallelism to the four-GPU trainer."""
         mode = MODES["kill_rollout__dp4__colocate"]

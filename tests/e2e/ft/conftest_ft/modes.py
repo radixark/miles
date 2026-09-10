@@ -107,6 +107,17 @@ def _compute_parallelism_segment(mode: FTTestMode) -> str:
 
 
 MODES: dict[str, FTTestMode] = {
+    "kill_rollout__dp4": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=4,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        ft_components=("rollout",),
+        parallel_args="",
+    ),
     "kill_rollout__dp2_tp2": FTTestMode(
         model_name=DENSE_MODEL_NAME,
         model_hf_repo=DENSE_MODEL_HF_REPO,
