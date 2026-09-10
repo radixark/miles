@@ -41,6 +41,7 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(
     est_time=1200,
     suite="stage-c-2-gpu-h200",
+    hardware=["hopper"],
     labels=["agentic"],
     disabled="needs a network route to the sandbox service and its key on the runner; run manually on a GPU devbox that has both",
 )
