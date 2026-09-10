@@ -930,7 +930,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            report = self.weight_updater.update_weights(weight_version=weight_version)
+            with self._fault_hooks.weight_update_scope(weight_version=weight_version):
+                report = self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
             report.validate_assignment(engine_cell_ids)
 

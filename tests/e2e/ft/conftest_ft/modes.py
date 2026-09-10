@@ -107,6 +107,16 @@ def _compute_parallelism_segment(mode: FTTestMode) -> str:
 
 
 MODES: dict[str, FTTestMode] = {
+    "kill_train__dp2_tp2": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=2,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        parallel_args="--tensor-model-parallel-size 2 --sequence-parallel",
+    ),
     # --- 1-node (8 GPUs) variants ---
     "kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer": FTTestMode(
         model_name=MODEL_NAME,

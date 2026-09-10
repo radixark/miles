@@ -31,6 +31,12 @@
 
 ### Scenarios
 
+- **Precise all-gather entry**: `test_precise_all_gather__kill_train__dp2_tp2.py` calls the shared random-crash runner with `precise_all_gather=True`.
+- **Precise topology**: real rollout engines, disaggregated TP2 trainers, p2p weight transfer, and 600-second training/update deadlines.
+- **Precise faults**: trainer all-gather hooks inject `sigkill`, GIL deadlock, and training-thread deadlock; every enabled form must produce an effect receipt and matching worker dispatch evidence.
+- **Precise recovery**: the normal healing and completed-tail assertions remain mandatory.
+- **Calibration**: the deadlines and 4800-second CI estimate have not been calibrated by a run.
+
 - **Scenario logic**: `conftest_ft/scenario_<name>.py` — a typer app plus a `run_ci(mode)` runner.
 
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
@@ -56,6 +62,7 @@
 
 | Mode | Nodes | GPUs (train + rollout) | DP cells | Parallelism | Rollout | Model | `ft_components` | Why it exists |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `kill_train__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | real weight-update tensor all-gather fault hooks |
 | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 TP2 EP2 | debug data | 5-layer MoE | `("train",)` | TP + EP coverage |
 | `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 PP2 | debug data | 5-layer MoE | `("train",)` | PP coverage, via `--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2` |
 | `kill_train__dp4_cp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 4 | CP2 | debug data | 5-layer MoE | `("train",)` | multi-replica coverage (>= 4 cells) |

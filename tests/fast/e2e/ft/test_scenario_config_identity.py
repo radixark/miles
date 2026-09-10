@@ -1,10 +1,15 @@
 import dataclasses
 import itertools
+import shlex
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from tests.e2e.ft.conftest_ft import scenario_random_crash, scenario_realistic_gsm8k
 from tests.utils.soak import state
-from tests.utils.soak.recipes import gsm8k
+from tests.utils.soak.hook_fault_form import HookFaultForm
+from tests.utils.soak.recipes import gsm8k, gsm8k_launcher
 
 from miles.utils.external_utils import command_utils
 
@@ -34,7 +39,7 @@ class _StubInjector:
     def __init__(self) -> None:
         self.event_log = state.EventLog()
 
-    def stop_and_join(self) -> None:
+    def stop_and_join(self, *, teardown: Callable[[], None]) -> None:
         pass
 
 
@@ -53,7 +58,10 @@ def _install(monkeypatch, seen: _Seen) -> None:
 
 
 class TestOneConfigPerSoak:
-    def test_the_random_soak_builds_one_config_and_aims_every_step_at_it(self, monkeypatch, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("precise", [False, True])
+    def test_the_random_soak_builds_one_config_and_aims_every_step_at_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, precise: bool
+    ) -> None:
         """Regression: a second default_config gave the injector a run_id no release was ever installed under."""
         seen = _Seen()
         _install(monkeypatch, seen)
@@ -68,17 +76,67 @@ class TestOneConfigPerSoak:
             scenario_random_crash, "materialize_cyclic_debug_rollout_data", lambda count: str(tmp_path / "rollout")
         )
         monkeypatch.setattr(scenario_random_crash, "get_common_train_args", lambda mode, **kwargs: "")
-        monkeypatch.setattr(scenario_random_crash, "get_ft_args", lambda mode: "")
-        monkeypatch.setattr(scenario_random_crash, "spawn_fault_injector", lambda **kwargs: _StubInjector())
+        monkeypatch.setattr(scenario_random_crash, "get_ft_args", lambda mode, **kwargs: "")
+        spawns: list[dict] = []
+        launches: list[dict] = []
+        hook_checks: list[str] = []
+        monkeypatch.setattr(
+            scenario_random_crash, "spawn_fault_injector", lambda **kwargs: spawns.append(kwargs) or _StubInjector()
+        )
         monkeypatch.setattr(scenario_random_crash, "assert_healing", lambda ft_components, **kwargs: None)
+        monkeypatch.setattr(scenario_random_crash, "assert_tail_complete", lambda events: None)
+        monkeypatch.setattr(
+            scenario_random_crash,
+            "run_training",
+            lambda **kwargs: launches.append(kwargs) or seen.trained.append(kwargs["config"]),
+        )
+        monkeypatch.setattr(scenario_random_crash, "read_events", lambda path: [])
+        monkeypatch.setattr(
+            scenario_random_crash, "assert_hook_effects", lambda events, **kwargs: hook_checks.append("effects")
+        )
+        monkeypatch.setattr(
+            scenario_random_crash, "assert_hook_survivors", lambda events, **kwargs: hook_checks.append("survivors")
+        )
 
-        scenario_random_crash.run_ci("kill_train__dp4_cp2__fake_rollout__moe_5layer", num_steps=1)
+        scenario_random_crash.run_ci(
+            "kill_train__dp2_tp2" if precise else "kill_train__dp4_cp2__fake_rollout__moe_5layer",
+            num_steps=60,
+            precise_all_gather=precise,
+        )
 
         assert [config.run_id for config in seen.created] == ["sentinel-0"]
         assert dump_run_ids == ["sentinel-0"]
-        assert [config is seen.created[0] for config in seen.prepared] == [True]
-        assert [config is seen.created[0] for config in seen.asked_for_host] == [True]
-        assert [config is seen.created[0] for config in seen.trained] == [True]
+        run_config = seen.prepared[0]
+        assert run_config.run_id == seen.created[0].run_id
+        assert run_config.ray_submission_id
+        assert [config is run_config for config in seen.prepared] == [True]
+        assert [config is run_config for config in seen.asked_for_host] == [True]
+        assert [config is run_config for config in seen.trained] == [True]
+        assert len(spawns) == len(launches) == 1
+        assert spawns[0]["config"] is run_config
+        assert hook_checks == (["effects", "survivors"] if precise else [])
+        if precise:
+            mode = launches[0]["mode"]
+            assert mode.has_real_rollout and not mode.colocate
+            assert mode.num_cells == 2
+            parallel = shlex.split(mode.parallel_args)
+            assert parallel[parallel.index("--tensor-model-parallel-size") + 1] == "2"
+            argv = shlex.split(launches[0]["train_args"])
+            for flag, value in {
+                "--update-weight-transfer-mode": "p2p",
+                "--train-step-timeout": "600",
+                "--update-weights-timeout": "600",
+            }.items():
+                assert argv.count(flag) == 1
+                assert argv[argv.index(flag) + 1] == value
+            forms = spawns[0]["cell_fault_forms"]
+            assert set(forms) == {"actor"}
+            assert all(isinstance(form, HookFaultForm) for form in forms["actor"])
+            assert {form.name for form in forms["actor"]} == {
+                "hook:trainer_before_all_gather:sigkill:0ms",
+                "hook:trainer_before_all_gather:deadlock:0ms",
+                "hook:trainer_before_all_gather:thread_deadlock:0ms",
+            }
 
     def test_the_gsm8k_soak_builds_one_config_and_aims_every_step_at_it(self, monkeypatch, tmp_path: Path) -> None:
         """The same bug here would point the injector at one release while training ran under another."""
@@ -92,6 +150,16 @@ class TestOneConfigPerSoak:
             lambda config: seen.prepared.append(config) or _RecordingBackend(config, seen),
         )
         monkeypatch.setattr(gsm8k, "prepare_gsm8k", lambda U: None)
+        monkeypatch.setattr(gsm8k, "get_dumps_root", lambda: tmp_path)
+        monkeypatch.setattr(
+            gsm8k, "validate_dump_storage", lambda path: SimpleNamespace(model_dump_json=lambda **kwargs: "{}")
+        )
+        monkeypatch.setattr(gsm8k, "validate_training_storage", lambda args: None)
+        monkeypatch.setattr(gsm8k, "assert_tail_complete", lambda events: None)
+        monkeypatch.setattr(gsm8k, "assert_tail_quality", lambda events, **kwargs: None)
+        monkeypatch.setattr(
+            gsm8k_launcher, "execute_session", lambda *, run, injector, fully_async: run.launch(run.config)
+        )
         dump_run_ids: list[str] = []
         monkeypatch.setattr(
             gsm8k,
@@ -101,13 +169,16 @@ class TestOneConfigPerSoak:
         monkeypatch.setattr(gsm8k, "spawn_fault_injector", lambda **kwargs: _StubInjector())
         monkeypatch.setattr(scenario_realistic_gsm8k, "assert_healing", lambda ft_components, **kwargs: None)
 
-        scenario_realistic_gsm8k.run_ci(num_rollout=1)
+        scenario_realistic_gsm8k.run_ci(num_rollout=100)
 
         assert [config.run_id for config in seen.created] == ["sentinel-0"]
         assert dump_run_ids == ["sentinel-0"]
-        assert [config is seen.created[0] for config in seen.prepared] == [True, True]
-        assert [config is seen.created[0] for config in seen.asked_for_host] == [True]
-        assert [config is seen.created[0] for config in seen.trained] == [True]
+        run_config = seen.prepared[0]
+        assert run_config.run_id == seen.created[0].run_id
+        assert run_config.ray_submission_id
+        assert [config is run_config for config in seen.prepared] == [True, True]
+        assert [config is run_config for config in seen.asked_for_host] == [True]
+        assert [config is run_config for config in seen.trained] == [True]
 
 
 class TestRelaunchingASoak:
@@ -116,6 +187,7 @@ class TestRelaunchingASoak:
         seen = _Seen()
         _install(monkeypatch, seen)
         monkeypatch.setattr(gsm8k, "create_backend_for_run", lambda config: _RecordingBackend(config, seen))
+        monkeypatch.setattr(gsm8k, "validate_training_storage", lambda args: None)
         relaunch = dataclasses.replace(command_utils.default_config(), hot_restart="orchestration")
 
         gsm8k.launch_gsm8k(relaunch, train_args="", fully_async=False)

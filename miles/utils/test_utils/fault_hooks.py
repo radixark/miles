@@ -1,6 +1,9 @@
 import logging
 import threading
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
 from uuid import uuid4
 
@@ -15,6 +18,12 @@ logger = logging.getLogger(__name__)
 
 FaultHookName = Literal["trainer_before_all_gather", "trainer_before_weight_send"]
 FaultHookStatus = Literal["armed", "scheduled", "cancelled", "expired", "fired", "failed"]
+_active_hook: ContextVar[Callable[[FaultHookName], None] | None] = ContextVar("active_fault_hook", default=None)
+
+
+def reach_fault_hook(hook: FaultHookName) -> None:
+    if (callback := _active_hook.get()) is not None:
+        callback(hook)
 
 
 class FaultHookRequest(FrozenStrictBaseModel):
@@ -42,6 +51,7 @@ class FaultHookRecord(FrozenStrictBaseModel):
     due_at: float | None = None
     rollout_id: int | None = None
     attempt: int | None = None
+    weight_version: int | None = None
 
 
 class FaultHookCommand(FrozenStrictBaseModel):
@@ -61,6 +71,17 @@ class FaultHookRegistry:
         self._lock = threading.Lock()
         self._records: dict[str, FaultHookRecord] = {}
         self._timers: dict[str, threading.Timer] = {}
+
+    @contextmanager
+    def weight_update_scope(self, *, weight_version: int) -> Iterator[None]:
+        def reach(hook: FaultHookName) -> None:
+            self.reach(hook=hook, weight_version=weight_version)
+
+        token = _active_hook.set(reach)
+        try:
+            yield
+        finally:
+            _active_hook.reset(token)
 
     def control(self, command: FaultHookCommand) -> str | FaultHookRecord:
         if command.operation == "inspect":
@@ -111,7 +132,14 @@ class FaultHookRegistry:
             self._expire()
             return self._records[request_id]
 
-    def reach(self, *, hook: FaultHookName, rollout_id: int, attempt: int) -> None:
+    def reach(
+        self,
+        *,
+        hook: FaultHookName,
+        rollout_id: int | None = None,
+        attempt: int | None = None,
+        weight_version: int | None = None,
+    ) -> None:
         with self._lock:
             self._expire()
             record = next(
@@ -125,6 +153,7 @@ class FaultHookRegistry:
                 update={
                     "rollout_id": rollout_id,
                     "attempt": attempt,
+                    "weight_version": weight_version,
                     "reached_at": now,
                     "due_at": now + record.request.delay_ms / 1000,
                 }
@@ -204,6 +233,7 @@ class FaultHookRegistry:
                 due_at=record.due_at,
                 rollout_id=record.rollout_id,
                 attempt=record.attempt,
+                weight_version=record.weight_version,
             ),
         )
         self._records[record.request.request_id] = record

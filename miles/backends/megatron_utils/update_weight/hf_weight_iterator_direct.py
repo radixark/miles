@@ -12,6 +12,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.test_utils.fault_hooks import reach_fault_hook
 from miles.utils.types import ParamInfo
 
 from ..megatron_to_hf import convert_to_hf
@@ -159,6 +160,7 @@ def _materialize_expert_batch(
     handles = []
     for i, param in enumerate(etp_gathered):
         buffers = [torch.empty_like(param, device=torch.cuda.current_device()) for _ in range(ep.size)]
+        reach_fault_hook("trainer_before_all_gather")
         handles.append(dist.all_gather(buffers, param, group=ep.group, async_op=True))
         for ep_rank, ep_names in enumerate(all_names):
             all_gathered[ep_rank].append((ep_names[i], buffers[ep_rank]))
@@ -357,6 +359,7 @@ def all_gather_params_async(
                 continue
 
             param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
+            reach_fault_hook("trainer_before_all_gather")
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
             gather_tasks.append((info, None, handle, param_partitions, param.partition_dim, param.partition_stride))
             handles.append(handle)

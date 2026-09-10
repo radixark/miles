@@ -91,8 +91,10 @@ class InjectFaultForm(BaseFaultForm, SoakActionForm):
                 logger.warning("Fault submission outcome is unknown: %s", request.request_id, exc_info=True)
             return await self._read_receipt(client=client, request=request)
 
-    async def _read_receipt(self, *, client: httpx.AsyncClient, request: SoakActionRequest) -> dict:
-        async with asyncio.timeout(30.0):
+    async def _read_receipt(
+        self, *, client: httpx.AsyncClient, request: SoakActionRequest, timeout_seconds: float = 30.0
+    ) -> dict:
+        async with asyncio.timeout(timeout_seconds):
             while True:
                 try:
                     response = await client.get(f"{self._base_url}/api/v1/fault-receipts/{request.request_id}")

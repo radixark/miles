@@ -4,6 +4,7 @@
 
 from functools import partial
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
@@ -27,10 +28,13 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.utils.soak.checks.ft import assert_healing
+from tests.utils.soak.checks.hooks import assert_hook_effects, assert_hook_survivors
 from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.config import create_policy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, spawn_fault_injector
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
+from tests.utils.soak.hook_fault_form import HookFaultForm
+from tests.utils.soak.state import event_source
 from tests.utils.soak.teardown import teardown_run
 from tests.utils.soak.utils import (
     create_soak_config,
@@ -40,8 +44,10 @@ from tests.utils.soak.utils import (
     get_train_script,
 )
 
-from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
+from miles.utils.audit_utils.event_logger.models import FaultHookEvent, TrainGroupStepEndEvent
 from miles.utils.external_utils import command_utils
+from miles.utils.test_utils.fault_injector import FailureMode
 
 app: typer.Typer = typer.Typer()
 
@@ -64,6 +70,7 @@ def run_ci(
     allow_during_recovery: AllowDuringRecoveryOption = True,
     min_survivors: MinSurvivorsOption = 1,
     max_concurrent_actions: MaxConcurrentActionsOption = 1,
+    precise_all_gather: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -75,12 +82,16 @@ def run_ci(
     manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
     """
     ft_mode: FTTestMode = resolve_mode(mode)
+    if precise_all_gather:
+        assert mode == "kill_train__dp2_tp2", "Precise all-gather requires the real-rollout TP2 mode"
     tail_policy = create_tail_policy(num_rollout=num_steps)
     if fully_async:
         assert_mode_supports_fully_async(ft_mode, mode=mode)
 
     config = create_soak_config(command_utils.default_config())
     test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
+    if precise_all_gather:
+        test_name = f"precise_all_gather{'_fully_async' if fully_async else ''}"
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
@@ -103,9 +114,26 @@ def run_ci(
         + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
+    if precise_all_gather:
+        train_args += "--update-weight-transfer-mode p2p --train-step-timeout 600 --update-weights-timeout 600 "
 
     base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     evidence_dir = evidence_directory(Path(dump_dir))
+    cell_fault_forms = (
+        {
+            "actor": [
+                HookFaultForm(
+                    base_url=base_url,
+                    failure_mode=failure_mode,
+                    hook="trainer_before_all_gather",
+                    lifetime_seconds=300,
+                )
+                for failure_mode in [FailureMode.SIGKILL, FailureMode.DEADLOCK, FailureMode.THREAD_DEADLOCK]
+            ]
+        }
+        if precise_all_gather
+        else create_cell_fault_forms(base_url=base_url, config=config)
+    )
     injector = spawn_fault_injector(
         tail_policy=tail_policy,
         policy=create_policy(
@@ -124,7 +152,7 @@ def run_ci(
         base_url=base_url,
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
-        cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
+        cell_fault_forms=cell_fault_forms,
     )
 
     try:
@@ -143,6 +171,19 @@ def run_ci(
         )
 
     assert_tail_complete(injector.event_log.events)
+    if precise_all_gather:
+        hook_event_dir = event_source(
+            injector.event_log.events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME
+        )
+        training_events = read_events(hook_event_dir)
+        assert_hook_effects(
+            injector.event_log.events,
+            hook_events=[event for event in training_events if isinstance(event, FaultHookEvent)],
+        )
+        assert_hook_survivors(
+            injector.event_log.events,
+            steps=[event for event in training_events if isinstance(event, TrainGroupStepEndEvent)],
+        )
     assert_healing(
         ft_mode.ft_components,
         injector=injector,

@@ -98,6 +98,7 @@ class TrainGroupStepEndEvent(EventBase):
     type: Literal["train_group_step_end"] = "train_group_step_end"
     rollout_id: int
     cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
+    cell_incarnations: dict[str, str] = Field(default_factory=dict)
 
 
 class CellReconfigureEvent(EventBase):
@@ -159,6 +160,7 @@ class FaultHookEvent(EventBase):
     due_at: float | None = None
     rollout_id: int | None = None
     attempt: int | None = None
+    weight_version: int | None = None
 
 
 Event = Annotated[

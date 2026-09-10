@@ -10,6 +10,35 @@ from miles.utils.test_utils.fault_hooks import FaultHookRegistry, FaultHookReque
 
 
 class TestFaultHookRegistry:
+    def test_weight_update_scope_records_version_and_unwinds_after_failure(
+        self, fault_hook_registry: FaultHookRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failed update preserves its version without leaking its registry into later work."""
+        registry = fault_hook_registry
+        request = FaultHookRequest(
+            request_id="scoped", instance_id=registry.instance_id, hook="trainer_before_all_gather", mode="exit"
+        )
+        registry.arm(request)
+        monkeypatch.setattr(fault_hooks, "inject_fault", lambda **kwargs: None)
+
+        fault_hooks.reach_fault_hook(request.hook)
+        assert registry.read(request_id=request.request_id, instance_id=registry.instance_id).status == "armed"
+        with pytest.raises(RuntimeError, match="unexpectedly returned"):
+            with registry.weight_update_scope(weight_version=23):
+                fault_hooks.reach_fault_hook(request.hook)
+
+        record = registry.read(request_id=request.request_id, instance_id=registry.instance_id)
+        assert record.weight_version == 23
+        assert record.rollout_id is None
+        assert record.attempt is None
+        events = [event for event in read_events(tmp_path) if isinstance(event, FaultHookEvent)]
+        assert events[-1].weight_version == 23
+
+        next_request = request.model_copy(update={"request_id": "next"})
+        registry.arm(next_request)
+        fault_hooks.reach_fault_hook(request.hook)
+        assert registry.read(request_id=next_request.request_id, instance_id=registry.instance_id).status == "armed"
+
     @pytest.mark.parametrize("outcome", ["fire", "cancel", "expire"])
     def test_delayed_dispatch_respects_cancellation_and_expiry(
         self,
