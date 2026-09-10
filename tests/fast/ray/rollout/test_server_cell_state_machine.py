@@ -289,7 +289,7 @@ class TestTick:
 
         await cell.tick()
 
-        assert cell_env["memory_calls"] == [("release", dict(tags=None)), ("resume", dict(tags=["weights"]))]
+        assert cell_env["memory_calls"] == [("release", dict(tags=["kv_cache", "cuda_graph"]))]
 
     async def test_the_weight_checker_snapshots_before_the_memory_is_handed_back(self, cell_env):
         """Releasing the occupation discards the loaded weights, so a later snapshot records garbage."""
@@ -352,7 +352,6 @@ class TestTick:
         ("failing_operation", "error_message"),
         [
             ("release_memory_occupation", "engine refused to release its memory"),
-            ("resume_memory_occupation", "engine refused to resume its weights"),
         ],
     )
     async def test_a_cell_whose_memory_reconfiguration_fails_is_retried_by_a_later_tick(
@@ -452,7 +451,7 @@ class TestTick:
             f"check_weights:{kwargs['action']}" if name == "check_weights" else name
             for name, kwargs in cell_env["memory_calls"]
         ]
-        assert names == ["check_weights:snapshot", "release", "resume", "check_weights:reset_tensors"]
+        assert names == ["check_weights:snapshot", "release", "check_weights:reset_tensors"]
 
     async def test_the_snapshot_is_taken_over_the_whole_model_without_a_skip_list(self, cell_env):
         """The baseline must match what the controller-side reset and comparison later cover."""
