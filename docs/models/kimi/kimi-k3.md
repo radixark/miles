@@ -29,13 +29,13 @@ as HF-named chunks over CUDA IPC.
 
 ## 2. Supported Variants
 
-| Variant | Layers | Purpose | GPUs |
+| `--model-name` | Layers | Purpose | GPUs |
 |---|---|---|---|
-| `full` | full stack | the real model | 64 (16 × 4), validated |
-| `4layer` | 4 | smoke test, default | single node |
+| `Kimi-K3` | 93 | the release | 64 (16 × 4), validated |
+| `Kimi-K3-4layer` | 4 (1 dense + 3 MoE) | smoke test and CI, default | one node; two for rollout TP16 |
 
-`--model-variant` selects between them and sets the matching checkpoint paths and
-`megatron_model_type`.
+The name sets the checkpoint paths under `--model-dir` and the `megatron_model_type`;
+`--train-mode lora|full` picks the recipe.
 
 Architecture, from `scripts/models/kimi-k3.py`: hidden 7168, FFN 33792, 96 attention heads,
 `kv_channels=256`, MLA with `q_lora_rank=1536` / `kv_lora_rank=512` /
