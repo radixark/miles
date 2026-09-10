@@ -17,10 +17,7 @@ def maybe_fake_quantize_nvfp4_weight_tensors(
         return weight_tensors
 
     # Keep CuTe DSL optional for every process that does not enable this path.
-    from miles.utils.fused_nvfp4_qdq import (
-        current_nvfp4_qdq_config,
-        fake_nvfp4_quantization_ste,
-    )
+    from miles.utils.fused_nvfp4_qdq import current_nvfp4_qdq_config, fake_nvfp4_quantization_ste
 
     qdq_config = current_nvfp4_qdq_config()
     return [fake_nvfp4_quantization_ste(weight, qdq_config) for weight in weight_tensors]
