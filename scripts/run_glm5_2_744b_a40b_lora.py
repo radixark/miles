@@ -256,7 +256,7 @@ def _train(args: ScriptArgs):
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type math "
+        f"--rm-type {'dapo' if args.task == 'dapo-math' else 'math'} "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
@@ -269,6 +269,8 @@ def _train(args: ScriptArgs):
             rollout_args += f"--prompt-data {args.data_dir}/gsm8k/train.parquet --input-key messages "
         case "dapo-math":  # zhuzilin/dapo-math-17k ships {prompt, label} jsonl (prompt = chat messages)
             rollout_args += f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl --input-key prompt "
+            # DAPO prompts request Answer:, and the DAPO verifier returns a reward dict.
+            rollout_args += "--reward-key acc "
     if args.dapo_dynamic_sampling:
         rollout_args += (
             f"--over-sampling-batch-size {args.over_sampling_batch_size} "

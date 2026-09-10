@@ -55,6 +55,12 @@ MoE EP enabled. The rollout YAML under the shared save directory includes every 
 configuration template; the full 78-layer training topology needs its own
 hardware validation.
 
+For DAPO-math-17k with an 8192-token total context, add `--task dapo-math
+--seq-window 8192 --rollout-max-response-len 8192 --dapo-dynamic-sampling` to
+preparation and training as applicable. The DAPO task uses the existing DAPO
+verifier for the dataset's `Answer:` format and selects its `acc` field as
+the 0/1 training reward. Dynamic sampling retains groups with differing rewards.
+
 | Knob | Default / behavior |
 |---|---|
 | `--dsa-attention-backend` | `tilelang`; `megatron` is also selectable |
