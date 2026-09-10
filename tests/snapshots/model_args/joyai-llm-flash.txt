@@ -13,6 +13,8 @@
 "RMSNorm"
 "--position-embedding-type"
 "rope"
+"--rope-type"
+"rope"
 "--norm-epsilon"
 "1e-6"
 "--swiglu"

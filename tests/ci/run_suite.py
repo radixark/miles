@@ -17,6 +17,7 @@ from tests.ci.ci_utils import (
     CI_GATE_RECORD_DIR_ENV,
     build_store_from_env,
     gate_provenance_from_env,
+    reaping_is_isolated,
     run_unittest_files,
 )
 from tests.ci.hardware import CUDA_STAGES, dispatch_targets
@@ -279,6 +280,7 @@ def run_a_suite(args):
         gate_executing_suite=suite,
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
+        reap_leftovers=reaping_is_isolated(),
     )
 
 

@@ -19,9 +19,10 @@ import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora_utils import is_lora_model, save_lora_checkpoint
-from miles.backends.megatron_utils.update_weight.common import named_params_and_buffers
+from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER, load_hf_config
 from miles.utils.megatron_bridge_utils import patch_megatron_model
 
@@ -59,12 +60,18 @@ def export_hf_model_direct(
         # A stale marker from an earlier run would vouch for this run's half-written shards.
         (path / HF_EXPORT_COMPLETE_MARKER).unlink(missing_ok=True)
 
-    iterator = HfWeightIteratorDirect(args, model, model_name=model_name, quantization_config=quantization_config)
+    iterator = HfWeightIteratorDirect(
+        args,
+        model,
+        placement=WeightUpdatePlacement(gather_pp=True),
+        model_name=model_name,
+        quantization_config=quantization_config,
+    )
 
     weight_map: dict[str, str] = {}
     total_size = 0
     shard_index = 0
-    for hf_named_tensors in iterator.get_hf_weight_chunks(megatron_local_weights):
+    for hf_named_tensors in iterator.iter_hf_weights(megatron_local_weights):
         if not is_writer:
             continue
         shard_index += 1

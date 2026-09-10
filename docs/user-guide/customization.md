@@ -52,6 +52,9 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 
 **Default:** `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn`; use `miles.rollout.sglang_rollout.generate_rollout` under `MILES_USE_LEGACY_ROLLOUT_V1=1`.
 
+Plain functions with the signature above are wrapped in a legacy adapter. A class-based rollout
+function needs to subclass `miles.rollout.base_types.BaseRolloutFn`.
+
 **Reference:** [`examples/experimental/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/experimental/multi_agent/rollout_with_multi_agents.py).
 
 ### `--custom-generate-function-path`
@@ -158,8 +161,8 @@ Hook to normalize rewards differently from the default GRPO normalization.
 Per-group filter; runs after scoring, before queueing for training.
 
 ```python
-def filter_function(args, samples: list[Sample], **kwargs) -> DynamicFilterOutput:
-    return DynamicFilterOutput(keep=True, reason=None)
+def filter_function(args, samples: list[Sample], **kwargs) -> FilterOutput:
+    return FilterOutput(keep=True, reason=None)
 ```
 
 **Stock implementation:** `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std`.

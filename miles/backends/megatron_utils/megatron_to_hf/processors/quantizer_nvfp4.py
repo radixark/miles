@@ -56,7 +56,7 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
         if not match:
             return converted_named_params
         layer_idx, rest = match.groups()
-        rest = rest.replace("transformer_layer.", "")
+        rest = rest.replace("transformer_layer.", "").replace("mtp_model_layer.", "")
     else:
         layer_idx, rest = match.groups()
 

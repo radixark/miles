@@ -39,9 +39,10 @@ def compute_advantages_and_returns(
     `args.normalize_advantages` is True, advantages are whitened across the
     data-parallel group using masked statistics.
 
-    Early returns if both `log_probs` and `values` are None (intermediate
-    pipeline stages), unless the last stage is explicitly allowed to derive
-    zero-KL shapes without the standalone actor pass.
+    Early returns on intermediate pipeline stages; the last stage also
+    returns early when neither `log_probs` nor `values` is present, unless
+    it is explicitly allowed to derive zero-KL shapes without the standalone
+    actor pass.
 
     Args:
         args: Configuration specifying estimator type, KL coefficient,
@@ -62,10 +63,11 @@ def compute_advantages_and_returns(
     total_lengths: list[int] = rollout_data.get("total_lengths")
     max_seq_lens: list[int] | None = rollout_data.get("max_seq_lens", None)
 
-    # return when not the last pp stage.
-    if log_probs is None and values is None:
-        if not (allow_missing_log_probs and get_parallel_state().is_pp_last_stage):
-            return
+    # under --use-rollout-logprobs every stage holds log-probs, so ask the parallel state, not the tensors
+    if not get_parallel_state().is_pp_last_stage:
+        return
+    if log_probs is None and values is None and not allow_missing_log_probs:
+        return
 
     # This is the authoritative persistence boundary: scores produced before
     # the policy update are fixed training data and must not retain a graph.
@@ -184,8 +186,9 @@ def loss_function(
         loss, log = func(args, batch, logits, sum_of_sample_mean)
 
     # Forces autograd to traverse the full graph on every rank to avoid hang.
+    # fp32 sum: an fp16 logits sum can overflow to inf, and 0 * inf is nan.
     if parallel_state.cp.size > 1 and args.allgather_cp:
-        loss = loss + 0 * logits.sum()
+        loss = loss + 0 * logits.sum(dtype=torch.float32)
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
     if num_rollouts is not None:
