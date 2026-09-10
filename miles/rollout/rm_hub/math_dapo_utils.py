@@ -132,6 +132,8 @@ REMOVED_EXPRESSIONS = [
     r"^{\circ}",
     r"\;",
     r",\!",
+    r"\(",
+    r"\)",
     "{,}",
     '"',
     "\\dots",
