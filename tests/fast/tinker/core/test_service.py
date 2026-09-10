@@ -433,7 +433,7 @@ async def test_malformed_loss_inputs_are_rejected_at_admission(service):
         "forward_backward",
         {
             "model_id": model_id,
-            "seq_id": 4,
+            "seq_id": 5,
             "loss_fn": "importance_sampling",
             "loss_fn_config": {},
             "datums": [rl_datum(3)],
