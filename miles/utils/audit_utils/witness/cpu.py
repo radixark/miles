@@ -1,8 +1,9 @@
 import copy
 from collections import Counter
 from collections.abc import Iterable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
 import torch
 
@@ -81,3 +82,36 @@ def snapshot_cpu_witness(model: Sequence[torch.nn.Module]) -> dict[TrainingSampl
     snapshots = [witness.snapshot() for witness in witnesses]
     assert all(snapshot == snapshots[0] for snapshot in snapshots[1:]), "CPU witness model chunks diverged"
     return snapshots[0]
+
+
+def clear_cpu_witness(model: Sequence[torch.nn.Module]) -> None:
+    for witness in cpu_witnesses(model):
+        witness.set_extra_state({"version": 1, "sample_counts": {}})
+
+
+@contextmanager
+def preserve_cpu_witness(model: Sequence[torch.nn.Module]) -> Iterator[None]:
+    states = [witness.get_extra_state() for witness in cpu_witnesses(model)]
+    try:
+        yield
+    finally:
+        for witness, state in zip(cpu_witnesses(model), states, strict=True):
+            witness.set_extra_state(state)
+
+
+@contextmanager
+def hide_cpu_witness(model: Sequence[torch.nn.Module]) -> Iterator[None]:
+    children = [
+        (parent, name, child)
+        for chunk in model
+        for parent in list(chunk.modules())
+        for name, child in list(parent.named_children())
+        if isinstance(child, CpuWitness)
+    ]
+    for parent, name, _ in children:
+        delattr(parent, name)
+    try:
+        yield
+    finally:
+        for parent, name, child in children:
+            parent.add_module(name, child)

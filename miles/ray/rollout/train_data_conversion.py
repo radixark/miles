@@ -1,4 +1,5 @@
 import logging
+from collections import Counter, defaultdict
 from typing import Any
 
 import torch
@@ -34,6 +35,9 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "source_sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "sample_row_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "sample_row_counts": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
@@ -72,6 +76,14 @@ def convert_samples_to_train_data(
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
 
+    source_sample_indices = [sample.index for sample in samples]
+    sample_row_counts = Counter(source_sample_indices)
+    next_row_index: defaultdict[int, int] = defaultdict(int)
+    sample_row_indices = []
+    for sample_index in source_sample_indices:
+        sample_row_indices.append(next_row_index[sample_index])
+        next_row_index[sample_index] += 1
+
     train_data = {
         "tokens": [sample.tokens for sample in samples],
         "response_lengths": [sample.response_length for sample in samples],
@@ -81,6 +93,9 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
+        "source_sample_indices": source_sample_indices,
+        "sample_row_indices": sample_row_indices,
+        "sample_row_counts": [sample_row_counts[index] for index in source_sample_indices],
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
@@ -384,6 +399,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "loss_masks",
             "round_number",
             "sample_indices",
+            "source_sample_indices",
+            "sample_row_indices",
+            "sample_row_counts",
             "rollout_ids",
             "rollout_mask_sums",
             "rollout_log_probs",
