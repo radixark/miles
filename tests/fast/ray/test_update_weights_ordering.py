@@ -118,7 +118,6 @@ def _orchestration_args(**overrides) -> Namespace:
     values = dict(
         debug_train_only=False,
         debug_rollout_only=False,
-        save_inference_engine_weight_checksum=True,
         start_rollout_id=0,
         ci_ft_test_actions=None,
         ci_ft_test_actions_path=None,
@@ -276,12 +275,6 @@ class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
     async def test_no_event_logger_does_not_call_check_weights(self):
         """Without an initialized event logger, no check_weights request is issued."""
         inference_controller, _ = await self._log(_orchestration_args(), initialized=False)
-
-        inference_controller.check_weights.assert_not_called()
-
-    async def test_flag_off_skips_collection(self):
-        """Without --save-inference-engine-weight-checksum, no check_weights request is issued."""
-        inference_controller, _ = await self._log(_orchestration_args(save_inference_engine_weight_checksum=False))
 
         inference_controller.check_weights.assert_not_called()
 

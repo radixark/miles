@@ -376,7 +376,6 @@ class TestUpdateWeights:
         return Namespace(
             debug_train_only=False,
             debug_rollout_only=False,
-            save_inference_engine_weight_checksum=True,
             start_rollout_id=start_rollout_id,
         )
 
