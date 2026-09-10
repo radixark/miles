@@ -111,11 +111,6 @@ _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 # ---------------------------------------------------------------------------
 
 
-def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
-    """LoRA + --colocate + --lora-base-cpu-backup all set."""
-    return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
-
-
 def sglang_lora_target_all_sentinel(args) -> bool:
     """Hand SGLang the ``"all"`` shorthand so it auto-detects module names (required for Inkling)."""
     from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
@@ -171,10 +166,6 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
                 g.copy_(red)
 
 
-def lora_rollout_base_retained(args: Namespace) -> bool:
-    return not args.offload_rollout or "weight" not in args.offload_rollout_level
-
-
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     """Check if model has LoRA layers applied."""
     for model_chunk in model:
@@ -184,11 +175,6 @@ def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
             if "lora_" in name or "adapter" in name:
                 return True
     return False
-
-
-def is_lora_weight_name(name: str) -> bool:
-    """Check if a weight name corresponds to a LoRA adapter weight."""
-    return ".lora_A." in name or ".lora_B." in name
 
 
 def _is_adapter_param_name(name: str) -> bool:
