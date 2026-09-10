@@ -19,7 +19,9 @@ import time
 import traceback
 
 import tinker
-from miles.rollout.rm_hub.math_dapo_utils import compute_score  # DAPO's rule-based math reward: +1 / -1
+from miles.rollout.rm_hub.math_dapo_utils import (
+    compute_score,  # DAPO's rule-based math reward: {"score": +1 / -1, ...}
+)
 from tinker import types
 
 DAPO_CLIP = {"clip_low_threshold": 0.8, "clip_high_threshold": 1.28}
@@ -52,7 +54,7 @@ async def rollout_group(sampler, tokenizer, prompt_tokens: list[int], label: str
     )
     sequences = list(response.sequences)
     rewards = [
-        compute_score(tokenizer.decode(list(sequence.tokens), skip_special_tokens=True), label)
+        compute_score(tokenizer.decode(list(sequence.tokens), skip_special_tokens=True), label)["score"]
         for sequence in sequences
     ]
     return prompt_tokens, sequences, rewards
