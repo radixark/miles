@@ -34,7 +34,10 @@ def _object_store_of_inited_controller() -> None:
 def _make_controller(cells: list) -> TrainerController:
     group = object.__new__(TrainerController)
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
-    group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
+    group.args = SimpleNamespace(
+        enable_event_analyzer=False, save_debug_event_data=None, num_critic_only_steps=0, trainer_model_id=None
+    )
+    group._role = "actor"
     group._witness_allocator = None
     group._indep_dp_quorum_id = 0
     group._health_checker_activeness = ActivenessTracker(active=True)

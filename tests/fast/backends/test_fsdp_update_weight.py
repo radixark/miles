@@ -1,5 +1,6 @@
 import asyncio
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ import torch
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.fsdp_utils import update_weight_utils
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.weight_version_checkpoint import read_weight_version, write_weight_version
 
 
 class _SessionEngine:
@@ -110,6 +112,7 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
     def update_bucket_weights(self, named_tensors, weight_version=None):
         assert named_tensors
         self.last_named_tensors = named_tensors
+        self.last_weight_version = weight_version
         update_weight_utils.async_utils.wait_futures(
             [update_weight_utils.async_utils.submit(self.rollout_engines[0].update_weights_from_tensor())]
         )
@@ -122,6 +125,23 @@ def _make_updater(model, rollout_engines):
     )
     updater.connect_rollout_engines(rollout_engines, None)
     return updater
+
+
+def test_restored_counter_publishes_the_next_absolute_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first push after resuming version nine must publish ten rather than restart at one."""
+    events = []
+    updater = _make_updater(model={"weight": torch.ones(1)}, rollout_engines=[_SessionEngine("engine", events)])
+    write_weight_version(checkpoint_dir=tmp_path, iteration=3, weight_version=9)
+    updater.weight_version = read_weight_version(checkpoint_dir=tmp_path, iteration=3)
+    monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: None)
+    monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
+    monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
+
+    updater.update_weights()
+
+    assert updater.weight_version == 10
+    assert updater.last_weight_version == 10
 
 
 def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):

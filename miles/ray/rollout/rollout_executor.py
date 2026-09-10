@@ -1,10 +1,14 @@
 import asyncio
+import inspect
 import logging
 import time
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
-from typing import Any
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
@@ -18,18 +22,22 @@ from miles.ray.rollout.train_data_conversion import (
     split_train_data_by_dp,
 )
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnTrainInput,
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.fully_async_data_buffer import Group, iter_samples
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
-from miles.utils.async_utils import maybe_await
+from miles.utils.async_utils import maybe_await, submit
+from miles.utils.audit_utils import sample_ownership
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.event_logger.models import SampleOwner
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
@@ -42,6 +50,7 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.multi_lora import EmptyBatchTimeoutError
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.types import Sample
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
@@ -50,6 +59,12 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LastBatch:
+    rollout_id: int
+    samples: list[Group]
 
 
 class RolloutExecutor:
@@ -69,6 +84,7 @@ class RolloutExecutor:
 
         self.args = args
         self._lineage_id = uuid.uuid4().hex
+        sample_ownership.set_lineage_id(self._lineage_id)
         # set by the training actor after each weight update, keyed by trainer model id (None for one policy)
         self._weight_versions_of_model_id: dict[str | None, int] = {}
         self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
@@ -76,6 +92,7 @@ class RolloutExecutor:
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
+        self._last_batches: dict[str | None, LastBatch] = {}
 
     @init_once
     async def init(self) -> None:
@@ -135,6 +152,14 @@ class RolloutExecutor:
     async def dispose(self) -> None:
         if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
             await maybe_await(self.generate_rollout.dispose())
+        for trainer_model_id in self._train_parallel_configs_of_model_id or {None: {}}:
+            self._log_holdings_snapshot(
+                rollout_id=(
+                    batch.rollout_id if (batch := self._last_batches.get(trainer_model_id)) else self.rollout_id
+                ),
+                trainer_model_id=trainer_model_id,
+                reason="final",
+            )
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
@@ -163,7 +188,7 @@ class RolloutExecutor:
             except EmptyBatchTimeoutError as e:
                 assert self.args.multi_lora, "only the multi-LoRA rollout waits for a non-empty batch"
                 logger.warning(f"Rollout {rollout_id} produced no trainable group before the empty-wait timeout: {e}")
-                return RolloutDataPack(empty_batch_timeout=True)
+                return RolloutDataPack(empty_batch_timeout=True, lineage_id=self._lineage_id)
         save_debug_rollout_data(
             self.args,
             data,
@@ -194,7 +219,7 @@ class RolloutExecutor:
             data_ref = split_train_data_by_dp(
                 self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
             )
-        return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
+        return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref, lineage_id=self._lineage_id)
 
     async def eval(
         self,
@@ -274,26 +299,37 @@ class RolloutExecutor:
             data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
             metrics = None
         else:
-            if not self.use_legacy_rollout_v1:
-                data = await asyncio.to_thread(
-                    call_rollout_function,
-                    self.generate_rollout,
-                    RolloutFnTrainInput(
-                        rollout_id=rollout_id,
-                        weight_version=self._weight_versions_of_model_id.get(trainer_model_id),
-                        trainer_model_id=trainer_model_id,
-                    ),
-                )
+            input = RolloutFnTrainInput(
+                rollout_id=rollout_id,
+                weight_version=self._weight_versions_of_model_id.get(trainer_model_id),
+                trainer_model_id=trainer_model_id,
+            )
+            if (
+                not self.use_legacy_rollout_v1
+                and isinstance(self.generate_rollout, BaseRolloutFn)
+                and inspect.iscoroutinefunction(self.generate_rollout.__call__)
+            ):
+                data = await asyncio.wrap_future(submit(self._call_and_record(input)))
             else:
-                data = await asyncio.to_thread(
-                    call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
-                )
+                if self.use_legacy_rollout_v1:
+                    data = await asyncio.to_thread(
+                        call_rollout_fn,
+                        self.generate_rollout,
+                        self.args,
+                        rollout_id,
+                        self.data_source,
+                        evaluation=False,
+                    )
+                else:
+                    data = await asyncio.to_thread(call_rollout_function, self.generate_rollout, input)
+                self._record_last_batch(rollout_id=rollout_id, trainer_model_id=trainer_model_id, samples=data.samples)
             metrics = data.metrics
             data = data.samples
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self._train_parallel_configs_of_model_id[trainer_model_id]
             )
             assert_samples_weight_version_sane(self.args, samples=data)
+            self._log_trimmed_samples(data=data, rollout_id=rollout_id, trainer_model_id=trainer_model_id)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
                 data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)
@@ -303,6 +339,83 @@ class RolloutExecutor:
                 metrics = None
 
         return data, metadata, metrics
+
+    def _log_trimmed_samples(self, *, data: list[Sample], rollout_id: int, trainer_model_id: str | None) -> None:
+        retained_indices = {sample.index for sample in iter_samples(data)}
+        removed = [
+            sample
+            for group in self._last_batches[trainer_model_id].samples
+            for sample in iter_samples(group)
+            if sample.index not in retained_indices
+        ]
+        if removed:
+            sample_ownership.log_owner_transition(
+                removed,
+                from_owner=SampleOwner.HANDED_TO_TRAINER,
+                to_owner=SampleOwner.DROPPED,
+                reason="trim",
+                trainer_model_id=trainer_model_id,
+                rollout_id=rollout_id,
+            )
+
+    async def _call_and_record(self, input: RolloutFnTrainInput):
+        output = await self.generate_rollout(input)
+        self._record_last_batch(
+            rollout_id=input.rollout_id, trainer_model_id=input.trainer_model_id, samples=output.samples
+        )
+        return output
+
+    def _record_last_batch(self, *, rollout_id: int, trainer_model_id: str | None, samples: list[Group]) -> None:
+        self._last_batches[trainer_model_id] = LastBatch(rollout_id=rollout_id, samples=samples)
+        self._log_holdings_snapshot(rollout_id=rollout_id, trainer_model_id=trainer_model_id, reason="step")
+        sample_ownership.log_owner_transition(
+            (sample for group in samples for sample in iter_samples(group)),
+            from_owner=SampleOwner.OUTPUT_BUFFER,
+            to_owner=SampleOwner.HANDED_TO_TRAINER,
+            trainer_model_id=trainer_model_id,
+            rollout_id=rollout_id,
+        )
+
+    def _log_holdings_snapshot(
+        self,
+        *,
+        rollout_id: int,
+        trainer_model_id: str | None,
+        reason: Literal["step", "save", "final"],
+        holdings: dict[SampleOwner, list[int]] | None = None,
+    ) -> None:
+        if not isinstance(self.generate_rollout, BaseRolloutFn):
+            return
+        if holdings is None:
+            holdings = self.generate_rollout.describe_holdings(trainer_model_id=trainer_model_id)
+        if holdings is None:
+            return
+
+        sample_ownership.log_holdings_snapshot(
+            rollout_id=rollout_id,
+            trainer_model_id=trainer_model_id,
+            holdings={
+                **holdings,
+                SampleOwner.HANDED_TO_TRAINER: self._handed_to_trainer_samples(trainer_model_id=trainer_model_id),
+            },
+            replays_samples=self.generate_rollout.replays_samples(trainer_model_id=trainer_model_id),
+            rank_weight_witness_supported=self.args.train_backend == "megatron",
+            checkpoint_ids=(
+                sample_ownership.checkpoint_ids_of(
+                    event_dir=Path(x) if (x := self.args.save_debug_event_data) is not None else None,
+                    rollout_id=rollout_id,
+                    trainer_model_id=trainer_model_id,
+                )
+                if reason == "save"
+                else None
+            ),
+            reason=reason,
+        )
+
+    def _handed_to_trainer_samples(self, trainer_model_id: str | None) -> list[int]:
+        if (batch := self._last_batches.get(trainer_model_id)) is None:
+            return []
+        return [sample.index for group in batch.samples for sample in iter_samples(group) if sample.index is not None]
 
     # -------------------------- checkpointing -----------------------------
 

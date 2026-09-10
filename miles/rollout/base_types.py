@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from miles.rollout.data_source import DataSource
+from miles.utils.audit_utils.event_logger.models import SampleOwner
 from miles.utils.types import Sample
 
 if TYPE_CHECKING:
@@ -78,11 +79,17 @@ class BaseRolloutFn(abc.ABC):
     def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         raise NotImplementedError
 
-    def save(self, rollout_id: int) -> None:
+    def save(self, rollout_id: int) -> dict[str | None, dict[SampleOwner, list[int]]] | None:
         return None
 
     def load(self, rollout_id: int | None) -> None:
         return None
+
+    def describe_holdings(self, trainer_model_id: str | None) -> dict[SampleOwner, list[int]] | None:
+        return None
+
+    def replays_samples(self, trainer_model_id: str | None) -> bool:
+        return False
 
     async def dispose(self) -> None:
         return None

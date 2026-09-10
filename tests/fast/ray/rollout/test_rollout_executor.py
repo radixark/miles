@@ -1,14 +1,18 @@
 import asyncio
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
+from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import SampleOwner, SampleOwnerTransitionEvent
+from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -60,6 +64,9 @@ class TestDispose:
         executor.data_source = object()
         executor.args = Namespace()
         executor._metric_checker = None
+        executor._train_parallel_configs_of_model_id = {}
+        executor._last_batches = {}
+        executor.rollout_id = -1
         monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
         monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
 
@@ -136,3 +143,85 @@ class TestSetEvalFleetInfo:
         assert first.generate_state.args.rollout_num_gpus == info.num_gpus
         assert first.generate_state.args.rollout_num_gpus_per_engine == info.num_gpus_per_engine
         assert second.generate_state is None
+
+
+class FakeDataSource:
+    def __init__(self) -> None:
+        self.saved: list[int] = []
+        self.loaded: list[int | None] = []
+
+    def save(self, rollout_id: int) -> None:
+        self.saved.append(rollout_id)
+
+    def load(self, rollout_id: int | None = None) -> None:
+        self.loaded.append(rollout_id)
+
+
+class CountingLegacyRolloutFn:
+    def __init__(self, start_index: int = 0) -> None:
+        self.next_index = start_index
+        self.num_calls = 0
+
+    def __call__(self, args, rollout_id, data_source, evaluation):
+        self.num_calls += 1
+        self.next_index += 1
+        sample = Sample(index=self.next_index, group_index=self.next_index, prompt="p", status=Sample.Status.COMPLETED)
+        return RolloutFnTrainOutput(samples=[[sample]])
+
+
+class TestDeliveryOwnership:
+    async def test_generated_delivery_and_trim_have_distinct_ownership_events(
+        self, tmp_path: Path, ownership_event_dir: Path
+    ) -> None:
+        """Delivered samples and postprocessing drops remain individually attributable."""
+        executor = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+        data, _, _ = await executor._get_rollout_data(0)
+        samples = [sample for group in data for sample in group]
+        executor._log_trimmed_samples(data=samples[:-1], rollout_id=0, trainer_model_id=None)
+
+        transitions = [
+            event for event in read_events(ownership_event_dir) if isinstance(event, SampleOwnerTransitionEvent)
+        ]
+
+        assert transitions[0].to_owner is SampleOwner.HANDED_TO_TRAINER
+        assert transitions[0].sample_indices == [sample.index for sample in samples]
+        assert transitions[-1].to_owner is SampleOwner.DROPPED
+        assert transitions[-1].sample_indices == [samples[-1].index]
+        assert transitions[-1].reason == "trim"
+
+
+def make_executor(tmp_path, rollout_fn, *, data_source=None) -> RolloutExecutor:
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor.args = Namespace(
+        save=str(tmp_path),
+        load=str(tmp_path),
+        load_debug_rollout_data=None,
+        ci_inject_rollout_data_path=None,
+        save_debug_event_data=None,
+        train_backend="megatron",
+    )
+    executor.use_legacy_rollout_v1 = True
+    executor.generate_rollout = rollout_fn
+    executor.eval_generate_rollout = rollout_fn
+    executor.data_source = data_source if data_source is not None else FakeDataSource()
+    executor._train_parallel_configs_of_model_id = {None: {}, "solver": {}, "verifier": {}}
+    executor._weight_versions_of_model_id = {}
+    executor._last_batches = {}
+    executor._replay = {}
+    executor._lineage_id = "initial"
+    executor.rollout_id = -1
+    return executor
+
+
+@pytest.fixture(autouse=True)
+def _stub_rollout_data_postprocessing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(rollout_executor_module, "postprocess_rollout_data", lambda args, data, **kwargs: (data, {}))
+    monkeypatch.setattr(rollout_executor_module, "assert_samples_weight_version_sane", lambda args, samples: None)
+    monkeypatch.setattr(
+        rollout_executor_module.RolloutDataInjectionUtil, "should_inject", staticmethod(lambda args, rollout_id: False)
+    )
+    monkeypatch.setattr(rollout_executor_module.event_logger_checkpoint, "snapshot", lambda args, rollout_id: None)
+
+
+def prompt_indices(data) -> list[int]:
+    return [sample.index for group in data for sample in group]

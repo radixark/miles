@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Annotated, Any, Literal
 
 from pydantic import Discriminator
@@ -97,6 +98,7 @@ class WitnessAllocateIdEvent(EventBase):
 class TrainGroupStepEndEvent(EventBase):
     type: Literal["train_group_step_end"] = "train_group_step_end"
     rollout_id: int
+    role: Literal["actor", "critic"] | None = None
     cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
 
 
@@ -108,6 +110,7 @@ class CellReconfigureEvent(EventBase):
     # healing happened iff non-empty
     healed_cell_indices: list[int]
     alive_cell_indices_after: list[int]
+    role: Literal["actor", "critic"] | None = None
 
 
 class InferenceEngineWeightChecksumEvent(EventBase):
@@ -145,6 +148,61 @@ class MetricEvent(EventBase):
     metrics: dict[str, Any]
 
 
+class SampleOwner(str, Enum):
+    DATA_SOURCE = "data_source"
+    RETRY_BUFFER = "retry_buffer"
+    IN_FLIGHT = "in_flight"
+    OUTPUT_BUFFER = "output_buffer"
+    HANDED_TO_TRAINER = "handed_to_trainer"
+    TRAINED = "trained"
+    DROPPED = "dropped"
+
+
+class SampleOwnerTransitionEvent(EventBase):
+    lineage_id: str | None = None
+    type: Literal["sample_owner_transition"] = "sample_owner_transition"
+    sample_indices: list[int]
+    trainer_model_id: str | None = None
+    from_owner: SampleOwner
+    to_owner: SampleOwner
+    rollout_id: int | None = None
+    reason: str | None = None
+
+
+class RolloutGroupRoutedEvent(EventBase):
+    lineage_id: str | None = None
+    type: Literal["rollout_group_routed"] = "rollout_group_routed"
+    prompt_indices: list[int]
+
+
+class RolloutHoldingsSnapshotEvent(EventBase):
+    lineage_id: str | None = None
+    type: Literal["rollout_holdings_snapshot"] = "rollout_holdings_snapshot"
+    rollout_id: int
+    trainer_model_id: str | None = None
+    holdings: dict[SampleOwner, list[int]]
+    replays_samples: bool
+    reason: Literal["step", "save", "final"]
+    rank_weight_witness_supported: bool = True
+    checkpoint_ids: dict[str, str] = {}
+
+
+class TrainerTrainedSamplesEvent(EventBase):
+    lineage_id: str | None = None
+    type: Literal["trainer_trained_samples"] = "trainer_trained_samples"
+    rollout_id: int
+    trainer_model_id: str | None = None
+    sample_indices: list[int]
+
+
+class RolloutStateRestoreEvent(EventBase):
+    lineage_id: str | None = None
+    parent_lineage_id: str | None = None
+    type: Literal["rollout_state_restore"] = "rollout_state_restore"
+    rollout_id: int | None = None
+    rollout_ids: dict[str, int] | None = None
+
+
 class TrainerGroupMappingEvent(EventBase):
     type: Literal["trainer_group_mapping"] = "trainer_group_mapping"
     lineage_id: str | None
@@ -168,8 +226,19 @@ class TrainerCpuWitnessEvent(EventBase):
     checkpoint_id: str | None = None
 
 
+class TrainerCheckpointEvent(EventBase):
+    type: Literal["trainer_checkpoint"] = "trainer_checkpoint"
+    rollout_id: int
+    role: Literal["actor", "critic"]
+    checkpoint_id: str
+    cell_index: int
+    rank_count: int
+    alive_cell_indices: list[int]
+
+
 Event = Annotated[
-    TrainEngineLocalWeightChecksumEvent
+    TrainerCheckpointEvent
+    | TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
     | WitnessAllocateIdEvent
     | TrainGroupStepEndEvent
@@ -179,8 +248,13 @@ Event = Annotated[
     | EnvReportEvent
     | EngineEnvReportEvent
     | MetricEvent
+    | SampleOwnerTransitionEvent
+    | RolloutGroupRoutedEvent
+    | RolloutHoldingsSnapshotEvent
+    | TrainerTrainedSamplesEvent
     | TrainerGroupMappingEvent
-    | TrainerCpuWitnessEvent,
+    | TrainerCpuWitnessEvent
+    | RolloutStateRestoreEvent,
     Discriminator("type"),
 ]
 

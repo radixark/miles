@@ -9,11 +9,20 @@ from unittest.mock import MagicMock
 import pytest
 import ray
 from sglang_router.launch_router import RouterArgs
-
 from tests.fast.fixtures.args_fixtures import parser_defaults
 
+from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.utils import object_store
 from miles.utils.types import Sample
+
+
+class UnevenLegacyRolloutFn:
+    def __init__(self) -> None:
+        self.num_calls = 0
+
+    def __call__(self, args: Namespace, rollout_id: int, data_source: Any, evaluation: bool) -> RolloutFnTrainOutput:
+        self.num_calls += 1
+        return RolloutFnTrainOutput(samples=[[make_sample(index=index, group_index=index)] for index in range(5)])
 
 
 def make_args(**overrides: Any) -> Namespace:

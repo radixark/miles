@@ -3,12 +3,13 @@ import logging
 import sys
 from argparse import Namespace
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 
+from miles.backends.training_utils.weight_version_checkpoint import write_weight_version
 from miles.utils.init_once import InitOnce
 
 _ACTOR_MODULE_NAME = "miles.backends.megatron_utils.actor"
@@ -123,6 +124,7 @@ def _actor(actor_module, *, role: str, args: Namespace):
     actor.opt_param_scheduler = None
     actor._last_rollout_id = None
     actor._post_init_random_state = _FakeRandomState()
+    actor.weight_updater = SimpleNamespace(weight_version=0)
     return actor
 
 
@@ -179,6 +181,39 @@ class TestLoadStateScheduler:
 
 
 class TestTheCheckpointAReloadRollsBackTo:
+    def test_a_reload_restores_the_counter_from_the_loaded_checkpoint(
+        self, actor_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reloading weights must rewind the updater to the same checkpoint's absolute version."""
+        directory = tmp_path / "pretrain"
+        _write_checkpoint(directory, iteration=50)
+        write_weight_version(checkpoint_dir=directory, iteration=50, weight_version=9)
+        args = _args(tmp_path, load=str(tmp_path / "reference"))
+        _watch_load(actor_module, monkeypatch, args=args, iteration=50)
+        actor = _actor(actor_module, role="actor", args=args)
+        actor.weight_updater.weight_version = 20
+
+        actor.load_state()
+
+        assert actor.weight_updater.weight_version == 9
+
+    def test_initial_load_reads_the_loaded_iteration_instead_of_the_latest_tracker(
+        self, actor_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit checkpoint step must restore its counter even when the tracker points ahead."""
+        directory = tmp_path / "pretrain"
+        _write_checkpoint(directory, iteration=50)
+        write_weight_version(checkpoint_dir=directory, iteration=30, weight_version=9)
+        write_weight_version(checkpoint_dir=directory, iteration=50, weight_version=20)
+        args = _args(tmp_path, ckpt_step=30)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=30)
+        actor = _actor(actor_module, role="actor", args=args)
+
+        output = actor._load_state_core(checkpointing_context=None, overrider_for_loading={})
+
+        assert output.loaded_rollout_id == 30
+        assert output.weight_version == 9
+
     def test_a_reload_reads_the_directory_the_run_was_told_to_load_from(self, actor_module, tmp_path, monkeypatch):
         """The data source reads its own state out of that same directory, so the two have to be the same one."""
         load = _write_checkpoint(tmp_path / "pretrain", iteration=50)

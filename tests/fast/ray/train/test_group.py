@@ -15,7 +15,11 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
+from miles.utils.audit_utils.event_logger.models import (
+    CellReconfigureEvent,
+    TrainerCheckpointEvent,
+    TrainerTrainedSamplesEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.data import RolloutDataPack
@@ -27,6 +31,40 @@ from miles.utils.workers.naming import compute_cell_id
 pytestmark = pytest.mark.asyncio
 
 _DUMMY_DATA_PACK = RolloutDataPack(sample_indices=[0], data_ref=_MooncakeStoreObjectRef(payload="data"))
+
+
+class TestTrainedSampleOwnership:
+    @pytest.mark.parametrize(
+        "use_critic, num_critic_only_steps, rollout_id, expected_role",
+        [
+            (True, 2, 0, "critic"),
+            (True, 2, 1, "critic"),
+            (True, 2, 2, "actor"),
+            (True, 0, 0, "actor"),
+            (False, 2, 0, "actor"),
+        ],
+    )
+    def test_exactly_one_role_records_the_consumed_batch(
+        self,
+        ownership_event_dir: Path,
+        use_critic: bool,
+        num_critic_only_steps: int,
+        rollout_id: int,
+        expected_role: str,
+    ) -> None:
+        """Critic warmup and actor training must each record exactly one consumption event."""
+        for role in ("actor", "critic"):
+            controller = TrainerController.__new__(TrainerController)
+            controller._role = role
+            controller.args = SimpleNamespace(
+                use_critic=use_critic, num_critic_only_steps=num_critic_only_steps, trainer_model_id=None
+            )
+            controller._log_trained_samples(rollout_id=rollout_id, sample_indices=[1], lineage_id=f"pack-{role}")
+
+        [event] = [e for e in read_events(ownership_event_dir) if isinstance(e, TrainerTrainedSamplesEvent)]
+        assert event.sample_indices == [1]
+        assert event.rollout_id == rollout_id
+        assert event.lineage_id == f"pack-{expected_role}"
 
 
 def _make_mock_args(
@@ -66,6 +104,9 @@ def _make_mock_args(
         object_store_backend="ray",
         worker_comm_backend="ray",
         trainer_model_id=None,
+        num_critic_only_steps=0,
+        use_critic=False,
+        train_backend="megatron",
     )
 
 
@@ -1142,9 +1183,11 @@ class TestAllocateWitnessInfo:
 
 
 class TestLogStepEndEvent:
-    def test_with_normal_and_error_cells(self):
+    @pytest.mark.parametrize("role", ["actor", "critic"])
+    def test_with_normal_and_error_cells(self, role: str) -> None:
         """Passes correct cell_outcomes to event logger for a mix of normal and errored cells."""
         group = _make_controller(num_cells=3)
+        group._role = role
 
         mock_cell_0 = MagicMock()
         mock_cell_0.cell_index = 0
@@ -1176,6 +1219,7 @@ class TestLogStepEndEvent:
             args = mock_logger.log.call_args[0]
             partial = args[1]
             assert partial["rollout_id"] == 42
+            assert partial["role"] == role
 
             cell_outcomes = partial["cell_outcomes"]
             assert cell_outcomes[0] == [TrainStepOutcome.NORMAL, TrainStepOutcome.NORMAL]
@@ -1208,7 +1252,13 @@ class TestCellStatusesUnderConcurrentReconcile:
 class TestUpdateWeightsReturnsTheVersion:
     def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
-        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
+        group.args = SimpleNamespace(
+            debug_train_only=False,
+            debug_rollout_only=False,
+            trainer_model_id=None,
+            num_critic_only_steps=0,
+            use_critic=False,
+        )
         group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
         return group
 
@@ -1274,15 +1324,86 @@ class TestTrainRunsFTTestActions:
 
 
 class TestSaveModel:
-    async def test_the_selected_cell_is_told_whether_the_save_must_be_synchronous(self):
+    async def test_the_selected_cell_is_told_whether_the_save_must_be_synchronous(
+        self, ownership_event_dir: Path
+    ) -> None:
         """An async save that the caller asked to block on would let training race the checkpoint writer."""
+        group = await _make_alive_controller(num_cells=2, actor_count_per_cell=2)
+
+        await group.save_model(rollout_id=9, force_sync=True)
+
+        [event] = [e for e in read_events(ownership_event_dir) if isinstance(e, TrainerCheckpointEvent)]
+        assert event.cell_index == 0
+        assert event.rank_count == 2
+        assert event.alive_cell_indices == [0, 1]
+        assert event.role == "actor"
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            save_calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "save_model"]
+            assert [c[2] for c in save_calls] == [
+                {"rollout_id": 9, "force_sync": True, "checkpoint_id": event.checkpoint_id}
+            ]
+        for handle in get_raw_actor_handles(_cell(group, 1)):
+            calls = ray.get(handle.get_calls.remote())
+            assert not any(call[0] == "save_model" for call in calls)
+            assert [call[2] for call in calls if call[0] == "log_checkpoint_witness"] == [
+                {"rollout_id": 9, "checkpoint_id": event.checkpoint_id}
+            ]
+
+    async def test_failed_peer_witness_retries_with_a_new_checkpoint_identity(self, ownership_event_dir: Path) -> None:
+        """A failed peer snapshot cannot certify the first save attempt as complete."""
         group = await _make_alive_controller(num_cells=2)
+        for handle in get_raw_actor_handles(_cell(group, 1)):
+            ray.get(handle.set_fail_methods.remote(["log_checkpoint_witness"]))
+
+        await group.save_model(rollout_id=9, force_sync=True)
+
+        [event] = [e for e in read_events(ownership_event_dir) if isinstance(e, TrainerCheckpointEvent)]
+        assert event.alive_cell_indices == [0]
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            calls = [call for call in ray.get(handle.get_calls.remote()) if call[0] == "save_model"]
+            assert len(calls) == 2
+            assert calls[0][2]["checkpoint_id"] != event.checkpoint_id
+            assert calls[1][2]["checkpoint_id"] == event.checkpoint_id
+
+    async def test_a_failed_save_attempt_cannot_supply_the_successful_checkpoint_identity(
+        self, ownership_event_dir: Path
+    ) -> None:
+        """A retried save binds only the successful cell to a fresh checkpoint identity."""
+        group = await _make_alive_controller(num_cells=2)
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            ray.get(handle.set_fail_methods.remote(["save_model"]))
+
+        await group.save_model(rollout_id=9, force_sync=True)
+
+        [event] = [e for e in read_events(ownership_event_dir) if isinstance(e, TrainerCheckpointEvent)]
+        assert event.cell_index == 1
+        assert event.rank_count == 1
+        assert event.alive_cell_indices == [1]
+        for handle in get_raw_actor_handles(_cell(group, 1)):
+            calls = [call for call in ray.get(handle.get_calls.remote()) if call[0] == "save_model"]
+            assert calls[0][2]["checkpoint_id"] == event.checkpoint_id
+
+    async def test_a_backend_without_cpu_witness_keeps_its_save_protocol(self) -> None:
+        """Other backends do not receive Megatron-only checkpoint metadata."""
+        group = await _make_alive_controller(num_cells=1)
+        group.args.train_backend = "fsdp"
 
         await group.save_model(rollout_id=9, force_sync=True)
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
-            save_calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "save_model"]
-            assert [c[2] for c in save_calls] == [{"rollout_id": 9, "force_sync": True}]
+            calls = [call for call in ray.get(handle.get_calls.remote()) if call[0] == "save_model"]
+            assert calls[0][2] == {"rollout_id": 9, "force_sync": True}
+
+    async def test_repeated_saves_of_one_rollout_have_distinct_identities(self, ownership_event_dir: Path) -> None:
+        """A second save cannot borrow rank evidence from the first save of the same rollout."""
+        group = await _make_alive_controller(num_cells=1)
+
+        await group.save_model(rollout_id=9, force_sync=True)
+        await group.save_model(rollout_id=9, force_sync=True)
+
+        events = [e for e in read_events(ownership_event_dir) if isinstance(e, TrainerCheckpointEvent)]
+        assert len(events) == 2
+        assert events[0].checkpoint_id != events[1].checkpoint_id
 
 
 class TestExportHf:

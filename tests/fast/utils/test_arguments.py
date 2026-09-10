@@ -393,6 +393,15 @@ class TestEventDirectoryDefaults:
 
         assert args.save_debug_event_data == "/debug/run/events"
 
+    def test_runs_without_checkpoint_or_debug_flags_still_have_distinct_audit_directories(self) -> None:
+        """Always-on ownership checking must remain enabled without checkpoint or debug output."""
+        first, second = self._parse([]), self._parse([])
+        miles_validate_args(first)
+        miles_validate_args(second)
+
+        assert first.save_debug_event_data is not None
+        assert first.save_debug_event_data != second.save_debug_event_data
+
 
 class TestMaybeApplyDumperOverrides:
     def _make_args(

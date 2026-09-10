@@ -9,6 +9,11 @@ from miles.utils.audit_utils.event_logger.models import (
     EngineEnvReportEvent,
     Event,
     InferenceEngineWeightChecksumEvent,
+    RolloutHoldingsSnapshotEvent,
+    RolloutStateRestoreEvent,
+    SampleOwner,
+    SampleOwnerTransitionEvent,
+    TrainerTrainedSamplesEvent,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
     WitnessSnapshotParamEvent,
@@ -232,3 +237,43 @@ class TestCheckEventNaming:
         from miles.utils.audit_utils.event_logger.models import _check_event_naming
 
         _check_event_naming()
+
+
+class TestSampleOwnershipEventModels:
+    def test_every_sample_ownership_event_survives_the_discriminated_union(self) -> None:
+        """The checker reads the log back through this union, so an unregistered event is invisible to it."""
+        events = [
+            SampleOwnerTransitionEvent(
+                timestamp=_FIXED_TS,
+                source=_FIXED_SOURCE,
+                sample_indices=[1, 2],
+                from_owner=SampleOwner.IN_FLIGHT,
+                to_owner=SampleOwner.OUTPUT_BUFFER,
+                lineage_id="branch-b",
+            ),
+            RolloutHoldingsSnapshotEvent(
+                timestamp=_FIXED_TS,
+                source=_FIXED_SOURCE,
+                rollout_id=0,
+                holdings={SampleOwner.RETRY_BUFFER: [1]},
+                replays_samples=False,
+                reason="final",
+                lineage_id="branch-b",
+            ),
+            TrainerTrainedSamplesEvent(
+                timestamp=_FIXED_TS, source=_FIXED_SOURCE, rollout_id=0, sample_indices=[1], lineage_id="branch-b"
+            ),
+            RolloutStateRestoreEvent(
+                timestamp=_FIXED_TS,
+                source=_FIXED_SOURCE,
+                rollout_id=0,
+                lineage_id="branch-b",
+                parent_lineage_id="branch-a",
+                rollout_ids={"solver": 0, "verifier": 2},
+            ),
+        ]
+
+        parsed = [_event_adapter.validate_json(event.model_dump_json()) for event in events]
+
+        assert [type(one) for one in parsed] == [type(one) for one in events]
+        assert parsed == events

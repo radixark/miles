@@ -3,7 +3,9 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml
 from sglang_router.launch_router import RouterArgs
@@ -3661,8 +3663,9 @@ def miles_validate_args(args):
         args.save_debug_trajectory_data = f"{args.dump_details}/trajectory/{{rollout_id}}.jsonl"
         args.save_debug_event_data = f"{args.dump_details}/{EVENTS_DIRNAME}"
 
-    if args.save_debug_event_data is None and args.save is not None:
-        args.save_debug_event_data = f"{args.save}/{EVENTS_DIRNAME}"
+    if args.save_debug_event_data is None:
+        root = Path(args.save) if args.save is not None else Path.cwd() / "miles-audit" / uuid4().hex
+        args.save_debug_event_data = str(root / EVENTS_DIRNAME)
 
     if args.load_debug_rollout_data is not None:
         logger.info(

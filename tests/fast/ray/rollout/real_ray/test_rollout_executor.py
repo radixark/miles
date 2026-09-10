@@ -243,7 +243,9 @@ class TestGenerate:
 
         result = await executor.get(rollout_id=11)
 
-        assert result == RolloutDataPack(sample_indices=None, data_ref=None, empty_batch_timeout=True)
+        assert result == RolloutDataPack(
+            sample_indices=None, data_ref=None, empty_batch_timeout=True, lineage_id=executor._lineage_id
+        )
 
     async def test_rejects_samples_generated_under_the_default_weight_version(self, ray_local_mode, patch_low_level):
         """A batch carrying the sglang never-updated version must fail get(), not reach training."""

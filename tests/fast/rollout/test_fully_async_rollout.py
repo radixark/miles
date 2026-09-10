@@ -15,6 +15,7 @@ import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.utils.audit_utils.event_logger.models import SampleOwner
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
@@ -90,6 +91,8 @@ def make_args(**overrides) -> Namespace:
         sglang_router_port=30000,
         sglang_router_request_timeout_secs=14400,
         eval_num_gpus=0,
+        save=None,
+        load=None,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -128,8 +131,10 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
 async def test_eval_without_fleet_pauses_producer(monkeypatch):
     """Shared-engine eval: producer submissions pause during eval and resume after."""
     release = asyncio.Event()
+    entered = asyncio.Event()
 
     async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        entered.set()
         await release.wait()
         return group
 
@@ -152,13 +157,13 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
 
     # Start the producer via a train call, then run eval concurrently.
     drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
-    await asyncio.sleep(0.05)
+    await entered.wait()
     submitted_before_eval = data_source.num_get_calls
 
     eval_task = asyncio.create_task(fn(RolloutFnEvalInput(rollout_id=0)))
     await eval_started.wait()
     release.set()  # in-flight groups finish and buffer, but no NEW submissions
-    await asyncio.sleep(0.05)
+    await drain
     assert data_source.num_get_calls == submitted_before_eval
 
     eval_release.set()
@@ -199,43 +204,59 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
     assert data_source.num_get_calls == 0
 
 
-class TestRetryBuffer:
-    async def test_the_next_submission_prefers_retry_prompts_over_the_data_source(self, monkeypatch) -> None:
-        """Recycled prompts are retried before advancing the read-only data source."""
-        source = FakeDataSource()
-        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), source)
-        group = make_group(7)
-        fn._recycle(group)
+def abort_once_generate(aborted_group_index: int):
+    seen: set[int] = set()
 
-        entry = await fn._submit_one_group()
-
-        assert entry.prompt_group == group
-        assert source.num_get_calls == 0
-        assert not fn._retry_buffer
-
-
-async def test_aborted_group_recycled(monkeypatch):
-    aborted = make_group(1, status=Sample.Status.ABORTED)
-    data_source = FakeDataSource(scripted=[aborted])
-    args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
-    calls = 0
-
-    async def abort_once(state, group, **kwargs):
-        nonlocal calls
-        calls += 1
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await asyncio.sleep(0)
+        first_time = group[0].group_index == aborted_group_index and group[0].group_index not in seen
+        seen.add(group[0].group_index)
         for sample in group:
-            sample.status = Sample.Status.ABORTED if calls == 1 else Sample.Status.COMPLETED
+            sample.status = Sample.Status.ABORTED if first_time else Sample.Status.COMPLETED
         return group
 
-    fn = make_fn(monkeypatch, args, data_source, generate=abort_once)
+    return generate
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
 
-    assert data_source.num_get_calls == 1
-    # reset_for_retry cleared generated outputs so the prompt can be re-sampled
-    assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
-    assert output.samples[0][0].group_index == 1
-    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+class TestRetryBuffer:
+    async def test_an_aborted_group_is_resubmitted_from_the_retry_buffer(self, monkeypatch):
+        """The rollout function owns its retry buffer, and the read-only data source refuses add_samples."""
+        aborted = make_group(1)
+        data_source = FakeDataSource(scripted=[aborted])
+        args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
+        fn = make_fn(monkeypatch, args, data_source, generate=abort_once_generate(1))
+
+        output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert output.samples[0][0].group_index == 1
+        assert data_source.num_get_calls == 1
+        assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+
+    async def test_a_recycled_group_is_reset_before_it_goes_back_into_the_buffer(self, monkeypatch):
+        """Generated tokens are written into the prompt samples in place, so a resubmission must clear them."""
+        args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        group = make_group(1, weight_versions=["5"])
+
+        fn._recycle(group, reason=data_buffer.UnusedReason.ABORTED, trainer_model_id=None)
+
+        [pending] = fn._retry_buffer
+        assert [sample.index for sample in pending.samples] == [sample.index for sample in group]
+        assert all(sample.response == "" and sample.weight_versions == [] for sample in pending.samples)
+        assert all(sample.response == "ok" and sample.weight_versions for sample in group)
+
+    async def test_the_next_submission_prefers_the_retry_buffer_over_the_data_source(self, monkeypatch):
+        """A recycled prompt that queued behind the whole dataset would come back an epoch later."""
+        data_source = FakeDataSource()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
+        recycled = make_group(7)
+        fn._retry_buffer.append(fully_async._PendingPrompt(samples=recycled))
+
+        fn._submit_one_group()
+
+        assert data_source.num_get_calls == 0
+        assert [pending.samples for pending in fn._in_flight.values()] == [recycled]
+        assert not fn._retry_buffer
 
 
 async def test_stale_group_recycled(monkeypatch):
@@ -271,9 +292,10 @@ async def test_stale_group_recycled(monkeypatch):
 
     output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=10))
 
-    assert data_source.num_get_calls == 1
+    assert all(sample.response == "ok" and sample.oldest_weight_version == 5 for sample in stale)
+    assert [sample.index for sample in output.samples[0]] == [sample.index for sample in stale]
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
-    assert output.metrics["rollout/fully_async/max_staleness"] == 5
+    assert output.metrics["rollout/fully_async/max_staleness"] == 0
 
 
 async def test_stale_group_dropped_by_default(monkeypatch):
@@ -299,8 +321,10 @@ async def test_worker_error_propagates(monkeypatch):
 
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release = asyncio.Event()
+    entered = asyncio.Event()
 
     async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        entered.set()
         await release.wait()
         return group
 
@@ -310,7 +334,7 @@ async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
 
     drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
-    await asyncio.sleep(0.05)
+    await entered.wait()
     assert data_source.num_get_calls == 1
 
     release.set()
@@ -352,14 +376,13 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
         expanded = []
         for sample in group:
             aborted = replace(sample, status=Sample.Status.ABORTED)
-            expanded.append([aborted, replace(sample)])
+            expanded.append([aborted, replace(sample, status=Sample.Status.COMPLETED)])
         return expanded
 
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source, generate=multi_sample_generate)
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
-    assert data_source.num_get_calls == 1
     assert all(isinstance(sample, Sample) for sample in submitted[1])
     assert len(submitted) > 1
     assert len(output.samples) == 1
@@ -428,7 +451,9 @@ def make_buffer(max_groups=None, max_staleness=None):
         max_weight_staleness=max_staleness,
     )
     buffer = data_buffer.DefaultDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
+        data_buffer.DataBufferConstructorInput(
+            args=args, unused_handler_fn=lambda group, *, reason, trainer_model_id: unused.append(group)
+        )
     )
     return buffer, unused
 
@@ -442,7 +467,9 @@ async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
     """The accepted-only raw_reward is conditioned by the filter, so this mean must still see dropped groups."""
     args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
     buffer = data_buffer.DefaultDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group: None)
+        data_buffer.DataBufferConstructorInput(
+            args=args, unused_handler_fn=lambda group, *, reason, trainer_model_id: None
+        )
     )
 
     await put_group(buffer, make_group(1, reward=0))
@@ -464,10 +491,10 @@ async def test_buffer_blocks_producer_when_full():
     assert not blocked.done()
     assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 2
 
-    assert (await buffer.get()).group[0].group_index == 1
+    assert (await buffer.get(num_groups=1))[0].group[0].group_index == 1
     await blocked
-    assert (await buffer.get()).group[0].group_index == 2
-    assert (await buffer.get()).group[0].group_index == 3
+    assert (await buffer.get(num_groups=1))[0].group[0].group_index == 2
+    assert (await buffer.get(num_groups=1))[0].group[0].group_index == 3
 
 
 async def test_buffer_get_ignores_unknown_context_keys():
@@ -475,7 +502,7 @@ async def test_buffer_get_ignores_unknown_context_keys():
     buffer, _ = make_buffer()
     await put_group(buffer, make_group(1))
 
-    assert (await buffer.get(current_version=1, some_future_key=2)).group[0].group_index == 1
+    assert (await buffer.get(num_groups=1, current_version=1, some_future_key=2))[0].group[0].group_index == 1
 
 
 async def test_buffer_get_skips_groups_stale_at_consumption_time():
@@ -485,7 +512,7 @@ async def test_buffer_get_skips_groups_stale_at_consumption_time():
     await put_group(buffer, stale)
     await put_group(buffer, make_group(2, weight_versions=["9"]))
 
-    assert (await buffer.get(current_version=10)).group[0].group_index == 2
+    assert (await buffer.get(num_groups=1, current_version=10))[0].group[0].group_index == 2
     assert unused == [stale]
     assert buffer.get_metrics()["rollout/fully_async/stale_groups_filtered"] == 1
 
@@ -497,7 +524,7 @@ async def test_buffer_staleness_metrics():
 
     await put_group(buffer, make_group(2, weight_versions=["6"]))
     await put_group(buffer, make_group(3, weight_versions=["8"]))
-    await buffer.get(current_version=10)  # pops group 1 and tracks the engine version clock
+    await buffer.get(num_groups=1, current_version=10)  # pops group 1 and tracks the engine version clock
     metrics = buffer.get_metrics()
     assert metrics["rollout/fully_async/avg_staleness"] == 6.0  # consumed group 1: 10 - 4
     assert metrics["rollout/fully_async/buffer_avg_staleness"] == 3.0  # buffered groups 2, 3: (4 + 2) / 2
@@ -522,7 +549,9 @@ def make_multi_buffer(*model_ids: str, max_staleness=None, paths_per_model=None)
         custom_async_data_buffer_path_per_model=paths_per_model,
     )
     buffer = data_buffer.DefaultMultiDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
+        data_buffer.DataBufferConstructorInput(
+            args=args, unused_handler_fn=lambda group, *, reason, trainer_model_id: unused.append(group)
+        )
     )
     return buffer, unused
 
@@ -542,7 +571,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
         await put_group(buffer, make_multi_policy_group(1, "solver", "verifier"))
 
-        entry = await buffer.get(trainer_model_id="verifier")
+        [entry] = await buffer.get(num_groups=1, trainer_model_id="verifier")
 
         assert [sample.trainer_model_id for sample in data_buffer.iter_samples(entry.group)] == ["verifier"]
 
@@ -551,7 +580,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
         await put_group(buffer, make_multi_policy_group(1, "solver", "solver"))
 
-        waiting = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+        waiting = asyncio.create_task(buffer.get(num_groups=1, trainer_model_id="verifier"))
         await asyncio.sleep(0.01)
 
         assert not waiting.done()
@@ -578,7 +607,7 @@ class TestPerPolicyQueues:
         group[0].trainer_model_id, group[1].trainer_model_id = "solver", "verifier"
 
         await put_group(buffer, group)
-        drained = asyncio.create_task(buffer.get(current_version=9, trainer_model_id="solver"))
+        drained = asyncio.create_task(buffer.get(num_groups=1, current_version=9, trainer_model_id="solver"))
         await asyncio.sleep(0.01)
 
         assert unused == [group]
@@ -589,7 +618,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
 
         with pytest.raises(AssertionError, match="trains no policy of this run"):
-            await buffer.get(trainer_model_id="reviewer")
+            await buffer.get(num_groups=1, trainer_model_id="reviewer")
 
     async def test_every_policy_of_the_config_gets_a_queue_of_its_own(self):
         """The queues are built from --megatron-config, so a policy missing one has nowhere to put its groups."""
@@ -616,12 +645,12 @@ class TestPerPolicyQueues:
         class _RecordingInner:
             async def get(self, **context):
                 seen.append(context)
-                return "entry"
+                return ["entry"]
 
         buffer._inners["solver"] = _RecordingInner()
 
-        assert await buffer.get(current_version=4, trainer_model_id="solver") == "entry"
-        assert seen == [{"current_version": 4, "trainer_model_id": "solver"}]
+        assert await buffer.get(num_groups=1, current_version=4, trainer_model_id="solver") == ["entry"]
+        assert seen == [{"num_groups": 1, "current_version": 4, "trainer_model_id": "solver"}]
 
 
 def make_tagged_sample(index: int, trainer_model_id: str | None) -> Sample:
@@ -719,24 +748,24 @@ class TestFilterGroup:
         """This is what stops a policy from training on another policy's responses."""
         solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
 
-        assert data_buffer._filter_group([solver, verifier], trainer_model_id="solver") == [solver]
+        assert data_buffer.filter_group([solver, verifier], trainer_model_id="solver") == [solver]
 
     def test_it_keeps_a_sub_group_that_still_has_samples(self):
         """A trajectory whose samples are split across policies survives on both sides, one sample each."""
         solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
 
-        assert data_buffer._filter_group([[solver, verifier]], trainer_model_id="solver") == [[solver]]
+        assert data_buffer.filter_group([[solver, verifier]], trainer_model_id="solver") == [[solver]]
 
     def test_it_drops_a_sub_group_that_lost_every_sample(self):
         """An empty list left in place would be a trajectory that consumers must special-case forever."""
-        assert data_buffer._filter_group([[make_tagged_sample(1, "verifier")]], trainer_model_id="solver") == []
+        assert data_buffer.filter_group([[make_tagged_sample(1, "verifier")]], trainer_model_id="solver") == []
 
     def test_it_leaves_the_group_it_was_given_untouched(self):
         """It runs once per policy over the same group, so a mutating filter would eat the later policies' samples."""
         solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
         group = [solver, [verifier]]
 
-        data_buffer._filter_group(group, trainer_model_id="solver")
+        data_buffer.filter_group(group, trainer_model_id="solver")
 
         assert group == [solver, [verifier]]
 
@@ -772,7 +801,6 @@ class TestPerPolicyBufferClass:
             "solver", "verifier", paths_per_model=[f"solver={__name__}.RecordingBuffer"]
         )
 
-        assert RecordingBuffer.constructed_with.unused_handler_fn == unused.append
         assert RecordingBuffer.constructed_with.args is buffer._inners["verifier"]._args
 
     def test_a_policy_this_run_does_not_train_is_refused(self):
@@ -852,16 +880,26 @@ class MultiPolicyDataSource(FakeDataSource):
 class WedgedBuffer(data_buffer.DataBuffer):
     def __init__(self, input: data_buffer.DataBufferConstructorInput):
         self._never = asyncio.Event()
+        self.entered = asyncio.Event()
 
-    async def put(self, input: data_buffer.DataBufferInput) -> None:
+    async def put(self, input: data_buffer.DataBufferInput) -> data_buffer.PutOutcomes:
+        self.entered.set()
         await self._never.wait()
+        raise AssertionError("the wedged buffer never accepts a group")
 
-    async def get(self, **context) -> data_buffer.DataBufferInput:
+    async def get(self, *, num_groups: int, **context) -> list[data_buffer.DataBufferInput]:
+        self.entered.set()
         await self._never.wait()
         raise AssertionError("the wedged buffer never hands out a group")
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         return {}
+
+    def snapshot(self) -> data_buffer.DataBufferState:
+        return {}
+
+    def restore(self, state: data_buffer.DataBufferState) -> None:
+        raise NotImplementedError
 
 
 class TestDisposal:
@@ -870,7 +908,8 @@ class TestDisposal:
         args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
         fn = make_fn(monkeypatch, args, FakeDataSource())
         step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
+        await fn._output.entered.wait()
         assert not step.done()
 
         await asyncio.wait_for(fn.dispose(), timeout=5)
@@ -882,7 +921,8 @@ class TestDisposal:
         args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
         fn = make_fn(monkeypatch, args, FakeDataSource())
         step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
+        await fn._output.entered.wait()
 
         await fn.dispose()
 
@@ -951,7 +991,7 @@ class TestBufferSelection:
 
         await fn(RolloutFnTrainInput(rollout_id=0, weight_version=4, trainer_model_id="a"))
 
-        assert RecordingMultiBuffer.get_calls == [dict(current_version=4, trainer_model_id="a")]
+        assert RecordingMultiBuffer.get_calls == [dict(num_groups=1, current_version=4, trainer_model_id="a")]
 
 
 async def test_worker_defaults_to_sample_granularity(monkeypatch):
@@ -1029,8 +1069,10 @@ class TestRolloutFnContract:
 
 async def test_worker_bounds_in_flight_groups(monkeypatch):
     release = asyncio.Event()
+    entered = asyncio.Event()
 
     async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        entered.set()
         await release.wait()
         return group
 
@@ -1038,9 +1080,131 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
     fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), data_source, generate=blocking_generate)
 
     drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
-    await asyncio.sleep(0.05)
+    await entered.wait()
     assert data_source.num_get_calls == 2  # in-flight bound, not more
 
     release.set()
     output = await drain
     assert len(output.samples) == 2
+
+
+def make_checkpointing_args(tmp_path, **overrides) -> Namespace:
+    return make_args(save=str(tmp_path), load=str(tmp_path), **overrides)
+
+
+def owned_sample_indices(fn) -> set[int]:
+    holdings = fn.describe_holdings(trainer_model_id=None)
+    return {index for indices in holdings.values() for index in indices}
+
+
+class BlockingPutBuffer(data_buffer.DefaultDataBuffer):
+    def __init__(
+        self, input: data_buffer.DataBufferConstructorInput, *, entered: asyncio.Event, release: asyncio.Event
+    ) -> None:
+        super().__init__(input)
+        self.entered = entered
+        self.release = release
+
+    async def put(self, input: data_buffer.DataBufferInput) -> data_buffer.PutOutcomes:
+        self.entered.set()
+        await self.release.wait()
+        return await super().put(input)
+
+
+class TestInFlightRegistry:
+    async def test_a_submitted_group_is_registered_before_it_starts(self, monkeypatch):
+        """A group nobody records between the data source and the buffer is a group a checkpoint loses."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+        task = fn._submit_one_group()
+
+        assert fn.describe_holdings(trainer_model_id=None)[SampleOwner.IN_FLIGHT] == [10010, 10011]
+        task.cancel()
+
+    async def test_a_generated_group_stays_owned_while_put_blocks_on_a_full_buffer(self, monkeypatch):
+        """put may wait for the trainer for minutes, and the group belongs to nobody else meanwhile."""
+        release = asyncio.Event()
+
+        entered = asyncio.Event()
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.BlockingPutBuffer")
+        monkeypatch.setattr(
+            fully_async,
+            "load_function",
+            lambda path: (lambda input: BlockingPutBuffer(input, entered=entered, release=release)) if path else None,
+        )
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0, weight_version=1)))
+        await entered.wait()
+
+        assert fn.describe_holdings(trainer_model_id=None)[SampleOwner.OUTPUT_BUFFER] == [10010, 10011]
+
+        release.set()
+        await step
+        assert fn.describe_holdings(trainer_model_id=None)[SampleOwner.IN_FLIGHT] == []
+
+    async def test_a_group_is_deregistered_only_once_the_buffer_has_it(self, monkeypatch):
+        """Deregistering before put returns opens a window where the group has no owner at all."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=0, weight_version=1))
+
+        assert fn.describe_holdings(trainer_model_id=None)[SampleOwner.IN_FLIGHT] == []
+
+
+class TestPutOutcomeEvents:
+    def test_each_policy_of_a_group_gets_its_own_ownership_event(self, monkeypatch):
+        """A group one policy kept and another dropped needs both moves logged, or the drop looks like a leak."""
+        logged = []
+        monkeypatch.setattr(
+            fully_async.sample_ownership,
+            "log_owner_transition",
+            lambda samples, **kwargs: logged.append((sorted(s.index for s in samples), kwargs)),
+        )
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        prompt_group = make_group(7)
+        prompt_group[0].trainer_model_id = "solver"
+        prompt_group[1].trainer_model_id = "verifier"
+
+        fn._log_put_outcomes(
+            [(prompt_group, {"solver": data_buffer.PutOutcome.KEPT, "verifier": data_buffer.PutOutcome.DROPPED})],
+        )
+
+        assert logged == [
+            (
+                [70],
+                dict(
+                    from_owner=SampleOwner.IN_FLIGHT,
+                    to_owner=SampleOwner.OUTPUT_BUFFER,
+                    trainer_model_id="solver",
+                    reason=None,
+                ),
+            ),
+            (
+                [71],
+                dict(
+                    from_owner=SampleOwner.IN_FLIGHT,
+                    to_owner=SampleOwner.DROPPED,
+                    trainer_model_id="verifier",
+                    reason="dynamic_filter",
+                ),
+            ),
+        ]
+
+    def test_single_policy_outcomes_combine_all_finished_groups(self, monkeypatch):
+        """One producer cycle emits one transition for all finished groups of the same policy."""
+        logged = []
+        monkeypatch.setattr(
+            fully_async.sample_ownership,
+            "log_owner_transition",
+            lambda samples, **kwargs: logged.append(sorted(s.index for s in samples)),
+        )
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+        fn._log_put_outcomes(
+            [
+                (make_group(7), {None: data_buffer.PutOutcome.KEPT}),
+                (make_group(8), {None: data_buffer.PutOutcome.KEPT}),
+            ]
+        )
+
+        assert logged == [[70, 71, 80, 81]]

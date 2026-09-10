@@ -87,6 +87,9 @@ class DummyTrainActor:
     def save_model(self, *args: Any, **kwargs: Any) -> None:
         self._record("save_model", args, kwargs)
 
+    def log_checkpoint_witness(self, *args: Any, **kwargs: Any) -> None:
+        self._record("log_checkpoint_witness", args, kwargs)
+
     def export_hf(self, *args: Any, **kwargs: Any) -> None:
         self._record("export_hf", args, kwargs)
 

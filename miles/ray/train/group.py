@@ -1,21 +1,25 @@
 import asyncio
 import logging
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils import object_store
 from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
+from miles.utils.audit_utils import sample_ownership
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
+    TrainerCheckpointEvent,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
@@ -215,6 +219,11 @@ class TrainerController:
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
+            self._log_trained_samples(
+                rollout_id=rollout_id,
+                sample_indices=rollout_data_pack.sample_indices,
+                lineage_id=rollout_data_pack.lineage_id,
+            )
 
             return worker_results
 
@@ -253,8 +262,28 @@ class TrainerController:
             }
             get_event_logger().log(
                 TrainGroupStepEndEvent,
-                dict(rollout_id=rollout_id, cell_outcomes=cell_outcomes),
+                dict(rollout_id=rollout_id, role=self._role, cell_outcomes=cell_outcomes),
             )
+
+    def _log_trained_samples(
+        self, *, rollout_id: int, sample_indices: list[int] | None, lineage_id: str | None
+    ) -> None:
+        if not sample_indices:
+            return
+        critic_only = (
+            bool(self.args.use_critic)
+            and self.args.num_critic_only_steps
+            and rollout_id < self.args.num_critic_only_steps
+        )
+        recording_role = CRITIC_ROLE if critic_only else ACTOR_ROLE
+        if self._role != recording_role:
+            return
+        sample_ownership.log_trained_samples(
+            rollout_id=rollout_id,
+            trainer_model_id=self.args.trainer_model_id,
+            sample_indices=sample_indices,
+            lineage_id=lineage_id,
+        )
 
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
         outcomes = TrainerController._compute_attempt_outcomes(snapshot_alive_cells, results)
@@ -373,9 +402,41 @@ class TrainerController:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
-            lambda _: self._execute_first_alive("save_model", rollout_id=rollout_id, force_sync=force_sync),
+            lambda _: self._save_model_attempt(rollout_id=rollout_id, force_sync=force_sync),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
+
+    async def _save_model_attempt(self, *, rollout_id: int, force_sync: bool) -> None:
+        if self.args.train_backend != "megatron":
+            await self._execute_first_alive("save_model", rollout_id=rollout_id, force_sync=force_sync)
+            return
+        cells = [cell for cell in self._cells if cell.is_alive]
+        if not cells:
+            raise NonRetryableError("No alive cells available to save a checkpoint")
+        checkpoint_id = uuid.uuid4().hex
+        results = await self._execute_first_alive(
+            "save_model", rollout_id=rollout_id, force_sync=force_sync, checkpoint_id=checkpoint_id
+        )
+        await gather_and_raise_first(
+            [
+                cell.execute("log_checkpoint_witness", rollout_id=rollout_id, checkpoint_id=checkpoint_id)
+                for cell in self._cells
+                if cell.is_alive and cell is not cells[0]
+            ]
+        )
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                TrainerCheckpointEvent,
+                dict(
+                    rollout_id=rollout_id,
+                    role=self._role,
+                    checkpoint_id=checkpoint_id,
+                    cell_index=cells[0].cell_index,
+                    rank_count=len(results),
+                    alive_cell_indices=[cell.cell_index for cell in self._cells if cell.is_alive],
+                ),
+                print_log=False,
+            )
 
     async def export_hf(self, rollout_id: int, path: str) -> None:
         """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
@@ -623,6 +684,7 @@ class TrainerController:
                     src_cell_index=src_cell_index,
                     healed_cell_indices=healed_cell_indices,
                     alive_cell_indices_after=alive_cell_indices_after,
+                    role=self._role,
                 ),
             )
 
