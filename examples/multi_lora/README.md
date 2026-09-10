@@ -16,6 +16,12 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
 
 ## Run
 
+The gateway imports the Tinker wire schema at startup, so install the SDK on the serving node too:
+
+```bash
+pip install "tinker>=0.26.2"
+```
+
 Start the gateway:
 
 ```bash

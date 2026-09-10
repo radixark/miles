@@ -4,7 +4,14 @@ import pytest
 import torch
 
 from miles.tinker.core.types import UserInputError
-from miles.tinker.runtime import MilesBackend, _build_train_data, _prompt_logprobs, _to_sequence, _topk_prompt_logprobs
+from miles.tinker.runtime import (
+    MilesBackend,
+    _build_train_data,
+    _pad_to_dp_multiple,
+    _prompt_logprobs,
+    _to_sequence,
+    _topk_prompt_logprobs,
+)
 
 
 def _datum(tokens: list[int], **extra) -> dict:
@@ -135,3 +142,37 @@ def test_a_pinned_seed_still_gets_one_stream_per_sample():
     assert [_with_sample_seed(request, i)["sampling_params"]["sampling_seed"] for i in range(3)] == [7, 8, 9]
     assert request["sampling_params"]["sampling_seed"] == 7
     assert "sampling_seed" not in _with_sample_seed({"sampling_params": {}}, 2)["sampling_params"]
+
+
+class TestPadToDpMultiple:
+    def test_a_multiple_passes_through_unchanged(self):
+        slot_datums = [(0, _datum([1, 2])), (1, _datum([3, 4]))]
+        assert _pad_to_dp_multiple(slot_datums, 2) is slot_datums
+
+    def test_padding_replicates_the_last_datum_with_zero_loss_weight(self):
+        slot_datums = [(0, _datum([1, 2, 3], weights=[1.0, 1.0], advantages=[2.0, 2.0]))]
+        padded = _pad_to_dp_multiple(slot_datums, 4)
+        assert len(padded) == 4
+        for slot, filler in padded[1:]:
+            assert slot == 0 and filler["tokens"] == [1, 2, 3]
+            assert filler["weights"] == [0.0, 0.0] and filler["advantages"] == [0.0, 0.0]
+        assert slot_datums[0][1]["weights"] == [1.0, 1.0], "the original datum must not be mutated"
+
+
+async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
+    backend = MilesBackend(trainer=None, router_url="http://router", dp_size=2)
+    seen = {}
+
+    async def fake_run_batch(method, batch_id, train_data):
+        seen.update(train_data)
+        per_datum = [
+            {"sample_index": index, "loss": float(index), "logprobs": torch.tensor([-0.1])}
+            for index in range(len(train_data["tokens"]))
+        ]
+        return [{"per_datum": per_datum}]
+
+    backend._run_batch = fake_run_batch
+    outputs = await backend.forward_backward(1, [(0, _datum([1, 2], weights=[1.0]))], "cross_entropy", {})
+    assert seen["dynamic_global_batch_size"] == 2, "a singleton batch must be padded to the DP size"
+    assert seen["loss_weights"] == [[1.0], [0.0]]
+    assert len(outputs) == 1, "padding outputs are dropped"
