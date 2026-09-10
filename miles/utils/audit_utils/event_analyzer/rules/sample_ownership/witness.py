@@ -1,0 +1,78 @@
+from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import CurrentTrainerWitnessIssue
+from miles.utils.audit_utils.event_logger.models import (
+    Event,
+    TrainerCpuWitnessEvent,
+    TrainerWitnessCohortEvent,
+    TrainingSampleCount,
+)
+
+
+def _current_witnesses(
+    events: list[Event],
+) -> tuple[list[TrainerCpuWitnessEvent], list[CurrentTrainerWitnessIssue]]:
+    cohorts = [event for event in events if isinstance(event, TrainerWitnessCohortEvent)]
+    if not cohorts:
+        return [], [
+            CurrentTrainerWitnessIssue(
+                description="no completed trainer witness cohort was recorded",
+                replicas=[],
+            )
+        ]
+
+    cohort = max(enumerate(cohorts), key=lambda item: (item[1].timestamp, item[0]))[1]
+    expected = set(cohort.replica_ids)
+    if not expected:
+        return [], [
+            CurrentTrainerWitnessIssue(
+                description="completed trainer witness cohort contains no replicas",
+                replicas=[],
+            )
+        ]
+    latest: dict[str, tuple[int, TrainerCpuWitnessEvent]] = {}
+    for position, event in enumerate(events):
+        if not isinstance(event, TrainerCpuWitnessEvent):
+            continue
+        if (
+            event.cohort_id != cohort.cohort_id
+            or event.rollout_id != cohort.rollout_id
+            or event.replica_id not in expected
+        ):
+            continue
+        current = latest.get(event.replica_id)
+        if current is None or (event.timestamp, position) > (current[1].timestamp, current[0]):
+            latest[event.replica_id] = (position, event)
+
+    missing = sorted(expected - latest.keys())
+    if missing:
+        return [], [
+            CurrentTrainerWitnessIssue(
+                description="completed trainer witness cohort is missing replica snapshots",
+                replicas=missing,
+            )
+        ]
+    return [latest[replica_id][1] for replica_id in sorted(expected)], []
+
+
+def _rows_by_sample(event: TrainerCpuWitnessEvent) -> dict[int, list[TrainingSampleCount]]:
+    result: dict[int, list[TrainingSampleCount]] = {}
+    for row in event.sample_counts:
+        result.setdefault(row.sample.source_sample_index, []).append(row)
+    return result
+
+
+def _describe_rows(rows: list[TrainingSampleCount]) -> list[str]:
+    return [f"row {row.sample.row_index}/{row.sample.row_count}: count {row.count}" for row in rows]
+
+
+def _rows_are_trained_once(rows: list[TrainingSampleCount]) -> bool:
+    if not rows:
+        return False
+
+    row_counts = {row.sample.row_count for row in rows}
+    if len(row_counts) != 1 or (row_count := next(iter(row_counts))) <= 0:
+        return False
+    return (
+        len(rows) == row_count
+        and {row.sample.row_index for row in rows} == set(range(row_count))
+        and all(row.count == 1 for row in rows)
+    )
