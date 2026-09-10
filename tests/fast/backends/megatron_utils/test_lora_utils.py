@@ -5,10 +5,13 @@ exclude-module parsing, and LoRA sync config building — all without GPU.
 """
 
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
+from miles.backends.megatron_utils import lora_utils
 from miles.backends.megatron_utils.lora_utils import (
     _get_lora_class_name,
     _is_adapter_param_name,
@@ -377,3 +380,37 @@ class TestBuildLoraSyncConfigUnderMultiLora:
         )
 
         assert build_lora_sync_config(self._args())["target_modules"] == "all-linear"
+
+
+class _AdapterModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base = torch.nn.Linear(2, 2)
+        self.lora_A = torch.nn.Parameter(torch.zeros(1, 2))
+        self.lora_B = torch.nn.Parameter(torch.zeros(2, 1))
+
+
+def _single_rank(monkeypatch):
+    monkeypatch.setattr(
+        lora_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(tp=SimpleNamespace(rank=0), pp=SimpleNamespace(rank=0)),
+    )
+
+
+def test_load_lora_adapter_rejects_a_shard_that_does_not_match_the_adapter(tmp_path, monkeypatch):
+    """A silently partial load resumes training on a half-initialized adapter."""
+    _single_rank(monkeypatch)
+    torch.save({"lora_A": torch.ones(1, 2), "stale_lora_C": torch.ones(1)}, tmp_path / "adapter_megatron_rank0.pt")
+
+    with pytest.raises(RuntimeError, match=r"missing=\['lora_B'\], unexpected=\['stale_lora_C'\]"):
+        lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path))
+
+
+def test_load_lora_adapter_rejects_shards_saved_under_another_layout(tmp_path, monkeypatch):
+    """Falling through to fresh adapter weights would hide a resharding mistake."""
+    _single_rank(monkeypatch)
+    torch.save({"lora_A": torch.ones(1, 2)}, tmp_path / "adapter_megatron_rank1.pt")
+
+    with pytest.raises(FileNotFoundError, match="none for global rank 0"):
+        lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path))
