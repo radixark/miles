@@ -104,7 +104,7 @@ over at rollout 0 with the run.
 ### `scenario_hot_restart_realistic_gsm8k`
 
 ```
-Type: single run, ft's scenario_realistic_gsm8k with hot restarts instead of kills
+Type: single run, shared tests/utils/soak/recipes/gsm8k.py with hot restarts
 Steps: as scenario_realistic_gsm8k
 Injection: HotRestartFaultForm at random intervals through the ordinary cell fault scheduler,
         seed logged

@@ -10,7 +10,7 @@ import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_realistic_gsm8k as scenario
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFaultForm
-from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
+from tests.utils.soak.recipes import gsm8k as scenario_realistic_gsm8k
 from tests.utils.soak.state import InjectionEvent
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger

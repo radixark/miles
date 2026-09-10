@@ -1,15 +1,8 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
-import os
-import shutil
-from collections.abc import Callable
-from dataclasses import dataclass
-from functools import partial
-from pathlib import Path
 
 import typer
-from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import (
     FullyAsyncOption,
     MetricThresholdOption,
@@ -18,25 +11,17 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     SeedOption,
     TrainerCrashIntervalSecondsOption,
 )
-from tests.e2e.ft.conftest_ft.execution import (
-    DATA_DIR,
-    MODEL_DIR,
-    get_api_server_args,
-    get_fully_async_args,
-    get_train_script,
-)
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
-from tests.fast.cluster_backends import create_backend_for_run
-from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
-from tests.utils.soak.fault_forms import (
-    CellFaultForms,
-    compute_mean_interval_seconds_of_cell_type,
-    create_cell_fault_forms,
+from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
+from tests.utils.soak.recipes.gsm8k import (
+    DEFAULT_METRIC_THRESHOLD,
+    DEFAULT_NUM_ROLLOUT,
+    DEFAULT_SEED,
+    FT_COMPONENTS,
+    run_realistic_gsm8k,
 )
 
-from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 
 app: typer.Typer = typer.Typer()
 
@@ -44,6 +29,7 @@ TEST_NAME: str = "realistic_gsm8k"
 
 DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS: float = 600.0
 DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS: float = 1200.0
+
 
 @app.command(name="run")
 def run_ci(

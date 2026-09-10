@@ -6,15 +6,13 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
 from tests.fast.cluster_backends import create_backend_for_run
-from tests.utils.soak.entrypoint import API_SERVER_PORT
+from tests.utils.soak.utils import DATA_DIR, DEFAULT_TRAIN_SCRIPT, MODEL_DIR
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
-from miles.utils.workers.types import ClusterBackend
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="ft_test_dumper_"))
 _MEGATRON_SOURCE_PATCHER_CONFIG_PATH: Path = _RUN_DIR / "megatron_source_patcher.yaml"

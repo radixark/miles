@@ -1,8 +1,8 @@
 import pytest
 from tests.e2e.ft import test_random_crash_fully_async__kill_train_rollout__dp2_cp2 as fully_async_random_entry
-from tests.e2e.ft.conftest_ft.execution import get_fully_async_args, get_train_script
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_mode_supports_fully_async
+from tests.utils.soak.utils import get_fully_async_args, get_train_script
 
 
 def test_the_fully_async_soak_launches_the_async_trainer() -> None:

@@ -9,7 +9,7 @@ from tests.fast.utils.command_recorder import record_commands
 from miles.utils.external_utils.command_utils.common import repo_base_dir
 
 _CELLS_THAT_RUN_ON_A_CLUSTER = (
-    "tests/e2e/ft/conftest_ft/scenario_realistic_gsm8k.py",
+    "tests/utils/soak/recipes/gsm8k.py",
     "tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py",
     "tests/e2e/short/test_qwen2.5_0.5B_gsm8k_short.py",
     "tests/e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py",

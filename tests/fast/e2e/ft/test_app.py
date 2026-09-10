@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 from tests.e2e.ft.conftest_ft import app as app_module
-from tests.e2e.ft.conftest_ft.app import _DUMPS_ROOT_ENV, RunSideRequest, resolve_dump_dir, run_pipeline
+from tests.e2e.ft.conftest_ft.app import RunSideRequest, resolve_dump_dir, run_pipeline
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.soak.utils import _DUMPS_ROOT_ENV
 from typer.testing import CliRunner
 
 from miles.utils.external_utils import command_utils

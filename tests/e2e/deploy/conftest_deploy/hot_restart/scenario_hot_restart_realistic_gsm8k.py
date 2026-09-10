@@ -16,14 +16,14 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_checkpoi
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME, HotRestartFaultForm
 from tests.e2e.ft.conftest_ft.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
-from tests.e2e.ft.conftest_ft.scenario_realistic_gsm8k import (
+from tests.utils.soak.fault_forms import CellFaultForms
+from tests.utils.soak.recipes.gsm8k import (
     DEFAULT_METRIC_THRESHOLD,
     DEFAULT_NUM_ROLLOUT,
     DEFAULT_SEED,
     Gsm8kRun,
     run_realistic_gsm8k,
 )
-from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.state import Event, InjectionEvent
 from tests.utils.soak.views import compute_num_successful_injections_of_form
 

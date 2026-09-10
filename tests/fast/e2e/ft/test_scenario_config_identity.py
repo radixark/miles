@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tests.e2e.ft.conftest_ft import scenario_random_crash, scenario_realistic_gsm8k
 from tests.utils.soak import state
+from tests.utils.soak.recipes import gsm8k
 
 from miles.utils.external_utils import command_utils
 
@@ -86,18 +87,18 @@ class TestOneConfigPerSoak:
         for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
             monkeypatch.setenv(proxy_var, "http://unused")
         monkeypatch.setattr(
-            scenario_realistic_gsm8k,
+            gsm8k,
             "create_backend_for_run",
             lambda config: seen.prepared.append(config) or _RecordingBackend(config, seen),
         )
-        monkeypatch.setattr(scenario_realistic_gsm8k, "prepare_gsm8k", lambda U: None)
+        monkeypatch.setattr(gsm8k, "prepare_gsm8k", lambda U: None)
         dump_run_ids: list[str] = []
         monkeypatch.setattr(
-            scenario_realistic_gsm8k,
+            gsm8k,
             "resolve_dump_dir",
             lambda test_name, *, run_id: dump_run_ids.append(run_id) or str(tmp_path / "gsm8k"),
         )
-        monkeypatch.setattr(scenario_realistic_gsm8k, "spawn_fault_injector", lambda **kwargs: _StubInjector())
+        monkeypatch.setattr(gsm8k, "spawn_fault_injector", lambda **kwargs: _StubInjector())
         monkeypatch.setattr(scenario_realistic_gsm8k, "assert_healing", lambda ft_components, **kwargs: None)
 
         scenario_realistic_gsm8k.run_ci(num_rollout=1)
@@ -114,11 +115,9 @@ class TestRelaunchingASoak:
         """A hot restart relaunches the soak with --hot-restart added, and the backend reads that off its config."""
         seen = _Seen()
         _install(monkeypatch, seen)
-        monkeypatch.setattr(
-            scenario_realistic_gsm8k, "create_backend_for_run", lambda config: _RecordingBackend(config, seen)
-        )
+        monkeypatch.setattr(gsm8k, "create_backend_for_run", lambda config: _RecordingBackend(config, seen))
         relaunch = dataclasses.replace(command_utils.default_config(), hot_restart="orchestration")
 
-        scenario_realistic_gsm8k._launch_gsm8k(relaunch, train_args="", fully_async=False)
+        gsm8k._launch_gsm8k(relaunch, train_args="", fully_async=False)
 
         assert [config.hot_restart for config in seen.trained] == ["orchestration"]
