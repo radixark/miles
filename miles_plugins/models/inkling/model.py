@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import partial
 
 import torch
 import transformer_engine.pytorch as te
@@ -138,13 +139,10 @@ def get_inkling_layer_spec(config) -> ModuleSpec:
     spec.submodules.self_attention = ModuleSpec(
         module=InklingSelfAttention, params={"attn_mask_type": AttnMaskType.causal}, submodules=attn.submodules
     )
-    mlp = spec.submodules.mlp
-    moe_subs = mlp.submodules
+    moe_subs = spec.submodules.mlp.keywords["submodules"]
     moe_subs.router = InklingRouter
-    moe_subs.shared_experts = ModuleSpec(module=InklingSharedExperts, submodules=moe_subs.shared_experts.submodules)
-    spec.submodules.mlp = ModuleSpec(
-        module=InklingMoELayer, params=getattr(mlp, "params", None) or {}, submodules=moe_subs
-    )
+    moe_subs.shared_experts = partial(InklingSharedExperts, submodules=moe_subs.shared_experts.keywords["submodules"])
+    spec.submodules.mlp = partial(InklingMoELayer, submodules=moe_subs)
     return spec
 
 
@@ -154,9 +152,8 @@ def get_inkling_dense_layer_spec(config) -> ModuleSpec:
     spec.submodules.self_attention = ModuleSpec(
         module=InklingSelfAttention, params={"attn_mask_type": AttnMaskType.causal}, submodules=attn.submodules
     )
-    mlp = spec.submodules.mlp
-    spec.submodules.mlp = ModuleSpec(
-        module=InklingDenseMLP, params=getattr(mlp, "params", None) or {}, submodules=mlp.submodules
+    spec.submodules.mlp = partial(
+        InklingDenseMLP.as_mlp_submodule, submodules=spec.submodules.mlp.keywords["submodules"]
     )
     return spec
 

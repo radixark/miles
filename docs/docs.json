@@ -137,6 +137,7 @@
           ],
           "expanded": false
          },
+         "models/qwen/qwen3-8-flash-next",
          "models/qwen/qwen3-next",
          {
           "group": "Qwen3",
@@ -153,6 +154,7 @@
         "group": "GLM",
         "pages": [
          "models/glm/index",
+         "models/glm/glm5-3-flash",
          "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
@@ -220,6 +222,7 @@
        "advanced/fault-tolerance",
        "advanced/pd-disaggregation",
        "advanced/p2p-weight-transfer",
+       "advanced/mooncake-rollout-transfer",
        "advanced/disaggregated-rollout",
        "advanced/disk-offload"
       ]
@@ -274,12 +277,13 @@
      {
       "group": "CI",
       "pages": [
-       "ci/contributor-guide",
-       "ci/00-stage",
-       "ci/01-label",
-       "ci/02-docker-build",
-       "ci/03-metric-history-gate",
-       "ci/04-release"
+       "developer/ci/contributor-guide",
+       "developer/ci/00-stage",
+       "developer/ci/01-label",
+       "developer/ci/02-docker-build",
+       "developer/ci/03-metric-history-gate",
+       "developer/ci/04-release",
+       "developer/ci/05-command-identity"
       ]
      }
     ]
@@ -346,6 +350,41 @@
   ]
  },
  "redirects": [
+  {
+   "source": "/ci/contributor-guide",
+   "destination": "/developer/ci/contributor-guide",
+   "permanent": true
+  },
+  {
+   "source": "/ci/00-stage",
+   "destination": "/developer/ci/00-stage",
+   "permanent": true
+  },
+  {
+   "source": "/ci/01-label",
+   "destination": "/developer/ci/01-label",
+   "permanent": true
+  },
+  {
+   "source": "/ci/02-docker-build",
+   "destination": "/developer/ci/02-docker-build",
+   "permanent": true
+  },
+  {
+   "source": "/ci/03-metric-history-gate",
+   "destination": "/developer/ci/03-metric-history-gate",
+   "permanent": true
+  },
+  {
+   "source": "/ci/04-release",
+   "destination": "/developer/ci/04-release",
+   "permanent": true
+  },
+  {
+   "source": "/ci/05-command-identity",
+   "destination": "/developer/ci/05-command-identity",
+   "permanent": true
+  },
   {
    "source": "/user-guide/rollout-endpoints",
    "destination": "/user-guide/generate-endpoint"

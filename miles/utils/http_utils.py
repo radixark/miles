@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import random
 import socket
+import subprocess
 import time
 
 import httpx
@@ -15,6 +16,8 @@ from miles.utils.logging_utils import configure_logger_raw
 logger = logging.getLogger(__name__)
 
 MILES_HOST_IP_ENV = "MILES_HOST_IP"
+
+_TCP_POLL_INTERVAL_SECONDS = 0.5
 
 
 def find_available_port(base_port: int):
@@ -45,7 +48,7 @@ def is_port_available(port):
 def wait_for_server_ready(
     host: str,
     port: int,
-    process: "multiprocessing.Process | None" = None,
+    process: "multiprocessing.Process | subprocess.Popen | None" = None,
     timeout: float = 30,
 ) -> None:
     """Poll until a TCP port is accepting connections.
@@ -54,7 +57,7 @@ def wait_for_server_ready(
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if process is not None and not process.is_alive():
+        if process is not None and not _is_process_running(process):
             raise RuntimeError(f"Server process died before port {port} became ready")
         try:
             with socket.create_connection((host, port), timeout=1):
@@ -62,6 +65,38 @@ def wait_for_server_ready(
         except OSError:
             time.sleep(0.5)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+
+# TODO: remove; switch the remaining (test-only) callers to wait_tcp_ready_async
+def wait_tcp_ready(host: str, port: int, *, timeout: float = 30) -> None:
+    """Poll until a TCP port accepts connections."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host.strip("[]"), port), timeout=1):
+                return
+        except OSError:
+            time.sleep(_TCP_POLL_INTERVAL_SECONDS)
+    raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+
+async def wait_tcp_ready_async(host: str, port: int, *, timeout: float = 30) -> None:
+    """Poll until a TCP port accepts connections, leaving the event loop free to run meanwhile."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection(host.strip("[]"), port), timeout=1)
+            writer.close()
+            return
+        except (OSError, asyncio.TimeoutError):
+            await asyncio.sleep(_TCP_POLL_INTERVAL_SECONDS)
+    raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+
+def _is_process_running(process: "multiprocessing.Process | subprocess.Popen") -> bool:
+    if isinstance(process, subprocess.Popen):
+        return process.poll() is None
+    return process.is_alive()
 
 
 def get_host_info():
@@ -183,6 +218,31 @@ def terminate_process(process: multiprocessing.Process, timeout: float = 1.0) ->
         process.join()
 
 
+class GeneralHttpClientProvider:
+    _CONNECT_TIMEOUT = 10.0
+    _WRITE_TIMEOUT = 60.0
+    _POOL_TIMEOUT = 60.0
+    _TIMEOUT = httpx.Timeout(connect=_CONNECT_TIMEOUT, read=None, write=_WRITE_TIMEOUT, pool=_POOL_TIMEOUT)
+    _LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=None)
+
+    # TODO: entries are never evicted and the clients are never aclose()d, so a caller that keeps
+    # creating event loops (repeated asyncio.run) leaks one client and its keep-alive sockets per
+    # loop. Today's call sites use a bounded number of loops; add eviction before that stops holding.
+    _clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+
+    @classmethod
+    def client(cls) -> httpx.AsyncClient:
+        loop = asyncio.get_running_loop()
+        client = cls._clients.get(loop)
+        if client is None:
+            client = httpx.AsyncClient(timeout=cls._TIMEOUT, limits=cls._LIMITS)
+            cls._clients[loop] = client
+        return client
+
+
+# TODO: the client below is not general — it carries a rollout-specific connection limit and an
+# optional ray-distributed POST path. Rename it (or fold it into GeneralHttpClientProvider with the
+# limit as an argument) once the rollout request path is reworked.
 _http_client: httpx.AsyncClient | None = None
 _client_concurrency: int = 0
 
@@ -313,7 +373,7 @@ def _init_ray_distributed_post(args):
     # Define the async actor
     @ray.remote
     class _HttpPosterActor:
-        def __init__(self, concurrency: int):
+        def __init__(self, *, concurrency: int):
             # Lazy creation to this actor's event loop
             self._client = httpx.AsyncClient(
                 limits=httpx.Limits(max_connections=max(1, concurrency)),
@@ -339,7 +399,7 @@ def _init_ray_distributed_post(args):
                 max_concurrency=per_actor_conc,
                 # Use tiny CPU to schedule
                 num_cpus=0.001,
-            ).remote(per_actor_conc)
+            ).remote(concurrency=per_actor_conc)
             created.append(actor)
 
     _post_actors = created

@@ -1,8 +1,12 @@
 import json
 import os
+import platform
 import shlex
+import sys
+from types import SimpleNamespace
 
 import pytest
+from tests.fast.launch_scripts.py_harness import launcher_hardware_literals
 from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
@@ -628,12 +632,78 @@ class TestEncodePseudoFile:
         assert shlex.split(f"--custom-config-path {encoded}")[1] == encoded
 
 
+def _hardware_launchers_accept() -> set[str]:
+    """Every value any launcher's `--hardware` takes, minus the sentinel that stands for "ask the node"."""
+    return set().union(*launcher_hardware_literals().values()) - {"auto"}
+
+
 class TestHardwareTables:
-    @pytest.mark.parametrize("hardware", ["H100", "GB200", "GB300", "MI350X", "MI355X"])
-    def test_every_supported_hardware_declares_its_gpus_per_node(self, hardware):
-        """A launcher whose default hardware is missing here raises KeyError before doing anything."""
-        assert command_utils.NUM_GPUS_OF_HARDWARE[hardware] > 0
+    def test_every_hardware_a_launcher_accepts_declares_its_gpus_per_node(self):
+        """A launcher whose hardware is missing here raises KeyError before doing anything."""
+        assert _hardware_launchers_accept() <= command_utils.NUM_GPUS_OF_HARDWARE.keys()
 
     def test_every_hardware_with_a_generation_also_has_a_gpu_count(self):
         """Every launcher reads the GPU count, while only some read the generation."""
         assert command_utils.GENERATION_HARDWARE.keys() <= command_utils.NUM_GPUS_OF_HARDWARE.keys()
+
+
+def _fake_torch(monkeypatch, *, capability, machine, total_memory=141 * 1024**3, name="fake", hip=None):
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            version=SimpleNamespace(hip=hip),
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                get_device_name=lambda: name,
+                get_device_capability=lambda: capability,
+                get_device_properties=lambda device: SimpleNamespace(total_memory=total_memory),
+            ),
+        ),
+    )
+
+
+class TestDetectHardware:
+    @pytest.mark.parametrize(
+        ("capability", "machine", "expected"),
+        [
+            ((10, 0), "x86_64", "B200"),
+            ((10, 0), "aarch64", "GB200"),
+            ((10, 3), "x86_64", "B300"),
+            ((10, 3), "aarch64", "GB300"),
+        ],
+    )
+    def test_grace_is_what_separates_the_superchip_from_the_pcie_part(
+        self, monkeypatch, capability, machine, expected
+    ):
+        """GB200/GB300 carry the same die as B200/B300, so the host CPU is the only signal."""
+        _fake_torch(monkeypatch, capability=capability, machine=machine)
+
+        assert command_utils.detect_hardware() == expected
+
+    @pytest.mark.parametrize(("total_memory", "expected"), [(80 * 1024**3, "H100"), (141 * 1024**3, "H200")])
+    def test_hopper_is_split_by_memory(self, monkeypatch, total_memory, expected):
+        """H100 and H200 share sm90; only the HBM capacity tells them apart."""
+        _fake_torch(monkeypatch, capability=(9, 0), machine="x86_64", total_memory=total_memory)
+
+        assert command_utils.detect_hardware() == expected
+
+    def test_rocm_reads_the_device_name(self, monkeypatch):
+        _fake_torch(monkeypatch, capability=(9, 5), machine="x86_64", name="AMD Instinct MI355X", hip="6.4")
+
+        assert command_utils.detect_hardware() == "MI355X"
+
+    def test_an_unrecognized_device_asks_for_an_explicit_hardware(self, monkeypatch):
+        """Silently guessing the wrong profile costs a whole run; a launcher flag is one word."""
+        _fake_torch(monkeypatch, capability=(12, 0), machine="x86_64", name="NVIDIA GeForce RTX 5090")
+
+        with pytest.raises(AssertionError, match="pass --hardware"):
+            command_utils.detect_hardware()
+
+    def test_every_detectable_hardware_is_a_table_entry(self, monkeypatch):
+        """A detected name the tables do not carry is a KeyError at the first lookup."""
+        for capability in ((9, 0), (10, 0), (10, 3)):
+            for machine in ("x86_64", "aarch64"):
+                _fake_torch(monkeypatch, capability=capability, machine=machine)
+                assert command_utils.detect_hardware() in command_utils.NUM_GPUS_OF_HARDWARE

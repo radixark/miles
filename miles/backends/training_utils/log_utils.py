@@ -97,16 +97,19 @@ def gather_log_data(
     parallel_state = get_parallel_state()
 
     pg = parallel_state.effective_dp_cp
-    log_structured(logger.info, op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
+    log_structured(logger.info, tag="ft", op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
     try:
         gathered_log_dict = MultiPGUtil.gather_object(
             obj=log_dict,
             groups_inner_to_outer=pg.gloo_groups_inner_to_outer,
         )
-        log_structured(logger.info, op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True)
+        log_structured(
+            logger.info, tag="ft", op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True
+        )
     except RuntimeError:
         log_structured(
             logger.warning,
+            tag="ft",
             op="cross_cell",
             phase="end",
             kind="log_gather",
@@ -195,6 +198,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "rollout_mask_sums",
                 "rollout_routed_experts",
                 "rollout_indexer_topk",
+                "rollout_sampling_mask_ids",
+                "rollout_sampling_mask_offsets",
                 "max_seq_lens",
                 "dynamic_global_batch_size",
                 "witness_ids",

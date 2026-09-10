@@ -28,9 +28,10 @@ Env vars:
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
 
 Server contract: the env server must run tbench2_env at or after the
-huggingface/OpenEnv#1012 merge (04d259ea6; install per the README) —
+huggingface/OpenEnv#1025 merge (38b2a3135; install per the README) —
 canonical tests/test.sh scoring inside the standard ``evaluate`` action, task
-WORKDIR resolved server-side, verifier assets withheld. The adapter verifies
+WORKDIR resolved server-side, verifier assets withheld, and a verifier that
+never writes its verdict reported as a scoring error rather than reward 0. The adapter verifies
 the contract on every episode rather than trusting the deployment: an
 ``evaluate`` reply without the canonical-harness marker is treated as no
 verdict and the episode is dropped with a warning (see the guard in
@@ -52,9 +53,9 @@ import re
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 from openai import AsyncOpenAI
+from miles.rollout.agentic.session import resolve_session_url
 
 logger = logging.getLogger(__name__)
 
@@ -121,17 +122,6 @@ def _is_retryable_env_error(e: BaseException) -> bool:
     if "CAPACITY_REACHED" in str(e):
         return True
     return type(e).__name__ in {"ConnectionClosedOK", "ConnectionClosedError", "ConnectionClosed"}
-
-
-def _resolve_session_url(base_url: str) -> str:
-    """Build the OpenAI-compatible policy URL, rewriting host for off-cluster agents."""
-    session_url = f"{base_url}/v1"
-    external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
-    if external_host:
-        parsed = urlparse(session_url)
-        netloc = f"{external_host}:{parsed.port}" if parsed.port else external_host
-        session_url = urlunparse(parsed._replace(netloc=netloc))
-    return session_url
 
 
 def _extract_messages(prompt: Any) -> list[dict[str, str]]:
@@ -259,13 +249,15 @@ async def multi_turn(
     ends when the policy stops emitting a command, says TASK_COMPLETE, or hits
     OPENENV_MAX_TURNS. Scoring is the standard ``evaluate`` action: the server
     runs the task's tests/test.sh and reports the verdict (see the module
-    docstring for the required server contract).
+    docstring for the required server contract). The returned agent metrics
+    label the stop as ``task_complete``, ``no_command``, ``max_turns``, or
+    ``length``.
     """
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
 
-    async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float]:
+    async def body(env: Any) -> tuple[float | None, int, str, list[float], list[float], float, float]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
         # latency; tool_times[i] is turn i's env.step(exec) latency. reset_time and
         # eval_time bracket the one-off reset() and the final evaluate() env steps.
@@ -281,6 +273,7 @@ async def multi_turn(
             convo.append({"role": "user", "content": instruction})
 
         turns = 0
+        end_reason = "max_turns"
         while turns < max_turns:
             turns += 1
             t0 = time.monotonic()
@@ -302,10 +295,15 @@ async def multi_turn(
             convo.append(message.model_dump(exclude_none=True))
 
             if choice.finish_reason == "length":
+                end_reason = "length"
                 break
 
             command = _strip_fence(reply) if "```" in reply else reply.strip()
-            if not command or command.upper().startswith("TASK_COMPLETE"):
+            if not command:
+                end_reason = "no_command"
+                break
+            if command.upper().startswith("TASK_COMPLETE"):
+                end_reason = "task_complete"
                 break
 
             t0 = time.monotonic()
@@ -330,7 +328,8 @@ async def multi_turn(
         # No canonical verdict -> reward None (the training wrapper drops the
         # sample instead of ingesting a false-negative 0):
         #   - reward=None / `error` set: the scoring step itself errored
-        #     server-side (toolkit timeout, staging I/O) -- not tests failing.
+        #     server-side (toolkit timeout, staging I/O, or test.sh never
+        #     wrote reward.txt) -- not tests failing.
         #   - harness marker absent: the server scored, but not through the
         #     canonical tests/test.sh (a tbench2_env install predating the
         #     contract in the module docstring, or a task dir without test.sh
@@ -353,10 +352,10 @@ async def multi_turn(
         if post_episode is not None:
             await post_episode(env, action_cls)
 
-        return reward, turns, gen_times, tool_times, reset_time, eval_time
+        return reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time
 
     result = await run_body(classes["env"], metadata, body)
-    reward, turns, gen_times, tool_times, reset_time, eval_time = result
+    reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time = result
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
@@ -364,6 +363,7 @@ async def multi_turn(
     total_tool_time = sum(tool_times) + reset_time + eval_time
     return reward, {
         "turns": turns,
+        "end_reason": end_reason,
         "tool_calls": len(tool_times),
         "gen_times": gen_times,
         "tool_times": tool_times,
@@ -414,7 +414,7 @@ async def run_for_training(
     request_kwargs = request_kwargs or {}
     metadata = metadata or {}
 
-    session_url = _resolve_session_url(base_url)
+    session_url = resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
 
     policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")

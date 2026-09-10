@@ -13,8 +13,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "zai-org"
     model_name: str = "GLM-4.7-Flash"
     megatron_model_type: str = "glm4.7-flash"
-    num_gpus_per_node: int = 8
-    hardware: Literal["H200", "B200"] = "H200"
+    num_gpus_per_node: int | None = None
+    hardware: Literal["auto", "H200", "B200"] = "auto"
     rollout_num_gpus_per_engine: int | None = None  # None => derive from hardware
     sglang_attention_backend: str | None = None
     enable_eval: bool = True
@@ -22,6 +22,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
+
+    def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 
 def prepare(args: ScriptArgs):

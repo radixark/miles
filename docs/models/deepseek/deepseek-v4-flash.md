@@ -21,6 +21,11 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 | Model | Active / Total | HF ID |
 |---|---|---|
 | DeepSeek-V4-Flash | 13 B / 284 B | [sgl-project/DeepSeek-V4-Flash-FP8](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) |
+| DeepSeek-V4-Flash-0731 | 13 B / 284 B | [deepseek-ai/DeepSeek-V4-Flash-0731](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) |
+
+`DeepSeek-V4-Flash-0731` is the official release with MXFP4 routed experts. Its architecture is identical
+to DeepSeek-V4-Flash; the launcher's `prepare-fp8` stage (`tools/convert_mxfp4_to_fp8.py`) casts the
+experts losslessly to blockwise FP8, after which the pipeline is identical to `DeepSeek-V4-Flash-FP8`.
 
 ## 3. Quick start
 
@@ -44,7 +49,15 @@ python scripts/run_deepseek_v4.py full-train \
    --num-nodes 16 --num-gpus-per-node 8 --rollout-num-nodes 8
 ```
 
-The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
+```bash
+# Official MXFP4 release (0731) — adds an MXFP4->FP8 cast before the same pipeline.
+# 8-node GB300 run (32 GPUs):
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash-0731 \
+   --num-nodes 8 --num-gpus-per-node 4
+```
+
+The `full-train` subcommand chains `prepare-download → [prepare-fp8 →] prepare-single → prepare-spmd → prepare-cp → train` (`prepare-fp8` only for the MXFP4 `0731` variant). Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
 
 ### 3.2 Launcher path defaults
 

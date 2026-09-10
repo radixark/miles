@@ -67,7 +67,7 @@ class EventLogger:
                 f.write(line)
         if print_log:
             payload = prune_for_log(event.model_dump(mode="json", exclude={"timestamp", "source"}))
-            log_structured(logger.info, op="event", event=type(event).__name__, **payload)
+            log_structured(logger.info, tag="audit", op="event", event=type(event).__name__, **payload)
 
     def close(self) -> None:
         pass

@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 def save_debug_train_data(args, *, rollout_id, rollout_data):
     if args.save_debug_train_data is not None:
         parallel_state = get_parallel_state()
+        # TP peers duplicate the DP shard and only the last PP stage computes the per-token fields
+        if parallel_state.tp.rank != 0 or not parallel_state.is_pp_last_stage:
+            return
         save_debug_train_data_for_rank(
             args,
             rollout_id=rollout_id,

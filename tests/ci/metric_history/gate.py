@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """Offline regression gate for the CI metric-history system.
 
 * Consumes one merged per-run JSONL record plus the `register_ci_gate` specs

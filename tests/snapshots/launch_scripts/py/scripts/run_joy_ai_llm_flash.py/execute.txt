@@ -25,6 +25,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --kv-channels 128
   --normalization RMSNorm
   --position-embedding-type rope
+  --rope-type rope
   --norm-epsilon 1e-6
   --swiglu
   --untie-embeddings-and-output-weights

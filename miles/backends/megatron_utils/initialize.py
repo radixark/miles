@@ -57,7 +57,7 @@ def _initialize_distributed(args, get_embedding_ranks=None, get_position_embeddi
         order="tp-cp-ep-dp-pp" if not args.use_tp_pp_dp_mapping else "tp-cp-ep-pp-dp",
         get_embedding_ranks=get_embedding_ranks,
         get_position_embedding_ranks=get_position_embedding_ranks,
-        create_gloo_process_groups=args.enable_gloo_process_groups,
+        create_gloo_process_groups=args.use_gloo_process_groups,
     )
 
 
@@ -127,7 +127,7 @@ def init(
         _initialize_tp_communicators()
 
     if getattr(args, "custom_megatron_init_path", None):
-        from miles.utils.misc import load_function
+        from miles.utils.function_registry import load_function
 
         custom_init = load_function(args.custom_megatron_init_path)
         custom_init(args)
