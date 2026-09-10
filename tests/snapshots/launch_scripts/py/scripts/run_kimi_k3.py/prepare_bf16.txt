@@ -1,0 +1,5 @@
+### 0
+python <REPO_ROOT>/tools/convert_mxfp4_to_bf16.py
+  --model-dir <SANDBOX>/models/Kimi-K3-4layer
+  --save-dir <SANDBOX>/models/Kimi-K3-4layer-bf16
+  --device cuda
