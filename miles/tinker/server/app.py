@@ -69,8 +69,9 @@ def build_app(service: TinkerService) -> FastAPI:
 
     @app.post("/api/v1/session_heartbeat")
     async def session_heartbeat(request: Request):
+        tenant = _tenant(request)
         payload = await request.json()
-        service.heartbeat(payload["session_id"])
+        service.heartbeat(tenant, payload["session_id"])
         return {"type": "session_heartbeat"}
 
     @app.post("/api/v1/get_server_capabilities")
