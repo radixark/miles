@@ -21,6 +21,7 @@ from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.audit_utils.witness.cpu import preserve_cpu_witness
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -980,13 +981,14 @@ class MegatronTrainRayActor(TrainRayActor):
             old_ckpt_step = self.args.ckpt_step
             self.args.ckpt_step = self.args.opd_teacher_ckpt_step
 
-        _, _ = load_checkpoint(
-            self.model,
-            None,
-            None,
-            checkpointing_context={},
-            skip_load_to_model_and_opt=False,
-        )
+        with preserve_cpu_witness(self.model):
+            _, _ = load_checkpoint(
+                self.model,
+                None,
+                None,
+                checkpointing_context={},
+                skip_load_to_model_and_opt=False,
+            )
         self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune = old_args
 
         if model_tag == "ref" and self.args.ref_ckpt_step is not None:

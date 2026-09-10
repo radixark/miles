@@ -4,6 +4,8 @@ import torch
 from miles.utils.audit_utils.witness.cpu import (
     CpuWitness,
     TrainingSampleIdentity,
+    hide_cpu_witness,
+    preserve_cpu_witness,
     record_cpu_witness,
     snapshot_cpu_witness,
 )
@@ -18,6 +20,27 @@ def _identity(source_sample_index: int, row_index: int, row_count: int) -> Train
 
 
 class TestCpuWitness:
+    def test_preserve_restores_state_after_other_model_load(self) -> None:
+        """Auxiliary model loads cannot overwrite the actor witness."""
+        model = torch.nn.Module()
+        model.add_module("cpu_witness", CpuWitness())
+        model.cpu_witness.record([_identity(7, 0, 1)])
+
+        with preserve_cpu_witness([model]):
+            model.cpu_witness.record([_identity(8, 0, 1)])
+
+        assert model.cpu_witness.snapshot() == {_identity(7, 0, 1): 1}
+
+    def test_hide_excludes_witness_from_legacy_checkpoint_load(self) -> None:
+        """Legacy checkpoints can load while the new module is hidden."""
+        model = torch.nn.Module()
+        model.add_module("cpu_witness", CpuWitness())
+
+        with hide_cpu_witness([model]):
+            assert "cpu_witness" not in dict(model.named_children())
+
+        assert "cpu_witness" in dict(model.named_children())
+
     def test_counts_every_occurrence(self) -> None:
         """Repeated sample identities remain visible as repeated consumption."""
         witness = CpuWitness()
