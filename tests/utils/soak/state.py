@@ -12,6 +12,7 @@ from typing import Literal, get_args
 from uuid import uuid4
 
 from pydantic import Field, field_validator
+from tests.utils.soak.config import SoakPolicy
 from tests.utils.soak.process_target import ProcessTarget
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -99,6 +100,7 @@ class SoakActionRequest(FrozenStrictBaseModel):
 
 class SoakScheduleEvent(BaseEvent):
     due_of_type: dict[str, float]
+    policy: SoakPolicy | None = None
 
 
 class SoakActionRequestedEvent(BaseEvent):

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+from tests.utils.soak.config import SoakPolicy
 from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler, list_cells, run_fault_injection_loop
 from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
 from tests.utils.soak.observer import SoakObserver
@@ -39,6 +40,7 @@ class FaultInjectorHandle:
         event_log: EventLog | None = None,
         observer: SoakObserver | None = None,
         evidence_path: Path | None = None,
+        policy: SoakPolicy | None = None,
     ) -> None:
         self.event_log = event_log if event_log is not None else EventLog()
         if evidence_path is not None:
@@ -78,6 +80,7 @@ class FaultInjectorHandle:
                     mean_intervals=mean_interval_seconds_of_cell_type,
                     forms=cell_fault_forms,
                     injection_enabled=injection_enabled,
+                    policy=policy,
                 ),
                 forms={kind: cell_fault_forms[kind] for kind in self._cell_types},
                 event_log=self.event_log,
@@ -156,12 +159,14 @@ def spawn_fault_injector(
     observer: SoakObserver | None = None,
     evidence_path: Path | None = None,
     sources: dict[str, Path] | None = None,
+    policy: SoakPolicy | None = None,
 ) -> FaultInjectorHandle:
     use_kubernetes = config is not None and config.cluster_backend is ClusterBackend.KUBERNETES
     handle = FaultInjectorHandle(
         event_log=event_log,
         observer=observer,
         evidence_path=evidence_path,
+        policy=policy,
         base_url=base_url,
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,

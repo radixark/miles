@@ -7,7 +7,10 @@ from pathlib import Path
 import typer
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import (
+    AllowDuringRecoveryOption,
     FullyAsyncOption,
+    MaxConcurrentActionsOption,
+    MinSurvivorsOption,
     ModeOption,
     NumStepsOption,
     RolloutCrashIntervalSecondsOption,
@@ -23,6 +26,7 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.utils.soak.checks.ft import assert_healing
+from tests.utils.soak.config import create_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, spawn_fault_injector
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
 from tests.utils.soak.utils import evidence_directory, get_api_server_args, get_fully_async_args, get_train_script
@@ -48,6 +52,9 @@ def run_ci(
     trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
     rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
     fully_async: FullyAsyncOption = False,
+    allow_during_recovery: AllowDuringRecoveryOption = True,
+    min_survivors: MinSurvivorsOption = 1,
+    max_concurrent_actions: MaxConcurrentActionsOption = 1,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -90,6 +97,16 @@ def run_ci(
 
     base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     injector = spawn_fault_injector(
+        policy=create_policy(
+            expected_cells={
+                kind: count
+                for kind, count in {"actor": ft_mode.num_cells, "rollout": ft_mode.rollout_num_engines}.items()
+                if kind in mean_interval_seconds_of_cell_type
+            },
+            allow_during_recovery=allow_during_recovery,
+            min_survivors=min_survivors,
+            max_concurrent_actions=max_concurrent_actions,
+        ),
         evidence_path=evidence_directory(Path(dump_dir)) / "events.jsonl",
         sources={"training_events": Path(dump_dir) / EVENTS_DIRNAME},
         config=config,

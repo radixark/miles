@@ -71,8 +71,6 @@ class SoakRunner:
                     if task.done():
                         active.remove(task)
                         task.result()
-                if _has_pending_action(self.get_events()):
-                    continue
                 if (request := self._scheduler.choose(events=self.get_events(), now=time.monotonic())) is None:
                     continue
                 self._event_log.note_action_requested(request)

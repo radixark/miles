@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from tests.fast.cluster_backends import create_backend_for_run
+from tests.utils.soak.config import SoakPolicy, create_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.observer import SoakObserver
@@ -34,6 +35,8 @@ MODEL_TYPE: str = "qwen2.5-0.5B"
 # 4 training GPUs, plus 4 rollout engines x 1 GPU.
 TRAIN_GPUS: int = 4
 ROLLOUT_GPUS: int = 4
+CONTEXT_PARALLEL_SIZE: int = 2
+ROLLOUT_GPUS_PER_ENGINE: int = 1
 # Must stay identical to the threshold asserted by the no-fault baseline
 # tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py: fault recovery must not cost accuracy.
 DEFAULT_METRIC_THRESHOLD: float = 0.55
@@ -83,6 +86,7 @@ def run_realistic_gsm8k(
     create_observer: Callable[[Gsm8kRun], SoakObserver] | None = None,
     execute_session: Callable[[Gsm8kRun, FaultInjectorHandle], None] | None = None,
     injection_enabled: Callable[[], bool] | None = None,
+    policy: SoakPolicy | None = None,
 ) -> Gsm8kOutcome:
     U = create_backend_for_run(config)
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
@@ -119,6 +123,20 @@ def run_realistic_gsm8k(
         launch=partial(launch_gsm8k, train_args=train_args, fully_async=fully_async),
     )
     injector = spawn_fault_injector(
+        policy=(
+            policy
+            if policy is not None
+            else create_policy(
+                expected_cells={
+                    kind: count
+                    for kind, count in {
+                        "actor": TRAIN_GPUS // CONTEXT_PARALLEL_SIZE,
+                        "rollout": ROLLOUT_GPUS // ROLLOUT_GPUS_PER_ENGINE,
+                    }.items()
+                    if kind in mean_interval_seconds_of_cell_type
+                }
+            )
+        ),
         config=config,
         base_url=run.base_url,
         seed=seed,
@@ -197,7 +215,7 @@ def get_gsm8k_train_args(
     perf_args = (
         # Parallelism mirrors the kill_train__dp2_cp2__moe_5layer mode (2 cells x CP2), not
         # the no-fault baseline test.
-        "--context-parallel-size 2 "
+        f"--context-parallel-size {CONTEXT_PARALLEL_SIZE} "
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 9216 "
     )
@@ -215,7 +233,7 @@ def get_gsm8k_train_args(
 
     sglang_args = (
         f"--rollout-num-gpus {ROLLOUT_GPUS} "
-        "--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-enable-metrics "
     )
