@@ -61,7 +61,7 @@ def install_cpu_witness(model: torch.nn.Module, *, chunk_index: int) -> None:
         CpuWitness(
             pipeline_rank=parallel.pp.rank,
             chunk_index=chunk_index,
-            replica_id=(parallel.tp.rank, parallel.cp.rank, parallel.effective_dp.rank),
+            replica_id=(parallel.tp.rank, parallel.cp.rank, parallel.intra_dp.rank),
         ),
     )
 

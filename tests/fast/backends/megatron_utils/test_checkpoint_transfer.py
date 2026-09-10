@@ -10,6 +10,7 @@ from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
 from miles.backends.megatron_utils.ft import checkpoint_transfer, in_memory_checkpoint
 from miles.backends.megatron_utils.ft.checkpoint_transfer import _TensorViewCodec, _TransportCodec
+from miles.utils.audit_utils.witness.cpu import CpuWitness, TrainingSampleIdentity
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 _CKPT_TRANSFER_LOGGER = "miles.backends.megatron_utils.ft.checkpoint_transfer"
@@ -108,6 +109,20 @@ class TestSerializeForTransport:
 
 
 class TestDeserializeFromTransport:
+    def test_round_trip_preserves_the_real_cpu_witness_sharded_object(self) -> None:
+        """FT transport preserves the witness shard data and its intra-DP replica identity."""
+        witness = CpuWitness(pipeline_rank=2, chunk_index=1, replica_id=(3, 4, 0))
+        sample = TrainingSampleIdentity(source_sample_index=7, row_index=0, row_count=1)
+        witness.record([sample])
+        sharded_state_dict = {"model": witness.sharded_state_dict(prefix="actor.cpu_witness.")}
+        state_dict = MCoreTensorAwareStateDict(common={}, sharded_state_dict=sharded_state_dict)
+
+        _, restored = _TransportCodec.decode(_TransportCodec.encode(state_dict=state_dict, iteration=11))
+
+        [restored_object] = list(restored.sharded_state_dict["model"].values())
+        assert restored_object.replica_id == (3, 4, 0)
+        assert restored_object.data == {"version": 1, "sample_counts": {sample: 1}}
+
     def test_round_trip_preserves_tensor_values_iteration_and_common(self, state_dict: MCoreTensorAwareStateDict):
         original_tensors = [t.clone() for t in state_dict.tensors]
         original_common = dict(state_dict.common)

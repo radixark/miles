@@ -5,6 +5,7 @@ from miles.utils.audit_utils.witness.cpu import (
     CpuWitness,
     TrainingSampleIdentity,
     hide_cpu_witness,
+    install_cpu_witness,
     preserve_cpu_witness,
     record_cpu_witness,
     snapshot_cpu_witness,
@@ -20,6 +21,29 @@ def _identity(source_sample_index: int, row_index: int, row_count: int) -> Train
 
 
 class TestCpuWitness:
+    def test_install_uses_the_intra_cell_dp_replica_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """FT cells describe the same checkpoint shard despite different alive ranks."""
+        parallel = type(
+            "Parallel",
+            (),
+            {
+                "pp": type("Group", (), {"rank": 2})(),
+                "tp": type("Group", (), {"rank": 3})(),
+                "cp": type("Group", (), {"rank": 4})(),
+                "intra_dp": type("Group", (), {"rank": 5})(),
+                "effective_dp": type("Group", (), {"rank": 6})(),
+            },
+        )()
+        monkeypatch.setattr(
+            "miles.backends.training_utils.parallel.get_parallel_state",
+            lambda: parallel,
+        )
+        model = torch.nn.Module()
+
+        install_cpu_witness(model, chunk_index=1)
+
+        assert model.cpu_witness.replica_id == (3, 4, 5)
+
     def test_preserve_restores_state_after_other_model_load(self) -> None:
         """Auxiliary model loads cannot overwrite the actor witness."""
         model = torch.nn.Module()
