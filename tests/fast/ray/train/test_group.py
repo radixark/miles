@@ -511,6 +511,12 @@ class TestRefreshCellsReconfigureEvent:
         assert events[0].src_cell_index == 0
         assert events[0].healed_cell_indices == [2]
         assert events[0].alive_cell_indices_after == [0, 1, 2]
+        assert events[0].cell_incarnations_after == {
+            compute_cell_id(pool_id=group._pool_id, cell_index=index): (
+                "pseudo-hash-2" if index == 2 else "pseudo-hash-1"
+            )
+            for index in range(3)
+        }
 
     async def test_shrink_emits_event_without_src(self, _event_log_dir: Path):
         """A pure-shrink reconfigure emits one CellReconfigureEvent with no src and no healed cells."""
@@ -525,6 +531,9 @@ class TestRefreshCellsReconfigureEvent:
         assert events[0].src_cell_index is None
         assert events[0].healed_cell_indices == []
         assert events[0].alive_cell_indices_after == [0, 2]
+        assert events[0].cell_incarnations_after == {
+            compute_cell_id(pool_id=group._pool_id, cell_index=index): "pseudo-hash-1" for index in (0, 2)
+        }
 
     async def test_noop_refresh_emits_no_event(self, _event_log_dir: Path):
         """A refresh that needs no reconfigure emits no CellReconfigureEvent."""

@@ -1,24 +1,17 @@
-from collections import Counter
 from pathlib import Path
 
 from tests.utils.soak.entrypoint import FaultInjectorHandle
 from tests.utils.soak.fault_forms import ACTOR_CELL_TYPE, CELL_TYPE_OF_FT_COMPONENT, ROLLOUT_CELL_TYPE
+from tests.utils.soak.recovery import compute_recovery_episodes
 from tests.utils.soak.state import event_source
 from tests.utils.soak.views import (
-    compute_cells_not_serving_after_injection,
     compute_forms_drawn_without_success,
-    compute_injected_cell_names,
     compute_num_injections,
-    compute_states_of_cell_name,
     compute_successful_form_names,
 )
 
-from miles.utils.test_utils.reconfigure_assertions import (
-    assert_min_soak_injections,
-    assert_soak_reconfigure_events,
-    load_reconfigure_events,
-)
-from miles.utils.workers.naming import parse_cell_id
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
+from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections, load_reconfigure_events
 
 
 def assert_healing(
@@ -30,8 +23,8 @@ def assert_healing(
     _assert_drawn_fault_forms_worked(injector)
 
     if "train" in ft_components:
-        assert_soak_reconfigure_events(
-            event_dir, num_successful_injections=compute_num_injections(events, cell_type=ACTOR_CELL_TYPE)
+        assert_min_soak_injections(
+            compute_num_injections(events, cell_type=ACTOR_CELL_TYPE), context=f"{context} trainer cells"
         )
         assert_trainer_injections_healed(injector, event_dir=event_dir)
 
@@ -64,42 +57,32 @@ def _assert_enabled_fault_forms_worked(injector: FaultInjectorHandle, *, ft_comp
 
 def assert_trainer_injections_healed(injector: FaultInjectorHandle, *, event_dir: Path) -> None:
     event_dir = event_source(injector.event_log.events, name="training_events", fallback=event_dir)
-    injected: Counter[int] = Counter(
-        parse_cell_id(name).cell_index
-        for name in compute_injected_cell_names(injector.event_log.events, cell_type=ACTOR_CELL_TYPE)
-    )
-    healed: Counter[int] = Counter(
-        cell_index for event in load_reconfigure_events(event_dir) for cell_index in event.healed_cell_indices
-    )
-    debt: Counter[int] = injected - healed
-
-    assert not debt, (
-        f"Trainer recovery witness failed: cell index -> accepted injection(s) never healed {dict(debt)} when "
-        f"training ended (injected {dict(injected)}, healed {dict(healed)} across the events in {event_dir})"
-    )
-
-    print(
-        f"Trainer recovery witness assertion passed: every one of {sum(injected.values())} accepted injection(s) "
-        f"is paired with a healing of the same cell ({dict(healed)})"
-    )
+    assert event_dir.is_dir(), f"Event directory {event_dir} does not exist or is not a directory"
+    _assert_recovery_episodes(injector, cell_type=ACTOR_CELL_TYPE, reconfigurations=load_reconfigure_events(event_dir))
 
 
 def assert_rollout_cells_served_after_injection(injector: FaultInjectorHandle) -> None:
+    _assert_recovery_episodes(injector, cell_type=ROLLOUT_CELL_TYPE)
+
+
+def _assert_recovery_episodes(
+    injector: FaultInjectorHandle,
+    *,
+    cell_type: str,
+    reconfigurations: list[CellReconfigureEvent] | None = None,
+) -> None:
     events = injector.event_log.events
-    num_injections: int = compute_num_injections(events, cell_type=ROLLOUT_CELL_TYPE)
-    offenders: dict[str, list[str]] = compute_cells_not_serving_after_injection(events, cell_type=ROLLOUT_CELL_TYPE)
-    observed: dict[str, list[str]] = {
-        name: [state.value for state in states] for name, states in compute_states_of_cell_name(events).items()
+    episodes = [
+        episode
+        for episode in compute_recovery_episodes(events, reconfigurations=reconfigurations)
+        if episode.cell_type == cell_type
+    ]
+    expected = compute_num_injections(events, cell_type=cell_type)
+    assert (
+        sum(len(episode.request_ids) for episode in episodes) == expected
+    ), f"{cell_type} injections lack request-bound incarnation evidence"
+    unresolved = {
+        episode.cell_id: episode.request_ids for episode in episodes if episode.recovered_incarnation is None
     }
-
-    assert not offenders, (
-        f"Rollout recovery witness failed: {sorted(offenders)} were never observed healthy and Serving on a "
-        f"reading fresh enough to outlast the stale-status window after their last accepted injection, so the "
-        f"run may have ended with a permanently missing replica ({num_injections} accepted injection(s); "
-        f"observed states: {observed})"
-    )
-
-    print(
-        f"Rollout recovery witness assertion passed: every injected cell was observed healthy and Serving on a "
-        f"fresh reading after its last of {num_injections} accepted injection(s)"
-    )
+    assert not unresolved, f"{cell_type} recovery witness failed: unresolved requests {unresolved}"
+    print(f"{cell_type} recovery witness passed: {expected} injections in {len(episodes)} recovery episodes")

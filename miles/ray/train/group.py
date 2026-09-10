@@ -660,6 +660,7 @@ class TrainerController:
         src_alive_rank = will_alive_indices.index(src_cell_index)
         ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_healing_indices]
 
+        participating_cells = [c for c in self._cells if c.cell_index in will_alive_indices]
         with self._paused_health_checkers():
             coop_prepare_outputs = await asyncio.gather(
                 *[
@@ -680,8 +681,7 @@ class TrainerController:
                             recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_healing_indices else None,
                         )
                     )
-                    for c in self._cells
-                    if c.cell_index in will_alive_indices
+                    for c in participating_cells
                 ],
                 return_exceptions=True,
             )
@@ -706,6 +706,7 @@ class TrainerController:
                 src_cell_index=src_cell_index if snapshotted_healing_indices else None,
                 healed_cell_indices=snapshotted_healing_indices,
                 alive_cell_indices_after=will_alive_indices,
+                cell_incarnations_after={cell.cell_id: cell.workers_hash for cell in participating_cells},
             )
         else:
             log_structured(
@@ -726,6 +727,7 @@ class TrainerController:
         src_cell_index: int | None,
         healed_cell_indices: list[int],
         alive_cell_indices_after: list[int],
+        cell_incarnations_after: dict[str, str],
     ) -> None:
         if is_event_logger_initialized():
             get_event_logger().log(
@@ -736,6 +738,7 @@ class TrainerController:
                     src_cell_index=src_cell_index,
                     healed_cell_indices=healed_cell_indices,
                     alive_cell_indices_after=alive_cell_indices_after,
+                    cell_incarnations_after=cell_incarnations_after,
                 ),
             )
 

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from tests.utils.soak import entrypoint, fault_forms, state, views
+from tests.utils.soak import entrypoint, fault_forms, state
 from tests.utils.soak.checks.ft import _assert_drawn_fault_forms_worked, assert_healing
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
@@ -38,50 +38,64 @@ def _all_forms_of_ray_run() -> fault_forms.CellFaultForms:
     return fault_forms.create_cell_fault_forms(base_url="http://control", config=config)
 
 
-def _actor_cell(name: str = _ACTOR_CELL_NAME) -> dict:
+def _actor_cell(name: str = _ACTOR_CELL_NAME, *, generation: str = "generation-0") -> dict:
     return {
         "metadata": {
             "name": name,
-            "labels": {"miles.io/cell-type": "actor", "miles.io/workers-hash": "generation-0"},
+            "labels": {"miles.io/cell-type": "actor"},
         },
-        "status": {"phase": "Running", "conditions": [{"type": "Healthy", "status": "True"}]},
+        "status": {
+            "phase": "Running",
+            "conditions": [{"type": "Healthy", "status": "True"}],
+            "workers_hash": generation,
+        },
     }
 
 
 def _note_actor_injections(
     injector: entrypoint.FaultInjectorHandle, count: int, *, name: str = _ACTOR_CELL_NAME
 ) -> None:
-    log = injector.event_log
-    for _ in range(count):
-        log.observe([_actor_cell(name)])
-        log.note_injection_attempt(
-            cell_name=name,
-            form_name="inject_fault:sigkill",
-            succeeded=True,
-        )
+    _note_form_attempts(injector, form_name="inject_fault:sigkill", outcomes=[True] * count, name=name)
 
 
 def _note_form_attempts(
     injector: entrypoint.FaultInjectorHandle, *, form_name: str, outcomes: list[bool], name: str = _ACTOR_CELL_NAME
 ) -> None:
-    injector.event_log.observe([_actor_cell(name)])
     for succeeded in outcomes:
-        injector.event_log.note_injection_attempt(
-            cell_name=name,
+        _note_fault(
+            injector.event_log,
+            target=_actor_cell(name),
             form_name=form_name,
             succeeded=succeeded,
         )
 
 
 def _note_rollout_injection(log: state.EventLog) -> None:
-    log.note_injection_attempt(
-        cell_name=_ROLLOUT_CELL_NAME,
+    _note_fault(
+        log,
+        target=_rollout_cell(state.ObservedCellState.SERVING),
         form_name="inject_fault:sigkill",
         succeeded=True,
     )
 
 
-def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
+def _note_fault(log: state.EventLog, *, target: dict, form_name: str, succeeded: bool) -> None:
+    latest = next((event for event in reversed(log.events) if isinstance(event, state.SoakObservation)), None)
+    if latest is not None:
+        target = next(
+            (cell for cell in latest.cells or [] if cell["metadata"]["name"] == target["metadata"]["name"]), target
+        )
+    log.note_observation(state.SoakObservation(cells=[target]))
+    request = state.SoakActionRequest(target=target, form_name=form_name, harms_cell=True)
+    log.note_action_requested(request)
+    if succeeded:
+        log.note_action_applied(
+            state.SoakActionAppliedEvent(request_id=request.request_id, evidence={"exited_pids": [42]})
+        )
+    log.note_action_result(state.SoakActionResultEvent(request_id=request.request_id, returned=succeeded))
+
+
+def _rollout_cell(cell_state: state.ObservedCellState, *, generation: str = "generation-0") -> dict:
     phase = "Pending" if cell_state is state.ObservedCellState.PENDING else "Running"
     conditions = (
         []
@@ -94,9 +108,9 @@ def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
     return {
         "metadata": {
             "name": _ROLLOUT_CELL_NAME,
-            "labels": {"miles.io/cell-type": "rollout", "miles.io/workers-hash": "generation-0"},
+            "labels": {"miles.io/cell-type": "rollout"},
         },
-        "status": {"phase": phase, "conditions": conditions},
+        "status": {"phase": phase, "conditions": conditions, "workers_hash": generation},
     }
 
 
@@ -110,7 +124,12 @@ def _write_shrink_only_events(event_dir: Path) -> None:
     event_logger.close()
 
 
-def _write_healing_events(event_dir: Path, healed_cell_indices_per_event: list[list[int]]) -> None:
+def _write_healing_events(
+    event_dir: Path,
+    healed_cell_indices_per_event: list[list[int]],
+    *,
+    injector: entrypoint.FaultInjectorHandle,
+) -> None:
     event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="main"))
     for index, healed_cell_indices in enumerate(healed_cell_indices_per_event):
         event_logger.log(
@@ -121,8 +140,19 @@ def _write_healing_events(event_dir: Path, healed_cell_indices_per_event: list[l
                 src_cell_index=0,
                 healed_cell_indices=healed_cell_indices,
                 alive_cell_indices_after=[0, 1],
+                cell_incarnations_after={
+                    f"actor-{cell_index}": f"recovered-{index}" for cell_index in healed_cell_indices
+                },
             ),
             print_log=False,
+        )
+        injector.event_log.note_observation(
+            state.SoakObservation(
+                cells=[
+                    _actor_cell(f"actor-{cell_index}", generation=f"recovered-{index}")
+                    for cell_index in healed_cell_indices
+                ]
+            )
         )
     event_logger.close()
 
@@ -134,7 +164,7 @@ class TestAssertHealing:
         injector = _injector(cell_types=("actor",))
         _note_actor_injections(injector, 3)
 
-        with pytest.raises(AssertionError, match="Healing witness failed"):
+        with pytest.raises(AssertionError, match="actor recovery witness failed"):
             assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
     def test_trainer_soak_ignores_rollout_injections_when_counting_its_own(self, tmp_path: Path) -> None:
@@ -142,7 +172,7 @@ class TestAssertHealing:
         _write_shrink_only_events(tmp_path / "events")
         injector = _injector(cell_types=("actor", "rollout"))
         log = injector.event_log
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        log.note_observation(state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.SERVING)]))
         for _ in range(3):
             _note_rollout_injection(log)
 
@@ -153,41 +183,48 @@ class TestAssertHealing:
         """A rollout-only soak that ends with its last victim still relaunching must fail."""
         injector = _injector(cell_types=("rollout",))
         log = injector.event_log
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        log.note_observation(state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.SERVING)]))
         _note_rollout_injection(log)
-        log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        log.note_observation(
+            state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.PENDING, generation="new-1")])
+        )
+        log.note_observation(
+            state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.SERVING, generation="new-1")])
+        )
         _note_rollout_injection(log)
-        log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
+        log.note_observation(
+            state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.PENDING, generation="new-2")])
+        )
 
-        with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
+        with pytest.raises(AssertionError, match="rollout recovery witness failed"):
             assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
-    def test_rollout_soak_accepts_a_fresh_serve_after_the_last_injection(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_rollout_soak_accepts_a_fresh_serve_after_the_last_injection(self, tmp_path: Path) -> None:
         """The witness must stay invisible on the path a healthy soak actually takes."""
-        monkeypatch.setattr(views, "STALE_STATUS_GRACE_SECONDS", 0.0)
         injector = _injector(cell_types=("rollout",))
         log = injector.event_log
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        log.note_observation(state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.SERVING)]))
         for _ in range(2):
             _note_rollout_injection(log)
-        log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        log.note_observation(
+            state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.PENDING, generation="new-1")])
+        )
+        log.note_observation(
+            state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.SERVING, generation="new-1")])
+        )
 
         assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
-    def test_rollout_soak_rejects_a_serve_still_inside_the_stale_window(self, tmp_path: Path) -> None:
+    def test_rollout_soak_rejects_a_serve_from_the_faulted_incarnation(self, tmp_path: Path) -> None:
         """A serve observed right after the kill can be the dead cell's stale reading, and proves nothing."""
         injector = _injector(cell_types=("rollout",))
         log = injector.event_log
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        log.note_observation(state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.SERVING)]))
         for _ in range(2):
             _note_rollout_injection(log)
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        log.note_observation(state.SoakObservation(cells=[_rollout_cell(state.ObservedCellState.SERVING)]))
 
-        with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
+        with pytest.raises(AssertionError, match="rollout recovery witness failed"):
             assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
 
@@ -239,28 +276,28 @@ class TestAssertEveryDrawnFaultFormWorked:
 class TestAssertEveryEnabledFaultFormWorked:
     def test_a_form_the_soak_never_drew_fails_it(self, tmp_path: Path) -> None:
         """Regression: a soak that cleared the injection floor with one form used to pass without trying the rest."""
-        _write_healing_events(tmp_path / "events", [[0], [0]])
         injector = _injector(cell_types=("actor",), cell_fault_forms=_all_forms_of_ray_run())
         _note_actor_injections(injector, 2)
+        _write_healing_events(tmp_path / "events", [[0], [0]], injector=injector)
 
         with pytest.raises(AssertionError, match="never injected successfully"):
             assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
     def test_a_soak_that_landed_every_enabled_form_passes(self, tmp_path: Path) -> None:
         """The happy path has to stay reachable, or the refusal above proves nothing."""
-        _write_healing_events(tmp_path / "events", [[0], [0], [0]])
         injector = _injector(cell_types=("actor",), cell_fault_forms=_all_forms_of_ray_run())
         for failure_mode in fault_forms.FAILURE_MODES:
             _note_form_attempts(injector, form_name=f"inject_fault:{failure_mode.value}", outcomes=[True])
+        _write_healing_events(tmp_path / "events", [[0], [0], [0]], injector=injector)
 
         assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
     def test_forms_of_a_component_the_mode_did_not_enable_are_not_required(self, tmp_path: Path) -> None:
         """A trainer-only soak must not be failed for never crashing an engine it was told to leave alone."""
-        _write_healing_events(tmp_path / "events", [[0], [0], [0]])
         injector = _injector(cell_types=("actor", "rollout"), cell_fault_forms=_all_forms_of_ray_run())
         for failure_mode in fault_forms.FAILURE_MODES:
             _note_form_attempts(injector, form_name=f"inject_fault:{failure_mode.value}", outcomes=[True])
+        _write_healing_events(tmp_path / "events", [[0], [0], [0]], injector=injector)
 
         assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
@@ -268,36 +305,37 @@ class TestAssertEveryEnabledFaultFormWorked:
 class TestTrainerHealingPairing:
     def test_a_final_injection_that_never_healed_fails_even_though_the_floor_is_cleared(self, tmp_path: Path) -> None:
         """Regression: 3 crashes with 2 heals used to pass, leaving the run permanently degraded."""
-        _write_healing_events(tmp_path / "events", [[0], [0]])
         injector = _injector(cell_types=("actor",))
-        _note_actor_injections(injector, 3)
+        _note_actor_injections(injector, 2)
+        _write_healing_events(tmp_path / "events", [[0], [0]], injector=injector)
+        _note_actor_injections(injector, 1)
 
-        with pytest.raises(AssertionError, match="Trainer recovery witness failed"):
+        with pytest.raises(AssertionError, match="actor recovery witness failed"):
             assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
     def test_two_cells_healed_by_one_reconfigure_event_count_as_two_healings(self, tmp_path: Path) -> None:
         """One reconfigure can readmit several cells, so counting events would under-count the healing."""
-        _write_healing_events(tmp_path / "events", [[0, 1]])
         injector = _injector(cell_types=("actor",))
         _note_actor_injections(injector, 1, name="actor-0")
         _note_actor_injections(injector, 1, name="actor-1")
+        _write_healing_events(tmp_path / "events", [[0, 1]], injector=injector)
 
         assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
     def test_healing_a_cell_that_was_never_injected_does_not_pay_another_cells_debt(self, tmp_path: Path) -> None:
         """Counting healings without pairing them by cell index would call this a healthy soak."""
-        _write_healing_events(tmp_path / "events", [[0], [0]])
         injector = _injector(cell_types=("actor",))
         _note_actor_injections(injector, 2, name="actor-1")
+        _write_healing_events(tmp_path / "events", [[0], [0]], injector=injector)
 
-        with pytest.raises(AssertionError, match="Trainer recovery witness failed"):
+        with pytest.raises(AssertionError, match="actor recovery witness failed"):
             assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
     def test_every_injection_paired_with_a_healing_of_the_same_cell_passes(self, tmp_path: Path) -> None:
         """The assertion must stay invisible on the path a healthy soak actually takes."""
-        _write_healing_events(tmp_path / "events", [[0], [1]])
         injector = _injector(cell_types=("actor",))
         _note_actor_injections(injector, 1, name="actor-0")
         _note_actor_injections(injector, 1, name="actor-1")
+        _write_healing_events(tmp_path / "events", [[0], [1]], injector=injector)
 
         assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")

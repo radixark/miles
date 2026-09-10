@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator
+from pydantic import Discriminator, Field
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
@@ -108,6 +108,7 @@ class CellReconfigureEvent(EventBase):
     # healing happened iff non-empty
     healed_cell_indices: list[int]
     alive_cell_indices_after: list[int]
+    cell_incarnations_after: dict[str, str] = Field(default_factory=dict)
 
 
 class InferenceEngineWeightChecksumEvent(EventBase):
