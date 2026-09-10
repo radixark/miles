@@ -93,7 +93,6 @@ def position_for_request(
             attach.best_overlap,
             len(state.tree.nodes),
         )
-    if state.active_leaf is not attach.node:
         state.activity.generation += 1
     state.active_leaf = attach.node
 

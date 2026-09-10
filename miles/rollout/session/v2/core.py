@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from contextlib import ExitStack
 from copy import deepcopy
 
 from starlette.responses import Response
@@ -69,13 +70,12 @@ class SessionCoreV2(SessionCore):
         failures map to 422; unknown assembly exceptions propagate.
         """
         session = self.registry.get_session(session_id)
-        accepted = False
-        try:
+        with ExitStack() as cleanup:
             async with session.lock:
                 if session.closing:
                     raise SessionNotFoundError(f"session not found: session_id={session_id}")
                 self.lifecycle.accept(session, collect=True)
-                accepted = True
+                cleanup.callback(self.lifecycle.finish, session)
                 generation = session.activity.generation
                 metadata = self._session_metadata(session_id, session)
                 if agent_metadata is not None:
@@ -88,9 +88,6 @@ class SessionCoreV2(SessionCore):
             if response.status_code == 200:
                 response.headers[SESSION_GENERATION_HEADER] = str(generation)
             return response
-        finally:
-            if accepted:
-                self.lifecycle.finish(session)
 
     def _assemble_leaf_samples(self, leaves, records, metadata: dict, *, max_seq_len: int | None) -> Response:
         if not leaves:
@@ -152,8 +149,7 @@ class SessionCoreV2(SessionCore):
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-        accepted = False
-        try:
+        with ExitStack() as cleanup:
             # --- Phase 1: prepare request (lock held briefly) ---
             async with session.lock:
                 self.lifecycle.check_open()
@@ -180,7 +176,7 @@ class SessionCoreV2(SessionCore):
                 proxy_body = json.dumps(request_body).encode()
                 attach_parent = session.active_leaf
                 self.lifecycle.accept(session)
-                accepted = True
+                cleanup.callback(self.lifecycle.finish, session)
             # --- lock released ---
 
             # --- Phase 2: proxy to backend (NO lock held) ---
@@ -231,6 +227,3 @@ class SessionCoreV2(SessionCore):
             # --- lock released ---
 
             return _chat_client_response(result, response, client_stream)
-        finally:
-            if accepted:
-                self.lifecycle.finish(session)

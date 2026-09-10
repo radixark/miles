@@ -22,6 +22,7 @@ class SessionLifecycle:
         self.registry = registry
         self.idle_timeout = idle_timeout
         self.closing = False
+        self._shutdown: asyncio.Task | None = None
         self.tasks: set[asyncio.Task] = set()
 
     def check_open(self) -> None:
@@ -82,3 +83,21 @@ class SessionLifecycle:
         for session in self.registry.sessions.values():
             session.closing = True
             self.forget_timer(session)
+
+    async def close(self, *, timeout: float = 30.0) -> bool:
+        if self._shutdown is None:
+            self.stop()
+            self._shutdown = asyncio.create_task(self._close())
+        try:
+            return await asyncio.wait_for(asyncio.shield(self._shutdown), timeout)
+        except TimeoutError:
+            logger.warning("Session server shutdown timed out; outstanding work retains its storage")
+            return False
+
+    async def _close(self) -> bool:
+        for session in list(self.registry.sessions.values()):
+            async with session.lock:
+                self.registry.remove_session(session.session_id)
+        if self.tasks:
+            await asyncio.gather(*self.tasks)
+        return await self.registry.record_store.close(timeout=None)

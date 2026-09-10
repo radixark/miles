@@ -22,7 +22,7 @@ Stage 1 has no memory limit, reservation, capacity backpressure, or capacity-bas
 | `miles/rollout/session/record/codec.py` | Detached canonical records and lossless JSON encoding |
 | `miles/rollout/session/record/types.py` | Keys, key-only refs, errors, and backend protocol |
 | `miles/rollout/session/recording.py` | Serving checkpoints and commit publication |
-| `miles/rollout/session/lifecycle.py` | Active operations, cleanup generations, and collect idle retention |
+| `miles/rollout/session/lifecycle.py` | Active operations, cleanup generations, collect idle retention, and shutdown |
 
 Only the three offload implementation files with `doc-dev:` sentinels bind to this page. Serving and collect callers are integration points; this page does not document general session-server behavior.
 
@@ -76,7 +76,7 @@ Collect enables idle retention at the initial snapshot, before I/O. After the la
 
 ## Shutdown and temporary files
 
-Setup registers core shutdown before closing the upstream HTTP client. Core shutdown stops new serving work, marks sessions closing, cancels retention timers, and retires sessions under their locks. A shared shielded task then drains store work and explicitly closes the aiosqlite connection. Its 30-second waiting deadline includes session-lock waits.
+Setup registers core shutdown before closing the upstream HTTP client. `SessionCore.close` delegates to `SessionLifecycle`, which owns the shared shutdown task. Shutdown stops new serving work, marks sessions closing, cancels retention timers, and retires sessions under their locks. A shared shielded task then drains store work and explicitly closes the aiosqlite connection. Its 30-second waiting deadline includes session-lock waits.
 
 A timeout returns `False` and warns, while the actual shutdown task and files remain owned. A later close can await the same task. Connection-close failure also returns `False` and preserves the namespace; it does not automatically restart a failed shutdown task. The backend removes its directory only after successful connection close. Directory-cleanup failure warns and preserves remaining files.
 

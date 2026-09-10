@@ -8,10 +8,10 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - ``get_session`` and ``collect_samples`` capture refs and metadata under the session lock, hydrate outside it, and retain independent records through reply encoding. Sample assembly failures return 422 with the assertion text.
 """
 
-import asyncio
 import json
 import logging
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 
 from starlette.responses import Response
@@ -263,7 +263,6 @@ class SessionCore:
         self.config = config
         self.instance_id = session_server_instance_id
         self.lifecycle = SessionLifecycle(registry)
-        self._shutdown: asyncio.Task | None = None
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
@@ -322,13 +321,12 @@ class SessionCore:
 
     async def get_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)
-        accepted = False
-        try:
+        with ExitStack() as cleanup:
             async with session.lock:
                 if session.closing:
                     raise SessionNotFoundError(f"session not found: session_id={session_id}")
                 self.lifecycle.accept(session)
-                accepted = True
+                cleanup.callback(self.lifecycle.finish, session)
                 metadata = self._session_metadata(session_id, session)
                 read = self.registry.record_store.get_many(session.record_refs)
             records = await self._read_records(read)
@@ -336,20 +334,16 @@ class SessionCore:
             return Response(
                 content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
             )
-        finally:
-            if accepted:
-                self.lifecycle.finish(session)
 
     async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble a captured record snapshot; validation failures return 422."""
         session = self.registry.get_session(session_id)
-        accepted = False
-        try:
+        with ExitStack() as cleanup:
             async with session.lock:
                 if session.closing:
                     raise SessionNotFoundError(f"session not found: session_id={session_id}")
                 self.lifecycle.accept(session, collect=True)
-                accepted = True
+                cleanup.callback(self.lifecycle.finish, session)
                 generation = session.activity.generation
                 metadata = self._session_metadata(session_id, session)
                 read = self.registry.record_store.get_many(session.record_refs)
@@ -358,9 +352,6 @@ class SessionCore:
             if response.status_code == 200:
                 response.headers[SESSION_GENERATION_HEADER] = str(generation)
             return response
-        finally:
-            if accepted:
-                self.lifecycle.finish(session)
 
     def _assemble_samples(self, records: list[SessionRecord], metadata: dict, *, max_seq_len: int | None) -> Response:
         tokenizer = self.registry.tokenizer
@@ -406,22 +397,7 @@ class SessionCore:
         return Response(status_code=204)
 
     async def close(self, *, timeout: float = 30.0) -> bool:
-        if self._shutdown is None:
-            self.lifecycle.stop()
-            self._shutdown = asyncio.create_task(self._close())
-        try:
-            return await asyncio.wait_for(asyncio.shield(self._shutdown), timeout)
-        except TimeoutError:
-            logger.warning("Session server shutdown timed out; outstanding work retains its storage")
-            return False
-
-    async def _close(self) -> bool:
-        for session in list(self.registry.sessions.values()):
-            async with session.lock:
-                self.registry.remove_session(session.session_id)
-        if self.lifecycle.tasks:
-            await asyncio.gather(*self.lifecycle.tasks)
-        return await self.registry.record_store.close(timeout=None)
+        return await self.lifecycle.close(timeout=timeout)
 
     async def chat_completions(
         self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
@@ -438,8 +414,7 @@ class SessionCore:
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-        accepted = False
-        try:
+        with ExitStack() as cleanup:
             # --- Phase 1: prepare request (lock held briefly) ---
             async with session.lock:
                 self.lifecycle.check_open()
@@ -467,7 +442,7 @@ class SessionCore:
                 proxy_body = json.dumps(request_body).encode()
                 expected_num_assistant = session.num_assistant
                 self.lifecycle.accept(session)
-                accepted = True
+                cleanup.callback(self.lifecycle.finish, session)
             # --- lock released ---
 
             # --- Phase 2: proxy to backend (NO lock held) ---
@@ -528,9 +503,6 @@ class SessionCore:
             # --- lock released ---
 
             return _chat_client_response(result, response, client_stream)
-        finally:
-            if accepted:
-                self.lifecycle.finish(session)
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes

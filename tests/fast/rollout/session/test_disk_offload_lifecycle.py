@@ -148,12 +148,12 @@ async def test_close_deadline_covers_lock_wait_without_cancelling_shutdown(core)
     state = core.registry.get_session(sid)
     async with state.lock:
         assert not await core.close(timeout=0.01)
-        shared = core._shutdown
+        shared = core.lifecycle._shutdown
         assert shared is not None and not shared.done() and path.exists()
         with pytest.raises(SessionServerClosingError):
             await core.create_session()
         assert not await core.close(timeout=0.01)
-        assert core._shutdown is shared
+        assert core.lifecycle._shutdown is shared
     assert await core.close(timeout=5)
     assert not path.exists() and not core.registry.sessions
 
@@ -342,3 +342,60 @@ async def test_startup_initialization_failure_keeps_serving_in_memory(tmp_path, 
     finally:
         assert await core.close()
         await template.close()
+
+
+@pytest.mark.parametrize("operation", ["get", "collect"])
+async def test_snapshot_failure_still_retires_activity(core, monkeypatch, operation):
+    sid = core.registry.create_session()
+    core.lifecycle.idle_timeout = 0.01
+    await _collect(core, sid)
+    state = core.registry.get_session(sid)
+
+    def fail_snapshot(*args):
+        raise ValueError("metadata snapshot failed")
+
+    monkeypatch.setattr(core, "_session_metadata", fail_snapshot)
+    with pytest.raises(ValueError, match="metadata snapshot failed"):
+        if operation == "get":
+            await core.get_session(sid)
+        else:
+            await core.collect_samples(sid, max_seq_len=None)
+    assert state.activity.active == 0
+    await _expired(core, sid)
+
+
+async def test_cancelled_chat_still_retires_activity(core):
+    sid = core.registry.create_session()
+    core.lifecycle.idle_timeout = 0.01
+    await _collect(core, sid)
+    state = core.registry.get_session(sid)
+    core.backend.block = asyncio.Event()
+    task = asyncio.create_task(_chat(core, sid))
+    await core.backend.entered.get()
+    assert state.activity.active == 1 and state.activity.timer is None
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert state.activity.active == 0 and not state.record_refs
+    await _expired(core, sid)
+
+
+async def test_cancelled_close_waiter_keeps_shutdown_owned(core):
+    sid = core.registry.create_session()
+    await _chat(core, sid)
+    await core.registry.record_store.flush()
+    path = core.registry.record_store._backend.path
+    state = core.registry.get_session(sid)
+    async with state.lock:
+        waiter = asyncio.create_task(core.close(timeout=5))
+        async with asyncio.timeout(2):
+            while not core.lifecycle.closing:
+                await asyncio.sleep(0)
+        shared = core.lifecycle._shutdown
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert shared is not None and not shared.done() and path.exists()
+    assert await core.close(timeout=5)
+    assert core.lifecycle._shutdown is shared
+    assert not path.exists() and not core.registry.sessions
