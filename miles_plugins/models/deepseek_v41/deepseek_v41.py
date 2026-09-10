@@ -37,7 +37,7 @@ from miles_plugins.models.deepseek_v4.ops.rope import wrapped_precompute_freqs_c
 from miles_plugins.models.deepseek_v41.engram import DeepSeekV41Engram
 from miles_plugins.models.deepseek_v41.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v41.ops.indexer import DeepSeekV41Indexer
-from miles_plugins.models.deepseek_v41.ops.kvnorm import kv_norm_rope_fp8
+from miles_plugins.models.deepseek_v41.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
 from miles_plugins.models.deepseek_v41.ops.quant import fake_quant_compressed_kv
 from miles_plugins.models.deepseek_v41.ops.rope import apply_rotary_emb
 
@@ -522,6 +522,7 @@ class DeepSeekV41Attention(MegatronModule):
                 latent = latent.clone(memory_format=torch.contiguous_format)
                 apply_rotary_emb(latent[..., -rd:], freqs_compress)
                 latent = fake_quant_compressed_kv(latent)
+                latent = compressed_kv_stored(latent, rd)
                 if cp > 1:
                     latent = all_gather_cp(latent, dim=1, cp_group=self.cp_group)
                 rt.latent[self.layer_id] = latent
