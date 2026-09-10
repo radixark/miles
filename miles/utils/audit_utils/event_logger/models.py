@@ -152,6 +152,7 @@ class IssuedSampleGroup(FrozenStrictBaseModel):
 
 class DataSourceIssuedSamplesEvent(EventBase):
     type: Literal["data_source_issued_samples"] = "data_source_issued_samples"
+    rollout_id: int | None = None
     groups: list[IssuedSampleGroup]
 
 
@@ -180,6 +181,7 @@ class TrainerCpuWitnessEvent(EventBase):
     cohort_id: str
     sample_counts: list[TrainingSampleCount]
     reason: Literal["train_end", "current", "save", "transfer", "load"]
+    attempt: int = 0
 
 
 class TrainerWitnessCohortEvent(EventBase):
@@ -192,6 +194,11 @@ class TrainerWitnessCohortEvent(EventBase):
 class TrainerWitnessCohortPayload(TypedDict):
     snapshots: list[dict[str, Any]]
     marker: dict[str, Any]
+
+
+class TrainerWitnessCohortSnapshot(FrozenStrictBaseModel):
+    snapshots: list[TrainerCpuWitnessEvent]
+    marker: TrainerWitnessCohortEvent
 
 
 Event = Annotated[

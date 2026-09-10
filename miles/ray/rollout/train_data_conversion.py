@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from typing import Any
 
 import torch
@@ -78,11 +79,7 @@ def convert_samples_to_train_data(
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
 
-    source_sample_indices = [
-        sample.source_sample_index if sample.source_sample_index is not None else sample.index for sample in samples
-    ]
-    sample_row_indices = [sample.sample_row_index if sample.sample_row_index is not None else 0 for sample in samples]
-    sample_row_counts = [sample.sample_row_count if sample.sample_row_count is not None else 1 for sample in samples]
+    sample_identity_columns = _training_sample_identity_columns(samples)
 
     train_data = {
         "tokens": [sample.tokens for sample in samples],
@@ -93,9 +90,7 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
-        "source_sample_indices": source_sample_indices,
-        "sample_row_indices": sample_row_indices,
-        "sample_row_counts": sample_row_counts,
+        **sample_identity_columns,
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
@@ -196,7 +191,29 @@ def convert_samples_to_train_data(
 
 
 def _add_training_sample_identities(train_data: dict[str, Any], samples: list[Sample]) -> None:
-    expected = {
+    expected = _training_sample_identity_columns(samples)
+    fields = tuple(expected)
+    supplied_fields = [field for field in fields if field in train_data]
+
+    if supplied_fields:
+        assert len(supplied_fields) == len(fields), "custom converter must return all training sample identity columns"
+        actual = {field: list(train_data[field]) for field in fields}
+        lengths = {len(values) for values in actual.values()}
+        assert lengths == {len(samples)}, "custom converter returned invalid training sample identity column lengths"
+        assert Counter(zip(*(actual[field] for field in fields), strict=True)) == Counter(
+            zip(*(expected[field] for field in fields), strict=True)
+        ), "custom converter changed the training sample identity obligations"
+        return
+
+    assert "sample_indices" in train_data, "custom converter must return sample_indices"
+    assert list(train_data["sample_indices"]) == [
+        sample.index for sample in samples
+    ], "custom converter must return training sample identities when it reorders or changes rows"
+    train_data.update(expected)
+
+
+def _training_sample_identity_columns(samples: list[Sample]) -> dict[str, list[int]]:
+    return {
         "source_sample_indices": [
             sample.source_sample_index if sample.source_sample_index is not None else sample.index
             for sample in samples
@@ -208,11 +225,6 @@ def _add_training_sample_identities(train_data: dict[str, Any], samples: list[Sa
             sample.sample_row_count if sample.sample_row_count is not None else 1 for sample in samples
         ],
     }
-    for field, values in expected.items():
-        if field in train_data:
-            assert list(train_data[field]) == values, f"custom converter returned inconsistent {field}"
-        else:
-            train_data[field] = values
 
 
 def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:

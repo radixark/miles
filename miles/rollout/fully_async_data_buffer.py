@@ -1,6 +1,6 @@
 """Data buffer between fully-async rollout production and training consumption.
 
-``DataBuffer`` is the contract (put / get / get_metrics); ``DefaultDataBuffer``
+``DataBuffer`` is the contract (put / batch get / metrics / checkpoint state); ``DefaultDataBuffer``
 is the built-in implementation, replaceable via ``--custom-async-data-buffer-path``.
 Every group-level decision lives here — what to keep, what to hand to
 ``--async-unused-samples-handler`` — so a custom buffer owns all of it. Only
@@ -97,7 +97,7 @@ class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
     The producer puts each finished group as it completes; the consumer gets one
-    group at a time; get_metrics is collected once per training step. Storage,
+    complete group batch at a time; get_metrics is collected once per training step. Storage,
     ordering, and filtering are invisible to callers — an implementation is free
     to reject a group on put, on get, or not at all.
     """

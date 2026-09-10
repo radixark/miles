@@ -116,19 +116,23 @@ The implementation lives in
 [`miles/rollout/fully_async_data_buffer.py`](https://github.com/radixark/miles/blob/main/miles/rollout/fully_async_data_buffer.py).
 
 The **data buffer** is the store of finished groups between the two loops, and every
-group-level decision lives in it. The producer puts each group in as it completes, the
-trainer takes groups back out one at a time, and everything in between — what to keep,
-what to discard, what to send back for regeneration — is the buffer's call. It is one
-replaceable component with three methods:
+group-level decision lives in it. The producer puts each group in as it completes, and
+the trainer atomically takes a complete training batch. The buffer decides what to
+keep, discard, or send back for regeneration.
 
 | Method | Called by | Purpose |
 |---|---|---|
-| `put()` | The rollout worker, once per finished group | Store the group, or reject it |
-| `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
+| `put(DataBufferInput)` | The rollout worker, once per finished group | Store the group or resolve it as unused; set `completed` only after the decision is durable in buffer state |
+| `get(num_groups=..., **context)` | The trainer, once per step | Return exactly `num_groups` entries atomically, waiting until a complete batch is available |
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
+| `snapshot()` | Checkpoint save | Return all accepted, pending, and retry-relevant entries needed to resume without loss or duplicate admission |
+| `restore(state)` | Checkpoint load | Replace the buffer state with a previous snapshot |
 
-Those three methods are the whole interface: the worker and the trainer see nothing
-else, and everything inside the box below is the built-in `DefaultDataBuffer`.
+`DataBufferInput.prompt_group` is the source material used for retry and `group` is the
+finished output. A custom buffer must preserve `admission_passed` so a restored entry is
+not filtered twice, and must preserve `completed` so checkpointing can distinguish a
+blocked `put()` from a durable admission decision. `UnusedReason.ABORTED` and
+`UnusedReason.STALE` identify entries passed to the unused-sample handler.
 
 ```mermaid
 flowchart LR
@@ -144,7 +148,7 @@ flowchart LR
         GF -->|"staleness > --max-weight-staleness"| U
         U -->|drop| X
     end
-    GF -->|"get()"| T["Trainer drains<br/>rollout_batch_size groups"]
+    GF -->|"get(num_groups=rollout_batch_size)"| T["Trainer receives<br/>one atomic batch"]
     U -->|retry| DS
     T --> S[Optimizer step, weight sync]
 ```
@@ -177,10 +181,26 @@ Staleness control decides which of those groups training is allowed to see:
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
-takes over all three methods and therefore every group-level decision, and the flags in
+takes over the full interface and therefore every group-level decision, and the flags in
 this section apply only if your class reads them. The one decision that stays outside is
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
+
+### Sample accounting
+
+The sample ownership checker is enabled by default for supported single-policy
+Megatron runs. Every issued sample must become part of the current actor weights exactly
+once or end in an explicit drop decision. The checker waits 300 seconds before an
+unresolved sample becomes an error and requests a fresh CPU witness every 30 seconds.
+Use `--no-sample-ownership-check` to opt out, or adjust the grace period and cadence with
+`--sample-ownership-grace-period-seconds` and
+`--sample-ownership-check-interval-seconds`.
+
+The checker is disabled for FSDP, LoRA, multi-LoRA, multi-policy, train-only, and
+rollout-only runs. Checkpoint save includes the data source cursor, buffer state,
+in-flight handoff state, issued/drop history, and current trainer witness. Restore
+rejects a checkpoint whose completion marker exists but any required component is
+missing or corrupt.
 
 ## Evaluation
 

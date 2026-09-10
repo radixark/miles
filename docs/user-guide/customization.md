@@ -256,6 +256,9 @@ def convert_samples_to_train_data(args, samples) -> dict:
         "raw_reward":       [...],
         "truncated":        [...],
         "sample_indices":   [...],
+        "source_sample_indices": [...],
+        "sample_row_indices":    [...],
+        "sample_row_counts":     [...],
         "loss_masks":       [...],
         # optional
         "round_number":            [...],
@@ -264,8 +267,14 @@ def convert_samples_to_train_data(args, samples) -> dict:
         "metadata":                [...],
         "multimodal_train_inputs": [...],
         "teacher_log_probs":       [...],
-    }
+}
 ```
+
+The three sample identity columns describe the actual output rows. A converter that
+preserves input order and row count may omit them and Miles fills them from the input.
+A converter that reorders, filters, duplicates, or expands rows must return all three
+columns. Their identities must match the input obligations exactly; filtering is a
+separate explicit drop decision and cannot be hidden by relabeling output rows.
 
 ---
 

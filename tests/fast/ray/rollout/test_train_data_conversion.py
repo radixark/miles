@@ -266,7 +266,7 @@ class TestConvertSamplesToTrainData:
 
     def test_custom_convert_func_preserves_output_and_adds_sample_identity(self):
         args = make_args()
-        sentinel = {"foo": "bar"}
+        sentinel = {"foo": "bar", "sample_indices": [0]}
         out = convert_samples_to_train_data(
             args,
             [make_sample()],
@@ -278,6 +278,61 @@ class TestConvertSamplesToTrainData:
         assert out["source_sample_indices"] == [0]
         assert out["sample_row_indices"] == [0]
         assert out["sample_row_counts"] == [1]
+
+    def test_custom_convert_func_accepts_explicit_reordered_identities(self):
+        """A custom converter may reorder rows when it reorders every identity column."""
+        args = make_args()
+        samples = [make_sample(index=7), make_sample(index=8)]
+        converted = {
+            "sample_indices": [8, 7],
+            "source_sample_indices": [8, 7],
+            "sample_row_indices": [0, 0],
+            "sample_row_counts": [1, 1],
+        }
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=lambda a, s: converted,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["source_sample_indices"] == [8, 7]
+
+    def test_custom_convert_func_rejects_duplicate_output_hidden_by_input_identities(self):
+        """A custom converter cannot hide a duplicated row behind the original identities."""
+        args = make_args()
+        samples = [make_sample(index=7), make_sample(index=8)]
+        converted = {
+            "sample_indices": [7, 7],
+            "source_sample_indices": [7, 7],
+            "sample_row_indices": [0, 0],
+            "sample_row_counts": [1, 1],
+        }
+
+        with pytest.raises(AssertionError, match="changed the training sample identity obligations"):
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=lambda a, s: converted,
+                custom_reward_post_process_func=None,
+            )
+
+    def test_custom_convert_func_requires_explicit_identities_when_rows_change(self):
+        """A custom converter must identify rows that it filters or reorders."""
+        args = make_args()
+        samples = [make_sample(index=7), make_sample(index=8)]
+
+        with pytest.raises(AssertionError, match="when it reorders or changes rows"):
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=lambda a, s: {"sample_indices": [7, 7]},
+                custom_reward_post_process_func=None,
+            )
 
     def test_dynamic_global_batch_size_metadata_must_match(self):
         args = make_args(use_dynamic_global_batch_size=True, rewards_normalization=False)

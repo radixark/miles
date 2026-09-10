@@ -18,6 +18,7 @@ from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_fil
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
+from miles.utils.audit_utils.sample_flow import log_dropped_groups
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.function_registry import load_function
@@ -501,6 +502,12 @@ async def generate_rollout_async(
             dynamic_filter_output = call_dynamic_filter(dynamic_filter, args, group)
             if not dynamic_filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
+                log_dropped_groups(
+                    group,
+                    [],
+                    reason=f"dynamic_filter:{dynamic_filter_output.reason}",
+                    rollout_id=rollout_id,
+                )
                 state.remaining_batch_size -= 1
                 continue
 
@@ -509,6 +516,8 @@ async def generate_rollout_async(
             if len(data) < target_data_size:
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
+            else:
+                log_dropped_groups(group, [], reason="oversampling", rollout_id=rollout_id)
 
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
@@ -532,7 +541,9 @@ async def generate_rollout_async(
     state.reset()
     if (x := args.rollout_sample_filter_path) is not None:
         filter_func = load_function(x)
+        before_filter = copy.deepcopy(data)
         filter_func(args, data)
+        log_dropped_groups(before_filter, data, reason="sample_filter", rollout_id=rollout_id)
 
     # There can be circumstances where users want to process all samples including filtered ones.
     if (x := args.rollout_all_samples_process_path) is not None:
