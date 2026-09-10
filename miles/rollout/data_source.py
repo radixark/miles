@@ -158,7 +158,7 @@ class RolloutDataSource(DataSource):
             self.dataset.shuffle(self.epoch_id)
 
 
-class RolloutDataSourceWithBuffer(RolloutDataSource):
+class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
     def __init__(self, args):
         super().__init__(args)
         self.buffer = []

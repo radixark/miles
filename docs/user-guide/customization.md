@@ -101,12 +101,11 @@ message/token ownership contract.
 ```python
 class CustomDataSource(DataSource):
     def get_samples(self, num_samples) -> list[list[Sample]]: ...
-    def add_samples(self, samples) -> None: ...
     def save(self, rollout_id) -> None: ...
     def load(self, rollout_id=None) -> None: ...
 ```
 
-**Default:** `miles.rollout.data_source.RolloutDataSourceWithBuffer`.
+**Default:** `miles.rollout.data_source.RolloutDataSource`.
 
 ### `--eval-function-path`
 
