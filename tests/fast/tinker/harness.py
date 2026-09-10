@@ -100,6 +100,16 @@ def datum(tokens: int = 3) -> dict:
     return {"tokens": list(range(tokens + 1)), "target_len": tokens, "weights": [1.0] * tokens}
 
 
+def rl_datum(tokens: int = 3) -> dict:
+    """RL losses read logprobs+advantages and reject the cross-entropy weights."""
+    return {
+        "tokens": list(range(tokens + 1)),
+        "target_len": tokens,
+        "sampling_logprobs": [0.0] * tokens,
+        "advantages": [1.0] * tokens,
+    }
+
+
 def fb_payload(model_id: str, seq_id: int, datums: list[dict], loss_fn: str = "cross_entropy") -> dict:
     return {"model_id": model_id, "seq_id": seq_id, "datums": datums, "loss_fn": loss_fn, "loss_fn_config": {}}
 

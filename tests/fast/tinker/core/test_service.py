@@ -3,7 +3,7 @@
 import asyncio
 
 import pytest
-from tests.fast.tinker.harness import ADAM, await_settled, created_model, datum, fb_payload
+from tests.fast.tinker.harness import ADAM, await_settled, created_model, datum, fb_payload, rl_datum
 
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
@@ -412,6 +412,11 @@ async def test_malformed_loss_inputs_are_rejected_at_admission(service):
             "loss_fn": "importance_sampling",
             "datums": [datum() | {"sampling_logprobs": [0.0], "advantages": [1.0, 2.0, 3.0, 4.0]}],
         },
+        # datum() carries weights, which importance_sampling never reads
+        "unread input": {
+            "loss_fn": "importance_sampling",
+            "datums": [datum() | {"sampling_logprobs": [0.0] * 3, "advantages": [1.0] * 3}],
+        },
     }
     for seq_id, payload in enumerate(cases.values(), start=1):
         request_id = service.submit(
@@ -431,7 +436,7 @@ async def test_malformed_loss_inputs_are_rejected_at_admission(service):
             "seq_id": 4,
             "loss_fn": "importance_sampling",
             "loss_fn_config": {},
-            "datums": [datum() | {"sampling_logprobs": [0.0] * 3, "advantages": [1.0] * 3}],
+            "datums": [rl_datum(3)],
         },
     )
     assert (await await_settled(service, "tenant", healthy)).state == DONE
@@ -675,3 +680,25 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
     future = await await_settled(service, "tenant", loaded)
     assert (future.state, future.error_category) == (FAILED, "user") and "lora_alpha" in future.error
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
+
+
+async def test_a_recycled_slot_does_not_inherit_poison(service):
+    session_id = service.create_session("tenant")
+    model_id = await created_model(service)
+    slot = service.models[model_id].slot
+    service.backend.fail_next = RuntimeError("cuda died")
+    failed = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
+    assert (await await_settled(service, "tenant", failed)).state == FAILED
+
+    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
+    await service._sweep_once()
+    assert slot in service.free_slots
+
+    del service.sessions[session_id]  # no live sessions: no lease to expire
+    fresh = await created_model(service)
+    assert service.models[fresh].slot == slot
+    step_after_fb = service.submit("tenant", "forward_backward", fb_payload(fresh, 1, [datum()]))
+    assert (await await_settled(service, "tenant", step_after_fb)).state == DONE
+    step = service.submit("tenant", "optim_step", _optim_payload(fresh, 2))
+    future = await await_settled(service, "tenant", step)
+    assert future.state == DONE, "the poison belonged to the evicted model, not the slot"

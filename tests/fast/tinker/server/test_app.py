@@ -162,3 +162,15 @@ async def test_weights_info_answers_the_sdk_resume_probe(client):
     path = (await _poll(client, saved["request_id"]))["path"]
     info = (await client.post("/api/v1/weights_info", json={"tinker_path": path}, headers=_headers())).json()
     assert (info["base_model"], info["is_lora"], info["lora_rank"]) == ("base", True, 8)
+
+
+async def test_retrieve_long_polls_until_settlement(client):
+    future = client.service.futures.create("model", "tenant-a")
+    poll = asyncio.create_task(
+        client.post("/api/v1/retrieve_future", json={"request_id": future.request_id}, headers=_headers())
+    )
+    await asyncio.sleep(0.05)
+    assert not poll.done(), "a pending future must hold the poll open instead of answering try_again"
+    client.service.futures.resolve(future.request_id, {"op": "optim_step", "metrics": {"grad_norm": 1.0}})
+    response = await asyncio.wait_for(poll, timeout=2)
+    assert response.json() == {"type": "optim_step", "metrics": {"grad_norm": 1.0}}
