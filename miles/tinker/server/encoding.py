@@ -34,12 +34,19 @@ def decode_command(op: str, payload: dict) -> tuple[str, dict]:
     if op == "optim_step":
         return op, decoded | {"adam_params": materialize_adam_params(payload["adam_params"])}
     if op == "save_state":
+        _reject_ttl(payload)
         return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
     if op == "load_state":
         return op, decoded | {"path": payload["path"], "optimizer": payload["optimizer"]}
     if op == "save_weights_for_sampler":
+        _reject_ttl(payload)
         return op, decoded | {"sampler_path": payload.get("path")}
     raise UserInputError(f"unknown command op {op!r}")
+
+
+def _reject_ttl(payload: dict) -> None:
+    if payload.get("ttl_seconds") is not None:
+        raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
 
 
 def materialize_adam_params(raw: dict) -> dict:
