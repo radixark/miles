@@ -207,7 +207,7 @@ class TinkerService:
         future = self.futures.create(model_id, tenant)
         stream.request_id_by_seq[seq_id] = future.request_id
         try:
-            self._admit(op, payload)
+            self._validate_batch_payload(op, payload)
         except UserInputError as error:
             self.futures.fail(future.request_id, str(error), "user")
             # consume rejected sequence positions so the stream can advance
@@ -227,7 +227,7 @@ class TinkerService:
         self._wake.set()
         return future.request_id
 
-    def _admit(self, op: CommandOp, payload: dict) -> None:
+    def _validate_batch_payload(self, op: CommandOp, payload: dict) -> None:
         if not op.is_batch():
             return
         datums = payload["datums"]
@@ -460,11 +460,11 @@ class TinkerService:
         refs = sorted(batch.datums, key=lambda ref: ref.stream.slot)
         slot_datums = [(ref.stream.slot, ref.datum) for ref in refs]
         self._batch_counter += 1
-        execute_batch = (
+        forward = (
             self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
         )
         try:
-            outputs = await execute_batch(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
+            outputs = await forward(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
         except UserInputError as error:
             await self._discard_batch_runs(batch, str(error), "user")
             return
@@ -502,7 +502,7 @@ class TinkerService:
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
-            results = await self._execute_barrier(barrier)
+            results = await self._dispatch_barrier_op(barrier)
         except (UserInputError, OwnershipError) as error:
             self._fail_barrier(barrier, str(error), "user")
             return
@@ -521,7 +521,7 @@ class TinkerService:
             self.futures.fail(pending.command.request_id, error, category)
             stream.finish(pending)
 
-    async def _execute_barrier(self, barrier: BarrierUnit) -> list[dict] | None:
+    async def _dispatch_barrier_op(self, barrier: BarrierUnit) -> list[dict] | None:
         if barrier.op == CommandOp.OPTIM_STEP:
             await self._step_optimizers(barrier.entries)
             return None  # settled per slot
