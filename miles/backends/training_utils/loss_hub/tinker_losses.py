@@ -33,6 +33,11 @@ def _as_tensor_like(values, reference: torch.Tensor) -> torch.Tensor:
     return torch.as_tensor(values, dtype=reference.dtype, device=reference.device)
 
 
+def _response_masks(batch: RolloutBatch, log_probs: list[torch.Tensor]) -> list[torch.Tensor]:
+    """Per-datum loss masks; a DP-padding datum is all zeros and must not reach the objective."""
+    return [_as_tensor_like(mask, log_prob) for mask, log_prob in zip(batch["loss_masks"], log_probs, strict=True)]
+
+
 def _sum_loss_and_outputs(
     batch: RolloutBatch,
     logits: torch.Tensor,
@@ -59,8 +64,10 @@ def cross_entropy_loss_function(
 ) -> tuple[torch.Tensor, dict]:
     log_probs = _target_logprobs(args, batch, logits)
     per_datum_losses = [
-        -(_as_tensor_like(weights, log_prob) * log_prob).sum()
-        for log_prob, weights in zip(log_probs, batch["loss_weights"], strict=True)
+        -(_as_tensor_like(weights, log_prob) * log_prob * mask).sum()
+        for log_prob, weights, mask in zip(
+            log_probs, batch["loss_weights"], _response_masks(batch, log_probs), strict=True
+        )
     ]
     return _sum_loss_and_outputs(batch, logits, log_probs, per_datum_losses)
 
@@ -73,11 +80,11 @@ def importance_sampling_loss_function(
 ) -> tuple[torch.Tensor, dict]:
     log_probs = _target_logprobs(args, batch, logits)
     per_datum_losses = []
-    for log_prob, sampling_log_prob, advantage in zip(
-        log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True
+    for log_prob, sampling_log_prob, advantage, mask in zip(
+        log_probs, batch["rollout_log_probs"], batch["advantages"], _response_masks(batch, log_probs), strict=True
     ):
         ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
-        per_datum_losses.append(-(ratio * _as_tensor_like(advantage, log_prob)).sum())
+        per_datum_losses.append(-(ratio * _as_tensor_like(advantage, log_prob) * mask).sum())
     return _sum_loss_and_outputs(batch, logits, log_probs, per_datum_losses)
 
 
@@ -92,13 +99,13 @@ def ppo_loss_function(
     clip_high = config.get("clip_high_threshold", PPO_DEFAULTS["clip_high_threshold"])
     log_probs = _target_logprobs(args, batch, logits)
     per_datum_losses = []
-    for log_prob, sampling_log_prob, advantage in zip(
-        log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True
+    for log_prob, sampling_log_prob, advantage, mask in zip(
+        log_probs, batch["rollout_log_probs"], batch["advantages"], _response_masks(batch, log_probs), strict=True
     ):
         ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
         advantages = _as_tensor_like(advantage, log_prob)
         objective = torch.minimum(ratio * advantages, torch.clamp(ratio, clip_low, clip_high) * advantages)
-        per_datum_losses.append(-objective.sum())
+        per_datum_losses.append(-(objective * mask).sum())
     return _sum_loss_and_outputs(batch, logits, log_probs, per_datum_losses)
 
 
@@ -113,12 +120,12 @@ def cispo_loss_function(
     clip_high = config.get("clip_high_threshold", CISPO_DEFAULTS["clip_high_threshold"])
     log_probs = _target_logprobs(args, batch, logits)
     per_datum_losses = []
-    for log_prob, sampling_log_prob, advantage in zip(
-        log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True
+    for log_prob, sampling_log_prob, advantage, mask in zip(
+        log_probs, batch["rollout_log_probs"], batch["advantages"], _response_masks(batch, log_probs), strict=True
     ):
         ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
         coefficient = torch.clamp(ratio, clip_low, clip_high).detach()
-        per_datum_losses.append(-(coefficient * log_prob * _as_tensor_like(advantage, log_prob)).sum())
+        per_datum_losses.append(-(coefficient * log_prob * _as_tensor_like(advantage, log_prob) * mask).sum())
     return _sum_loss_and_outputs(batch, logits, log_probs, per_datum_losses)
 
 
@@ -132,12 +139,12 @@ def dro_loss_function(
     beta = config.get("beta", DRO_DEFAULTS["beta"])
     log_probs = _target_logprobs(args, batch, logits)
     per_datum_losses = []
-    for log_prob, sampling_log_prob, advantage in zip(
-        log_probs, batch["rollout_log_probs"], batch["advantages"], strict=True
+    for log_prob, sampling_log_prob, advantage, mask in zip(
+        log_probs, batch["rollout_log_probs"], batch["advantages"], _response_masks(batch, log_probs), strict=True
     ):
         divergence = log_prob - _as_tensor_like(sampling_log_prob, log_prob)
         objective = log_prob * _as_tensor_like(advantage, log_prob) - 0.5 * beta * divergence**2
-        per_datum_losses.append(-objective.sum())
+        per_datum_losses.append(-(objective * mask).sum())
     return _sum_loss_and_outputs(batch, logits, log_probs, per_datum_losses)
 
 
