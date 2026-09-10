@@ -118,6 +118,6 @@ class TestRelaunchingASoak:
         monkeypatch.setattr(gsm8k, "create_backend_for_run", lambda config: _RecordingBackend(config, seen))
         relaunch = dataclasses.replace(command_utils.default_config(), hot_restart="orchestration")
 
-        gsm8k._launch_gsm8k(relaunch, train_args="", fully_async=False)
+        gsm8k.launch_gsm8k(relaunch, train_args="", fully_async=False)
 
         assert [config.hot_restart for config in seen.trained] == ["orchestration"]

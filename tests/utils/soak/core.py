@@ -17,9 +17,11 @@ from tests.utils.soak.state import (
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakDeploymentTarget,
     SoakObservation,
     SoakScheduleEvent,
     cell_type_of,
+    target_type_of,
 )
 from tests.utils.soak.views import compute_successful_form_names
 
@@ -118,19 +120,24 @@ class SoakActionScheduler:
             if isinstance(event, SoakScheduleEvent):
                 due_of_type.update(event.due_of_type)
             elif isinstance(event, SoakActionRequestedEvent) and event.request.next_due_at is not None:
-                due_of_type[cell_type_of(event.request.target)] = event.request.next_due_at
+                due_of_type[target_type_of(event.request.target)] = event.request.next_due_at
             elif isinstance(event, (ObservationsEvent, SoakObservation)):
                 observation = event
-        if observation is None or observation.cells is None:
+        if observation is None:
             return None
-        cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
-        for cell in observation.cells:
-            cells_of_type[cell_type_of(cell)].append(cell)
+        cells_of_type: dict[str, list[dict | SoakDeploymentTarget]] = {
+            cell_type: [] for cell_type in self._mean_intervals
+        }
+        for cell in observation.cells or []:
+            if cell_type_of(cell) in cells_of_type:
+                cells_of_type[cell_type_of(cell)].append(cell)
+        if isinstance(observation, SoakObservation) and "deployment" in cells_of_type:
+            cells_of_type["deployment"].extend(observation.deployments)
         due_types = sorted(kind for kind, due_at in due_of_type.items() if now >= due_at)
         if not due_types:
             return None
 
-        ready_types = [kind for kind in due_types if len(cells_of_type[kind]) > 1]
+        ready_types = [kind for kind in due_types if len(cells_of_type[kind]) >= (1 if kind == "deployment" else 2)]
         if not ready_types:
             return None
 
@@ -141,6 +148,7 @@ class SoakActionScheduler:
             return None
         candidates = None
         if isinstance(observation, SoakObservation) and form.name in {"delete_pod", "exec_sigkill"}:
+            assert isinstance(target, dict), "Pod faults require a cell target"
             candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
             if not candidates:
                 return None
@@ -158,6 +166,7 @@ class SoakActionScheduler:
 def _execute_action(
     *, action: SoakActionRequest, forms: CellFaultForms, rng: random.Random, event_log: EventLog
 ) -> None:
+    assert isinstance(action.target, dict), "The synchronous bridge only supports cell targets"
     matching = [form for form in forms[cell_type_of(action.target)] if form.name == action.form_name]
     assert len(matching) == 1, f"Expected one form named {action.form_name}, found {len(matching)}"
     form = matching[0]

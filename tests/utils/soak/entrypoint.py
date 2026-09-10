@@ -34,16 +34,22 @@ class FaultInjectorHandle:
         poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
         namespace: str | None = None,
         release: str | None = None,
+        event_log: EventLog | None = None,
+        observer: SoakObserver | None = None,
     ) -> None:
-        self.event_log = EventLog()
+        self.event_log = event_log if event_log is not None else EventLog()
         self.cell_fault_forms = cell_fault_forms
         self._base_url = base_url
         self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
         self._get_virtual_cells: Callable[[], list[dict]] | None = get_virtual_cells
         self._runner = (
             SoakRunner(
-                observer=SoakObserver(
-                    base_url=base_url, cell_types=self._cell_types, namespace=namespace, release=release
+                observer=(
+                    observer
+                    if observer is not None
+                    else SoakObserver(
+                        base_url=base_url, cell_types=self._cell_types, namespace=namespace, release=release
+                    )
                 ),
                 scheduler=SoakActionScheduler(
                     rng=random.Random(seed),
@@ -79,6 +85,9 @@ class FaultInjectorHandle:
 
     def start(self) -> None:
         self._worker.start()
+
+    def raise_if_failed(self) -> None:
+        self._worker.join(timeout_seconds=0)
 
     def stop_and_join(self) -> None:
         self._worker.stop_and_join(timeout_seconds=STOP_AND_JOIN_TIMEOUT_SECONDS)
@@ -120,9 +129,13 @@ def spawn_fault_injector(
     injection_enabled: Callable[[], bool] | None = None,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
     config: ExecuteTrainConfig | None = None,
+    event_log: EventLog | None = None,
+    observer: SoakObserver | None = None,
 ) -> FaultInjectorHandle:
     use_kubernetes = config is not None and config.cluster_backend is ClusterBackend.KUBERNETES
     handle = FaultInjectorHandle(
+        event_log=event_log,
+        observer=observer,
         base_url=base_url,
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,

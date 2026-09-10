@@ -4,9 +4,11 @@ import enum
 import threading
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -51,19 +53,38 @@ class SoakPodTarget(FrozenStrictBaseModel):
     uid: str
 
 
+class SoakDeploymentTarget(FrozenStrictBaseModel):
+    kind: Literal["deployment"] = "deployment"
+    namespace: str
+    release: str
+    workload_stamps: dict[str, str | None]
+    workload_uids: dict[str, str]
+    saved_iteration: int | None
+    finished_rollout_id: int | None
+
+
 class SoakObservation(BaseEvent):
     cells: list[dict] | None
     pods_of_cell: dict[str, list[SoakPodTarget]] = Field(default_factory=dict)
+    deployments: list[SoakDeploymentTarget] = Field(default_factory=list)
+    details: dict[str, dict] = Field(default_factory=dict)
     errors: dict[str, str] = Field(default_factory=dict)
 
 
 class SoakActionRequest(FrozenStrictBaseModel):
     request_id: str = Field(default_factory=lambda: uuid4().hex)
-    target: dict
+    target: SoakDeploymentTarget | dict
     form_name: str
     harms_cell: bool
     next_due_at: float | None = None
     pod: SoakPodTarget | None = None
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def _parse_target(cls, value: SoakDeploymentTarget | dict) -> SoakDeploymentTarget | dict:
+        if isinstance(value, dict) and value.get("kind") == "deployment":
+            return SoakDeploymentTarget.model_validate(value)
+        return value
 
 
 class SoakScheduleEvent(BaseEvent):
@@ -78,6 +99,17 @@ class SoakActionResultEvent(BaseEvent):
     request_id: str
     returned: bool
     error: str | None = None
+
+
+class SoakActionAppliedEvent(BaseEvent):
+    request_id: str
+    evidence: dict
+
+
+class SoakLauncherExitedEvent(BaseEvent):
+    request_id: str | None
+    returncode: int
+    log_path: Path
 
 
 class CellInfo(FrozenStrictBaseModel):
@@ -99,6 +131,8 @@ Event = (
     | SoakActionResultEvent
     | SoakScheduleEvent
     | SoakObservation
+    | SoakActionAppliedEvent
+    | SoakLauncherExitedEvent
 )
 
 
@@ -131,6 +165,12 @@ class EventLog:
     def note_action_result(self, result: SoakActionResultEvent) -> None:
         self._append(result)
 
+    def note_action_applied(self, event: SoakActionAppliedEvent) -> None:
+        self._append(event.model_copy(deep=True))
+
+    def note_launcher_exited(self, event: SoakLauncherExitedEvent) -> None:
+        self._append(event)
+
     def note_schedule(self, schedule: SoakScheduleEvent) -> None:
         self._append(schedule)
 
@@ -155,3 +195,7 @@ def compute_cell_infos(cells: list[dict]) -> dict[str, CellInfo]:
 
 def cell_type_of(cell: dict) -> str:
     return cell["metadata"]["labels"]["miles.io/cell-type"]
+
+
+def target_type_of(target: SoakDeploymentTarget | dict) -> str:
+    return "deployment" if isinstance(target, SoakDeploymentTarget) else cell_type_of(target)

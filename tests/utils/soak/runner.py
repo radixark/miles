@@ -11,10 +11,12 @@ from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.state import (
     Event,
     EventLog,
+    SoakActionAppliedEvent,
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
-    cell_type_of,
+    SoakDeploymentTarget,
+    target_type_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,23 +60,27 @@ class SoakRunner:
         return self._event_log.events
 
     async def _observe_and_choose(self, stop_event: asyncio.Event) -> None:
-        action_task: asyncio.Task[None] | None = None
+        active: set[asyncio.Task[None]] = set()
         async with asyncio.TaskGroup() as actions:
             while not stop_event.is_set():
                 await asyncio.sleep(self._poll_interval_seconds)
                 self._event_log.note_observation(await self._observer.observe())
                 if stop_event.is_set():
                     return
-                if action_task is not None and not action_task.done():
+                for task in tuple(active):
+                    if task.done():
+                        active.remove(task)
+                        task.result()
+                if _has_pending_action(self.get_events()):
                     continue
                 if (request := self._scheduler.choose(events=self.get_events(), now=time.monotonic())) is None:
                     continue
                 self._event_log.note_action_requested(request)
-                action_task = actions.create_task(self._execute(request))
+                active.add(actions.create_task(self._execute(request)))
 
     async def _execute(self, request: SoakActionRequest) -> None:
         try:
-            await self._forms[(cell_type_of(request.target), request.form_name)].execute(request)
+            await self._forms[(target_type_of(request.target), request.form_name)].execute(request)
         except asyncio.CancelledError as error:
             self._event_log.note_action_result(
                 SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
@@ -102,3 +108,17 @@ class SoakRunner:
                         error="Cancelled before execution",
                     )
                 )
+
+
+def _has_pending_action(events: list[Event]) -> bool:
+    pending: dict[str, SoakActionRequest] = {}
+    for event in events:
+        if isinstance(event, SoakActionRequestedEvent):
+            pending[event.request.request_id] = event.request
+        elif isinstance(event, SoakActionResultEvent):
+            pending.pop(event.request_id, None)
+        elif isinstance(event, SoakActionAppliedEvent):
+            request = pending.get(event.request_id)
+            if request is not None and isinstance(request.target, SoakDeploymentTarget):
+                del pending[event.request_id]
+    return bool(pending)

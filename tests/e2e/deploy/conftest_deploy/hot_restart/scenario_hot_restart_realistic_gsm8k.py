@@ -11,10 +11,13 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint 
     read_step_events,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_take_overs_replaced_only_script
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver, observing_cluster
+from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver, ClusterSnapshot
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_checkpoint_dir, compute_release_of_config
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
-from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME, HotRestartFaultForm
+from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME
+from tests.e2e.deploy.conftest_deploy.hot_restart.soak_form import SoakActionFormHotRestart
+from tests.e2e.deploy.conftest_deploy.hot_restart.soak_observer import HotRestartSoakObserver
+from tests.e2e.deploy.conftest_deploy.hot_restart.soak_session import execute_hot_restart_session
 from tests.e2e.ft.conftest_ft.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.recipes.gsm8k import (
@@ -24,8 +27,15 @@ from tests.utils.soak.recipes.gsm8k import (
     Gsm8kRun,
     run_realistic_gsm8k,
 )
-from tests.utils.soak.state import Event, InjectionEvent
-from tests.utils.soak.views import compute_num_successful_injections_of_form
+from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
+from tests.utils.soak.state import (
+    Event,
+    InjectionEvent,
+    SoakActionAppliedEvent,
+    SoakActionRequestedEvent,
+    SoakActionResultEvent,
+    SoakObservation,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -39,8 +49,7 @@ MIN_HOT_RESTARTS: int = 1
 MAX_REDONE_STEPS_PER_TAKE_OVER: int = SAVE_INTERVAL + 1
 DEFAULT_HOT_RESTART_INTERVAL_SECONDS: float = 600.0
 TERMINAL_QUIESCENCE_ROLLOUTS: int = 15
-_HOT_RESTART_CELL_TYPE: str = "hot-restart-virtual-cell"
-_VIRTUAL_CELL_NAMES: tuple[str, str] = ("hot-restart-virtual-cell-0", "hot-restart-virtual-cell-1")
+_HOT_RESTART_TARGET_TYPE: str = "deployment"
 
 HotRestartIntervalSecondsOption = Annotated[
     float, typer.Option(help="Mean seconds between take-overs of the orchestration script")
@@ -57,10 +66,7 @@ def run_ci(
     config = command_utils.default_config()
     assert_cluster_can_deploy_runs(config)
 
-    observer = ClusterObserver(
-        release=compute_release_of_config(config), namespace=config.namespace, trainer_id=DEFAULT_TRAINER_ID
-    )
-    hot_restart_form: MutableBox[HotRestartFaultForm | None] = MutableBox(value=None)
+    hot_restart_form: MutableBox[SoakActionFormHotRestart | None] = MutableBox(value=None)
     max_allowed_rollout_id = num_rollout - TERMINAL_QUIESCENCE_ROLLOUTS - 1
 
     def create_forms(run: Gsm8kRun) -> CellFaultForms:
@@ -69,44 +75,37 @@ def run_ci(
             "the run's fault forms were built twice, so the form this soak reads at the end is not the one the "
             "second run was injected with"
         )
-        [hot_restart_form.value] = forms[_HOT_RESTART_CELL_TYPE]
+        [hot_restart_form.value] = forms[_HOT_RESTART_TARGET_TYPE]
         return forms
 
-    with observing_cluster(observer):
-        outcome = run_realistic_gsm8k(
-            config=config,
-            test_name=TEST_NAME,
-            seed=seed,
-            num_rollout=num_rollout,
-            metric_threshold=metric_threshold,
-            fully_async=False,
-            mean_interval_seconds_of_cell_type={_HOT_RESTART_CELL_TYPE: hot_restart_interval_seconds},
-            create_forms=create_forms,
-            get_virtual_cells=lambda: _create_virtual_cells_before(hot_restart_form.value),
-            build_extra_train_args=lambda dump_dir: _build_train_args(dump_dir, wandb_run_id=config.run_id),
-            enable_fault_tolerance=False,
-        )
+    outcome = run_realistic_gsm8k(
+        config=config,
+        test_name=TEST_NAME,
+        seed=seed,
+        num_rollout=num_rollout,
+        metric_threshold=metric_threshold,
+        fully_async=False,
+        mean_interval_seconds_of_cell_type={_HOT_RESTART_TARGET_TYPE: hot_restart_interval_seconds},
+        create_forms=create_forms,
+        create_observer=_create_observer,
+        execute_session=execute_hot_restart_session,
+        injection_enabled=lambda: hot_restart_form.value is not None
+        and hot_restart_form.value.is_within_injection_window(),
+        build_extra_train_args=lambda dump_dir: _build_train_args(dump_dir, wandb_run_id=config.run_id),
+        enable_fault_tolerance=False,
+    )
 
     form = hot_restart_form.value
     assert form is not None, "no fault form was ever built for this run, so nothing here was ever taken over"
 
-    form.join_relaunches()
-    form.assert_take_overs_installed_cleanly()
-    assert_no_take_over_attempt_failed(outcome.injector.event_log.events)
+    events = outcome.injector.event_log.events
+    assert_no_take_over_attempt_failed(events)
 
-    evidence = HotRestartEvidence(
-        records=form.records,
-        snapshots=tuple(observer.snapshots),
-        release=observer.release,
-        observation_attempts=observer.attempts,
-        observation_failures=observer.failures,
-    )
+    evidence = _project_evidence(events=events, release=compute_release_of_config(config), namespace=config.namespace)
     evidence.write(dump_dir=outcome.run.dump_dir)
     assert_take_overs_replaced_only_script(
         evidence,
-        num_restarts=compute_num_successful_injections_of_form(
-            outcome.injector.event_log.events, form_name=HOT_RESTART_FORM_NAME
-        ),
+        num_restarts=len(evidence.records),
         minimum_restarts=MIN_HOT_RESTARTS,
     )
     assert_take_over_loss_within_save_interval(evidence.records)
@@ -120,16 +119,28 @@ def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
 
 
 def assert_no_take_over_attempt_failed(events: list[Event]) -> None:
+    requests = {
+        event.request.request_id
+        for event in events
+        if isinstance(event, SoakActionRequestedEvent) and event.request.form_name == HOT_RESTART_FORM_NAME
+    }
+    applied = {event.request_id for event in events if isinstance(event, SoakActionAppliedEvent)}
     failed = [
         one
         for one in events
         if isinstance(one, InjectionEvent) and one.form_name == HOT_RESTART_FORM_NAME and not one.succeeded
     ]
+    failed.extend(
+        event
+        for event in events
+        if isinstance(event, SoakActionResultEvent) and event.request_id in requests and not event.returned
+    )
 
     assert not failed, (
         f"{len(failed)} take-over attempt(s) failed: {failed}. Every draw of this form fires, so a failure here is "
         f"a relaunch the cluster refused or one that never reached the run, not a draw that was declined"
     )
+    assert not (missing := requests - applied), f"Take-over requests never applied: {sorted(missing)}"
 
 
 def assert_take_over_loss_within_save_interval(records: Sequence[HotRestartRecord]) -> None:
@@ -193,30 +204,44 @@ def _read_finished_steps_of_log(events_dir: Path) -> dict[int, str]:
 
 
 def create_hot_restart_forms(run: Gsm8kRun, *, max_allowed_rollout_id: int) -> CellFaultForms:
-    form = HotRestartFaultForm(
-        launch=run.launch,
-        config=run.config,
-        checkpoint_dir=compute_checkpoint_dir(run.dump_dir),
-        events_dir=run.events_dir,
+    form = SoakActionFormHotRestart(
+        launch_spec=Gsm8kLaunchSpec(config=run.config, train_args=run.train_args, fully_async=False),
+        event_log=run.event_log,
+        log_dir=run.evidence_dir,
         max_allowed_rollout_id=max_allowed_rollout_id,
     )
-    return {_HOT_RESTART_CELL_TYPE: [form]}
+    return {_HOT_RESTART_TARGET_TYPE: [form]}
 
 
-def _create_virtual_cells() -> list[dict]:
-    return [
-        {
-            "metadata": {"name": name, "labels": {"miles.io/cell-type": _HOT_RESTART_CELL_TYPE}},
-            "status": {"phase": "Running", "conditions": [{"type": "Healthy", "status": "True"}]},
-        }
-        for name in _VIRTUAL_CELL_NAMES
-    ]
+def _create_observer(run: Gsm8kRun) -> HotRestartSoakObserver:
+    return HotRestartSoakObserver(
+        base_url=run.base_url,
+        cell_types=set(),
+        namespace=run.config.namespace,
+        release=compute_release_of_config(run.config),
+        trainer_id=DEFAULT_TRAINER_ID,
+        checkpoint_dir=compute_checkpoint_dir(run.dump_dir),
+        events_dir=run.events_dir,
+    )
 
 
-def _create_virtual_cells_before(form: HotRestartFaultForm | None) -> list[dict]:
-    if form is None or not form.is_within_injection_window():
-        return []
-    return _create_virtual_cells()
+def _project_evidence(*, events: list[Event], release: str, namespace: str) -> HotRestartEvidence:
+    observer = ClusterObserver(release=release, namespace=namespace, trainer_id=DEFAULT_TRAINER_ID)
+    for event in events:
+        if isinstance(event, SoakObservation) and (raw := event.details.get("hot_restart_cluster")) is not None:
+            observer.record_snapshot(ClusterSnapshot.model_validate(raw))
+    records = tuple(
+        HotRestartRecord.model_validate(event.evidence["record"])
+        for event in events
+        if isinstance(event, SoakActionAppliedEvent) and "record" in event.evidence
+    )
+    return HotRestartEvidence(
+        records=records,
+        snapshots=tuple(observer.snapshots),
+        release=release,
+        observation_attempts=observer.attempts,
+        observation_failures=observer.failures,
+    )
 
 
 def build_checkpoint_args(dump_dir: str) -> str:

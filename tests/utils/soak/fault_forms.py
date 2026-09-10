@@ -55,6 +55,7 @@ class InjectFaultForm(BaseFaultForm, SoakActionForm):
 
     async def execute(self, request: SoakActionRequest) -> None:
         assert request.form_name == self.name, f"Request {request.request_id} names another form: {request.form_name}"
+        assert isinstance(request.target, dict), "Fault injection requires a cell target"
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(
                 f"{self._base_url}/api/v1/cells/{request.target['metadata']['name']}/inject-fault",

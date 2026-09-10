@@ -106,23 +106,25 @@ over at rollout 0 with the run.
 ```
 Type: single run, shared tests/utils/soak/recipes/gsm8k.py with hot restarts
 Steps: as scenario_realistic_gsm8k
-Injection: HotRestartFaultForm at random intervals through the ordinary cell fault scheduler,
+Injection: SoakActionFormHotRestart at random intervals through the shared async soak scheduler,
         seed logged
-Eligibility: two healthy virtual cells; the form does not harm its target, so both remain eligible
-        after a take-over without pretending a real trainer or rollout cell was targeted
-Terminal lifecycle: the form reads progress from the same dump directory as checkpoints and events;
-        the virtual-cell provider returns no targets after rollout 234, leaving rollouts 235-249
+Eligibility: one observed deployment, identified by namespace, release, workload UIDs and stamps
+Terminal lifecycle: the observer reads progress from the run's checkpoints and events;
+        admission closes after rollout 234, leaving rollouts 235-249
         free of new take-overs
 Landing signal: both replaced workloads (orchestrator, rollout-executor) carry a stamp other
         than the one they carried at the draw - rewritten, not added
 Observation: as in scenario_hot_restart_deterministic - snapshots start after the release settles
+Execution: each launcher runs in an owned subprocess; an applied event permits the next draw
+        while that launcher keeps watching training; its eventual exit is recorded separately
 Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's cost); mean draw
         interval 600s (--hot-restart-interval-seconds)
 
 1. Run the realistic gsm8k recipe while the plan injects hot restarts
 2. Assert: gsm8k reward improves as in scenario_realistic_gsm8k
 3. Assert: >= MIN_HOT_RESTARTS take-overs landed; no injection attempt failed; every relaunch
-   thread finished without raising (where the run's own metric verdict surfaces); each landed
+   process finished with success or a replacement exit explained by an applied successor;
+   the final launcher succeeded (where the run's own metric verdict surfaces); each landed
    take-over stamped orchestrator and rollout-executor once; no other workload rolled or lost a
    pod; one trainer boot uuid throughout, first read before any take-over stamped a workload; no
    take-over threw away more than MAX_REDONE_STEPS_PER_TAKE_OVER = SAVE_INTERVAL + 1 steps - one

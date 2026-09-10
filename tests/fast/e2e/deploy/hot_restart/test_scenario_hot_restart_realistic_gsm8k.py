@@ -1,17 +1,17 @@
+import random
 import shlex
 import shutil
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
-
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_realistic_gsm8k as scenario
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
-from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFaultForm
+from tests.e2e.deploy.conftest_deploy.hot_restart.soak_form import SoakActionFormHotRestart
+from tests.utils.soak.core import SoakActionScheduler
 from tests.utils.soak.recipes import gsm8k as scenario_realistic_gsm8k
-from tests.utils.soak.state import InjectionEvent
+from tests.utils.soak.state import InjectionEvent, SoakDeploymentTarget, SoakObservation, SoakScheduleEvent
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
@@ -83,53 +83,69 @@ class TestTheRecipeIsTheOneFtConverges:
 
 
 class TestTheInjectionPlan:
-    def test_virtual_cells_remain_available_before_the_closing_window(self):
+    def test_deployment_remains_available_before_the_closing_window(self):
         """A draw before the final fifteen rollouts still reaches the ordinary scheduler."""
-        form = MagicMock(spec=HotRestartFaultForm)
-        form.is_within_injection_window.return_value = True
-        cells = scenario._create_virtual_cells_before(form)
+        run = _run("/dumps")
+        [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)["deployment"]
+        run.event_log.note_observation(SoakObservation(cells=[], deployments=[_deployment(finished=233)]))
 
-        assert len(cells) == 2
+        assert form.is_within_injection_window()
 
-    def test_virtual_cells_disappear_at_the_closing_window(self):
+    def test_deployment_becomes_ineligible_at_the_closing_window(self):
         """Completing rollout 234 leaves all of 235-249 free of new take-overs."""
-        form = MagicMock(spec=HotRestartFaultForm)
-        form.is_within_injection_window.return_value = False
-        cells = scenario._create_virtual_cells_before(form)
+        run = _run("/dumps")
+        [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)["deployment"]
+        run.event_log.note_observation(SoakObservation(cells=[], deployments=[_deployment(finished=234)]))
 
-        assert cells == []
+        assert not form.is_within_injection_window()
 
-    def test_the_plan_supplies_two_healthy_virtual_cells(self):
-        """The regular scheduler sees a spare target without borrowing a real FT cell."""
-        cells = scenario._create_virtual_cells()
-
-        assert [cell["metadata"]["name"] for cell in cells] == list(scenario._VIRTUAL_CELL_NAMES)
-        assert all(
-            cell["metadata"]["labels"]["miles.io/cell-type"] == scenario._HOT_RESTART_CELL_TYPE for cell in cells
+    def test_one_real_deployment_is_sufficient_without_borrowing_ft_cells(self):
+        """Hot restart targets the actual deployment and needs no imaginary spare cell."""
+        forms = scenario.create_hot_restart_forms(_run("/dumps"), max_allowed_rollout_id=234)
+        scheduler = SoakActionScheduler(rng=random.Random(0), mean_intervals={"deployment": 1}, forms=forms)
+        target = _deployment(finished=233)
+        request = scheduler.choose(
+            events=[SoakScheduleEvent(due_of_type={"deployment": 0}), SoakObservation(cells=[], deployments=[target])],
+            now=1,
         )
+        assert request is not None and request.target == target
+        assert not request.harms_cell
 
     def test_the_only_fault_the_plan_may_draw_is_a_hot_restart(self):
         """A pod kill mixed in would make the trainer boot uuid this test pins change for a second reason."""
         forms = scenario.create_hot_restart_forms(_run("/dumps"), max_allowed_rollout_id=234)
 
-        assert list(forms) == [scenario._HOT_RESTART_CELL_TYPE]
-        assert [type(one) for one in forms[scenario._HOT_RESTART_CELL_TYPE]] == [HotRestartFaultForm]
+        assert list(forms) == [scenario._HOT_RESTART_TARGET_TYPE]
+        assert [type(one) for one in forms[scenario._HOT_RESTART_TARGET_TYPE]] == [SoakActionFormHotRestart]
 
     def test_the_plan_relaunches_the_release_the_run_was_installed_under(self):
         """A relaunch of another release would leave the trainers of this run behind."""
         run = _run("/dumps")
-        [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)[scenario._HOT_RESTART_CELL_TYPE]
+        [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)[scenario._HOT_RESTART_TARGET_TYPE]
 
-        assert form._launch is run.launch
-        assert form._config is run.config
+        assert form._launch_spec.train_args == run.train_args
+        assert form._launch_spec.config is run.config
 
     def test_the_form_reads_the_progress_of_the_run_it_restarts(self):
         """Eligibility is read off this run's checkpoints and events, not off a neighbouring dump directory."""
         run = _run("/dumps/gsm8k")
-        [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)[scenario._HOT_RESTART_CELL_TYPE]
+        [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)[scenario._HOT_RESTART_TARGET_TYPE]
+        observer = scenario._create_observer(run)
 
-        assert form._checkpoint_dir == scenario.compute_checkpoint_dir(run.dump_dir)
-        assert form._events_dir == run.events_dir
+        assert form._event_log is run.event_log
+        assert observer.checkpoint_dir == scenario.compute_checkpoint_dir(run.dump_dir)
+        assert observer.events_dir == run.events_dir
+
+
+def _deployment(*, finished: int) -> SoakDeploymentTarget:
+    return SoakDeploymentTarget(
+        namespace="rl",
+        release="demo",
+        workload_stamps={},
+        workload_uids={},
+        saved_iteration=230,
+        finished_rollout_id=finished,
+    )
 
 
 class TestTheSpecTheseConstantsAreDocumentedIn:

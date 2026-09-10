@@ -100,6 +100,9 @@ class ClusterObserver:
                 release=self.release, namespace=self.namespace, trainer_id=self.trainer_id
             ),
         )
+        self.record_snapshot(snapshot)
+
+    def record_snapshot(self, snapshot: ClusterSnapshot) -> None:
         if not snapshot.describes_whole_release:
             self._record_failed_read()
             logger.warning(

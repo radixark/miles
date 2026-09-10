@@ -1,13 +1,16 @@
 import os
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
+from uuid import uuid4
 
 from tests.fast.cluster_backends import create_backend_for_run
 from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
 from tests.utils.soak.fault_forms import CellFaultForms
+from tests.utils.soak.observer import SoakObserver
+from tests.utils.soak.state import EventLog
 from tests.utils.soak.utils import (
     DATA_DIR,
     MODEL_DIR,
@@ -42,10 +45,17 @@ class Gsm8kRun:
     dump_dir: str
     train_args: str
     launch: Callable[[command_utils.ExecuteTrainConfig], None]
+    event_log: EventLog = field(default_factory=EventLog)
+    session_id: str = field(default_factory=lambda: uuid4().hex)
 
     @property
     def events_dir(self) -> Path:
         return Path(self.dump_dir) / EVENTS_DIRNAME
+
+    @property
+    def evidence_dir(self) -> Path:
+        path = Path(self.dump_dir)
+        return path.with_name(f"{path.name}-soak") / self.session_id
 
 
 @dataclass(frozen=True)
@@ -70,6 +80,9 @@ def run_realistic_gsm8k(
     build_extra_train_args: Callable[[str], str],
     get_virtual_cells: Callable[[], list[dict]] | None = None,
     enable_fault_tolerance: bool = True,
+    create_observer: Callable[[Gsm8kRun], SoakObserver] | None = None,
+    execute_session: Callable[[Gsm8kRun, FaultInjectorHandle], None] | None = None,
+    injection_enabled: Callable[[], bool] | None = None,
 ) -> Gsm8kOutcome:
     U = create_backend_for_run(config)
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
@@ -103,7 +116,7 @@ def run_realistic_gsm8k(
         config=config,
         dump_dir=dump_dir,
         train_args=train_args,
-        launch=partial(_launch_gsm8k, train_args=train_args, fully_async=fully_async),
+        launch=partial(launch_gsm8k, train_args=train_args, fully_async=fully_async),
     )
     injector = spawn_fault_injector(
         config=config,
@@ -112,10 +125,16 @@ def run_realistic_gsm8k(
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=create_forms(run),
         get_virtual_cells=get_virtual_cells,
+        event_log=run.event_log,
+        observer=create_observer(run) if create_observer is not None else None,
+        injection_enabled=injection_enabled,
     )
 
     try:
-        run.launch(config)
+        if execute_session is None:
+            run.launch(config)
+        else:
+            execute_session(run, injector)
     finally:
         injector.stop_and_join()
 
@@ -240,7 +259,7 @@ def get_gsm8k_train_args(
     )
 
 
-def _launch_gsm8k(config: command_utils.ExecuteTrainConfig, *, train_args: str, fully_async: bool) -> None:
+def launch_gsm8k(config: command_utils.ExecuteTrainConfig, *, train_args: str, fully_async: bool) -> None:
     create_backend_for_run(config).execute_train(
         train_args=train_args,
         num_gpus_per_node=TRAIN_GPUS + ROLLOUT_GPUS,

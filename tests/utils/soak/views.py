@@ -9,9 +9,11 @@ from tests.utils.soak.state import (
     InjectionEvent,
     ObservationsEvent,
     ObservedCellState,
+    SoakActionAppliedEvent,
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakDeploymentTarget,
     SoakObservation,
     compute_cell_infos,
 )
@@ -37,6 +39,8 @@ def project_legacy_events(events: list[Event]) -> list[Event]:
             assert event.request_id not in completed, f"Duplicate soak result: {event.request_id}"
             completed.add(event.request_id)
             request = requests[event.request_id]
+            if isinstance(request.target, SoakDeploymentTarget):
+                continue
             projected.append(
                 InjectionEvent(
                     timestamp=event.timestamp,
@@ -46,7 +50,7 @@ def project_legacy_events(events: list[Event]) -> list[Event]:
                     harmed=request.harms_cell,
                 )
             )
-        else:
+        elif isinstance(event, (InjectionEvent, ObservationsEvent)):
             projected.append(event)
     return projected
 
@@ -119,6 +123,17 @@ def compute_cells_not_serving_after_injection(
 
 
 def compute_successful_form_names(events: list[Event], *, cell_type: str) -> set[str]:
+    if cell_type == "deployment":
+        requests = {
+            event.request.request_id: event.request
+            for event in events
+            if isinstance(event, SoakActionRequestedEvent) and isinstance(event.request.target, SoakDeploymentTarget)
+        }
+        return {
+            requests[event.request_id].form_name
+            for event in events
+            if isinstance(event, SoakActionAppliedEvent) and event.request_id in requests
+        }
     events = project_legacy_events(events)
     cell_type_of_name = _compute_cell_type_of_name(events)
     return {
