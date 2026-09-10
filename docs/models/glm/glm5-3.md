@@ -50,7 +50,7 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_glm5_2_744b_a40b_lora.py train \
 
 The trainer uses TP within each node, EP across all actor GPUs, PP=1, and
 ETP=1. The FP8 rollout defaults to eight GPUs per engine, with DP attention and
-MoE EP enabled. The inline rollout config includes every actor GPU and keeps
+MoE EP enabled. The rollout YAML under the shared save directory includes every actor GPU and keeps
 `update_weights: true` so adapter updates reach each engine. The example is a
 configuration template; the full 78-layer training topology needs its own
 hardware validation.
@@ -73,7 +73,7 @@ quantization error; assess train/rollout log-probability differences separately.
 ## Validation scope
 
 Launcher tests record the GLM-5.3 preparation and four-node FP8 commands,
-including the inline SGLang config. Model-argument tests verify that GLM-5.3
+including the generated SGLang YAML. Model-argument tests verify that GLM-5.3
 inherits the GLM-5.2 architecture. Bridge tests compare absorbed and ordinary
 LoRA outputs and gradients, including TP-sharded factors.
 

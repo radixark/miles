@@ -167,7 +167,7 @@ def add_sglang_arguments(parser):
         type=str,
         default=None,
         help=(
-            "Path to a YAML config for SGLang engine deployment, or an inline `base64:<payload>`. "
+            "Path to a YAML config for SGLang engine deployment. "
             "Defines server_groups with worker_type (regular/prefill/decode/placeholder), "
             "num_gpus per group, and optional per-group 'overrides' dict of "
             "ServerArgs field names that override the base --sglang-* CLI args. "

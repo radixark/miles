@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from argparse import Namespace
 
 import pytest
@@ -42,24 +41,6 @@ def _resolve_yaml(tmp_path, yaml_text: str, **args_overrides):
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml_text)
     return resolve_sglang_config(_make_args(sglang_config=str(cfg_path), **args_overrides))
-
-
-def test_inline_yaml_resolves_like_a_file_with_an_updated_rollout_checkpoint(tmp_path):
-    yaml_text = (
-        "sglang:\n"
-        "  - name: actor\n"
-        "    model_path: /ckpt/rollout-fp8\n"
-        "    update_weights: true\n"
-        "    server_groups:\n"
-        "      - worker_type: regular\n"
-        "        num_gpus: 8\n"
-        "        num_gpus_per_engine: 2\n"
-    )
-    inline = "base64:" + base64.b64encode(yaml_text.encode()).decode()
-    actual = resolve_sglang_config(_make_args(sglang_config=inline))
-    assert actual == _resolve_yaml(tmp_path, yaml_text)
-    assert actual.models[0].model_path == "/ckpt/rollout-fp8"
-    assert actual.models[0].update_weights is True
 
 
 class TestNumGpusPerEnginePrecedence:

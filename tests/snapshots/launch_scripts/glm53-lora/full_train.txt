@@ -135,7 +135,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-disable-shared-experts-fusion
   --sglang-max-lora-rank 16
   --sglang-lora-backend triton
-  --sglang-config base64:<frozen-pseudo-file-1>
+  --sglang-config <SANDBOX>/260101-000000-000/sglang_fp8_rollout.yaml
   --save-interval 1
   --save <SANDBOX>/260101-000000-000
   --attention-dropout 0.0
@@ -151,9 +151,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
 
 ### pseudo file 1
 sglang:
-- model_path: /root/models/GLM-5.3
-  name: default
-  server_groups:
-  - num_gpus: 32
-    worker_type: regular
-  update_weights: true
+  - name: default
+    model_path: /root/models/GLM-5.3
+    update_weights: true
+    server_groups:
+      - worker_type: regular
+        num_gpus: 32

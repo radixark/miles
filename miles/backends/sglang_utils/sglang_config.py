@@ -2,13 +2,13 @@
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import pydantic
 import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
-from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ class _RawModelConfig(FrozenStrictBaseModel):
 class _RawSglangConfig(FrozenStrictBaseModel):
     """Configuration for SGLang engine deployment.
 
-    Loaded from a ``--sglang-config`` YAML file or inline ``base64:`` payload.
+    Loaded from ``--sglang-config`` YAML file.
 
     **Config format**::
 
@@ -111,7 +111,7 @@ class _RawSglangConfig(FrozenStrictBaseModel):
 
     @classmethod
     def from_yaml(cls, path: str) -> "_RawSglangConfig":
-        return cls.model_validate(yaml.safe_load(resolve_file_arg(path)))
+        return cls.model_validate(yaml.safe_load(Path(path).read_text()))
 
     @staticmethod
     def from_prefill_num_servers(args) -> "_RawSglangConfig":

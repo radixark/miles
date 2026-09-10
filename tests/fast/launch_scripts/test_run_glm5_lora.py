@@ -33,6 +33,9 @@ def test_glm53_fp8_multinode_launch_snapshot(monkeypatch, tmp_path, entrypoint):
         },
         sandbox=tmp_path,
     )
+    config_path = tmp_path / module.U.create_run_id() / "sglang_fp8_rollout.yaml"
+    if entrypoint != "prepare":
+        recording.pseudo_files.append(config_path.read_text())
     snapshot = REPO_ROOT / "tests/snapshots/launch_scripts/glm53-lora" / f"{entrypoint}.txt"
     formatted = "\n".join(line.rstrip() for line in format_recording(recording, sandbox=tmp_path).splitlines())
     assert_matches_snapshot(snapshot, formatted.rstrip() + "\n", f"GLM-5.3::{entrypoint}")
@@ -47,7 +50,7 @@ def test_glm53_defaults_use_bf16_for_training_and_the_official_fp8_rollout():
     assert args.sglang_mem_fraction_static == 0.8
 
 
-def test_explicit_checkpoint_paths_and_engine_size_are_preserved(tmp_path):
+def test_explicit_checkpoint_paths_and_engine_size_are_preserved(monkeypatch, tmp_path):
     module = import_launch_script(_SCRIPT)
     args = module.ScriptArgs(
         model_name="GLM-5.3",
@@ -57,12 +60,15 @@ def test_explicit_checkpoint_paths_and_engine_size_are_preserved(tmp_path):
         hf_checkpoint="/models/train",
         fp8_rollout_checkpoint="/models/rollout",
         rollout_num_gpus_per_engine=16,
+        save_dir=str(tmp_path),
     )
     assert args.hf_checkpoint == "/models/train"
     assert args.fp8_rollout_checkpoint == "/models/rollout"
-    flags = module._get_sglang_args(args)
-    assert "--rollout-num-gpus-per-engine 16 " in flags
-    config = _RawSglangConfig.from_yaml(flags.split("--sglang-config ")[1].strip())
+    monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
+    recording = install_command_recorder(monkeypatch)
+    module._train(args)
+    assert "--rollout-num-gpus-per-engine 16 " in "\n".join(recording.commands)
+    config = _RawSglangConfig.from_yaml(tmp_path / args.run_id / "sglang_fp8_rollout.yaml")
     engine = config.models[0]
     assert engine.model_path == "/models/rollout"
     assert engine.update_weights is True

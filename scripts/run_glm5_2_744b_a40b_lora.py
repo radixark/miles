@@ -62,7 +62,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import typer
-import yaml
 
 import miles.utils.external_utils.command_utils as U
 
@@ -161,12 +160,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
             )
         if self.rollout_num_gpus_per_engine == 0:
             self.rollout_num_gpus_per_engine = (
-                (min(8, self.num_gpus_per_node) if self.fp8_rollout else self.total_gpus) if self.is_full_model else 2
+                (min(8, self.num_gpus_per_node) if self.fp8_rollout else self.total_gpus)
+                if self.model_name == "GLM-5.3"
+                else 2
             )
         if self.rollout_num_gpus_per_engine < 1 or self.total_gpus % self.rollout_num_gpus_per_engine != 0:
             raise ValueError("The actor GPU count must be divisible by rollout_num_gpus_per_engine")
         if self.sglang_mem_fraction_static is None:
-            self.sglang_mem_fraction_static = 0.8 if self.is_full_model else 0.5
+            self.sglang_mem_fraction_static = 0.8 if self.model_name == "GLM-5.3" else 0.5
         if self.rollout_max_response_len == 0:
             self.rollout_max_response_len = 4096 if self.task == "dapo-math" else 512
         if self.seq_window == 0 and self.task == "dapo-math":
@@ -179,10 +180,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     @property
     def total_gpus(self) -> int:
         return self.num_nodes * self.num_gpus_per_node
-
-    @property
-    def is_full_model(self) -> bool:
-        return self.model_name in {"GLM-5.2", "GLM-5.3"}
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -220,11 +217,25 @@ def _prepare_download(args: ScriptArgs):
     _download_dataset(args)
 
 
-def _get_lora_args(args: ScriptArgs) -> str:
+def _train(args: ScriptArgs):
+    if args.num_nodes > 1 and not U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"):
+        raise ValueError("Join all nodes to Ray and set MILES_SCRIPT_EXTERNAL_RAY=1 before multi-node training")
+    print(
+        f"[run] GLM5 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.total_gpus} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
+    )
+    load_save_path = f"{args.save_dir}/{args.run_id}"
+
+    ckpt_args = (
+        f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
+        f"--dsa-attention-backend {args.dsa_attention_backend} "
+    )
+
+    # the full rollout config applies to the toys too (same glm_moe_dsa serving path)
+    _is_full = True
     _tm = args.target_modules
     # KEEP_MOE_LORA=0 drops the expert projections (attention-only LoRA)
     _keep_moe_lora = os.environ.get("KEEP_MOE_LORA", "1") != "0"
-    if not _keep_moe_lora:
+    if _is_full and not _keep_moe_lora:
         _tm = ",".join(m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj"))
     # the MOE_LORA_LAYERS subset feature is disabled; warn so it is not silently ignored
     _moe_lora_layers = os.environ.get("MOE_LORA_LAYERS", "").strip()
@@ -236,14 +247,11 @@ def _get_lora_args(args: ScriptArgs) -> str:
     lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{_tm}" '
     if _keep_moe_lora and args.experts_shared_outer_loras:
         lora_args += "--experts-shared-outer-loras "
-    lora_args += "--no-gradient-accumulation-fusion "
+    if _is_full:
+        lora_args += "--no-gradient-accumulation-fusion "
     if args.lora_base_cpu_backup:
         lora_args += "--lora-base-cpu-backup "
 
-    return lora_args
-
-
-def _get_rollout_args(args: ScriptArgs) -> str:
     rollout_args = (
         "--label-key label "
         "--apply-chat-template "
@@ -267,10 +275,12 @@ def _get_rollout_args(args: ScriptArgs) -> str:
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         )
 
-    return rollout_args
+    grpo_args = "--advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00 --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
+    # routing replay only: --use-rollout-indexer-replay is debug-only and its
+    # ~78-128 GB/rank host buffer OOMs the colocate pod
+    r3_args = "--use-rollout-routing-replay " if args.use_r3 else ""
 
-def _get_optimizer_args() -> str:
     optimizer_args = (
         "--optimizer adam --lr 1e-5 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
     )
@@ -278,77 +288,52 @@ def _get_optimizer_args() -> str:
     if os.environ.get("OPTIMIZER_CPU_OFFLOAD", "1") != "0":
         optimizer_args += "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
 
-    return optimizer_args
+    perf_args = _get_parallel_config(args)
 
-
-def _get_sglang_args(args: ScriptArgs) -> str:
-    # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
-    # fits engine=min(8, ngpu) on one node
-    _fp8_full = args.fp8_rollout and args.is_full_model
-    _eng = args.rollout_num_gpus_per_engine
-    _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
-    _cg = 256 if _fp8_full else 64
-    _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
-    sglang_args = (
-        f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
-        f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
-        "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
-        f"--sglang-attention-backend nsa --sglang-nsa-decode-backend {_decode} "
-        f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
-        f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
-        f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
-        "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
-        # required: without it sglang miscounts the gate_up slices -> engine-init crash
-        f"--sglang-max-lora-rank {args.lora_rank} "
-        f"--sglang-lora-backend {args.sglang_lora_backend} "
-    )
+    if _is_full:
+        # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
+        # fits engine=min(8, ngpu) on one node
+        _fp8_full = args.fp8_rollout and args.model_name in {"GLM-5.2", "GLM-5.3"}
+        _eng = (
+            min(8, args.num_gpus_per_node)
+            if _fp8_full and args.model_name == "GLM-5.2"
+            else args.rollout_num_gpus_per_engine
+        )
+        _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
+        _cg = 256 if _fp8_full else 64
+        _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
+        sglang_args = (
+            f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
+            f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
+            "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
+            f"--sglang-attention-backend nsa --sglang-nsa-decode-backend {_decode} "
+            f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
+            f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
+            f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
+            "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
+            # required: without it sglang miscounts the gate_up slices -> engine-init crash
+            f"--sglang-max-lora-rank {args.lora_rank} "
+            f"--sglang-lora-backend {args.sglang_lora_backend} "
+        )
+    else:
+        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
 
     if args.fp8_rollout:
         # Serve the fp8 ckpt via --sglang-config; update_weights stays on so the per-step LoRA
         # sync reaches the engine (the bf16 base sync is already skipped under colocate + backup).
-        config = {
-            "sglang": [
-                {
-                    "name": "default",
-                    "model_path": args.fp8_rollout_checkpoint,
-                    "update_weights": True,
-                    "server_groups": [{"worker_type": "regular", "num_gpus": args.total_gpus}],
-                }
-            ]
-        }
-        sglang_args += f"--sglang-config {U.encode_pseudo_file(yaml.safe_dump(config))} "
-
-    return sglang_args
-
-
-def _train(args: ScriptArgs):
-    if args.num_nodes > 1 and not U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"):
-        raise ValueError("Join all nodes to Ray and set MILES_SCRIPT_EXTERNAL_RAY=1 before multi-node training")
-    print(
-        f"[run] GLM5 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.total_gpus} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
-    )
-    load_save_path = f"{args.save_dir}/{args.run_id}"
-
-    ckpt_args = (
-        f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
-        f"--dsa-attention-backend {args.dsa_attention_backend} "
-    )
-
-    lora_args = _get_lora_args(args)
-
-    rollout_args = _get_rollout_args(args)
-
-    grpo_args = "--advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00 --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
-
-    # routing replay only: --use-rollout-indexer-replay is debug-only and its
-    # ~78-128 GB/rank host buffer OOMs the colocate pod
-    r3_args = "--use-rollout-routing-replay " if args.use_r3 else ""
-
-    optimizer_args = _get_optimizer_args()
-
-    perf_args = _get_parallel_config(args)
-
-    sglang_args = _get_sglang_args(args)
+        sglang_config_path = f"{load_save_path}/sglang_fp8_rollout.yaml"
+        os.makedirs(load_save_path, exist_ok=True)
+        with open(sglang_config_path, "w") as f:
+            f.write(
+                "sglang:\n"
+                "  - name: default\n"
+                f"    model_path: {args.fp8_rollout_checkpoint}\n"
+                "    update_weights: true\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                f"        num_gpus: {args.total_gpus}\n"
+            )
+        sglang_args += f"--sglang-config {sglang_config_path} "
 
     save_args = f"--save-interval 1 --save {load_save_path} "
 
