@@ -21,6 +21,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 from miles.backends.megatron_utils.lora.utils import is_lora_model, save_lora_checkpoint
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER, load_hf_config
@@ -52,13 +53,10 @@ def export_hf_model_direct(
     Same conversion machinery as the weight updater, so export coverage matches
     weight-sync coverage (the bridge silently exports zero weights for specs it has
     no mapping for, e.g. qwen3.5). Collective — all ranks must call it; rank 0 writes.
+    Runs inside ``save_hf_model``'s checkpoint phase, which owns the directory.
     """
     path = Path(path)
     is_writer = torch.distributed.get_rank() == 0
-    if is_writer:
-        path.mkdir(parents=True, exist_ok=True)
-        # A stale marker from an earlier run would vouch for this run's half-written shards.
-        (path / HF_EXPORT_COMPLETE_MARKER).unlink(missing_ok=True)
 
     iterator = HfWeightIteratorDirect(
         args,
@@ -84,21 +82,17 @@ def export_hf_model_direct(
         safetensors.torch.save_file(shard_tensors, path / shard_name)
         del shard_tensors
 
-    try:
-        if is_writer:
-            assert weight_map, f"HF export to {path} produced no weights"
-            base_checkpoint = Path(args.hf_checkpoint)
-            if base_checkpoint.is_dir():
-                for meta_file in base_checkpoint.iterdir():
-                    if _is_hf_metadata_file(meta_file):
-                        shutil.copy2(meta_file, path / meta_file.name)
-            else:
-                logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
-            index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
-            (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
-    finally:
-        # In a finally: rank 0 is the only rank that can fail above.
-        torch.distributed.barrier()
+    if is_writer:
+        assert weight_map, f"HF export to {path} produced no weights"
+        base_checkpoint = Path(args.hf_checkpoint)
+        if base_checkpoint.is_dir():
+            for meta_file in base_checkpoint.iterdir():
+                if _is_hf_metadata_file(meta_file):
+                    shutil.copy2(meta_file, path / meta_file.name)
+        else:
+            logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
+        index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
+        (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
 
 
 @cache
@@ -138,63 +132,45 @@ def save_hf_model(
     should_log = get_parallel_state().effective_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
     path = Path(path if path is not None else args.save_hf.format(rollout_id=rollout_id))
 
-    try:
-        if should_log:
-            logger.info(f"Saving model in HuggingFace format to {path}")
-
+    def write_shards(tmp_dir: Path):
         if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
             # LoRA keeps the bridge (adapter merging).
             hf_config = load_hf_config(args.hf_checkpoint)
             export_hf_model_direct(
                 args,
                 model,
-                path,
+                tmp_dir,
                 model_name=type(hf_config).__name__.lower() if args.model_name is None else args.model_name,
                 quantization_config=getattr(hf_config, "quantization_config", None),
                 megatron_local_weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
             )
         else:
             bridge = _get_hf_bridge(args.hf_checkpoint)
-            path.mkdir(parents=True, exist_ok=True)
-            if torch.distributed.get_rank() == 0:
-                (path / HF_EXPORT_COMPLETE_MARKER).unlink(missing_ok=True)
             with patch_megatron_model(model):
                 # For LoRA models, merge_adapter_weights=True (default) merges
                 # adapter weights into base weights for a standalone HF model.
-                bridge.save_hf_pretrained(model, path=path)
-
-            torch.distributed.barrier()
+                bridge.save_hf_pretrained(model, path=tmp_dir)
             if torch.distributed.get_rank() == 0:
-                if not any(path.glob("*.safetensors")) and not any(path.glob("*.bin")):
+                if not any(tmp_dir.glob("*.safetensors")) and not any(tmp_dir.glob("*.bin")):
                     raise RuntimeError(
                         f"HF export to {path} produced no weight files — the megatron "
                         f"bridge likely has no mapping for this model architecture."
                     )
+        if is_lora_model(model):
+            # adapter-only HF PEFT checkpoint next to the merged model
+            save_lora_checkpoint(model, args, str(tmp_dir / "adapter"))
+        if torch.distributed.get_rank() == 0:
+            # kept for readers that validate pre-existing dirs (is_complete_hf_export)
+            (tmp_dir / HF_EXPORT_COMPLETE_MARKER).touch()
 
+    try:
         if should_log:
-            logger.info(f"Successfully saved merged HuggingFace model to {path}")
+            logger.info(f"Saving model in HuggingFace format to {path}")
+        write_checkpoint_dir(path, write_shards)
+        if should_log:
+            logger.info(f"Successfully saved HuggingFace model to {path}")
     except Exception as e:
         if raise_on_error:
             raise
         if should_log:
             logger.error(f"Failed to save HuggingFace format: {e}")
-        return
-
-    # Additionally save adapter-only checkpoint for LoRA models
-    if is_lora_model(model):
-        try:
-            adapter_path = path / "adapter"
-            if should_log:
-                logger.info(f"Saving LoRA adapter (HF PEFT format) to {adapter_path}")
-            save_lora_checkpoint(model, args, str(adapter_path))
-            if should_log:
-                logger.info(f"Successfully saved LoRA adapter to {adapter_path}")
-        except Exception as e:
-            if raise_on_error:
-                raise
-            if should_log:
-                logger.error(f"Failed to save LoRA adapter: {e}")
-            return
-
-    if torch.distributed.get_rank() == 0:
-        (path / HF_EXPORT_COMPLETE_MARKER).touch()
