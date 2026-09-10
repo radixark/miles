@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
-from miles.utils.external_utils.miles_workbench.naming import CHART_DIR
+from miles.utils.external_utils.miles_workbench.naming import CHART_DIR, object_name
 from miles.utils.external_utils.miles_workbench.options import InstallArgs
 from miles.utils.external_utils.miles_workbench.preflight.rules import LWS_RESOURCE
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -89,7 +89,7 @@ def _rule_entries(rule: dict[str, Any]) -> dict[str, tuple[str, ...]]:
 
 
 def helm_value_overrides(args: InstallArgs) -> list[str]:
-    overrides: list[str] = []
+    overrides: list[str] = ["--set-string", f"objectName={object_name(args.release)}"]
     if not args.rbac:
         overrides += ["--set", "rbac.create=false"]
     if not args.lws:
