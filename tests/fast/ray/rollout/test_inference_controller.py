@@ -1679,3 +1679,21 @@ class TestEndUpdateWeightsTakesFailedCellsOutOfService:
         )
 
         assert (cells["engine-1"].marked_errored, cells["engine-1"].marked_ready) == (0, 0)
+
+
+class TestRemovedWeightUpdateInterruptionGuards:
+    def test_the_controller_exposes_no_lock_taking_suspend_or_injection_entry_point(self) -> None:
+        """Either entry point back on the controller would let a suspend block on the weight-update lock."""
+        for name in ("stop_cell_between_weight_updates", "inject_fault_between_weight_updates"):
+            assert not hasattr(InferenceController, name), name
+
+    def test_the_removed_entry_points_are_not_part_of_the_rpc_surface(self) -> None:
+        """A caller reaching them over RPC is how the cell-operations layer took the lock."""
+        specs = collect_rpc_method_specs(InferenceController)
+
+        assert "stop_cell_between_weight_updates" not in specs
+        assert "inject_fault_between_weight_updates" not in specs
+
+    def test_the_controller_module_no_longer_knows_about_failure_modes(self) -> None:
+        """Only the removed injection entry point needed a FailureMode here; the worker manager owns it now."""
+        assert not hasattr(inference_controller_module, "FailureMode")
