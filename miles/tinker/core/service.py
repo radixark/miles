@@ -394,6 +394,8 @@ class TinkerService:
     async def _evict_model(self, model_id: str, error: str, category: str) -> None:
         """Free a model's slot and fail its pending requests; requires the backend lock."""
         record = self.models.pop(model_id)
+        # the poison belongs to the evicted model's gradient window, not the slot
+        self._poisoned_slots.pop(record.slot, None)
         stream = self.planner.stream(model_id)
         self.planner.remove_stream(model_id)
         for request_id in stream.request_id_by_seq.values():
