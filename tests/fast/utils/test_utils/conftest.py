@@ -23,6 +23,38 @@ def fault_hook_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Faul
     return FaultHookRegistry()
 
 
+class ControlledFaultTimer:
+    def __init__(self, *, interval: float, function: Callable[..., None], kwargs: dict[str, str]) -> None:
+        self.interval = interval
+        self.function = function
+        self.kwargs = kwargs
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def dispatch(self) -> None:
+        self.function(**self.kwargs)
+
+
+@pytest.fixture
+def fault_timers(monkeypatch: pytest.MonkeyPatch) -> list[ControlledFaultTimer]:
+    timers: list[ControlledFaultTimer] = []
+
+    def create(*, interval: float, function: Callable[..., None], kwargs: dict[str, str]) -> ControlledFaultTimer:
+        timer = ControlledFaultTimer(interval=interval, function=function, kwargs=kwargs)
+        timers.append(timer)
+        return timer
+
+    monkeypatch.setattr(fault_hooks.threading, "Timer", create)
+    return timers
+
+
 class RecordingSessionBackend:
     def __init__(self) -> None:
         self.cpu_commands: list[str] = []

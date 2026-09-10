@@ -14,7 +14,7 @@ from miles.utils.test_utils.fault_injector import inject_fault
 logger = logging.getLogger(__name__)
 
 FaultHookName = Literal["trainer_before_all_gather", "trainer_before_weight_send"]
-FaultHookStatus = Literal["armed", "cancelled", "expired", "fired", "failed"]
+FaultHookStatus = Literal["armed", "scheduled", "cancelled", "expired", "fired", "failed"]
 
 
 class FaultHookRequest(FrozenStrictBaseModel):
@@ -23,7 +23,14 @@ class FaultHookRequest(FrozenStrictBaseModel):
     hook: FaultHookName
     mode: Literal["sigkill", "exit", "segfault", "sigstop", "deadlock", "thread_deadlock"]
     lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
+    delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)
     receipt_url: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_delay(self) -> "FaultHookRequest":
+        if self.mode == "thread_deadlock" and self.delay_ms > 0:
+            raise ValueError("Training-thread deadlock requires immediate hook execution")
+        return self
 
 
 class FaultHookRecord(FrozenStrictBaseModel):
@@ -31,6 +38,8 @@ class FaultHookRecord(FrozenStrictBaseModel):
     status: FaultHookStatus
     armed_at: float
     changed_at: float
+    reached_at: float | None = None
+    due_at: float | None = None
     rollout_id: int | None = None
     attempt: int | None = None
 
@@ -51,6 +60,7 @@ class FaultHookRegistry:
         self.instance_id = uuid4().hex
         self._lock = threading.Lock()
         self._records: dict[str, FaultHookRecord] = {}
+        self._timers: dict[str, threading.Timer] = {}
 
     def control(self, command: FaultHookCommand) -> str | FaultHookRecord:
         if command.operation == "inspect":
@@ -73,7 +83,7 @@ class FaultHookRegistry:
                 if existing.request != request:
                     raise ValueError("Fault hook request ID was reused with different parameters")
                 return existing
-            if any(record.status == "armed" for record in self._records.values()):
+            if any(record.status in {"armed", "scheduled"} for record in self._records.values()):
                 raise ValueError("A fault hook is already armed in this process")
             now = time.monotonic()
             record = FaultHookRecord(request=request, status="armed", armed_at=now, changed_at=now)
@@ -91,7 +101,7 @@ class FaultHookRegistry:
                 return record
             if record.request != request:
                 raise ValueError("Fault hook cancellation does not match the original request")
-            if record.status == "armed":
+            if record.status in {"armed", "scheduled"}:
                 record = self._transition(record=record, status="cancelled")
             return record
 
@@ -110,9 +120,46 @@ class FaultHookRegistry:
             )
             if record is None:
                 return
-            record = record.model_copy(update={"rollout_id": rollout_id, "attempt": attempt})
+            now = time.monotonic()
+            record = record.model_copy(
+                update={
+                    "rollout_id": rollout_id,
+                    "attempt": attempt,
+                    "reached_at": now,
+                    "due_at": now + record.request.delay_ms / 1000,
+                }
+            )
+            if record.request.delay_ms > 0:
+                record = self._transition(record=record, status="scheduled")
+                timer = threading.Timer(
+                    interval=min(record.due_at, record.armed_at + record.request.lifetime_seconds) - now,
+                    function=self._fire_scheduled,
+                    kwargs={"request_id": record.request.request_id},
+                )
+                timer.daemon = True
+                self._timers[record.request.request_id] = timer
+                try:
+                    timer.start()
+                except Exception:
+                    logger.exception("Could not schedule fault hook: %s", record.request.request_id)
+                    self._transition(record=record, status="failed")
+                    raise
+                return
             record = self._transition(record=record, status="fired")
 
+        self._execute(record)
+
+    def _fire_scheduled(self, *, request_id: str) -> None:
+        with self._lock:
+            self._expire()
+            record = self._records[request_id]
+            if record.status != "scheduled":
+                return
+            record = self._transition(record=record, status="fired")
+
+        self._execute(record)
+
+    def _execute(self, record: FaultHookRecord) -> None:
         try:
             inject_fault(
                 mode=record.request.mode,
@@ -133,12 +180,14 @@ class FaultHookRegistry:
     def _expire(self) -> None:
         now = time.monotonic()
         for record in tuple(self._records.values()):
-            if record.status == "armed" and now >= record.armed_at + record.request.lifetime_seconds:
+            if record.status in {"armed", "scheduled"} and now >= record.armed_at + record.request.lifetime_seconds:
                 self._transition(record=record, status="expired")
 
     def _transition(self, *, record: FaultHookRecord, status: FaultHookStatus) -> FaultHookRecord:
         updated = record.model_copy(update={"status": status, "changed_at": time.monotonic()})
         self._record(updated)
+        if status not in {"armed", "scheduled"} and (timer := self._timers.pop(record.request.request_id, None)):
+            timer.cancel()
         return updated
 
     def _record(self, record: FaultHookRecord) -> None:
@@ -151,6 +200,8 @@ class FaultHookRegistry:
                 mode=record.request.mode,
                 status=record.status,
                 monotonic_time=record.changed_at,
+                reached_at=record.reached_at,
+                due_at=record.due_at,
                 rollout_id=record.rollout_id,
                 attempt=record.attempt,
             ),

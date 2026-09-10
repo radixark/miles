@@ -153,8 +153,10 @@ class FaultHookEvent(EventBase):
     instance_id: str
     hook: str
     mode: str
-    status: Literal["armed", "cancelled", "expired", "fired", "failed"]
+    status: Literal["armed", "scheduled", "cancelled", "expired", "fired", "failed"]
     monotonic_time: float
+    reached_at: float | None = None
+    due_at: float | None = None
     rollout_id: int | None = None
     attempt: int | None = None
 

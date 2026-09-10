@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from tests.fast.utils.test_utils.conftest import ControlledFaultTimer
 
 from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.audit_utils.event_logger.models import FaultHookEvent
@@ -9,6 +10,83 @@ from miles.utils.test_utils.fault_hooks import FaultHookRegistry, FaultHookReque
 
 
 class TestFaultHookRegistry:
+    @pytest.mark.parametrize("outcome", ["fire", "cancel", "expire"])
+    def test_delayed_dispatch_respects_cancellation_and_expiry(
+        self,
+        fault_hook_registry: FaultHookRegistry,
+        fault_timers: list[ControlledFaultTimer],
+        monkeypatch: pytest.MonkeyPatch,
+        outcome: str,
+        tmp_path: Path,
+    ) -> None:
+        """Arrival returns before dispatch and a winning cancellation or expiry prevents injection."""
+        registry = fault_hook_registry
+        now = 10.0
+        monkeypatch.setattr(fault_hooks.time, "monotonic", lambda: now)
+        request = FaultHookRequest(
+            request_id="delayed",
+            instance_id=registry.instance_id,
+            hook="trainer_before_all_gather",
+            mode="exit",
+            delay_ms=500,
+            lifetime_seconds=2,
+        )
+        injections: list[str] = []
+
+        def terminate(*, mode: str, request_id: str, receipt_url: str | None) -> None:
+            injections.append(request_id)
+            assert registry.cancel(request).status == "fired"
+            raise SystemExit(1)
+
+        monkeypatch.setattr(fault_hooks, "inject_fault", terminate)
+        registry.arm(request)
+        now = 11.0
+        registry.reach(hook=request.hook, rollout_id=7, attempt=2)
+        registry.reach(hook=request.hook, rollout_id=8, attempt=0)
+        assert injections == []
+        assert len(fault_timers) == 1
+        assert fault_timers[0].interval == 0.5
+        assert fault_timers[0].started
+        scheduled = registry.read(request_id=request.request_id, instance_id=registry.instance_id)
+        assert scheduled.status == "scheduled"
+        assert scheduled.reached_at == 11.0
+        assert scheduled.due_at == 11.5
+        assert registry.arm(request) == scheduled
+
+        now = 11.5
+        if outcome == "fire":
+            with pytest.raises(SystemExit):
+                fault_timers[0].dispatch()
+            assert injections == [request.request_id]
+        else:
+            if outcome == "cancel":
+                assert registry.cancel(request).status == "cancelled"
+            else:
+                now = 12.0
+            fault_timers[0].dispatch()
+            assert injections == []
+
+        expected = {"fire": "fired", "cancel": "cancelled", "expire": "expired"}[outcome]
+        final = registry.read(request_id=request.request_id, instance_id=registry.instance_id)
+        assert final.status == expected
+        assert final.rollout_id == 7
+        assert final.attempt == 2
+        assert fault_timers[0].cancelled
+        events = [event for event in read_events(tmp_path) if isinstance(event, FaultHookEvent)]
+        assert events[-1].status == expected
+        assert events[-1].due_at == 11.5
+
+    def test_delayed_thread_deadlock_is_rejected(self, fault_hook_registry: FaultHookRegistry) -> None:
+        """A timer-thread deadlock must not be presented as a training-thread deadlock."""
+        with pytest.raises(ValueError, match="immediate"):
+            FaultHookRequest(
+                request_id="wrong-thread",
+                instance_id=fault_hook_registry.instance_id,
+                hook="trainer_before_all_gather",
+                mode="thread_deadlock",
+                delay_ms=1,
+            )
+
     @pytest.mark.parametrize("arm_first", [False, True])
     @pytest.mark.parametrize("mode", ["exit", "sigstop", "deadlock", "thread_deadlock"])
     def test_cancelled_request_cannot_rearm_or_fire(
