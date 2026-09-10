@@ -3,7 +3,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-import ray
 import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -17,15 +16,8 @@ from miles.ray.rollout.train_data_conversion import (
     split_train_data_by_dp_raw,
     split_train_data_by_dp_scheduled_raw,
 )
-from miles.utils import object_store
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _ray_minicluster(ray_local_mode):
-    """split_train_data_by_dp uses ray.put(...) so we need Ray."""
-    yield
 
 
 # ----------------------------- convert_samples_to_train_data -----------------------------
@@ -680,11 +672,6 @@ class TestPostProcessRewardsProperties:
 
 
 class TestSplitTrainDataByDp:
-    @pytest.fixture(autouse=True)
-    def _init_object_store(self):
-        """split_train_data_by_dp puts through the object store singleton."""
-        object_store.init_instance(make_args())
-
     def test_strided_partition_when_balance_data_off(self):
         args = make_args(balance_data=False)
         data = {
@@ -695,8 +682,7 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1, 1]] * 4,
             "sample_indices": [0, 1, 2, 3],
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(args, data, {"dp_size": 2})
         # stride: dp=0 takes [0, 2], dp=1 takes [1, 3]
         assert list(parts[0]["partition"]) == [0, 2]
         assert list(parts[1]["partition"]) == [1, 3]
@@ -713,8 +699,7 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1] * n for n in (1, 2, 3, 4)],
             "sample_indices": [0, 1, 2, 3],
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(args, data, {"dp_size": 2})
         sizes = [len(p["tokens"]) for p in parts]
         assert max(sizes) - min(sizes) <= 1
 
@@ -730,8 +715,7 @@ class TestSplitTrainDataByDp:
             "rollout_log_probs": [[-0.1], [-0.2]],
             "round_number": [1, 2],
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(args, data, {"dp_size": 2})
         assert "rollout_log_probs" in parts[0]
         assert "round_number" in parts[0]
 
@@ -748,8 +732,7 @@ class TestSplitTrainDataByDp:
             "raw_reward": [9.0, 8.0, 7.0, 6.0],
             "dynamic_global_batch_size": 4,
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(args, data, {"dp_size": 2})
         for p in parts:
             assert p["raw_reward"] == [9.0, 8.0, 7.0, 6.0]
             assert p["dynamic_global_batch_size"] == 4
@@ -766,8 +749,7 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1]] * n,
             "sample_indices": list(range(n)),
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 4})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(args, data, {"dp_size": 4})
         all_indices = sorted(i for p in parts for i in p["partition"])
         assert all_indices == list(range(n))
 
