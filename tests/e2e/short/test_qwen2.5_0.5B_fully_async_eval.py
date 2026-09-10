@@ -4,7 +4,9 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "eval", "fully-async"])
+register_cuda_ci(
+    est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "eval", "fully-async"], hardware=["hopper", "blackwell"]
+)
 register_rocm_ci(est_time=400, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "eval", "fully-async"])
 
 FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
@@ -88,7 +90,10 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test "
+    ci_args = (
+        "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.4 "
+        "--ci-metric-checker-expect-num 3 "
+    )
 
     misc_args = (
         "--attention-dropout 0.0 "

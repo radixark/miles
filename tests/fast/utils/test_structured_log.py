@@ -152,18 +152,25 @@ class TestPruneForLog:
 
 
 class TestLogStructured:
-    def test_emits_ft_prefixed_logfmt_via_given_method(self, caplog):
-        """log_structured emits one 'ft '-prefixed logfmt line through the passed logger method."""
+    def test_emits_tag_prefixed_logfmt_via_given_method(self, caplog):
+        """log_structured prefixes the logfmt line with the caller-supplied tag."""
         logger = logging.getLogger("t_emit")
         with caplog.at_level(logging.INFO, logger="t_emit"):
-            log_structured(logger.info, op="execute", phase="start", cell=1, fn="train")
+            log_structured(logger.info, tag="ft", op="execute", phase="start", cell=1, fn="train")
         assert caplog.messages == ["ft op=execute phase=start cell=1 fn=train"]
+
+    def test_no_tag_emits_bare_logfmt(self, caplog):
+        """Without a tag the line is pure logfmt with no prefix."""
+        logger = logging.getLogger("t_no_tag")
+        with caplog.at_level(logging.INFO, logger="t_no_tag"):
+            log_structured(logger.info, op="execute", phase="start")
+        assert caplog.messages == ["op=execute phase=start"]
 
     def test_uses_the_level_of_the_passed_method(self, caplog):
         """The record's level is that of the bound method passed (warning here)."""
         logger = logging.getLogger("t_level")
         with caplog.at_level(logging.DEBUG, logger="t_level"):
-            log_structured(logger.warning, op="x")
+            log_structured(logger.warning, tag="ft", op="x")
         assert caplog.records[0].levelno == logging.WARNING
 
     def test_exc_info_is_forwarded(self, caplog):
@@ -173,14 +180,14 @@ class TestLogStructured:
             try:
                 raise ValueError("boom")
             except ValueError:
-                log_structured(logger.error, op="x", exc_info=True)
+                log_structured(logger.error, tag="ft", op="x", exc_info=True)
         assert caplog.records[0].exc_info[0] is ValueError
 
     def test_stacklevel_points_to_caller_not_helper(self, caplog):
         """stacklevel=2 makes the record's filename the caller's, not structured_log.py."""
         logger = logging.getLogger("t_stack")
         with caplog.at_level(logging.INFO, logger="t_stack"):
-            log_structured(logger.info, op="x")
+            log_structured(logger.info, tag="ft", op="x")
         assert caplog.records[0].filename == "test_structured_log.py"
 
 
@@ -207,8 +214,8 @@ class TestWithLogs:
         """A sync call emits phase=start then phase=end carrying the auto-detected class and method."""
         with caplog.at_level(logging.INFO):
             assert FakeActor().train() == 42
-        assert caplog.messages[0] == "ft cls=FakeActor fn=train phase=start"
-        assert caplog.messages[1].startswith("ft cls=FakeActor fn=train phase=end ok=true elapsed_s=")
+        assert caplog.messages[0] == "actor cls=FakeActor fn=train phase=start"
+        assert caplog.messages[1].startswith("actor cls=FakeActor fn=train phase=end ok=true elapsed_s=")
 
     def test_class_is_read_from_the_runtime_instance(self, caplog):
         """The cls field reflects the actual runtime instance, not where the method was defined."""
@@ -218,16 +225,16 @@ class TestWithLogs:
 
         with caplog.at_level(logging.INFO):
             SubActor().train()
-        assert caplog.messages[0] == "ft cls=SubActor fn=train phase=start"
+        assert caplog.messages[0] == "actor cls=SubActor fn=train phase=start"
 
     def test_exception_logs_end_not_ok_with_exc_info_and_reraises(self, caplog):
         """On exception the end line is ok=false with the traceback, and the error propagates."""
         with caplog.at_level(logging.INFO):
             with pytest.raises(ValueError, match="boom"):
                 FakeActor().update_weights()
-        assert caplog.messages[0] == "ft cls=FakeActor fn=update_weights phase=start"
+        assert caplog.messages[0] == "actor cls=FakeActor fn=update_weights phase=start"
         end = caplog.records[1]
-        assert end.getMessage().startswith("ft cls=FakeActor fn=update_weights phase=end ok=false elapsed_s=")
+        assert end.getMessage().startswith("actor cls=FakeActor fn=update_weights phase=end ok=false elapsed_s=")
         assert end.levelno == logging.ERROR
         assert end.exc_info[0] is ValueError
 
@@ -235,8 +242,8 @@ class TestWithLogs:
         """An async call emits the same start/end pair after the coroutine completes."""
         with caplog.at_level(logging.INFO):
             assert asyncio.run(FakeActor().send_ckpt()) == "done"
-        assert caplog.messages[0] == "ft cls=FakeActor fn=send_ckpt phase=start"
-        assert caplog.messages[1].startswith("ft cls=FakeActor fn=send_ckpt phase=end ok=true elapsed_s=")
+        assert caplog.messages[0] == "actor cls=FakeActor fn=send_ckpt phase=start"
+        assert caplog.messages[1].startswith("actor cls=FakeActor fn=send_ckpt phase=end ok=true elapsed_s=")
 
     def test_async_cancellation_logs_cancelled_at_info_and_reraises(self, caplog):
         """Cancelling an async call emits an info end line with cancelled=true and no traceback."""
@@ -251,7 +258,7 @@ class TestWithLogs:
         with caplog.at_level(logging.INFO):
             asyncio.run(run())
         end = caplog.records[1]
-        assert end.getMessage().startswith("ft cls=FakeActor fn=wait_forever phase=end ok=false elapsed_s=")
+        assert end.getMessage().startswith("actor cls=FakeActor fn=wait_forever phase=end ok=false elapsed_s=")
         assert end.getMessage().endswith("cancelled=true")
         assert end.levelno == logging.INFO
         assert not end.exc_info

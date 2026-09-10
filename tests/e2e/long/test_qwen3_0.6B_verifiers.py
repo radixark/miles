@@ -1,6 +1,7 @@
 import math
 import os
 import shutil
+import site
 import sys
 from collections import Counter
 from pathlib import Path
@@ -11,7 +12,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["short"])
+register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
 
 MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"
@@ -31,7 +32,8 @@ CODE_GOLF_DIR = RUN_DIR / "environments" / "code_golf_v1"
 def prepare():
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {RUN_DIR}")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
-    U.exec_command_cpu(f"uv venv --clear --python {sys.executable} --system-site-packages {VERIFIERS_VENV}")
+    U.exec_command_cpu(f"uv venv --clear --seed --python {sys.executable} --system-site-packages {VERIFIERS_VENV}")
+    (VERIFIERS_SITE_PACKAGES / "launcher-site.pth").write_text("\n".join(site.getsitepackages()) + "\n")
     U.exec_command_cpu(
         f"{VERIFIERS_VENV}/bin/python -m pip install "
         f"-r {U.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
@@ -60,7 +62,7 @@ def prepare():
 
 def execute():
     config_path = RUN_DIR / "code-golf.toml"
-    config_path.write_text('[taskset]\nid = "code-golf-v1"\n')
+    config_path.write_text('[taskset]\nid = "code-golf-v1"\n\n[timeout]\nrollout = 300\n')
     dump_dir = RUN_DIR / "dump"
 
     train_args = " ".join(
@@ -113,6 +115,7 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
             "MILES_USE_LEGACY_ROLLOUT_V1": "1",
+            "VF_LOG_LEVEL": "INFO",
             "PYTHONPATH": (
                 f"{VERIFIERS_SITE_PACKAGES}:{CODE_GOLF_DIR}:{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}"
             ),

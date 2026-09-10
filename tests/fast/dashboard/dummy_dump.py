@@ -43,7 +43,7 @@ from miles.ray.rollout.train_data_conversion import (
     split_train_data_by_dp_raw,
 )
 from miles.utils.train_dump_utils import save_debug_train_data_for_rank
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 @dataclass
@@ -70,6 +70,7 @@ def dump_dummy_run(
     with_eval: bool = True,
     with_tokenizer: bool = True,
     remove_sample_indices: tuple[int, ...] = (),
+    duplicate_first_sample_index: bool = False,
     seed: int = 0,
 ) -> DummyRunTruth:
     """``remove_sample_indices`` marks the given within-step positions as
@@ -95,6 +96,9 @@ def dump_dummy_run(
             )
             for i in range(n)
         ]
+        if duplicate_first_sample_index:
+            samples[1].index = samples[0].index
+            samples[1].reward = samples[0].reward
         for sample in samples[:2]:
             sample.metadata["messages"] = _dummy_messages(sample)
         save_debug_rollout_data(args, samples, rollout_id=rollout_id, evaluation=False)
@@ -169,7 +173,15 @@ def _make_sample(
     # every third sample is agentic-shaped: multi-turn (mixed weight versions
     # under fully async) with a chat prompt carrying tool messages
     agentic = index % 3 == 0
-    versions = [str(index % 3), str(index % 3 + 1)] if agentic else [str(index % 3)]
+    total_length = prompt_length + response_length
+    if agentic:
+        split = prompt_length + response_length // 2
+        versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan(str(index % 3), prompt_length, split)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan(str(index % 3 + 1), split, total_length)]),
+        ]
+    else:
+        versions = [WeightVersionsPerCall(spans=[WeightVersionSpan(str(index % 3), prompt_length, total_length)])]
     prompt: str | list = "What is 1+1?"
     if agentic:
         prompt = [

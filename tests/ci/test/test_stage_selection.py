@@ -20,14 +20,19 @@ def _registration(
     *,
     labels: list[str] | None = None,
     disabled: str | None = None,
+    hardware: list[str] | None = None,
 ) -> CIRegistry:
     backend = HWBackend.ROCM if suite == "stage-c-4-gpu-mi350" else HWBackend.CUDA
+    if hardware is None and backend is HWBackend.CUDA:
+        # Mirror the home-stage invariant the registry enforces.
+        hardware = ["blackwell"] if suite.endswith("-b200") else ["hopper"]
     return CIRegistry(
         backend=backend,
         filename=filename,
         est_time=1,
         suite=suite,
         labels=["precision"] if labels is None else labels,
+        hardware=hardware or [],
         disabled=disabled,
     )
 
@@ -77,7 +82,7 @@ def test_docs_tooling_and_cpu_only_tests_skip_every_gpu_stage():
         CIRegistry(HWBackend.CPU, cpu_test, 1, "stage-a-cpu"),
     ]
     changed_files = (
-        ChangedFile("M", ("docs/ci/00-stage.md",)),
+        ChangedFile("M", ("docs/developer/ci/00-stage.md",)),
         ChangedFile("M", ("examples/README.md",)),
         ChangedFile("M", (".pre-commit-config.yaml",)),
         ChangedFile("M", ("scripts/tools/sync_example_docs.py",)),
@@ -128,6 +133,19 @@ def test_broad_scope_adds_every_runnable_stage():
     assert skipped == PR_GPU_STAGES - {"stage-b-2-gpu-h200", "stage-c-8-gpu-h100"}
 
 
+@pytest.mark.parametrize("changed_path", ["docs/index.md", "tests/e2e/test_hopper.py"])
+def test_blackwell_only_scope_keeps_b200_for_non_blackwell_changes(changed_path):
+    registrations = [
+        _registration("tests/e2e/test_hopper.py", "stage-c-8-gpu-h200", hardware=["hopper"]),
+        _registration("tests/e2e/test_blackwell.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
+    ]
+    changed_files = (ChangedFile("M", (changed_path,)),)
+
+    skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-blackwell-only",)))
+
+    assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200"}
+
+
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():
     registrations = [_registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200")]
     changed_files = (ChangedFile("M", ("docs/index.md",)),)
@@ -174,7 +192,7 @@ def test_changed_labeled_test_without_its_label_keeps_current_selection_semantic
 def test_cli_publishes_all_gpu_stages_for_docs_diff(tmp_path):
     repo_root = Path(__file__).resolve().parents[3]
     diff_path = tmp_path / "changed-files.z"
-    diff_path.write_bytes(b"M\0docs/ci/00-stage.md\0")
+    diff_path.write_bytes(b"M\0docs/developer/ci/00-stage.md\0")
     output_path = tmp_path / "github-output"
     env = os.environ.copy()
     env.update(

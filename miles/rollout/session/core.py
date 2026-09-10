@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
@@ -245,11 +246,17 @@ class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
     def __init__(
-        self, backend, registry: SessionRegistry, args, session_server_instance_id=None, *, use_addition_r3=False
+        self,
+        backend,
+        registry: SessionRegistry,
+        config: SessionServerConfig,
+        session_server_instance_id=None,
+        *,
+        use_addition_r3=False,
     ):
         self.backend = backend
         self.registry = registry
-        self.args = args
+        self.config = config
         self.instance_id = session_server_instance_id
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
@@ -320,7 +327,7 @@ class SessionCore:
             return _samples_response(encode_samples([], metadata, empty_reason="no_records"))
         try:
             samples = compute_samples_from_openai_records(
-                self.args,
+                self.config,
                 session.records,
                 tokenizer,
                 accumulated_token_ids=metadata.get("accumulated_token_ids"),
@@ -332,7 +339,7 @@ class SessionCore:
             if not samples:
                 return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
             if self.use_addition_r3:
-                samples = [merge_samples_with_addition_r3(self.args, samples, session.records, tokenizer)]
+                samples = [merge_samples_with_addition_r3(self.config, samples, session.records, tokenizer)]
             else:
                 samples = [merge_samples(samples, tokenizer)]
         except (AssertionError, ValueError) as exc:
@@ -373,7 +380,7 @@ class SessionCore:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.args, self.registry.tito_tokenizer
+                body, self.config, self.registry.tito_tokenizer
             )
 
             request_messages = request_body.get("messages", [])
@@ -405,7 +412,12 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, _, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        assistant_message = tito_tokenizer.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=completion_token_ids,
+        )
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
@@ -421,8 +433,12 @@ class SessionCore:
                 )
                 return _chat_client_response(result, response, client_stream)
 
-            session.update_pretokenized_state(
+            stored_request_messages = tito_tokenizer.preserve_server_message_state(
+                session.messages,
                 request_messages,
+            )
+            session.update_pretokenized_state(
+                stored_request_messages,
                 assistant_message,
                 prompt_token_ids=prompt_token_ids,
                 completion_token_ids=completion_token_ids,

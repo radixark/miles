@@ -33,7 +33,7 @@ miles/
 ├── tools/                    # checkpoint converters, quantizers, profilers
 ├── tests/                    # fast / fast-gpu / e2e / ci / manual (see Running CI)
 ├── docker/                   # Dockerfile, Dockerfile.rocm, build.py, patches
-├── docs/                     # the source of this site, plus docs/ci internals
+├── docs/                     # the source of this site, plus docs/developer/ci internals
 └── .claude/                  # rules and skills (see What lives in .claude)
 ```
 
@@ -116,17 +116,17 @@ binds that central document. Editing such a file means updating its documentatio
 same change, and editing the document means finding the files that name it.
 
 ```python
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 ```
 
 Current sentinels, so you know when you have walked into one:
 
 | File | Governing document |
 |---|---|
-| `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/ci/00-stage.md`, `docs/ci/01-label.md` |
-| `.github/workflows/bot-bump-miles-version.yml`, `bot-cherry-pick.yml`, `release-*.yml` | `docs/ci/04-release.md` |
-| `docker/build.py` | `docs/ci/02-docker-build.md` |
-| `tests/ci/metric_history/**` | `docs/ci/03-metric-history-gate.md` |
+| `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/developer/ci/00-stage.md`, `docs/developer/ci/01-label.md` |
+| `.github/workflows/bot-bump-miles-version.yml`, `bot-cherry-pick.yml`, `release-*.yml` | `docs/developer/ci/04-release.md` |
+| `docker/build.py` | `docs/developer/ci/02-docker-build.md` |
+| `tests/ci/metric_history/**` | `docs/developer/ci/03-metric-history-gate.md` |
 
 Grep for `doc-dev:` before editing anything under `.github/workflows/` or `docker/`. A
 change that lands the code and leaves the document stale is the failure mode this
@@ -157,12 +157,13 @@ from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
     est_time=600,                 # rough seconds; balances shards and sets the per-file timeout
-    suite="stage-c-4-gpu-h200",   # the hardware bucket that runs it
+    suite="stage-c-4-gpu-h200",   # the home stage that runs it by default
     labels=["megatron"],          # required for CUDA and ROCm tests
+    hardware=["hopper", "blackwell"],  # required CUDA generations
 )
 ```
 
-`register_cpu_ci` allows empty labels for always-on CPU coverage; `register_cuda_ci` and `register_rocm_ci` require a non-empty domain-label list. All three also accept `nightly=True` (nightly, weekly, and release cadence only) and `disabled="<reason + issue link>"` (reported as skipped rather than deleted). The calls are parsed from the AST, so they must be top-level, literal, and unaliased.
+`register_cpu_ci` allows empty labels for always-on CPU coverage; `register_cuda_ci` and `register_rocm_ci` require a non-empty domain-label list. `register_cuda_ci` also requires a non-empty `hardware` list, with the generation matching its home `suite` first. All three accept `nightly=True` (nightly, weekly, and release cadence only) and `disabled="<reason + issue link>"` (reported as skipped rather than deleted). The calls are parsed from the AST, so they must be top-level, literal, and unaliased.
 
 The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e` and `tests/ci` for
 `test_*.py`, and a file outside `tests/fast/` with no registration fails collection with
@@ -272,7 +273,7 @@ map it to a host.
 
 * **Quick questions:** the `#miles-rl` channel of the [SGLang Slack](https://slack.sglang.ai).
 * **Design discussions:** a GitHub Discussion, or an Issue labeled `discussion`.
-* **CI internals:** [Stage](/ci/00-stage) (stages), [Labels](/ci/01-label) (label
-  semantics), [Docker build](/ci/02-docker-build) (images),
-  [Metric history & regression gate](/ci/03-metric-history-gate) (metric gate), and the
-  [CI Contributor Guide](/ci/contributor-guide) for the long-form version of this section.
+* **CI internals:** [Stage](/developer/ci/00-stage) (stages), [Labels](/developer/ci/01-label) (label
+  semantics), [Docker build](/developer/ci/02-docker-build) (images),
+  [Metric history & regression gate](/developer/ci/03-metric-history-gate) (metric gate), and the
+  [CI Contributor Guide](/developer/ci/contributor-guide) for the long-form version of this section.

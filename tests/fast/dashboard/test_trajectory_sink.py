@@ -4,7 +4,7 @@ from miles.dashboard import hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, TrajectorySink
 from miles.dashboard.store import Stream, TrajectoryEvent, TrajectoryEventKind
 from miles.utils.lifecycle import TrajectoryLifecycle
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 class FakeRemoteMethod:
@@ -31,7 +31,13 @@ def clean_sink():
 
 
 def _sample(index=7, group=2, versions=("3", "4")):
-    return Sample(index=index, group_index=group, weight_versions=list(versions))
+    return Sample(
+        index=index,
+        group_index=group,
+        weight_versions=[
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
+        ],
+    )
 
 
 def _pushed(handle):
@@ -60,6 +66,38 @@ def test_attempt_and_gen_events_carry_identity_and_version():
         assert (event.sample_index, event.group_index) == (7, 2)
         assert event.weight_version == "4"
     assert _pushed(handle)[-1].detail == Sample.Status.PENDING.value
+
+
+def test_event_without_weight_version_spans_uses_empty_version():
+    """A sample whose generation reported no weight version is still emitted, with an empty version."""
+    handle = FakeHandle()
+    sink = TrajectorySink(handle)
+
+    sink.attempt_start(_sample(versions=()))
+    sink.flush()
+
+    [event] = _pushed(handle)
+    assert (event.kind, event.sample_index, event.weight_version) == (TrajectoryEventKind.ATTEMPT_START, 7, "")
+
+
+def test_event_uses_last_span_from_multi_span_generation_call():
+    """The reported version is the last span of the last call, not that call's first span."""
+    handle = FakeHandle()
+    sample = Sample(
+        index=7,
+        group_index=2,
+        weight_versions=[
+            WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 1)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan("4", 1, 2), WeightVersionSpan("5", 2, 3)]),
+        ],
+    )
+    sink = TrajectorySink(handle)
+
+    sink.gen_start(sample)
+    sink.flush()
+
+    [event] = _pushed(handle)
+    assert event.weight_version == "5"
 
 
 def test_spans_use_explicit_timestamps_and_turns():

@@ -6,8 +6,10 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -24,6 +26,15 @@ from tests.ci.metric_history.gate import evaluate_gate
 # Env var the training process reads to find the per-attempt record directory; kept
 # in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
 CI_GATE_RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
+
+# Accelerator memory is freed by the driver asynchronously after the holders are killed.
+_REAP_SETTLE_SECONDS = 10.0
+_REAP_POLL_SECONDS = 1.0
+
+# Both patterns end in "::" on purpose: a test path under tests/e2e/sglang/ contains
+# "sglang", so a bare pattern would make the reaper kill the process it is preparing for.
+_LEFTOVER_PATTERNS = ("sglang::", "ray::")
+_LEFTOVER_COMMAND_CHARS = 120
 
 
 def _sanitize_for_path(name: str) -> str:
@@ -141,6 +152,28 @@ def _kill_process_tree(pgid: int):
         pass
     except Exception as e:
         logger.warning(f"Error killing process group {pgid}: {e}")
+
+
+FAILURE_TAIL_BYTES = 8_192
+FAILURE_TAIL_LINES = 60
+
+
+def _drain_child_output(stream, tail: deque) -> None:
+    """Pass a child's output straight through, keeping only its last bytes for the failure summary."""
+    held = 0
+    while chunk := stream.read(65_536):
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+        tail.append(chunk)
+        held += len(chunk)
+        while tail and held - len(tail[0]) >= FAILURE_TAIL_BYTES:
+            held -= len(tail.popleft())
+
+
+def _failure_tail(chunks: deque) -> str:
+    text = b"".join(chunks)[-FAILURE_TAIL_BYTES:].decode("utf-8", errors="replace")
+    lines = [line for line in text.splitlines() if line.strip()]
+    return "\n".join(lines[-FAILURE_TAIL_LINES:])
 
 
 def run_with_timeout(
@@ -278,6 +311,7 @@ def run_gate_hook(
     *,
     store,
     registry: CIRegistry,
+    executing_suite: str,
     write_baseline: bool,
     provenance: RunProvenance,
     now_iso: str | None = None,
@@ -295,7 +329,7 @@ def run_gate_hook(
     this round.
     """
     try:
-        result = evaluate_gate(filename, merged_record_path, store, registry=registry)
+        result = evaluate_gate(filename, merged_record_path, store, executing_suite=executing_suite, registry=registry)
 
         if write_baseline:
             if not result.metrics:
@@ -386,8 +420,10 @@ def run_unittest_files(
     max_attempts: int = 2,
     retry_wait_seconds: int = 60,
     gate_store=None,
+    gate_executing_suite: str = "",
     gate_write_baseline: bool = False,
     gate_provenance: RunProvenance | None = None,
+    reap_leftovers: bool = False,
 ):
     """
     Run a list of test files.
@@ -407,6 +443,9 @@ def run_unittest_files(
                     a non-baseline-writing run, which only logs a shadow verdict.
         gate_provenance: RunProvenance for the gate write; defaults to
                     `gate_provenance_from_env()` when None.
+        reap_leftovers: If True, kill leftover engine and ray processes before every
+                    attempt. Off by default because reaping is process-wide: it would
+                    also reach the caller when this function runs inside a test.
     """
     tic = time.perf_counter()
     success = True
@@ -424,9 +463,11 @@ def run_unittest_files(
 
         process = None
         output_lines = []
+        output_tail: deque = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
         def run_one_file(filename, capture_output=False, record_dir=None, _i=i, _estimated_time=estimated_time):
-            nonlocal process, output_lines
+            nonlocal process, output_lines, output_tail
+            output_tail = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
             full_path = os.path.join(os.getcwd(), filename)
             logger.info(f".\n.\nBegin ({_i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n")
@@ -454,15 +495,19 @@ def run_unittest_files(
                 for line in process.stdout:
                     logger.info(line.rstrip())
                     output_lines.append(line)
+                    output_tail.append(line.encode("utf-8", errors="replace"))
                 process.wait()
             else:
+                # Chunked pass-through, not a line loop: a GPU suite writes over a hundred megabytes
+                # here and the runner's own stdout stays the destination.
                 process = subprocess.Popen(
                     ["python3", full_path],
-                    stdout=None,
-                    stderr=None,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     start_new_session=True,
                     env=child_env,
                 )
+                _drain_child_output(process.stdout, output_tail)
                 process.wait()
 
             elapsed = time.perf_counter() - file_tic
@@ -479,6 +524,9 @@ def run_unittest_files(
         passing_record_path: str | None = None
 
         while attempt <= (max_attempts if enable_retry else 1):
+            if reap_leftovers:
+                reap_leaked_accelerator_processes()
+
             if attempt > 1:
                 logger.info(f"\n[CI Retry] Attempt {attempt}/{max_attempts} for {filename}\n")
                 was_retried = True
@@ -552,7 +600,7 @@ def run_unittest_files(
                         logger.info(f"\nFAILED: {filename} returned exit code {ret_code}\n")
                         if was_retried:
                             retried_tests.append((filename, attempt, "failed"))
-                        failed_tests.append((filename, f"exit code {ret_code}"))
+                        failed_tests.append((filename, f"exit code {ret_code}", _failure_tail(output_tail)))
                         break
 
                 except TimeoutError:
@@ -564,7 +612,7 @@ def run_unittest_files(
                     logger.info(f"\nTIMEOUT: {filename} after {effective_timeout} seconds\n")
                     if was_retried:
                         retried_tests.append((filename, attempt, "timeout"))
-                    failed_tests.append((filename, f"timeout after {effective_timeout}s"))
+                    failed_tests.append((filename, f"timeout after {effective_timeout}s", _failure_tail(output_tail)))
                     break
                 except Exception:
                     attempt_elapsed = time.perf_counter() - attempt_tic
@@ -600,6 +648,7 @@ def run_unittest_files(
                 passing_record_path,
                 store=gate_store,
                 registry=file,
+                executing_suite=gate_executing_suite,
                 write_baseline=gate_write_baseline,
                 provenance=gate_provenance or gate_provenance_from_env(),
             )
@@ -628,8 +677,13 @@ def run_unittest_files(
             logger.info(f"  {test}")
     if failed_tests:
         logger.info("\nFAILED:")
-        for test, reason in failed_tests:
+        for test, reason, _ in failed_tests:
             logger.info(f"  {test} ({reason})")
+        for test, _, tail in failed_tests:
+            if tail:
+                logger.info(f"\nLast output of {test}:")
+                for line in tail.splitlines():
+                    logger.info(f"  | {line}")
     if retried_tests:
         logger.info("\nRETRIED:")
         for test, attempts, result in retried_tests:
@@ -648,3 +702,75 @@ def run_unittest_files(
         write_github_step_summary(summary)
 
     return 0 if success else -1
+
+
+def reaping_is_isolated() -> bool:
+    # The reap below is process-wide, which is only safe inside CI's per-job pid namespace;
+    # a local run_suite invocation or an externally managed Ray cluster shares the host, and
+    # reaping there kills unrelated Ray/SGLang workloads.
+    return os.environ.get("CI") == "true" and not os.environ.get("MILES_SCRIPT_EXTERNAL_RAY")
+
+
+def reap_leaked_accelerator_processes() -> None:
+    # A finished e2e leaves sglang scheduler processes behind: they are grandchildren of the
+    # test process, so nothing in the ray or engine teardown path reaches them once the test
+    # exits, and they keep holding accelerator memory. The next test file in the same job then
+    # starts on a dirty device and fails while initializing NCCL, which reads as that test
+    # being broken. The workflow only reaps once per job, before the first file.
+    #
+    # The kill is process-wide. That is safe only because every accelerator stage runs in its
+    # own container with its own pid namespace, so nothing outside this job is reachable.
+    for argv in (["ray", "stop", "--force"], *(["pkill", "-9", "-f", p] for p in _LEFTOVER_PATTERNS)):
+        try:
+            subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning(f"Reaping leftovers with {argv[0]} failed: {type(e).__name__}: {e}")
+
+    _wait_until_reaped()
+
+
+def _wait_until_reaped() -> None:
+    # Sleeping a fixed time and moving on cannot tell "the device is clean" from "the kill
+    # missed and the next file is about to start dirty", which is exactly the failure this
+    # whole mechanism exists to stop being misread as a broken test. Poll instead, and say
+    # so loudly when the leftovers outlive the wait.
+    # Checked at least once even with no time budget left: the point is to know, not to wait.
+    deadline = time.monotonic() + _REAP_SETTLE_SECONDS
+    while True:
+        survivors = _surviving_leftover_processes()
+        if not survivors or time.monotonic() >= deadline:
+            break
+        time.sleep(_REAP_POLL_SECONDS)
+
+    # The full window is still spent even once nothing matches: the driver frees the memory
+    # asynchronously after its holders are gone, so an empty process table is not yet a clean
+    # device. Polling is what tells us whether the kill worked, not what shortens the wait.
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+
+    if survivors:
+        logger.warning(
+            f"Leftovers still alive after {_REAP_SETTLE_SECONDS}s: {survivors}. "
+            f"The next test file may start on an occupied device."
+        )
+
+
+def _surviving_leftover_processes() -> list[str]:
+    # Deliberately not pgrep: a process killed with SIGKILL stays in the table as a zombie
+    # until its parent reaps it, and the job's pid 1 is a shell that never will. pgrep counts
+    # those, so it reports every reap as having failed. Read the state column and skip them.
+    try:
+        listing = subprocess.run(["ps", "-eo", "stat=,args="], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning(f"Listing processes to check the reap failed: {type(e).__name__}: {e}")
+        return []
+
+    alive = []
+    for line in listing.stdout.splitlines():
+        state, _, command = line.strip().partition(" ")
+        if state.startswith("Z"):
+            continue
+        if any(pattern in command for pattern in _LEFTOVER_PATTERNS):
+            alive.append(command[:_LEFTOVER_COMMAND_CHARS])
+    return alive

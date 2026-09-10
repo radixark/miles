@@ -89,6 +89,13 @@
         "pages": [
          "models/deepseek/index",
          {
+          "group": "DeepSeek-V4.1",
+          "pages": [
+           "models/deepseek/deepseek-v4-1-flash"
+          ],
+          "expanded": false
+         },
+         {
           "group": "DeepSeek-V4",
           "pages": [
            "models/deepseek/deepseek-v4-flash",

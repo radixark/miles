@@ -269,6 +269,8 @@ def workflow_run(
         "/run-ci",
         "/run-ci ",
         "/run-ci tests/e2e/test_a.py",
+        "/run-on-blackwell extra",
+        "/run-on-",
         "/rerun-test",
         "/rerun-test ",
         "/rerun-test tests/e2e/test_a.py extra",
@@ -293,8 +295,9 @@ def test_command_parser_rejects_non_exact_commands(body):
         HANDLER.parse_command(body)
 
 
-def test_command_parser_accepts_one_exact_command_with_outer_whitespace():
-    assert HANDLER.parse_command(" \n/run-ci-a_B.c-d\t") == HANDLER.AddLabel("run-ci-a_B.c-d")
+@pytest.mark.parametrize("label", ["run-ci-a_B.c-d", "run-on-blackwell"])
+def test_command_parser_accepts_one_exact_command_with_outer_whitespace(label):
+    assert HANDLER.parse_command(f" \n/{label}\t") == HANDLER.AddLabel(label)
 
 
 def test_command_parser_accepts_exact_bypass_fastfail_command():
@@ -574,6 +577,10 @@ def test_checked_in_policy_exposes_exact_labels_and_access_groups():
     assert labels == {f"run-ci-{key}" for key in KNOWN_LABELS} | {
         "bypass-fastfail",
         "run-ci-image",
+        # Scope and dispatch labels: consumed by ci_policy, not KNOWN_LABELS.
+        "run-ci-blackwell-only",
+        "run-on-hopper",
+        "run-on-blackwell",
     }
     assert loaded["groups"]["add_label_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
@@ -726,6 +733,8 @@ def test_repository_writer_clears_only_ci_control_labels(permission):
                 "run-ci",
                 "run-ci-all",
                 "run-ci-historical",
+                "run-on-blackwell",
+                "run-on-hopper",
                 "nightly",
                 "bypass-fastfail",
                 "documentation",
@@ -744,6 +753,8 @@ def test_repository_writer_clears_only_ci_control_labels(permission):
         "run-ci-all",
         "run-ci-historical",
         "run-ci-short",
+        "run-on-blackwell",
+        "run-on-hopper",
     ]
     assert result == {
         "actor_id": ACTOR_ID,
@@ -1476,6 +1487,35 @@ def test_label_mutation_api_failure_is_not_retried(monkeypatch, operation, excep
         else:
             api.remove_label(123, "run-ci-short")
     assert attempts == [15]
+
+
+def test_http_error_names_the_request_and_accepted_permissions(monkeypatch):
+    def urlopen(_request, *, timeout):
+        raise urllib.error.HTTPError(
+            "url", 403, "forbidden", {"X-Accepted-GitHub-Permissions": "pull_requests=write"}, None
+        )
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError) as excinfo:
+        HANDLER.GitHubAPI("secret-token").add_label(123, "run-ci-short")
+    message = str(excinfo.value)
+    assert message == (
+        "GitHub API returned HTTP 403 for POST /repos/radixark/miles/issues/123/labels; "
+        "accepted permissions: pull_requests=write"
+    )
+    assert "secret-token" not in message
+
+
+def test_http_error_without_accepted_permissions_still_names_the_request(monkeypatch):
+    def urlopen(_request, *, timeout):
+        raise urllib.error.HTTPError("url", 404, "missing", {}, None)
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError) as excinfo:
+        HANDLER.GitHubAPI("secret-token").get_permission("actor")
+    assert str(excinfo.value) == (
+        "GitHub API returned HTTP 404 for GET /repos/radixark/miles/collaborators/actor/permission"
+    )
 
 
 def test_unconfirmed_mutation_response_fails_without_rollback():
@@ -2456,7 +2496,10 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
         "- name: Authorize and run the issues command", 1
     )[0]
-    assert "permission-issues: write" in issues_token
+    # Exact indented lines, so a commented-out key cannot satisfy the check.
+    assert "\n          permission-issues: write\n" in issues_token
+    assert "\n          permission-pull-requests: write\n" in issues_token
+    assert "permission-pull-requests: read" not in issues_token
     assert "Require the command App for label commands" in handle_job
     assert handle_job.index("Require the command App for label commands") < handle_job.index(
         "Mint the issues-scoped App token"

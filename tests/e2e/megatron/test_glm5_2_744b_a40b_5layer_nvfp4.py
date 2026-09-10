@@ -8,9 +8,9 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=3600,
-    suite="stage-c-8-gpu-h100",
-    labels=["model-scripts"],
-    disabled="Requires Blackwell/B200 CI runner for NVFP4.",
+    suite="stage-c-8-gpu-b200",
+    labels=["megatron", "model-scripts"],
+    hardware=["blackwell"],
 )
 
 MODEL_ORG = "Pinaster"
