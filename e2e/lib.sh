@@ -1,10 +1,11 @@
 # Shared plumbing for the gateway end-to-end scripts (e2e_test.sh, auto_e2e_test.sh).
 # Source it after setting the knobs; it defines the functions and the teardown trap.
 #
-# Everything a run starts (its own Ray head, the gateway job, the SGLang engines) carries two
-# markers in its environment: MILES_E2E_FAMILY lets a new run sweep a previous run's leftovers,
-# MILES_E2E_RUN keeps a dying run's own teardown away from a newer run. Nothing else on the node
-# (another user's Ray cluster or engines) is ever touched.
+# Everything a run starts (its own Ray head, the gateway job, the SGLang engines) carries
+# MILES_E2E_RUN in its environment: preflight sweeps any process still carrying one from an
+# earlier run of either script, and teardown stops only the processes carrying this run's value,
+# so a dying run never reaches a newer one. Nothing else on the node (another user's Ray
+# cluster or engines) is ever touched. MILES_E2E_FAMILY only names the run in logs.
 
 : "${PY:=/opt/sglang/bin/python3}"
 : "${MEGATRON_PATH:=/root/Megatron-LM}"
@@ -24,28 +25,35 @@ export MILES_E2E_FAMILY=${MILES_E2E_FAMILY:-miles-e2e-$(basename "$RUN_ROOT")}
 export MILES_E2E_RUN="$MILES_E2E_FAMILY-$(basename "$RUN_DIR")-$$"
 export RAY_ADDRESS=http://127.0.0.1:$RAY_DASH_PORT
 JOB_ID=""
-OWN_SID=$(ps -o sid= -p $$ | tr -d ' ')
 
 log() { echo "[e2e $(date +%H:%M:%S)] $*"; }
 
-marker_pids() {  # $1: environment line to look for, e.g. MILES_E2E_RUN=<value>
+own_chain() {  # this script and its ancestors: the only marked processes a sweep must leave alone.
+    local pid=$$ chain=" "   # ray's daemons, the gateway job and the engines re-parent away and stay fair game
+    while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
+        chain="$chain$pid "
+        pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)
+    done
+    echo "$chain"
+}
+OWN_CHAIN=$(own_chain)
+
+marker_pids() {  # $1: grep pattern for one environment line, e.g. ^MILES_E2E_RUN=<value>$
     local p pid
     for p in /proc/[0-9]*; do
         pid=${p#/proc/}
-        if { tr '\0' '\n' < "$p/environ" | grep -qx "$1"; } 2>/dev/null; then
-            # skip this script's own session (itself, its pipelines, the log tailer); the ray head,
-            # the gateway job and the engines all live in sessions of their own
-            [ "$(ps -o sid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$OWN_SID" ] && continue
+        case "$OWN_CHAIN" in *" $pid "*) continue ;; esac
+        if { tr '\0' '\n' < "$p/environ" | grep -q "$1"; } 2>/dev/null; then
             echo "$pid"
         fi
     done
 }
 
-kill_marked() {  # $1: environment line selecting the processes to stop
+kill_marked() {  # $1: grep pattern selecting the processes to stop by an environment line
     local pids
     pids=$(marker_pids "$1" | tr '\n' ' ')
     [ -z "${pids// /}" ] && return 0
-    log "stopping processes marked $1: $pids"
+    log "stopping processes whose environment matches $1: $pids"
     kill -TERM $pids 2>/dev/null || true
     sleep 8
     pids=$(marker_pids "$1" | tr '\n' ' ')
@@ -66,7 +74,7 @@ e2e_cleanup() {
         exit 0
     fi
     [ -n "$JOB_ID" ] && ray job stop --address "$RAY_ADDRESS" "$JOB_ID" >/dev/null 2>&1 || true
-    kill_marked "MILES_E2E_RUN=$MILES_E2E_RUN"
+    kill_marked "^MILES_E2E_RUN=$MILES_E2E_RUN\$"
     rm -rf "$RAY_TEMP"
     log "GPU memory after teardown:"; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader -i "$GPUS" | sed 's/^/    /'
     log "logs: $RUN_DIR (serve.log, client.log, serve-command.txt)"
@@ -86,7 +94,7 @@ e2e_preflight() {
     done
     NGPUS=$(echo "$GPUS" | tr ',' '\n' | wc -l)
     [ "$NGPUS" -ge $((TRAIN_GPUS + ROLLOUT_GPUS)) ] || { log "need $((TRAIN_GPUS + ROLLOUT_GPUS)) GPUs, GPUS=$GPUS has $NGPUS"; exit 2; }
-    kill_marked "MILES_E2E_FAMILY=$MILES_E2E_FAMILY"  # leftovers of previous runs of this family
+    kill_marked "^MILES_E2E_RUN="  # leftovers of any earlier run of either script, whatever its family
     for port in "$TINKER_PORT" "$RAY_PORT" "$RAY_DASH_PORT"; do
         if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; then log "port $port is busy"; exit 2; fi
     done
