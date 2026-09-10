@@ -33,9 +33,6 @@ uv pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@har
 # or harbor[daytona], harbor[modal], ...
 ```
 
-mini-swe-agent does not need the fork's patches for correctness; public
-`harbor[e2b]` works for it.
-
 ## 2. Provision the sandbox backend
 
 Credentials follow the contract every Miles sandbox integration uses: the
@@ -43,9 +40,9 @@ worker reads the provider key from its own environment or from a key file; the
 launcher forwards only the file's path.
 
 ```bash
-# E2B Cloud
+# E2B, cloud or self-hosted: the key first
 mkdir -p ~/.config/e2b && echo e2b_... > ~/.config/e2b/api_key
-# self-hosted AgentENV instead: point the SDK at it (see ../agentenv/README.md)
+# a self-hosted E2B-compatible service also needs the SDK pointed at it
 export E2B_API_URL=http://<server>:8000 E2B_SANDBOX_URL=http://<server>:8000
 # Daytona
 mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key
@@ -57,11 +54,11 @@ put it on a filesystem every worker can read.
 
 **Network.** In-sandbox agents (mini-swe-agent, claude-code) call the model
 from inside the sandbox, so the sandbox platform must reach the Miles session
-server: `--router-external-host` is the address substituted into the URL the
-agent gets, and ports 30000/31000 must route from the sandbox network (for
-AgentENV, allow the trainer's subnet in the server's egress config; see the
-AgentENV recipe). Host-process agents (terminus-2) call the model from the
-worker and need no sandbox egress.
+server. `--router-external-host` is the address substituted into the URL the
+agent gets. Two port ranges must route from the sandbox network: one
+session-server port per worker starting at `--session-server-port` (30000-30031
+for `run.py`'s 32 workers) and the SGLang router's 31000. Host-process agents
+(terminus-2) call the model from the worker and need no sandbox egress.
 
 ## 3. Prepare data
 
