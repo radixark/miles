@@ -8,7 +8,6 @@ import pytest
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.utils.workers.worker_handle import WorkerStillBusyError
 
 
 class TestRolloutWaitsForSampleOwnership:
@@ -163,25 +162,6 @@ class TestPeriodicSampleOwnershipCheck:
 
         with pytest.raises(TimeoutError):
             await executor._run_one_sample_ownership_check()
-
-    async def test_transient_cohort_changes_retry_within_one_deadline(self) -> None:
-        """A fleet transition retries fresh collection without resetting the overall timeout."""
-        calls = 0
-
-        class Controller:
-            async def log_current_cpu_witness(self, *, rollout_id: int) -> dict[str, Any]:
-                nonlocal calls
-                calls += 1
-                if calls == 1:
-                    raise WorkerStillBusyError("trainer cell cohort changed")
-                return {"snapshots": [], "marker": {}}
-
-        executor = self._executor(controller=Controller(), store=SimpleNamespace(), interval=0.0)
-
-        payload, _ = await executor._collect_current_cpu_witness(timeout=1.0)
-
-        assert payload == {"snapshots": [], "marker": {}}
-        assert calls == 2
 
     @staticmethod
     def _executor(

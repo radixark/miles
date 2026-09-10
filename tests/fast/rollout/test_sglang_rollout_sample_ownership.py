@@ -1,8 +1,9 @@
 import asyncio
-from collections.abc import Iterator
+from collections.abc import ContextManager, Iterator
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample
@@ -38,7 +39,7 @@ class _LegacyGenerateState:
         self.aborted = False
         self.semaphore = asyncio.Semaphore(1)
 
-    def dp_rank_context(self):
+    def dp_rank_context(self) -> ContextManager[None]:
         return nullcontext()
 
 
@@ -203,5 +204,5 @@ class TestLegacyRolloutSampleOwnership:
         assert event.reason == "sample_filter"
 
 
-async def _return(value):
+async def _return(value: Any) -> Any:
     return value

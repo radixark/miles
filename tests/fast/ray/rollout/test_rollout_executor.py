@@ -231,12 +231,14 @@ def _stub_rollout_postprocessing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestLastBatchReplay:
-    async def test_raw_handoff_round_trips_real_event_snapshot_and_replay_pipeline(
+    @pytest.mark.parametrize("checkpoint_stage", ["raw", "delivered"])
+    async def test_checkpoint_stage_round_trips_real_event_snapshot_and_replay_pipeline(
         self,
+        checkpoint_stage: Literal["raw", "delivered"],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """A raw handoff checkpoint restores issued history before replay emits each later terminal drop once."""
+        """A checkpoint restores issued history without repeating terminal drops from any saved stage."""
         event_dir = tmp_path / "active-events"
         args = make_args(
             load=str(tmp_path),
@@ -291,10 +293,14 @@ class TestLastBatchReplay:
                 task = asyncio.create_task(executor._save_checkpoint(0))
                 task.add_done_callback(lambda _completed: saved.set())
 
-            monkeypatch.setattr(executor, "_record_last_batch", record_and_queue_save)
-            first_get = asyncio.create_task(executor.get(rollout_id=1))
-            assert await asyncio.to_thread(saved.wait, 5)
-            await first_get
+            if checkpoint_stage == "raw":
+                monkeypatch.setattr(executor, "_record_last_batch", record_and_queue_save)
+                first_get = asyncio.create_task(executor.get(rollout_id=1))
+                assert await asyncio.to_thread(saved.wait, 5)
+                await first_get
+            else:
+                await executor.get(rollout_id=1)
+                await executor.save(0)
             (tmp_path / "latest_checkpointed_iteration.txt").write_text("0")
 
             resumed_fn = FailingRolloutFn(RolloutFnConstructorInput(args=args, data_source=_FakeDataSource(tmp_path)))

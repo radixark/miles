@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.issued import _issued_samples, _IssuedSample
@@ -18,6 +19,13 @@ from miles.utils.audit_utils.event_logger.models import (
     ExplicitlyDroppedSamplesEvent,
     TrainingSampleCount,
 )
+
+
+@dataclass(frozen=True)
+class _ReplicaRows:
+    replica_id: str
+    trained_by_sample: dict[int, list[TrainingSampleCount]]
+    skipped_by_sample: dict[int, list[TrainingSampleCount]]
 
 
 def check(
@@ -43,10 +51,10 @@ def check(
     if witness_issues:
         return [*identity_issues, *witness_issues]
     current_rows = [
-        (
-            witness.replica_id,
-            _rows_by_sample(witness.sample_counts),
-            _rows_by_sample(witness.skipped_nonfinite_sample_counts),
+        _ReplicaRows(
+            replica_id=witness.replica_id,
+            trained_by_sample=_rows_by_sample(witness.sample_counts),
+            skipped_by_sample=_rows_by_sample(witness.skipped_nonfinite_sample_counts),
         )
         for witness in current_witnesses
     ]
@@ -63,13 +71,7 @@ def check(
 def _resolution_issues(
     *,
     sample: _IssuedSample,
-    current_rows: list[
-        tuple[
-            str,
-            dict[int, list[TrainingSampleCount]],
-            dict[int, list[TrainingSampleCount]],
-        ]
-    ],
+    current_rows: list[_ReplicaRows],
     drops: dict[int, int],
 ) -> list[SampleResolutionIssue]:
     drop_count = drops.get(sample.sample_index, 0)
@@ -77,9 +79,9 @@ def _resolution_issues(
         return [_issue(sample=sample, replica_id=None, trained_rows=[], skipped_rows=[], drop_count=drop_count)]
 
     issues = []
-    for replica_id, trained_by_sample, skipped_by_sample in current_rows:
-        trained_rows = trained_by_sample.get(sample.sample_index, [])
-        skipped_rows = skipped_by_sample.get(sample.sample_index, [])
+    for replica in current_rows:
+        trained_rows = replica.trained_by_sample.get(sample.sample_index, [])
+        skipped_rows = replica.skipped_by_sample.get(sample.sample_index, [])
         valid = (
             not trained_rows and not skipped_rows
             if drop_count == 1
@@ -89,7 +91,7 @@ def _resolution_issues(
             issues.append(
                 _issue(
                     sample=sample,
-                    replica_id=replica_id,
+                    replica_id=replica.replica_id,
                     trained_rows=_describe_rows(trained_rows),
                     skipped_rows=_describe_rows(skipped_rows),
                     drop_count=drop_count,
