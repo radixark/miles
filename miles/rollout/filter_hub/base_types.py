@@ -48,7 +48,9 @@ class MetricGatherer:
                 continue
             if not args.reward_key and isinstance(sample.reward, dict):
                 continue
-            self._unfiltered_reward_sum += float(sample.get_reward_value(args))
+            if (value := sample.get_reward_value(args)) is None:
+                continue
+            self._unfiltered_reward_sum += float(value)
             self._unfiltered_reward_count += 1
 
     def on_dynamic_filter_drop(self, reason: str | None):
