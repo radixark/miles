@@ -85,6 +85,13 @@ class TestGenerateRequest:
         assert by_ids["sampling_params"]["stop_token_ids"] == [7, 8]
         assert by_text["sampling_params"]["stop"] == ["\n"]
 
+    def test_an_empty_stop_list_disables_eos(self):
+        request = self._request({"max_tokens": 1, "stop": []})
+        assert request["sampling_params"]["ignore_eos"] is True
+        assert "stop" not in request["sampling_params"] and "stop_token_ids" not in request["sampling_params"]
+        default = self._request({"max_tokens": 1})
+        assert "ignore_eos" not in default["sampling_params"], "stop=None keeps the default EOS behavior"
+
     def test_topk_requests_prompt_logprobs(self):
         request = self._request({"max_tokens": 1}, topk_prompt_logprobs=3)
         assert request["logprob_start_len"] == 0
