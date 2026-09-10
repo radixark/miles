@@ -9,6 +9,7 @@ register_cuda_ci(
     est_time=900,
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "sglang", "replay"],
+    hardware=["hopper", "blackwell"],
 )
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 
