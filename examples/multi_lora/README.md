@@ -16,10 +16,10 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
 
 ## Run
 
-The gateway imports the Tinker wire schema at startup, so install the SDK on the serving node too:
+The gateway implements the `tinker==0.26.2` wire schema (newer SDKs renamed protobuf fields); install that exact version on the serving node and the client:
 
 ```bash
-pip install "tinker>=0.26.2"
+pip install "tinker==0.26.2"
 ```
 
 Start the gateway:
