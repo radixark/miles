@@ -37,6 +37,11 @@ def init_tracking(args, primary: bool = True, **kwargs):
     _manager.init(args, primary=primary, **kwargs)
 
 
+def log_table(name: str, columns: list[str], rows: list[list]) -> None:
+    """Log a table of text rows to the backends that support tables (wandb)."""
+    _manager.log_table(name, columns, rows)
+
+
 def define_step_key_metric_group(prefix: str, step_key: str) -> None:
     """Declare a metric group plotted against its own step key (e.g. ``{name}/*`` vs ``{name}/step``).
     Only wandb acts on this; must be called from the primary tracking process or definitions may be lost."""

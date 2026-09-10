@@ -33,6 +33,10 @@ ray job submit --address=auto -- \
 Available flags: `--use-wandb`, `--wandb-project`, `--wandb-group`. `WANDB_API_KEY`
 should be supplied via Ray's `env_vars` rather than baked into the launch script.
 
+Pass `--log-sample-completions N` to also log the first N prompt/response pairs of every rollout step
+(taken round-robin across prompts) as a `rollout/completions` table, with reward, status and response
+length. Only wandb renders it today; other backends ignore it.
+
 ## What to watch
 
 | Signal | Healthy pattern | Red flag |
