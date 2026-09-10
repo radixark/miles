@@ -114,3 +114,29 @@ def test_engine_failure_aborts_the_staged_session():
         _push(updater)
     assert any(kwargs.get("abort") for kwargs in _kwargs_of(calls, "end_weight_update"))
     assert "update_weight_version" not in _phases(calls)
+
+
+def test_a_failed_staged_open_aborts_the_session():
+    calls = []
+    updater = _updater(calls, failing_method="begin_weight_update")
+    with pytest.raises(RuntimeError):
+        _push(updater)
+    assert any(
+        kwargs.get("abort") for kwargs in _kwargs_of(calls, "end_weight_update")
+    ), "__exit__ never runs when __enter__ raises; the open itself must discard the staged session"
+
+
+def test_a_failed_open_resumes_the_paused_engines():
+    calls = []
+    updater = _updater(calls, failing_method="begin_weight_update")
+    updater.is_lora = True
+    with (
+        patch(f"{_MODULE}.dist") as dist,
+        patch(f"{_MODULE}.get_gloo_group"),
+        patch(f"{_SESSION}.dist") as session_dist,
+        patch(f"{_SESSION}.get_gloo_group"),
+    ):
+        dist.get_rank.return_value = session_dist.get_rank.return_value = 0
+        with pytest.raises(RuntimeError):
+            updater.update_weights()
+    assert "continue_generation" in _phases(calls), "no bytes moved yet, so the engines can resume serving"
