@@ -543,6 +543,9 @@ async def test_a_failed_optim_step_retires_the_model(service):
     assert slot in service.free_slots
     assert service.backend.named("unload_slot") == [{"slot": slot}]
 
+    with pytest.raises(UserInputError, match="restore from a checkpoint"):
+        service.submit("tenant", "optim_step", _optim_payload(model_id, 2))
+
 
 async def test_poison_consumption_discards_retried_gradients(service):
     model_id = await created_model(service)
