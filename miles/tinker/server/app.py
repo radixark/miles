@@ -97,7 +97,10 @@ def build_app(service: TinkerService) -> FastAPI:
         return {
             "type": "get_info",
             "model_id": record.model_id,
-            "model_data": {"model_name": record.base_model, "lora_rank": record.lora_rank},
+            "model_name": record.base_model,
+            "is_lora": True,
+            "lora_rank": record.lora_rank,
+            "model_data": {"model_name": record.base_model},
         }
 
     @app.post("/api/v1/forward_backward")
