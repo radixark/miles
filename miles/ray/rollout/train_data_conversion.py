@@ -4,6 +4,7 @@ from typing import Any
 import torch
 
 from miles.utils import object_store
+from miles.utils.audit_utils.sample_flow import log_dropped_sample_indices
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
@@ -369,6 +370,14 @@ def split_train_data_by_dp_scheduled_raw(
         global_batch_size=global_batch_size,
         rollout_indices=data["rollout_ids"],
     )
+    retained_rows = {index for partition in partitions for index in partition}
+    retained_sources = {data["source_sample_indices"][index] for index in retained_rows}
+    dropped_sources = [
+        source_index
+        for index, source_index in enumerate(data["source_sample_indices"])
+        if index not in retained_rows and source_index not in retained_sources
+    ]
+    log_dropped_sample_indices(dropped_sources, reason="dp_schedule_trim")
     logger.info(
         f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
         f"num_rollouts={num_rollouts}, num_microbatches={num_microbatches}"

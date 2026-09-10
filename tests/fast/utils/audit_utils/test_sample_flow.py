@@ -5,9 +5,9 @@ import pytest
 
 from miles.rollout.data_source import DataSource
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent
+from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, ExplicitlyDroppedSamplesEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
-from miles.utils.audit_utils.sample_flow import record_data_source_issues
+from miles.utils.audit_utils.sample_flow import log_dropped_groups, log_dropped_samples, record_data_source_issues
 from miles.utils.types import Sample
 
 
@@ -50,3 +50,32 @@ class TestRecordDataSourceIssues:
 
         with pytest.raises(ValueError, match="sample index"):
             source.get_samples(num_samples=1)
+
+
+class TestLogDroppedSamples:
+    def test_logs_each_source_sample_once_for_compact_rows(self, event_dir: Path) -> None:
+        """Dropping compact rows resolves their source sample once."""
+        rows = [
+            Sample(index=10, source_sample_index=4),
+            Sample(index=10, source_sample_index=4),
+        ]
+
+        log_dropped_samples(rows, reason="dynamic_filter", rollout_id=3)
+
+        [event] = read_events(event_dir)
+        assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+        assert event.sample_indices == [4]
+        assert event.reason == "dynamic_filter"
+        assert event.rollout_id == 3
+
+    def test_group_comparison_logs_only_fully_removed_sources(self, event_dir: Path) -> None:
+        """A source with any retained compact row is not reported as dropped."""
+        first = Sample(index=10, source_sample_index=4)
+        second = Sample(index=10, source_sample_index=4)
+        removed = Sample(index=20, source_sample_index=8)
+
+        log_dropped_groups([[first, second], [removed]], [[second]], reason="trim", rollout_id=5)
+
+        [event] = read_events(event_dir)
+        assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+        assert event.sample_indices == [8]

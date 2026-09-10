@@ -30,7 +30,7 @@ from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
-from miles.utils.audit_utils.sample_flow import record_data_source_issues
+from miles.utils.audit_utils.sample_flow import log_dropped_groups, record_data_source_issues
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
@@ -285,9 +285,11 @@ class RolloutExecutor:
                 )
             metrics = data.metrics
             data = data.samples
+            untrimmed_data = list(data)
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self._train_parallel_configs_of_model_id[trainer_model_id]
             )
+            log_dropped_groups(untrimmed_data, data, reason="trim", rollout_id=rollout_id)
             assert_samples_weight_version_sane(self.args, samples=data)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
