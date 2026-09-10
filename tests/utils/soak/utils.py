@@ -15,8 +15,8 @@ DATA_DIR: str = get_test_data_dir()
 def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) -> str:
     resolved = config if config is not None else command_utils.default_config()
     if resolved.cluster_backend is not ClusterBackend.KUBERNETES:
-        return f"--api-server-port {API_SERVER_PORT} "
-    return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
+        return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
+    return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 --fault-witness-enable "
 
 
 DEFAULT_TRAIN_SCRIPT: str = "train.py"

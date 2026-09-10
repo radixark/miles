@@ -137,7 +137,7 @@ class StubFaultForm(fault_forms.BaseFaultForm):
 
 
 class AsyncStubFaultForm(fault_forms.BaseFaultForm, SoakActionForm):
-    def __init__(self, *, name: str, execute: Callable[[state.SoakActionRequest], Awaitable[None]]) -> None:
+    def __init__(self, *, name: str, execute: Callable[[state.SoakActionRequest], Awaitable[dict | None]]) -> None:
         self._name = name
         self._execute = execute
 
@@ -145,8 +145,8 @@ class AsyncStubFaultForm(fault_forms.BaseFaultForm, SoakActionForm):
     def name(self) -> str:
         return self._name
 
-    async def execute(self, request: state.SoakActionRequest) -> None:
-        await self._execute(request)
+    async def execute(self, request: state.SoakActionRequest) -> dict | None:
+        return await self._execute(request)
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         raise AssertionError("An async action must not use the synchronous bridge")

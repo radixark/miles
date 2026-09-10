@@ -1,7 +1,22 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from tests.fast.utils.soak.utils import PENDING, RUNNING_NOT_SERVING, SERVING, SUSPENDED, log_of, note_injected, staged
 from tests.utils.soak import state, views
+
+
+@pytest.mark.parametrize("returned", [False, True])
+def test_only_applied_evidence_counts_even_when_command_status_disagrees(returned: bool) -> None:
+    """Command success alone earns no coverage and a later receipt can resolve a failed reply."""
+    request = state.SoakActionRequest(target={"metadata": {"name": "actor-0"}}, form_name="kill", harms_cell=True)
+    events = [
+        state.SoakActionRequestedEvent(request=request),
+        state.SoakActionResultEvent(request_id=request.request_id, returned=returned),
+    ]
+    assert views.compute_num_successful_injections_of_form(events, form_name="kill") == 0
+    events.append(state.SoakActionAppliedEvent(request_id=request.request_id, evidence={"exited_pids": [42]}))
+    assert views.compute_num_successful_injections_of_form(events, form_name="kill") == 1
 
 
 def test_observed_states_record_only_transitions() -> None:

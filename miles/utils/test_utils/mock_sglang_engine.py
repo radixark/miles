@@ -51,8 +51,16 @@ class MockSGLangEngine:
         else:
             self._faults[method] = exception
 
-    def inject_fault(self, mode: str) -> None:
-        self._record("inject_fault", (), {"mode": mode})
+    def inject_fault(self, mode: str, *, request_id: str | None = None, receipt_url: str | None = None) -> None:
+        self._record(
+            "inject_fault",
+            (),
+            {
+                "mode": mode,
+                **({"request_id": request_id} if request_id is not None else {}),
+                **({"receipt_url": receipt_url} if receipt_url is not None else {}),
+            },
+        )
 
     def get_calls(self) -> list[tuple[str, tuple, dict]]:
         return list(self.calls)

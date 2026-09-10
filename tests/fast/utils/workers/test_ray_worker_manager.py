@@ -2019,8 +2019,11 @@ class TestInjectFault:
         assert fake_ray_cluster.calls_of("inject_fault") == []
         current = manager.observe_fault_target("engine-00000", sub_index=0)
         assert current.workers_hash != target.workers_hash
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, expected_target=current)
+        manager.inject_fault(
+            "engine-00000", mode="sigkill", worker_in_cell_index=0, expected_target=current, request_id="request-1"
+        )
         assert len(fake_ray_cluster.calls_of("inject_fault")) == 1
+        assert fake_ray_cluster.calls_of("inject_fault")[0].kwargs == {"request_id": "request-1"}
 
     async def test_recreated_manager_does_not_reuse_generation_identity(
         self, fake_ray_cluster: FakeRayCluster

@@ -152,7 +152,14 @@ class KubernetesCellOperations(BaseCellOperations):
         )
 
     async def inject_fault(
-        self, *, cell_id: str, mode: FailureMode, sub_index: int, expected_target: FaultTarget | None = None
+        self,
+        *,
+        cell_id: str,
+        mode: FailureMode,
+        sub_index: int,
+        expected_target: FaultTarget | None = None,
+        request_id: str | None = None,
+        receipt_url: str | None = None,
     ) -> None:
         await self._ensure_watching()
         if expected_target is not None:
@@ -181,7 +188,9 @@ class KubernetesCellOperations(BaseCellOperations):
             handle = handles[worker_name]
         else:
             handle = build_rpc_handle_of_worker_info(infos[sub_index], expected_boot_uuid=expected_target.boot_uuid)
-        await _inject_fault_over_rpc(handle=handle, mode=mode, worker_name=worker_name)
+        await _inject_fault_over_rpc(
+            handle=handle, mode=mode, worker_name=worker_name, request_id=request_id, receipt_url=receipt_url
+        )
 
     async def _delete_pod_of_incarnation(
         self, *, core_v1_api: Any, cell_id: str, pod: PodIdentity, deadline: float
@@ -281,10 +290,23 @@ def _reported_container(pod: PodIdentity, *, name: str) -> ContainerIdentity | N
     return reported[0]
 
 
-async def _inject_fault_over_rpc(*, handle: BaseWorkerHandle, mode: FailureMode, worker_name: str) -> None:
+async def _inject_fault_over_rpc(
+    *,
+    handle: BaseWorkerHandle,
+    mode: FailureMode,
+    worker_name: str,
+    request_id: str | None = None,
+    receipt_url: str | None = None,
+) -> None:
     try:
         await asyncio.wait_for(
-            handle.submit_without_result("inject_fault", mode=mode.value), timeout=INJECT_FAULT_TIMEOUT_SECONDS
+            handle.submit_without_result(
+                "inject_fault",
+                mode=mode.value,
+                **({"request_id": request_id} if request_id is not None else {}),
+                **({"receipt_url": receipt_url} if receipt_url is not None else {}),
+            ),
+            timeout=INJECT_FAULT_TIMEOUT_SECONDS,
         )
     except ServerRestartedError as error:
         raise StaleFaultTargetError(f"Worker {worker_name} changed its boot identity") from error

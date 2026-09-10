@@ -297,6 +297,15 @@ class TestDecidedAddresses:
 
 
 class TestRanksPerPod:
+    @pytest.mark.parametrize("num_workers", [1, 8])
+    def test_soak_keeps_a_witness_supervisor_outside_the_original_worker_command(self, num_workers: int) -> None:
+        """Single and multi-worker pods retain a live outer process after the fault target exits."""
+        spec = make_trainer_spec(num_workers_per_cell=num_workers)
+        ordinary = _rendered_entry(spec)["command"]
+        enabled = _rendered_entry(spec, worker_argv=["--fault-witness-enable"])["command"]
+        module_index = enabled.index("miles.utils.test_utils.fault_witness_supervisor")
+        assert enabled[module_index + 1 :] == [*ordinary, "--fault-witness-enable"]
+
     def test_the_supervisor_starts_the_ranks_the_provider_will_look_for(self):
         """The provider fans a pod out into the ranks its own command started, so the two cannot drift."""
         spec = make_trainer_spec(num_workers_per_cell=24, num_gpus_per_node=8)
@@ -336,7 +345,7 @@ def _rendered_pods_per_cell(spec: BaseWorkerSpec) -> int:
     return _rendered_entry(spec).get("size", 1)
 
 
-def _rendered_entry(spec: BaseWorkerSpec) -> dict:
+def _rendered_entry(spec: BaseWorkerSpec, *, worker_argv: list[str] | None = None) -> dict:
     values = build_values(
         [spec],
         LaunchPlan(
@@ -345,7 +354,7 @@ def _rendered_entry(spec: BaseWorkerSpec) -> dict:
             release=_RELEASE,
             namespace="rl",
             orchestrator_command=["python", "train.py"],
-            worker_argv=[],
+            worker_argv=worker_argv or [],
         ),
     ).as_values()
     return next(

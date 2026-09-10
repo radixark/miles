@@ -24,6 +24,7 @@ STALE_STATUS_GRACE_SECONDS: float = 120.0
 def project_legacy_events(events: list[Event]) -> list[Event]:
     requests: dict[str, SoakActionRequest] = {}
     completed: set[str] = set()
+    applied: set[str] = set()
     projected: list[Event] = []
     for event in events:
         if isinstance(event, SoakObservation):
@@ -39,6 +40,22 @@ def project_legacy_events(events: list[Event]) -> list[Event]:
             assert event.request_id not in completed, f"Duplicate soak result: {event.request_id}"
             completed.add(event.request_id)
             request = requests[event.request_id]
+            if isinstance(request.target, SoakDeploymentTarget) or event.returned or event.request_id in applied:
+                continue
+            projected.append(
+                InjectionEvent(
+                    timestamp=event.timestamp,
+                    cell_name=request.target["metadata"]["name"],
+                    form_name=request.form_name,
+                    succeeded=False,
+                    harmed=request.harms_cell,
+                )
+            )
+        elif isinstance(event, SoakActionAppliedEvent):
+            assert event.request_id in requests, f"Soak application without request: {event.request_id}"
+            assert event.request_id not in applied, f"Duplicate soak application: {event.request_id}"
+            applied.add(event.request_id)
+            request = requests[event.request_id]
             if isinstance(request.target, SoakDeploymentTarget):
                 continue
             projected.append(
@@ -46,7 +63,7 @@ def project_legacy_events(events: list[Event]) -> list[Event]:
                     timestamp=event.timestamp,
                     cell_name=request.target["metadata"]["name"],
                     form_name=request.form_name,
-                    succeeded=event.returned,
+                    succeeded=True,
                     harmed=request.harms_cell,
                 )
             )

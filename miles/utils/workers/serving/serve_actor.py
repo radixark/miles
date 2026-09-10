@@ -37,8 +37,12 @@ class ServeActor(NodeProbeMixin):
         )
         self._server_thread.start()
 
-    def inject_fault(self, mode: str) -> None:
-        _inject_fault(mode=mode)
+    def inject_fault(self, mode: str, *, request_id: str | None = None, receipt_url: str | None = None) -> None:
+        _inject_fault(
+            mode=mode,
+            **({"request_id": request_id} if request_id is not None else {}),
+            **({"receipt_url": receipt_url} if receipt_url is not None else {}),
+        )
 
 
 def serve_until_stopped(*, app: Any, port: int) -> None:

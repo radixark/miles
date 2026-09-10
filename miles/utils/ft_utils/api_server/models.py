@@ -94,6 +94,7 @@ class FaultInjection(StrictBaseModel):
     mode: FailureMode
     sub_index: int = 0
     expected_target: FaultTarget | None = None
+    request_id: str | None = None
 
 
 class K8sStatus(StrictBaseModel):

@@ -57,7 +57,14 @@ class BaseCellOperations(abc.ABC):
 
     @abc.abstractmethod
     async def inject_fault(
-        self, *, cell_id: str, mode: FailureMode, sub_index: int, expected_target: FaultTarget | None = None
+        self,
+        *,
+        cell_id: str,
+        mode: FailureMode,
+        sub_index: int,
+        expected_target: FaultTarget | None = None,
+        request_id: str | None = None,
+        receipt_url: str | None = None,
     ) -> None: ...
 
     async def observe_fault_target(self, *, cell_id: str, sub_index: int) -> FaultTarget:

@@ -1138,6 +1138,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "fault-tolerance controller; set 0.0.0.0 to accept remote controllers.",
             )
             parser.add_argument(
+                "--fault-witness-enable",
+                action="store_true",
+                help="Keep served worker containers alive while fault exit witnesses publish their receipts",
+            )
+            parser.add_argument(
                 "--api-server-port",
                 type=int,
                 default=None,

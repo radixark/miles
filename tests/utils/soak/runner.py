@@ -80,7 +80,7 @@ class SoakRunner:
 
     async def _execute(self, request: SoakActionRequest) -> None:
         try:
-            await self._forms[(target_type_of(request.target), request.form_name)].execute(request)
+            evidence = await self._forms[(target_type_of(request.target), request.form_name)].execute(request)
         except asyncio.CancelledError as error:
             self._event_log.note_action_result(
                 SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
@@ -94,6 +94,10 @@ class SoakRunner:
             if not isinstance(error, (httpx.HTTPError, subprocess.SubprocessError, TimeoutError)):
                 raise
         else:
+            if evidence is not None:
+                self._event_log.note_action_applied(
+                    SoakActionAppliedEvent(request_id=request.request_id, evidence=evidence)
+                )
             self._event_log.note_action_result(SoakActionResultEvent(request_id=request.request_id, returned=True))
 
     def _finalize_cancelled_actions(self) -> None:

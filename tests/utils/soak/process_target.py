@@ -1,8 +1,9 @@
-import json
 import os
 import re
+import select
 import signal
 import sys
+import time
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -25,6 +26,17 @@ class ProcessTarget(FrozenStrictBaseModel):
     init_start_ticks: int
     pattern: str
     processes: list[ProcessIdentity] = Field(min_length=1)
+
+
+class ProcessExitReceipt(FrozenStrictBaseModel):
+    request_id: str = Field(min_length=1)
+    target: ProcessTarget
+    exited_pids: list[int] = Field(min_length=1)
+
+    def validate_for(self, *, request_id: str, target: ProcessTarget) -> None:
+        assert self.request_id == request_id, "Process receipt belongs to another request"
+        assert self.target == target, "Process receipt belongs to another incarnation"
+        assert self.exited_pids == [process.pid for process in target.processes], "Process receipt is incomplete"
 
 
 def observe_processes(*, pod_uid: str, pattern: str) -> ProcessTarget:
@@ -67,7 +79,17 @@ def kill_observed_processes(target: ProcessTarget) -> list[int]:
             assert matcher.search(command.decode(errors="replace")), "Process command changed"
             handles.append(fd)
         for fd in handles:
+            if select.select([fd], [], [], 0)[0]:
+                raise ProcessLookupError("An observed process exited before injection")
+        for fd in handles:
             signal.pidfd_send_signal(fd, signal.SIGKILL)
+        pending = set(handles)
+        deadline = time.monotonic() + 5.0
+        while pending:
+            readable, _, _ = select.select(list(pending), [], [], max(0.0, deadline - time.monotonic()))
+            if not readable:
+                raise TimeoutError("Signalled processes did not exit within five seconds")
+            pending.difference_update(readable)
     return [process.pid for process in target.processes]
 
 
@@ -84,9 +106,14 @@ def observe(pod_uid: str, pattern: str) -> None:
 
 
 @app.command()
-def kill() -> None:
+def kill(request_id: str) -> None:
     target = ProcessTarget.model_validate_json(sys.stdin.read())
-    print(json.dumps({"signalled_pids": kill_observed_processes(target)}), flush=True)
+    print(
+        ProcessExitReceipt(
+            request_id=request_id, target=target, exited_pids=kill_observed_processes(target)
+        ).model_dump_json(),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

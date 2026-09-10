@@ -1,6 +1,8 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
 import abc
+import asyncio
+import logging
 import random
 
 import httpx
@@ -12,13 +14,17 @@ from tests.utils.soak.pod_manipulation import (
     list_pod_names_of_cell,
     sigkill_process_patterns_in_pod,
 )
+from tests.utils.soak.process_target import ProcessExitReceipt
 from tests.utils.soak.state import SoakActionRequest, SoakPodTarget
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
+from miles.utils.ft_utils.api_server.fault_receipts import FaultReceipt
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS
 from miles.utils.workers.types import ClusterBackend, DeployComponent
+
+logger = logging.getLogger(__name__)
 
 FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
 RAY_ROLLOUT_ENGINE_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL]
@@ -54,22 +60,48 @@ class InjectFaultForm(BaseFaultForm, SoakActionForm):
     def name(self) -> str:
         return f"inject_fault:{self._failure_mode.value}"
 
-    async def execute(self, request: SoakActionRequest) -> None:
+    async def execute(self, request: SoakActionRequest) -> dict:
         assert request.form_name == self.name, f"Request {request.request_id} names another form: {request.form_name}"
         assert isinstance(request.target, dict), "Fault injection requires a cell target"
         assert request.fault_target is not None, "Fault injection requires an observed process identity"
         assert request.fault_target.cell_id == request.target["metadata"]["name"]
         assert request.fault_target.workers_hash == request.target["status"]["workers_hash"]
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(
-                f"{self._base_url}/api/v1/cells/{request.target['metadata']['name']}/inject-fault",
-                json={
-                    "mode": self._failure_mode.value,
-                    "sub_index": request.fault_target.sub_index,
-                    "expected_target": request.fault_target.model_dump(mode="json"),
-                },
-            )
-            response.raise_for_status()
+            try:
+                response = await client.post(
+                    f"{self._base_url}/api/v1/cells/{request.target['metadata']['name']}/inject-fault",
+                    json={
+                        "mode": self._failure_mode.value,
+                        "sub_index": request.fault_target.sub_index,
+                        "expected_target": request.fault_target.model_dump(mode="json"),
+                        "request_id": request.request_id,
+                    },
+                )
+                if response.status_code < 500:
+                    response.raise_for_status()
+            except httpx.TransportError:
+                logger.warning("Fault submission outcome is unknown: %s", request.request_id, exc_info=True)
+            return await self._read_receipt(client=client, request=request)
+
+    async def _read_receipt(self, *, client: httpx.AsyncClient, request: SoakActionRequest) -> dict:
+        async with asyncio.timeout(30.0):
+            while True:
+                try:
+                    response = await client.get(f"{self._base_url}/api/v1/fault-receipts/{request.request_id}")
+                    if response.status_code != 404 and response.status_code < 500:
+                        response.raise_for_status()
+                        if (payload := response.json()) is not None:
+                            receipt = FaultReceipt.model_validate(payload)
+                            if (receipt.request_id, receipt.target, receipt.mode) != (
+                                request.request_id,
+                                request.fault_target,
+                                self._failure_mode,
+                            ):
+                                raise ValueError("Fault receipt does not match the requested injection")
+                            return receipt.model_dump(mode="json")
+                except httpx.TransportError:
+                    logger.warning("Fault receipt read failed: %s", request.request_id, exc_info=True)
+                await asyncio.sleep(0.2)
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         resp = requests.post(
@@ -94,11 +126,11 @@ class DeletePodFaultForm(BaseFaultForm, SoakActionForm):
     def name(self) -> str:
         return DELETE_POD_FORM_NAME
 
-    async def execute(self, request: SoakActionRequest) -> None:
+    async def execute(self, request: SoakActionRequest) -> dict:
         pod = _validate_pod_request(
             request=request, form_name=self.name, namespace=self._namespace, release=self._release
         )
-        await delete_observed_pod(pod)
+        return await delete_observed_pod(pod)
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         delete_one_pod_of_cell(
@@ -126,7 +158,7 @@ class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
     def process_patterns(self) -> dict[str, str]:
         return {self._container: self._process_pattern}
 
-    async def execute(self, request: SoakActionRequest) -> None:
+    async def execute(self, request: SoakActionRequest) -> dict:
         pod = _validate_pod_request(
             request=request, form_name=self.name, namespace=self._namespace, release=self._release
         )
@@ -147,6 +179,7 @@ class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
                 "-m",
                 "tests.utils.soak.process_target",
                 "kill",
+                request.request_id,
             ],
             timeout_seconds=KUBECTL_TIMEOUT_SECONDS,
             check=False,
@@ -157,6 +190,9 @@ class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
             f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}. A crash nobody caused would "
             f"otherwise be counted as one that happened"
         )
+        receipt = ProcessExitReceipt.model_validate_json(result.stdout)
+        receipt.validate_for(request_id=request.request_id, target=target)
+        return receipt.model_dump(mode="json")
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         cell_id = cell["metadata"]["name"]

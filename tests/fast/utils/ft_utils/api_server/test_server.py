@@ -66,6 +66,7 @@ async def test_observed_identity_is_forwarded_and_replacement_returns_preconditi
                 "mode": "sigkill",
                 "sub_index": 0,
                 "expected_target": observed.json(),
+                "request_id": "request-1",
             },
         )
     if replaced:
@@ -76,3 +77,41 @@ async def test_observed_identity_is_forwarded_and_replacement_returns_preconditi
         assert result.status_code == 200
         assert operations.dispatched == [operations.target]
         assert operations.modes == [FailureMode.SIGKILL]
+        assert operations.request_ids == ["request-1"]
+
+
+@pytest.mark.parametrize("dispatch_failed", [False, True])
+async def test_duplicate_submission_requires_evidence_and_never_dispatches_twice(dispatch_failed: bool) -> None:
+    """An ambiguous first dispatch remains unconfirmed until a matching receipt arrives."""
+    operations = PinnedCellOperations(dispatch_error=RuntimeError("Reply lost") if dispatch_failed else None)
+    app = server._create_api_app(
+        _CellRegistry([_CellHandler(cell_type="actor", operations=operations, controllers=[], pool_ids=["actor"])]),
+        receipt_url="http://witness-host:18080",
+    )
+    body = {
+        "mode": "sigkill",
+        "sub_index": 0,
+        "expected_target": operations.target.model_dump(mode="json"),
+        "request_id": "request-1",
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://control") as client:
+        first = await client.post("/api/v1/cells/actor-0/inject-fault", json=body)
+        assert first.status_code == (500 if dispatch_failed else 200)
+        duplicate = await client.post("/api/v1/cells/actor-0/inject-fault", json=body)
+        assert duplicate.status_code == 409
+        assert (await client.get("/api/v1/fault-receipts/request-1")).json() is None
+        published = await client.post("/api/v1/fault-receipts/request-1", json={"exited_pids": [42]})
+        assert published.status_code == 200
+        assert published.json() == {
+            "request_id": "request-1",
+            "target": body["expected_target"],
+            "mode": "sigkill",
+            "exited_pids": [42],
+        }
+        assert (await client.get("/api/v1/fault-receipts/request-1")).json() == published.json()
+        confirmed = await client.post("/api/v1/cells/actor-0/inject-fault", json=body)
+        assert confirmed.status_code == 200
+        conflict = await client.post("/api/v1/fault-receipts/request-1", json={"exited_pids": [43]})
+        assert conflict.status_code == 409
+    assert operations.request_ids == ["request-1"]
+    assert operations.receipt_urls == ["http://witness-host:18080"]

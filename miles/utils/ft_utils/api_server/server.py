@@ -11,9 +11,11 @@ from starlette.responses import JSONResponse
 
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
+from miles.utils.ft_utils.api_server.fault_receipts import FaultExitSubmission, FaultReceipt, FaultReceiptRegistry
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
+from miles.utils.misc import get_current_node_ip
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
@@ -66,7 +68,9 @@ def start_api_server(
 
 
 def _start_api_server_raw(*, registry: _CellRegistry, port: int, host: str) -> uvicorn.Server:
-    app = _create_api_app(registry)
+    receipt_host = get_current_node_ip() if host in {"0.0.0.0", "::"} else host
+    receipt_host = f"[{receipt_host}]" if ":" in receipt_host and not receipt_host.startswith("[") else receipt_host
+    app = _create_api_app(registry, receipt_url=f"http://{receipt_host}:{port}")
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port))
     _start_and_wait_thread(
@@ -81,8 +85,9 @@ def _start_api_server_raw(*, registry: _CellRegistry, port: int, host: str) -> u
 # -------------------------- main app ------------------------------
 
 
-def _create_api_app(registry: _CellRegistry) -> FastAPI:
+def _create_api_app(registry: _CellRegistry, *, receipt_url: str | None = None) -> FastAPI:
     app = FastAPI()
+    fault_receipts = FaultReceiptRegistry()
 
     # -------------------------- exceptions ------------------------------
 
@@ -140,9 +145,39 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
     async def inject_fault(name: str, body: FaultInjection) -> _OkResponse:
         handler = await _resolve(name)
         try:
+            if body.request_id is not None:
+                if body.expected_target is None:
+                    raise _K8sError(
+                        status_code=400, reason="BadRequest", message="A tracked fault requires an observed target"
+                    )
+                if (body.expected_target.cell_id, body.expected_target.sub_index) != (name, body.sub_index):
+                    raise _K8sError(
+                        status_code=400, reason="BadRequest", message="Fault target does not match the request route"
+                    )
+                try:
+                    registered = fault_receipts.register(
+                        request_id=body.request_id, target=body.expected_target, mode=body.mode
+                    )
+                except ValueError as error:
+                    raise _K8sError(status_code=409, reason="Conflict", message=str(error)) from error
+                if not registered:
+                    if fault_receipts.read(body.request_id) is None:
+                        raise _K8sError(
+                            status_code=409,
+                            reason="AlreadyExists",
+                            message="Fault request was already submitted without confirmed evidence; query its receipt",
+                        )
+                    return _OkResponse()
             await handler.inject_fault(
-                name, mode=body.mode, sub_index=body.sub_index, expected_target=body.expected_target
+                name,
+                mode=body.mode,
+                sub_index=body.sub_index,
+                expected_target=body.expected_target,
+                request_id=body.request_id,
+                **({"receipt_url": receipt_url} if body.request_id is not None and receipt_url is not None else {}),
             )
+        except _K8sError:
+            raise
         except StaleFaultTargetError as err:
             raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(err)) from err
         except NotImplementedError as err:
@@ -159,6 +194,22 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
                 message=f"Failed to inject fault into cell '{name}'",
             ) from err
         return _OkResponse()
+
+    @app.post("/api/v1/fault-receipts/{request_id}")
+    async def publish_fault_receipt(request_id: str, body: FaultExitSubmission) -> FaultReceipt:
+        try:
+            return fault_receipts.publish(request_id=request_id, submission=body)
+        except KeyError as error:
+            raise _K8sError(status_code=404, reason="NotFound", message="Unknown fault request") from error
+        except ValueError as error:
+            raise _K8sError(status_code=409, reason="Conflict", message=str(error)) from error
+
+    @app.get("/api/v1/fault-receipts/{request_id}")
+    async def get_fault_receipt(request_id: str) -> FaultReceipt | None:
+        try:
+            return fault_receipts.read(request_id)
+        except KeyError as error:
+            raise _K8sError(status_code=404, reason="NotFound", message="Unknown fault request") from error
 
     # -------------------------- utils ------------------------------
 

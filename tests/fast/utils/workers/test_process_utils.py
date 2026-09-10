@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -13,11 +14,41 @@ import miles.utils.workers.process_utils as process_utils
 from miles.utils.workers.process_utils import (
     kill_process,
     kill_process_tree,
+    kill_process_tree_and_wait,
     launch_bound_subprocess,
     terminate_process_tree,
 )
 
 _SLEEP_FOREVER = "import time; time.sleep(300)"
+
+
+def test_confirmed_tree_kill_waits_for_a_child_in_another_process_group(tmp_path: Path) -> None:
+    """A detached child must exit before the wrapper can report confirmed tree death."""
+    pid_file = tmp_path / "detached.pid"
+    command = (
+        "import subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {_SLEEP_FOREVER!r}], start_new_session=True)\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(300)\n"
+    )
+    process = launch_bound_subprocess([sys.executable, "-c", command], envs={})
+    child_fd = None
+    try:
+        child_pid = int(_read_when_present(pid_file))
+        child_fd = os.pidfd_open(child_pid)
+        exited = kill_process_tree_and_wait(process)
+        assert set(exited) == {process.pid, child_pid}
+        assert select.select([child_fd], [], [], 0)[0] == [child_fd]
+        assert process.wait(timeout=1) == -signal.SIGKILL
+    finally:
+        if child_fd is not None:
+            try:
+                signal.pidfd_send_signal(child_fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.close(child_fd)
+        kill_process_tree(process)
+        process.wait(timeout=5)
 
 
 def _is_alive(pid: int) -> bool:

@@ -1,8 +1,12 @@
 import random
 import subprocess
+import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from tests.utils.soak import pod_manipulation
+from tests.utils.soak.state import SoakPodTarget
 
 from miles.utils.test_utils import kubectl_reads
 
@@ -10,6 +14,61 @@ _CELL_ID = "actor-3"
 _RELEASE = "miles-run-abc123"
 _OTHER_RELEASE = "miles-run-def456"
 _NAMESPACE = "miles-e2e"
+
+
+class _ApiError(Exception):
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+
+@pytest.mark.parametrize("outcome", ["replaced", "missing", "already_deleting", "read_failed"])
+async def test_pod_deletion_requires_a_new_delete_and_confirmed_old_uid_absence(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """An existing deletion or failed observation cannot count as an applied fault."""
+    monkeypatch.setitem(
+        sys.modules,
+        "kubernetes_asyncio",
+        SimpleNamespace(
+            client=SimpleNamespace(
+                V1DeleteOptions=SimpleNamespace,
+                V1Preconditions=SimpleNamespace,
+                ApiException=_ApiError,
+            )
+        ),
+    )
+    before = SimpleNamespace(
+        metadata=SimpleNamespace(
+            uid="uid", resource_version="rv", deletion_timestamp="deleting" if outcome == "already_deleting" else None
+        )
+    )
+    after = (
+        SimpleNamespace(metadata=SimpleNamespace(uid="replacement"))
+        if outcome == "replaced"
+        else _ApiError(404 if outcome == "missing" else 500)
+    )
+    api = SimpleNamespace(
+        read_namespaced_pod=AsyncMock(side_effect=[before, after]), delete_namespaced_pod=AsyncMock()
+    )
+    pod = SoakPodTarget(namespace=_NAMESPACE, release=_RELEASE, name="pod", uid="uid")
+
+    if outcome in {"replaced", "missing"}:
+        assert await pod_manipulation._delete_and_confirm_pod(api=api, pod=pod) == {
+            "kind": "pod_deleted",
+            "namespace": _NAMESPACE,
+            "pod_name": "pod",
+            "pod_uid": "uid",
+        }
+    else:
+        with pytest.raises(AssertionError if outcome == "already_deleting" else _ApiError):
+            await pod_manipulation._delete_and_confirm_pod(api=api, pod=pod)
+    if outcome == "already_deleting":
+        api.delete_namespaced_pod.assert_not_called()
+    else:
+        assert api.delete_namespaced_pod.await_count == 1
+        preconditions = api.delete_namespaced_pod.call_args.kwargs["body"].preconditions
+        assert preconditions.uid == "uid" and preconditions.resource_version == "rv"
+
 
 _PODS_OF_RELEASE: dict[str, str] = {
     _RELEASE: "actor-3-0 actor-3-1",

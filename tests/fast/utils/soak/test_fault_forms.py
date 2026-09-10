@@ -16,15 +16,19 @@ from miles.utils.workers.cell_operations.base import FaultTarget
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 
-@pytest.mark.parametrize("status_code", [200, 503])
+@pytest.mark.parametrize("status_code", [200, 412, 503, None])
 async def test_async_http_injection_uses_the_recorded_target_and_propagates_failure(
-    monkeypatch: pytest.MonkeyPatch, status_code: int
+    monkeypatch: pytest.MonkeyPatch, status_code: int | None
 ) -> None:
-    """A selected cell is sent once and a refused HTTP response cannot count as success."""
+    """A receipt resolves an ambiguous submission without submitting the fault twice."""
     sent: list[httpx.Request] = []
 
-    def respond(request: httpx.Request) -> httpx.Response:
-        sent.append(request)
+    def respond(http_request: httpx.Request) -> httpx.Response:
+        sent.append(http_request)
+        if http_request.method == "GET":
+            return httpx.Response(status_code=200, json=receipt)
+        if status_code is None:
+            raise httpx.ReadTimeout("Reply lost", request=http_request)
         return httpx.Response(status_code=status_code)
 
     client_type = httpx.AsyncClient
@@ -38,17 +42,26 @@ async def test_async_http_injection_uses_the_recorded_target_and_propagates_fail
     request = SoakActionRequest(
         form_name=form.name, target=typed_cell("actor-7", "actor"), harms_cell=True, fault_target=identity
     )
-    if status_code == 200:
-        await form.execute(request)
-    else:
+    receipt = {
+        "request_id": request.request_id,
+        "target": identity.model_dump(mode="json"),
+        "mode": "sigkill",
+        "exited_pids": [42],
+    }
+    if status_code == 412:
         with pytest.raises(httpx.HTTPStatusError):
             await form.execute(request)
-    assert len(sent) == 1
+        assert len(sent) == 1
+    else:
+        assert await form.execute(request) == receipt
+        assert len(sent) == 2
+        assert sent[1].url.path == f"/api/v1/fault-receipts/{request.request_id}"
     assert sent[0].url.path == "/api/v1/cells/actor-7/inject-fault"
     assert json.loads(sent[0].content) == {
         "mode": "sigkill",
         "sub_index": 0,
         "expected_target": identity.model_dump(mode="json"),
+        "request_id": request.request_id,
     }
 
 
@@ -82,10 +95,17 @@ async def test_async_pod_exec_uses_the_selected_pod_and_rejects_a_missing_proces
             },
         ),
     )
-    command = AsyncMock(return_value=subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=""))
+    receipt = {
+        "request_id": request.request_id,
+        "target": request.pod.process_targets["engine"].model_dump(mode="json"),
+        "exited_pids": [42],
+    }
+    command = AsyncMock(
+        return_value=subprocess.CompletedProcess(args=[], returncode=returncode, stdout=json.dumps(receipt), stderr="")
+    )
     monkeypatch.setattr(fault_forms, "run_command", command)
     if returncode == 0:
-        await form.execute(request)
+        assert await form.execute(request) == receipt
     else:
         with pytest.raises(AssertionError, match="No process matching"):
             await form.execute(request)
@@ -104,6 +124,7 @@ async def test_async_pod_exec_uses_the_selected_pod_and_rejects_a_missing_proces
         "-m",
         "tests.utils.soak.process_target",
         "kill",
+        request.request_id,
     ]
     assert (
         ProcessTarget.model_validate_json(command.call_args.kwargs["stdin_data"])

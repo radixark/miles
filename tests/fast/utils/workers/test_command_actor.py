@@ -201,7 +201,7 @@ class TestInjectFault:
         """Crashing a worker must include every subprocess that belongs to that worker."""
         killed: list[int] = []
         monkeypatch.setattr(process_utils, "kill_process", _refuse_to_kill)
-        monkeypatch.setattr(process_utils, "kill_process_tree", lambda process: killed.append(process.pid))
+        monkeypatch.setattr(process_utils, "kill_process_tree_and_wait", lambda process: killed.append(process.pid))
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
 
@@ -231,7 +231,7 @@ class TestInjectFault:
     @pytest.mark.parametrize("mode", ["exit", "segfault", "deadlock"])
     def test_every_other_failure_mode_is_rejected(self, monkeypatch: pytest.MonkeyPatch, mode: str):
         """A process exits, segfaults and deadlocks from the inside; no signal an outsider sends reproduces that."""
-        monkeypatch.setattr(process_utils, "kill_process_tree", _refuse_to_kill)
+        monkeypatch.setattr(process_utils, "kill_process_tree_and_wait", _refuse_to_kill)
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
 
@@ -249,7 +249,7 @@ class TestInjectFault:
     def test_the_actor_process_survives_the_injection(self, monkeypatch: pytest.MonkeyPatch):
         """Production loses the engine, not its supervisor, so crashing the actor would be the wrong fault."""
         monkeypatch.setattr(fault_injector, "inject_fault", _refuse_to_inject)
-        monkeypatch.setattr(process_utils, "kill_process_tree", lambda process: None)
+        monkeypatch.setattr(process_utils, "kill_process_tree_and_wait", lambda process: None)
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
 

@@ -10,11 +10,38 @@ from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.state import (
     EventLog,
+    SoakActionAppliedEvent,
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakObservation,
 )
+from tests.utils.soak.views import compute_num_successful_injections_of_form
+
+
+@pytest.mark.parametrize("evidence", [None, {"exited_pids": [42]}])
+async def test_runner_records_applied_before_result_only_when_form_returns_evidence(evidence: dict | None) -> None:
+    """A completed command earns coverage only when its form supplies actual effect evidence."""
+
+    async def execute(request: SoakActionRequest) -> dict | None:
+        return evidence
+
+    log = EventLog()
+    forms = {"actor": [AsyncStubFaultForm(name="fault", execute=execute)]}
+    runner = SoakRunner(
+        observer=SoakObserver(base_url="http://control", cell_types={"actor"}),
+        scheduler=SoakActionScheduler(rng=random.Random(0), mean_intervals={"actor": 1}, forms=forms),
+        forms=forms,
+        event_log=log,
+    )
+    request = SoakActionRequest(target=typed_cell("actor-0", "actor"), form_name="fault", harms_cell=True)
+    log.note_action_requested(request)
+    await runner._execute(request)
+    assert isinstance(log.events[-1], SoakActionResultEvent) and log.events[-1].returned
+    assert compute_num_successful_injections_of_form(log.events, form_name="fault") == int(evidence is not None)
+    if evidence is not None:
+        assert isinstance(log.events[-2], SoakActionAppliedEvent)
+        assert log.events[-2].evidence == evidence
 
 
 def test_pending_action_does_not_block_observation_and_stop_reaps_it_before_final_snapshot() -> None:

@@ -140,7 +140,14 @@ class RayWorkerManager:
         return FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash=cell.get_info().workers_hash)
 
     def inject_fault(
-        self, cell_id: str, *, mode: str, worker_in_cell_index: int, expected_target: FaultTarget | None = None
+        self,
+        cell_id: str,
+        *,
+        mode: str,
+        worker_in_cell_index: int,
+        expected_target: FaultTarget | None = None,
+        request_id: str | None = None,
+        receipt_url: str | None = None,
     ) -> None:
         cell = self._find_cell(cell_id)
         if expected_target is not None and (
@@ -156,7 +163,12 @@ class RayWorkerManager:
                 f"worker_in_cell_index {worker_in_cell_index} out of range for cell {cell_id} "
                 f"(has {len(cell.actors)} workers)"
             )
-        cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(mode)
+        if request_id is None:
+            cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(mode)
+        else:
+            cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(
+                mode, request_id=request_id, **({"receipt_url": receipt_url} if receipt_url is not None else {})
+            )
 
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
         addrs = self._find_actor(worker_name).self_addrs

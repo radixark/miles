@@ -188,8 +188,8 @@ def _serve_command(spec: ServeWorkerSpec, plan: LaunchPlan) -> list[str]:
         "--",
     ] + plan.worker_argv
     if workers_per_pod == 1:
-        return serve
-    return [
+        return _with_fault_witness_supervisor(serve, plan=plan)
+    command = [
         *interpreter_prefix,
         "-m",
         _SUPERVISOR_MODULE,
@@ -197,6 +197,13 @@ def _serve_command(spec: ServeWorkerSpec, plan: LaunchPlan) -> list[str]:
         str(workers_per_pod),
         "--",
     ] + serve
+    return _with_fault_witness_supervisor(command, plan=plan)
+
+
+def _with_fault_witness_supervisor(command: list[str], *, plan: LaunchPlan) -> list[str]:
+    if "--fault-witness-enable" not in plan.worker_argv:
+        return command
+    return [*python_argv_prefix(), "-m", "miles.utils.test_utils.fault_witness_supervisor", *command]
 
 
 def _is_sub_node(pairing_layout: PairingLayout | None) -> bool:

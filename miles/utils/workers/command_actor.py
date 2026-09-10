@@ -5,6 +5,7 @@ import threading
 
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.test_utils import fault_injector
+from miles.utils.test_utils.fault_witness import publish_exit_receipt
 from miles.utils.workers import process_utils
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ class CommandActor(NodeProbeMixin):
     def __init__(self) -> None:
         self._process: subprocess.Popen | None = None
         self._shutting_down = False
+        self._fault_lock = threading.Lock()
 
     def run(self, cmd: str, envs: dict[str, str]) -> None:
         assert self._process is None, "CommandActor.run can only be called once"
@@ -34,7 +36,7 @@ class CommandActor(NodeProbeMixin):
         assert self._process is not None, "CommandActor has no subprocess to kill"
         process_utils.kill_process_tree(self._process)
 
-    def inject_fault(self, mode: str) -> None:
+    def inject_fault(self, mode: str, *, request_id: str | None = None, receipt_url: str | None = None) -> None:
         assert self._process is not None, "CommandActor has no subprocess to inject a fault into"
         assert (failure_mode := fault_injector.FailureMode(mode)) is fault_injector.FailureMode.SIGKILL, (
             f"{failure_mode.value} is a fault a process inflicts on itself from the inside, and no signal reproduces "
@@ -42,14 +44,20 @@ class CommandActor(NodeProbeMixin):
         )
 
         logger.warning(f"CommandActor kills its subprocess group pid={self._process.pid}")
-        process_utils.kill_process_tree(self._process)
+        with self._fault_lock:
+            exited_pids = process_utils.kill_process_tree_and_wait(self._process)
+            if request_id is not None:
+                logger.info("Fault injection request_id=%s exited_pids=%s", request_id, exited_pids)
+                if receipt_url is not None:
+                    publish_exit_receipt(receipt_url=receipt_url, request_id=request_id, exited_pids=exited_pids)
 
     def _babysit(self, process: subprocess.Popen) -> None:
         returncode = process.wait()
 
-        if self._shutting_down:
-            logger.info(f"CommandActor subprocess exited with returncode={returncode} during shutdown")
-            return
+        with self._fault_lock:
+            if self._shutting_down:
+                logger.info(f"CommandActor subprocess exited with returncode={returncode} during shutdown")
+                return
 
-        logger.info(f"CommandActor exits since its subprocess exited with returncode={returncode}")
-        os._exit(returncode if 0 <= returncode <= 255 else 1)
+            logger.info(f"CommandActor exits since its subprocess exited with returncode={returncode}")
+            os._exit(returncode if 0 <= returncode <= 255 else 1)
