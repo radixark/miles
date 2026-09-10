@@ -507,27 +507,24 @@ class TinkerService:
             )
         except Exception as error:  # noqa: BLE001  can fail after some slots already stepped
             logger.exception("the optimizer step failed at the backend level")
-            message = f"model unloaded after a failed optimizer step ({type(error).__name__}: {error}); restore from a checkpoint"
             for stream, pending in entries:
-                self.futures.fail(pending.command.request_id, message, "server")
-                stream.finish(pending)
-                await self._evict_model(stream.model_id, message, "server")
+                await self._retire_after_failed_step(stream, pending, f"{type(error).__name__}: {error}")
             return
         for stream, pending in entries:
             outcome = outcomes[stream.slot]
             if "error" in outcome:
-                self.futures.fail(pending.command.request_id, outcome["error"], "server")
-                stream.finish(pending)
-                # the slot may hold a half-applied or rank-divergent step; it must not keep serving
-                await self._evict_model(
-                    stream.model_id,
-                    f"model unloaded after a failed optimizer step ({outcome['error']}); restore from a checkpoint",
-                    "server",
-                )
+                await self._retire_after_failed_step(stream, pending, outcome["error"])
             else:
                 metrics = {key: float(value) for key, value in outcome.items()}
                 self.futures.resolve(pending.command.request_id, {"op": "optim_step", "metrics": metrics})
                 stream.finish(pending)
+
+    async def _retire_after_failed_step(self, stream, pending, error: str) -> None:
+        """The slot may hold a half-applied or rank-divergent step; it must not keep serving."""
+        message = f"model unloaded after a failed optimizer step ({error}); restore from a checkpoint"
+        self.futures.fail(pending.command.request_id, message, "server")
+        stream.finish(pending)
+        await self._evict_model(stream.model_id, message, "server")
 
     async def _fail_if_poisoned(self, stream, pending) -> bool:
         """Fail the next optimizer step when a batch discarded its accumulated gradients."""
