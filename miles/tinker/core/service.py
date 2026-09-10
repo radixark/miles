@@ -500,9 +500,18 @@ class TinkerService:
         entries = [entry for entry in entries if not await self._fail_if_poisoned(*entry)]
         if not entries:
             return
-        outcomes = await self.backend.optim_step(
-            {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
-        )
+        try:
+            outcomes = await self.backend.optim_step(
+                {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
+            )
+        except Exception as error:  # noqa: BLE001  can fail after some slots already stepped
+            logger.exception("the optimizer step failed at the backend level")
+            message = f"model unloaded after a failed optimizer step ({type(error).__name__}: {error}); restore from a checkpoint"
+            for stream, pending in entries:
+                self.futures.fail(pending.command.request_id, message, "server")
+                stream.finish(pending)
+                await self._evict_model(stream.model_id, message, "server")
+            return
         for stream, pending in entries:
             outcome = outcomes[stream.slot]
             if "error" in outcome:
