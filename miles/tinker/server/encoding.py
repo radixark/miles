@@ -67,6 +67,11 @@ def model_input_tokens(model_input: dict) -> list[int]:
 
 def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) -> dict:
     """One decoded datum (token list + loss_fn_inputs lists) -> internal datum."""
+    for name, values in inputs.items():
+        if any(isinstance(value, (list, tuple)) for value in values):
+            raise UserInputError(
+                f"datum {index}: loss_fn_inputs[{name!r}] must be 1-D; multi-target inputs are not supported"
+            )
     targets = [int(t) for t in inputs["target_tokens"]]
     if len(targets) != len(input_tokens):
         raise UserInputError(
