@@ -462,17 +462,23 @@ class TinkerService:
                 )
                 ref.stream.finish(request)
 
-    async def _discard_batch_runs(self, batch: BatchUnit, error: str, category: str) -> None:
-        """Fail each affected batch run and discard its gradients after a backward failure."""
-        streams = {ref.stream for ref in batch.datums}
-        for stream in streams:
+    def _fail_batch_runs(self, batch: BatchUnit, error: str, category: str) -> None:
+        for stream in {ref.stream for ref in batch.datums}:
             for pending in list(stream.open_batch_run()):
                 self.futures.fail(pending.command.request_id, error, category)
                 stream.finish(pending)
+
+    async def _discard_batch_runs(self, batch: BatchUnit, error: str, category: str) -> None:
+        """Fail each affected batch run and discard its gradients after a backward failure."""
+        self._fail_batch_runs(batch, error, category)
         if batch.op == CommandOp.FORWARD_BACKWARD:
-            for slot in sorted({stream.slot for stream in streams}):
-                self._poisoned_slots[slot] = (error, category)
-                await self.backend.zero_grads(slot)
+            for stream in sorted({ref.stream for ref in batch.datums}, key=lambda s: s.slot):
+                self._poisoned_slots[stream.slot] = (error, category)
+                try:
+                    await self.backend.zero_grads(stream.slot)
+                except Exception:  # noqa: BLE001  the accumulation is unknown; poison is not enough
+                    logger.exception(f"zero_grads({stream.slot}) failed")
+                    await self._evict_model(stream.model_id, error, "server")
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
