@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -286,6 +287,9 @@ class LinearTrajectory:
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
 
+_REMOVED_SESSION_IDS_REMEMBERED = 1024
+
+
 class SessionRegistry:
     """Session ID -> trajectory mapping with shared tokenizer resources.
 
@@ -302,6 +306,9 @@ class SessionRegistry:
         message_matcher: SessionMessageMatcher | None = None,
     ):
         self.sessions: dict[str, LinearTrajectory] = {}
+        # Recently removed ids, so a 404 can say "deleted" instead of "unknown" (#956). Bounded: this is a
+        # diagnostic, not a registry; ids older than the window degrade to "unknown".
+        self._removed_session_ids: deque[str] = deque(maxlen=_REMOVED_SESSION_IDS_REMEMBERED)
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
         self.comparator = tito_tokenizer.create_comparator()
@@ -317,12 +324,18 @@ class SessionRegistry:
     def get_session(self, session_id: str) -> LinearTrajectory:
         session = self.sessions.get(session_id)
         if session is None:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            raise self._not_found(session_id)
         return session
 
     def remove_session(self, session_id: str) -> None:
         if self.sessions.pop(session_id, None) is None:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            raise self._not_found(session_id)
+        self._removed_session_ids.append(session_id)
+
+    def _not_found(self, session_id: str) -> SessionNotFoundError:
+        if session_id in self._removed_session_ids:
+            return SessionNotFoundError(f"session not found (deleted): session_id={session_id}")
+        return SessionNotFoundError(f"session not found: session_id={session_id}")
 
     def compute_session_mismatch(self, session: LinearTrajectory) -> list[dict] | None:
         """Compare accumulated token IDs against canonical chat template output.
