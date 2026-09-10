@@ -1,5 +1,7 @@
 from contextlib import contextmanager
 
+from miles.backends.training_utils.model_companion import ModelCompanionUtils
+
 try:
     from megatron.core.utils import unwrap_model
 except ImportError:
@@ -23,7 +25,8 @@ def patch_megatron_model(model):
                 module._maintain_float32_expert_bias()
 
     try:
-        yield
+        with ModelCompanionUtils.hide(model):
+            yield
     finally:
         if attribute_was_added:
             delattr(model_config, "share_embeddings_and_output_weights")

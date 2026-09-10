@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
@@ -29,6 +30,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.model_companion import ModelCompanionUtils, TrainingSampleIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -455,6 +457,7 @@ def train_one_step(
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
     multi_lora = is_multi_lora_enabled(args)
+    witness_start = data_iterator[0].offset
 
     if multi_lora:
         from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
@@ -576,6 +579,12 @@ def train_one_step(
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
     )
+    local_consumed_identities = (
+        _consumed_sample_identities(data_iterator[0], start=witness_start)
+        if not disable_optimizer and not multi_lora
+        else []
+    )
+    consumed_identities: list[TrainingSampleIdentity] = []
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
@@ -590,7 +599,14 @@ def train_one_step(
 
         metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced, num_rollouts=metric_num_rollouts
+            args,
+            model,
+            parallel_state,
+            losses_reduced=losses_reduced,
+            num_rollouts=metric_num_rollouts,
+            collect_training_metadata=lambda: consumed_identities.extend(
+                _gather_sample_identities(local_consumed_identities)
+            ),
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
@@ -603,9 +619,9 @@ def train_one_step(
         else:
             grad_norm = optimizer.get_grad_norm()
             if isinstance(grad_norm, torch.Tensor):
-                valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
+                valid_step = valid_step and not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
-                valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+                valid_step = valid_step and not (math.isnan(grad_norm) or math.isinf(grad_norm))
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
@@ -619,6 +635,9 @@ def train_one_step(
     # step and subsequent zero_grad release them.
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
+
+    if parallel_state.indep_dp.size == 1 and not disable_optimizer and not multi_lora:
+        consumed_identities = _gather_sample_identities(local_consumed_identities)
 
     if not disable_optimizer and valid_step:
         if multi_lora:
@@ -634,6 +653,11 @@ def train_one_step(
             # Update learning rate.
             assert update_successful
             opt_param_scheduler.step(increment=num_rollouts)
+
+        if not multi_lora:
+            ModelCompanionUtils.record(model=model, samples=consumed_identities)
+    elif outcome == TrainStepOutcome.NORMAL and not disable_optimizer and not multi_lora:
+        ModelCompanionUtils.record(model=model, samples=consumed_identities, is_skipped=True)
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
@@ -666,6 +690,35 @@ def train_one_step(
             return loss_reduced, grad_norm, outcome
 
     return {}, grad_norm, outcome
+
+
+def _consumed_sample_identities(data_iterator: DataIterator, *, start: int) -> list[TrainingSampleIdentity]:
+    data = data_iterator.rollout_data
+    fields = ["source_sample_indices", "sample_row_indices", "sample_row_counts"]
+    if any(field not in data for field in fields):
+        raise ValueError("Training data is missing CPU witness sample identity fields")
+    indices = (
+        [index for batch in data_iterator.micro_batch_indices[start : data_iterator.offset] for index in batch]
+        if data_iterator.micro_batch_indices is not None
+        else list(range(start, data_iterator.offset))
+    )
+    return [
+        TrainingSampleIdentity(
+            source_sample_index=data["source_sample_indices"][index],
+            row_index=data["sample_row_indices"][index],
+            row_count=data["sample_row_counts"][index],
+        )
+        for index in indices
+    ]
+
+
+def _gather_sample_identities(local: list[TrainingSampleIdentity]) -> list[TrainingSampleIdentity]:
+    parallel = get_parallel_state()
+    if parallel.effective_dp.size == 1:
+        return local
+    gathered: list[list[TrainingSampleIdentity] | None] = [None] * parallel.effective_dp.size
+    dist.all_gather_object(gathered, local, group=parallel.effective_dp.gloo_group)
+    return [identity for identities in gathered if identities is not None for identity in identities]
 
 
 def finalize_model_grads_with_empty_cache(*args, **kwargs):

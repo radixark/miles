@@ -3,11 +3,16 @@ import inspect
 import sys
 from argparse import Namespace
 from collections.abc import Iterator
+from functools import partial
 from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
+import torch
+
+from miles.backends.training_utils.model_companion import ModelCompanion, TrainingSampleIdentity
+from miles.utils.tensor_backper import TensorBackuper
 
 _ACTOR_MODULE_NAME = "miles.backends.megatron_utils.actor"
 
@@ -49,6 +54,54 @@ class TestCriticValuesValueSpec:
     def test_critic_values_are_shipped_as_a_typed_ragged_field(self, actor_module: ModuleType) -> None:
         """Variable-length critic sequences require the typed ragged object-store codec."""
         assert actor_module.CRITIC_VALUES_VALUE_SPEC["values"].codec == "typed_ragged"
+
+
+def test_actor_ref_actor_switch_restores_model_companion(
+    actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actor backup tag restores its companion after a ref model switch."""
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    real_empty_like = torch.empty_like
+    monkeypatch.setattr(
+        torch,
+        "empty_like",
+        lambda tensor, **kwargs: real_empty_like(
+            tensor, **{key: value for key, value in kwargs.items() if key != "pin_memory"}
+        ),
+    )
+    train_actor = object.__new__(actor_module.MegatronTrainRayActor)
+    train_actor.args = SimpleNamespace(colocate=False, keep_old_actor=False, megatron_to_hf_mode="bridge")
+    train_actor.with_ref = True
+    train_actor.with_opd_teacher = False
+    train_actor.model = [torch.nn.Module()]
+    train_actor.model[0].add_module("model_companion", ModelCompanion())
+    weight = torch.nn.Parameter(torch.tensor([1.0]))
+    train_actor.model[0].register_parameter("weight", weight)
+    train_actor.weights_backuper = TensorBackuper.create(
+        source_getter=partial(train_actor._named_actor_weights, include_model_companion=True)
+    )
+    train_actor._active_model_tag = "actor"
+    actor_sample = TrainingSampleIdentity(source_sample_index=7, row_index=0, row_count=1)
+    ref_sample = TrainingSampleIdentity(source_sample_index=8, row_index=0, row_count=1)
+    train_actor.model[0].model_companion.record([actor_sample])
+    train_actor.weights_backuper.backup("actor")
+    weight.data.fill_(2)
+    train_actor.model[0].model_companion.record([ref_sample])
+    train_actor.weights_backuper.backup("ref")
+    train_actor._active_model_tag = "ref"
+
+    assert set(train_actor._get_actor_weights()) == {"vp_stages.0.weight"}
+
+    train_actor._switch_model("actor")
+
+    assert train_actor.model[0].model_companion.snapshot() == {actor_sample: 1}
+    assert torch.equal(weight, torch.tensor([1.0]))
+    assert set(train_actor._get_actor_weights()) == {"vp_stages.0.weight"}
+
+    train_actor._switch_model("ref")
+
+    assert train_actor.model[0].model_companion.snapshot() == {actor_sample: 1, ref_sample: 1}
+    assert torch.equal(weight, torch.tensor([2.0]))
 
 
 class _FakeController:

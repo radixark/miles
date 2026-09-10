@@ -1,18 +1,33 @@
 import logging
 import pickle
+from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
 from miles.backends.megatron_utils.ft import checkpoint_transfer, in_memory_checkpoint
 from miles.backends.megatron_utils.ft.checkpoint_transfer import _TensorViewCodec, _TransportCodec
+from miles.backends.training_utils.model_companion import ModelCompanion, TrainingSampleIdentity
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 _CKPT_TRANSFER_LOGGER = "miles.backends.megatron_utils.ft.checkpoint_transfer"
+
+
+@pytest.fixture()
+def single_rank_gloo(tmp_path: Path) -> Iterator[dist.ProcessGroup]:
+    """Provide the real single-rank process group required by integrity validation."""
+    rendezvous = tmp_path / "gloo-rendezvous"
+    dist.init_process_group(backend="gloo", init_method=f"file://{rendezvous}", rank=0, world_size=1)
+    try:
+        yield dist.group.WORLD
+    finally:
+        dist.destroy_process_group()
 
 
 class _FakeTransport:
@@ -53,7 +68,10 @@ def state_dict() -> MCoreTensorAwareStateDict:
             "step": ShardedTensor.from_rank_offsets("step", torch.tensor([100], dtype=torch.int64)),
         },
     }
-    common = {"iteration": 0, "args_repr": "dummy"}
+    common = {
+        "iteration": 0,
+        "args_repr": "dummy",
+    }
     return MCoreTensorAwareStateDict(common=common, sharded_state_dict=sharded_state_dict)
 
 
@@ -104,6 +122,37 @@ class TestSerializeForTransport:
 
 
 class TestDeserializeFromTransport:
+    def test_round_trip_preserves_the_real_model_companion_parameters(
+        self, single_rank_gloo: dist.ProcessGroup
+    ) -> None:
+        """A surviving cell donor restores both witness outcomes into a healing receiver."""
+        donor = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        sample = TrainingSampleIdentity(source_sample_index=7, row_index=0, row_count=1)
+        skipped_sample = TrainingSampleIdentity(source_sample_index=8, row_index=0, row_count=1)
+        donor.record([sample])
+        donor.record([skipped_sample], is_skipped=True)
+        state_dict, _ = MCoreTensorAwareStateDict.from_state_dict(
+            {"model": donor.sharded_state_dict(prefix="model_companion.")},
+            algo="atomic",
+            parallelization_group=single_rank_gloo,
+        )
+
+        donor.record([sample])
+        donor.record([skipped_sample], is_skipped=True)
+
+        _, restored = _TransportCodec.decode(_TransportCodec.encode(state_dict=state_dict, iteration=11))
+
+        receiver = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        receiver_state = restored.to_state_dict(
+            {"model": receiver.sharded_state_dict(prefix="model_companion.")},
+            algo="atomic",
+            parallelization_group=single_rank_gloo,
+        )
+        receiver.load_state_dict({"rows": receiver_state["model"]["model_companion.rows"]})
+
+        assert receiver.snapshot() == {sample: 1}
+        assert receiver.snapshot(is_skipped=True) == {skipped_sample: 1}
+
     def test_round_trip_preserves_tensor_values_iteration_and_common(self, state_dict: MCoreTensorAwareStateDict):
         original_tensors = [t.clone() for t in state_dict.tensors]
         original_common = dict(state_dict.common)

@@ -14,6 +14,7 @@ import torch
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
+from miles.backends.training_utils.model_companion import ModelCompanionUtils
 from miles.backends.training_utils.parallel import get_parallel_state
 
 
@@ -22,11 +23,15 @@ def named_params_and_buffers(
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
     translate_gpu_to_cpu: bool = False,
+    include_model_companion: bool = False,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     if convert_to_global_name:
         ans = _named_params_and_buffers_global(args, model)
     else:
         ans = _named_params_and_buffers_vanilla(model)
+
+    if not include_model_companion:
+        ans = ((name, tensor) for name, tensor in ans if not ModelCompanionUtils.is_parameter_name(name))
 
     if translate_gpu_to_cpu:
         ans = ((name, _maybe_get_cpu_backup(tensor)) for name, tensor in ans)

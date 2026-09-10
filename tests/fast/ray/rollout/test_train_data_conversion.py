@@ -32,6 +32,23 @@ def _ray_minicluster(ray_local_mode):
 
 
 class TestConvertSamplesToTrainData:
+    def test_repeated_unstamped_sample_index_remains_duplicate_identity(self):
+        """Unstamped duplicate indices remain visible as duplicate rows."""
+        args = make_args(advantage_estimator="grpo", rewards_normalization=False)
+        samples = [make_sample(index=7), make_sample(index=7), make_sample(index=8)]
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["source_sample_indices"] == [7, 7, 8]
+        assert out["sample_row_indices"] == [0, 0, 0]
+        assert out["sample_row_counts"] == [1, 1, 1]
+
     def test_default_path_produces_required_keys(self):
         args = make_args(advantage_estimator="grpo", rewards_normalization=False)
         samples = make_samples_grouped(n_groups=2, group_size=4)
@@ -247,7 +264,7 @@ class TestConvertSamplesToTrainData:
 
         assert out["weight_versions"] == [[[], [{"version": "v1", "abs_start": 2, "abs_end": 4}]], []]
 
-    def test_custom_convert_func_short_circuits(self):
+    def test_custom_convert_func_preserves_output_and_adds_sample_identity(self):
         args = make_args()
         sentinel = {"foo": "bar"}
         out = convert_samples_to_train_data(
@@ -258,6 +275,9 @@ class TestConvertSamplesToTrainData:
             custom_reward_post_process_func=None,
         )
         assert out is sentinel
+        assert out["source_sample_indices"] == [0]
+        assert out["sample_row_indices"] == [0]
+        assert out["sample_row_counts"] == [1]
 
     def test_dynamic_global_batch_size_metadata_must_match(self):
         args = make_args(use_dynamic_global_batch_size=True, rewards_normalization=False)

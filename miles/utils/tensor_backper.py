@@ -67,21 +67,26 @@ class _TensorBackuperNormal(TensorBackuper):
     def backup(self, tag: str) -> None:
         backup_dict = self._backups[tag]
         for name, param in self._source_getter():
-            if name not in backup_dict:
-                backup_dict[name] = torch.empty_like(param, device=torch.device("cpu"), pin_memory=True)
+            if name not in backup_dict or backup_dict[name].shape != param.shape:
+                backup_dict[name] = torch.empty_like(
+                    param, device=torch.device("cpu"), pin_memory=param.device.type == "cuda"
+                )
             backup_dict[name].copy_(param.detach(), non_blocking=True)
         torch.cuda.synchronize()
 
     @torch.no_grad()
     def copy(self, *, src_tag: str, dst_tag: str):
-        for name in self._backups[dst_tag]:
-            self._backups[dst_tag][name].copy_(self._backups[src_tag][name])
+        for name, source in self._backups[src_tag].items():
+            if name not in self._backups[dst_tag] or self._backups[dst_tag][name].shape != source.shape:
+                self._backups[dst_tag][name] = torch.empty_like(source)
+            self._backups[dst_tag][name].copy_(source)
 
     @torch.no_grad()
     def restore(self, tag: str) -> None:
         backup_dict = self._backups[tag]
         for name, param in self._source_getter():
             assert name in backup_dict
+            _resize_cpu_tensor(target=param, source=backup_dict[name])
             param.copy_(backup_dict[name], non_blocking=True)
         torch.cuda.synchronize()
 
@@ -115,8 +120,10 @@ class _TensorBackuperMainCast(TensorBackuper):
         if tag != "actor":
             return self._others.backup(tag)
         for name, tensor in self._ctx.extras_getter():
-            if name not in self._extras_backup:
-                self._extras_backup[name] = torch.empty_like(tensor, device=torch.device("cpu"), pin_memory=True)
+            if name not in self._extras_backup or self._extras_backup[name].shape != tensor.shape:
+                self._extras_backup[name] = torch.empty_like(
+                    tensor, device=torch.device("cpu"), pin_memory=tensor.device.type == "cuda"
+                )
             self._extras_backup[name].copy_(tensor.detach(), non_blocking=True)
             self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
         torch.cuda.synchronize()
@@ -134,6 +141,7 @@ class _TensorBackuperMainCast(TensorBackuper):
         for model_chunk in self._ctx.model_chunks:
             model_chunk.start_param_sync(force_sync=True)
         for name, tensor in self._ctx.extras_getter():
+            _resize_cpu_tensor(target=tensor, source=self._extras_backup[name])
             tensor.copy_(self._extras_backup[name], non_blocking=True)
         torch.cuda.synchronize()
         if self._expected_hashes is not None:
@@ -179,3 +187,10 @@ def _hash_tensor_sha256(x: torch.Tensor) -> str:
     """Real (cryptographic) hash: a mismatch here has to mean a bug."""
     data = x.detach().cpu().contiguous()
     return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()
+
+
+def _resize_cpu_tensor(*, target: torch.Tensor, source: torch.Tensor) -> None:
+    if target.shape == source.shape:
+        return
+    assert target.device.type == "cpu", f"Cannot resize non-CPU tensor from {target.shape} to {source.shape}"
+    target.resize_(source.shape)
