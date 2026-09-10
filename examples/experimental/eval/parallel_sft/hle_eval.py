@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import random
 import re
 import time
 from collections import defaultdict
@@ -45,6 +47,202 @@ Return a JSON object with exactly these fields:
 - correct: "yes" or "no"
 """
 
+# Ordinary English words with no bearing on any answer. Rendered in a random
+# order they read as nonsense, which is the point: the filler must occupy context
+# without giving the model anything to reason about.
+FILLER_WORDS: tuple[str, ...] = (
+    "amber",
+    "anchor",
+    "apron",
+    "arbor",
+    "attic",
+    "badger",
+    "bagel",
+    "bamboo",
+    "barrel",
+    "basket",
+    "beacon",
+    "beetle",
+    "bellow",
+    "birch",
+    "biscuit",
+    "blanket",
+    "blossom",
+    "boulder",
+    "bramble",
+    "brass",
+    "breeze",
+    "bridle",
+    "brook",
+    "bucket",
+    "bundle",
+    "burrow",
+    "butter",
+    "cabin",
+    "candle",
+    "canvas",
+    "canyon",
+    "carpet",
+    "cattle",
+    "cedar",
+    "cellar",
+    "chalk",
+    "chestnut",
+    "chimney",
+    "cider",
+    "cinder",
+    "clover",
+    "cobble",
+    "compass",
+    "copper",
+    "cotton",
+    "cradle",
+    "crimson",
+    "crumble",
+    "cushion",
+    "dapple",
+    "dawn",
+    "dimple",
+    "drift",
+    "drizzle",
+    "dusk",
+    "ember",
+    "fable",
+    "falcon",
+    "feather",
+    "fennel",
+    "ferry",
+    "fiddle",
+    "flannel",
+    "flicker",
+    "fossil",
+    "furrow",
+    "gable",
+    "garland",
+    "gentle",
+    "ginger",
+    "glimmer",
+    "gravel",
+    "grove",
+    "hammock",
+    "harbor",
+    "harvest",
+    "hazel",
+    "heather",
+    "hollow",
+    "honey",
+    "hush",
+    "ivory",
+    "jasmine",
+    "jingle",
+    "juniper",
+    "kettle",
+    "kindle",
+    "lantern",
+    "lattice",
+    "lavender",
+    "ledger",
+    "lemon",
+    "linen",
+    "lumber",
+    "mantle",
+    "maple",
+    "marble",
+    "meadow",
+    "mellow",
+    "mingle",
+    "mitten",
+    "mossy",
+    "murmur",
+    "nectar",
+    "nestle",
+    "nimble",
+    "nutmeg",
+    "oaken",
+    "orchard",
+    "otter",
+    "paddle",
+    "pantry",
+    "parsley",
+    "pebble",
+    "pepper",
+    "pewter",
+    "pickle",
+    "pillow",
+    "plaster",
+    "plume",
+    "pond",
+    "porch",
+    "pottery",
+    "prairie",
+    "puddle",
+    "quilt",
+    "quiver",
+    "rafter",
+    "ramble",
+    "raven",
+    "ribbon",
+    "ripple",
+    "river",
+    "rubble",
+    "rustic",
+    "saddle",
+    "saffron",
+    "sandal",
+    "satchel",
+    "scarlet",
+    "shingle",
+    "shutter",
+    "sizzle",
+    "slumber",
+    "smolder",
+    "sorrel",
+    "sparrow",
+    "spindle",
+    "spruce",
+    "stable",
+    "steeple",
+    "stitch",
+    "sturdy",
+    "sundial",
+    "supper",
+    "swallow",
+    "tangle",
+    "tassel",
+    "teapot",
+    "thimble",
+    "thistle",
+    "thunder",
+    "timber",
+    "tinder",
+    "toffee",
+    "trellis",
+    "trestle",
+    "trickle",
+    "trough",
+    "tumble",
+    "tundra",
+    "twilight",
+    "umber",
+    "velvet",
+    "wagon",
+    "walnut",
+    "wander",
+    "warble",
+    "whisker",
+    "whistle",
+    "wicker",
+    "willow",
+    "winnow",
+    "wobble",
+    "woolen",
+    "yarrow",
+    "yonder",
+    "zephyr",
+)
+
+DEFAULT_FILLER_TRAILER = "The text above, after the question, is meaningless filler. Answer the question before it."
+
 
 class Args(Tap):
     input: str
@@ -65,6 +263,13 @@ class Args(Tap):
     request_timeout_sec: int = 3600
     disable_thinking: bool = False
     multiple_choice_only: bool = False
+
+    # Context-position experiments: pad every templated prompt to this many
+    # tokens with nonsense words placed after the question, so the model must
+    # answer from deep inside its context window. Requires --max_context_length.
+    filler_target_prompt_tokens: int | None = None
+    filler_seed: str = "hle-filler-v1"
+    filler_trailer: str = DEFAULT_FILLER_TRAILER
 
     # ``judge_base_url`` is an OpenAI-compatible base URL, including ``/v1``.
     # This works with an independently hosted SGLang server or router.
@@ -181,28 +386,107 @@ def judge_payload(args: Args, row: dict[str, Any], candidate_answer: str) -> dic
     return payload
 
 
+def render_filler(rng: random.Random, word_count: int) -> str:
+    """Render ``word_count`` random dictionary words as sentence-shaped nonsense."""
+    words = [rng.choice(FILLER_WORDS) for _ in range(word_count)]
+    sentences = []
+    index = 0
+    while index < len(words):
+        chunk = words[index : index + rng.randint(6, 14)]
+        sentences.append(chunk[0].capitalize() + " " + " ".join(chunk[1:]) + ".")
+        index += len(chunk)
+    paragraphs = [" ".join(sentences[start : start + 8]) for start in range(0, len(sentences), 8)]
+    return "\n\n".join(paragraphs)
+
+
+def compose_filler_message(base_prompt: str, filler: str, trailer: str) -> str:
+    """Place the filler after the question so the task sits at the start of the context."""
+    parts = [base_prompt, filler]
+    if trailer:
+        parts.append(trailer)
+    return "\n\n".join(parts)
+
+
+def templated_prompt_tokens(tokenizer: Any, args: Args, content: str) -> int:
+    return len(
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=not args.disable_thinking,
+            return_dict=False,
+        )
+    )
+
+
+def build_filler_message(tokenizer: Any, args: Args, row: dict[str, Any], base_prompt: str) -> tuple[str, int]:
+    """Pad the prompt with filler until the templated length reaches the target.
+
+    Returns the message and its templated token count. The count lands on the
+    target exactly when a word boundary allows it and otherwise a few tokens
+    below it; it never exceeds the target.
+    """
+    target = args.filler_target_prompt_tokens
+    assert target is not None
+    rng = random.Random(f"{args.filler_seed}:{row['id']}")
+    overhead = templated_prompt_tokens(tokenizer, args, compose_filler_message(base_prompt, "x", args.filler_trailer))
+    need = target - overhead
+    if need <= 0:
+        raise ValueError(f"HLE row {row['id']} already exceeds the filler target: {overhead} prompt tokens")
+    # Every word costs at least one token, so this stream is long enough.
+    text = render_filler(rng, need + 64)
+    encoded = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+    offsets = encoded["offset_mapping"]
+    best: tuple[str, int] | None = None
+    seen: set[int] = set()
+    token_count = min(need, len(offsets))
+    while token_count not in seen:
+        seen.add(token_count)
+        end = offsets[max(token_count, 1) - 1][1]
+        cut = text.rfind(" ", 0, end)
+        message = compose_filler_message(base_prompt, text[: cut if cut > 0 else end].rstrip(), args.filler_trailer)
+        count = templated_prompt_tokens(tokenizer, args, message)
+        if count == target:
+            return message, count
+        if count < target and (best is None or count > best[1]):
+            best = (message, count)
+        token_count = min(max(token_count + target - count, 1), len(offsets))
+    if best is None:
+        raise ValueError(f"HLE row {row['id']}: could not fit filler under {target} prompt tokens")
+    return best
+
+
 def prepare_context_budgets(args: Args, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Reserve the exact templated prompt length before allocating output tokens."""
     if args.max_context_length is None:
         return rows
     if args.max_context_length <= 0 or not args.tokenizer_path:
         raise ValueError("A positive --max_context_length requires --tokenizer_path")
+    if (
+        args.filler_target_prompt_tokens is not None
+        and not 0 < args.filler_target_prompt_tokens < args.max_context_length
+    ):
+        raise ValueError("--filler_target_prompt_tokens must be positive and below --max_context_length")
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, local_files_only=True)
     prepared = []
     for row in rows:
-        prompt_tokens = len(
-            tokenizer.apply_chat_template(
-                [{"role": "user", "content": generation_prompt(row)}],
-                tokenize=True,
-                add_generation_prompt=True,
-                enable_thinking=not args.disable_thinking,
-                return_dict=False,
-            )
-        )
+        message = generation_prompt(row)
+        base_prompt_tokens = templated_prompt_tokens(tokenizer, args, message)
+        prompt_tokens = base_prompt_tokens
+        if args.filler_target_prompt_tokens is not None:
+            message, prompt_tokens = build_filler_message(tokenizer, args, row, message)
         output_tokens = min(args.max_tokens, args.max_context_length - prompt_tokens)
         if output_tokens <= 0:
             raise ValueError(f"HLE row {row['id']} leaves no output budget: {prompt_tokens} prompt tokens")
-        prepared.append({**row, "_prompt_tokens": prompt_tokens, "_max_tokens": output_tokens})
+        prepared.append(
+            {
+                **row,
+                "_message": message,
+                "_prompt_tokens": prompt_tokens,
+                "_filler_tokens": prompt_tokens - base_prompt_tokens,
+                "_max_tokens": output_tokens,
+            }
+        )
     return prepared
 
 
@@ -240,9 +524,10 @@ async def evaluate_one(
     row: dict[str, Any],
     trial_index: int,
 ) -> dict[str, Any]:
+    message = row.get("_message") or generation_prompt(row)
     payload: dict[str, Any] = {
         "model": args.model,
-        "messages": [{"role": "user", "content": generation_prompt(row)}],
+        "messages": [{"role": "user", "content": message}],
         "max_tokens": row.get("_max_tokens", args.max_tokens),
         "temperature": args.temperature,
     }
@@ -257,6 +542,8 @@ async def evaluate_one(
         "answer_type": row["answer_type"],
         "requested_max_tokens": payload["max_tokens"],
         "expected_prompt_tokens": row.get("_prompt_tokens"),
+        "filler_tokens": row.get("_filler_tokens", 0),
+        "message_sha256": hashlib.sha256(message.encode()).hexdigest(),
         "max_context_length": args.max_context_length,
     }
     try:
@@ -507,6 +794,8 @@ async def main_async(args: Args) -> None:
         raise ValueError("--judge_max_tokens_param must be max_tokens or max_completion_tokens")
     if args.max_tokens <= 0 or args.judge_max_tokens <= 0:
         raise ValueError("Output token limits must be positive")
+    if args.filler_target_prompt_tokens is not None and args.max_context_length is None:
+        raise ValueError("--filler_target_prompt_tokens requires --max_context_length and --tokenizer_path")
     if args.incremental and Path(args.output_jsonl).exists():
         raise FileExistsError(f"Refusing to overwrite {args.output_jsonl}; use a new output path")
     if args.generations_jsonl is not None:

@@ -1,11 +1,15 @@
 import asyncio
 import json
+import random
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
 from aiohttp import web
 from examples.experimental.eval.parallel_sft import hle_eval
 from examples.experimental.eval.parallel_sft.hle_eval import (
+    DEFAULT_FILLER_TRAILER,
+    FILLER_WORDS,
     Args,
     RequestStartRateLimiter,
     extract_choice,
@@ -15,6 +19,7 @@ from examples.experimental.eval.parallel_sft.hle_eval import (
     main_async,
     parse_judgment,
     prepare_context_budgets,
+    render_filler,
     summarize,
 )
 from pytest import MonkeyPatch, raises
@@ -296,3 +301,134 @@ def test_incremental_output_refuses_to_overwrite(tmp_path: Path) -> None:
     with raises(FileExistsError):
         asyncio.run(main_async(args))
     assert output.read_text() == "preserved\n"
+
+
+class WordTokenizer:
+    """Fake fast tokenizer: every whitespace-delimited word is one token, plus 5 template tokens."""
+
+    def apply_chat_template(self, messages: list[dict], **kwargs: object) -> list[int]:
+        return [0] * (5 + len(messages[0]["content"].split()))
+
+    def __call__(self, text: str, **kwargs: object) -> dict:
+        spans = [match.span() for match in re.finditer(r"\S+", text)]
+        return {"input_ids": list(range(len(spans))), "offset_mapping": spans}
+
+
+def filler_args(target: int, seed: str = "hle-filler-v1") -> Args:
+    args = Args()
+    args.max_context_length = 1000
+    args.max_tokens = 600
+    args.tokenizer_path = "/local/checkpoint-tokenizer"
+    args.filler_target_prompt_tokens = target
+    args.filler_seed = seed
+    return args
+
+
+def test_filler_pads_prompt_to_target_with_question_first(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(hle_eval.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: WordTokenizer())
+    row = {"id": "one", "question": "What is 2 + 2?", "answer_type": "exactMatch"}
+    base_tokens = 5 + len(generation_prompt(row).split())
+
+    prepared = prepare_context_budgets(filler_args(400), [row])[0]
+
+    assert prepared["_prompt_tokens"] == 400
+    assert prepared["_filler_tokens"] == 400 - base_tokens
+    assert prepared["_max_tokens"] == 600
+    assert prepared["_message"].startswith(generation_prompt(row) + "\n\n")
+    assert prepared["_message"].endswith("\n\n" + DEFAULT_FILLER_TRAILER)
+    assert "_message" not in row
+
+
+def test_filler_is_deterministic_per_seed_and_question(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(hle_eval.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: WordTokenizer())
+    row = {"id": "one", "question": "Question", "answer_type": "exactMatch"}
+    other = {**row, "id": "two"}
+
+    first = prepare_context_budgets(filler_args(300), [row])[0]["_message"]
+    again = prepare_context_budgets(filler_args(300), [row])[0]["_message"]
+    reseeded = prepare_context_budgets(filler_args(300, seed="other-seed"), [row])[0]["_message"]
+    other_question = prepare_context_budgets(filler_args(300), [other])[0]["_message"]
+
+    assert first == again
+    assert first != reseeded
+    assert first != other_question
+
+
+def test_filler_words_are_harmless_dictionary_words() -> None:
+    forbidden = {"answer", "final", "question", "yes", "no", "true", "false", "correct", "wrong", "letter", "option"}
+    assert all(re.fullmatch(r"[a-z]{3,}", word) for word in FILLER_WORDS)
+    assert not forbidden & set(FILLER_WORDS)
+    assert len(set(FILLER_WORDS)) == len(FILLER_WORDS)
+
+    text = render_filler(random.Random("seed"), 120)
+
+    assert len(text.split()) == 120
+    assert text.count(".") >= 8
+    assert "\n\n" in text
+    assert set(word.strip(".").lower() for word in text.split()) <= set(FILLER_WORDS)
+
+
+def test_filler_requires_a_context_budget_below_the_limit(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(hle_eval.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: WordTokenizer())
+    row = {"id": "one", "question": "Question", "answer_type": "exactMatch"}
+    with raises(ValueError, match="below --max_context_length"):
+        prepare_context_budgets(filler_args(1000), [row])
+    args = Args()
+    args.filler_target_prompt_tokens = 100
+    with raises(ValueError, match="requires --max_context_length"):
+        asyncio.run(main_async(args))
+
+
+def test_filler_message_is_sent_and_budget_checked_end_to_end(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(hle_eval.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: WordTokenizer())
+
+    async def run_test() -> None:
+        requests: list[dict] = []
+
+        async def chat_completions(request: web.Request) -> web.Response:
+            payload = await request.json()
+            requests.append(payload)
+            prompt_tokens = 5 + len(payload["messages"][0]["content"].split())
+            return web.json_response(
+                {
+                    "choices": [{"message": {"content": "thinking\nFinal answer: 4"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 3},
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", chat_completions)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+
+        input_path = tmp_path / "hle.jsonl"
+        input_path.write_text(
+            json.dumps({"id": "p", "question": "What is 2 + 2?", "answer": "4", "answer_type": "exactMatch"}) + "\n"
+        )
+        args = filler_args(400)
+        args.input = str(input_path)
+        args.base_url = f"http://127.0.0.1:{port}/v1"
+        args.model = "checkpoint-model"
+        args.output_jsonl = str(tmp_path / "results.jsonl")
+        args.summary_json = str(tmp_path / "summary.json")
+        try:
+            await main_async(args)
+        finally:
+            await runner.cleanup()
+
+        sent = requests[0]["messages"][0]["content"]
+        assert sent.startswith("What is 2 + 2?")
+        assert sent.endswith(DEFAULT_FILLER_TRAILER)
+        assert 5 + len(sent.split()) == 400
+        assert requests[0]["max_tokens"] == 600
+        result = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
+        assert result["status_code"] == 200
+        assert result["prompt_tokens"] == result["expected_prompt_tokens"] == 400
+        assert result["filler_tokens"] > 300
+        assert len(result["message_sha256"]) == 64
+        assert result["predicted_answer"] == "4"
+
+    asyncio.run(run_test())

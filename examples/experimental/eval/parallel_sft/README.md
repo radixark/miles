@@ -205,6 +205,20 @@ It checks the endpoint's reported token usage against that calculation. This doe
 not change the serving endpoint's global context length or other clients' limits.
 The tokenizer uses the existing `transformers` dependency in `requirements.txt`.
 
+For context-position experiments, `--filler_target_prompt_tokens N` pads every
+prompt with nonsense words until the fully templated prompt is `N` tokens long
+(or a few tokens under it when word boundaries do not allow an exact fit). The
+question and its answer-format instruction stay at the very start of the prompt;
+the filler comes after them, followed by `--filler_trailer` (a one-sentence
+default that says the filler is meaningless and points back to the question; pass
+an empty string to omit it). The filler is deterministic per `--filler_seed` and
+question id, so repeated trials of one question share a prefix. Because the
+output budget is `min(--max_tokens, --max_context_length - prompt)`, choose
+`--max_tokens` so that the padded and unpadded runs receive the same output
+budget; then the only difference between them is where in the context window
+the model reasons. Result rows record `filler_tokens` and `message_sha256`. This
+mode requires `--max_context_length` and `--tokenizer_path`.
+
 For standalone long-running evaluations, `--incremental` flushes completed trials
 to `--output_jsonl` and writes a small adjacent `*.progress.json` next to the
 summary. It refuses to overwrite an existing output. Optional
