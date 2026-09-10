@@ -4,8 +4,8 @@ This PR adds example tools only, on top of #2846 at
 `81dfaa0b176ea74c516f8309023dc5200ed46769`. It does not change Miles runtime,
 `serve_tinker.py`, the original multi-LoRA example, or CI/unit-test files.
 The scripts were submitted for review before the N-user experiment. After review,
-the standalone GPU probe passed on the topology below; the N-user E2E is running
-and has not passed yet.
+the standalone GPU probe passed on the topology below. The first N-user E2E
+failed on the router's file-descriptor limit; no E2E pass is established yet.
 
 ## Hardware validation so far
 
@@ -20,8 +20,10 @@ four H200 nodes (32 GPUs), Qwen3-30B-A3B, rank 16 and 8192 tokens:
   capacity estimate, **not a separately measured rollout GPU limit**.
 - The engine host budget was omitted. Each of the eight rollout engines is
   configured with 121 GPU LoRA buffers; that setting is not an inference maximum.
-- The 121-user, three-step DAPO SDK trial is in progress. No passing E2E count
-  or OOM boundary is established yet.
+- The first 121-user DAPO SDK trial failed before training: the router inherited
+  a soft open-file limit of 1024, exhausted sockets, marked all workers unhealthy
+  and returned HTTP 503. This was not CUDA OOM or an adapter-capacity result.
+  The retry keeps N=121 after raising the environment's open-file limit.
 
 ## Scripts to review
 
@@ -109,6 +111,14 @@ GPUs (TP2/EP8) plus 16 rollout GPUs (eight TP2/EP2 engines), rank16/alpha32.
 The launcher uses the repository's standard `execute_train` process preamble;
 run it on the dedicated experiment cluster with the previous trial stopped.
 It does not acquire or release devbox leases.
+
+Before starting Ray on **every node**, and in the SDK client's launch shell, set
+`ulimit -n 65536` (the hard limit must permit it). The router holds both incoming
+and outgoing sockets for long-running generations; 121 users with eight samples
+each can exceed a 1024-descriptor limit. Setting the limit only in the submission
+shell does not update existing Ray workers. For an already-running cluster,
+raise `RLIMIT_NOFILE` on its owned raylets and descendants or restart that cluster
+from correctly configured shells; verify `/proc/<router-pid>/limits` before users.
 
 Pass the same checkpoint, topology, precision, recompute and token settings to
 both jobs. If using separate source checkouts, pass `--sglang-pythonpath`, and
