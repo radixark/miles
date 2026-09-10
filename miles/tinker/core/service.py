@@ -557,13 +557,20 @@ class TinkerService:
     async def _load_state(self, record: ModelRecord, payload: dict) -> list[dict]:
         source_id, kind, name = _parse_tinker_path(payload["path"])
         self._checkpoint_meta(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
-        await self.backend.load_slot(
-            record.slot,
-            record.lora_rank,
-            record.lora_alpha,
-            ckpt_path=self._checkpoint_dir(source_id, kind, name),
-            load_optimizer=payload["optimizer"],
-        )
+        try:
+            await self.backend.load_slot(
+                record.slot,
+                record.lora_rank,
+                record.lora_alpha,
+                ckpt_path=self._checkpoint_dir(source_id, kind, name),
+                load_optimizer=payload["optimizer"],
+            )
+        except Exception:
+            # a load that failed partway may leave mixed weight/optimizer state
+            await self._evict_model(
+                record.model_id, "model unloaded after a failed load_state; create a new model", "server"
+            )
+            raise
         return [{"op": "load_state"}]
 
     async def _publish_sampler_version(self, record: ModelRecord, payload: dict) -> list[dict]:
