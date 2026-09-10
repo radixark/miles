@@ -64,11 +64,18 @@ def save_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
         torch.save(_optimizer_slot_state(optimizer, slot), tmp_dir / _optim_shard_name())
 
     def publish_dir():
-        # write-then-rename so readers never see a partial checkpoint
+        # write-then-rename so readers never see a partial checkpoint; on overwrite
+        # the old version survives (as _old_<name>) until the replacement is in place
         if _rank() == 0:
             if final_dir.exists():
-                shutil.rmtree(final_dir)
-            os.replace(tmp_dir, final_dir)
+                old_dir = final_dir.parent / f"_old_{final_dir.name}"
+                if old_dir.exists():
+                    shutil.rmtree(old_dir)
+                os.replace(final_dir, old_dir)
+                os.replace(tmp_dir, final_dir)
+                shutil.rmtree(old_dir)
+            else:
+                os.replace(tmp_dir, final_dir)
 
     _run_checkpoint_phase(make_tmp_dir)
     _run_checkpoint_phase(write_shards)
