@@ -5,11 +5,11 @@ import os
 import random
 import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
+from miles.ray.rollout.train_data_conversion import split_train_data_by_dp
 from miles.utils import object_store
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.pydantic_utils import StrictBaseModel
@@ -311,7 +311,9 @@ def process_rollout_data(
         raw = get_result.value
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
-        raw = split_train_data_by_dp_raw(args, raw, dp_size=train_parallel_config.dp_size)
+        raw = split_train_data_by_dp(args, raw, train_parallel_config=train_parallel_config)
+        if witness_info is not None:
+            _assert_witness_rows(total_rows=len(get_result.value["tokens"]), shards=raw)
         rollout_data = raw[dp_rank]
     else:
         assert len(rollout_data_ref) == train_parallel_config.dp_size
@@ -320,6 +322,15 @@ def process_rollout_data(
         rollout_data = dict(get_result.value)
 
     return process_rollout_data_shard(args, rollout_data), get_result
+
+
+def _assert_witness_rows(*, total_rows: int, shards: list[dict[str, Any]]) -> None:
+    kept_rows = sum(len(shard["tokens"]) for shard in shards)
+    assert kept_rows == total_rows, (
+        f"Witness ids were allocated for every row ({total_rows} rows), but the schedule dropped "
+        f"{total_rows - kept_rows} rows; pass --allow-partial-train-step or make the number of distinct "
+        "rollout ids a multiple of --global-batch-size."
+    )
 
 
 class RolloutDataPack(StrictBaseModel):

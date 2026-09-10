@@ -570,6 +570,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--delay-split-train-data-by-dp",
                 action="store_true",
                 default=False,
+                help="Split the rollout batch across DP ranks on the training side instead of the rollout side, "
+                "using the training side's own DP size.",
             )
             parser.add_argument(
                 "--allgather-cp",
@@ -3358,6 +3360,14 @@ def miles_validate_args(args):
         assert (
             args.train_backend == "megatron"
         ), f"indep_dp requires train_backend='megatron', got '{args.train_backend}'"
+        assert args.use_dynamic_batch_size, (
+            "--indep-dp requires --use-dynamic-batch-size (with --max-tokens-per-gpu): "
+            "the live cell count after a fault need not divide global_batch_size"
+        )
+        assert not args.use_dynamic_global_batch_size, (
+            "--indep-dp does not support --use-dynamic-global-batch-size: "
+            "independent cells do not expose a DP size to the rollout side"
+        )
         per_replica_size = compute_megatron_world_size_except_dp(args)
         logger.info(f"indep_dp: adjusting args.world_size from {args.world_size} to {per_replica_size} (per-cell)")
         args.world_size = per_replica_size

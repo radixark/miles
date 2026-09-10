@@ -37,6 +37,7 @@ from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
 
 _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
     "world_size": 8,
@@ -49,6 +50,14 @@ _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
 def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
     for name, size in _MEGATRON_PARALLEL_SIZES.items():
         setattr(args, name, size)
+
+
+def _parse_megatron_args(extra: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+    _set_megatron_parallel_sizes(args)
+    return args
 
 
 # These name a dataset column, a metric or a prompt field, not a credential.
@@ -110,7 +119,9 @@ class TestSaveInferenceEngineWeightChecksumArguments:
 
     def test_trainer_fault_tolerance_enables_the_checksum_flag(self) -> None:
         """Trainer healing must compare the restored weights with the inference engines."""
-        args = self._parse(["--use-fault-tolerance", "--ft-components", "train", "--num-rollout", "1"])
+        args = self._parse(
+            ["--use-fault-tolerance", "--ft-components", "train", "--num-rollout", "1"] + DYNAMIC_BATCH_ARGS
+        )
 
         miles_validate_args(args)
 
@@ -1368,13 +1379,38 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
 
 def test_shared_actor_critic_ppo_rejects_indep_dp():
     """Multi-cell PPO used to pass validation and fail only at the first training step's external-data assert."""
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
-    args = parser.parse_args(["--advantage-estimator", "ppo", "--indep-dp", "--num-rollout", "1"] + REQUIRED_ARGS)
-    _set_megatron_parallel_sizes(args)
+    args = _parse_megatron_args(["--advantage-estimator", "ppo", "--indep-dp"] + DYNAMIC_BATCH_ARGS)
 
     with pytest.raises(AssertionError, match="does not support --indep-dp"):
         miles_validate_args(args)
+
+
+class TestIndepDpBatchSchedule:
+    def test_indep_dp_requires_dynamic_batch_size(self):
+        """Static micro-batching cannot align once the live cell count stops dividing the global batch."""
+        with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
+            miles_validate_args(_parse_megatron_args(["--indep-dp"]))
+
+    def test_train_fault_tolerance_inherits_the_dynamic_batch_size_requirement(self):
+        """The train component implies indep_dp, so it must fail the same way instead of at the first fault."""
+        with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
+            miles_validate_args(_parse_megatron_args(["--use-fault-tolerance", "--ft-components", "train"]))
+
+    def test_indep_dp_rejects_dynamic_global_batch_size(self):
+        """The rollout side resolves that flag from a dp_size independent cells never advertise."""
+        with pytest.raises(AssertionError, match="does not support --use-dynamic-global-batch-size"):
+            miles_validate_args(
+                _parse_megatron_args(["--indep-dp", "--use-dynamic-global-batch-size"] + DYNAMIC_BATCH_ARGS)
+            )
+
+    def test_indep_dp_with_dynamic_batch_size_passes(self):
+        """The supported combination must keep validating, or every trainer FT run is rejected."""
+        args = _parse_megatron_args(["--use-fault-tolerance", "--ft-components", "train"] + DYNAMIC_BATCH_ARGS)
+
+        miles_validate_args(args)
+
+        assert args.indep_dp
+        assert args.use_dynamic_batch_size
 
 
 def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
@@ -1394,12 +1430,7 @@ class TestFaultToleranceResolutionOrder:
     def _validate(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
         config_path = tmp_path / "custom.yaml"
         config_path.write_text(yaml_body)
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        args = parser.parse_args(
-            extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
-        )
-        _set_megatron_parallel_sizes(args)
+        args = _parse_megatron_args(extra + ["--custom-config-path", str(config_path)] + DYNAMIC_BATCH_ARGS)
         miles_validate_args(args)
         return args
 
@@ -1474,18 +1505,8 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
 
 def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
     """Deriving indep_dp after the disk-stream asserts would have let an unsupported pair through."""
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
-    args = parser.parse_args(
-        [
-            "--stream-optimizer-state-to-disk",
-            "--use-fault-tolerance",
-            "--ft-components",
-            "train",
-            "--num-rollout",
-            "1",
-        ]
-        + REQUIRED_ARGS
+    args = _parse_megatron_args(
+        ["--stream-optimizer-state-to-disk", "--use-fault-tolerance", "--ft-components", "train"] + DYNAMIC_BATCH_ARGS
     )
     args.optimizer = "adam"
     args.use_distributed_optimizer = True
