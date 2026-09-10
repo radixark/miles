@@ -9,15 +9,15 @@ __all__ = ["check"]
 def check(events: list[Event]) -> list[ChecksumMismatchIssue]:
     """Check: all engines of one rollout must hold exactly the same weights."""
     issues: list[ChecksumMismatchIssue] = []
-    seen: set[tuple[str | None, str, int, str, str]] = set()
-    representatives: dict[tuple[str | None, str, int], tuple[str, dict[str, str]]] = {}
+    seen: set[tuple[str | None, str, str | None, int, str | None, str, str]] = set()
+    representatives: dict[tuple[str | None, str, str | None, int], tuple[str, dict[str, str]]] = {}
     for event in events:
         if isinstance(event, InferenceEngineWeightChecksumEvent):
             if event.engine_snapshots:
                 assert event.weight_version is not None
                 for snapshot in event.engine_snapshots:
-                    group = (event.trainer_model_id, snapshot.model_name, event.weight_version)
-                    identity = (*group, snapshot.cell_id, snapshot.workers_hash)
+                    group = (event.trainer_model_id, snapshot.model_name, event.version_epoch, event.weight_version)
+                    identity = (*group, event.update_id, snapshot.cell_id, snapshot.workers_hash)
                     assert identity not in seen, f"Duplicate engine checksum evidence: {identity}"
                     seen.add(identity)
                     label = f"{group}/cell_{snapshot.cell_id}/{snapshot.workers_hash}"

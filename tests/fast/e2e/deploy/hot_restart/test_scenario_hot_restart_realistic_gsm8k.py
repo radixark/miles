@@ -59,6 +59,7 @@ class TestTheRecipeIsTheOneFtConverges:
             "--ci-disable-weight-update-checker",
             "--load",
             "--save",
+            "--save-inference-engine-weight-checksum",
             "--save-interval",
             "--wandb-run-id",
         ]

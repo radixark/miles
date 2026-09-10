@@ -95,6 +95,8 @@ class TestOneConfigPerSoak:
             lambda **kwargs: launches.append(kwargs) or seen.trained.append(kwargs["config"]),
         )
         monkeypatch.setattr(scenario_random_crash, "read_events", lambda path: [])
+        checksum_checks: list[object] = []
+        monkeypatch.setattr(scenario_random_crash, "assert_published_weight_checksums", checksum_checks.append)
         monkeypatch.setattr(
             scenario_random_crash, "assert_hook_effects", lambda events, **kwargs: hook_checks.append("effects")
         )
@@ -134,7 +136,7 @@ class TestOneConfigPerSoak:
         assert [config is run_config for config in seen.trained] == [True]
         assert len(spawns) == len(launches) == 1
         assert spawns[0]["config"] is run_config
-        assert spawns[0].get("injection_enabled") is None
+        assert len(checksum_checks) == (0 if scenario == "random" else 1)
         assert (
             hook_checks
             == {

@@ -20,6 +20,52 @@ from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
 class TestRolloutServerPureFunctions:
+    @pytest.mark.parametrize("cancel_snapshot", [False, True])
+    async def test_failed_snapshot_drains_other_requests_before_releasing_the_lock(
+        self, monkeypatch: pytest.MonkeyPatch, cancel_snapshot: bool
+    ) -> None:
+        """A failed or cancelled snapshot cannot leave requests running into the next update."""
+        server = await _make_serving_server(monkeypatch, num_cells=2)
+        both_started = asyncio.Event()
+        started: set[str] = set()
+        finished: set[str] = set()
+
+        async def check_weights(
+            cell: ServerCell, action: str, allow_quant_error: bool, selector: str, skip_list: list[str] | None
+        ) -> dict:
+            started.add(cell.meta.cell_id)
+            if len(started) == 2:
+                both_started.set()
+            try:
+                await both_started.wait()
+                if cell.meta.cell_id == "default-0" and not cancel_snapshot:
+                    raise RuntimeError("checksum connection failed")
+                await asyncio.Future()
+            finally:
+                assert server.context_lock.held_in_current_context
+                finished.add(cell.meta.cell_id)
+
+        monkeypatch.setattr(ServerCell, "check_weights", check_weights)
+        async with server.context_lock:
+            snapshot = asyncio.create_task(
+                server.get_weight_checksum_snapshot(
+                    target_incarnations={"default-0": "pseudo-hash-0", "default-1": "pseudo-hash-1"}
+                )
+            )
+            try:
+                await asyncio.wait_for(both_started.wait(), timeout=1)
+                if cancel_snapshot:
+                    snapshot.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await snapshot
+                else:
+                    with pytest.raises(RuntimeError, match="checksum connection failed"):
+                        await snapshot
+                assert finished == {"default-0", "default-1"}
+            finally:
+                snapshot.cancel()
+                await asyncio.gather(snapshot, return_exceptions=True)
+
     @pytest.mark.parametrize("case", ["reordered", "stale", "missing_body"])
     async def test_checksum_snapshot_preserves_incarnation_and_response_pairing(
         self, monkeypatch: pytest.MonkeyPatch, case: str

@@ -7,6 +7,8 @@ class WeightUpdateReport:
     weight_version: int | None
     updated_cell_ids: tuple[str, ...]
     failed_cell_ids: tuple[str, ...]
+    version_epoch: str | None = None
+    update_id: str | None = None
 
     def __post_init__(self) -> None:
         for name, cell_ids in (

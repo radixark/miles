@@ -95,6 +95,7 @@ class TrainerController:
 
         self._cells_by_id: dict[str, TrainerCell] = {}
         self._last_published_weight_version = 0
+        self._weight_version_epoch = uuid4().hex
 
     @property
     def pool_id(self) -> str:
@@ -418,11 +419,19 @@ class TrainerController:
             report = await self._update_weights_on_first_alive_cell(info, weight_version=candidate_version)
         report.validate_assignment(info.engine_cell_ids)
         report = discard_version_nothing_serves(report)
+        report = replace(report, version_epoch=self._weight_version_epoch, update_id=info.update_id)
+        published_version = report.weight_version
+        if published_version is not None:
+            assert published_version in (candidate_version, previous_version), (
+                f"trainer {self._trainer_id} answered weight version {published_version}, "
+                f"expected the candidate {candidate_version} or the previous {previous_version}"
+            )
         if is_event_logger_initialized():
             get_event_logger().log(
                 WeightUpdateResultEvent,
                 dict(
                     update_id=info.update_id,
+                    version_epoch=self._weight_version_epoch,
                     rollout_id=rollout_id,
                     candidate_version=candidate_version,
                     published_version=report.weight_version,
@@ -432,13 +441,8 @@ class TrainerController:
                 ),
             )
 
-        published_version = report.weight_version
         if published_version is None:
             return report
-        assert published_version in (candidate_version, previous_version), (
-            f"trainer {self._trainer_id} answered weight version {published_version}, "
-            f"expected the candidate {candidate_version} or the previous {previous_version}"
-        )
         self._last_published_weight_version = published_version
         return report
 

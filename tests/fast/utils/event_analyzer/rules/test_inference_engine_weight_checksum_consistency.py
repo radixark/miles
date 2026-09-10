@@ -24,7 +24,7 @@ def _make_event(*, rollout_id: int, engine_checksums: list[dict[str, str]]) -> I
 
 class TestCheck:
     @pytest.mark.parametrize(
-        "case", ["same", "different", "missing_tensor", "other_version", "other_model", "duplicate"]
+        "case", ["same", "different", "missing_tensor", "other_version", "other_model", "other_epoch", "duplicate"]
     )
     def test_versioned_snapshots_are_joined_across_events(self, case: str) -> None:
         """Same-version replicas compare across events while distinct versions and models stay separate."""
@@ -32,7 +32,7 @@ class TestCheck:
             model_name="actor", cell_id="engine-0", workers_hash="old", tensors={"rank0/w": "a", "rank0/b": "b"}
         )
         second = first.model_copy(update={"workers_hash": "new"})
-        if case in {"different", "other_version", "other_model"}:
+        if case in {"different", "other_version", "other_model", "other_epoch"}:
             second = second.model_copy(update={"tensors": {"rank0/w": "different", "rank0/b": "b"}})
         elif case == "missing_tensor":
             second = second.model_copy(update={"tensors": {"rank0/w": "a"}})
@@ -46,6 +46,7 @@ class TestCheck:
                 source=SimpleProcessIdentity(component="main"),
                 rollout_id=index,
                 weight_version=2 if index == 1 and case == "other_version" else 1,
+                version_epoch=f"epoch-{index}" if case == "other_epoch" else "epoch",
                 engine_checksums=[snapshot.tensors],
                 engine_snapshots=[snapshot],
             )

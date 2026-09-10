@@ -194,12 +194,19 @@ class RolloutServer:
             if cell_id not in cells or cells[cell_id].meta.workers_hash != workers_hash:
                 raise ValueError(f"Checksum target incarnation is no longer addressable: {cell_id}")
         selected = [cells[cell_id] for cell_id in sorted(target_incarnations)]
-        bodies = await asyncio.gather(
-            *[
+        tasks = [
+            asyncio.create_task(
                 cell.check_weights(action="checksum", allow_quant_error=False, selector="all", skip_list=None)
-                for cell in selected
-            ]
-        )
+            )
+            for cell in selected
+        ]
+        try:
+            bodies = await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         return [
             InferenceEngineChecksumSnapshot(
                 model_name=self.model_name,

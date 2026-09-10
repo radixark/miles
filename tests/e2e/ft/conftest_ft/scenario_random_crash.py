@@ -36,6 +36,7 @@ from tests.utils.soak.checks.hooks import (
     assert_remote_p2p_failures,
 )
 from tests.utils.soak.checks.tail import assert_tail_complete
+from tests.utils.soak.checks.weights import assert_published_weight_checksums
 from tests.utils.soak.config import create_policy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, spawn_fault_injector
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
@@ -223,6 +224,14 @@ def run_ci(
         )
 
     assert_tail_complete(injector.event_log.events)
+    if ft_mode.has_real_rollout:
+        assert_published_weight_checksums(
+            read_events(
+                event_source(
+                    injector.event_log.events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME
+                )
+            )
+        )
     if precise_all_gather or precise_p2p:
         hook_event_dir = event_source(
             injector.event_log.events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME

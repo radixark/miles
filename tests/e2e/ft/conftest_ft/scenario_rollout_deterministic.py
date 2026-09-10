@@ -21,6 +21,7 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.utils.soak.checks.determinism import assert_deterministic_environment
 from tests.utils.soak.checks.ft import assert_rollout_cells_served_after_injection
 from tests.utils.soak.checks.tail import assert_tail_complete
+from tests.utils.soak.checks.weights import assert_published_weight_checksums
 from tests.utils.soak.config import SoakCellPolicy, SoakPolicy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
 from tests.utils.soak.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
@@ -157,13 +158,10 @@ def _compute_fault_progress_windows(
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
     for side in (BASELINE_SIDE, TARGET_SIDE):
         assert_identified_engine_checksums(dump_dir=Path(dump_dir) / side)
+        assert_published_weight_checksums(read_events(Path(dump_dir) / side / EVENTS_DIRNAME))
         assert_deterministic_environment(
             read_events(Path(dump_dir) / side / EVENTS_DIRNAME),
-            trainer_ranks={
-                (cell_index, rank)
-                for cell_index in range(mode.num_cells)
-                for rank in range(mode.train_num_nodes * mode.train_gpus_per_node // mode.num_cells)
-            },
+            trainer_ranks={(0, rank) for rank in range(mode.train_num_nodes * mode.train_gpus_per_node)},
             engine_count=mode.rollout_num_engines,
             engine_env=DETERMINISTIC_INFERENCE_ENV_VARS,
             trainer_env=_DETERMINISTIC_ENV_VARS,

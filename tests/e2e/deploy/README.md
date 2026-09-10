@@ -142,3 +142,6 @@ Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's c
 
 Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
 ```
+
+- **Weight evidence**: explicitly enable inference checksums; check consistency and movement across archived active and discarded event generations. After admission closes and the last takeover applies, require at least two publications with exact update, epoch and engine-incarnation checksum coverage.
+- **Interrupted publication boundary**: a takeover can interrupt checksum collection after a weight publication. Full publication coverage is mandatory in the final uninterrupted tail; interrupted earlier publications remain a product-level coverage gap. Recorded earlier checksums still undergo consistency and movement checks.

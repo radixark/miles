@@ -125,6 +125,8 @@ class InferenceEngineWeightChecksumEvent(EventBase):
     weight_version: int | None = None
     engine_snapshots: list[InferenceEngineChecksumSnapshot] = Field(default_factory=list)
     movement_skip_reasons: list[ChecksumMovementSkipReason] | None = None
+    version_epoch: str | None = None
+    update_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_snapshot_identity(self) -> Self:
@@ -198,6 +200,7 @@ class WeightUpdateAssignmentEvent(EventBase):
 class WeightUpdateResultEvent(EventBase):
     type: Literal["weight_update_result"] = "weight_update_result"
     update_id: str
+    version_epoch: str | None = None
     rollout_id: int | None
     candidate_version: int
     published_version: int | None

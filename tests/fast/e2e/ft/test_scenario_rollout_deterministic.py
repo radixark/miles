@@ -3,8 +3,10 @@ import random
 import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from tests.e2e.ft.conftest_ft import scenario_rollout_deterministic
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_rollout_deterministic import (
     DETERMINISTIC_INFERENCE_ENV_VARS,
@@ -20,6 +22,7 @@ from tests.utils.soak.fault_forms import InjectFaultForm
 from tests.utils.soak.state import SoakAdmissionClosedEvent, SoakObservation, SoakScheduleEvent
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.ray.specs.train import compute_trainer_num_cells
 from miles.utils.audit_utils.event_logger.models import TrainGroupStepEndEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.external_utils import command_utils
@@ -28,6 +31,37 @@ from miles.utils.workers.cell_operations.base import FaultTarget
 from miles.utils.workers.types import ClusterBackend
 
 _BASE = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+
+
+def test_environment_evidence_uses_the_actual_non_independent_trainer_layout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rollout-only FT keeps all trainer ranks in one cell when checking environment evidence."""
+    mode = MODES["kill_rollout__dp4"]
+    args = SimpleNamespace(
+        indep_dp=False, actor_num_nodes=mode.train_num_nodes, actor_num_gpus_per_node=mode.train_gpus_per_node
+    )
+    num_cells = compute_trainer_num_cells(args, role="actor")
+    expected = {
+        (cell, rank)
+        for cell in range(num_cells)
+        for rank in range(mode.train_num_nodes * mode.train_gpus_per_node // num_cells)
+    }
+    observed: list[set[tuple[int, int]]] = []
+    monkeypatch.setattr(scenario_rollout_deterministic, "read_events", lambda path: [])
+    monkeypatch.setattr(scenario_rollout_deterministic, "assert_identified_engine_checksums", lambda **kwargs: None)
+    monkeypatch.setattr(scenario_rollout_deterministic, "assert_published_weight_checksums", lambda events: None)
+    monkeypatch.setattr(scenario_rollout_deterministic, "compare_deterministic_sides", lambda **kwargs: None)
+    monkeypatch.setattr(
+        scenario_rollout_deterministic,
+        "assert_deterministic_environment",
+        lambda events, **kwargs: observed.append(kwargs["trainer_ranks"]),
+    )
+
+    scenario_rollout_deterministic._compare(str(tmp_path), mode)
+
+    assert num_cells == 1
+    assert observed == [expected, expected]
 
 
 def test_the_actual_backend_owns_the_single_api_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

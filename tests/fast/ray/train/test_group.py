@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 import ray
@@ -1253,6 +1254,7 @@ class TestUpdateWeightsReturnsTheVersion:
         )
         group._trainer_id = "trainer-0"
         group._last_published_weight_version = 0
+        group._weight_version_epoch = uuid4().hex
         group._execute_first_alive = AsyncMock(return_value=[_rank_report(version) for version in per_worker_versions])
         return group
 
@@ -1351,6 +1353,7 @@ def _make_fanout_controller(cells: list[_FakeTrainerCell]) -> TrainerController:
     controller.args = SimpleNamespace(update_weights_timeout=1800.0, colocate=False, update_weight_transfer_mode="p2p")
     controller._trainer_id = "trainer-0"
     controller._last_published_weight_version = 0
+    controller._weight_version_epoch = uuid4().hex
     controller._cells_by_id = {cell.cell_id: cell for cell in cells}
     return controller
 
@@ -1696,6 +1699,7 @@ def _make_version_controller(outcomes: list) -> tuple[TrainerController, _Record
     )
     controller._trainer_id = "trainer-0"
     controller._last_published_weight_version = 0
+    controller._weight_version_epoch = uuid4().hex
     fleet = _RecordingCellFleet(outcomes)
     controller._execute_first_alive = fleet.execute_first_alive
     return controller, fleet
@@ -1715,8 +1719,11 @@ class TestWeightVersionAllocation:
         """Consecutive publications must be consecutive ordinals, otherwise the engines cannot be told apart."""
         controller, fleet = _make_version_controller([1, 2])
 
-        assert (await controller.update_weights(info=_assigned_info())).weight_version == 1
-        assert (await controller.update_weights(info=_assigned_info())).weight_version == 2
+        first = await controller.update_weights(info=_assigned_info())
+        second = await controller.update_weights(info=_assigned_info())
+        assert (first.weight_version, second.weight_version) == (1, 2)
+        assert first.version_epoch == second.version_epoch == controller._weight_version_epoch
+        assert first.update_id and second.update_id and first.update_id != second.update_id
         assert fleet.weight_versions == [1, 2]
 
     async def test_a_skipped_update_leaves_the_ordinal_unconsumed(self):
@@ -1735,20 +1742,26 @@ class TestWeightVersionAllocation:
         assert (await controller.update_weights(info=_assigned_info())).weight_version == 1
         assert fleet.weight_versions == [1, 1]
 
-    async def test_an_unexpected_ordinal_from_the_trainer_is_rejected(self):
+    async def test_an_unexpected_ordinal_from_the_trainer_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A healed cell answering its own local count would silently rewind the version the fleet serves."""
         controller, _fleet = _make_version_controller([7])
+        event_logger = MagicMock()
+        monkeypatch.setattr(group_module, "is_event_logger_initialized", lambda: True)
+        monkeypatch.setattr(group_module, "get_event_logger", lambda: event_logger)
 
         with pytest.raises(AssertionError, match="expected the candidate 1"):
             await controller.update_weights(info=_assigned_info())
+        event_logger.log.assert_not_called()
+        assert controller._last_published_weight_version == 0
 
     async def test_two_controllers_keep_separate_counters(self):
         """Each policy publishes its own weights, so one controller must not consume another's ordinals."""
         first, first_fleet = _make_version_controller([1])
         second, second_fleet = _make_version_controller([1])
 
-        await first.update_weights(info=_assigned_info())
-        await second.update_weights(info=_assigned_info())
+        first_report = await first.update_weights(info=_assigned_info())
+        second_report = await second.update_weights(info=_assigned_info())
+        assert first_report.version_epoch != second_report.version_epoch
 
         assert (first_fleet.weight_versions, second_fleet.weight_versions) == ([1], [1])
 
