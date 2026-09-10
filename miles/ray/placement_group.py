@@ -27,6 +27,7 @@ from miles.ray.specs.train import (
     external_trainer_controller_addrs,
 )
 from miles.ray.wiring import get_backend_capability
+from miles.utils.audit_utils.checksum_policy import checksum_movement_skip_reasons
 from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -371,6 +372,10 @@ async def _maybe_log_inference_engine_weight_checksums(
             engine_checksums=engine_checksums,
             weight_version=weight_version,
             engine_snapshots=snapshots,
+            movement_skip_reasons=checksum_movement_skip_reasons(
+                lora_enabled=args.lora_rank > 0 or args.lora_adapter_path is not None,
+                update_weights_interval=args.update_weights_interval,
+            ),
         ),
     )
 

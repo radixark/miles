@@ -383,6 +383,9 @@ class TestUpdateWeights:
             debug_rollout_only=False,
             save_inference_engine_weight_checksum=True,
             update_weight_engine_request_timeout=300.0,
+            lora_rank=0,
+            lora_adapter_path=None,
+            update_weights_interval=1,
             start_rollout_id=start_rollout_id,
         )
 

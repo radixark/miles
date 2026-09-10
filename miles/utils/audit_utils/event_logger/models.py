@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import Discriminator, Field, model_validator
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.checksum_policy import ChecksumMovementSkipReason
 from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -123,6 +124,7 @@ class InferenceEngineWeightChecksumEvent(EventBase):
     engine_checksums: list[dict[str, str]]
     weight_version: int | None = None
     engine_snapshots: list[InferenceEngineChecksumSnapshot] = Field(default_factory=list)
+    movement_skip_reasons: list[ChecksumMovementSkipReason] | None = None
 
     @model_validator(mode="after")
     def _validate_snapshot_identity(self) -> Self:
