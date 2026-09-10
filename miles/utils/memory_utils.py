@@ -15,6 +15,17 @@ def clear_memory(clear_host_memory: bool = False):
         torch._C._host_emptyCache()
 
 
+@torch.no_grad()
+def move_optimizer_state(optimizers, device) -> None:
+    """Move every optimizer state tensor to ``device`` (after verl's fsdp_utils)."""
+    for optimizer in optimizers:
+        for state in optimizer.state.values():
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to(device, non_blocking=True)
+    torch.cuda.synchronize()
+
+
 def available_memory():
     device = torch.cuda.current_device()
     free, total = torch.cuda.mem_get_info(device)
