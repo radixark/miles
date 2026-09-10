@@ -211,6 +211,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         start_rollout_id = loaded_rollout_id + 1
         self._asleep = False
+        self._grad_buffer_paused = False
 
         if role == "critic":
             if self.args.offload_train:
@@ -327,15 +328,33 @@ class MegatronTrainRayActor(TrainRayActor):
             # Params stay resident for update_weights, which pauses them afterwards.
             torch_memory_saver.pause(tag="grad_buffer")
             torch_memory_saver.pause(tag="default")
+        elif lora_rollout_enabled(self.args):
+            # adapter params keep their host backup in "default"; the grad buffers have none
+            if not self._grad_buffer_paused:
+                torch_memory_saver.pause(tag="grad_buffer")
+                self._grad_buffer_paused = True
+            torch_memory_saver.pause(tag="default")
         else:
-            tag = "default" if lora_rollout_enabled(self.args) else None
-            torch_memory_saver.pause(tag=tag)
+            torch_memory_saver.pause(tag=None)
 
         self._asleep = True
         print_memory("after offload model")
 
         if should_log_cpu_memory:
             log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
+
+    @with_logs
+    @timer
+    def offload_grad_buffer(self) -> None:
+        """Free the LoRA grad buffers ahead of sleep(), so the engine can resume its weights first."""
+        assert self.args.offload_train
+        assert lora_rollout_enabled(self.args), "only LoRA keeps its grad buffers in a no-backup region"
+        if self._asleep or self._grad_buffer_paused:
+            return
+        print_memory("before offload grad buffer")
+        torch_memory_saver.pause(tag="grad_buffer")
+        self._grad_buffer_paused = True
+        print_memory("after offload grad buffer")
 
     @with_logs
     @timer
@@ -347,8 +366,12 @@ class MegatronTrainRayActor(TrainRayActor):
             return
         print_memory("before wake_up model")
 
-        tag = "default" if lora_rollout_enabled(self.args) else None
-        torch_memory_saver.resume(tag=tag)
+        if lora_rollout_enabled(self.args):
+            torch_memory_saver.resume(tag="default")
+            torch_memory_saver.resume(tag="grad_buffer")
+            self._grad_buffer_paused = False
+        else:
+            torch_memory_saver.resume(tag=None)
 
         clear_memory()
         reload_process_groups()
@@ -369,10 +392,16 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @property
     def _enable_weight_backup(self) -> bool:
-        """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
+        """Keep host weights for model switching and weight sync while offloaded."""
         if self._weight_sync_reads_tms_backup:
             return False
-        return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor or self.args.colocate
+        return (
+            self.with_ref
+            or self.with_opd_teacher
+            or self.args.keep_old_actor
+            or self.args.colocate
+            or self.args.offload_train
+        )
 
     def _switch_model(self, target_tag: str) -> None:
         if not self._enable_weight_backup:
@@ -771,7 +800,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self._weight_sync_reads_tms_backup:
             return dict(self._named_actor_weights(translate_gpu_to_cpu=True))
         # use cpu backup only when weight is not live on gpu
-        if self.args.colocate or self._active_model_tag != "actor":
+        if self.args.colocate or self._asleep or self._active_model_tag != "actor":
             return self.weights_backuper.get("actor")
         return dict(self._named_actor_weights())
 

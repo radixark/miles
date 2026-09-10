@@ -141,3 +141,11 @@ shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto the Megatron
 - [Backends Beyond Megatron](/advanced/architecture-support)
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
 - [Low Precision RL](/advanced/low-precision)
+
+## Checkpoint compatibility
+
+Megatron versions exposing `mixer.conv1d_weight` and `mixer.conv1d_bias`
+require the corresponding bridge mappings. The Miles Nemotron-H shim
+supports these names alongside the older `mixer.conv1d.weight` and
+`mixer.conv1d.bias` names. Missing mappings leave these parameters unloaded
+and omit them from rollout weight updates.

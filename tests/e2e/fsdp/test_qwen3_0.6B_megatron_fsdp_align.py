@@ -8,6 +8,7 @@ register_cuda_ci(
     est_time=900,
     suite="stage-c-2-gpu-h200",
     labels=["fsdp"],
+    hardware=["hopper", "blackwell"],
 )
 register_rocm_ci(
     est_time=800,
@@ -141,6 +142,7 @@ def execute():
                 "--train-memory-margin-bytes 3221225472 "
                 f"--load-debug-rollout-data {debug_data_path} "
                 f"--ci-load-grad-norm {grad_norm_path} "
+                "--skip-actor-forward-only "
                 "--attention-dropout 0.0 "
                 "--hidden-dropout 0.0 "
                 "--accumulate-allreduce-grads-in-fp32 "

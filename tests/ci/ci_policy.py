@@ -8,10 +8,20 @@ import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
+from tests.ci.hardware import KNOWN_ARCHES
 from tests.ci.labels import KNOWN_LABELS
 
 _RUN_CI_PREFIX = "run-ci-"
-_WORKFLOW_ONLY_LABELS = {"nightly", "bypass-fastfail"}
+# `run-on-<arch>` lacks the `run-ci-` prefix, so membership here is what
+# admits it past `_SAFE_RUN_CI_LABEL` and keeps `strip_run_ci_prefix` quiet.
+# `run-ci-blackwell-only` matches the prefix regex already and, being absent
+# from KNOWN_LABELS, is dropped from the domain set like any other scope label.
+_WORKFLOW_ONLY_LABELS = {"nightly", "bypass-fastfail"} | {f"run-on-{arch}" for arch in KNOWN_ARCHES}
+
+# Scope label selecting the tests that only run on Blackwell. Distinct from
+# `run-on-blackwell`: this one runs the Blackwell-exclusive set, that one
+# moves whatever it can onto Blackwell.
+_BLACKWELL_ONLY_LABEL = "run-ci-blackwell-only"
 _SAFE_RUN_CI_LABEL = re.compile(r"^run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 REGULAR_CADENCE = "regular"
@@ -38,6 +48,11 @@ class RunPolicy:
     admit_nightly_tests: bool
     bypass_fastfail: bool
     write_baseline: bool
+    # Arches this run executes on; empty means "each test on its own default".
+    dispatch_arches: frozenset[str] = frozenset()
+    # Whether a test may execute outside its home stage. Only an explicit
+    # `run-on-*` sets this, so every other run selects exactly what it does today.
+    absorb: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,14 +120,28 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
         raise ValueError("The nightly workflow label requires cadence='nightly'")
 
     requested = strip_run_ci_prefix(raw_labels) & set(KNOWN_LABELS)
+    blackwell_only = _BLACKWELL_ONLY_LABEL in raw_labels
     if "run-ci-all" in raw_labels or cadence in {WEEKLY_CADENCE, RELEASE_CADENCE}:
         scope = set(KNOWN_LABELS)
     elif cadence == NIGHTLY_CADENCE:
         scope = set(KNOWN_LABELS) - {"long", "ft-long"}
+    elif blackwell_only:
+        # The arch, not the domain, is the selection here.
+        scope = set(KNOWN_LABELS)
     elif "run-ci-image" in raw_labels:
         scope = set(KNOWN_LABELS) - {"long", "ft-short", "ft-long"}
     else:
         scope = set()
+
+    # An explicit `run-on-*` both picks the arches and permits a test to leave
+    # its home stage. `run-ci-blackwell-only` picks an arch without permitting
+    # that move, which is exactly what makes it mean "the Blackwell-exclusive
+    # tests" rather than "everything that can run on Blackwell".
+    dispatch_arches = frozenset(arch for arch in KNOWN_ARCHES if f"run-on-{arch}" in raw_labels)
+    absorb = bool(dispatch_arches)
+    if not dispatch_arches and blackwell_only:
+        dispatch_arches = frozenset({"blackwell"})
+
     full_cadences = {NIGHTLY_CADENCE, WEEKLY_CADENCE, RELEASE_CADENCE}
     return RunPolicy(
         cadence=cadence,
@@ -120,6 +149,8 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
         admit_nightly_tests=cadence in full_cadences,
         bypass_fastfail=cadence in full_cadences or "bypass-fastfail" in raw_labels,
         write_baseline=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE},
+        dispatch_arches=dispatch_arches,
+        absorb=absorb,
     )
 
 

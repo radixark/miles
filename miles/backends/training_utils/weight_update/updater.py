@@ -142,6 +142,7 @@ class WeightUpdater:
                 set_weight_version(protocol.rollout_engines, self.weight_version)
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
+        protocol.after_engines_resumed()
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

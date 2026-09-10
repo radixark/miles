@@ -310,6 +310,9 @@ class Qwen3TITOTokenizer(TITOTokenizer):
     ) -> list[int]:
         incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
         prefix = list(pretokenized_token_ids)
+        # Weakly post-trained Qwen3 models, notably 0.6B, may emit the pretraining/padding token `<|endoftext|>`.
+        # Seen in TITO's March 2026 bring-up; rare in larger models. See https://github.com/radixark/miles/issues/3113.
+        # This is model degeneration, not a valid `<|im_end|>` alias; keep the strict checker reporting it.
         if prefix and prefix[-1] == self._im_end_id:
             prefix.append(self._newline_id)
         return prefix + incremental

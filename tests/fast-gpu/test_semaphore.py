@@ -9,6 +9,7 @@ register_cuda_ci(
     est_time=60,
     suite="stage-b-2-gpu-h200",
     labels=["sglang"],
+    hardware=["hopper", "blackwell"],
     disabled="FIXME: re-enable after shared HTTP client concurrency is reset between cases.",
 )
 
