@@ -396,8 +396,10 @@ class TinkerService:
                 await self._evict_model(model_id, "lease expired", "user")
 
     async def _evict_model(self, model_id: str, error: str, category: str) -> None:
-        """Free a model's slot and fail its pending requests; requires the backend lock."""
-        record = self.models.pop(model_id)
+        """Free a model's slot and fail its pending requests; requires the backend lock. Idempotent."""
+        record = self.models.pop(model_id, None)
+        if record is None:
+            return
         # the poison belongs to the evicted model's gradient window, not the slot
         self._poisoned_slots.pop(record.slot, None)
         stream = self.planner.stream(model_id)
@@ -423,10 +425,7 @@ class TinkerService:
                 async with self._backend_lock:
                     unit = self.planner.next_to_run()
                     if unit is not None:
-                        if isinstance(unit, BatchUnit):
-                            await self._run_batch(unit)
-                        else:
-                            await self._run_barrier(unit)
+                        await self._run_unit_and_evict_on_failure(unit)
                         continue
                 await self._wake.wait()
                 self._wake.clear()
@@ -434,6 +433,28 @@ class TinkerService:
             sweep_task.cancel()
             with suppress(asyncio.CancelledError):
                 await sweep_task
+
+    async def _run_unit_and_evict_on_failure(self, unit) -> None:
+        try:
+            if isinstance(unit, BatchUnit):
+                await self._run_batch(unit)
+            else:
+                await self._run_barrier(unit)
+        except Exception as error:  # noqa: BLE001  the handler's own failure handling failed
+            logger.exception("dispatch failed past its handler; retiring the unit's models")
+            message = (
+                f"model unloaded after an unhandled failure "
+                f"({type(error).__name__}: {error}); restore from a checkpoint"
+            )
+            self._fail_unit(unit, message, "server")
+            for model_id in _unit_model_ids(unit):
+                await self._evict_model(model_id, message, "server")
+
+    def _fail_unit(self, unit, error: str, category: str) -> None:
+        if isinstance(unit, BatchUnit):
+            self._fail_batch_runs(unit, error, category)
+        else:
+            self._fail_barrier(unit, error, category)
 
     async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
@@ -673,6 +694,11 @@ class TinkerService:
 
 def _tenant_digest(tenant: str) -> str:
     return hashlib.sha256(tenant.encode()).hexdigest()
+
+
+def _unit_model_ids(unit) -> list[str]:
+    streams = {ref.stream for ref in unit.datums} if isinstance(unit, BatchUnit) else {s for s, _ in unit.entries}
+    return sorted(stream.model_id for stream in streams)
 
 
 def _parse_tinker_path(path: str) -> tuple[str, str, str]:
