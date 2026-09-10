@@ -11,7 +11,9 @@ import numpy as np
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 from miles.utils import object_store
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.pydantic_utils import StrictBaseModel
+
 from .audit_utils.witness.allocator import WitnessInfo
 
 if TYPE_CHECKING:
@@ -296,8 +298,8 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
 def process_rollout_data(
     args,
     rollout_data_ref,
-    dp_rank,
-    dp_size,
+    dp_rank: int,
+    train_parallel_config: TrainParallelConfig,
     witness_info: WitnessInfo | None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
@@ -309,10 +311,10 @@ def process_rollout_data(
         raw = get_result.value
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
-        raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
+        raw = split_train_data_by_dp_raw(args, raw, dp_size=train_parallel_config.dp_size)
         rollout_data = raw[dp_rank]
     else:
-        assert len(rollout_data_ref) == dp_size
+        assert len(rollout_data_ref) == train_parallel_config.dp_size
         assert witness_info is None
         get_result = store.get(rollout_data_ref[dp_rank])
         rollout_data = dict(get_result.value)

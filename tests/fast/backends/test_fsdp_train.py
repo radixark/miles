@@ -3,6 +3,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from unittest.mock import Mock
 
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
+
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 
@@ -16,12 +18,11 @@ def test_fsdp_train_debug_rollout_only_returns_a_normal_output(monkeypatch):
     """A debug-rollout-only FSDP step trains nothing yet answers the driver with a NORMAL output."""
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = Namespace(offload_train=False, debug_rollout_only=True)
+    actor.train_parallel_config = make_train_parallel_config(dp_size=1)
     actor._heartbeat = Mock()
     actor._train_core = Mock()
     actor.wake_up = Mock()
-    monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
-    )
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(actor_module, "timer", _noop_timer)
     monkeypatch.setattr(actor_module, "inverse_timer", _noop_timer)
 

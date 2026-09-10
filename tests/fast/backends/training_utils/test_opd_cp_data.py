@@ -62,7 +62,11 @@ def _load_rollout_data(
     monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
 
-    loaded_rollout_data, _store_get_result = data_utils.get_rollout_data(_args(qkv_format), object())
+    loaded_rollout_data, _store_get_result = data_utils.get_rollout_data(
+        args=_args(qkv_format),
+        rollout_data_ref=object(),
+        train_parallel_config=parallel_state.train_parallel_config(supports_precomputed_schedule=True),
+    )
     return loaded_rollout_data
 
 
