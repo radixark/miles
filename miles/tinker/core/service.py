@@ -389,7 +389,11 @@ class TinkerService:
         for request_id in stream.request_id_by_seq.values():
             if self.futures.get(request_id, record.tenant) is not None:
                 self.futures.fail(request_id, error, category)
-        await self.backend.unload_slot(record.slot)
+        try:
+            await self.backend.unload_slot(record.slot)
+        except Exception:  # noqa: BLE001  a dirty slot must not kill the sweep or dispatch loop
+            logger.exception(f"failed to unload slot {record.slot}; keeping it out of the free pool")
+            return
         self.free_slots.add(record.slot)
 
     # -------- dispatch loop --------
