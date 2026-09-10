@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,23 @@ from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
 from tests.ci.stage_selection import PR_GPU_STAGES, ChangedFile, read_changed_files, select_skipped_gpu_stages
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+
+WORKFLOW = Path(__file__).resolve().parents[3] / ".github/workflows/pr-test.yml"
+
+
+def test_a_cpu_failure_cannot_skip_the_gpu_stages_a_nightly_asked_for():
+    """bypass_fastfail is defeated by any job on the path that inherits the default success().
+
+    A job without `if` is gated on its whole dependency closure, so on 2026-09-10 a
+    stage-a-cpu failure skipped resolve-ci-image and with it all seven GPU stages, even
+    though the nightly policy had set bypass_fastfail=true.
+    """
+    workflow = WORKFLOW.read_text()
+    blocks = dict(re.findall(r"\n  ([a-z][a-z0-9-]*):\n(.*?)(?=\n  [a-z][a-z0-9-]*:\n|\Z)", workflow, re.S))
+    for job in ("docker-build", "resolve-ci-image"):
+        block = blocks[job]
+        assert "if:" in block, f"{job} inherits success() over the closure, defeating bypass_fastfail"
+        assert "always()" in block, f"{job} must not be gated on an unrelated upstream failure"
 
 
 def _registration(
