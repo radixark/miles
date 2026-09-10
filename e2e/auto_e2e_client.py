@@ -19,9 +19,10 @@ import time
 import traceback
 
 import tinker
-from miles.rollout.rm_hub.math_dapo_utils import (
-    compute_score,  # DAPO's rule-based math reward: {"score": +1 / -1, ...}
-)
+
+# DAPO's rule-based math reward returns {"score": +1 / -1, "acc", "pred"}
+from miles.rollout.rm_hub.math_dapo_utils import compute_score
+from miles.utils.processing_utils import load_tokenizer
 from tinker import types
 
 DAPO_CLIP = {"clip_low_threshold": 0.8, "clip_high_threshold": 1.28}
@@ -92,12 +93,15 @@ async def run_tenant(index: int, args, rows_by_step) -> dict:
     training = await service.create_lora_training_client_async(
         base_model=args.base_model, rank=args.lora_rank, train_unembed=False
     )
-    tokenizer = training.get_tokenizer()
+    # the checkpoint's own tokenizer: it carries the chat template and decodes what the engines sampled
+    tokenizer = load_tokenizer(args.base_model, trust_remote_code=True)
 
     def encode(messages):
-        return tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True, enable_thinking=args.enable_thinking
+        # render, then encode: apply_chat_template(tokenize=True) returns two tokens on this transformers build
+        text = tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False, enable_thinking=args.enable_thinking
         )
+        return tokenizer.encode(text, add_special_tokens=False)
 
     started = time.time()
     path, sampler = await publish(training, service, "step0")
