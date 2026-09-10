@@ -166,9 +166,8 @@ class TinkerService:
             async with self._backend_lock:
                 await self.backend.load_slot(record.slot, record.lora_rank, record.lora_alpha)
         except Exception as error:
-            self.models.pop(record.model_id, None)
-            self.planner.remove_stream(record.model_id)
-            self.free_slots.add(record.slot)
+            async with self._backend_lock:
+                await self._evict_model(record.model_id, f"model initialization failed ({error})", "server")
             self.futures.fail(request_id, str(error), "server")
             return
         self.futures.resolve(request_id, {"op": "create_model", "model_id": record.model_id})
