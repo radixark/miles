@@ -14,6 +14,7 @@ the Harbor task.
 | File | Purpose |
 | --- | --- |
 | `run.py` | Validated synchronous GLM-4.7-Flash launcher. |
+| `run_nemotron3_moe_tb21.py` | Nemotron 3 Nano / 3.5 Lightning 30B-A3B training with checkpoint resume. |
 | `run-glm47-flash-agentic-async.py` | Disaggregated fully asynchronous launcher. |
 | `run_glm52_lora_tb2_daytona.py` | Multi-node GLM-5.2 744B-A40B LoRA launcher (bf16 trainer, fp8 rollout). |
 | `swe_agent_function.py` | Sends each rollout to the Harbor agent server. |
@@ -132,3 +133,20 @@ are written by the trainer itself and are the authoritative progress signal.
 
 The synchronous launcher uses GLM-4.7 tool-call and reasoning parsers, TITO,
 the Miles session server, and the Megatron backend.
+
+## Nemotron 3 Nano and 3.5 Lightning
+
+`run_nemotron3_moe_tb21.py` uses the Nemotron-H bridge and routing replay with
+native Harbor Terminus2. Stage the BF16 model and task JSONL before launching;
+the module's help and example document the required paths and tracking options.
+Use `parser_name: "json"` in each task's metadata with a Harbor server that
+supports selecting the Terminus2 parser per request.
+
+To continue an existing run, pass `--load-dir /path/to/checkpoints`. Miles restores
+the checkpoint's optimizer, RNG, and rollout position. `--num-rollout` is the
+total rollout target, including the restored position.
+
+Sandbox selection belongs to the Harbor server. To use E2B, install Harbor's
+`e2b` extra and use an agent-server branch supporting `HARBOR_ENV_TYPE=e2b`.
+Point this launcher's `--agent-server-url` at that server. Verify template
+startup, Terminus2 setup, grading, and cancellation before training.
