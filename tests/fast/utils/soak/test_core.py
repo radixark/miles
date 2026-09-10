@@ -34,7 +34,8 @@ def test_requests_are_recorded_before_execution_and_failures_keep_the_same_ident
             raise RuntimeError("response lost")
 
     core._execute_action(
-        action=core._SelectedAction(target=target, form=StubFaultForm("fault", inject)),
+        action=state.SoakActionRequest(target=target, form_name="fault", harms_cell=True),
+        forms={"actor": [StubFaultForm("fault", inject)]},
         rng=random.Random(0),
         event_log=log,
     )
@@ -49,6 +50,28 @@ def test_requests_are_recorded_before_execution_and_failures_keep_the_same_ident
     assert not [event for event in log.events if isinstance(event, state.InjectionEvent)]
     assert views.compute_num_injections(log.events) == int(not fails)
     assert views.compute_forms_drawn_without_success(log.events) == ([("actor", "fault")] if fails else [])
+
+
+def test_recorded_deadlines_survive_rebuilding_the_scheduler() -> None:
+    """A recorded future deadline is not redrawn by polling or recreating the scheduler."""
+    log = state.EventLog()
+    cells = [typed_cell(f"actor-{i}", "actor") for i in range(2)]
+    log.observe(cells)
+    cells.clear()
+    log.note_schedule(state.SoakScheduleEvent(due_of_type={"actor": 10.0}))
+    forms = {"actor": [StubFaultForm("fault", _do_nothing)]}
+    scheduler = core.SoakActionScheduler(rng=random.Random(0), mean_intervals={"actor": 1.0}, forms=forms)
+
+    assert scheduler.choose(events=log.events, now=9.0) is None
+    with patch.object(core, "_compute_next_injection_time", return_value=20.0):
+        request = scheduler.choose(events=log.events, now=10.0)
+    assert request is not None
+    assert request.next_due_at == 20.0
+    log.note_action_requested(request)
+
+    rebuilt = core.SoakActionScheduler(rng=random.Random(100), mean_intervals={"actor": 1.0}, forms=forms)
+    assert rebuilt.choose(events=log.events, now=19.0) is None
+    assert rebuilt.choose(events=log.events, now=20.0) is not None
 
 
 def _run_injection_loop(

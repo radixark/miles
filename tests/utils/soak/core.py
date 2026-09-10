@@ -5,11 +5,21 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 
 import requests
 from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms
-from tests.utils.soak.state import Event, EventLog, SoakActionRequest, SoakActionResultEvent, cell_type_of
+from tests.utils.soak.state import (
+    Event,
+    EventLog,
+    ObservationsEvent,
+    SoakActionRequest,
+    SoakActionRequestedEvent,
+    SoakActionResultEvent,
+    SoakScheduleEvent,
+    cell_type_of,
+)
 from tests.utils.soak.views import compute_successful_form_names
 
 logger = logging.getLogger(__name__)
@@ -43,6 +53,7 @@ def run_fault_injection_loop(
         forms=cell_fault_forms,
         injection_enabled=injection_enabled,
     )
+    event_log.note_schedule(scheduler.initial_schedule())
 
     while not stop_event.is_set():
         if stop_event.wait(timeout=poll_interval_seconds):
@@ -58,8 +69,8 @@ def run_fault_injection_loop(
         if stop_event.is_set():
             break
 
-        if (action := scheduler.choose(cells=cells, events=event_log.events)) is not None:
-            _execute_action(action=action, rng=rng, event_log=event_log)
+        if (action := scheduler.choose(events=event_log.events, now=time.monotonic())) is not None:
+            _execute_action(action=action, forms=cell_fault_forms, rng=rng, event_log=event_log)
 
 
 @dataclass(frozen=True)
@@ -90,17 +101,31 @@ class SoakActionScheduler:
         self._mean_intervals = mean_intervals
         self._forms = forms
         self._injection_enabled = injection_enabled
-        self._next_due = {
-            cell_type: _compute_next_injection_time(rng, mean_interval_seconds)
-            for cell_type, mean_interval_seconds in sorted(mean_intervals.items())
-        }
 
-    def choose(self, *, cells: list[dict], events: list[Event]) -> "_SelectedAction | None":
-        cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._next_due}
-        for cell in cells:
+    def initial_schedule(self) -> SoakScheduleEvent:
+        return SoakScheduleEvent(
+            due_of_type={
+                cell_type: _compute_next_injection_time(self._rng, mean_interval_seconds)
+                for cell_type, mean_interval_seconds in sorted(self._mean_intervals.items())
+            }
+        )
+
+    def choose(self, *, events: list[Event], now: float) -> SoakActionRequest | None:
+        due_of_type: dict[str, float] = {}
+        observation = None
+        for event in events:
+            if isinstance(event, SoakScheduleEvent):
+                due_of_type.update(event.due_of_type)
+            elif isinstance(event, SoakActionRequestedEvent) and event.request.next_due_at is not None:
+                due_of_type[cell_type_of(event.request.target)] = event.request.next_due_at
+            elif isinstance(event, ObservationsEvent):
+                observation = event
+        if observation is None:
+            return None
+        cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
+        for cell in observation.cells:
             cells_of_type[cell_type_of(cell)].append(cell)
-        now: float = time.monotonic()
-        due_types = sorted(kind for kind, due_at in self._next_due.items() if now >= due_at)
+        due_types = sorted(kind for kind, due_at in due_of_type.items() if now >= due_at)
         if not due_types:
             return None
 
@@ -113,20 +138,20 @@ class SoakActionScheduler:
         form = _draw_form(self._forms[cell_type], events=events, cell_type=cell_type, rng=self._rng)
         if self._injection_enabled is not None and not self._injection_enabled():
             return None
-        self._next_due[cell_type] = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
-        return _SelectedAction(target=target, form=form)
+        next_due_at = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
+        return SoakActionRequest(
+            target=deepcopy(target), form_name=form.name, harms_cell=form.harms_cell, next_due_at=next_due_at
+        )
 
 
-@dataclass(frozen=True)
-class _SelectedAction:
-    target: dict
-    form: BaseFaultForm
-
-
-def _execute_action(*, action: _SelectedAction, rng: random.Random, event_log: EventLog) -> None:
-    form = action.form
+def _execute_action(
+    *, action: SoakActionRequest, forms: CellFaultForms, rng: random.Random, event_log: EventLog
+) -> None:
+    matching = [form for form in forms[cell_type_of(action.target)] if form.name == action.form_name]
+    assert len(matching) == 1, f"Expected one form named {action.form_name}, found {len(matching)}"
+    form = matching[0]
     cell_name = action.target["metadata"]["name"]
-    request = SoakActionRequest(target=action.target, form_name=form.name, harms_cell=form.harms_cell)
+    request = action
     event_log.note_action_requested(request)
     try:
         form.inject(action.target, rng)

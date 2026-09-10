@@ -2,6 +2,7 @@
 
 import enum
 import threading
+from copy import deepcopy
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -48,6 +49,11 @@ class SoakActionRequest(FrozenStrictBaseModel):
     target: dict
     form_name: str
     harms_cell: bool
+    next_due_at: float | None = None
+
+
+class SoakScheduleEvent(BaseEvent):
+    due_of_type: dict[str, float]
 
 
 class SoakActionRequestedEvent(BaseEvent):
@@ -69,9 +75,10 @@ class CellInfo(FrozenStrictBaseModel):
 class ObservationsEvent(BaseEvent):
     # One whole poll, so a cell that has vanished is as recorded as one that answered.
     cell_infos: dict[str, CellInfo]
+    cells: list[dict] = Field(default_factory=list)
 
 
-Event = InjectionEvent | ObservationsEvent | SoakActionRequestedEvent | SoakActionResultEvent
+Event = InjectionEvent | ObservationsEvent | SoakActionRequestedEvent | SoakActionResultEvent | SoakScheduleEvent
 
 
 class EventLog:
@@ -92,6 +99,7 @@ class EventLog:
     def observe(self, cells: list[dict]) -> None:
         self._append(
             ObservationsEvent(
+                cells=deepcopy(cells),
                 cell_infos={
                     cell["metadata"]["name"]: CellInfo(
                         cell_type=cell_type_of(cell),
@@ -99,7 +107,7 @@ class EventLog:
                         alive=cell_is_alive(cell),
                     )
                     for cell in cells
-                }
+                },
             )
         )
 
@@ -108,6 +116,9 @@ class EventLog:
 
     def note_action_result(self, result: SoakActionResultEvent) -> None:
         self._append(result)
+
+    def note_schedule(self, schedule: SoakScheduleEvent) -> None:
+        self._append(schedule)
 
     def _append(self, event: Event) -> None:
         with self._lock:
