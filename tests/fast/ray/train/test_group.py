@@ -33,6 +33,7 @@ async def test_log_current_cpu_witness_collects_live_cell_snapshots(tmp_path: Pa
     """A live snapshot writes its cohort only after every cell returns."""
     set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
     controller = object.__new__(TrainerController)
+    controller._role = "actor"
     controller._cells_by_id = {
         "cell-a": SimpleNamespace(
             cell_index=0,
@@ -67,6 +68,7 @@ async def test_log_current_cpu_witness_requires_exact_alive_replicas(
     """A missing or duplicate cell representative cannot produce a completed cohort."""
     set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
     controller = object.__new__(TrainerController)
+    controller._role = "actor"
     controller._cells_by_id = {
         "cell-a": SimpleNamespace(
             cell_index=0,

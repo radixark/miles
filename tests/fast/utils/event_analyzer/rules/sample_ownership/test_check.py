@@ -67,7 +67,7 @@ def _witness(
     replica_id: str = "cell-0",
     rollout_id: int = 1,
     timestamp: datetime = _NOW,
-    reason: str = "step",
+    reason: str = "current",
     cohort_id: str = "cohort-1",
 ) -> TrainerCpuWitnessEvent:
     return TrainerCpuWitnessEvent(

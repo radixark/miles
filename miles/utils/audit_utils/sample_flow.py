@@ -1,4 +1,6 @@
+import contextvars
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from miles.rollout.data_source import DataSource
@@ -9,6 +11,20 @@ from miles.utils.audit_utils.event_logger.models import (
     IssuedSampleGroup,
 )
 from miles.utils.types import Sample
+
+_drop_logging_suppressed: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "drop_logging_suppressed",
+    default=False,
+)
+
+
+@contextmanager
+def suppress_drop_logging() -> Iterator[None]:
+    token = _drop_logging_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _drop_logging_suppressed.reset(token)
 
 
 def record_data_source_issues(data_source: DataSource) -> None:
@@ -57,6 +73,9 @@ def log_dropped_sample_indices(
     reason: str,
     rollout_id: int | None = None,
 ) -> None:
+    if _drop_logging_suppressed.get():
+        return
+
     sample_indices = list(dict.fromkeys(sample_indices))
     if not sample_indices or not is_event_logger_initialized():
         return

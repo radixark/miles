@@ -1,9 +1,11 @@
 import asyncio
+import json
 from argparse import Namespace
 from pathlib import Path
 
 import pytest
 import torch
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
@@ -13,6 +15,7 @@ from miles.ray.rollout.rollout_executor import (
     compute_executor_state_path,
 )
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.rollout.data_source import compute_global_dataset_state_path
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.types import Sample
@@ -146,11 +149,14 @@ class TestSetEvalFleetInfo:
 
 
 class _FakeDataSource:
-    def __init__(self) -> None:
+    def __init__(self, path: Path) -> None:
+        self._path = path
         self.loaded: list[int | None] = []
 
     def save(self, rollout_id: int) -> None:
-        pass
+        path = compute_global_dataset_state_path(self._path, rollout_id=rollout_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"sample_group_index": 1, "sample_index": 1}, path)
 
     def load(self, rollout_id: int | None) -> None:
         self.loaded.append(rollout_id)
@@ -175,15 +181,17 @@ class _CountingRolloutFn:
 
 def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
     executor = RolloutExecutor.__new__(RolloutExecutor)
-    executor.args = Namespace(load=str(tmp_path), save=str(tmp_path), load_debug_rollout_data=None)
+    executor.args = make_args(load=str(tmp_path), save=str(tmp_path))
     executor.use_legacy_rollout_v1 = True
     executor.generate_rollout = rollout_fn
     executor.eval_generate_rollout = rollout_fn
-    executor.data_source = _FakeDataSource()
+    executor.data_source = _FakeDataSource(tmp_path)
     executor._train_parallel_configs_of_model_id = {None: {}}
     executor._weight_versions_of_model_id = {}
     executor._last_batch = None
     executor._replay = None
+    executor._replay_stage = None
+    executor._replay_train_data = None
     return executor
 
 
@@ -224,6 +232,35 @@ class TestLastBatchReplay:
         await resumed._get_rollout_data(rollout_id=2)
 
         assert resumed.generate_rollout.num_calls == 1
+
+    async def test_a_delivered_batch_resumes_after_postprocessing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A replay saved after delivery does not repeat trim processing or its terminal events."""
+        sample = Sample(index=1, group_index=1, status=Sample.Status.COMPLETED)
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor._record_processed_batch(
+            rollout_id=1,
+            samples=[sample],
+            metadata={"stage": "final"},
+            stage="delivered",
+        )
+        executor.save(0)
+        resumed = _make_executor(tmp_path, _CountingRolloutFn())
+        resumed.load(0)
+        monkeypatch.setattr(
+            rollout_executor_module,
+            "postprocess_rollout_data",
+            lambda *args, **kwargs: pytest.fail("delivered replay must not rerun postprocessing"),
+        )
+
+        samples, metadata, _ = await resumed._get_rollout_data(rollout_id=1)
+
+        assert samples[0].index == 1
+        assert metadata == {"stage": "final"}
+        assert resumed._replay_stage == "delivered"
 
     async def test_a_different_rollout_id_does_not_consume_the_pending_replay(self, tmp_path: Path) -> None:
         """An unrelated get leaves the exact recorded rollout available for its own id."""
@@ -325,12 +362,63 @@ class TestCheckpointCompleteMarker:
 
     def test_a_marker_without_executor_state_is_refused(self, tmp_path: Path) -> None:
         """A corrupt checkpoint cannot use its marker to hide a missing mandatory executor file."""
-        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=5)
-        marker.parent.mkdir()
-        marker.write_text("")
         executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.save(5)
+        compute_executor_state_path(tmp_path, rollout_id=5).unlink()
 
         with pytest.raises(AssertionError, match="no executor_state_5.pt"):
+            executor.load(5)
+
+    def test_a_marker_without_data_source_state_is_refused(self, tmp_path: Path) -> None:
+        """Sample identity cursors are mandatory even when the global dataset is disabled."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.save(5)
+        compute_global_dataset_state_path(tmp_path, rollout_id=5).unlink()
+
+        with pytest.raises(AssertionError, match="global_dataset_state_dict_5.pt"):
+            executor.load(5)
+
+    def test_a_marker_rejects_invalid_data_source_identity(self, tmp_path: Path) -> None:
+        """A complete checkpoint cannot resume with missing sample identity cursors."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.save(5)
+        torch.save({}, compute_global_dataset_state_path(tmp_path, rollout_id=5))
+
+        with pytest.raises(AssertionError, match="invalid sample_group_index"):
+            executor.load(5)
+
+    def test_a_marker_without_fully_async_state_is_refused(self, tmp_path: Path) -> None:
+        """A fully async checkpoint cannot discard its queued and in-flight work."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.save(5)
+        executor.args.fully_async = True
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=5)
+        marker.write_text(json.dumps(executor._checkpoint_manifest(5, directory=tmp_path), sort_keys=True))
+
+        with pytest.raises(AssertionError, match="fully_async_state_5.pt"):
+            executor.load(5)
+
+    def test_a_marker_without_event_snapshot_is_refused(self, tmp_path: Path) -> None:
+        """An accounting-enabled checkpoint cannot forget the issued and terminal events."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.save(5)
+        executor.args.save_debug_event_data = str(tmp_path / "events")
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=5)
+        marker.write_text(json.dumps(executor._checkpoint_manifest(5, directory=tmp_path), sort_keys=True))
+
+        with pytest.raises(AssertionError, match="no mandatory state"):
+            executor.load(5)
+
+    def test_a_marker_manifest_must_match_the_restored_mode(self, tmp_path: Path) -> None:
+        """The marker records which component set made the checkpoint complete."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.save(5)
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=5)
+        manifest = json.loads(marker.read_text())
+        manifest["files"] = []
+        marker.write_text(json.dumps(manifest))
+
+        with pytest.raises(AssertionError, match="describes"):
             executor.load(5)
 
     def test_an_empty_optional_load_warns_and_continues(self, tmp_path: Path) -> None:

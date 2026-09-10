@@ -1,16 +1,16 @@
 import asyncio
 import copy
 import inspect
+import json
 import logging
-import os
-import tempfile
 import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -36,7 +36,9 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.data_source import compute_global_dataset_state_path
 from miles.rollout.fully_async_data_buffer import Group
+from miles.rollout.fully_async_rollout import compute_fully_async_state_path
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.async_utils import maybe_await, run, submit
@@ -45,11 +47,16 @@ from miles.utils.audit_utils.event_logger import checkpoint as event_logger_chec
 from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
 from miles.utils.audit_utils.event_logger.models import TrainerWitnessCohortPayload
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
-from miles.utils.audit_utils.sample_flow import log_dropped_groups, record_data_source_issues
+from miles.utils.audit_utils.sample_flow import (
+    log_dropped_groups,
+    log_dropped_samples,
+    record_data_source_issues,
+    suppress_drop_logging,
+)
 from miles.utils.audit_utils.sample_ownership_store import SampleOwnershipEventStore
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
-from miles.utils.file_utils import atomic_write_text
+from miles.utils.file_utils import atomic_torch_save, atomic_write_text
 from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
@@ -59,6 +66,7 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.multi_lora import EmptyBatchTimeoutError
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.types import Sample
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerStillBusyError
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -78,22 +86,13 @@ def compute_checkpoint_complete_marker_path(directory: str | Path, *, rollout_id
     return Path(directory) / "rollout" / f"complete_{rollout_id}"
 
 
-def _atomic_torch_save(path: Path, obj: object) -> None:
-    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(handle, "wb") as file:
-            torch.save(obj, file)
-            os.fchmod(file.fileno(), 0o644)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-
-
 @dataclass(frozen=True)
 class LastBatch:
     rollout_id: int
     samples: list[Group]
+    stage: Literal["raw", "postprocessed", "delivered"] = "raw"
+    metadata: dict[str, Any] | None = None
+    train_data: dict[str, Any] | None = None
 
 
 class RolloutExecutor:
@@ -125,6 +124,8 @@ class RolloutExecutor:
         self._actor_controller: BaseWorkerHandle | None = None
         self._last_batch: LastBatch | None = None
         self._replay: LastBatch | None = None
+        self._replay_stage: Literal["raw", "postprocessed", "delivered"] | None = None
+        self._replay_train_data: dict[str, Any] | None = None
 
     @init_once
     async def init(self) -> None:
@@ -229,20 +230,44 @@ class RolloutExecutor:
         log_rollout_data(
             rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
         )
-        data = convert_samples_to_train_data(
-            self.args,
-            data,
-            metadata=metadata,
-            custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
-            custom_reward_post_process_func=self.custom_reward_post_process_func,
-        )
-        sample_indices = data.get("sample_indices")
-        if self.args.delay_split_train_data_by_dp:
-            data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
-        else:
-            data_ref = split_train_data_by_dp(
-                self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
-            )
+        processed_samples = data
+        drop_context = suppress_drop_logging() if self._replay_stage == "delivered" else nullcontext()
+        try:
+            with drop_context:
+                if self.args.use_critic and rollout_id < self.args.num_critic_only_steps:
+                    log_dropped_samples(
+                        processed_samples,
+                        reason="critic_only_warmup",
+                        rollout_id=rollout_id,
+                    )
+                if self._replay_train_data is not None:
+                    data = copy.deepcopy(self._replay_train_data)
+                else:
+                    data = convert_samples_to_train_data(
+                        self.args,
+                        data,
+                        metadata=metadata,
+                        custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+                        custom_reward_post_process_func=self.custom_reward_post_process_func,
+                    )
+                sample_indices = data.get("sample_indices")
+                if self.args.delay_split_train_data_by_dp:
+                    data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+                else:
+                    data_ref = split_train_data_by_dp(
+                        self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
+                    )
+            if trainer_model_id is None:
+                self._record_processed_batch(
+                    rollout_id=rollout_id,
+                    samples=processed_samples,
+                    metadata=metadata,
+                    stage="delivered",
+                    train_data=data,
+                )
+        finally:
+            self._replay_stage = None
+            self._replay_train_data = None
         return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(
@@ -327,15 +352,26 @@ class RolloutExecutor:
             self._replay = None
             logger.info(f"Replaying the {len(replayed.samples)} groups recorded for rollout {rollout_id}")
             data = copy.deepcopy(replayed.samples)
-            self._record_last_batch(rollout_id=rollout_id, samples=data)
-            untrimmed_data = list(data)
-            data, metadata = postprocess_rollout_data(
-                self.args,
-                data,
-                train_parallel_config=self._train_parallel_configs_of_model_id[trainer_model_id],
-            )
-            log_dropped_groups(untrimmed_data, data, reason="trim", rollout_id=rollout_id)
-            assert_samples_weight_version_sane(self.args, samples=data)
+            self._replay_stage = replayed.stage
+            self._replay_train_data = copy.deepcopy(replayed.train_data)
+            if replayed.stage != "raw":
+                metadata = copy.deepcopy(replayed.metadata)
+                assert metadata is not None
+            else:
+                untrimmed_data = list(data)
+                data, metadata = postprocess_rollout_data(
+                    self.args,
+                    data,
+                    train_parallel_config=self._train_parallel_configs_of_model_id[trainer_model_id],
+                )
+                log_dropped_groups(untrimmed_data, data, reason="trim", rollout_id=rollout_id)
+                assert_samples_weight_version_sane(self.args, samples=data)
+                self._record_processed_batch(
+                    rollout_id=rollout_id,
+                    samples=data,
+                    metadata=metadata,
+                    stage="postprocessed",
+                )
             metrics = None
         else:
             if not self.use_legacy_rollout_v1:
@@ -373,6 +409,13 @@ class RolloutExecutor:
                     self.args, generated=generated_data, injected=data, rollout_id=rollout_id
                 )
                 metrics = None
+            if trainer_model_id is None:
+                self._record_processed_batch(
+                    rollout_id=rollout_id,
+                    samples=data,
+                    metadata=metadata,
+                    stage="postprocessed",
+                )
 
         return data, metadata, metrics
 
@@ -477,6 +520,23 @@ class RolloutExecutor:
     def _record_last_batch(self, *, rollout_id: int, samples: list[Group]) -> None:
         self._last_batch = LastBatch(rollout_id=rollout_id, samples=copy.deepcopy(samples))
 
+    def _record_processed_batch(
+        self,
+        *,
+        rollout_id: int,
+        samples: list[Group],
+        metadata: dict[str, Any],
+        stage: Literal["postprocessed", "delivered"],
+        train_data: dict[str, Any] | None = None,
+    ) -> None:
+        self._last_batch = LastBatch(
+            rollout_id=rollout_id,
+            samples=copy.deepcopy(samples),
+            stage=stage,
+            metadata=copy.deepcopy(metadata),
+            train_data=copy.deepcopy(train_data),
+        )
+
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
@@ -485,9 +545,13 @@ class RolloutExecutor:
             compute_checkpoint_complete_marker_path(self.args.save, rollout_id=rollout_id).unlink(missing_ok=True)
         run(self._save_state(rollout_id))
         if self.args.save is not None:
+            self._assert_saved_checkpoint_state(rollout_id)
             marker = compute_checkpoint_complete_marker_path(self.args.save, rollout_id=rollout_id)
             marker.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(marker, "")
+            atomic_write_text(
+                marker,
+                json.dumps(self._checkpoint_manifest(rollout_id, directory=self.args.save), sort_keys=True),
+            )
 
     async def _save_state(self, rollout_id: int) -> None:
         self.data_source.save(rollout_id)
@@ -508,7 +572,7 @@ class RolloutExecutor:
         )
         path = compute_executor_state_path(save_dir, rollout_id=rollout_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_torch_save(path=path, obj={"last_batch": pending})
+        atomic_torch_save(path=path, obj={"last_batch": pending})
         logger.info(f"Saved {int(pending is not None)} untrained rollout batch to {path}")
 
     def load(self, rollout_id: int | None = None, *, require_complete: bool = False) -> None:
@@ -546,11 +610,9 @@ class RolloutExecutor:
             return
 
         directory = Path(load_dir) / "rollout"
-        if compute_checkpoint_complete_marker_path(load_dir, rollout_id=rollout_id).exists():
-            executor_state = compute_executor_state_path(load_dir, rollout_id=rollout_id)
-            assert (
-                executor_state.is_file()
-            ), f"{directory} has complete_{rollout_id} but no {executor_state.name}; the checkpoint is corrupt"
+        marker = compute_checkpoint_complete_marker_path(load_dir, rollout_id=rollout_id)
+        if marker.exists():
+            self._assert_checkpoint_state(load_dir, rollout_id, marker=marker)
             return
 
         found = sorted(path.name for path in directory.glob(f"*_{rollout_id}.pt")) if directory.is_dir() else []
@@ -562,6 +624,105 @@ class RolloutExecutor:
             not require_complete
         ), f"the trainer restored rollout {rollout_id}, but {directory} has no complete_{rollout_id} marker"
         logger.warning(f"No rollout state under {directory} for rollout {rollout_id}; nothing to restore")
+
+    def _assert_saved_checkpoint_state(self, rollout_id: int) -> None:
+        assert self.args.save is not None
+        self._assert_checkpoint_state(self.args.save, rollout_id)
+
+    def _assert_checkpoint_state(self, directory: str | Path, rollout_id: int, marker: Path | None = None) -> None:
+        expected = self._checkpoint_manifest(rollout_id)
+        manifest = self._checkpoint_manifest(rollout_id, directory=directory)
+        if marker is not None:
+            try:
+                restored_manifest = json.loads(marker.read_text())
+            except json.JSONDecodeError as error:
+                raise AssertionError(f"{marker} does not contain a valid checkpoint manifest") from error
+            contract_fields = (
+                "version",
+                "rollout_id",
+                "data_source_path",
+                "files",
+                "event_snapshot_enabled",
+                "directories",
+            )
+            assert all(
+                restored_manifest.get(field) == expected[field] for field in contract_fields
+            ), f"{marker} describes {restored_manifest!r}, expected contract {expected!r}; the checkpoint is corrupt"
+            manifest = restored_manifest
+        assert (manifest.get("event_snapshot") is not None) == manifest[
+            "event_snapshot_enabled"
+        ], f"checkpoint manifest event snapshot declaration is inconsistent: {manifest!r}"
+        required_files = [Path(directory) / relative for relative in manifest["files"]]
+        for path in required_files:
+            assert path.is_file(), (
+                f"{Path(directory) / 'rollout'} has complete_{rollout_id} but no {path.name}; "
+                "the checkpoint is corrupt"
+            )
+        for relative in manifest["directories"]:
+            path = Path(directory) / relative
+            assert path.is_dir(), (
+                f"{Path(directory) / 'rollout'} has complete_{rollout_id} but no mandatory state at {path}; "
+                "the checkpoint is corrupt"
+            )
+        if (event_snapshot := manifest.get("event_snapshot")) is not None:
+            snapshot_path = Path(directory) / event_snapshot["directory"]
+            event_logger_checkpoint.validate_event_snapshot(
+                snapshot_path,
+                history_files=event_snapshot["history_files"],
+                has_current=event_snapshot["has_current"],
+            )
+
+        data_source_path = compute_global_dataset_state_path(directory, rollout_id=rollout_id)
+        data_source_state = torch.load(data_source_path, weights_only=False)
+        for field in ("sample_group_index", "sample_index"):
+            value = data_source_state.get(field)
+            assert (
+                isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            ), f"{data_source_path} has invalid {field}={value!r}; the checkpoint cannot preserve sample identity"
+
+        executor_state = torch.load(compute_executor_state_path(directory, rollout_id=rollout_id), weights_only=False)
+        if (last_batch := executor_state["last_batch"]) is not None:
+            for sample in _iter_samples(last_batch.samples):
+                for field, value in (("group_index", sample.group_index), ("index", sample.index)):
+                    assert isinstance(value, int) and not isinstance(value, bool) and value >= 0, (
+                        f"executor replay batch has invalid {field}={value!r}; "
+                        "the checkpoint cannot preserve sample identity"
+                    )
+
+    def _checkpoint_manifest(self, rollout_id: int, directory: str | Path | None = None) -> dict[str, Any]:
+        assert self.args.save is not None or self.args.load is not None
+        files = [
+            str(Path("rollout") / compute_executor_state_path(".", rollout_id=rollout_id).name),
+            str(Path("rollout") / compute_global_dataset_state_path(".", rollout_id=rollout_id).name),
+        ]
+        if self.args.fully_async:
+            files.append(str(Path("rollout") / compute_fully_async_state_path(".", rollout_id=rollout_id).name))
+        directories = []
+        event_snapshot = None
+        if self.args.save_debug_event_data is not None:
+            relative_event_snapshot = event_logger_checkpoint.compute_event_snapshot_path(
+                checkpoint_root=Path("."),
+                iteration=rollout_id,
+            )
+            directories.append(str(relative_event_snapshot))
+            if directory is not None:
+                snapshot_path = Path(directory) / relative_event_snapshot
+                event_snapshot = {
+                    "directory": str(relative_event_snapshot),
+                    "history_files": sorted(
+                        str(path.relative_to(snapshot_path)) for path in snapshot_path.glob("**/*.jsonl")
+                    ),
+                    "has_current": (snapshot_path / "sample_ownership_current.json").is_file(),
+                }
+        return {
+            "version": 1,
+            "rollout_id": rollout_id,
+            "data_source_path": self.args.data_source_path,
+            "files": files,
+            "event_snapshot_enabled": self.args.save_debug_event_data is not None,
+            "directories": directories,
+            "event_snapshot": event_snapshot,
+        }
 
     # -------------------------- misc APIs -----------------------------
 
@@ -590,3 +751,11 @@ class RolloutExecutor:
         self._eval_fleet = RolloutExecutorEvalFleet(
             self.args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
         )
+
+
+def _iter_samples(node: list[Any]) -> Iterator[Sample]:
+    for item in node:
+        if isinstance(item, Sample):
+            yield item
+        else:
+            yield from _iter_samples(item)
