@@ -1,16 +1,16 @@
 import abc
 import logging
-import socket
 from argparse import Namespace
 from collections.abc import Sequence
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
-import ray
 import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.weight_update.protocols.broadcast import connect_rollout_engines_from_distributed
 
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions  # type: ignore[import]
@@ -21,7 +21,7 @@ from sglang.srt.utils import MultiprocessingSerializer
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils import async_utils
-from miles.utils.distributed_utils import get_gloo_group, init_process_group
+from miles.utils.distributed_utils import get_gloo_group
 
 if TYPE_CHECKING:
     pass
@@ -151,10 +151,16 @@ class UpdateWeightFromTensor(UpdateWeight):
         """Attach rollout engines and create per-engine IPC (Gloo) groups (sets gather src rank, engine, tp_rank)."""
         self.rollout_engines = rollout_engines
 
-        # Here we assume the gpu id of rollout engines and train actors are the same.
-        for i, engine in enumerate(self.rollout_engines):
-            start_rank = i * self.args.rollout_num_gpus_per_engine
-            end_rank = (i + 1) * self.args.rollout_num_gpus_per_engine
+        if engine_gpu_counts is None:
+            engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
+        if engine_gpu_offsets is None:
+            engine_gpu_offsets = list(accumulate(engine_gpu_counts, initial=0))[:-1]
+
+        self._ipc_engine = None
+        self._ipc_gather_src = None
+        self._ipc_gather_group = None
+        for engine, start_rank, count in zip(rollout_engines, engine_gpu_offsets, engine_gpu_counts, strict=True):
+            end_rank = start_rank + count
             group_ranks = list(range(start_rank, end_rank))
             new_group = dist.new_group(
                 ranks=group_ranks,
@@ -167,6 +173,9 @@ class UpdateWeightFromTensor(UpdateWeight):
                 self.tp_rank = dist.get_rank() - start_rank
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
+        if self._ipc_engine is None:
+            return
+
         monkey_patch_torch_reductions()
         logger.info("Using flattened tensor bucket")
         named_tensors_by_dtypes = {}
@@ -243,34 +252,9 @@ class UpdateWeightFromDistributed(UpdateWeight):
         self._is_src_rank = dist.get_rank() == 0
         if self._is_src_rank:
             self._group_name = "miles"
-            master_address = ray._private.services.get_node_ip_address()
-            with socket.socket() as sock:
-                sock.bind(("", 0))
-                master_port = sock.getsockname()[1]
-            # +1 for the trainer's source rank (rank 0); rollout engine ranks start at 1
-            world_size = self.args.rollout_num_gpus + 1
-
-            futures = [
-                async_utils.submit(
-                    api_client.init_weights_update_group(
-                        master_address,
-                        master_port,
-                        i * self.args.rollout_num_gpus_per_engine + 1,
-                        world_size,
-                        self._group_name,
-                        backend="nccl",
-                    )
-                )
-                for i, api_client in enumerate(self.rollout_engines)
-            ]
-            self._model_update_groups = init_process_group(
-                backend="nccl",
-                init_method=f"tcp://{master_address}:{master_port}",
-                world_size=world_size,
-                rank=0,
-                group_name=self._group_name,
+            self._model_update_groups = connect_rollout_engines_from_distributed(
+                self.args, self._group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
             )
-            async_utils.wait_futures(futures)
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
         """Send names/dtypes/shapes metadata to engines, then broadcast the tensors (contiguous;
