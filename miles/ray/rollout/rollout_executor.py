@@ -32,7 +32,7 @@ from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.fully_async_data_buffer import Group, iter_samples
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
-from miles.utils.async_utils import maybe_await, submit
+from miles.utils.async_utils import maybe_await, run, submit
 from miles.utils.audit_utils import sample_ownership
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -420,14 +420,26 @@ class RolloutExecutor:
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
-    def save(self, rollout_id: int) -> None:
+    def save(self, rollout_id: int, rollout_ids: dict[str, int] | None = None) -> None:
+        run(self._save_sample_state(rollout_id, rollout_ids=rollout_ids))
+        event_logger_checkpoint.snapshot(self.args, rollout_id)
+        event_analyzer.run_analysis_from_args(self.args, always_on_only=True)
+
+    async def _save_sample_state(self, rollout_id: int, *, rollout_ids: dict[str, int] | None) -> None:
         self.data_source.save(rollout_id)
+        holdings = None
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.save(rollout_id)
+                holdings = self.generate_rollout.save(rollout_id)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.save(rollout_id)
-        event_logger_checkpoint.snapshot(self.args, rollout_id)
+        for trainer_model_id in self._train_parallel_configs_of_model_id or {None: {}}:
+            self._log_holdings_snapshot(
+                rollout_id=(rollout_ids or {}).get(trainer_model_id, rollout_id),
+                trainer_model_id=trainer_model_id,
+                reason="save",
+                holdings=holdings.get(trainer_model_id) if holdings is not None else None,
+            )
 
     def load(self, rollout_id: int | None = None) -> None:
         self.data_source.load(rollout_id)

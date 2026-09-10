@@ -1,21 +1,28 @@
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
+from tests.fast.ray.rollout.test_rollout_executor import make_executor
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 import argparse
 import asyncio
+import copy
 from argparse import Namespace
 from collections import deque
+from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 import pytest
+import torch
 
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
-from miles.utils.audit_utils.event_logger.models import SampleOwner
+from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import RolloutHoldingsSnapshotEvent, SampleOwner
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
@@ -1151,6 +1158,221 @@ class TestInFlightRegistry:
         assert fn.describe_holdings(trainer_model_id=None)[SampleOwner.IN_FLIGHT] == []
 
 
+class TestSaveAndLoad:
+
+    async def test_a_group_blocked_in_put_is_saved_and_delivered_without_regeneration(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A prompt held by a producer blocked on a full buffer must survive the checkpoint."""
+        release = asyncio.Event()
+        entered = asyncio.Event()
+
+        args = make_checkpointing_args(
+            tmp_path, rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.BlockingPutBuffer"
+        )
+        monkeypatch.setattr(
+            fully_async,
+            "load_function",
+            lambda path: (lambda input: BlockingPutBuffer(input, entered=entered, release=release)) if path else None,
+        )
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0, weight_version=1)))
+        await entered.wait()
+        in_flight_indices = owned_sample_indices(fn)
+        assert in_flight_indices
+
+        fn.save(0)
+
+        release.set()
+        await step
+        resumed = make_fn(monkeypatch, make_checkpointing_args(tmp_path, rollout_batch_size=1), FakeDataSource())
+        resumed.load(0)
+        assert in_flight_indices == set(resumed.describe_holdings(trainer_model_id=None)[SampleOwner.OUTPUT_BUFFER])
+
+    async def test_a_checkpoint_only_resumes_the_policy_still_waiting_for_put(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A consumed policy must not be regenerated when its peer was blocked during save."""
+        args = make_checkpointing_args(
+            tmp_path, rollout_batch_size=1, megatron_config=encode_megatron_config("a", "b")
+        )
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn._ensure_output()
+        entered, release = asyncio.Event(), asyncio.Event()
+        fn._output._inners["b"] = BlockingPutBuffer(
+            data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=fn._handle_unused),
+            entered=entered,
+            release=release,
+        )
+        group = make_multi_policy_group(7, "a", "b")
+        fn._pending_puts = fn._output.partition(data_buffer.DataBufferInput(prompt_group=group, group=group))
+        putting = asyncio.create_task(fn._flush_pending_puts())
+        await entered.wait()
+        consumed = await fn._output.get(num_groups=1, trainer_model_id="a")
+        assert [sample.index for sample in consumed[0].group] == [70]
+
+        fn.save(0)
+        putting.cancel()
+        await asyncio.gather(putting, return_exceptions=True)
+        restored = make_fn(monkeypatch, args, FakeDataSource())
+        restored.load(0)
+        restored._ensure_output()
+        restored._output.restore(restored._pending_restore)
+        restored._pending_restore = None
+        await restored._flush_pending_puts()
+
+        assert restored._output.snapshot()["a"] == []
+        remaining = await restored._output.get(num_groups=1, trainer_model_id="b")
+        assert [sample.index for sample in remaining[0].group] == [71]
+        assert restored.data_source.num_get_calls == 0
+
+    async def test_a_batch_being_drained_is_saved_with_the_buffer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Between the buffer giving a batch up and the drain returning it, only _in_transit owns it."""
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn._output = make_buffer()[0]
+        group = make_group(4)
+        await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+        batch = await fn._take_batch(num_groups=1, current_version=1, trainer_model_id=None)
+
+        fn.save(0)
+
+        state = torch.load(fully_async.compute_fully_async_state_path(tmp_path, rollout_id=0), weights_only=False)
+        assert [entry.prompt_group[0].index for entry in state["output_buffer"][None]] == [
+            batch[0].prompt_group[0].index
+        ]
+
+    async def test_a_recycled_group_is_saved_from_the_retry_buffer(self, monkeypatch, tmp_path):
+        """An aborted group that already went back for a retry has no other record on disk."""
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1, async_unused_samples_handler="retry")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        recycled = make_group(5)
+        fn._recycle(recycled, reason=data_buffer.UnusedReason.ABORTED, trainer_model_id=None)
+
+        fn.save(0)
+
+        resumed = make_fn(monkeypatch, args, FakeDataSource())
+        resumed.load(0)
+        assert resumed.describe_holdings(trainer_model_id=None)[SampleOwner.RETRY_BUFFER] == [50, 51]
+
+    async def test_an_in_flight_group_is_saved_reset_so_it_reruns_from_the_prompt(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The samples handed to the generate function are written in place, so a half-run turn must be cleared."""
+        release = asyncio.Event()
+        generate_entered = asyncio.Event()
+
+        async def blocking_generate(
+            state: FakeGenerateState,
+            group: list[Sample],
+            sampling_params: dict[str, Any],
+            evaluation: bool = False,
+            sample_done_callback: Callable[..., None] | None = None,
+        ) -> list[Sample]:
+            for sample in group:
+                sample.response = "half a turn"
+            generate_entered.set()
+            await release.wait()
+            return group
+
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource(), generate=blocking_generate)
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0, weight_version=1)))
+        await generate_entered.wait()
+        before = owned_sample_indices(fn)
+        assert before
+
+        fn.save(0)
+
+        release.set()
+        step.cancel()
+        resumed = make_fn(monkeypatch, args, FakeDataSource())
+        resumed.load(0)
+        assert before == set(resumed.describe_holdings(trainer_model_id=None)[SampleOwner.RETRY_BUFFER])
+        persisted = torch.load(fully_async.compute_fully_async_state_path(tmp_path, rollout_id=0), weights_only=False)
+        assert all(
+            sample.response == "" for pending in persisted["in_flight_prompt_groups"] for sample in pending.samples
+        )
+
+    async def test_the_buffered_half_of_a_group_still_in_flight_is_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A multi policy put fills one policy at a time; keeping both copies would train that half twice."""
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn._output = make_buffer()[0]
+        prompt_group = make_group(3)
+        await fn._output.put(data_buffer.DataBufferInput(prompt_group=prompt_group, group=prompt_group))
+        fn._in_flight[asyncio.Future()] = fully_async._PendingPrompt(samples=prompt_group)
+        original_snapshot = fn._output.snapshot
+        monkeypatch.setattr(fn._output, "snapshot", lambda: copy.deepcopy(original_snapshot()))
+
+        fn.save(0)
+
+        state = torch.load(fully_async.compute_fully_async_state_path(tmp_path, rollout_id=0), weights_only=False)
+        assert state["output_buffer"][None] == []
+        assert [pending.samples[0].group_index for pending in state["in_flight_prompt_groups"]] == [3]
+
+    async def test_a_restored_buffer_needs_a_weight_version_before_the_first_step(self, monkeypatch, tmp_path):
+        """Groups restored under an unknown version would all be filtered as stale, losing the whole batch."""
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        group = make_group(4)
+        fn._pending_restore = {None: [data_buffer.DataBufferInput(prompt_group=group, group=group)]}
+
+        with pytest.raises(AssertionError, match="has not pushed a weight version"):
+            fn._start_worker(weight_version=None)
+
+    async def test_an_empty_restored_buffer_needs_no_weight_version(self, monkeypatch, tmp_path):
+        """A run checkpointed with nothing buffered has no group to measure, and must still start."""
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn._pending_restore = {None: []}
+
+        fn._start_worker(weight_version=None)
+
+        assert fn.describe_holdings(trainer_model_id=None)[SampleOwner.OUTPUT_BUFFER] == []
+        fn._worker.cancel()
+
+    async def test_a_restored_buffer_is_put_back_before_the_producer_starts(self, monkeypatch, tmp_path):
+        """The restored groups are finished work, and regenerating them would waste a whole batch."""
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        group = make_group(4)
+        fn._pending_restore = {None: [data_buffer.DataBufferInput(prompt_group=group, group=group)]}
+
+        output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=1))
+
+        assert output.samples[0][0].group_index == 4
+
+    async def test_loading_after_the_producer_started_is_refused(self, monkeypatch, tmp_path):
+        """A late restore would put groups into a buffer the producer is already filling."""
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        await fn(RolloutFnTrainInput(rollout_id=0, weight_version=1))
+
+        with pytest.raises(AssertionError, match="before the producer starts"):
+            fn.load(0)
+
+    async def test_a_missing_state_file_only_warns(self, monkeypatch, tmp_path):
+        """A checkpoint written before this feature existed still has to be resumable."""
+        fn = make_fn(monkeypatch, make_checkpointing_args(tmp_path, rollout_batch_size=1), FakeDataSource())
+
+        fn.load(7)
+
+        assert owned_sample_indices(fn) == set()
+
+    async def test_a_run_without_save_writes_nothing(self, monkeypatch, tmp_path):
+        """--save is optional, and a run without it must not fail at the checkpoint step."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+        fn.save(0)
+
+        assert not list(tmp_path.iterdir())
+
+
 class TestPutOutcomeEvents:
     def test_each_policy_of_a_group_gets_its_own_ownership_event(self, monkeypatch):
         """A group one policy kept and another dropped needs both moves logged, or the drop looks like a leak."""
@@ -1208,3 +1430,156 @@ class TestPutOutcomeEvents:
         )
 
         assert logged == [[70, 71, 80, 81]]
+
+
+class TestDescribeHoldings:
+    def test_replay_contract_is_available_before_the_restored_worker_starts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Executor replay snapshots must retain the configured policy replay contract."""
+        monkeypatch.setattr(RecordingBuffer, "replays_samples", True)
+        args = make_args(
+            megatron_config=encode_megatron_config("solver", "verifier"),
+            custom_async_data_buffer_path_per_model=[f"verifier={__name__}.RecordingBuffer"],
+        )
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        group = make_group(1)
+        fn._pending_restore = {"verifier": [data_buffer.DataBufferInput(prompt_group=group, group=group)]}
+
+        assert fn.replays_samples(trainer_model_id="solver") is False
+        assert fn.replays_samples(trainer_model_id="verifier") is True
+        assert fn.describe_holdings(trainer_model_id="verifier")[SampleOwner.OUTPUT_BUFFER] == [10, 11]
+        assert fn._worker is None
+
+    async def test_dispose_checks_a_final_snapshot_after_stopping_the_worker(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ownership_event_dir: Path
+    ) -> None:
+        """Disposal detects a last-step loss without needing a checkpoint or three snapshots."""
+        entered = asyncio.Event()
+
+        async def blocked_generate(
+            state: FakeGenerateState,
+            group: list[Sample],
+            sampling_params: dict[str, Any],
+            evaluation: bool = False,
+            sample_done_callback: Callable[..., None] | None = None,
+        ) -> list[Sample]:
+            entered.set()
+            await asyncio.Event().wait()
+            return group
+
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource(), generate=blocked_generate)
+        executor = make_executor(tmp_path, rollout_fn=fn)
+        executor.use_legacy_rollout_v1 = False
+        executor._train_parallel_configs_of_model_id = {None: {}}
+        executor._metric_checker = None
+        executor.args.save_debug_event_data = str(ownership_event_dir)
+        executor.args.enable_event_analyzer = False
+        executor.rollout_id = 0
+        fn._start_worker(weight_version=1)
+        await entered.wait()
+        fully_async.sample_ownership.log_owner_transition(
+            make_group(1), from_owner=SampleOwner.DATA_SOURCE, to_owner=SampleOwner.IN_FLIGHT
+        )
+
+        with pytest.raises(ValueError, match="Event analysis found issues"):
+            await executor.dispose()
+
+        assert fn._worker.done()
+        [snapshot] = [e for e in read_events(ownership_event_dir) if isinstance(e, RolloutHoldingsSnapshotEvent)]
+        assert snapshot.reason == "final"
+        assert snapshot.holdings[SampleOwner.IN_FLIGHT] == [10010, 10011]
+        for task in fn._in_flight:
+            task.cancel()
+        await asyncio.gather(*fn._in_flight, return_exceptions=True)
+
+    async def test_save_emits_separate_policy_holdings_and_replay_contracts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ownership_event_dir: Path
+    ) -> None:
+        """A replay policy must not supply holdings or disable duplicate checks for its peer."""
+        args = make_checkpointing_args(tmp_path, megatron_config=encode_megatron_config("solver", "verifier"))
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn._output = data_buffer.DefaultMultiDataBuffer(
+            data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=fn._handle_unused)
+        )
+        fn._output._inners["verifier"].replays_samples = True
+        group = make_group(1)
+        fn._output.restore({"solver": [], "verifier": [data_buffer.DataBufferInput(prompt_group=group, group=group)]})
+        executor = make_executor(tmp_path, rollout_fn=fn)
+        executor.use_legacy_rollout_v1 = False
+        executor._train_parallel_configs_of_model_id = {"solver": {}, "verifier": {}}
+        executor._record_last_batch(rollout_id=2, trainer_model_id="verifier", samples=[make_group(4)])
+
+        await executor._save_sample_state(rollout_id=0, rollout_ids={"solver": 0, "verifier": 1})
+
+        snapshots = {
+            event.trainer_model_id: event
+            for event in read_events(ownership_event_dir)
+            if isinstance(event, RolloutHoldingsSnapshotEvent) and event.reason == "save"
+        }
+        assert set(snapshots) == {"solver", "verifier"}
+        assert snapshots["solver"].holdings[SampleOwner.OUTPUT_BUFFER] == []
+        assert snapshots["solver"].holdings[SampleOwner.HANDED_TO_TRAINER] == []
+        assert snapshots["solver"].replays_samples is False
+        assert snapshots["verifier"].holdings[SampleOwner.OUTPUT_BUFFER] == [10, 11]
+        assert snapshots["verifier"].holdings[SampleOwner.HANDED_TO_TRAINER] == [40, 41]
+        assert snapshots["verifier"].replays_samples is True
+        assert snapshots["verifier"].rollout_id == 1
+
+    async def test_policies_share_prompts_but_not_output_holdings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One policy's shared sample index cannot hide another policy's missing output."""
+        fn = make_fn(
+            monkeypatch,
+            make_args(megatron_config=encode_megatron_config("solver", "verifier")),
+            FakeDataSource(),
+        )
+        group = make_group(1)
+        fn._pending_restore = {"verifier": [data_buffer.DataBufferInput(prompt_group=group, group=group)]}
+        fn._retry_buffer.append(fully_async._PendingPrompt(samples=make_group(2)))
+        fn._in_flight[asyncio.Future()] = fully_async._PendingPrompt(samples=make_group(3))
+
+        solver = fn.describe_holdings(trainer_model_id="solver")
+        verifier = fn.describe_holdings(trainer_model_id="verifier")
+
+        assert solver[SampleOwner.OUTPUT_BUFFER] == []
+        assert verifier[SampleOwner.OUTPUT_BUFFER] == [10, 11]
+        assert solver[SampleOwner.RETRY_BUFFER] == verifier[SampleOwner.RETRY_BUFFER] == [20, 21]
+        assert solver[SampleOwner.IN_FLIGHT] == verifier[SampleOwner.IN_FLIGHT] == [30, 31]
+
+    async def test_save_reuses_the_collected_buffer_for_holdings(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Saving state and reporting its holdings must read the output buffer only once."""
+        fn = make_fn(monkeypatch, make_checkpointing_args(tmp_path, rollout_batch_size=1), FakeDataSource())
+        fn._output = make_buffer()[0]
+        group = make_group(1)
+        await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+        snapshot = fn._output.snapshot
+        reads = 0
+
+        def read_once() -> data_buffer.DataBufferState:
+            nonlocal reads
+            reads += 1
+            assert reads == 1
+            return snapshot()
+
+        monkeypatch.setattr(fn._output, "snapshot", read_once)
+
+        holdings = fn.save(0)
+
+        assert holdings[None][SampleOwner.OUTPUT_BUFFER] == [10, 11]
+
+    async def test_it_reports_every_owner_the_rollout_function_has(self, monkeypatch):
+        """The checker reads exactly this, so an owner missing here looks like a lost sample."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        fn._output = make_buffer()[0]
+        buffered = make_group(1)
+        await fn._output.put(data_buffer.DataBufferInput(prompt_group=buffered, group=buffered))
+        fn._retry_buffer.append(fully_async._PendingPrompt(samples=make_group(2)))
+        fn._in_flight[asyncio.Future()] = fully_async._PendingPrompt(samples=make_group(3))
+
+        holdings = fn.describe_holdings(trainer_model_id=None)
+
+        assert set(holdings[SampleOwner.OUTPUT_BUFFER]) == {10, 11}
+        assert set(holdings[SampleOwner.RETRY_BUFFER]) == {20, 21}
+        assert set(holdings[SampleOwner.IN_FLIGHT]) == {30, 31}

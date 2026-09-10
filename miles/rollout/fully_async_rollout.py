@@ -22,7 +22,10 @@ import copy
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
+import torch
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import (
@@ -35,6 +38,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
 )
+from miles.rollout.data_source import compute_rollout_state_path
 from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
     DataBufferConstructorInput,
@@ -57,12 +61,23 @@ from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_data
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils.audit_utils import sample_ownership
 from miles.utils.audit_utils.event_logger.models import SampleOwner
+from miles.utils.file_utils import atomic_torch_save
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
 NO_PROGRESS_WARN_SECS = 30.0
+
+
+def compute_fully_async_state_path(directory: str | Path, *, rollout_id: int | None) -> Path:
+    return compute_rollout_state_path(directory, name="fully_async_state", rollout_id=rollout_id)
+
+
+@dataclass(frozen=True)
+class _CollectedState:
+    persisted: dict[str, Any]
+    holdings: dict[str | None, dict[SampleOwner, list[int]]]
 
 
 @dataclass(frozen=True)
@@ -103,6 +118,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._retry_buffer: deque[_PendingPrompt] = deque()
         self._in_flight: dict[asyncio.Task, _PendingPrompt] = {}
         self._in_transit: DataBufferState = {}
+        self._pending_restore: DataBufferState | None = None
         self._pending_puts: dict[str | None, DataBufferInput] = {}
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
@@ -114,6 +130,16 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     def _start_worker(self, *, weight_version: int | None) -> None:
         self._ensure_output()
+        if (restore := self._pending_restore) is not None:
+            num_restored = sum(len(entries) for entries in restore.values()) + len(self._pending_puts)
+            assert num_restored == 0 or weight_version is not None, (
+                f"the checkpoint restored {num_restored} finished groups into "
+                f"the data buffer, but the orchestration script has not pushed a weight version yet; every "
+                f"restored group would be measured against an unknown version and the staleness filter would "
+                f"throw the whole batch away. Update the engine weights before the first rollout get"
+            )
+            self._output.restore(restore)
+            self._pending_restore = None
         self._worker = asyncio.create_task(self._worker_loop())
         logger.info("Started fully-async rollout worker")
 
@@ -338,7 +364,62 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             reason=reason.value,
         )
 
-    # ------------------------- checkpointing --------------------------
+    # ============================= checkpointing ==============================
+
+    def save(self, rollout_id: int) -> dict[str | None, dict[SampleOwner, list[int]]]:
+        collected = self._collect_state()
+        if (save_dir := self.args.save) is None:
+            logger.warning("no --save: the fully async rollout state is not checkpointed")
+            return collected.holdings
+
+        state = collected.persisted
+        path = compute_fully_async_state_path(save_dir, rollout_id=rollout_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_torch_save(path=path, obj=state)
+        logger.info(
+            f"Saved fully async rollout state to {path}: {len(state['retry_buffer'])} groups to retry, "
+            f"{len(state['in_flight_prompt_groups'])} in flight, "
+            f"{sum(len(entries) for entries in state['output_buffer'].values())} buffered"
+        )
+        return collected.holdings
+
+    def load(self, rollout_id: int | None = None) -> None:
+        assert self._worker is None, "the fully async rollout state is restored before the producer starts"
+
+        if (load_dir := self.args.load) is None:
+            logger.warning("no --load: the fully async rollout starts with nothing in flight")
+            return
+
+        path = compute_fully_async_state_path(load_dir, rollout_id=rollout_id)
+        if not path.exists():
+            logger.warning(f"no fully async rollout state under {path}: starting with nothing in flight")
+            return
+
+        state = torch.load(path, weights_only=False)
+        self._pending_puts = state.get("pending_puts", {})
+        self._retry_buffer.extend(state["retry_buffer"])
+        self._retry_buffer.extend(state["in_flight_prompt_groups"])
+        for pending in self._retry_buffer:
+            sample_ownership.log_owner_transition(
+                pending.samples,
+                from_owner=SampleOwner.RETRY_BUFFER,
+                to_owner=SampleOwner.RETRY_BUFFER,
+                trainer_model_id=pending.trainer_model_id,
+                reason="restored",
+            )
+        self._pending_restore = state["output_buffer"]
+        restored_outputs = {key: list(entries) for key, entries in self._pending_restore.items()}
+        for model_id, entry in self._pending_puts.items():
+            restored_outputs.setdefault(model_id, []).append(entry)
+        for trainer_model_id, entries in restored_outputs.items():
+            sample_ownership.log_owner_transition(
+                (sample for entry in entries for sample in iter_samples(entry.group)),
+                from_owner=SampleOwner.OUTPUT_BUFFER,
+                to_owner=SampleOwner.OUTPUT_BUFFER,
+                trainer_model_id=trainer_model_id,
+                reason="restored",
+            )
+        logger.info(f"Loaded fully async rollout state from {path}: {len(self._retry_buffer)} groups to resubmit")
 
     def describe_holdings(self, trainer_model_id: str | None) -> dict[SampleOwner, list[int]]:
         self._settle_pending_puts()
@@ -358,6 +439,39 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         )
         buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
         self._output = buffer_cls(DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused))
+
+    def _collect_state(self) -> _CollectedState:
+        self._settle_pending_puts()
+        buffered = self._buffered()
+        config = resolve_megatron_config(self.args)
+        in_flight_ids = {
+            (_prompt_group_key(pending.samples), pending.trainer_model_id) for pending in self._in_flight.values()
+        }
+        return _CollectedState(
+            persisted=dict(
+                retry_buffer=list(self._retry_buffer),
+                pending_puts=self._pending_puts,
+                in_flight_prompt_groups=[
+                    _PendingPrompt(
+                        samples=_copy_reset_for_retry(pending.samples), trainer_model_id=pending.trainer_model_id
+                    )
+                    for pending in self._in_flight.values()
+                ],
+                output_buffer={
+                    trainer_model_id: [
+                        entry
+                        for entry in entries
+                        if (_prompt_group_key(entry.prompt_group), None) not in in_flight_ids
+                        and (_prompt_group_key(entry.prompt_group), trainer_model_id) not in in_flight_ids
+                    ]
+                    for trainer_model_id, entries in buffered.items()
+                },
+            ),
+            holdings={
+                model_id: self._holdings(buffered=buffered, trainer_model_id=model_id)
+                for model_id in (config.model_ids if config.is_multi_policy else [None])
+            },
+        )
 
     def _holdings(self, *, buffered: DataBufferState, trainer_model_id: str | None) -> dict[SampleOwner, list[int]]:
         return {
@@ -387,6 +501,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         }
 
     def _buffered(self) -> DataBufferState:
+        if self._pending_restore is not None:
+            return self._merge_output_state(self._pending_restore)
         return self._merge_output_state(self._output.snapshot() if self._output is not None else {})
 
     def _merge_output_state(self, buffered: DataBufferState) -> DataBufferState:
@@ -394,6 +510,10 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         for key, entries in buffered.items():
             ans.setdefault(key, []).extend(entries)
         return ans
+
+
+def _prompt_group_key(prompt_group: list[Sample]) -> frozenset[int]:
+    return frozenset(sample.index for sample in prompt_group)
 
 
 def _copy_reset_for_retry(prompt_group: list[Sample]) -> list[Sample]:
