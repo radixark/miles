@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -437,7 +438,7 @@ def save_lora_checkpoint(
 
     save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
-        dist.barrier()
+        dist.barrier(group=get_gloo_group())
 
     adapter_state: dict[str, torch.Tensor] = {}
     for model_chunk in model:
@@ -507,7 +508,7 @@ def save_lora_checkpoint(
         logger.info(f"Saved optimizer/scheduler state to {save_path}")
 
     if dist.is_initialized():
-        dist.barrier()
+        dist.barrier(group=get_gloo_group())
 
     return str(save_path)
 
