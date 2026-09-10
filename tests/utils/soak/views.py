@@ -4,9 +4,44 @@ import dataclasses
 from datetime import datetime
 from typing import Literal
 
-from tests.utils.soak.state import Event, InjectionEvent, ObservationsEvent, ObservedCellState
+from tests.utils.soak.state import (
+    Event,
+    InjectionEvent,
+    ObservationsEvent,
+    ObservedCellState,
+    SoakActionRequest,
+    SoakActionRequestedEvent,
+    SoakActionResultEvent,
+)
 
 STALE_STATUS_GRACE_SECONDS: float = 120.0
+
+
+def project_legacy_events(events: list[Event]) -> list[Event]:
+    requests: dict[str, SoakActionRequest] = {}
+    completed: set[str] = set()
+    projected: list[Event] = []
+    for event in events:
+        if isinstance(event, SoakActionRequestedEvent):
+            assert event.request.request_id not in requests, f"Duplicate soak request: {event.request.request_id}"
+            requests[event.request.request_id] = event.request
+        elif isinstance(event, SoakActionResultEvent):
+            assert event.request_id in requests, f"Soak result without request: {event.request_id}"
+            assert event.request_id not in completed, f"Duplicate soak result: {event.request_id}"
+            completed.add(event.request_id)
+            request = requests[event.request_id]
+            projected.append(
+                InjectionEvent(
+                    timestamp=event.timestamp,
+                    cell_name=request.target["metadata"]["name"],
+                    form_name=request.form_name,
+                    succeeded=event.returned,
+                    harmed=request.harms_cell,
+                )
+            )
+        else:
+            projected.append(event)
+    return projected
 
 
 def compute_num_injections(events: list[Event], *, cell_type: str | None = None, harmed_only: bool = True) -> int:
@@ -27,6 +62,7 @@ def compute_injected_cell_names(
 
 
 def compute_num_successful_injections_of_form(events: list[Event], *, form_name: str) -> int:
+    events = project_legacy_events(events)
     return len(
         [
             event
@@ -39,6 +75,7 @@ def compute_num_successful_injections_of_form(events: list[Event], *, form_name:
 def compute_cells_not_serving_after_injection(
     events: list[Event], *, cell_type: str, grace_seconds: float | None = None
 ) -> dict[str, list[str]]:
+    events = project_legacy_events(events)
     if grace_seconds is None:
         grace_seconds = STALE_STATUS_GRACE_SECONDS
 
@@ -75,6 +112,7 @@ def compute_cells_not_serving_after_injection(
 
 
 def compute_successful_form_names(events: list[Event], *, cell_type: str) -> set[str]:
+    events = project_legacy_events(events)
     cell_type_of_name = _compute_cell_type_of_name(events)
     return {
         event.form_name
@@ -86,6 +124,7 @@ def compute_successful_form_names(events: list[Event], *, cell_type: str) -> set
 
 
 def compute_forms_drawn_without_success(events: list[Event]) -> list[tuple[str, str]]:
+    events = project_legacy_events(events)
     cell_type_of_name = _compute_cell_type_of_name(events)
     drawn: set[tuple[str, str]] = set()
     worked: set[tuple[str, str]] = set()
@@ -100,6 +139,7 @@ def compute_forms_drawn_without_success(events: list[Event]) -> list[tuple[str, 
 
 
 def compute_injection_times(events: list[Event], *, cell_type: str | None = None) -> list[datetime]:
+    events = project_legacy_events(events)
     cell_type_of_name = _compute_cell_type_of_name(events)
     return [
         event.timestamp
@@ -125,6 +165,7 @@ class _CellEvent:
 
 
 def _compute_cell_events(events: list[Event], *, harmed_only: bool = True) -> dict[str, list[_CellEvent]]:
+    events = project_legacy_events(events)
     cell_events_of_name: dict[str, list[_CellEvent]] = {}
     for event in events:
         if isinstance(event, InjectionEvent):

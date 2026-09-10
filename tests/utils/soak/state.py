@@ -3,6 +3,7 @@
 import enum
 import threading
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from pydantic import Field
 
@@ -42,6 +43,23 @@ class InjectionEvent(BaseEvent):
     harmed: bool = True
 
 
+class SoakActionRequest(FrozenStrictBaseModel):
+    request_id: str = Field(default_factory=lambda: uuid4().hex)
+    target: dict
+    form_name: str
+    harms_cell: bool
+
+
+class SoakActionRequestedEvent(BaseEvent):
+    request: SoakActionRequest
+
+
+class SoakActionResultEvent(BaseEvent):
+    request_id: str
+    returned: bool
+    error: str | None = None
+
+
 class CellInfo(FrozenStrictBaseModel):
     cell_type: str
     state: ObservedCellState
@@ -53,7 +71,7 @@ class ObservationsEvent(BaseEvent):
     cell_infos: dict[str, CellInfo]
 
 
-Event = InjectionEvent | ObservationsEvent
+Event = InjectionEvent | ObservationsEvent | SoakActionRequestedEvent | SoakActionResultEvent
 
 
 class EventLog:
@@ -84,6 +102,12 @@ class EventLog:
                 }
             )
         )
+
+    def note_action_requested(self, request: SoakActionRequest) -> None:
+        self._append(SoakActionRequestedEvent(request=request.model_copy(deep=True)))
+
+    def note_action_result(self, result: SoakActionResultEvent) -> None:
+        self._append(result)
 
     def _append(self, event: Event) -> None:
         with self._lock:

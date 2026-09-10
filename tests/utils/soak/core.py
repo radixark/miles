@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import requests
 from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms
-from tests.utils.soak.state import Event, EventLog, cell_type_of
+from tests.utils.soak.state import Event, EventLog, SoakActionRequest, SoakActionResultEvent, cell_type_of
 from tests.utils.soak.views import compute_successful_form_names
 
 logger = logging.getLogger(__name__)
@@ -126,16 +126,18 @@ class _SelectedAction:
 def _execute_action(*, action: _SelectedAction, rng: random.Random, event_log: EventLog) -> None:
     form = action.form
     cell_name = action.target["metadata"]["name"]
+    request = SoakActionRequest(target=action.target, form_name=form.name, harms_cell=form.harms_cell)
+    event_log.note_action_requested(request)
     try:
         form.inject(action.target, rng)
-    except Exception:
-        event_log.note_injection_attempt(
-            cell_name=cell_name, form_name=form.name, succeeded=False, harmed=form.harms_cell
+    except Exception as error:
+        event_log.note_action_result(
+            SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
         )
         logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
         return
 
-    event_log.note_injection_attempt(cell_name=cell_name, form_name=form.name, succeeded=True, harmed=form.harms_cell)
+    event_log.note_action_result(SoakActionResultEvent(request_id=request.request_id, returned=True))
     logger.info("Injected fault %s into %s", form.name, cell_name)
 
 

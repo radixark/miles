@@ -17,6 +17,40 @@ from tests.fast.utils.soak.utils import (
 from tests.utils.soak import core, fault_forms, state, views
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_requests_are_recorded_before_execution_and_failures_keep_the_same_identity(fails: bool) -> None:
+    """A lost response keeps the selected target and cannot become a successful injection."""
+    log = state.EventLog()
+    target = typed_cell("actor-0", "actor")
+    log.observe([target])
+
+    def inject(cell: dict, rng: random.Random) -> None:
+        requests = [event for event in log.events if isinstance(event, state.SoakActionRequestedEvent)]
+        assert len(requests) == 1
+        assert requests[0].request.target == target
+        assert not [event for event in log.events if isinstance(event, state.SoakActionResultEvent)]
+        cell["metadata"]["name"] = "mutated"
+        if fails:
+            raise RuntimeError("response lost")
+
+    core._execute_action(
+        action=core._SelectedAction(target=target, form=StubFaultForm("fault", inject)),
+        rng=random.Random(0),
+        event_log=log,
+    )
+
+    requests = [event for event in log.events if isinstance(event, state.SoakActionRequestedEvent)]
+    results = [event for event in log.events if isinstance(event, state.SoakActionResultEvent)]
+    assert len(results) == 1
+    assert results[0].request_id == requests[0].request.request_id
+    assert requests[0].request.target["metadata"]["name"] == "actor-0"
+    assert results[0].returned is not fails
+    assert results[0].error == ("RuntimeError('response lost')" if fails else None)
+    assert not [event for event in log.events if isinstance(event, state.InjectionEvent)]
+    assert views.compute_num_injections(log.events) == int(not fails)
+    assert views.compute_forms_drawn_without_success(log.events) == ([("actor", "fault")] if fails else [])
+
+
 def _run_injection_loop(
     *,
     fake_get,
