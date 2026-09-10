@@ -19,11 +19,11 @@ import ast
 import re
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOC_PATH = REPO_ROOT / "docs" / "user-guide" / "cli-reference.md"
 BASELINE_PATH = Path(__file__).with_name("cli_reference_undocumented.txt")
+_TEST_REL_PATH = Path(__file__).resolve().relative_to(REPO_ROOT)
+_REGEN_CMD = f"python {_TEST_REL_PATH} --regen"
 
 # Modules whose ``add_argument()`` calls feed ``get_miles_extra_args_provider()``,
 # i.e. the ``train.py`` / ``train_async.py`` CLI. A new module that defines
@@ -63,6 +63,12 @@ def _defined_flags() -> set[str]:
 
 
 def _documented_flags() -> set[str]:
+    """Every ``--flag`` token anywhere in cli-reference.md.
+
+    This scans the whole file, not just the reference table, so a flag named only
+    in prose -- no table row -- still counts as documented. Deliberately loose:
+    this is a backlog guard, not a table-completeness check.
+    """
     return set(re.findall(r"--[a-zA-Z0-9][a-zA-Z0-9-]*", DOC_PATH.read_text()))
 
 
@@ -90,7 +96,44 @@ def _baseline_entries() -> list[str]:
 
 def _require_checkout() -> None:
     if not DOC_PATH.is_file() or not (REPO_ROOT / _ARG_SOURCES[0]).is_file():
+        import pytest
+
         pytest.skip("cli-reference.md / arguments.py not on disk; nothing to compare")
+
+
+_BASELINE_HEADER = (
+    "# Miles training-CLI flags not yet in docs/user-guide/cli-reference.md.\n"
+    f"# Baseline for {_TEST_REL_PATH} -- built to shrink.\n"
+    "# Document a flag in cli-reference.md, then delete its line here.\n"
+    "# Regenerate after a flag rename on main re-reds the branch:\n"
+    f"#   {_REGEN_CMD}\n"
+)
+
+
+def _regenerate_baseline() -> None:
+    """Rewrite the baseline file from the current source + doc.
+
+    Use when a rename or new flag on main makes the branch fail before merge:
+    it re-snapshots today's undocumented set instead of hand-patching lines.
+
+    Refuses to write when the ``add_argument`` scan finds implausibly few flags,
+    the same regression guard ``test_no_new_undocumented_flag`` applies: a broken
+    scan must not overwrite the backlog with an empty set.
+    """
+    defined = _defined_flags()
+    if len(defined) < _MIN_EXPECTED_FLAGS:
+        raise SystemExit(
+            f"only {len(defined)} flags parsed from {list(_ARG_SOURCES)} (expected "
+            f">= {_MIN_EXPECTED_FLAGS}); refusing to overwrite {BASELINE_PATH.name}. "
+            "The add_argument scan probably broke -- fix it before regenerating."
+        )
+    undocumented = sorted(_undocumented(defined, _documented_flags()))
+    text = (
+        _BASELINE_HEADER
+        + f"# {len(undocumented)} flags ({len(defined)} scanned) as of generation.\n"
+        + "".join(f"{flag}\n" for flag in undocumented)
+    )
+    BASELINE_PATH.write_text(text)
 
 
 def test_no_new_undocumented_flag() -> None:
@@ -107,7 +150,8 @@ def test_no_new_undocumented_flag() -> None:
         "these flags are defined for train.py / train_async.py but missing from "
         "docs/user-guide/cli-reference.md. Add a row to the Complete reference "
         f"section, or -- if the flag is genuinely internal -- append it to "
-        f"{BASELINE_PATH.name}:\n  " + "\n  ".join(new)
+        f"{BASELINE_PATH.name}. If main renamed a flag, re-snapshot with "
+        f"`{_REGEN_CMD}`:\n  " + "\n  ".join(new)
     )
 
 
@@ -122,7 +166,8 @@ def test_baseline_has_no_stale_entry() -> None:
     stale = gone + now_documented
     assert not stale, (
         f"{BASELINE_PATH.name} lines that no longer name an undocumented flag -- "
-        "delete them.\n"
+        "delete them (or re-snapshot with "
+        f"`{_REGEN_CMD}` if main renamed a flag).\n"
         f"  renamed or removed: {gone or '[]'}\n"
         f"  now documented (thank you): {now_documented or '[]'}"
     )
@@ -135,3 +180,12 @@ def test_baseline_is_sorted_and_unique() -> None:
     entries = _baseline_entries()
     assert entries == sorted(entries), "keep cli_reference_undocumented.txt sorted so diffs stay small"
     assert len(entries) == len(set(entries)), "duplicate line in cli_reference_undocumented.txt"
+
+
+if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:] != ["--regen"]:
+        raise SystemExit(f"usage: {_REGEN_CMD}")
+    _regenerate_baseline()
+    print(f"regenerated {BASELINE_PATH.relative_to(REPO_ROOT)}")

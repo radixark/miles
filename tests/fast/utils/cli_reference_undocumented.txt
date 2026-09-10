@@ -1,6 +1,8 @@
 # Miles training-CLI flags not yet in docs/user-guide/cli-reference.md.
 # Baseline for tests/fast/utils/test_cli_reference_sync.py -- built to shrink.
 # Document a flag in cli-reference.md, then delete its line here.
+# Regenerate after a flag rename on main re-reds the branch:
+#   python tests/fast/utils/test_cli_reference_sync.py --regen
 # 250 flags (339 scanned) as of generation.
 --allgather-cp
 --allow-partial-train-step
