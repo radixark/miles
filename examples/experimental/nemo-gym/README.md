@@ -1,5 +1,8 @@
 # SWE-agent training via NeMo Gym
 
+For a single-turn puzzle environment with a CPU-only verifier, see
+[Sokoban RL](SOKOBAN.md).
+
 ## Introduction
 
 This example trains a SWE agent with Miles using NVIDIA's
