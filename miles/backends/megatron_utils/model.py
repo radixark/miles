@@ -580,6 +580,12 @@ def train_one_step(
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
     )
+    local_consumed_identities = (
+        _consumed_sample_identities(data_iterator[0], start=witness_start)
+        if not disable_optimizer and not multi_lora
+        else []
+    )
+    consumed_identities: list[TrainingSampleIdentity] = []
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
@@ -594,7 +600,14 @@ def train_one_step(
 
         metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced, num_rollouts=metric_num_rollouts
+            args,
+            model,
+            parallel_state,
+            losses_reduced=losses_reduced,
+            num_rollouts=metric_num_rollouts,
+            collect_training_metadata=lambda: consumed_identities.extend(
+                _gather_sample_identities(local_consumed_identities)
+            ),
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
@@ -624,11 +637,8 @@ def train_one_step(
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
 
-    consumed_identities = (
-        _gather_consumed_sample_identities(data_iterator[0], start=witness_start)
-        if not disable_optimizer and valid_step
-        else []
-    )
+    if parallel_state.indep_dp.size == 1 and not disable_optimizer and not multi_lora and valid_step:
+        consumed_identities = _gather_sample_identities(local_consumed_identities)
 
     if not disable_optimizer and valid_step:
         if multi_lora:
@@ -645,10 +655,8 @@ def train_one_step(
             assert update_successful
             opt_param_scheduler.step(increment=num_rollouts)
 
-        record_cpu_witness(
-            model=model,
-            samples=consumed_identities,
-        )
+        if not multi_lora:
+            record_cpu_witness(model=model, samples=consumed_identities)
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
@@ -703,8 +711,7 @@ def _consumed_sample_identities(data_iterator: DataIterator, *, start: int) -> l
     ]
 
 
-def _gather_consumed_sample_identities(data_iterator: DataIterator, *, start: int) -> list[TrainingSampleIdentity]:
-    local = _consumed_sample_identities(data_iterator, start=start)
+def _gather_sample_identities(local: list[TrainingSampleIdentity]) -> list[TrainingSampleIdentity]:
     parallel = get_parallel_state()
     if parallel.effective_dp.size == 1:
         return local
