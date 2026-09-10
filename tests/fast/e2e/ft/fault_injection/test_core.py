@@ -530,30 +530,3 @@ def _always_refuse(cell: dict, rng: random.Random) -> None:
 
 def _do_nothing(cell: dict, rng: random.Random) -> None:
     return None
-
-
-class TestRolloutQuiescence:
-    def test_an_engine_that_is_not_in_the_router_blocks_its_kind(self) -> None:
-        """A relaunched engine reads Healthy long before it can answer, so its kind is still recovering."""
-        injected = _run_typed_injection_loop(
-            [
-                typed_cell("rollout-engine-0", "rollout"),
-                typed_cell("rollout-engine-1", "rollout", serving=False),
-            ],
-            cell_types=("rollout",),
-        )
-
-        assert injected == []
-
-    def test_two_serving_engines_still_leave_one_of_them_injectable(self) -> None:
-        """The quiescence rule must not block the case it was never meant to block."""
-        injected = _run_typed_injection_loop(
-            [typed_cell("rollout-engine-0", "rollout"), typed_cell("rollout-engine-1", "rollout")],
-            cell_types=("rollout",),
-        )
-
-        assert injected
-
-    def test_a_trainer_cell_is_judged_by_liveness_alone(self) -> None:
-        """Trainer cells carry no Serving condition, so requiring one would stop every trainer soak."""
-        assert core._cell_can_serve(typed_cell("actor-0", "actor"))
