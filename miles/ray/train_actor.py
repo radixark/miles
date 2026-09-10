@@ -199,6 +199,7 @@ class TrainRayActor(NodeProbeMixin):
         rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
         witness_info: WitnessInfo | None = None,
         attempt: int = 0,
+        cohort_id: str | None = None,
         external_data: TrainStepOutput | None = None,
     ) -> TrainStepOutput:
         raise NotImplementedError

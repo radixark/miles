@@ -19,9 +19,14 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
-from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.event_logger.logger import (
+    event_logger_context,
+    get_event_logger,
+    is_event_logger_initialized,
+)
+from miles.utils.audit_utils.event_logger.models import TrainerCpuWitnessEvent
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.audit_utils.witness.cpu import preserve_cpu_witness
+from miles.utils.audit_utils.witness.cpu import preserve_cpu_witness, snapshot_cpu_witness
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -113,6 +118,7 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
+        self._cell_index = indep_dp_info.cell_index
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -514,7 +520,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @event_logger_context(
-        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, external_data=None: dict(
+        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, cohort_id=None, external_data=None: dict(
             rollout_id=rollout_id, attempt=attempt
         )
     )
@@ -524,6 +530,7 @@ class MegatronTrainRayActor(TrainRayActor):
         rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
         witness_info: WitnessInfo | None = None,
         attempt: int = 0,
+        cohort_id: str | None = None,
         external_data: TrainStepOutput | None = None,
     ) -> TrainStepOutput:
         self._heartbeat.bump()
@@ -551,6 +558,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     external_data=external_data,
                     witness_info=witness_info,
                     attempt=attempt,
+                    cohort_id=cohort_id,
                 )
 
             return result
@@ -607,6 +615,7 @@ class MegatronTrainRayActor(TrainRayActor):
         *,
         witness_info: WitnessInfo | None,
         attempt: int,
+        cohort_id: str | None,
     ) -> TrainStepOutput:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
@@ -754,7 +763,78 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
 
         self._heartbeat.bump()
-        return TrainStepOutput(outcome=train_step_outcome)
+        witness_replica_id = None
+        if (
+            train_step_outcome == TrainStepOutcome.NORMAL
+            and not self.args.multi_lora
+            and is_first_replica_megatron_main_rank()
+        ):
+            witness_replica_id = f"cell-{self._cell_index}"
+            if is_event_logger_initialized():
+                assert cohort_id is not None
+                self._log_cpu_witness_snapshot(
+                    rollout_id=rollout_id,
+                    cohort_id=cohort_id,
+                    witness_replica_id=witness_replica_id,
+                    reason="train_end",
+                )
+        return TrainStepOutput(outcome=train_step_outcome, witness_replica_id=witness_replica_id)
+
+    def log_current_cpu_witness(self, rollout_id: int, cohort_id: str) -> dict[str, object] | None:
+        if self.role != "actor":
+            raise RuntimeError("CPU witness snapshots are only supported for the actor")
+        if self.args.multi_lora:
+            raise RuntimeError("CPU witness snapshots are not supported with multi-LoRA")
+        if not is_first_replica_megatron_main_rank():
+            return None
+        witness_replica_id = f"cell-{self._cell_index}"
+        event = self._log_cpu_witness_snapshot(
+            rollout_id=rollout_id,
+            cohort_id=cohort_id,
+            witness_replica_id=witness_replica_id,
+            reason="current",
+        )
+        return event.model_dump(mode="json")
+
+    def _log_cpu_witness_snapshot(
+        self,
+        *,
+        rollout_id: int,
+        cohort_id: str,
+        witness_replica_id: str,
+        reason: str,
+    ) -> TrainerCpuWitnessEvent:
+        sample_counts = [
+            {
+                "sample": {
+                    "source_sample_index": identity.source_sample_index,
+                    "row_index": identity.row_index,
+                    "row_count": identity.row_count,
+                },
+                "count": count,
+            }
+            for identity, count in sorted(
+                snapshot_cpu_witness(self.model).items(),
+                key=lambda item: (
+                    item[0].source_sample_index,
+                    item[0].row_index,
+                    item[0].row_count,
+                ),
+            )
+        ]
+        event_logger = get_event_logger()
+        event = event_logger.make_event(
+            TrainerCpuWitnessEvent,
+            {
+                "replica_id": witness_replica_id,
+                "rollout_id": rollout_id,
+                "cohort_id": cohort_id,
+                "sample_counts": sample_counts,
+                "reason": reason,
+            },
+        )
+        event_logger.log_event(event, print_log=False)
+        return event
 
     @with_logs
     @timer

@@ -9,7 +9,11 @@ from miles.utils.audit_utils.event_logger.models import (
     EngineEnvReportEvent,
     Event,
     InferenceEngineWeightChecksumEvent,
+    TrainerCpuWitnessEvent,
+    TrainerWitnessCohortEvent,
     TrainGroupStepEndEvent,
+    TrainingSampleCount,
+    TrainingSampleIdentity,
     WitnessAllocateIdEvent,
     WitnessSnapshotParamEvent,
 )
@@ -23,6 +27,43 @@ _TRAIN_SOURCE = TrainProcessIdentity(component="actor", cell_index=0, rank_withi
 
 
 class TestEventModelsDiscriminatedUnion:
+    def test_cpu_witness_snapshot_roundtrip(self) -> None:
+        """CPU witness events encode tuple identities without JSON map keys."""
+        event = TrainerCpuWitnessEvent(
+            timestamp=_FIXED_TS,
+            source=_TRAIN_SOURCE,
+            replica_id="cell-2",
+            rollout_id=7,
+            cohort_id="attempt-2",
+            sample_counts=[
+                TrainingSampleCount(
+                    sample=TrainingSampleIdentity(source_sample_index=11, row_index=1, row_count=2),
+                    count=1,
+                )
+            ],
+            reason="train_end",
+        )
+
+        parsed = _event_adapter.validate_json(event.model_dump_json())
+
+        assert isinstance(parsed, TrainerCpuWitnessEvent)
+        assert parsed.sample_counts == event.sample_counts
+
+    def test_witness_cohort_roundtrip(self) -> None:
+        """A cohort marker preserves the exact successful replica set."""
+        event = TrainerWitnessCohortEvent(
+            timestamp=_FIXED_TS,
+            source=_FIXED_SOURCE,
+            rollout_id=7,
+            cohort_id="attempt-2",
+            replica_ids=["cell-0", "cell-2"],
+        )
+
+        parsed = _event_adapter.validate_json(event.model_dump_json())
+
+        assert isinstance(parsed, TrainerWitnessCohortEvent)
+        assert parsed.replica_ids == ["cell-0", "cell-2"]
+
     def test_roundtrip_via_discriminator(self) -> None:
         event = WitnessAllocateIdEvent(
             timestamp=_FIXED_TS,

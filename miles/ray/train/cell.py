@@ -96,6 +96,7 @@ class TrainerCell:
         rollout_data_ref,
         witness_info,
         attempt: int,
+        cohort_id: str,
         external_data: list | None = None,
     ) -> list:
         if external_data is not None and len(external_data) != len(self._get_worker_handles()):
@@ -108,6 +109,7 @@ class TrainerCell:
                 rollout_data_ref=rollout_data_ref,
                 witness_info=witness_info,
                 attempt=attempt,
+                cohort_id=cohort_id,
                 **({} if external_data is None else dict(external_data=external_data[i])),
             ),
         )

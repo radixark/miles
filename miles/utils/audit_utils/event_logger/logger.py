@@ -53,7 +53,10 @@ class EventLogger:
             self._context_var.reset(token)
 
     def log(self, event_cls: type[EventBase], partial: dict[str, Any], *, print_log: bool = True) -> None:
-        event = event_cls(
+        self.log_event(self.make_event(event_cls, partial), print_log=print_log)
+
+    def make_event(self, event_cls: type[EventBase], partial: dict[str, Any]) -> EventBase:
+        return event_cls(
             **{
                 **partial,
                 "timestamp": datetime.now(timezone.utc),
@@ -61,6 +64,8 @@ class EventLogger:
                 **self._context_var.get({}),
             }
         )
+
+    def log_event(self, event: EventBase, *, print_log: bool = True) -> None:
         line = event.model_dump_json() + "\n"
         with self._lock:
             # Opened per write so the file can be replaced (e.g. restored from a

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,6 +17,8 @@ from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
+    TrainerWitnessCohortEvent,
+    TrainerWitnessCohortPayload,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
@@ -33,6 +36,7 @@ from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.types import DeploymentIdentity
+from miles.utils.workers.worker_handle import WorkerStillBusyError
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
@@ -41,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 _RETRY_MAX_ATTEMPTS = 30
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
+_CPU_WITNESS_SNAPSHOT_TIMEOUT_SECONDS = 60.0
 
 
 def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> SimpleHealthCheckerConfig | None:
@@ -79,6 +84,8 @@ class TrainerController:
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
+        self._cpu_witness_operation_lock = asyncio.Lock()
+        self._train_attempt_active = False
 
     @property
     def pool_id(self) -> str:
@@ -171,6 +178,24 @@ class TrainerController:
     ) -> list[TrainStepOutput]:
         """Do one rollout training"""
 
+        async with self._cpu_witness_operation_lock:
+            self._train_attempt_active = True
+            try:
+                return await self._train(
+                    rollout_id=rollout_id,
+                    rollout_data_pack=rollout_data_pack,
+                    external_data=external_data,
+                )
+            finally:
+                self._train_attempt_active = False
+
+    async def _train(
+        self,
+        rollout_id: int,
+        rollout_data_pack: RolloutDataPack,
+        external_data: list[TrainStepOutput] | None = None,
+    ) -> list[TrainStepOutput]:
+
         assert (
             external_data is None or len(self._cells) == 1
         ), "external_data is only supported for a single cell, i.e. without independent DP"
@@ -178,6 +203,7 @@ class TrainerController:
         await asyncio.to_thread(event_analyzer.run_analysis_from_args, self.args)
 
         async def _fn(attempt: int) -> list[TrainStepOutput]:
+            cohort_id = uuid.uuid4().hex
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
                 attempt=attempt,
@@ -192,6 +218,7 @@ class TrainerController:
                     rollout_data_ref=rollout_data_pack.data_ref,
                     witness_info=witness_info,
                     attempt=attempt,
+                    cohort_id=cohort_id,
                     external_data=external_data,
                 ),
                 debug_name="execute_all_alive_and_catch#train",
@@ -215,6 +242,20 @@ class TrainerController:
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
+            if self._role == "actor":
+                replica_ids = self._successful_witness_replica_ids(worker_results)
+                if len(replica_ids) == len(snapshot_alive_cells):
+                    self._log_witness_cohort(
+                        rollout_id=rollout_id,
+                        cohort_id=cohort_id,
+                        replica_ids=replica_ids,
+                    )
+                else:
+                    logger.error(
+                        "CPU witness cohort is incomplete after successful training: expected %d replicas, got %d",
+                        len(snapshot_alive_cells),
+                        len(replica_ids),
+                    )
 
             return worker_results
 
@@ -223,6 +264,72 @@ class TrainerController:
         await self._test_action_executor.run_after_step(rollout_id=rollout_id)
 
         return worker_results
+
+    async def log_current_cpu_witness(self, rollout_id: int) -> TrainerWitnessCohortPayload:
+        if self._role != "actor":
+            raise RuntimeError("CPU witness snapshots are only supported for the actor trainer")
+        if self._train_attempt_active or self._cpu_witness_operation_lock.locked():
+            raise WorkerStillBusyError("trainer is busy with a training attempt")
+
+        async with self._cpu_witness_operation_lock:
+            cohort_id = uuid.uuid4().hex
+            snapshot_alive_cells = [cell for cell in self._cells if cell.is_alive]
+            if not snapshot_alive_cells:
+                raise WorkerStillBusyError("trainer has no alive cells to snapshot")
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    *(
+                        cell.execute(
+                            "log_current_cpu_witness",
+                            rollout_id=rollout_id,
+                            cohort_id=cohort_id,
+                            kill_on_failure=False,
+                        )
+                        for cell in snapshot_alive_cells
+                    )
+                ),
+                timeout=_CPU_WITNESS_SNAPSHOT_TIMEOUT_SECONDS,
+            )
+            if snapshot_alive_cells != [cell for cell in self._cells if cell.is_alive]:
+                raise WorkerStillBusyError("trainer cell cohort changed while collecting CPU witness snapshots")
+            snapshots = [snapshot for cell_results in results for snapshot in cell_results if snapshot is not None]
+            marker = self._log_witness_cohort(
+                rollout_id=rollout_id,
+                cohort_id=cohort_id,
+                replica_ids=sorted(snapshot["replica_id"] for snapshot in snapshots),
+            )
+            assert marker is not None
+            return {"snapshots": snapshots, "marker": marker}
+
+    async def is_cpu_witness_snapshot_busy(self) -> bool:
+        return self._train_attempt_active or self._cpu_witness_operation_lock.locked()
+
+    def _log_witness_cohort(
+        self,
+        *,
+        rollout_id: int,
+        cohort_id: str,
+        replica_ids: list[str],
+    ) -> dict[str, Any] | None:
+        if not is_event_logger_initialized():
+            return None
+        event_logger = get_event_logger()
+        event = event_logger.make_event(
+            TrainerWitnessCohortEvent,
+            {"rollout_id": rollout_id, "cohort_id": cohort_id, "replica_ids": replica_ids},
+        )
+        event_logger.log_event(event, print_log=False)
+        return event.model_dump(mode="json")
+
+    @staticmethod
+    def _successful_witness_replica_ids(worker_results: list[TrainStepOutput]) -> list[str]:
+        return sorted(
+            {
+                result.witness_replica_id
+                for result in worker_results
+                if result.outcome == TrainStepOutcome.NORMAL and result.witness_replica_id is not None
+            }
+        )
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
