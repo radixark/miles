@@ -1,0 +1,4 @@
+# Install in a separate Python 3.13 environment, with the pinned Gym checkout
+# on PYTHONPATH so its resources_servers package can be imported.
+nemo-gym @ git+https://github.com/NVIDIA-NeMo/Gym.git@86e2252f53ee387a0b858d20ff7c55819a1d9053
+reasoning-gym==0.1.25
