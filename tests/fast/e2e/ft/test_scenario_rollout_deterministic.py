@@ -1,3 +1,4 @@
+import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -11,7 +12,22 @@ from tests.e2e.ft.conftest_ft.scenario_rollout_deterministic import (
     _rollout_fault_injection_enabled,
 )
 
+from miles.utils.external_utils import command_utils
+from miles.utils.workers.types import ClusterBackend
+
 _BASE = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+
+
+def test_the_actual_backend_owns_the_single_api_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Kubernetes override must not inherit API setup from the default Ray configuration."""
+    monkeypatch.setattr(
+        command_utils, "default_config", lambda: command_utils.ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY)
+    )
+    config = command_utils.ExecuteTrainConfig(cluster_backend=ClusterBackend.KUBERNETES, namespace="explicit")
+    argv = shlex.split(_build_args(MODES["kill_rollout__dp4__colocate"], str(tmp_path), config=config))
+    assert argv.count("--api-server-port") == 1
+    assert argv.count("--api-server-host") == 1
+    assert "--fault-witness-enable" in argv
 
 
 def test_rollout_deterministic_uses_the_shared_deterministic_recipe_without_true_on_policy(tmp_path: Path) -> None:

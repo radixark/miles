@@ -49,6 +49,8 @@ def test_each_comparison_side_can_transform_its_config_before_the_context_and_la
     """A side-specific release has to be shared by its target context and the launch it drives."""
     requests: list[RunSideRequest] = []
     contexts: list[command_utils.ExecuteTrainConfig] = []
+    prepared: list[command_utils.ExecuteTrainConfig] = []
+    built: list[command_utils.ExecuteTrainConfig] = []
     mode = FTTestMode(
         model_name="demo", model_hf_repo="demo/demo", megatron_model_type="demo", num_cells=1, parallel_args=""
     )
@@ -59,15 +61,15 @@ def test_each_comparison_side_can_transform_its_config_before_the_context_and_la
         yield
 
     monkeypatch.setattr(app_module, "resolve_dump_dir", lambda _test_name, *, run_id: str(tmp_path / "comparison"))
-    monkeypatch.setattr(app_module, "prepare", lambda _mode: None)
+    monkeypatch.setattr(app_module, "prepare", lambda _mode, *, config: prepared.append(config))
     monkeypatch.setattr(
         command_utils, "default_config", lambda: command_utils.ExecuteTrainConfig(run_id="shared-release")
     )
 
     run_pipeline(
         test_name="scenario_x",
-        build_baseline_args=lambda *_args: "",
-        build_target_args=lambda *_args: "",
+        build_baseline_args=lambda mode, dump_dir, enable_dumper, config: built.append(config) or "",
+        build_target_args=lambda mode, dump_dir, enable_dumper, config: built.append(config) or "",
         compare_fn=lambda *_args: None,
         phases=None,
         mode=None,
@@ -80,6 +82,10 @@ def test_each_comparison_side_can_transform_its_config_before_the_context_and_la
     assert [request.config.run_id for request in requests] == ["shared-release-baseline", "shared-release-target"]
     assert len(contexts) == 1
     assert contexts[0] is requests[1].config
+    assert all(
+        prepared_config is built_config is request.config
+        for prepared_config, built_config, request in zip(prepared, built, requests, strict=True)
+    )
 
 
 def test_each_comparison_side_releases_its_resources_before_the_next_side_starts(
@@ -92,7 +98,7 @@ def test_each_comparison_side_releases_its_resources_before_the_next_side_starts
     )
 
     monkeypatch.setattr(app_module, "resolve_dump_dir", lambda _test_name, *, run_id: str(tmp_path / "comparison"))
-    monkeypatch.setattr(app_module, "prepare", lambda _mode: None)
+    monkeypatch.setattr(app_module, "prepare", lambda _mode, *, config: None)
 
     run_pipeline(
         test_name="scenario_x",
@@ -120,7 +126,7 @@ def test_a_failed_comparison_side_is_released_without_starting_the_next_side(
         raise RuntimeError("baseline failed")
 
     monkeypatch.setattr(app_module, "resolve_dump_dir", lambda _test_name, *, run_id: str(tmp_path / "comparison"))
-    monkeypatch.setattr(app_module, "prepare", lambda _mode: None)
+    monkeypatch.setattr(app_module, "prepare", lambda _mode, *, config: None)
 
     with pytest.raises(RuntimeError, match="baseline failed"):
         run_pipeline(
@@ -147,7 +153,7 @@ def test_a_failed_release_blocks_the_next_comparison_side(tmp_path: Path, monkey
         raise RuntimeError("release failed")
 
     monkeypatch.setattr(app_module, "resolve_dump_dir", lambda _test_name, *, run_id: str(tmp_path / "comparison"))
-    monkeypatch.setattr(app_module, "prepare", lambda _mode: None)
+    monkeypatch.setattr(app_module, "prepare", lambda _mode, *, config: None)
 
     with pytest.raises(RuntimeError, match="release failed"):
         run_pipeline(
@@ -236,7 +242,7 @@ def test_ray_side_never_calls_kubernetes_release_tools(monkeypatch: pytest.Monke
 def test_a_fixed_topology_generate_data_runs_without_a_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """A scenario whose topology is fixed asks its user for no --mode on any of its subcommands."""
     mode = dataclasses.replace(_mode_fixture(), rollout_num_engines=1, rollout_gpus_per_engine=1)
-    monkeypatch.setattr(app_module, "prepare", lambda _mode: None)
+    monkeypatch.setattr(app_module, "prepare", lambda _mode, *, config: None)
     monkeypatch.setattr(app_module, "get_common_train_args", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(app_module, "run_training", lambda **_kwargs: None)
     app, _ = app_module.create_comparison_app_and_run_ci(

@@ -299,7 +299,7 @@ def pipeline(monkeypatch, tmp_path) -> _Pipeline:
     monkeypatch.setattr(scenario, "_build_deployments", recorded.build_deployments)
     monkeypatch.setattr(scenario, "_compare", recorded.compare)
     monkeypatch.setattr(ft_app, "resolve_dump_dir", lambda test_name, *, run_id: str(tmp_path / test_name))
-    monkeypatch.setattr(ft_app, "prepare", lambda mode: None)
+    monkeypatch.setattr(ft_app, "prepare", lambda mode, *, config: None)
     monkeypatch.setattr(ft_app, "run_pipeline", run_pipeline_without_release)
     monkeypatch.setattr(command_utils, "default_config", _pipeline_config)
     monkeypatch.setattr(
@@ -312,7 +312,9 @@ def pipeline(monkeypatch, tmp_path) -> _Pipeline:
     return recorded
 
 
-def _fake_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _fake_target_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
     return "--some-flag some-value "
 
 

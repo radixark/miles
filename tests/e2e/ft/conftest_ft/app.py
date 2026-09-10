@@ -34,7 +34,7 @@ TARGET_SIDE: str = "target"
 _RELEASE_POLL_INTERVAL_SECONDS = 1.0
 _RELEASE_TIMEOUT_SECONDS = 300.0
 
-BuildArgsFn = Callable[[FTTestMode, str, bool], str]
+BuildArgsFn = Callable[[FTTestMode, str, bool, command_utils.ExecuteTrainConfig], str]
 ConfigForSideFn = Callable[[str, command_utils.ExecuteTrainConfig], command_utils.ExecuteTrainConfig]
 TargetSideContextFn = Callable[
     [FTTestMode, str, command_utils.ExecuteTrainConfig], contextlib.AbstractContextManager[None]
@@ -120,8 +120,6 @@ def run_pipeline(
     dump_dir: str = resolve_dump_dir(test_name, run_id=command_utils.default_config().run_id)
     print(f"Dump directory: {dump_dir}")
 
-    prepare(ft_mode)
-
     try:
         for phase in effective_phases:
             for side, build_args in (
@@ -130,6 +128,7 @@ def run_pipeline(
             ):
                 side_dump = f"{dump_dir}/{_dump_subdir(side, phase)}"
                 config = _resolve_config_for_side(side, config_for_side=config_for_side)
+                prepare(ft_mode, config=config)
                 context = (
                     target_side_context(ft_mode, side_dump, config)
                     if side == TARGET_SIDE and target_side_context is not None
@@ -138,7 +137,7 @@ def run_pipeline(
                 request = RunSideRequest(
                     side=side,
                     mode=ft_mode,
-                    train_args=build_args(ft_mode, side_dump, enable_dumper),
+                    train_args=build_args(ft_mode, side_dump, enable_dumper, config),
                     dump_dir=side_dump,
                     config=config,
                     enable_dumper=enable_dumper,
@@ -193,8 +192,8 @@ def create_comparison_app_and_run_ci(
             dump_dir = resolve_dump_dir(test_name, run_id=config.run_id)
         sub = _dump_subdir(side, phase)
         full_dump_dir = f"{dump_dir}/{sub}"
-        args = build_fn(ft_mode, full_dump_dir, enable_dumper)
-        prepare(ft_mode)
+        prepare(ft_mode, config=config)
+        args = build_fn(ft_mode, full_dump_dir, enable_dumper, config)
 
         context = (
             target_side_context(ft_mode, full_dump_dir, config)
@@ -266,18 +265,19 @@ def create_comparison_app_and_run_ci(
     def generate_data(
         mode: OptionalModeOption = None,
         num_steps: Annotated[int, typer.Option(help="Number of rollout steps to generate")] = 12,
-        output_dir: Annotated[
-            str, typer.Option(help="Output directory for rollout data")
-        ] = "/tmp/generated_rollout_data",
+        output_dir: Annotated[str | None, typer.Option(help="Output directory for rollout data")] = None,
     ) -> None:
         """Generate debug rollout data using real rollout (no dumper)."""
         ft_mode = resolve_mode_fn(mode)
         assert (
             ft_mode.has_real_rollout
         ), f"recording debug rollout data needs real engines, and the mode runs {ft_mode.rollout_num_engines}"
-        prepare(ft_mode)
+        config = command_utils.default_config()
+        if output_dir is None:
+            output_dir = resolve_dump_dir(f"{test_name}_generated_rollout_data", run_id=config.run_id)
+        prepare(ft_mode, config=config)
         args = get_common_train_args(ft_mode, dump_dir=output_dir, num_steps=num_steps, enable_dumper=False)
-        run_training(train_args=args, mode=ft_mode)
+        run_training(train_args=args, mode=ft_mode, config=config)
 
     def run_ci(mode: str | None = None) -> None:
         """Run one mode's full pipeline (entry point for the per-mode CI files)."""
@@ -323,7 +323,7 @@ def create_non_comparison_app(
         dump_dir: str = resolve_dump_dir(test_name, run_id=config.run_id)
         print(f"Dump directory: {dump_dir}")
 
-        prepare(ft_mode)
+        prepare(ft_mode, config=config)
         args = build_args(ft_mode, dump_dir)
         run_training(train_args=args, mode=ft_mode, config=config)
 

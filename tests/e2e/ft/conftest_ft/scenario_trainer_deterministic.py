@@ -9,6 +9,7 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
@@ -81,11 +82,15 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     return base
 
 
-def _build_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _build_baseline_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
     return _build_phase_args(mode, dump_dir, is_target=False, enable_dumper=enable_dumper)
 
 
-def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _build_target_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
     return _build_phase_args(mode, dump_dir, is_target=True, enable_dumper=enable_dumper)
 
 

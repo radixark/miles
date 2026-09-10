@@ -44,9 +44,15 @@ _DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
 _DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
 
 
+def get_dumps_root() -> Path:
+    root = Path(os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT)
+    if not root.is_absolute():
+        raise ValueError("The shared dumps root must be an absolute path")
+    return root
+
+
 def resolve_dump_dir(test_name: str, *, run_id: str) -> str:
-    root = os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT
-    dump_dir = Path(root) / run_id / test_name
+    dump_dir = get_dumps_root() / run_id / test_name
     os.makedirs(dump_dir, exist_ok=True)
     return str(dump_dir)
 

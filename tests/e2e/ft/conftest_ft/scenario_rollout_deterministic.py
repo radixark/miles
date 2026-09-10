@@ -43,7 +43,12 @@ COLOCATED_MEM_FRACTION_STATIC: float = 0.4
 DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {"SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false"}
 
 
-def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _build_args(
+    mode: FTTestMode,
+    dump_dir: str,
+    enable_dumper: bool = True,
+    config: command_utils.ExecuteTrainConfig | None = None,
+) -> str:
     assert mode.has_real_rollout, f"{TEST_NAME} needs engines to crash, but mode {mode.model_name} has none"
     assert tuple(mode.ft_components) == ("rollout",), (
         f"{TEST_NAME} injects into rollout cells only, so the mode must enable ft on rollout alone, "
@@ -51,8 +56,7 @@ def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> 
     )
 
     args = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_ROLLOUTS, enable_dumper=enable_dumper)
-    args += get_ft_args(mode)
-    args += get_api_server_args()
+    args += get_ft_args(mode, api_server_args=get_api_server_args(config))
     args += "--mini-ft-controller-enable "
     args += "--debug-deterministic-collective "
     args += "--sglang-disable-radix-cache "

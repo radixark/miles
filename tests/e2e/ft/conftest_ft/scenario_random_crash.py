@@ -99,9 +99,8 @@ def run_ci(
         get_common_train_args(
             ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
         )
-        + get_ft_args(ft_mode)
+        + get_ft_args(ft_mode, api_server_args=get_api_server_args(config))
         + get_fully_async_args(fully_async=fully_async)
-        + get_api_server_args(config)
         + "--mini-ft-controller-enable "
     )
 

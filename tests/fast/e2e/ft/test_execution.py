@@ -1,8 +1,43 @@
 import dataclasses
+import shlex
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+from tests.e2e.ft.conftest_ft import execution
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args
 from tests.e2e.ft.conftest_ft.modes import MODES
+from tests.utils.soak.utils import _DUMPS_ROOT_ENV
+
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+
+
+def test_shared_patcher_path_survives_training_dump_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The launcher names a shared patcher file that clearing training outputs cannot remove."""
+    root = tmp_path / "shared storage"
+    dump = tmp_path / "training"
+    dump.mkdir()
+    monkeypatch.setenv(_DUMPS_ROOT_ENV, str(root))
+    args = execution.get_debug_dump_args(dump_dir=str(dump), enable_dumper=True)
+    argv = shlex.split(args)
+    patcher = Path(argv[argv.index("--dumper-source-patcher-config-train") + 1])
+    assert patcher.is_relative_to(root) and not patcher.is_relative_to(dump)
+    patcher.parent.mkdir(parents=True)
+    patcher.write_text("original patcher")
+    launched: list[bool] = []
+
+    def launch(**kwargs: object) -> None:
+        assert patcher.read_text() == "original patcher"
+        assert not dump.exists()
+        launched.append(True)
+
+    monkeypatch.setattr(ExecuteTrainConfig, "create_backend", lambda self: SimpleNamespace(execute_train=launch))
+    monkeypatch.setattr(execution, "validate_dump_storage", lambda path: None)
+    monkeypatch.setattr(execution, "validate_training_storage", lambda train_args: None)
+    execution.run_training(
+        train_args=args, mode=MODES["kill_rollout__dp4__colocate"], dump_dir=str(dump), config=ExecuteTrainConfig()
+    )
+    assert launched == [True]
 
 
 class TestGetCommonTrainArgs:

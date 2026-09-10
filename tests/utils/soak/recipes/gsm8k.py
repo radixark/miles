@@ -14,6 +14,7 @@ from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, sp
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.state import EventLog
+from tests.utils.soak.storage import validate_dump_storage, validate_training_storage
 from tests.utils.soak.teardown import teardown_run
 from tests.utils.soak.utils import (
     DATA_DIR,
@@ -21,6 +22,7 @@ from tests.utils.soak.utils import (
     create_soak_config,
     evidence_directory,
     get_api_server_args,
+    get_dumps_root,
     get_fully_async_args,
     get_train_script,
     resolve_dump_dir,
@@ -96,6 +98,10 @@ def run_realistic_gsm8k(
     config = create_soak_config(config)
     tail_policy = create_tail_policy(num_rollout=num_rollout, min_tail_rollouts=2 * _EVAL_INTERVAL)
     U = create_backend_for_run(config)
+    storage = validate_dump_storage(get_dumps_root())
+    storage_dir = get_dumps_root() / "launch-config" / uuid4().hex
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    (storage_dir / "storage.json").write_text(storage.model_dump_json(indent=2))
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
     print(f"Test: {test_name}, train script: {get_train_script(fully_async=fully_async)}")
 
@@ -153,7 +159,7 @@ def run_realistic_gsm8k(
         get_virtual_cells=get_virtual_cells,
         event_log=run.event_log,
         evidence_path=run.evidence_dir / "events.jsonl",
-        sources={"training_events": run.events_dir},
+        sources={"training_events": run.events_dir, "launch_config": storage_dir},
         observer=create_observer(run) if create_observer is not None else None,
         injection_enabled=injection_enabled,
     )
@@ -294,6 +300,7 @@ def get_gsm8k_train_args(
 
 
 def launch_gsm8k(config: command_utils.ExecuteTrainConfig, *, train_args: str, fully_async: bool) -> None:
+    validate_training_storage(train_args)
     create_backend_for_run(config).execute_train(
         train_args=train_args,
         num_gpus_per_node=TRAIN_GPUS + ROLLOUT_GPUS,
