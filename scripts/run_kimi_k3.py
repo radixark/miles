@@ -263,14 +263,16 @@ def _prepare_torch_dist(args: ScriptArgs) -> None:
             "The full model converts on 32 ranks; run tools/convert_hf_to_torch_dist.py as documented in "
             "docs/models/kimi/kimi-k3.md"
         )
+    # TP>1 needs CUDA_DEVICE_MAX_CONNECTIONS=1, which the converter does not set; EP alone shards the
+    # experts that dominate the 4-layer prune, and the torch_dist output re-shards at load
     U.convert_checkpoint(
         model_name=args.bf16_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         extra_args=(
-            f"--bf16 --tensor-model-parallel-size {args.tensor_parallel_size} --sequence-parallel "
+            "--bf16 --tensor-model-parallel-size 1 "
             "--pipeline-model-parallel-size 1 --context-parallel-size 1 "
-            f"--expert-model-parallel-size {args.expert_parallel_size} --expert-tensor-parallel-size 1 "
+            f"--expert-model-parallel-size {args.num_gpus_per_node} --expert-tensor-parallel-size 1 "
             "--megatron-to-hf-mode raw "
         ),
         dir_dst=args.model_dir,
