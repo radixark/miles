@@ -415,8 +415,8 @@ def save_lora_checkpoint(
        checkpoint resume without name/weight conversion. Each TP/PP rank saves its
        own shard with original parameter names.
 
-    Native Kimi K3 LoRA skips the HF PEFT export: its 896-expert adapter is too large to
-    materialize on every rank.
+    Raw-mode (native) adapters skip the HF PEFT export: they have no bridge, and Kimi K3's
+    896-expert adapter could not be materialized on every rank anyway.
 
     When ``optimizer`` is provided, training state (optimizer + LR scheduler) is
     also saved per-rank for checkpoint resume. Base model weights are frozen and
@@ -428,8 +428,8 @@ def save_lora_checkpoint(
     import json
 
     save_path = Path(save_dir)
-    # TODO: will rewrite in native lora refactor
-    native_kimi_k3 = args.megatron_to_hf_mode == "raw" and "kimi_k3" in (args.model_name or "").lower()
+    # raw-mode adapters have no bridge to export HF PEFT through
+    native = args.megatron_to_hf_mode == "raw"
     parallel_state = get_parallel_state()
     is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
     tp_rank = parallel_state.tp.rank
@@ -450,7 +450,7 @@ def save_lora_checkpoint(
     torch.save(adapter_state, native_path)
     logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
 
-    if native_kimi_k3:
+    if native:
         if global_rank == 0:
             config = {
                 "peft_type": "LORA",
@@ -460,13 +460,13 @@ def save_lora_checkpoint(
                 "lora_dropout": args.lora_dropout,
                 "bias": "none",
                 "task_type": "CAUSAL_LM",
-                "experts_shared_outer_loras": True,
+                "experts_shared_outer_loras": bool(args.experts_shared_outer_loras),
                 "format": "megatron_rank_sharded",
             }
             with open(save_path / "adapter_config.json", "w") as f:
                 json.dump(config, f, indent=2)
             os.sync()
-            logger.info(f"Saved rank-sharded Kimi K3 adapter to {save_path}")
+            logger.info(f"Saved rank-sharded adapter config to {save_path}")
     else:
         # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
         # Bridge export is collective: all TP ranks participate in the all-gather,
