@@ -603,7 +603,7 @@ def _validate_adapter_layout(models, adapters: list[KimiK3LoRAAdapter]) -> None:
         )
 
 
-def _export_attention(adapter: KimiK3LoRAAdapter, materialize_parameter):
+def _export_attention(adapter: KimiK3LoRAAdapter):
     batch = _GatherBatch()
     plans: list[tuple[str, torch.Tensor | Callable[[], torch.Tensor]]] = []
     prefix = adapter.hf_prefix
@@ -612,26 +612,24 @@ def _export_attention(adapter: KimiK3LoRAAdapter, materialize_parameter):
             ("q_a_proj", adapter.q_a_lora_A, adapter.q_a_lora_B),
             ("kv_a_proj_with_mqa", adapter.kv_a_lora_A, adapter.kv_a_lora_B),
         ):
-            local_a = materialize_parameter(parameter_a)
-            local_b = materialize_parameter(parameter_b)
-            plans.append((f"{prefix}{hf_name}.lora_A.weight", local_a))
-            plans.append((f"{prefix}{hf_name}.lora_B.weight", local_b))
-    o_a = batch.add("tp", materialize_parameter(adapter.o_lora_A), 1)
+            plans.append((f"{prefix}{hf_name}.lora_A.weight", parameter_a))
+            plans.append((f"{prefix}{hf_name}.lora_B.weight", parameter_b))
+    o_a = batch.add("tp", adapter.o_lora_A, 1)
     plans.append((f"{prefix}o_proj.lora_A.weight", o_a.get))
-    plans.append((f"{prefix}o_proj.lora_B.weight", materialize_parameter(adapter.o_lora_B)))
+    plans.append((f"{prefix}o_proj.lora_B.weight", adapter.o_lora_B))
     batch.flush()
     return plans
 
 
-def _export_dense_mlp(adapter: KimiK3LoRAAdapter, materialize_parameter):
+def _export_dense_mlp(adapter: KimiK3LoRAAdapter):
     batch = _GatherBatch()
     prefix = adapter.hf_prefix
-    fc1_a = materialize_parameter(adapter.fc1_lora_A)
-    gate_b_local, up_b_local = materialize_parameter(adapter.fc1_lora_B).chunk(2, dim=0)
+    fc1_a = adapter.fc1_lora_A
+    gate_b_local, up_b_local = adapter.fc1_lora_B.chunk(2, dim=0)
     gate_b = batch.add("tp", gate_b_local, 0)
     up_b = batch.add("tp", up_b_local, 0)
-    down_a = batch.add("tp", materialize_parameter(adapter.fc2_lora_A), 1)
-    fc2_b = materialize_parameter(adapter.fc2_lora_B)
+    down_a = batch.add("tp", adapter.fc2_lora_A, 1)
+    fc2_b = adapter.fc2_lora_B
     batch.flush()
     return [
         (f"{prefix}gate_proj.lora_A.weight", fc1_a),
@@ -643,16 +641,16 @@ def _export_dense_mlp(adapter: KimiK3LoRAAdapter, materialize_parameter):
     ]
 
 
-def _export_experts(adapter: KimiK3LoRAAdapter, materialize_parameter):
+def _export_experts(adapter: KimiK3LoRAAdapter):
     batch = _GatherBatch()
     prefix = adapter.hf_prefix
-    w1_a = materialize_parameter(adapter.w1_lora_A)
-    w3_a = materialize_parameter(adapter.w3_lora_A)
-    w1_b = batch.add("ep", materialize_parameter(adapter.w1_lora_B), 0)
-    w3_b = batch.add("ep", materialize_parameter(adapter.w3_lora_B), 0)
+    w1_a = adapter.w1_lora_A
+    w3_a = adapter.w3_lora_A
+    w1_b = batch.add("ep", adapter.w1_lora_B, 0)
+    w3_b = batch.add("ep", adapter.w3_lora_B, 0)
     if adapter.include_fc2:
-        w2_a = batch.add("ep", materialize_parameter(adapter.w2_lora_A), 0)
-        w2_b = materialize_parameter(adapter.w2_lora_B)
+        w2_a = batch.add("ep", adapter.w2_lora_A, 0)
+        w2_b = adapter.w2_lora_B
     batch.flush()
     plans = [
         (f"{prefix}w1.lora_A.weight", w1_a.unsqueeze(0)),
@@ -666,7 +664,7 @@ def _export_experts(adapter: KimiK3LoRAAdapter, materialize_parameter):
     return plans
 
 
-def export_kimi_k3_lora_hf_chunks(model_chunks, materialize_parameter=lambda parameter: parameter):
+def export_kimi_k3_lora_hf_chunks(model_chunks):
     models = list(_unwrap_model_chunks(model_chunks))
     adapters: list[KimiK3LoRAAdapter] = []
     for model in models:
@@ -677,11 +675,11 @@ def export_kimi_k3_lora_hf_chunks(model_chunks, materialize_parameter=lambda par
 
     for adapter in adapters:
         if adapter.kind in ("kda_attention", "mla_attention"):
-            plans = _export_attention(adapter, materialize_parameter)
+            plans = _export_attention(adapter)
         elif adapter.kind in ("dense_mlp", "shared_experts"):
-            plans = _export_dense_mlp(adapter, materialize_parameter)
+            plans = _export_dense_mlp(adapter)
         elif adapter.kind == "experts":
-            plans = _export_experts(adapter, materialize_parameter)
+            plans = _export_experts(adapter)
         else:
             raise ValueError(f"Unknown Kimi K3 LoRA adapter kind: {adapter.kind}")
         yield [

@@ -60,28 +60,12 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         pbar.close()
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
-    def _export_pp_local_lora(self, adapter, weights):
+    def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
         if "kimi_k3" in self.model_name.lower():
-            from miles.backends.megatron_utils.lora_utils import _is_adapter_param_name
             from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
 
-            if weights is None:
-                materialize_parameter = lambda parameter: parameter  # noqa: E731
-            else:
-                # while the trainer sleeps the live adapter is paused; weights holds the host backup
-                source_by_parameter_id = {
-                    id(parameter): weights[name]
-                    for name, parameter in named_params_and_buffers(self.args, self.model)
-                    if _is_adapter_param_name(name)
-                }
-                assert source_by_parameter_id, "Kimi K3 LoRA export found no adapter parameters"
-                materialize_parameter = lambda parameter: source_by_parameter_id[id(parameter)].cuda()  # noqa: E731
-            return [
-                named_tensor
-                for chunk in export_kimi_k3_lora_hf_chunks(self.model, materialize_parameter=materialize_parameter)
-                for named_tensor in chunk
-            ]
+            return [named_tensor for chunk in export_kimi_k3_lora_hf_chunks(self.model) for named_tensor in chunk]
         if "inkling" in (self.args.custom_model_provider_path or ""):
             from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
 

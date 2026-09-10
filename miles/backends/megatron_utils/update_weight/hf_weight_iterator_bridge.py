@@ -52,7 +52,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     yield unit
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
-    def _export_pp_local_lora(self, adapter, weights):
+    def _export_pp_local_lora(self, adapter):
         if adapter is None:
             return self._export_current_adapter()
 

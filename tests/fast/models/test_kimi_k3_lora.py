@@ -143,13 +143,6 @@ def test_native_export_is_chunked_by_adapter(monkeypatch):
     assert shared_experts[f"{prefix}down_proj.lora_A.weight"].shape == (2, 5)
     assert shared_experts[f"{prefix}down_proj.lora_B.weight"].shape == (8, 2)
 
-    backups = {id(parameter): torch.full_like(parameter, 17) for parameter in model.parameters()}
-    for chunk in export_kimi_k3_lora_hf_chunks(
-        [model], materialize_parameter=lambda parameter: backups[id(parameter)]
-    ):
-        for _name, tensor in chunk:
-            torch.testing.assert_close(tensor, torch.full_like(tensor, 17))
-
 
 def test_native_export_rejects_missing_shared_expert_adapter(monkeypatch):
     """A layer without its adapter must fail the export, not ship a partial adapter SGLang accepts."""
