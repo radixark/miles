@@ -255,6 +255,15 @@ class TinkerService:
                         f"datum {index}: loss_fn_inputs[{wire_key!r}] has {len(values)} values "
                         f"for {datum['target_len']} target tokens"
                     )
+            unread = [
+                wire_key
+                for wire_key, datum_key in LOSS_INPUT_KEYS.items()
+                if wire_key not in required_inputs and datum_key in datum
+            ]
+            if unread:
+                raise UserInputError(
+                    f"datum {index}: loss_fn {payload['loss_fn']!r} does not read loss_fn_inputs {unread}"
+                )
         if total_tokens > self.config.max_tokens_per_request:
             raise UserInputError(
                 f"{total_tokens} tokens exceeds max_tokens_per_request={self.config.max_tokens_per_request}"
