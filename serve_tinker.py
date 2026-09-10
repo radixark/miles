@@ -68,14 +68,19 @@ async def serve(args):
         uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
     )
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
+    # supervise both: a crashed dispatcher must take the HTTP server down with it,
+    # not keep answering /healthz while every training future pends forever
     service_task = asyncio.create_task(service.run())
+    server_task = asyncio.create_task(server.serve())
     try:
-        await server.serve()
+        done, _ = await asyncio.wait({service_task, server_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
     finally:
-        # service.run() loops forever; cancel it so the gateway can exit
-        service_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await service_task
+        for task in (service_task, server_task):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 if __name__ == "__main__":
