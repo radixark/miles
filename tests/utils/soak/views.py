@@ -4,7 +4,7 @@ import dataclasses
 from datetime import datetime
 from typing import Literal
 
-from tests.e2e.ft.conftest_ft.fault_injection.state import Event, InjectionEvent, ObservationsEvent, ObservedCellState
+from tests.utils.soak.state import Event, InjectionEvent, ObservationsEvent, ObservedCellState
 
 STALE_STATUS_GRACE_SECONDS: float = 120.0
 

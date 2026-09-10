@@ -4,7 +4,7 @@ import abc
 import random
 
 import requests
-from tests.e2e.ft.conftest_ft.fault_injection.pod_manipulation import (
+from tests.utils.soak.pod_manipulation import (
     delete_one_pod_of_cell,
     list_pod_names_of_cell,
     sigkill_process_patterns_in_pod,

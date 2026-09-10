@@ -1,5 +1,5 @@
-from tests.e2e.ft.conftest_ft.fault_injection import state
-from tests.fast.e2e.ft.fault_injection.utils import RUNNING_NOT_SERVING, SERVING, cell, staged
+from tests.fast.utils.soak.utils import RUNNING_NOT_SERVING, SERVING, cell, staged
+from tests.utils.soak import state
 
 
 def test_cell_is_alive_true_only_when_healthy_condition_is_true() -> None:

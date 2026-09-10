@@ -25,19 +25,16 @@ from tests.e2e.ft.conftest_ft.execution import (
     prepare,
     run_training,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
-    API_SERVER_PORT,
-    FaultInjectorHandle,
-    spawn_fault_injector,
-)
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
+from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
+from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
+from tests.utils.soak.fault_forms import (
     ACTOR_CELL_TYPE,
     CELL_TYPE_OF_FT_COMPONENT,
     ROLLOUT_CELL_TYPE,
     compute_mean_interval_seconds_of_cell_type,
     create_cell_fault_forms,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.views import (
+from tests.utils.soak.views import (
     compute_cells_not_serving_after_injection,
     compute_forms_drawn_without_success,
     compute_injected_cell_names,
@@ -45,7 +42,6 @@ from tests.e2e.ft.conftest_ft.fault_injection.views import (
     compute_states_of_cell_name,
     compute_successful_form_names,
 )
-from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils

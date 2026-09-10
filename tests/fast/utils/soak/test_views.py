@@ -1,15 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
-from tests.e2e.ft.conftest_ft.fault_injection import state, views
-from tests.fast.e2e.ft.fault_injection.utils import (
-    PENDING,
-    RUNNING_NOT_SERVING,
-    SERVING,
-    SUSPENDED,
-    log_of,
-    note_injected,
-    staged,
-)
+from tests.fast.utils.soak.utils import PENDING, RUNNING_NOT_SERVING, SERVING, SUSPENDED, log_of, note_injected, staged
+from tests.utils.soak import state, views
 
 
 def test_observed_states_record_only_transitions() -> None:

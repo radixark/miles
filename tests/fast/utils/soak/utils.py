@@ -3,7 +3,7 @@ import random
 from collections.abc import Callable, Iterator
 from unittest.mock import MagicMock, patch
 
-from tests.e2e.ft.conftest_ft.fault_injection import core, fault_forms, state
+from tests.utils.soak import core, fault_forms, state
 
 from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend

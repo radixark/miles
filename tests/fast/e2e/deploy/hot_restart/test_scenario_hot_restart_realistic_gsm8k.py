@@ -11,7 +11,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_re
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFaultForm
 from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
-from tests.e2e.ft.conftest_ft.fault_injection.state import InjectionEvent
+from tests.utils.soak.state import InjectionEvent
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent

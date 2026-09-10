@@ -2,8 +2,8 @@ import random
 from unittest.mock import MagicMock
 
 import pytest
-from tests.e2e.ft.conftest_ft.fault_injection import fault_forms
-from tests.fast.e2e.ft.fault_injection.utils import NAMESPACE, RUN_ID, api_server_fault_forms, config_of, typed_cell
+from tests.fast.utils.soak.utils import NAMESPACE, RUN_ID, api_server_fault_forms, config_of, typed_cell
+from tests.utils.soak import fault_forms
 
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.fault_injector import FailureMode

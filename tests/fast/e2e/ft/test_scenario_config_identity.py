@@ -3,7 +3,7 @@ import itertools
 from pathlib import Path
 
 from tests.e2e.ft.conftest_ft import scenario_random_crash, scenario_realistic_gsm8k
-from tests.e2e.ft.conftest_ft.fault_injection import state
+from tests.utils.soak import state
 
 from miles.utils.external_utils import command_utils
 

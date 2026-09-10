@@ -16,15 +16,11 @@ from tests.e2e.ft.conftest_ft.execution import (
     get_ft_args,
     get_train_env_vars_arg,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
-    API_SERVER_PORT,
-    FaultInjectorHandle,
-    spawn_fault_injector,
-)
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
-from tests.e2e.ft.conftest_ft.fault_injection.views import compute_injection_times, compute_num_injections
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_rollout_cells_served_after_injection
+from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
+from tests.utils.soak.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
+from tests.utils.soak.views import compute_injection_times, compute_num_injections
 
 from miles.utils.external_utils import command_utils
 from miles.utils.misc import MutableBox

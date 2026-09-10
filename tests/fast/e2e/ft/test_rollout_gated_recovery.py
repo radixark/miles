@@ -6,9 +6,9 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from tests.e2e.ft.conftest_ft.fault_injection import state, views
-from tests.fast.e2e.ft.fault_injection.utils import note_injected
 from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.utils.soak.utils import note_injected
+from tests.utils.soak import state, views
 
 from miles.ray.rollout import inference_controller as inference_controller_module
 from miles.ray.rollout import rollout_server as rollout_server_module

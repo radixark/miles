@@ -2,7 +2,7 @@ import random
 import subprocess
 
 import pytest
-from tests.e2e.ft.conftest_ft.fault_injection import pod_manipulation
+from tests.utils.soak import pod_manipulation
 
 from miles.utils.test_utils import kubectl_reads
 

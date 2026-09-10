@@ -25,18 +25,14 @@ from tests.e2e.ft.conftest_ft.execution import (
     get_fully_async_args,
     get_train_script,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
-    API_SERVER_PORT,
-    FaultInjectorHandle,
-    spawn_fault_injector,
-)
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
+from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
+from tests.fast.cluster_backends import create_backend_for_run
+from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
+from tests.utils.soak.fault_forms import (
     CellFaultForms,
     compute_mean_interval_seconds_of_cell_type,
     create_cell_fault_forms,
 )
-from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
-from tests.fast.cluster_backends import create_backend_for_run
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils

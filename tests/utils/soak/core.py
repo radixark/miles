@@ -7,9 +7,9 @@ import time
 from collections.abc import Callable
 
 import requests
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import BaseFaultForm, CellFaultForms
-from tests.e2e.ft.conftest_ft.fault_injection.state import Event, EventLog, cell_type_of
-from tests.e2e.ft.conftest_ft.fault_injection.views import compute_successful_form_names
+from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms
+from tests.utils.soak.state import Event, EventLog, cell_type_of
+from tests.utils.soak.views import compute_successful_form_names
 
 logger = logging.getLogger(__name__)
 

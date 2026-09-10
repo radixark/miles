@@ -4,9 +4,7 @@ from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from tests.e2e.ft.conftest_ft.fault_injection import core, fault_forms, state, views
-from tests.fast.e2e.ft.fault_injection.utils import (
+from tests.fast.utils.soak.utils import (
     StubFaultForm,
     api_server_fault_forms,
     cell,
@@ -16,6 +14,7 @@ from tests.fast.e2e.ft.fault_injection.utils import (
     patched_requests,
     typed_cell,
 )
+from tests.utils.soak import core, fault_forms, state, views
 
 
 def _run_injection_loop(

@@ -3,8 +3,7 @@ import threading
 from unittest.mock import patch
 
 import pytest
-from tests.e2e.ft.conftest_ft.fault_injection import core, entrypoint, views
-from tests.fast.e2e.ft.fault_injection.utils import (
+from tests.fast.utils.soak.utils import (
     SERVING,
     StubFaultForm,
     api_server_fault_forms,
@@ -14,6 +13,7 @@ from tests.fast.e2e.ft.fault_injection.utils import (
     staged,
     typed_cell,
 )
+from tests.utils.soak import core, entrypoint, views
 
 
 def test_stop_and_join_takes_one_last_snapshot_before_the_log_is_read() -> None:

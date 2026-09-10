@@ -15,7 +15,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     is_replaced_launch_exit,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, read_run_progress
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import BaseFaultForm
+from tests.utils.soak.fault_forms import BaseFaultForm
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 

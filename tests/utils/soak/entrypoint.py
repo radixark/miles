@@ -3,9 +3,9 @@
 import threading
 from collections.abc import Callable
 
-from tests.e2e.ft.conftest_ft.fault_injection.core import POLL_INTERVAL_SECONDS, list_cells, run_fault_injection_loop
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
-from tests.e2e.ft.conftest_ft.fault_injection.state import EventLog
+from tests.utils.soak.core import POLL_INTERVAL_SECONDS, list_cells, run_fault_injection_loop
+from tests.utils.soak.fault_forms import CellFaultForms
+from tests.utils.soak.state import EventLog
 
 from miles.utils.test_utils.polling_worker import PollingWorker
 
