@@ -5,9 +5,29 @@ that completes the configured DAPO workload. A passing count is qualified by
 the number of completed steps, sequence limit, adapter targets and topology;
 it is not a guarantee that every possible future workload fits.
 
-The initial experiment is based on Miles PR #3170 at
-`f159f9baa3cf9433c6b31d9f155bebdb721afe26` and SGLang PR #38165 at
-`c27edd9949f079c07ab66091219865af454b5cad`.
+This PR is based on Miles PR #2846 at
+`3b97ddc308bf10581d803617aa42f75bf7b88831`, integrating PR #3170 at
+`f159f9baa3cf9433c6b31d9f155bebdb721afe26`. The GPU environment uses SGLang
+PR #38165 at `c27edd9949f079c07ab66091219865af454b5cad`.
+
+## GPU E2E acceptance
+
+`pressure_client.py` uses real Tinker SDK clients against `serve_tinker.py`.
+Each client creates a separate LoRA model, publishes its sampler weights,
+samples through SGLang, builds DAPO training data, and awaits both GPU
+forward/backward and an Adam update. Subsequent steps publish the updated
+weights and repeat the same loop. No fake backend is used in this path.
+
+Clients synchronize before each step and after collecting their rollout batch.
+A client that has finished sampling therefore waits for the slowest client
+before submitting forward/backward. Phase files expose that wait.
+
+All N clients must complete three full steps before N passes. The one-slot
+memory probe, CPU unit tests and launcher snapshots do not satisfy that gate.
+Checkpoint saving during continuous training is included; checkpoint restore
+correctness is covered separately by the gateway tests, not by this pressure loop.
+The earlier GPU source estimated 121 slots but has not completed qualification;
+it is not evidence that this rebased PR passes GPU E2E.
 
 ## Workload
 
