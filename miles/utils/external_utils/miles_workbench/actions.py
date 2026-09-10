@@ -69,9 +69,8 @@ def _missing_verdict(args: DiagnosisArgs, *, state_file: Path | None) -> tuple[s
 
 
 def _helm_install_command(args: InstallArgs) -> list[str]:
-    command = Helm.upgrade_command(args.release, args.namespace, CHART_DIR, [], ci_run=False)
-    command += ["--set-string", f"objectName={object_name(args.release)}"]
-    return command + helm_value_overrides(args)
+    upgrade = Helm.upgrade_command(args.release, args.namespace, CHART_DIR, [], ci_run=False)
+    return upgrade + helm_value_overrides(args)
 
 
 def _ensure_namespace(namespace: str) -> None:
