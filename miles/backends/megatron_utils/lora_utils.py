@@ -153,7 +153,8 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
                 grad = param.grad
             if grad is not None:
                 grads.append(grad)
-        for dt in {g.dtype for g in grads}:
+        # set iteration order follows address-derived hashes and need not agree across ranks
+        for dt in sorted({g.dtype for g in grads}, key=str):
             gs = [g for g in grads if g.dtype == dt]
             if len(gs) == 1:
                 dist.all_reduce(gs[0], op=dist.ReduceOp.SUM, group=group)
