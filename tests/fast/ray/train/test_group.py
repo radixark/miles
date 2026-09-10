@@ -17,6 +17,7 @@ from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainerWitnessCohortEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.sample_ownership.step_window import SampleOwnershipStepWindow
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.data import RolloutDataPack
 from miles.utils.object_store import _MooncakeStoreObjectRef
@@ -35,7 +36,7 @@ async def test_log_current_cpu_witness_collects_live_cell_snapshots(tmp_path: Pa
     controller = object.__new__(TrainerController)
     controller._role = "actor"
     controller.args = SimpleNamespace(
-        sample_ownership_grace_period_seconds=300,
+        sample_ownership_grace_steps=10,
         sample_ownership_check_timeout_seconds=90,
     )
     controller._cells_by_id = {
@@ -53,6 +54,7 @@ async def test_log_current_cpu_witness_collects_live_cell_snapshots(tmp_path: Pa
     controller._cpu_witness_operation_lock = asyncio.Lock()
 
     with patch.object(group_module.uuid, "uuid4", return_value=SimpleNamespace(hex="cohort-current")):
+        controller._sample_ownership_steps = SampleOwnershipStepWindow(10)
         cohort = await controller.log_current_cpu_witness(rollout_id=7)
 
     assert [snapshot["replica_id"] for snapshot in cohort["snapshots"]] == ["cell-0", "cell-1"]
@@ -74,7 +76,7 @@ async def test_log_current_cpu_witness_requires_exact_alive_replicas(
     controller = object.__new__(TrainerController)
     controller._role = "actor"
     controller.args = SimpleNamespace(
-        sample_ownership_grace_period_seconds=300,
+        sample_ownership_grace_steps=10,
         sample_ownership_check_timeout_seconds=90,
     )
     controller._cells_by_id = {
@@ -103,10 +105,11 @@ async def test_transient_empty_cohort_releases_the_train_lock_before_retry(monke
     controller = object.__new__(TrainerController)
     controller._role = "actor"
     controller.args = SimpleNamespace(
-        sample_ownership_grace_period_seconds=300,
+        sample_ownership_grace_steps=10,
         sample_ownership_check_timeout_seconds=90,
     )
     controller._cells_by_id = {}
+    controller._sample_ownership_steps = SampleOwnershipStepWindow(10)
     controller._cpu_witness_operation_lock = asyncio.Lock()
     retrying = asyncio.Event()
     healed = asyncio.Event()
@@ -137,7 +140,7 @@ async def test_transient_empty_cohort_times_out_without_holding_the_train_lock()
     controller = object.__new__(TrainerController)
     controller._role = "actor"
     controller.args = SimpleNamespace(
-        sample_ownership_grace_period_seconds=0,
+        sample_ownership_grace_steps=0,
         sample_ownership_check_timeout_seconds=0,
     )
     controller._cells_by_id = {}
@@ -168,6 +171,7 @@ def _make_mock_args(
         api_server_port=0,
         indep_dp=indep_dp,
         enable_witness=enable_witness,
+        sample_ownership_grace_steps=10,
         witness_buffer_size=100,
         trainer_heartbeat_checker_interval=10.0,
         trainer_heartbeat_checker_timeout=10.0,

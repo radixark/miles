@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from typing import Any
 
 import yaml
@@ -2269,8 +2270,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--save-debug-event-data",
                 type=str,
                 default=None,
-                help="Where the audit events of this run go, including the env report. Defaults to "
-                "<save>/events, so that a run that checkpoints also records what it ran as.",
+                help="Where the audit events of this run go, including the env report. Checkpointing defaults "
+                "to <save>/events; the sample ownership checker otherwise uses a run-specific temporary directory.",
             )
             parser.add_argument(
                 "--dump-details",
@@ -2402,6 +2403,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--enable-event-analyzer",
                 action="store_true",
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
+            )
+            parser.add_argument(
+                "--sample-ownership-check",
+                action=argparse.BooleanOptionalAction,
+                default=False,
+                help="Periodically verify that every mature issued sample was trained exactly once or explicitly dropped.",
+            )
+            parser.add_argument(
+                "--sample-ownership-grace-steps",
+                type=int,
+                default=None,
+                help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI).",
+            )
+            parser.add_argument(
+                "--sample-ownership-check-interval-seconds",
+                type=float,
+                default=30.0,
+                help="Seconds between sample ownership checks.",
+            )
+            parser.add_argument(
+                "--sample-ownership-check-timeout-seconds",
+                type=float,
+                default=90.0,
+                help="Maximum seconds for current-witness collection or one event-log analysis.",
             )
             parser.add_argument(
                 "--enable-witness",
@@ -3318,6 +3343,52 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
+    if args.sample_ownership_grace_steps is None:
+        args.sample_ownership_grace_steps = 2 if args.ci_test else 10
+    if args.ci_test:
+        args.sample_ownership_check = True
+    if not args.sample_ownership_check:
+        return
+
+    multi_policy = (
+        args.train_backend == "megatron"
+        and args.megatron_config is not None
+        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
+    )
+    unsupported = [
+        reason
+        for condition, reason in (
+            (args.train_backend != "megatron", "the FSDP backend has no CPU witness"),
+            (is_lora_enabled(args), "LoRA training has no CPU witness"),
+            (args.multi_lora, "multi-LoRA training can replay samples"),
+            (multi_policy, "multi-policy training has separate witness lineages"),
+            (args.debug_train_only, "train-only mode has no issuing data source"),
+            (args.debug_rollout_only, "rollout-only mode has no trainer witness"),
+        )
+        if condition
+    ]
+    if unsupported:
+        args.sample_ownership_check = False
+        logger.warning("Disabled sample ownership checking: %s", "; ".join(unsupported))
+        return
+
+    if args.sample_ownership_grace_steps < 0:
+        raise ValueError("--sample-ownership-grace-steps must be non-negative")
+    if args.sample_ownership_check_interval_seconds <= 0:
+        raise ValueError("--sample-ownership-check-interval-seconds must be positive")
+    if args.sample_ownership_check_timeout_seconds <= 0:
+        raise ValueError("--sample-ownership-check-timeout-seconds must be positive")
+
+    if args.save_debug_event_data is None:
+        args.save_debug_event_data = os.path.join(
+            tempfile.gettempdir(),
+            "miles-sample-accounting",
+            args.run_uuid,
+            EVENTS_DIRNAME,
+        )
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -3992,6 +4063,8 @@ def miles_validate_args(args):
             )
 
     args.run_uuid = _resolve_run_uuid(args)
+
+    _resolve_sample_ownership_check(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True

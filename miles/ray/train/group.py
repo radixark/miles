@@ -3,6 +3,7 @@ import logging
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
+from miles.utils.audit_utils.sample_ownership.step_window import SampleOwnershipStepWindow
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 from miles.utils.data import RolloutDataPack, remove_train_output_refs
 from miles.utils.ft_utils.api_server.models import CellStatus
@@ -177,11 +179,14 @@ class TrainerController:
         """Do one rollout training"""
 
         async with self._cpu_witness_operation_lock:
-            return await self._train(
+            started_at = datetime.now(timezone.utc)
+            result = await self._train(
                 rollout_id=rollout_id,
                 rollout_data_pack=rollout_data_pack,
                 external_data=external_data,
             )
+            self._sample_ownership_steps.complete_step(started_at=started_at)
+            return result
 
     async def _train(
         self,
@@ -245,10 +250,7 @@ class TrainerController:
     async def log_current_cpu_witness(self, rollout_id: int) -> TrainerWitnessCohortPayload:
         if self._role != "actor":
             raise RuntimeError("CPU witness snapshots are only supported for the actor trainer")
-        timeout = max(
-            self.args.sample_ownership_grace_period_seconds,
-            self.args.sample_ownership_check_timeout_seconds,
-        )
+        timeout = self.args.sample_ownership_check_timeout_seconds
         async with asyncio.timeout(timeout):
             while True:
                 async with self._cpu_witness_operation_lock:
@@ -305,7 +307,12 @@ class TrainerController:
         event_logger = get_event_logger()
         event = event_logger.make_event(
             TrainerWitnessCohortEvent,
-            {"rollout_id": rollout_id, "cohort_id": cohort_id, "replica_ids": replica_ids},
+            {
+                "rollout_id": rollout_id,
+                "cohort_id": cohort_id,
+                "replica_ids": replica_ids,
+                "mature_before": self._sample_ownership_steps.mature_before(now=datetime.now(timezone.utc)),
+            },
         )
         return event.model_dump(mode="json")
 
@@ -400,6 +407,7 @@ class TrainerController:
         model, optimzier, local ckpt, etc.
         """
         self.args = args
+        self._sample_ownership_steps = SampleOwnershipStepWindow(args.sample_ownership_grace_steps)
         configure_logger(
             args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id, model_id=args.trainer_model_id)
         )

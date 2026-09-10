@@ -16,6 +16,8 @@ from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
+from miles.ray.specs.train import ACTOR_ROLE, compute_trainer_configs, create_trainer_controller_handle
+from miles.ray.wiring import get_backend_capability
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
@@ -28,9 +30,11 @@ from miles.utils import object_store
 from miles.utils.async_utils import maybe_await
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
-from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.sample_ownership.checker import check_current_samples
 from miles.utils.audit_utils.sample_ownership.flow import log_dropped_groups, record_data_source_issues
+from miles.utils.audit_utils.sample_ownership.store import SampleOwnershipEventStore
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
@@ -43,6 +47,7 @@ from miles.utils.multi_lora import EmptyBatchTimeoutError
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -75,6 +80,9 @@ class RolloutExecutor:
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
+        self._sample_ownership_task: asyncio.Task[None] | None = None
+        self._sample_ownership_store: SampleOwnershipEventStore | None = None
+        self._actor_controller: BaseWorkerHandle | None = None
 
     @init_once
     async def init(self) -> None:
@@ -133,6 +141,7 @@ class RolloutExecutor:
     # -------------------------- lifecycle -----------------------------
 
     async def dispose(self) -> None:
+        checker_error = await self._stop_sample_ownership_checker()
         if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
             await maybe_await(self.generate_rollout.dispose())
         if (close := getattr(self.data_source, "close", None)) is not None:
@@ -142,6 +151,8 @@ class RolloutExecutor:
             self._metric_checker.dispose()
         if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
             await maybe_await(self.eval_generate_rollout.dispose())
+        if checker_error is not None:
+            raise checker_error
 
     # -------------------------- data generation -----------------------------
 
@@ -157,8 +168,9 @@ class RolloutExecutor:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             try:
-                data, metadata, metrics = await self._get_rollout_data(
-                    rollout_id=rollout_id, trainer_model_id=trainer_model_id
+                data, metadata, metrics = await self._get_rollout_data_with_ownership_check(
+                    rollout_id=rollout_id,
+                    trainer_model_id=trainer_model_id,
                 )
             except EmptyBatchTimeoutError as e:
                 assert self.args.multi_lora, "only the multi-LoRA rollout waits for a non-empty batch"
@@ -301,6 +313,78 @@ class RolloutExecutor:
 
         return data, metadata, metrics
 
+    async def _get_rollout_data_with_ownership_check(
+        self,
+        *,
+        rollout_id: int,
+        trainer_model_id: str | None,
+    ) -> tuple[Any, Any, Any]:
+        if self._sample_ownership_task is None:
+            return await self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id)
+
+        rollout_task = asyncio.create_task(
+            self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id)
+        )
+        done, _ = await asyncio.wait(
+            (rollout_task, self._sample_ownership_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if self._sample_ownership_task in done:
+            rollout_task.cancel()
+            await asyncio.gather(rollout_task, return_exceptions=True)
+            await self._sample_ownership_task
+            raise AssertionError("the sample ownership checker completed without an error")
+        return await rollout_task
+
+    def _start_sample_ownership_checker(self) -> None:
+        if not self.args.sample_ownership_check or self._sample_ownership_task is not None:
+            return
+
+        [actor_config] = [config for config in compute_trainer_configs(self.args) if config.role == ACTOR_ROLE]
+        self._actor_controller = create_trainer_controller_handle(
+            self.args,
+            capability=get_backend_capability(self.args),
+            trainer_id=actor_config.trainer_id,
+        )
+        self._sample_ownership_store = SampleOwnershipEventStore(get_event_logger())
+        self._sample_ownership_task = asyncio.create_task(self._run_sample_ownership_checker())
+
+    async def _run_sample_ownership_checker(self) -> None:
+        assert self._actor_controller is not None
+        interval = self.args.sample_ownership_check_interval_seconds
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._run_one_sample_ownership_check()
+            except Exception:
+                if self.args.ci_test:
+                    raise
+                logger.exception("Sample ownership check failed")
+
+    async def _run_one_sample_ownership_check(self) -> None:
+        assert self._actor_controller is not None
+        assert self._sample_ownership_store is not None
+        await check_current_samples(
+            controller=self._actor_controller,
+            store=self._sample_ownership_store,
+            rollout_id=self.rollout_id,
+            timeout=self.args.sample_ownership_check_timeout_seconds,
+            event_source=str(self.args.save_debug_event_data),
+        )
+
+    async def _stop_sample_ownership_checker(self) -> BaseException | None:
+        if (task := self._sample_ownership_task) is None:
+            return None
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return None
+        except BaseException as error:
+            return error
+        return AssertionError("the sample ownership checker completed without an error")
+
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
@@ -320,6 +404,8 @@ class RolloutExecutor:
                 self.generate_rollout.load(rollout_id)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.load(rollout_id)
+        event_logger_checkpoint.restore(self.args)
+        self._start_sample_ownership_checker()
 
     # -------------------------- misc APIs -----------------------------
 

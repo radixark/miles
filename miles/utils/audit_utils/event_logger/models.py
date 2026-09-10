@@ -189,6 +189,7 @@ class TrainerWitnessCohortEvent(EventBase):
     rollout_id: int
     cohort_id: str
     replica_ids: list[str]
+    mature_before: datetime | None = None
 
 
 class TrainerWitnessCohortPayload(TypedDict):
