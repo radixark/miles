@@ -1,14 +1,15 @@
 ---
 title: DeepSeek
 sidebarTitle: Overview
-description: Miles recipes for the DeepSeek family — V4 Flash, V4 Pro, and V3.2.
+description: Miles recipes for the DeepSeek family — V4.1, V4 Flash, V4 Pro, and V3.2.
 ---
-Miles ships recipes for the DeepSeek family across two generations. **DeepSeek-V4** pairs sparse multi-head latent attention with a learned indexer, KV compressors, and hyper-connection routing. **DeepSeek-V3.2** keeps the V3 MoE and MLA shapes and adds DeepSeek Sparse Attention (DSA), the same attention implementation the GLM-5 recipes use. **DeepSeek-V3** itself remains available through `scripts/run_deepseek.py`.
+Miles ships recipes for the DeepSeek family across three generations. **DeepSeek-V4.1** extends the V4 stack with cross-layer shared attention sources, two-level candidate selection and an engram n-gram memory, and trains from a BF16 checkpoint with the optimizer state streamed to NVMe. **DeepSeek-V4** pairs sparse multi-head latent attention with a learned indexer, KV compressors, and hyper-connection routing. **DeepSeek-V3.2** keeps the V3 MoE and MLA shapes and adds DeepSeek Sparse Attention (DSA), the same attention implementation the GLM-5 recipes use. **DeepSeek-V3** itself remains available through `scripts/run_deepseek.py`.
 
 ## Variants
 
 | Model | Active / Total | HF ID | Recipe |
 |---|---|---|---|
+| DeepSeek-V4.1 Flash | 6 of 384 experts / ~750 B | `deepseek-ai/DeepSeek-V4.1-Flash`; image `radixark/miles:deepseek-v41` | [deepseek-v4-1-flash](/models/deepseek/deepseek-v4-1-flash) |
 | DeepSeek-V4-Pro | 49 B / 1.6 T | TBA | [deepseek-v4-pro](/models/deepseek/deepseek-v4-pro) |
 | DeepSeek-V4-Flash | 13 B / 284 B | `sgl-project/DeepSeek-V4-Flash-FP8` | [deepseek-v4-flash](/models/deepseek/deepseek-v4-flash) |
 | DeepSeek-V3.2 | 37 B / 671 B | `deepseek-ai/DeepSeek-V3.2` | [deepseek-v3-2](/models/deepseek/deepseek-v3-2) |
