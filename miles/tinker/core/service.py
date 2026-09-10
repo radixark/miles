@@ -96,6 +96,8 @@ class TinkerService:
         self._batch_counter = 0
         # discarded slot gradients must fail the next optimizer step
         self._poisoned_slots: dict[int, tuple[str, str]] = {}
+        # why each evicted model died, so later requests get the reason instead of "unknown model"
+        self._eviction_reasons: dict[str, str] = {}
 
     # -------- control plane --------
 
@@ -175,6 +177,9 @@ class TinkerService:
     def get_model(self, tenant: str, model_id: str) -> ModelRecord:
         record = self.models.get(model_id)
         if record is None:
+            reason = self._eviction_reasons.get(model_id)
+            if reason is not None:
+                raise UserInputError(f"model {model_id!r} was unloaded: {reason}")
             raise UserInputError(f"unknown model {model_id!r}")
         if record.tenant != tenant:
             raise OwnershipError(f"model {model_id} does not belong to this tenant")
@@ -399,6 +404,9 @@ class TinkerService:
         record = self.models.pop(model_id, None)
         if record is None:
             return
+        self._eviction_reasons[model_id] = error
+        while len(self._eviction_reasons) > 4 * self.config.n_slots:
+            self._eviction_reasons.pop(next(iter(self._eviction_reasons)))
         # the poison belongs to the evicted model's gradient window, not the slot
         self._poisoned_slots.pop(record.slot, None)
         stream = self.planner.stream(model_id)
