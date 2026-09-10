@@ -199,7 +199,9 @@ class WeightUpdater:
     def _publish_weight_version(self, checksums: dict | None) -> None:
         protocol = self.protocol
         if self._cell_session is not None:
-            self._cell_session.end()
+            self._cell_session.end(
+                expected_base_weight_checksums_by_cell=protocol.expected_base_weight_checksums_by_cell
+            )
             self._cell_session.set_weight_version(self.weight_version)
             return
 

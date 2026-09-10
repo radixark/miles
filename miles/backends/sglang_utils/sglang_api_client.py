@@ -408,10 +408,17 @@ class SGLangApiClient:
         adapter-only session (no quant unpack; base tensors rejected)."""
         return await self._make_request("begin_weight_update", {"selector": selector, "sync_base": sync_base})
 
-    async def end_weight_update(self, expected_lora_checksums=None):
+    async def end_weight_update(
+        self,
+        expected_lora_checksums: dict[str, dict[str, str]] | None = None,
+        expected_base_weight_checksums: dict[str, dict[str, str]] | None = None,
+    ) -> dict:
         """Close the weight-update session: re-finalize base weights (sync_base
         sessions) and apply the streamed LoRA stash."""
-        return await self._make_request("end_weight_update", {"expected_lora_checksums": expected_lora_checksums})
+        payload = {"expected_lora_checksums": expected_lora_checksums}
+        if expected_base_weight_checksums is not None:
+            payload["expected_base_weight_checksums"] = expected_base_weight_checksums
+        return await self._make_request("end_weight_update", payload)
 
     async def update_weight_version(self, weight_version: str, abort_all_requests: bool = False):
         return await self._make_request(

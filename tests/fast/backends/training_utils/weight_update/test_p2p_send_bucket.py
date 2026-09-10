@@ -46,6 +46,7 @@ def _send_one_bucket(p2p, *, engine_ranks: list[int], cell_ids: list[str]) -> li
     cell_updaters = {cell_id: _RecordingCellUpdater(log, cell_id) for cell_id in cell_ids}
     ready_hf_tensors = [("hf.w", torch.zeros(1))]
     protocol = SimpleNamespace(
+        args=SimpleNamespace(save_inference_engine_weight_checksum=False),
         is_sender=True,
         _shared_param_mapper=object(),
         _shared_params_dict={},
@@ -140,6 +141,7 @@ def _send_one_bucket_with_an_errored_cell(p2p, *, engine_ranks: list[int]) -> li
     cell_updaters = [_ErroredCellUpdater(log, "cell-dead"), _RecordingCellUpdater(log, "cell-live")]
     ready_hf_tensors = [("hf.w", torch.zeros(1))]
     protocol = SimpleNamespace(
+        args=SimpleNamespace(save_inference_engine_weight_checksum=False),
         is_sender=True,
         _shared_param_mapper=object(),
         _shared_params_dict={},
@@ -201,6 +203,7 @@ def _send_one_bucket_with_a_failing_wait(p2p, *, engine_ranks: list[int]) -> lis
     healthy = _RecordingCellUpdater(log, "cell-live")
     ready_hf_tensors = [("hf.w", torch.zeros(1))]
     protocol = SimpleNamespace(
+        args=SimpleNamespace(save_inference_engine_weight_checksum=False),
         is_sender=True,
         _shared_param_mapper=object(),
         _shared_params_dict={},

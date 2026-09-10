@@ -66,6 +66,21 @@ def client():
     return SGLangApiClient(server_url=SERVER_URL)
 
 
+class TestBaseWeightChecksumManifest:
+    async def test_rank_manifests_reach_the_receiver_without_flattening(
+        self, client: SGLangApiClient, recorder: _Recorder
+    ) -> None:
+        """Per-rank manifests survive HTTP serialization with the receiver's protocol field name."""
+        manifest = {"0": {"w": "rank-zero"}, "1": {"w": "rank-one"}}
+        await client.end_weight_update(expected_base_weight_checksums=manifest)
+        [(verb, url, kwargs)] = recorder.calls
+        assert (verb, url) == ("post", f"{SERVER_URL}/end_weight_update")
+        assert kwargs["json"] == {
+            "expected_lora_checksums": None,
+            "expected_base_weight_checksums": manifest,
+        }
+
+
 async def test_post_methods_hit_the_server_url_with_expected_payload(client, recorder):
     """Every POST-based method targets ``<server_url>/<endpoint>`` and sends the documented payload."""
     await client.update_weights_from_tensor(serialized_named_tensors=["a"], load_format="direct", flush_cache=True)

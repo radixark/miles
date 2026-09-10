@@ -25,32 +25,45 @@ class _PerCellEngineSession:
 
     def pause(self) -> None:
         mode = self.args.pause_generation_mode
-        self._call("pause_generation", lambda client: client.pause_generation(mode=mode))
+        self._call("pause_generation", lambda cell_id, client: client.pause_generation(mode=mode))
         if mode != "in_place":
-            self._call("flush_cache", lambda client: client.flush_cache())
+            self._call("flush_cache", lambda cell_id, client: client.flush_cache())
 
     def begin(self, *, selector: str, sync_base: bool) -> None:
         self._call(
             "begin_weight_update",
-            lambda client: client.begin_weight_update(selector=selector, sync_base=sync_base),
+            lambda cell_id, client: client.begin_weight_update(selector=selector, sync_base=sync_base),
         )
 
-    def end(self) -> None:
-        self._call("end_weight_update", lambda client: client.end_weight_update())
+    def end(
+        self, *, expected_base_weight_checksums_by_cell: dict[str, dict[str, dict[str, str]]] | None = None
+    ) -> None:
+        if expected_base_weight_checksums_by_cell is None:
+            self._call("end_weight_update", lambda cell_id, client: client.end_weight_update())
+            return
+        assert set(expected_base_weight_checksums_by_cell) == set(
+            self._health.healthy_cell_ids
+        ), "P2P checksum manifests must cover exactly the healthy inference cells"
+        self._call(
+            "end_weight_update",
+            lambda cell_id, client: client.end_weight_update(
+                expected_base_weight_checksums=expected_base_weight_checksums_by_cell[cell_id]
+            ),
+        )
 
     def set_weight_version(self, weight_version: int) -> None:
         self._call(
             "update_weight_version",
-            lambda client: client.update_weight_version(weight_version=str(weight_version)),
+            lambda cell_id, client: client.update_weight_version(weight_version=str(weight_version)),
         )
 
     def resume(self) -> None:
-        self._call("continue_generation", lambda client: client.continue_generation())
+        self._call("continue_generation", lambda cell_id, client: client.continue_generation())
 
-    def _call(self, op: str, make_request: Callable[[SGLangApiClient], Coroutine]) -> None:
+    def _call(self, op: str, make_request: Callable[[str, SGLangApiClient], Coroutine]) -> None:
         deadline = time.monotonic() + self._request_timeout
         futures = {
-            cell_id: async_utils.submit(make_request(self._clients_by_cell_id[cell_id]))
+            cell_id: async_utils.submit(make_request(cell_id, self._clients_by_cell_id[cell_id]))
             for cell_id in self._health.healthy_cell_ids
         }
 

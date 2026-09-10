@@ -27,10 +27,12 @@ class _RecordingApiClient:
         self._calls = calls
         self._cell_id = cell_id
         self._failing_method = failing_method
+        self.requests: dict[str, dict] = {}
 
     def __getattr__(self, name: str):
         async def method(**_kwargs):
             self._calls.append((self._cell_id, name))
+            self.requests[name] = _kwargs
             if name == self._failing_method:
                 raise ConnectionError(f"{self._cell_id} is unreachable")
             return {"success": True}
@@ -42,6 +44,7 @@ class _FakeCellIsolatingProtocol:
     use_weight_update_session = True
     supports_lora = False
     needs_base_resync_for_lora = False
+    expected_base_weight_checksums_by_cell = None
 
     def __init__(self) -> None:
         self.args = None
@@ -122,6 +125,25 @@ def _run(
 
 class TestPerCellSessionFrame:
     """The driver runs the engine session of every assigned cell independently."""
+
+    def test_the_updater_passes_each_cells_manifest_to_its_receiver(self) -> None:
+        """Publication uses the protocol's manifest instead of silently performing an unchecked end call."""
+        calls: list[tuple[str, str]] = []
+        protocol = _FakeCellIsolatingProtocol()
+        protocol.expected_base_weight_checksums_by_cell = {
+            "cell-0": {"0": {"w": "first"}},
+            "cell-1": {"0": {"w": "second"}},
+        }
+        engines = [_RecordingApiClient(calls, cell_id) for cell_id in _CELL_IDS]
+        updater = _make_updater(engines, protocol)
+
+        report = _run(updater)
+
+        assert report.updated_cell_ids == tuple(_CELL_IDS)
+        for cell_id, engine in zip(_CELL_IDS, engines, strict=True):
+            assert engine.requests["end_weight_update"] == {
+                "expected_base_weight_checksums": protocol.expected_base_weight_checksums_by_cell[cell_id]
+            }
 
     def test_every_healthy_cell_walks_the_whole_frame(self) -> None:
         """The per-cell path replaces the fleet-wide one, so it must still open and close every session."""

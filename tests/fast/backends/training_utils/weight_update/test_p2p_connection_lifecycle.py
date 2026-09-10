@@ -37,7 +37,12 @@ def _make_protocol(p2p, *, gathered_dp_rank: int = 0):
     ):
         dist_mock.get_rank.return_value = 0
         protocol = p2p.UpdateWeightP2P(
-            Namespace(hf_checkpoint="/ckpt", update_weight_engine_request_timeout=30.0, p2p_transfer_timeout=30.0)
+            Namespace(
+                hf_checkpoint="/ckpt",
+                update_weight_engine_request_timeout=30.0,
+                p2p_transfer_timeout=30.0,
+                save_inference_engine_weight_checksum=False,
+            )
         )
     protocol.transfer_plan._gathered_dp_rank = gathered_dp_rank
     return protocol
@@ -84,7 +89,7 @@ def _connect(
         engine_count = 1 + max((engine_ind for engine_ind, _rank in pairs), default=-1)
     protocol.connect(
         [object()] * engine_count,
-        None,
+        [1 + max((rank for engine, rank in pairs if engine == index), default=0) for index in range(engine_count)],
         None,
         [f"cell-{index}" for index in range(engine_count)],
         None,

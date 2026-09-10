@@ -43,8 +43,8 @@ class _FakeEngine:
     async def begin_weight_update(self, selector: str, sync_base: bool):
         return await self._answer("begin_weight_update", (selector, sync_base))
 
-    async def end_weight_update(self):
-        return await self._answer("end_weight_update")
+    async def end_weight_update(self, expected_base_weight_checksums: dict[str, dict[str, str]] | None = None):
+        return await self._answer("end_weight_update", expected_base_weight_checksums)
 
     async def update_weight_version(self, weight_version: str):
         return await self._answer("update_weight_version", weight_version)
@@ -70,6 +70,35 @@ def _fleet(log: list[tuple], cell_ids: list[str], **kwargs) -> dict[str, _FakeEn
 
 class TestFailureAttribution:
     """A cell that refuses or never answers must be the only cell that loses the update."""
+
+    def test_rejected_checksum_manifest_prevents_only_that_cells_publication(self) -> None:
+        """Each engine receives its own manifest and a rejecting engine is neither published nor resumed."""
+        log: list[tuple] = []
+        engines = _fleet(log, ["cell-0", "cell-1"])
+        engines["cell-0"] = _FakeEngine(log, "cell-0", unsuccessful={"end_weight_update"})
+        health = InferenceCellHealth(["cell-0", "cell-1"])
+        session = _session(engines, health)
+        manifests = {"cell-0": {"0": {"w": "first"}}, "cell-1": {"0": {"w": "second"}}}
+
+        session.end(expected_base_weight_checksums_by_cell=manifests)
+        session.set_weight_version(7)
+        session.resume()
+
+        assert {cell_id: detail for op, cell_id, detail in log if op == "end_weight_update"} == manifests
+        assert health.errored_cell_ids == ["cell-0"]
+        assert [(op, cell_id) for op, cell_id, detail in log if op != "end_weight_update"] == [
+            ("update_weight_version", "cell-1"),
+            ("continue_generation", "cell-1"),
+        ]
+
+    def test_missing_manifest_is_rejected_before_any_engine_is_finalized(self) -> None:
+        """An omitted target must not silently fall back to unchecked publication."""
+        log: list[tuple] = []
+        engines = _fleet(log, ["cell-0", "cell-1"])
+        session = _session(engines, InferenceCellHealth(["cell-0", "cell-1"]))
+        with pytest.raises(AssertionError, match="cover exactly the healthy inference cells"):
+            session.end(expected_base_weight_checksums_by_cell={"cell-0": {"0": {"w": "first"}}})
+        assert log == []
 
     def test_a_transport_error_only_errors_its_own_cell(self) -> None:
         """One dead engine must not abort the session frame of the cells that are still serving."""

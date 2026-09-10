@@ -34,6 +34,7 @@ class WeightTransferProtocol(ABC):
         self.inference_cell_health: InferenceCellHealth | None = None
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
+        self.expected_base_weight_checksums_by_cell: dict[str, dict[str, dict[str, str]]] | None = None
 
     @abstractmethod
     def connect(
