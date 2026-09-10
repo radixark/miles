@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from miles.utils.test_utils.fault_hooks import FaultHookCommand
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.cell_operations.base import (
@@ -436,6 +437,21 @@ class _Deletion:
         self.namespace = namespace
         self.uid = uid
         self.resource_version = resource_version
+
+
+class TestFaultHookIdentity:
+    @pytest.mark.parametrize(
+        "changes", [{"workers_hash": "replacement"}, {"pod_uid": "replacement"}, {"boot_uuid": None}]
+    )
+    async def test_stale_or_unpinned_hook_target_is_rejected(self, changes: dict[str, str | None]) -> None:
+        """No RPC is issued for an unpinned or replaced Kubernetes worker."""
+        provider = IncarnationProvider(pods=[make_pod("worker", uid="pod-1")])
+        operations = KubernetesCellOperations(provider=provider, namespace="test")
+        target = FaultTarget(
+            cell_id="actor-0", sub_index=0, workers_hash="hash-1", pod_uid="pod-1", boot_uuid="boot-1"
+        ).model_copy(update=changes)
+        with pytest.raises(StaleFaultTargetError):
+            await operations.control_fault_hook(target=target, command=FaultHookCommand(operation="inspect"))
 
 
 class IncarnationProvider(FakeProvider):

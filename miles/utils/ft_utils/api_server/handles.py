@@ -5,6 +5,7 @@ from typing import Protocol
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
+from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookRecord
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -93,6 +94,11 @@ class _CellHandler:
 
     async def observe_fault_target(self, cell_id: str, *, sub_index: int) -> FaultTarget:
         return await self._operations.observe_fault_target(cell_id=cell_id, sub_index=sub_index)
+
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> str | FaultHookRecord:
+        if self.cell_type != "actor":
+            raise NotImplementedError("Named fault hooks currently target trainer workers")
+        return await self._operations.control_fault_hook(target=target, command=command)
 
     async def inject_fault(
         self,

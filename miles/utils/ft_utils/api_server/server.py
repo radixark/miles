@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -13,9 +14,19 @@ from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.fault_receipts import FaultExitSubmission, FaultReceipt, FaultReceiptRegistry
 from miles.utils.ft_utils.api_server.handles import _CellHandler
-from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
+from miles.utils.ft_utils.api_server.models import (
+    Cell,
+    CellList,
+    CellPatch,
+    FaultHookControl,
+    FaultInjection,
+    K8sStatus,
+    _OkResponse,
+)
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.misc import get_current_node_ip
+from miles.utils.test_utils.fault_hooks import FaultHookRecord
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
@@ -140,6 +151,42 @@ def _create_api_app(registry: _CellRegistry, *, receipt_url: str | None = None) 
             raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(err)) from err
         except NotImplementedError as err:
             raise _K8sError(status_code=400, reason="BadRequest", message=str(err)) from err
+
+    @app.post("/api/v1/cells/{name}/fault-hook")
+    async def control_fault_hook(name: str, body: FaultHookControl) -> str | FaultHookRecord:
+        if body.target.cell_id != name:
+            raise _K8sError(status_code=400, reason="BadRequest", message="Fault target does not match route")
+        handler = await _resolve(name)
+        command = body.command
+        try:
+            if (request := command.request) is not None:
+                request = request.model_copy(update={"receipt_url": receipt_url})
+                command = command.model_copy(update={"request": request})
+                if command.operation == "arm":
+                    fault_receipts.register(
+                        request_id=request.request_id,
+                        target=body.target,
+                        mode=FailureMode(request.mode),
+                        operation_key=request.model_dump_json(exclude={"receipt_url"}),
+                    )
+            return await asyncio.wait_for(
+                handler.control_fault_hook(target=body.target, command=command), timeout=15.0
+            )
+        except StaleFaultTargetError as error:
+            raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(error)) from error
+        except NotImplementedError as error:
+            raise _K8sError(status_code=400, reason="BadRequest", message=str(error)) from error
+        except KeyError as error:
+            raise _K8sError(status_code=404, reason="NotFound", message="Unknown fault hook request") from error
+        except ValueError as error:
+            raise _K8sError(status_code=409, reason="Conflict", message=str(error)) from error
+        except (TimeoutError, asyncio.TimeoutError) as error:
+            raise _K8sError(status_code=504, reason="Timeout", message="Fault hook outcome is unknown") from error
+        except Exception as error:
+            logger.exception("Failed to control fault hook in cell %s", name)
+            raise _K8sError(
+                status_code=500, reason="InternalError", message="Fault hook outcome is unknown"
+            ) from error
 
     @app.post("/api/v1/cells/{name}/inject-fault")
     async def inject_fault(name: str, body: FaultInjection) -> _OkResponse:

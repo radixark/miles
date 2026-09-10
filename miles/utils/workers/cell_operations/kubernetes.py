@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookRecord
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import (
     TERMINATE_INCARNATION_TIMEOUT_SECONDS,
@@ -150,6 +151,25 @@ class KubernetesCellOperations(BaseCellOperations):
             boot_uuid=boot_uuid,
             pod_uid=pod_uid,
         )
+
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> str | FaultHookRecord:
+        await self._ensure_watching()
+        incarnation = self._provider.cell_incarnation(target.cell_id)
+        if (
+            not target.boot_uuid
+            or incarnation is None
+            or incarnation.workers_hash != target.workers_hash
+            or target.pod_uid not in {pod.uid for pod in incarnation.pods}
+        ):
+            raise StaleFaultTargetError("Fault hook target no longer matches the observed pods")
+        (infos,) = self._provider.get_worker_infos(cell_ids=[target.cell_id])
+        if not 0 <= target.sub_index < len(infos):
+            raise StaleFaultTargetError("Fault hook worker no longer exists")
+        handle = build_rpc_handle_of_worker_info(infos[target.sub_index], expected_boot_uuid=target.boot_uuid)
+        try:
+            return await asyncio.wait_for(handle.control_fault_hook(command=command), timeout=10.0)
+        except ServerRestartedError as error:
+            raise StaleFaultTargetError("Fault hook worker changed its boot identity") from error
 
     async def inject_fault(
         self,

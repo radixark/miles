@@ -1,3 +1,4 @@
+from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookRecord, FaultHookRegistry
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -13,6 +14,15 @@ class PinnedCellOperations:
         self.modes: list[FailureMode] = []
         self.request_ids: list[str | None] = []
         self.receipt_urls: list[str | None] = []
+        self.hooks = FaultHookRegistry()
+
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> str | FaultHookRecord:
+        if target != self.target:
+            raise StaleFaultTargetError("Target changed")
+        result = self.hooks.control(command)
+        if self.dispatch_error is not None:
+            raise self.dispatch_error
+        return result
 
     async def cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         return {

@@ -4,11 +4,18 @@ try:
     from enum import StrEnum
 except ImportError:
     from backports.strenum import StrEnum
+
 from typing import Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.test_utils.fault_hooks import FaultHookCommand
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import FaultTarget
+
+
+class FaultHookControl(StrictBaseModel):
+    target: FaultTarget
+    command: FaultHookCommand
 
 
 class TriState(StrEnum):

@@ -19,6 +19,7 @@ from miles.utils.http_utils import wrap_ipv6
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
+from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookRecord
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
@@ -138,6 +139,12 @@ class RayWorkerManager:
         if not cell.alive or not 0 <= sub_index < len(cell.actors):
             raise StaleFaultTargetError(f"Cell {cell_id} has no live worker at index {sub_index}")
         return FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash=cell.get_info().workers_hash)
+
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> str | FaultHookRecord:
+        if self.observe_fault_target(cell_id=target.cell_id, sub_index=target.sub_index) != target:
+            raise StaleFaultTargetError("Fault hook target no longer matches the observed worker")
+        actor = self._find_cell(target.cell_id).actors[target.sub_index].actor_handle
+        return await asyncio.wait_for(actor.control_fault_hook.remote(command=command), timeout=10.0)
 
     def inject_fault(
         self,

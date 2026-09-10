@@ -28,6 +28,7 @@ class FaultReceipt(FaultExitSubmission):
 class _Request:
     target: FaultTarget
     mode: FailureMode
+    operation_key: str
     receipt: FaultReceipt | None = None
 
 
@@ -35,14 +36,16 @@ class FaultReceiptRegistry:
     def __init__(self) -> None:
         self._requests: dict[str, _Request] = {}
 
-    def register(self, *, request_id: str, target: FaultTarget, mode: FailureMode) -> bool:
+    def register(
+        self, *, request_id: str, target: FaultTarget, mode: FailureMode, operation_key: str = "immediate"
+    ) -> bool:
         if not request_id:
             raise ValueError("Fault request ID must not be empty")
         if (existing := self._requests.get(request_id)) is not None:
-            if (existing.target, existing.mode) != (target, mode):
+            if (existing.target, existing.mode, existing.operation_key) != (target, mode, operation_key):
                 raise ValueError("Fault request ID was reused for another injection")
             return False
-        self._requests[request_id] = _Request(target=target, mode=mode)
+        self._requests[request_id] = _Request(target=target, mode=mode, operation_key=operation_key)
         return True
 
     def publish(self, *, request_id: str, submission: FaultExitSubmission) -> FaultReceipt:

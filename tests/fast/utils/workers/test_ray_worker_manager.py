@@ -12,6 +12,7 @@ from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, READINESS_METHOD, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
+from miles.utils.test_utils.fault_hooks import FaultHookCommand
 from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
@@ -2004,6 +2005,17 @@ class TestSuspendedCellInfos:
 
 
 class TestInjectFault:
+    async def test_restarted_cell_rejects_hook_control(self, fake_ray_cluster: FakeRayCluster) -> None:
+        """A hook inspection cannot follow a stale cell name to a replacement process."""
+        manager = await _launch([_make_spec("engine")])
+        target = manager.observe_fault_target("engine-00000", sub_index=0)
+        await manager.stop_cells(["engine-00000"])
+        await manager.start_cells(["engine-00000"])
+
+        with pytest.raises(StaleFaultTargetError):
+            await manager.control_fault_hook(target=target, command=FaultHookCommand(operation="inspect"))
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
+
     async def test_restarted_cell_rejects_the_previously_observed_target(
         self, fake_ray_cluster: FakeRayCluster
     ) -> None:

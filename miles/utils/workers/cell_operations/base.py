@@ -6,7 +6,7 @@ import enum
 from pydantic import Field
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-
+from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookRecord
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.worker_provider.base import CellInfo
 
@@ -69,3 +69,6 @@ class BaseCellOperations(abc.ABC):
 
     async def observe_fault_target(self, *, cell_id: str, sub_index: int) -> FaultTarget:
         raise NotImplementedError("This backend does not expose fault target identities")
+
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> str | FaultHookRecord:
+        raise NotImplementedError("This backend does not expose fault hooks")

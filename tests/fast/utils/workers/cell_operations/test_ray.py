@@ -7,8 +7,13 @@ from typing import Any
 
 import pytest
 
+from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookRequest
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import CellTerminationNotConfirmedError, CellTerminationOutcome
+from miles.utils.workers.cell_operations.base import (
+    CellTerminationNotConfirmedError,
+    CellTerminationOutcome,
+    FaultTarget,
+)
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 _TRAINER_CELL_ID = "trainer-engine-actor-00001"
@@ -35,6 +40,7 @@ class _RecordingWorkerManagerHandle:
         self.start_cells = _RecordingRemoteMethod(name="start_cells", calls=self.calls)
         self.stop_cells = _RecordingRemoteMethod(name="stop_cells", calls=self.calls)
         self.inject_fault = _RecordingRemoteMethod(name="inject_fault", calls=self.calls)
+        self.control_fault_hook = _RecordingRemoteMethod(name="control_fault_hook", calls=self.calls)
         self.stop_cell_incarnation = _RecordingRemoteMethod(name="stop_cell_incarnation", calls=self.calls)
 
 
@@ -54,6 +60,20 @@ def _make_fixture() -> _Fixture:
 
 class TestRayCellOperationsDisruptiveOperations:
     """Every cell kind is stopped and crashed through the worker manager, with no controller in the path."""
+
+    async def test_hook_control_preserves_incarnation_and_cancellation_request(self) -> None:
+        """The Ray bridge forwards the complete cancellation rather than issuing a new arm."""
+        fixture = _make_fixture()
+        target = FaultTarget(cell_id=_TRAINER_CELL_ID, sub_index=1, workers_hash="old-generation")
+        command = FaultHookCommand(
+            operation="cancel",
+            request=FaultHookRequest(
+                request_id="cancel-me", instance_id="old-process", hook="trainer_before_all_gather", mode="exit"
+            ),
+        )
+        fixture.worker_manager.control_fault_hook.result = "response"
+        assert await fixture.operations.control_fault_hook(target=target, command=command) == "response"
+        assert fixture.worker_manager.calls == [("control_fault_hook", (), {"target": target, "command": command})]
 
     async def test_a_rollout_cells_suspend_reaches_the_worker_manager(self) -> None:
         """Routing it through the inference controller would deadlock against the weight-update lock."""

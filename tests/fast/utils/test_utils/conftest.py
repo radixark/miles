@@ -9,7 +9,18 @@ from typing import Any
 
 import pytest
 
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.test_utils import fault_hooks
+from miles.utils.test_utils.fault_hooks import FaultHookRegistry
 from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer
+
+
+@pytest.fixture
+def fault_hook_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FaultHookRegistry:
+    event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main"))
+    monkeypatch.setattr(fault_hooks, "get_event_logger", lambda: event_logger)
+    return FaultHookRegistry()
 
 
 class RecordingSessionBackend:

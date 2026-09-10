@@ -1,12 +1,16 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from tests.fast.utils.ft_utils.api_server.conftest import PinnedCellOperations
 
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.ft_utils.api_server import server
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
+from miles.utils.test_utils import fault_hooks
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.worker_provider.base import CellInfo
 
@@ -23,6 +27,65 @@ class FakeCellOperations:
 
     async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
         pass
+
+
+class TestFaultHookApi:
+    @pytest.mark.parametrize("cancel_first", [False, True])
+    async def test_hook_control_round_trip_keeps_cancellation_and_receipts_separate(
+        self, cancel_first: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """HTTP retries preserve cancellation without manufacturing a fault receipt."""
+        event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main"))
+        monkeypatch.setattr(fault_hooks, "get_event_logger", lambda: event_logger)
+        operations = PinnedCellOperations()
+        app = server._create_api_app(
+            _CellRegistry(
+                [_CellHandler(cell_type="actor", operations=operations, controllers=[], pool_ids=["actor"])]
+            ),
+            receipt_url="http://witness:18080",
+        )
+        target = operations.target.model_dump(mode="json")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://control") as client:
+            inspected = await client.post(
+                "/api/v1/cells/actor-0/fault-hook", json={"target": target, "command": {"operation": "inspect"}}
+            )
+            assert inspected.status_code == 200
+            request = {
+                "request_id": "hook-1",
+                "instance_id": inspected.json(),
+                "hook": "trainer_before_all_gather",
+                "mode": "sigkill",
+                "receipt_url": "http://untrusted-override",
+            }
+            for operation in ["cancel", "arm", "read"] if cancel_first else ["arm", "cancel", "arm", "read"]:
+                result = await client.post(
+                    "/api/v1/cells/actor-0/fault-hook",
+                    json={"target": target, "command": {"operation": operation, "request": request}},
+                )
+                assert result.status_code == 200
+            assert result.json()["status"] == "cancelled"
+            assert result.json()["request"]["receipt_url"] == "http://witness:18080"
+            assert (await client.get("/api/v1/fault-receipts/hook-1")).json() is None
+            duplicate = await client.post(
+                "/api/v1/cells/actor-0/inject-fault",
+                json={"expected_target": target, "sub_index": 0, "mode": "sigkill", "request_id": "hook-1"},
+            )
+            assert duplicate.status_code == 409
+            assert operations.dispatched == []
+
+    async def test_replacement_is_rejected_before_hook_control(self) -> None:
+        """A stale cell observation cannot control a replacement worker's hooks."""
+        operations = PinnedCellOperations()
+        target = operations.target.model_dump(mode="json")
+        operations.target = operations.target.model_copy(update={"boot_uuid": "new-boot"})
+        app = server._create_api_app(
+            _CellRegistry([_CellHandler(cell_type="actor", operations=operations, controllers=[], pool_ids=["actor"])])
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://control") as client:
+            response = await client.post(
+                "/api/v1/cells/actor-0/fault-hook", json={"target": target, "command": {"operation": "inspect"}}
+            )
+        assert response.status_code == 412
 
 
 class TestStartApiServer:
