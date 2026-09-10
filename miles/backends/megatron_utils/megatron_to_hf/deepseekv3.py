@@ -149,7 +149,7 @@ def convert_deepseekv3_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.shared_head.norm.weight", param)]
         else:
             name = f"module.module.decoder.layers.{layer_idx}.{rest}"
-            name = name.replace("transformer_layer.", "")
+            name = name.replace("transformer_layer.", "").replace("mtp_model_layer.", "")
             return convert_deepseekv3_to_hf(args, name, param)
 
     raise ValueError(f"Unknown parameter name: {name}")

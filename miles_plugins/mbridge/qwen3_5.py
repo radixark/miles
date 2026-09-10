@@ -307,9 +307,10 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         if name in direct_name_mapping:
             return [direct_name_mapping[name]]
 
-        if "transformer_layer" in name:
+        _mtp_inner = next((p for p in ("transformer_layer", "mtp_model_layer") if p in name), None)
+        if _mtp_inner is not None:
             proxy_name = name.replace(
-                f"mtp.layers.{mtp_layer_idx}.transformer_layer",
+                f"mtp.layers.{mtp_layer_idx}.{_mtp_inner}",
                 f"decoder.layers.{mtp_layer_idx}",
             )
 

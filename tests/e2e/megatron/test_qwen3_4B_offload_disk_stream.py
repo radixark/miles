@@ -32,7 +32,6 @@ register_rocm_ci(
     est_time=600,
     suite="stage-c-4-gpu-mi350",
     labels=["miles-plugin", "amd"],
-    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -76,12 +75,20 @@ def _assert_streamed():
     logs = glob.glob("/tmp/ray/session_latest/logs/worker-*")
     assert logs, "no Ray worker logs to check for the streaming path"
 
+    initialized = set()
     streamed = set()
     for path in logs:
         with open(path, errors="ignore") as f:
-            if any("NVMe streaming step:" in line for line in f):
+            text = f.read()
+            if "NVMe optimizer main-param initialization:" in text:
+                initialized.add(path)
+            if "NVMe streaming step:" in text:
                 streamed.add(path)
 
+    assert len(initialized) == NUM_GPUS, (
+        f"expected {NUM_GPUS} ranks to initialize main params through NVMe, "
+        f"saw {len(initialized)}: {sorted(initialized)}"
+    )
     assert (
         len(streamed) == NUM_GPUS
     ), f"expected {NUM_GPUS} ranks to log streaming steps, saw {len(streamed)}: {sorted(streamed)}"

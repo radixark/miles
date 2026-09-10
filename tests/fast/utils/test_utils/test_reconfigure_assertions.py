@@ -7,7 +7,9 @@ from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.test_utils.reconfigure_assertions import (
+    MIN_SOAK_INJECTIONS,
     ReconfigureInfo,
+    assert_min_soak_injections,
     assert_reconfigure_events,
     assert_soak_reconfigure_events,
     load_reconfigure_events,
@@ -93,6 +95,17 @@ class TestAssertReconfigureEvents:
 
         with pytest.raises(AssertionError, match="sequence mismatch"):
             assert_reconfigure_events(tmp_path, expected=[_HEALING_EXPECTED])
+
+
+class TestAssertMinSoakInjections:
+    def test_minimum_injection_failure_names_the_caller_context(self) -> None:
+        """The standalone check reports which soak (e.g. a rollout-only one) fell short, not just that one did."""
+        with pytest.raises(AssertionError, match="rollout-only soak on engine cells"):
+            assert_min_soak_injections(1, context="rollout-only soak on engine cells")
+
+    def test_reaching_the_minimum_injection_count_passes(self) -> None:
+        """Exactly the required number of successful injections satisfies the standalone check."""
+        assert_min_soak_injections(MIN_SOAK_INJECTIONS, context="rollout-only soak on engine cells")
 
 
 class TestAssertSoakReconfigureEvents:

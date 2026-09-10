@@ -52,10 +52,10 @@ def convert_mimo_mtp_param(args, name, param):
     if component in direct_mappings:
         return [(direct_mappings[component], param)]
 
-    # Handle transformer_layer components
-    if component.startswith("transformer_layer."):
-        # Remove "transformer_layer." prefix
-        transformer_component = component[len("transformer_layer.") :]
+    transformer_layer_prefixes = ("transformer_layer.", "mtp_model_layer.")
+    matched_prefix = next((p for p in transformer_layer_prefixes if component.startswith(p)), None)
+    if matched_prefix is not None:
+        transformer_component = component[len(matched_prefix) :]
 
         # Create proxy name for reusing existing Qwen2 conversion functions
         proxy_name = f"module.module.decoder.layers.{layer_idx}.{transformer_component}"

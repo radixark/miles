@@ -92,7 +92,7 @@ class TestSetupModelAndOptimizerLoraBranch:
             use_checkpoint_opt_param_scheduler=False,
             override_opt_param_scheduler=False,
             lr_wsd_decay_style="linear",
-            enable_gloo_process_groups=False,
+            use_gloo_process_groups=False,
         )
 
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")

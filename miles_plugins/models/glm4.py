@@ -7,7 +7,6 @@ def get_glm_spec(args, config, vp_stage):
         moe_grouped_gemm=args.moe_grouped_gemm,
         qk_layernorm=args.qk_layernorm,
         multi_latent_attention=args.multi_latent_attention,
-        moe_use_legacy_grouped_gemm=args.moe_use_legacy_grouped_gemm,
         post_self_attn_layernorm=args.post_self_attn_layernorm,
         post_mlp_layernorm=args.post_mlp_layernorm,
     )

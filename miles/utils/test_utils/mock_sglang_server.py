@@ -13,6 +13,7 @@ from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 from miles.utils.http_utils import find_available_port
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -20,6 +21,7 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 @dataclass(frozen=True)
 class ProcessResultMetaInfo:
     weight_version: str | None = None
+    weight_versions: list[dict[str, str | int]] | None = None
     routed_experts: str | None = None
     spec_accept_token_num: int | None = None
     spec_draft_token_num: int | None = None
@@ -45,14 +47,14 @@ class MockSGLangServer:
         self,
         model_name: str,
         process_fn: ProcessFn,
-        host: str,
+        host: str | None,
         port: int,
         latency: float = 0.0,
         chat_template_path: str | None = None,
     ):
         self.tokenizer = load_tokenizer(model_name, chat_template_path=chat_template_path, trust_remote_code=True)
         self.process_fn = process_fn
-        self.host = host
+        self.host = host or NodeProbeMixin._get_node_ip()
         self.port = port or find_available_port(30000)
         self.latency = latency
 
@@ -73,7 +75,7 @@ class MockSGLangServer:
         self._concurrency.reset()
 
     def start(self):
-        self._server = UvicornThreadServer(self.app, host=self.host, port=self.port)
+        self._server = UvicornThreadServer(self.app, host=self.host, port=self.port, bind_host="0.0.0.0")
         self._server.start()
 
     def stop(self):
@@ -211,12 +213,23 @@ class MockSGLangServer:
         if prompt_ids is not None:
             choice["prompt_token_ids"] = prompt_ids
 
+        # Real SGLang chat responses always carry ``usage``; clients that
+        # validate the full ChatCompletionResponse schema require it.
+        if payload.get("input_ids") is not None:
+            prompt_token_count = len(payload["input_ids"])
+        else:
+            prompt_token_count = len(self.tokenizer.encode(prompt_str, add_special_tokens=False))
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
             "object": "chat.completion",
             "created": int(time.time()),
             "model": "mock-model",
             "choices": [choice],
+            "usage": {
+                "prompt_tokens": prompt_token_count,
+                "completion_tokens": len(output_ids),
+                "total_tokens": prompt_token_count + len(output_ids),
+            },
         }
 
 
@@ -256,7 +269,7 @@ def default_process_fn(prompt: str) -> ProcessResult:
 def with_mock_server(
     model_name: str = "Qwen/Qwen3-0.6B",
     process_fn: ProcessFn = default_process_fn,
-    host: str = "127.0.0.1",
+    host: str | None = None,
     port: int | None = None,
     latency: float = 0.0,
 ):

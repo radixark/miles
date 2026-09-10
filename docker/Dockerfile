@@ -1,7 +1,7 @@
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 # Build via docker/build.py (single source of truth for variant defaults,
 # platforms, tags, and build-arg ordering); callers may append explicit
-# build-arg overrides. See docs/ci/02-docker-build.md. Examples:
+# build-arg overrides. See docs/developer/ci/02-docker-build.md. Examples:
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
 #       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
 #       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
@@ -11,7 +11,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.16
+ARG SGLANG_IMAGE_TAG=v0.5.19
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -30,8 +30,8 @@ ARG WHEELS_REPO=yueming-yuan/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-x86_64
-ARG WHEELS_TAG_ARM64=cu130-aarch64
+ARG WHEELS_TAG_X86=cu130-torch213-x86_64
+ARG WHEELS_TAG_ARM64=cu130-torch213-aarch64
 
 # ======================================== Setup =============================================
 
@@ -84,7 +84,7 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.4.2
+RUN pip install flash-linear-attention==0.5.2
 # required for DeepSeek V4
 RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
 RUN pip install --no-deps tile_kernels==1.0.0
@@ -159,16 +159,13 @@ RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_
 # Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz
 # orthogonalization; not on PyPI (only a dependency-confusion stub), so install from the
 # git source Megatron-LM itself pins in pyproject.toml.
-RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1.0"
+RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3.0"
 
 # torch_memory_saver's source build needs TMS_CUDA_MAJOR; take it from torch.
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@f05a8754daf68238d54e4cf31cb3ba866684bbaf --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-# radixark/Megatron-Bridge#24 (TE 2.17 grouped-linear contract), merged to @bridge.
-# Pinned by SHA, not branch: buildkit caches this layer on the instruction text, so a
-# branch that moves leaves the old revision baked into the image with nothing to show it.
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@7f0fb3456f8ffe47599b5fd167b454605d85f932 --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
@@ -200,6 +197,9 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # file. Force it, then re-apply the same rewrite: the tree we just checked out carries
 # the cu13 markers, and sglang's editable install makes them visible to every later pip
 # resolve, which would drag cu13 packages onto a cu12 image.
+# The base image ships the Rust extension modules prebuilt (SGLANG_RUST_BUILD_MODE=never);
+# re-installing must not rebuild them, which needs the torch link path only the upstream
+# build stage has.
 RUN cd /sgl-workspace/sglang && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
@@ -212,7 +212,7 @@ RUN cd /sgl-workspace/sglang && \
       sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
       sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
     fi && \
-    pip install -e "python[all]" --no-deps
+    SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
 
 # =========================== Mooncake structured object store wheel ===========================
 
@@ -290,47 +290,6 @@ RUN pip install --force-reinstall --no-deps "apache-tvm-ffi==0.1.11" && \
 p = inspect.signature(k.make_kwargs_wrapper).parameters; \
 assert 'map_dataclass_to_tuple' in p, \
   'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
-
-# ==================== Pin nvidia-cutlass-dsl to 4.6.2 ====================
-# The sglang v0.5.16 base ships nvidia-cutlass-dsl 4.6.0, whose 4.6.0/4.6.1 runtime
-# hangs FA4 CuTe backward forever on sm_103 (B300/GB300): the first training backward
-# spins at 100% GPU in _bwd_postprocess_convert and never returns
-# (https://github.com/Dao-AILab/flash-attention/issues/2797). 4.6.2 is fixed and passes
-# FA4's own SM100 forward/backward checks. The meta-package alone does NOT move what a
-# process loads — the -libs-cu12/-libs-cu13 wheels carry the actual runtime — so pin
-# every component and fail the build loudly if any of them slips.
-RUN pip install --force-reinstall --no-deps \
-      "nvidia-cutlass-dsl==4.6.2" \
-      "nvidia-cutlass-dsl-libs-base==4.6.2" \
-      "nvidia-cutlass-dsl-libs-core==4.6.2" \
-      "nvidia-cutlass-dsl-libs-cu12==4.6.2" \
-      "nvidia-cutlass-dsl-libs-cu13==4.6.2" && \
-    python3 -c "from importlib.metadata import version as v; \
-libs = ['nvidia-cutlass-dsl', 'nvidia-cutlass-dsl-libs-base', 'nvidia-cutlass-dsl-libs-core', \
-        'nvidia-cutlass-dsl-libs-cu12', 'nvidia-cutlass-dsl-libs-cu13']; \
-bad = {p: v(p) for p in libs if v(p) != '4.6.2'}; \
-assert not bad, 'nvidia-cutlass-dsl components not at 4.6.2: %s' % bad"
-
-# ==================== Pin flashinfer to 0.6.15.post1 ====================
-# The sglang v0.5.16 base ships flashinfer 0.6.14, whose trtllm MoE cubins can hang
-# 2CTA kernels on Blackwell (regression since 0.6.8, fixed cubins in 0.6.15;
-# https://github.com/flashinfer-ai/flashinfer/pull/3973). 0.6.15.post1 additionally
-# fixes the host-side MLA/MoE dispatch overhead that got the plain 0.6.15 bump
-# reverted upstream (sgl-project/sglang#31625 -> #31927). The python + cubin + jit-cache
-# trio must move together; jit-cache wheels live on flashinfer's own index, per CUDA line.
-RUN FI_CUDA_INDEX=$([ "${ENABLE_CUDA_13}" = "1" ] && echo cu130 || echo cu129) && \
-    pip install --force-reinstall --no-deps \
-      --extra-index-url "https://flashinfer.ai/whl" \
-      --extra-index-url "https://flashinfer.ai/whl/${FI_CUDA_INDEX}" \
-      "flashinfer-python==0.6.15.post1" \
-      "flashinfer-cubin==0.6.15.post1" \
-      "flashinfer-jit-cache==0.6.15.post1" && \
-    python3 -c "from importlib.metadata import version as v; \
-vers = {p: v(p) for p in ['flashinfer-python', 'flashinfer-cubin', 'flashinfer-jit-cache']}; \
-bad = {p: x for p, x in vers.items() if not x.startswith('0.6.15.post1')}; \
-assert not bad, 'flashinfer components not at 0.6.15.post1: %s' % bad"
-# The sglang base exports FLASHINFER_VERSION=0.6.14; keep the marker in step.
-ENV FLASHINFER_VERSION=0.6.15.post1
 
 RUN rm -rf /tmp/wheels
 

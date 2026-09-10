@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 # creates hit Daytona's build cache, and no named snapshot is involved.
 #
 # The sandbox's env server is the tbench2_env baked by the recipe, installed
-# per the README (at or after the huggingface/OpenEnv#1012 merge): canonical
+# per the README (at or after the huggingface/OpenEnv#1025 merge): canonical
 # tests/test.sh scoring built into `evaluate`, task WORKDIR resolved
 # server-side, verifier assets withheld. The launcher preflight rejects an
 # older install outright, and the shared agent loop's harness-marker guard

@@ -51,10 +51,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "jdopensource"
     model_name: str = "JoyAI-LLM-Flash"
     megatron_model_type: str = "joyai-llm-flash"
-    num_gpus_per_node: int | None = 8
+    num_gpus_per_node: int | None = None
     actor_num_gpus_per_node: int | None = 4
     rollout_num_gpus: int | None = 4
-    hardware: Literal["B200", "B300", "GB200", "GB300"] = "B200"
+    hardware: Literal["auto", "B200", "B300", "GB200", "GB300"] = "auto"
     enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -74,6 +74,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mxfp8_num_layers_at_end_in_bf16: int = 6
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.train_mxfp8:
             assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8"
 

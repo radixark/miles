@@ -37,6 +37,7 @@ def model_args() -> str:
         "--swiglu "
         "--untie-embeddings-and-output-weights "
         "--position-embedding-type rope "
+        "--rope-type rope "
         "--no-position-embedding "
         "--normalization RMSNorm "
         "--norm-epsilon 1e-5 "

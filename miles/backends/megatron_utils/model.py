@@ -28,6 +28,7 @@ from megatron.training.training import get_model
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
+from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -175,9 +176,15 @@ def setup_model_and_optimizer(
         if hasattr(args, f.name):
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
+    if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
+        config.defer_main_param_initialization = True
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if args.stream_optimizer_state_to_disk:
+            from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
+
+            setup_muon_state_on_disk(args)
         if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
             if is_first_replica_megatron_main_rank():
                 logger.info(
@@ -187,7 +194,7 @@ def setup_model_and_optimizer(
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
-            use_gloo_process_groups=args.enable_gloo_process_groups,
+            use_gloo_process_groups=args.use_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
     elif is_multi_lora_enabled(args):
@@ -198,10 +205,11 @@ def setup_model_and_optimizer(
         optimizer = get_megatron_optimizer(
             config=config,
             model_chunks=model,
-            use_gloo_process_groups=args.enable_gloo_process_groups,
+            use_gloo_process_groups=args.use_gloo_process_groups,
         )
 
-    if args.stream_optimizer_state_to_disk:
+    if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
+        # Muon took the chunked-offloader route above; this store is DistOpt-only.
         from miles_plugins.optimizers.nvme_stream import setup_optimizer_state_streaming
 
         setup_optimizer_state_streaming(args, optimizer)
@@ -257,6 +265,7 @@ def forward_only(
     num_microbatches: Sequence[int],
     rollout_id: int,
     store_prefix: str = "",
+    fp32_output: bool = True,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -271,6 +280,7 @@ def forward_only(
         num_microbatches: Number of microbatches per rollout step.
         rollout_id: Rollout identifier (selects the per-rollout dump subdirectory).
         store_prefix: Prefix to prepend to stored output keys.
+        fp32_output: Whether Megatron should upcast the complete model output to FP32.
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
@@ -340,6 +350,7 @@ def forward_only(
             loss_mask=batch["full_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
+            fp32_output=fp32_output,
         )
 
         return output_tensor, partial(
@@ -357,7 +368,7 @@ def forward_only(
         model_module.eval()
 
     if args.custom_megatron_before_log_prob_hook_path:
-        from miles.utils.misc import load_function
+        from miles.utils.function_registry import load_function
 
         custom_before_log_prob_hook = load_function(args.custom_megatron_before_log_prob_hook_path)
         custom_before_log_prob_hook(args, model, store_prefix)
@@ -455,7 +466,7 @@ def train_one_step(
         _zero_grads(model, optimizer, disable_optimizer)
 
     if args.custom_megatron_before_train_step_hook_path:
-        from miles.utils.misc import load_function
+        from miles.utils.function_registry import load_function
 
         custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
         custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
@@ -536,13 +547,10 @@ def train_one_step(
                 **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             }
 
-            if args.enable_mtp_training:
-                forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
-
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
-            output_tensor = model(**forward_kwargs)
+            output_tensor = model(**forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss"))
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
@@ -634,6 +642,7 @@ def train_one_step(
 
     log_structured(
         logger.info,
+        tag="train",
         op="train_step",
         rollout=rollout_id,
         step=step_id,
@@ -739,16 +748,8 @@ def train(
 
     if args.reset_optimizer_states and not disable_optimizer:
         if is_first_replica_megatron_main_rank():
-            print("Reset optimizer states")
-        for chained_optimizer in optimizer.chained_optimizers:
-            for group in chained_optimizer.optimizer.param_groups:
-                if "step" in group:
-                    group["step"] = 0
-            for state in chained_optimizer.optimizer.state.values():
-                if "exp_avg" in state:
-                    state["exp_avg"].zero_()
-                if "exp_avg_sq" in state:
-                    state["exp_avg_sq"].zero_()
+            logger.info("Reset optimizer states")
+        reset_optimizer_states(optimizer)
 
     if args.manual_gc:
         # Disable the default garbage collector and perform the collection manually.
@@ -800,20 +801,20 @@ def train(
                 config.param_sync_func = param_sync_func
                 pre_hook_enabled = True
 
+        mtp_losses = None
         if args.enable_mtp_training:
             from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 
-            mtp_loss_scale = 1 / num_microbatches[step_id]
+            mtp_loss_scale = 1.0 if args.calculate_per_token_loss else 1 / num_microbatches[step_id]
+            MTPLossLoggingHelper.reduce_loss_in_tracker()
             tracker = MTPLossLoggingHelper.tracker
-            mtp_losses = None
+            # here we assume only one mtp layer
             if "values" in tracker:
-                values = tracker["values"]
-                if (x := tracker.get("reduce_group")) is not None:
-                    torch.distributed.all_reduce(values, group=x)
-                if (x := tracker.get("avg_group")) is not None:
-                    torch.distributed.all_reduce(values, group=x, op=torch.distributed.ReduceOp.AVG)
-                # here we assume only one mtp layer
                 mtp_losses = (tracker["values"] * mtp_loss_scale).item()
+            elif "loss_values" in tracker:
+                mtp_losses = (tracker["loss_values"] * mtp_loss_scale).item()
+
+            if mtp_losses is not None:
                 MTPLossLoggingHelper.clean_loss_in_tracker()
 
                 # CI check: verify MTP loss is within expected bounds
