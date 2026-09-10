@@ -1,5 +1,3 @@
-import inspect
-
 import torch
 from megatron.core.transformer import MLATransformerConfig
 from megatron.core.transformer.enums import AttnBackend
@@ -175,7 +173,7 @@ class KimiK3Bridge(DeepseekV3Bridge):
         }
 
     def _get_transformer_layer_spec(self, vp_stage=None):
-        self.has_vp_stage = "vp_stage" in inspect.signature(build_kimi_k3_spec).parameters
+        self.has_vp_stage = True
         return build_kimi_k3_spec(self.config, vp_stage=vp_stage)
 
     def _get_safetensor_io(self, weights_path: str):
