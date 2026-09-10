@@ -210,6 +210,10 @@ class MegatronTrainRayActor(TrainRayActor):
         verify_megatron_parallel_state(self.model)
 
         start_rollout_id = loaded_rollout_id + 1
+        if getattr(args, "lora_adapter_path", None) is not None and not getattr(
+            args, "lora_training_state_loaded", False
+        ):
+            start_rollout_id = 0
         self._asleep = False
         self._grad_buffer_paused = False
 
