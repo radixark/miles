@@ -143,16 +143,13 @@ def _with_sample_seed(request: dict, index: int) -> dict:
 
 def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
     """The trainer splits the batch evenly across data-parallel ranks; pad with
-    zero-weight copies of the last datum so every rank gets the same share.
-    Padding contributes no gradient and its outputs are dropped by the caller."""
+    zero-loss-mask copies of the last datum so every rank gets the same share.
+    The mask removes padding from every loss term; its outputs are dropped by the caller."""
     remainder = len(slot_datums) % dp_size
     if remainder == 0:
         return slot_datums
     slot, datum = slot_datums[-1]
-    filler = dict(datum)
-    for key in ("weights", "advantages"):
-        if key in filler:
-            filler[key] = [0.0] * len(filler[key])
+    filler = dict(datum) | {"padding": True}
     return slot_datums + [(slot, filler)] * (dp_size - remainder)
 
 
@@ -160,7 +157,7 @@ def _build_train_data(slot_datums: list) -> dict:
     datums = [datum for _, datum in slot_datums]
     train_data = {
         "tokens": [datum["tokens"] for datum in datums],
-        "loss_masks": [[1] * datum["target_len"] for datum in datums],
+        "loss_masks": [[0 if datum.get("padding") else 1] * datum["target_len"] for datum in datums],
         "response_lengths": [datum["target_len"] for datum in datums],
         "total_lengths": [len(datum["tokens"]) for datum in datums],
         "sample_indices": list(range(len(datums))),
