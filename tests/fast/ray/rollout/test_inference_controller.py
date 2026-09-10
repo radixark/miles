@@ -750,6 +750,50 @@ class TestEngineMetaContract:
 
 
 class TestUpdateWeightsLockWindow:
+    @pytest.mark.parametrize("fail", [False, True, "timeout"])
+    async def test_checksum_collection_holds_and_releases_the_update_lock(
+        self, monkeypatch: pytest.MonkeyPatch, fail: bool | str
+    ) -> None:
+        """Checksum collection stays in the update window and releases it even when collection fails."""
+        cell = _FakeUpdatableCell("hash-a", cell_id="engine-0", gpu_offset=0)
+        server = _RecordingServer({"engine-0": cell}, model_name="actor", update_weights=True)
+        controller = _make_controller({"actor": server})
+        observed = []
+        cancelled = []
+
+        async def collect(*, target_incarnations: dict[str, str]) -> list:
+            assert controller.context_lock.held_in_current_context
+            observed.append(target_incarnations)
+            if fail == "timeout":
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled.append(True)
+            if fail:
+                raise RuntimeError("checksum failed")
+            return []
+
+        monkeypatch.setattr(server, "get_weight_checksum_snapshot", collect, raising=False)
+        info = await controller.start_update_weights()
+        kwargs = dict(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            updated_cell_ids=["engine-0"],
+            failed_cell_ids=[],
+            collect_checksums=True,
+            checksum_timeout_seconds=0.01 if fail == "timeout" else 300,
+        )
+        if fail == "timeout":
+            with pytest.raises(asyncio.TimeoutError):
+                await controller.end_update_weights(**kwargs)
+            assert cancelled == [True]
+        elif fail:
+            with pytest.raises(RuntimeError, match="checksum failed"):
+                await controller.end_update_weights(**kwargs)
+        else:
+            await controller.end_update_weights(**kwargs)
+        assert observed == [{"engine-0": "hash-a"}]
+        assert not controller.context_lock.locked
+
     @pytest.mark.asyncio
     async def test_the_lock_is_held_from_start_until_end_update_weights(self):
         """start_update_weights opens a lock window that only end_update_weights closes."""

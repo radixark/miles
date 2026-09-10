@@ -382,6 +382,7 @@ class TestUpdateWeights:
             debug_train_only=False,
             debug_rollout_only=False,
             save_inference_engine_weight_checksum=True,
+            update_weight_engine_request_timeout=300.0,
             start_rollout_id=start_rollout_id,
         )
 
@@ -393,7 +394,6 @@ class TestUpdateWeights:
             "get_event_logger",
             lambda: SimpleNamespace(log=lambda _event_class, payload: logged.append(payload)),
         )
-        monkeypatch.setattr(placement_group_module, "flatten_inference_engine_checksums", lambda _result: [])
         monkeypatch.setattr(
             placement_group_module,
             "FTTestActionOrchestrationExecutor",
@@ -401,13 +401,21 @@ class TestUpdateWeights:
         )
         return logged
 
+    @staticmethod
+    def _checksum_snapshot():
+        return placement_group_module.InferenceEngineChecksumSnapshot(
+            model_name="actor", cell_id="cell-0", workers_hash="generation-0", tensors={"rank0/w": "hash"}
+        )
+
     async def test_a_fresh_run_stamps_the_startup_sync_before_the_first_rollout(self, monkeypatch):
         """A fresh run's startup push precedes rollout 0, so it is stamped -1 instead of being left unattributed."""
         from miles.ray.placement_group import update_weights
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
         inference_controller = MagicMock(
-            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
+            start_update_weights=AsyncMock(),
+            end_update_weights=AsyncMock(return_value=[self._checksum_snapshot()]),
+            check_weights=AsyncMock(),
         )
         logged = self._record_checksum_events(monkeypatch)
 
@@ -416,6 +424,11 @@ class TestUpdateWeights:
         )
 
         assert [payload["rollout_id"] for payload in logged] == [-1]
+        assert logged[0]["weight_version"] == 7
+        assert logged[0]["engine_snapshots"] == [self._checksum_snapshot()]
+        assert logged[0]["engine_checksums"] == [{"rank0/w": "hash"}]
+        assert inference_controller.end_update_weights.await_args.kwargs["collect_checksums"] is True
+        inference_controller.check_weights.assert_not_awaited()
 
     async def test_a_startup_sync_after_a_restore_stamps_the_restored_rollout_id(self, monkeypatch):
         """The restored rollout never runs again, so only this push can record the checksum of its weights."""
@@ -423,7 +436,9 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
         inference_controller = MagicMock(
-            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
+            start_update_weights=AsyncMock(),
+            end_update_weights=AsyncMock(return_value=[self._checksum_snapshot()]),
+            check_weights=AsyncMock(),
         )
         logged = self._record_checksum_events(monkeypatch)
 
@@ -439,7 +454,9 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
         inference_controller = MagicMock(
-            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
+            start_update_weights=AsyncMock(),
+            end_update_weights=AsyncMock(return_value=[self._checksum_snapshot()]),
+            check_weights=AsyncMock(),
         )
         logged = self._record_checksum_events(monkeypatch)
 

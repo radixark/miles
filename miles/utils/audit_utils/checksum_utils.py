@@ -1,6 +1,17 @@
 from typing import Any
 
+from pydantic import Field
+
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
+
 InferenceEngineChecksums = dict[str, str]
+
+
+class InferenceEngineChecksumSnapshot(FrozenStrictBaseModel):
+    model_name: str = Field(min_length=1)
+    cell_id: str = Field(min_length=1)
+    workers_hash: str = Field(min_length=1)
+    tensors: dict[str, str] = Field(min_length=1)
 
 
 def flatten_inference_engine_checksums(check_weights_result: Any) -> list[InferenceEngineChecksums]:
@@ -23,8 +34,12 @@ def _merge_inference_engine_ranks(engine_body: dict[str, Any]) -> InferenceEngin
     ranks_sorted = sorted(ranks, key=_gpu_rank)
 
     merged: InferenceEngineChecksums = {}
+    seen_ranks: set[int] = set()
     for rank_info in ranks_sorted:
         rank = _gpu_rank(rank_info)
+        assert rank not in seen_ranks, f"Duplicate checksum rank: {rank}"
+        seen_ranks.add(rank)
+        assert rank_info["checksums"], f"Checksum rank {rank} has no tensors"
         for name, value in rank_info["checksums"].items():
             merged[f"rank{rank}/{name}"] = value
     return merged

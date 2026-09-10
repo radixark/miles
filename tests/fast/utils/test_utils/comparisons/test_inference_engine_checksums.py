@@ -1,7 +1,7 @@
 """Tests for test_utils.comparisons.inference_engine_checksums.compare_inference_engine_checksums."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,8 +11,10 @@ from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLog
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
 from miles.utils.test_utils.comparisons.inference_engine_checksums import (
+    _checksums_by_version,
     assert_engine_count,
     assert_engine_weights_moved,
+    assert_identified_engine_checksums,
     compare_inference_engine_checksums,
 )
 
@@ -55,6 +57,97 @@ def _partial(
 
 
 class TestCompareInferenceEngineChecksums:
+    @pytest.mark.parametrize(
+        "case", ["restored", "changed", "missing_epoch", "ambiguous_order", "same_epoch_conflict"]
+    )
+    def test_restored_events_and_new_epochs_reusing_version_one_remain_separate(self, case: str) -> None:
+        """Checkpoint restoration preserves old epochs without conflating their version counters."""
+        sides = []
+        for side in ["baseline", "target"]:
+            events = []
+            for stage in [0, 1]:
+                tensors = {"rank0/w": f"weights-{stage}"}
+                if case == "changed" and side == "target" and stage == 1:
+                    tensors = {"rank0/w": "corrupted"}
+                epoch = f"{side}-{stage}"
+                if case == "missing_epoch":
+                    epoch = None
+                if case == "same_epoch_conflict":
+                    epoch = side
+                events.append(
+                    InferenceEngineWeightChecksumEvent(
+                        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc)
+                        + timedelta(seconds=0 if case == "ambiguous_order" else stage),
+                        source=_source_of(None),
+                        rollout_id=stage * 3 - 1,
+                        weight_version=1,
+                        version_epoch=epoch,
+                        update_id=f"{side}-update-{stage}",
+                        engine_checksums=[tensors],
+                        engine_snapshots=[
+                            dict(model_name="actor", cell_id="engine", workers_hash=side, tensors=tensors)
+                        ],
+                    )
+                )
+            sides.append(list(reversed(events)) if side == "target" else events)
+
+        if case in {"missing_epoch", "ambiguous_order", "same_epoch_conflict"}:
+            with pytest.raises(AssertionError):
+                _checksums_by_version(sides[0])
+        else:
+            baseline, target = [_checksums_by_version(events) for events in sides]
+            assert set(baseline) == {(None, "actor", 0, 1), (None, "actor", 1, 1)}
+            assert (baseline == target) is (case == "restored")
+
+    @pytest.mark.parametrize("case", ["empty", "legacy", "identified"])
+    def test_strict_gate_requires_identified_checksum_events(self, tmp_path: Path, case: str) -> None:
+        """Strict soak acceptance rejects missing evidence and legacy anonymous checksums."""
+        partial = _partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])
+        if case == "identified":
+            partial.update(
+                weight_version=1,
+                engine_snapshots=[
+                    dict(
+                        model_name="actor", cell_id="engine-0", workers_hash="generation-0", tensors={"rank0/w": "aaa"}
+                    )
+                ],
+            )
+        if case != "empty":
+            _write_inference_engine_events(tmp_path, [partial])
+        if case == "identified":
+            assert_identified_engine_checksums(dump_dir=tmp_path)
+        else:
+            with pytest.raises(AssertionError):
+                assert_identified_engine_checksums(dump_dir=tmp_path)
+
+    @pytest.mark.parametrize("case", ["same_version", "other_version", "legacy_target"])
+    def test_identified_events_align_by_version_instead_of_rollout(self, tmp_path: Path, case: str) -> None:
+        """Equal rollout indices cannot hide version mismatch, and equal versions can have different rollout indices."""
+        baseline = _partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])
+        baseline.update(
+            weight_version=7,
+            version_epoch="baseline-epoch",
+            engine_snapshots=[
+                dict(model_name="actor", cell_id="engine-0", workers_hash="baseline", tensors={"rank0/w": "aaa"})
+            ],
+        )
+        target = _partial(rollout_id=9 if case == "same_version" else 1, engine_checksums=[{"rank0/w": "aaa"}])
+        if case != "legacy_target":
+            target.update(
+                weight_version=7 if case == "same_version" else 8,
+                version_epoch="target-epoch",
+                engine_snapshots=[
+                    dict(model_name="actor", cell_id="engine-1", workers_hash="target", tensors={"rank0/w": "aaa"})
+                ],
+            )
+        _write_inference_engine_events(tmp_path / "baseline", [baseline])
+        _write_inference_engine_events(tmp_path / "target", [target])
+        if case == "same_version":
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+        else:
+            with pytest.raises(AssertionError):
+                compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
     def test_identical_passes(self, tmp_path: Path) -> None:
         """Internally-consistent sides with equal representative checksums pass."""
         partials = [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}])]

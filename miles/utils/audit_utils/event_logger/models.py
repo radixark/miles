@@ -1,9 +1,10 @@
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import Discriminator, Field
+from pydantic import Discriminator, Field, model_validator
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -120,6 +121,23 @@ class InferenceEngineWeightChecksumEvent(EventBase):
     trainer_model_id: str | None = None
     # One {tensor -> hash} dict per rollout engine; a TP>1 engine's ranks merge with a rank{r}/ prefix.
     engine_checksums: list[dict[str, str]]
+    weight_version: int | None = None
+    engine_snapshots: list[InferenceEngineChecksumSnapshot] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_snapshot_identity(self) -> Self:
+        if self.weight_version is None and not self.engine_snapshots:
+            return self
+        if self.weight_version is None or not self.engine_snapshots:
+            raise ValueError("Checksum version and snapshots must be recorded together")
+        if self.engine_checksums != [snapshot.tensors for snapshot in self.engine_snapshots]:
+            raise ValueError("Checksum tensors disagree with their identified snapshots")
+        cell_ids = [snapshot.cell_id for snapshot in self.engine_snapshots]
+        if len(cell_ids) != len(set(cell_ids)):
+            raise ValueError("Checksum event contains duplicate cell identities")
+        if len({snapshot.model_name for snapshot in self.engine_snapshots}) != 1:
+            raise ValueError("Checksum event mixes inference models")
+        return self
 
 
 class TrainAdvantageComputationEvent(_ActorTrainEventBase):

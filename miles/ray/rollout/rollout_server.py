@@ -8,6 +8,7 @@ from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot, flatten_inference_engine_checksums
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import retry_until_deadline
@@ -183,6 +184,31 @@ class RolloutServer:
     @requires_lock
     def _addressable_cells(self) -> list[ServerCell]:
         return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
+
+    @requires_lock
+    async def get_weight_checksum_snapshot(
+        self, *, target_incarnations: dict[str, str]
+    ) -> list[InferenceEngineChecksumSnapshot]:
+        cells = {cell.meta.cell_id: cell for cell in self._addressable_cells()}
+        for cell_id, workers_hash in target_incarnations.items():
+            if cell_id not in cells or cells[cell_id].meta.workers_hash != workers_hash:
+                raise ValueError(f"Checksum target incarnation is no longer addressable: {cell_id}")
+        selected = [cells[cell_id] for cell_id in sorted(target_incarnations)]
+        bodies = await asyncio.gather(
+            *[
+                cell.check_weights(action="checksum", allow_quant_error=False, selector="all", skip_list=None)
+                for cell in selected
+            ]
+        )
+        return [
+            InferenceEngineChecksumSnapshot(
+                model_name=self.model_name,
+                cell_id=cell.meta.cell_id,
+                workers_hash=cell.meta.workers_hash,
+                tensors=flatten_inference_engine_checksums([body])[0],
+            )
+            for cell, body in zip(selected, bodies, strict=True)
+        ]
 
     @lock_exempt
     async def wait_init_expected_num_cells(self, timeout: float = 3600):

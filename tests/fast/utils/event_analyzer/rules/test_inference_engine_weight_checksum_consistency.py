@@ -2,6 +2,10 @@
 
 from datetime import datetime, timezone
 
+import pytest
+
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
+
 from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_checksum_consistency import check
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
@@ -19,6 +23,40 @@ def _make_event(*, rollout_id: int, engine_checksums: list[dict[str, str]]) -> I
 
 
 class TestCheck:
+    @pytest.mark.parametrize(
+        "case", ["same", "different", "missing_tensor", "other_version", "other_model", "duplicate"]
+    )
+    def test_versioned_snapshots_are_joined_across_events(self, case: str) -> None:
+        """Same-version replicas compare across events while distinct versions and models stay separate."""
+        first = InferenceEngineChecksumSnapshot(
+            model_name="actor", cell_id="engine-0", workers_hash="old", tensors={"rank0/w": "a", "rank0/b": "b"}
+        )
+        second = first.model_copy(update={"workers_hash": "new"})
+        if case in {"different", "other_version", "other_model"}:
+            second = second.model_copy(update={"tensors": {"rank0/w": "different", "rank0/b": "b"}})
+        elif case == "missing_tensor":
+            second = second.model_copy(update={"tensors": {"rank0/w": "a"}})
+        elif case == "duplicate":
+            second = first
+        if case == "other_model":
+            second = second.model_copy(update={"model_name": "other"})
+        events = [
+            InferenceEngineWeightChecksumEvent(
+                timestamp=_FIXED_TS,
+                source=SimpleProcessIdentity(component="main"),
+                rollout_id=index,
+                weight_version=2 if index == 1 and case == "other_version" else 1,
+                engine_checksums=[snapshot.tensors],
+                engine_snapshots=[snapshot],
+            )
+            for index, snapshot in enumerate([first, second])
+        ]
+        if case == "duplicate":
+            with pytest.raises(AssertionError, match="Duplicate engine checksum evidence"):
+                check(events)
+        else:
+            assert bool(check(events)) == (case in {"different", "missing_tensor"})
+
     def test_empty_events_no_mismatches(self) -> None:
         """No engine checksum events means nothing to check."""
         assert check([]) == []

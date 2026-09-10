@@ -19,6 +19,19 @@ def _rank(rank: int, checksums: dict[str, str]) -> dict[str, Any]:
 
 
 class TestFlattenInferenceEngineChecksums:
+    @pytest.mark.parametrize("second", [{"w": "different"}, {"w": "same"}, {"other": "same"}])
+    def test_duplicate_rank_cannot_overwrite_or_merge_evidence(self, second: dict[str, str]) -> None:
+        """Repeated rank identities are invalid even when their tensors agree or do not overlap."""
+        result = [_engine_body(success=True, ranks=[_rank(0, {"w": "same"}), _rank(0, second)])]
+        with pytest.raises(AssertionError, match="Duplicate checksum rank"):
+            flatten_inference_engine_checksums(result)
+
+    def test_empty_rank_does_not_disappear_from_tensor_comparison(self) -> None:
+        """A rank with no tensor checksums cannot be hidden by another nonempty rank."""
+        result = [_engine_body(success=True, ranks=[_rank(0, {"w": "value"}), _rank(1, {})])]
+        with pytest.raises(AssertionError, match="has no tensors"):
+            flatten_inference_engine_checksums(result)
+
     def test_single_engine_single_rank(self) -> None:
         """One engine with one rank yields one prefixed checksum dict."""
         result = [_engine_body(success=True, ranks=[_rank(0, {"w": "aaa"})])]

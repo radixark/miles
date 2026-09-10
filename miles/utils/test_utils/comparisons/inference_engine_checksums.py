@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from miles.utils.audit_utils.event_analyzer.rules import inference_engine_weight_checksum_consistency
@@ -19,8 +20,13 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
     ), "Baseline engines disagree with each other"
     assert not inference_engine_weight_checksum_consistency.check(target), "Target engines disagree with each other"
 
-    baseline_by_model_and_rollout = _checksums_by_model_and_rollout_id(baseline)
-    target_by_model_and_rollout = _checksums_by_model_and_rollout_id(target)
+    versioned = any(event.weight_version is not None for event in [*baseline, *target])
+    if versioned:
+        baseline_by_model_and_rollout = _checksums_by_version(baseline)
+        target_by_model_and_rollout = _checksums_by_version(target)
+    else:
+        baseline_by_model_and_rollout = _checksums_by_model_and_rollout_id(baseline)
+        target_by_model_and_rollout = _checksums_by_model_and_rollout_id(target)
     assert baseline_by_model_and_rollout.keys() == target_by_model_and_rollout.keys(), (
         f"Engine checksum (model_id, rollout_id) sets differ: "
         f"baseline={sorted(baseline_by_model_and_rollout)} "
@@ -28,14 +34,13 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
     )
 
     mismatches: list[ChecksumMismatchIssue] = []
-    for key in sorted(baseline_by_model_and_rollout):
-        model_id, rollout_id = key
+    for key in sorted(baseline_by_model_and_rollout, key=repr):
         mismatches += list(
             compare_flat_dicts(
                 a=baseline_by_model_and_rollout[key],
                 b=target_by_model_and_rollout[key],
-                label_a=f"baseline/{model_id}/rollout_{rollout_id}",
-                label_b=f"target/{model_id}/rollout_{rollout_id}",
+                label_a=f"baseline/{'version' if versioned else 'rollout'}/{key}",
+                label_b=f"target/{'version' if versioned else 'rollout'}/{key}",
             )
         )
     assert not mismatches, "Engine weight checksum baseline-vs-target mismatch:\n" + "\n".join(
@@ -55,6 +60,14 @@ def assert_engine_count(*, side: str, dump_dir: str, expected: int) -> None:
     )
 
     print(f"{side}: every weight update covered {expected} engine(s)")
+
+
+def assert_identified_engine_checksums(*, dump_dir: Path) -> None:
+    events = _read_inference_engine_checksum_events(dump_dir)
+    assert events, f"No engine checksum evidence in {dump_dir}"
+    assert all(
+        event.weight_version is not None and event.engine_snapshots for event in events
+    ), f"Engine checksum evidence lacks published versions or instance identities in {dump_dir}"
 
 
 def assert_engine_weights_moved(*, side: str, dump_dir: str) -> None:
@@ -86,6 +99,37 @@ def _checksums_by_model_and_rollout_id(
         assert event.engine_checksums, f"No engine checksums for {key}"
         by_model_and_rollout[key] = event.engine_checksums[0]
     return by_model_and_rollout
+
+
+def _checksums_by_version(
+    events: list[InferenceEngineWeightChecksumEvent],
+) -> dict[tuple[str | None, str, int, int], dict[str, str]]:
+    starts: dict[tuple[str | None, str], dict[str, datetime]] = {}
+    for event in events:
+        assert (
+            event.weight_version is not None and event.engine_snapshots
+        ), "Versioned comparison requires identified snapshots on both sides"
+        assert event.version_epoch, "Versioned comparison requires a trainer epoch"
+        group = (event.trainer_model_id, event.engine_snapshots[0].model_name)
+        epochs = starts.setdefault(group, {})
+        epochs[event.version_epoch] = min(epochs.get(event.version_epoch, event.timestamp), event.timestamp)
+
+    ordinals: dict[tuple[str | None, str, str], int] = {}
+    for group, epochs in starts.items():
+        assert len(set(epochs.values())) == len(epochs), f"Ambiguous trainer epoch order for {group}"
+        for ordinal, epoch in enumerate(sorted(epochs, key=epochs.__getitem__)):
+            ordinals[(*group, epoch)] = ordinal
+
+    result: dict[tuple[str | None, str, int, int], dict[str, str]] = {}
+    for event in events:
+        snapshot = event.engine_snapshots[0]
+        epoch = ordinals[(event.trainer_model_id, snapshot.model_name, event.version_epoch)]
+        key = (event.trainer_model_id, snapshot.model_name, epoch, event.weight_version)
+        if key in result:
+            assert result[key] == snapshot.tensors, f"Conflicting checksum observations for {key}"
+        else:
+            result[key] = snapshot.tensors
+    return result
 
 
 def _read_inference_engine_checksum_events(dump_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:

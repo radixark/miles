@@ -20,6 +20,47 @@ from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
 class TestRolloutServerPureFunctions:
+    @pytest.mark.parametrize("case", ["reordered", "stale", "missing_body"])
+    async def test_checksum_snapshot_preserves_incarnation_and_response_pairing(
+        self, monkeypatch: pytest.MonkeyPatch, case: str
+    ) -> None:
+        """Out-of-order responses retain their cell identity, and stale or absent evidence fails."""
+        server = await _make_serving_server(monkeypatch, num_cells=2)
+        second_finished = asyncio.Event()
+        called = []
+
+        async def check_weights(
+            cell: ServerCell, action: str, allow_quant_error: bool, selector: str, skip_list: list[str] | None
+        ) -> dict | None:
+            called.append(cell.meta.cell_id)
+            assert server.context_lock.held_in_current_context
+            if cell.meta.cell_id == "default-0":
+                await second_finished.wait()
+            else:
+                second_finished.set()
+            if case == "missing_body" and cell.meta.cell_id == "default-0":
+                return None
+            return dict(
+                success=True, ranks=[dict(parallelism_info=[dict(rank=0)], checksums={"w": cell.meta.cell_id})]
+            )
+
+        monkeypatch.setattr(ServerCell, "check_weights", check_weights)
+        targets = {"default-1": "pseudo-hash-1", "default-0": "stale" if case == "stale" else "pseudo-hash-0"}
+        async with server.context_lock:
+            if case == "stale":
+                with pytest.raises(ValueError, match="no longer addressable"):
+                    await server.get_weight_checksum_snapshot(target_incarnations=targets)
+                assert not called
+            elif case == "missing_body":
+                with pytest.raises(AssertionError, match="no non-None engine bodies"):
+                    await server.get_weight_checksum_snapshot(target_incarnations=targets)
+            else:
+                snapshots = await server.get_weight_checksum_snapshot(target_incarnations=targets)
+                assert [(item.cell_id, item.workers_hash, item.tensors) for item in snapshots] == [
+                    ("default-0", "pseudo-hash-0", {"rank0/w": "default-0"}),
+                    ("default-1", "pseudo-hash-1", {"rank0/w": "default-1"}),
+                ]
+
     def test_resolve_sglang_config_yaml_gpu_mismatch_asserts(self, tmp_path: Path) -> None:
         """A YAML fleet whose GPU total disagrees with the CLI allocation is rejected."""
         cfg_path = tmp_path / "cfg.yaml"

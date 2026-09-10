@@ -32,6 +32,7 @@ from tests.utils.soak.views import compute_injection_times, compute_num_injectio
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.external_utils import command_utils
+from miles.utils.test_utils.comparisons.inference_engine_checksums import assert_identified_engine_checksums
 from miles.utils.test_utils.comparisons.metrics import read_rollout_completion_times
 from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections
 
@@ -155,6 +156,7 @@ def _compute_fault_progress_windows(
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
     for side in (BASELINE_SIDE, TARGET_SIDE):
+        assert_identified_engine_checksums(dump_dir=Path(dump_dir) / side)
         assert_deterministic_environment(
             read_events(Path(dump_dir) / side / EVENTS_DIRNAME),
             trainer_ranks={
