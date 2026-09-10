@@ -137,6 +137,7 @@ REMOVED_EXPRESSIONS = [
     "\\dots",
     "<|im_end|>",
     "<|endoftext|>",
+    "<|user|>",  # GLM end-of-turn token in rollout text.
 ]
 
 

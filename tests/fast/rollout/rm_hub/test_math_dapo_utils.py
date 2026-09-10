@@ -97,6 +97,11 @@ class TestComputeScore:
         "solution,gt,strict_box,expected_score,expected_acc",
         [
             ("Answer: 42", "42", False, 1.0, True),
+            ("Answer: 42<|user|>", "42", False, 1.0, True),
+            (r"Answer: \boxed{145}<|user|>", "145", False, 1.0, True),
+            (r"Answer: \boxed{-2}<|user|>", "-2", False, 1.0, True),
+            (r"Answer: \boxed{$-2$}<|user|>", "-2", False, 1.0, True),
+            (r"Answer: \boxed{43}<|user|>", "42", False, -1.0, False),
             ("Answer: wrong", "42", False, -1.0, False),
             (r"\boxed{42}", "42", True, 1.0, True),
             ("x" * 500 + " Answer: 42", "42", False, 1.0, True),
