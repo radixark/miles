@@ -34,7 +34,7 @@ from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
-register_cuda_ci(est_time=240, suite="stage-c-2-gpu-h200", labels=["lora"])
+register_cuda_ci(est_time=240, suite="stage-c-2-gpu-h200", labels=["lora"], hardware=["hopper"])
 
 _NAMES = ("A@1", "B", "C")
 _UPDATES = (("A@2", 4), ("B@2", 5))
