@@ -1,5 +1,8 @@
 """Tinker SDK endpoints with JSON/protobuf translation and tenant authentication."""
 
+import asyncio
+from contextlib import suppress
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
@@ -13,6 +16,8 @@ from miles.tinker.server.proto_codec import (
     decode_forward_backward_request,
     maybe_decompress,
 )
+
+RETRIEVE_LONG_POLL_S = 30.0
 
 COMMAND_ROUTES = {
     "/api/v1/optim_step": "optim_step",
@@ -128,6 +133,11 @@ def build_app(service: TinkerService) -> FastAPI:
         future = service.retrieve_future(_tenant(request), payload["request_id"])
         if future is None:
             return JSONResponse(status_code=410, content={"error": "unknown or expired request"})
+        if future.state == PENDING:
+            # long-poll: the SDK retries try_again with no backoff, so answer on
+            # settlement instead of turning every pending future into a busy-poll
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(future.settled.wait(), timeout=RETRIEVE_LONG_POLL_S)
         if future.state == PENDING:
             return {"type": "try_again", "queue_state": "active"}
         if future.state == FAILED:
