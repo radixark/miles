@@ -1,5 +1,5 @@
 """
-GLM-5.2 / GLM-5.3 744B-A40B GRPO LoRA training (Megatron-Bridge / bridge mode).
+GLM-5.2 744B-A40B GRPO LoRA training script (Megatron-Bridge / bridge mode).
 
 GLM-5.2 is MoE + MLA + DSA with cross-layer index sharing (only "computing" layers carry
 the indexer; the schedule is read from the HF config by the Megatron-Bridge GLM5 provider).
@@ -23,22 +23,9 @@ Supported model variants (HF checkpoint must be the native config,
 model_type=glm_moe_dsa / GlmMoeDsaForCausalLM):
   GLM-5.2          full 744B model (zai-org/GLM-5.2)
   GLM-5.2_5layer   5-layer GLM-5.2 prune (Pinaster/GLM-5.2_5layer; 3 dense + 2 MoE)
-  GLM-5.3          full 744B model; BF16 training from zai-org/GLM-5.3-BF16,
-                   optional FP8 rollout from zai-org/GLM-5.3 (not GLM-5.3-Flash)
-
-Args:
-  --model-name: GLM-5.2, GLM-5.2_5layer, or GLM-5.3.
-  --num-nodes / --num-gpus-per-node: Actor topology. For multiple nodes, join Ray
-      on every node first and set MILES_SCRIPT_EXTERNAL_RAY=1 on the head.
-  --hf-checkpoint: BF16 training checkpoint; overrides the model directory default.
-  --fp8-rollout / --fp8-rollout-checkpoint: Serve a separate FP8 base checkpoint.
-  --rollout-num-gpus-per-engine: Override the engine size (0 selects the model default).
 
 Usage:
   python scripts/run_glm5_2_744b_a40b_lora.py prepare    --model-name GLM-5.2_5layer
-  python scripts/run_glm5_2_744b_a40b_lora.py prepare --model-name GLM-5.3 --fp8-rollout
-  MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_glm5_2_744b_a40b_lora.py train \\
-      --model-name GLM-5.3 --num-nodes 4 --num-gpus-per-node 8 --fp8-rollout
   python scripts/run_glm5_2_744b_a40b_lora.py full-train --model-name GLM-5.2_5layer --num-gpus-per-node 4
   python scripts/run_glm5_2_744b_a40b_lora.py full-train --model-name GLM-5.2_5layer \\
       --dsa-attention-backend megatron --num-gpus-per-node 4

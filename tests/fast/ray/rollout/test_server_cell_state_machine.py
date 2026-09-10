@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
@@ -283,34 +282,14 @@ class TestTick:
         assert isinstance(cell._state, StatePendingWeights)
         assert cell_env["memory_calls"] == calls_after_first_tick
 
-    async def test_a_colocated_engine_keeps_weights_for_the_initial_update(self, cell_env):
-        """Only KV and graph memory are released while the engine awaits its first weight update."""
+    async def test_an_engine_sharing_gpus_with_the_trainer_hands_its_memory_back(self, cell_env):
+        """Under colocation the engine must give the gpus back until the next rollout."""
         cell = _make_cell(needs_offload=True)
         await cell.init()
 
         await cell.tick()
 
-        assert cell_env["memory_calls"] == [("release", dict(tags=["kv_cache", "cuda_graph"]))]
-
-    async def test_slow_base_weight_transfers_do_not_block_initialization(self, cell_env, monkeypatch):
-        """A full model's weight offload/reload can take longer than a controller tick."""
-
-        class _SlowWeightApiClient(_RecordingApiClient):
-            async def release_memory_occupation(self, tags=None):
-                if tags is None or "weights" in tags:
-                    await asyncio.Event().wait()
-                await super().release_memory_occupation(tags=tags)
-
-            async def resume_memory_occupation(self, tags=None):
-                await asyncio.Event().wait()
-
-        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _SlowWeightApiClient)
-        cell = _make_cell(needs_offload=True)
-        await cell.init()
-
-        await asyncio.wait_for(cell.tick(), timeout=0.1)
-
-        assert isinstance(cell._state, StatePendingWeights)
+        assert cell_env["memory_calls"] == [("release", dict(tags=None)), ("resume", dict(tags=["weights"]))]
 
     async def test_the_weight_checker_snapshots_before_the_memory_is_handed_back(self, cell_env):
         """Releasing the occupation discards the loaded weights, so a later snapshot records garbage."""
@@ -373,12 +352,13 @@ class TestTick:
         ("failing_operation", "error_message"),
         [
             ("release_memory_occupation", "engine refused to release its memory"),
+            ("resume_memory_occupation", "engine refused to resume its weights"),
         ],
     )
     async def test_a_cell_whose_memory_reconfiguration_fails_is_retried_by_a_later_tick(
         self, result_api_client, failing_operation: str, error_message: str
     ):
-        """A failed release must leave initialization retryable instead of stranding the cell as pending."""
+        """A failed release or resume must leave initialization retryable instead of stranding the cell as pending."""
         result_api_client.errors[failing_operation] = RuntimeError(error_message)
         cell = _make_cell(needs_offload=True)
         await cell.init()
@@ -472,7 +452,7 @@ class TestTick:
             f"check_weights:{kwargs['action']}" if name == "check_weights" else name
             for name, kwargs in cell_env["memory_calls"]
         ]
-        assert names == ["check_weights:snapshot", "release", "check_weights:reset_tensors"]
+        assert names == ["check_weights:snapshot", "release", "resume", "check_weights:reset_tensors"]
 
     async def test_the_snapshot_is_taken_over_the_whole_model_without_a_skip_list(self, cell_env):
         """The baseline must match what the controller-side reset and comparison later cover."""
