@@ -44,12 +44,20 @@ class InjectionEvent(BaseEvent):
     harmed: bool = True
 
 
+class SoakPodTarget(FrozenStrictBaseModel):
+    namespace: str
+    release: str
+    name: str
+    uid: str
+
+
 class SoakActionRequest(FrozenStrictBaseModel):
     request_id: str = Field(default_factory=lambda: uuid4().hex)
     target: dict
     form_name: str
     harms_cell: bool
     next_due_at: float | None = None
+    pod: SoakPodTarget | None = None
 
 
 class SoakScheduleEvent(BaseEvent):

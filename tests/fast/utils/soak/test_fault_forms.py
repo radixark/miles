@@ -1,13 +1,85 @@
+import json
 import random
-from unittest.mock import MagicMock
+import subprocess
+from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from tests.fast.utils.soak.utils import NAMESPACE, RUN_ID, api_server_fault_forms, config_of, typed_cell
 from tests.utils.soak import fault_forms
+from tests.utils.soak.state import SoakActionRequest, SoakPodTarget
 
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.types import ClusterBackend, DeployComponent
+
+
+@pytest.mark.parametrize("status_code", [200, 503])
+async def test_async_http_injection_uses_the_recorded_target_and_propagates_failure(
+    monkeypatch: pytest.MonkeyPatch, status_code: int
+) -> None:
+    """A selected cell is sent once and a refused HTTP response cannot count as success."""
+    sent: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(status_code=status_code)
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        fault_forms.httpx,
+        "AsyncClient",
+        lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    form = fault_forms.InjectFaultForm(base_url="http://control", failure_mode=FailureMode.SIGKILL)
+    request = SoakActionRequest(form_name=form.name, target=typed_cell("actor-7", "actor"), harms_cell=True)
+    if status_code == 200:
+        await form.execute(request)
+    else:
+        with pytest.raises(httpx.HTTPStatusError):
+            await form.execute(request)
+    assert len(sent) == 1
+    assert sent[0].url.path == "/api/v1/cells/actor-7/inject-fault"
+    assert json.loads(sent[0].content) == {"mode": "sigkill", "sub_index": 0}
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+async def test_async_pod_exec_uses_the_selected_pod_and_rejects_a_missing_process(
+    monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    """No matching process is a failed injection, even when kubectl itself launched successfully."""
+    form = fault_forms.ExecSigkillFaultForm(
+        namespace=NAMESPACE, run_id=RUN_ID, container="engine", process_pattern="sglang::"
+    )
+    release = ReleaseName(run_id=RUN_ID, deploy_component=DeployComponent.ALL, deploy_instance_id=None).serialize()
+    request = SoakActionRequest(
+        target=typed_cell("rollout-engine-7", "rollout"),
+        form_name=form.name,
+        harms_cell=True,
+        pod=SoakPodTarget(namespace=NAMESPACE, release=release, name="selected-pod", uid="selected-uid"),
+    )
+    command = AsyncMock(return_value=subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=""))
+    monkeypatch.setattr(fault_forms, "run_command", command)
+    if returncode == 0:
+        await form.execute(request)
+    else:
+        with pytest.raises(AssertionError, match="No process matching"):
+            await form.execute(request)
+    assert command.await_count == 1
+    assert command.call_args.args[0] == [
+        "kubectl",
+        "exec",
+        "--namespace",
+        NAMESPACE,
+        "selected-pod",
+        "--container",
+        "engine",
+        "--",
+        "pkill",
+        "-9",
+        "-f",
+        "sglang::",
+    ]
 
 
 def test_ray_draws_the_in_process_kills_for_a_trainer_cell() -> None:

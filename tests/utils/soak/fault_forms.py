@@ -3,16 +3,20 @@
 import abc
 import random
 
+import httpx
 import requests
+from tests.utils.soak.action import SoakActionForm, run_command
 from tests.utils.soak.pod_manipulation import (
     delete_one_pod_of_cell,
     list_pod_names_of_cell,
     sigkill_process_patterns_in_pod,
 )
+from tests.utils.soak.state import SoakActionRequest, SoakPodTarget
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
@@ -40,7 +44,7 @@ class BaseFaultForm(abc.ABC):
     def inject(self, cell: dict, rng: random.Random) -> None: ...
 
 
-class InjectFaultForm(BaseFaultForm):
+class InjectFaultForm(BaseFaultForm, SoakActionForm):
     def __init__(self, *, base_url: str, failure_mode: FailureMode) -> None:
         self._base_url = base_url
         self._failure_mode = failure_mode
@@ -48,6 +52,15 @@ class InjectFaultForm(BaseFaultForm):
     @property
     def name(self) -> str:
         return f"inject_fault:{self._failure_mode.value}"
+
+    async def execute(self, request: SoakActionRequest) -> None:
+        assert request.form_name == self.name, f"Request {request.request_id} names another form: {request.form_name}"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                f"{self._base_url}/api/v1/cells/{request.target['metadata']['name']}/inject-fault",
+                json={"mode": self._failure_mode.value, "sub_index": 0},
+            )
+            response.raise_for_status()
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         resp = requests.post(
@@ -58,7 +71,7 @@ class InjectFaultForm(BaseFaultForm):
         resp.raise_for_status()
 
 
-class DeletePodFaultForm(BaseFaultForm):
+class DeletePodFaultForm(BaseFaultForm, SoakActionForm):
     def __init__(self, *, namespace: str, run_id: str) -> None:
         assert namespace, "Deleting a cell's pod needs the namespace the run was installed into"
         assert run_id, "Deleting a cell's pod needs the run_id naming the release that owns it"
@@ -72,13 +85,22 @@ class DeletePodFaultForm(BaseFaultForm):
     def name(self) -> str:
         return DELETE_POD_FORM_NAME
 
+    async def execute(self, request: SoakActionRequest) -> None:
+        pod = _validate_pod_request(
+            request=request, form_name=self.name, namespace=self._namespace, release=self._release
+        )
+        await run_command(
+            ["kubectl", "delete", "pod", "--namespace", pod.namespace, "--wait=false", pod.name],
+            timeout_seconds=KUBECTL_TIMEOUT_SECONDS,
+        )
+
     def inject(self, cell: dict, rng: random.Random) -> None:
         delete_one_pod_of_cell(
             namespace=self._namespace, release=self._release, cell_id=cell["metadata"]["name"], rng=rng
         )
 
 
-class ExecSigkillFaultForm(BaseFaultForm):
+class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
     def __init__(self, *, namespace: str, run_id: str, container: str, process_pattern: str) -> None:
         assert namespace, "Crashing a process inside a cell's pod needs the namespace the run was installed into"
         assert run_id, "Crashing a process inside a cell's pod needs the run_id naming the release that owns it"
@@ -94,6 +116,34 @@ class ExecSigkillFaultForm(BaseFaultForm):
     def name(self) -> str:
         return EXEC_SIGKILL_FORM_NAME
 
+    async def execute(self, request: SoakActionRequest) -> None:
+        pod = _validate_pod_request(
+            request=request, form_name=self.name, namespace=self._namespace, release=self._release
+        )
+        result = await run_command(
+            [
+                "kubectl",
+                "exec",
+                "--namespace",
+                pod.namespace,
+                pod.name,
+                "--container",
+                self._container,
+                "--",
+                "pkill",
+                "-9",
+                "-f",
+                self._process_pattern,
+            ],
+            timeout_seconds=KUBECTL_TIMEOUT_SECONDS,
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"No process matching {self._process_pattern!r} was killed inside {pod.name} (exit "
+            f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}. A crash nobody caused would "
+            f"otherwise be counted as one that happened"
+        )
+
     def inject(self, cell: dict, rng: random.Random) -> None:
         cell_id = cell["metadata"]["name"]
         pod_names = list_pod_names_of_cell(namespace=self._namespace, release=self._release, cell_id=cell_id)
@@ -105,6 +155,17 @@ class ExecSigkillFaultForm(BaseFaultForm):
             container=self._container,
             process_pattern=self._process_pattern,
         )
+
+
+def _validate_pod_request(
+    *, request: SoakActionRequest, form_name: str, namespace: str, release: str
+) -> SoakPodTarget:
+    assert request.form_name == form_name, f"Request {request.request_id} names another form: {request.form_name}"
+    assert request.pod is not None, f"Request {request.request_id} names no pod"
+    assert (
+        request.pod.namespace == namespace and request.pod.release == release
+    ), f"Request {request.request_id} targets a different release: {request.pod}"
+    return request.pod
 
 
 CellFaultForms = dict[str, list[BaseFaultForm]]
