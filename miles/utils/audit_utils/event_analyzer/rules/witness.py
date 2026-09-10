@@ -4,6 +4,7 @@ from collections.abc import Callable, Hashable, Iterator, Sequence
 from typing import Protocol, TypeVar
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.event_analyzer.utils import filter_by_type
 from miles.utils.audit_utils.event_logger.models import (
     Event,
     TrainAdvantageComputationEvent,
@@ -53,27 +54,20 @@ def check(events: list[Event]) -> list[WitnessIssue]:
     """
 
     allocated_witness_ids_by_rollout = _compute_allocated_witness_ids_by_rollout(
-        _filter_by_type(events, WitnessAllocateIdEvent)
+        filter_by_type(events, WitnessAllocateIdEvent)
     )
 
     return list(
         _find_mismatches(
-            all_step_events=_filter_by_type(events, TrainGroupStepEndEvent),
-            all_witness_events=_filter_by_type(events, WitnessSnapshotParamEvent),
+            all_step_events=filter_by_type(events, TrainGroupStepEndEvent),
+            all_witness_events=filter_by_type(events, WitnessSnapshotParamEvent),
             expected_witness_ids_of_step=_compute_expected_witness_ids_of_step(allocated_witness_ids_by_rollout),
             allocated_witness_ids_by_rollout=allocated_witness_ids_by_rollout,
             zero_adv_witness_ids_by_rollout=_compute_zero_advantage_witness_ids(
-                _filter_by_type(events, TrainAdvantageComputationEvent)
+                filter_by_type(events, TrainAdvantageComputationEvent)
             ),
         )
     )
-
-
-_EventT = TypeVar("_EventT")
-
-
-def _filter_by_type(arr: Sequence[Event], ty: type[_EventT]) -> list[_EventT]:
-    return [x for x in arr if isinstance(x, ty)]
 
 
 def _compute_zero_advantage_witness_ids(

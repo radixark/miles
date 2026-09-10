@@ -15,8 +15,13 @@ from miles.utils.audit_utils.event_analyzer.analyzer import (
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import (
     InferenceEngineWeightChecksumEvent,
+    RolloutHoldingsSnapshotEvent,
+    RolloutStateRestoreEvent,
+    SampleOwner,
+    SampleOwnerTransitionEvent,
     TrainEngineLocalWeightChecksumEvent,
     TrainEngineLocalWeightChecksumState,
+    TrainerTrainedSamplesEvent,
 )
 from miles.utils.audit_utils.process_identity import (
     SimpleProcessIdentity,
@@ -50,7 +55,7 @@ def _make_source(*, cell_index: int = 0, rank: int = 0) -> TrainProcessIdentity:
 
 class TestRunAnalysis:
     def test_empty_directory_returns_no_issues(self, tmp_path: Path) -> None:
-        assert run_analysis(event_dir=tmp_path) == []
+        assert run_analysis(event_dir=tmp_path, always_on_only=False) == []
 
     def test_delegates_to_rules_and_returns_issues(self, tmp_path: Path) -> None:
         # Cross-replica rule compares same rank across DIFFERENT cells, so use cell_index 0/1.
@@ -62,11 +67,45 @@ class TestRunAnalysis:
         _log_checksum_event(logger_b, rollout_id=0, param_hashes={"pp0.w": "zzz"})
         logger_b.close()
 
-        issues = run_analysis(event_dir=tmp_path)
+        issues = run_analysis(event_dir=tmp_path, always_on_only=False)
         assert len(issues) == 1
 
 
 class TestSeveralModelIds:
+    def test_policies_sharing_sample_indices_do_not_contaminate_ownership(self, tmp_path: Path) -> None:
+        """Rollout ownership follows the destination policy even when both policies reuse source indices."""
+        event_logger = EventLogger(
+            log_dir=tmp_path, file_name="ownership.jsonl", source=SimpleProcessIdentity(component="rollout_executor")
+        )
+        event_logger.log(RolloutStateRestoreEvent, dict(rollout_id=0))
+        for model_id in ("solver", "verifier"):
+            event_logger.log(
+                SampleOwnerTransitionEvent,
+                dict(
+                    sample_indices=[1],
+                    trainer_model_id=model_id,
+                    from_owner=SampleOwner.OUTPUT_BUFFER,
+                    to_owner=SampleOwner.HANDED_TO_TRAINER,
+                ),
+            )
+            event_logger.log(
+                TrainerTrainedSamplesEvent,
+                dict(rollout_id=1, sample_indices=[1], trainer_model_id=model_id),
+            )
+            event_logger.log(
+                RolloutHoldingsSnapshotEvent,
+                dict(
+                    rollout_id=1,
+                    trainer_model_id=model_id,
+                    holdings={},
+                    replays_samples=False,
+                    reason="save",
+                ),
+            )
+        event_logger.close()
+
+        run_analysis_from_args(Namespace(save_debug_event_data=str(tmp_path)))
+
     def test_trainer_controller_events_are_partitioned_by_model_id(self) -> None:
         """Controller events stay with their model while model-neutral events accompany every partition."""
         solver_event = SimpleNamespace(
@@ -95,7 +134,7 @@ class TestSeveralModelIds:
                 _log_checksum_event(event_logger, rollout_id=0, param_hashes={"pp0.w": param_hash})
                 event_logger.close()
 
-        assert run_analysis(event_dir=tmp_path) == []
+        assert run_analysis(event_dir=tmp_path, always_on_only=False) == []
 
     def test_two_cells_of_one_model_id_are_still_compared(self, tmp_path: Path) -> None:
         """Partitioning by model id must not disable the check inside one model id, which is what it exists for."""
@@ -118,7 +157,7 @@ class TestSeveralModelIds:
         _log_checksum_event(other, rollout_id=0, param_hashes={"pp0.w": "bbb"})
         other.close()
 
-        assert len(run_analysis(event_dir=tmp_path)) == 1
+        assert len(run_analysis(event_dir=tmp_path, always_on_only=False)) == 1
 
 
 def _log_inference_engine_checksum_event(
@@ -144,7 +183,7 @@ class TestInferenceEngineChecksumRuleWiredIn:
         )
         event_logger.close()
 
-        issues = run_analysis(event_dir=tmp_path)
+        issues = run_analysis(event_dir=tmp_path, always_on_only=False)
         assert len(issues) == 1
 
     def test_consistent_engines_no_issue(self, tmp_path: Path) -> None:
@@ -157,16 +196,40 @@ class TestInferenceEngineChecksumRuleWiredIn:
         )
         event_logger.close()
 
-        assert run_analysis(event_dir=tmp_path) == []
+        assert run_analysis(event_dir=tmp_path, always_on_only=False) == []
 
 
 class TestRunAnalysisFromArgs:
-    def test_skips_when_disabled(self) -> None:
-        args = Namespace(enable_event_analyzer=False, save_debug_event_data="/tmp/whatever")
+    def test_ownership_runs_with_the_optional_analyzer_disabled(self, lost_sample_event_dir: Path) -> None:
+        """A lost checkpoint sample raises even when the optional analyzer flag is off."""
+        args = Namespace(enable_event_analyzer=False, save_debug_event_data=str(lost_sample_event_dir))
+
+        with pytest.raises(ValueError, match="Event analysis found issues"):
+            run_analysis_from_args(args)
+
+    def test_checksum_rules_remain_disabled_for_the_ownership_entry_point(self, tmp_path: Path) -> None:
+        """Enabling event logging alone must not enable optional checksum rules."""
+        for cell_index, checksum in ((0, "a"), (1, "b")):
+            event_logger = EventLogger(
+                log_dir=tmp_path, file_name=f"{cell_index}.jsonl", source=_make_source(cell_index=cell_index)
+            )
+            _log_checksum_event(event_logger, rollout_id=0, param_hashes={"w": checksum})
+            event_logger.close()
+        args = Namespace(enable_event_analyzer=False, save_debug_event_data=str(tmp_path))
+
+        args.enable_event_analyzer = True
+        run_analysis_from_args(args, always_on_only=True)
+        args.enable_event_analyzer = False
+        run_analysis_from_args(args)
+        assert run_analysis(event_dir=tmp_path, always_on_only=False)
+
+    def test_no_events_produce_no_issues_with_optional_rules_disabled(self, tmp_path: Path) -> None:
+        """An empty event directory has no ownership violations to report."""
+        args = Namespace(enable_event_analyzer=False, save_debug_event_data=str(tmp_path))
         run_analysis_from_args(args)
 
     def test_skips_when_no_event_dir(self) -> None:
-        args = Namespace(enable_event_analyzer=True)
+        args = Namespace(enable_event_analyzer=True, save_debug_event_data=None)
         run_analysis_from_args(args)
 
     def test_logs_analysis_duration(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

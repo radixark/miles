@@ -3,6 +3,7 @@
 import logging
 import time
 from argparse import Namespace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -10,24 +11,31 @@ from miles.utils.audit_utils.event_analyzer.rules import (
     cross_replica_weight_checksum,
     inference_engine_weight_checksum_consistency,
 )
+from miles.utils.audit_utils.event_analyzer.rules import sample_ownership as sample_ownership_rule
 from miles.utils.audit_utils.event_analyzer.rules import witness as witness_rule
 from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import (
+    RolloutHoldingsSnapshotEvent,
+    SampleOwnerTransitionEvent,
+    TrainerCpuWitnessEvent,
+    TrainerGroupMappingEvent,
+    TrainerTrainedSamplesEvent,
+)
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity, TrainProcessIdentity
 
 logger = logging.getLogger(__name__)
 
 
-def run_analysis_from_args(args: Namespace) -> None:
-    if not getattr(args, "enable_event_analyzer", False):
-        return
-
-    event_dir = getattr(args, "save_debug_event_data", None)
-    if event_dir is None:
+def run_analysis_from_args(args: Namespace, *, always_on_only: bool = False) -> None:
+    if (event_dir := args.save_debug_event_data) is None:
         return
 
     started_at = time.monotonic()
     try:
-        issues = run_analysis(event_dir=Path(event_dir))
+        issues = run_analysis(
+            event_dir=Path(event_dir),
+            always_on_only=always_on_only or not getattr(args, "enable_event_analyzer", False),
+        )
     finally:
         logger.info(f"Event analysis of {event_dir} took {time.monotonic() - started_at:.3f} seconds")
 
@@ -36,19 +44,23 @@ def run_analysis_from_args(args: Namespace) -> None:
         raise ValueError(f"Event analysis found issues: {issues}")
 
 
-def run_analysis(event_dir: Path) -> list[Any]:
+def run_analysis(event_dir: Path, *, always_on_only: bool) -> list[Any]:
     events = read_events(event_dir)
     if not events:
         return []
 
-    return [issue for model_events in _partition_by_model_id(events) for issue in _check_one_model_id(model_events)]
-
-
-def _check_one_model_id(events: list[Any]) -> list[Any]:
+    rules = [
+        (cross_replica_weight_checksum.check, False),
+        (inference_engine_weight_checksum_consistency.check, False),
+        (witness_rule.check, False),
+        (partial(sample_ownership_rule.check, latest_only=always_on_only), True),
+    ]
     return [
-        *cross_replica_weight_checksum.check(events),
-        *inference_engine_weight_checksum_consistency.check(events),
-        *witness_rule.check(events),
+        issue
+        for model_events in _partition_by_model_id(events)
+        for check, always_on in rules
+        if always_on or not always_on_only
+        for issue in check(model_events)
     ]
 
 
@@ -63,5 +75,16 @@ def _partition_by_model_id(events: list[Any]) -> list[list[Any]]:
 
 
 def _compute_model_id(event: Any) -> str | None:
+    if isinstance(
+        event,
+        (
+            SampleOwnerTransitionEvent,
+            RolloutHoldingsSnapshotEvent,
+            TrainerTrainedSamplesEvent,
+            TrainerCpuWitnessEvent,
+            TrainerGroupMappingEvent,
+        ),
+    ):
+        return event.trainer_model_id
     source = event.source
     return source.model_id if isinstance(source, (TrainProcessIdentity, TrainerControllerProcessIdentity)) else None
