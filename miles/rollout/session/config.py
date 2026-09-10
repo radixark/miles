@@ -4,6 +4,9 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
 class SessionServerConfig(FrozenStrictBaseModel):
+    disk_offload: bool
+    disk_offload_dir: str | None
+    run_id: str
     host: str
     port: int
     instance_id: str | None
@@ -32,6 +35,9 @@ def compute_session_server_config(
     args, *, host: str, port: int, instance_id: str | None, backend_url: str
 ) -> SessionServerConfig:
     return SessionServerConfig(
+        disk_offload=not args.disable_session_server_disk_offload,
+        disk_offload_dir=args.session_server_disk_offload_dir,
+        run_id=args.run_uuid,
         host=host,
         port=port,
         instance_id=instance_id,

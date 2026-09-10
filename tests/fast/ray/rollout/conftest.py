@@ -108,6 +108,8 @@ def make_args(**overrides: Any) -> Namespace:
         session_server_ip=None,
         session_server_port=None,
         session_server_workers=1,
+        disable_session_server_disk_offload=False,
+        session_server_disk_offload_dir=None,
         run_uuid="0123456789abcdef",
         # external rollout
         rollout_external=False,

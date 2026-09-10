@@ -2584,6 +2584,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "(multi-lineage trajectories, always-branch).",
             )
             parser.add_argument(
+                "--disable-session-server-disk-offload",
+                action="store_true",
+                help="Keep session records in memory instead of offloading them to SQLite.",
+            )
+            parser.add_argument(
+                "--session-server-disk-offload-dir",
+                type=str,
+                default=None,
+                help="Local directory for temporary session-record databases. Defaults to miles-session-records "
+                "beneath the system temporary directory; separate from training offload.",
+            )
+            parser.add_argument(
                 "--session-server-workers",
                 type=int,
                 default=32,

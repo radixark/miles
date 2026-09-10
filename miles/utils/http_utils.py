@@ -318,6 +318,14 @@ async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, r
             await asyncio.sleep(5)
 
 
+async def request_no_retry(
+    url: str, payload: dict, *, method: str, timeout: float, headers: dict | None = None
+) -> httpx.Response:
+    """One request with a total deadline; preserve status, headers and body."""
+    assert _http_client is not None, "init_http_client() must run before request_no_retry()"
+    return await asyncio.wait_for(_http_client.request(method, url, json=payload, headers=headers), timeout)
+
+
 async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
     """Perform one raw-bytes POST with a total timeout."""
     assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"

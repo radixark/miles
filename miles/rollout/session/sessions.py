@@ -6,8 +6,11 @@ Thin layer: converts each HTTP request to primitive inputs, calls
 
 import json
 import logging
+import tempfile
+import uuid
+from pathlib import Path
 
-from fastapi import Request
+from fastapi import Header, Request
 from fastapi.responses import JSONResponse
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionResponse
 from sglang.srt.parser.template_detection import detect_inline_system_support
@@ -38,11 +41,18 @@ from miles.rollout.session.anthropic_adapter import (
 from miles.rollout.session.anthropic_adapter import (
     _validate_anthropic_content_block as _validate_anthropic_content_block,
 )
-from miles.rollout.session.anthropic_adapter import _validate_anthropic_features, anthropic_adapter_available
+from miles.rollout.session.anthropic_adapter import (
+    _validate_anthropic_features,
+    anthropic_adapter_available,
+)
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import JSON_MEDIA_TYPE, SessionCore, _render_json
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.record.backends.sqlite.backend import SQLiteBackend
+from miles.rollout.session.record.store import RecordStore
+from miles.rollout.session.record.types import RecordReadError, RecordStorageError
+from miles.rollout.session.types import SESSION_GENERATION_HEADER, SESSION_RECORD_ERROR_CODE
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcherError,
@@ -73,16 +83,43 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
     )
     merge_inline_system = not detect_inline_system_support(getattr(tokenizer, "chat_template", None))
 
+    storage_instance_id = config.instance_id if config.instance_id is not None else uuid.uuid4().hex
+    disk = None
+    if config.disk_offload:
+        directory = (
+            Path(config.disk_offload_dir)
+            if config.disk_offload_dir is not None
+            else Path(tempfile.gettempdir()) / "miles-session-records"
+        )
+        disk = SQLiteBackend(directory, run_id=config.run_id, instance_id=storage_instance_id)
+    record_store = RecordStore(run_id=config.run_id, instance_id=storage_instance_id, backend=disk)
     use_v2 = config.use_session_server == "v2"
     if use_v2:
         from miles.rollout.session.v2.core import SessionCoreV2
         from miles.rollout.session.v2.session_state import SessionRegistryV2
 
-        registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
+        registry = SessionRegistryV2(
+            tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher, record_store=record_store
+        )
         core = SessionCoreV2(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
     else:
-        registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
+        registry = SessionRegistry(
+            tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher, record_store=record_store
+        )
         core = SessionCore(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
+
+    app.state.session_core = core
+    app.router.on_shutdown.append(core.close)
+
+    @app.exception_handler(RecordReadError)
+    async def record_read_error_handler(request: Request, exc: RecordReadError):
+        return JSONResponse(
+            status_code=503, content={"error": {"code": SESSION_RECORD_ERROR_CODE, "message": str(exc)}}
+        )
+
+    @app.exception_handler(RecordStorageError)
+    async def record_storage_error_handler(request: Request, exc: RecordStorageError):
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
@@ -108,8 +145,10 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         return await core.get_session(session_id)
 
     @app.delete("/sessions/{session_id}")
-    async def delete_session(session_id: str):
-        return await core.delete_session(session_id)
+    async def delete_session(
+        session_id: str, generation: int | None = Header(default=None, alias=SESSION_GENERATION_HEADER)
+    ):
+        return await core.delete_session(session_id, generation=generation)
 
     @app.post("/sessions/{session_id}/v1/chat/completions")
     async def chat_completions(request: Request, session_id: str):

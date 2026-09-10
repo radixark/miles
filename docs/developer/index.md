@@ -20,6 +20,12 @@ short tour for new contributors.
 
   </Card>
 
+  <Card title="Session Record Disk Offload" icon="database" href="/developer/session_server/00-disk_offload">
+
+    Session record ownership and the planned SQLite disk offload contract.
+
+  </Card>
+
   <Card title="Versions and Images" icon="layer-group" href="/developer/versions">
 
     How the miles, SGLang and Megatron-LM trees fit together, and how to bump one.

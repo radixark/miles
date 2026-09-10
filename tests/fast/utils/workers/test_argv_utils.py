@@ -93,6 +93,9 @@ class TestConfigToArgv:
         assert parse_config_argv(MilesRouterConfig, config_to_argv(router_config)) == router_config
 
         session_config = SessionServerConfig(
+            run_id="test-run",
+            disk_offload=True,
+            disk_offload_dir="/tmp/test-records",
             host="127.0.0.1",
             port=30100,
             instance_id="abc",

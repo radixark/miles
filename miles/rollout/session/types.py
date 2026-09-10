@@ -1,5 +1,8 @@
 from pydantic import BaseModel, Field
 
+SESSION_GENERATION_HEADER = "x-miles-session-generation"
+SESSION_RECORD_ERROR_CODE = "session_record_unavailable"
+
 
 class SessionRecord(BaseModel):
     timestamp: float

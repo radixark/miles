@@ -1,4 +1,5 @@
 accelerate
+aiosqlite==0.22.1
 backports.strenum; python_version < "3.11"
 blake3==1.0.9  # disk-delta weight sync (checksum)
 blobfile

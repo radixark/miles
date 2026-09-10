@@ -18,7 +18,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
+from miles.rollout.session.lifecycle import SessionActivity
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
+from miles.rollout.session.record.store import RecordStore
+from miles.rollout.session.record.types import RecordRef
+from miles.rollout.session.recording import commit_record
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
@@ -37,6 +41,9 @@ class SessionStateV2:
     semantics — a failed first turn leaves the session fully retryable).
     """
 
+    session_id: str
+    activity: SessionActivity = field(default_factory=SessionActivity, init=False, repr=False, compare=False)
+    record_store: RecordStore = field(repr=False, compare=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
@@ -48,8 +55,13 @@ class SessionStateV2:
     def active_messages(self) -> list[dict[str, Any]]:
         return self.active_leaf.path_messages() if self.active_leaf is not None else []
 
-    def active_records(self) -> list[SessionRecord]:
-        return [node.record for node in self.active_path()]
+    @property
+    def record_refs(self) -> list[RecordRef]:
+        return [node.record_checkpoint.ref for node in self.active_path()]
+
+    def release_records(self) -> None:
+        for node in self.tree.nodes:
+            self.record_store.delete(node.record_checkpoint.ref)
 
     def active_token_ids(self) -> list[int]:
         return self.active_leaf.token_ids if self.active_leaf is not None else []
@@ -81,6 +93,7 @@ def position_for_request(
             attach.best_overlap,
             len(state.tree.nodes),
         )
+        state.activity.generation += 1
     state.active_leaf = attach.node
 
 
@@ -159,17 +172,19 @@ def commit_generation(
 
     parent_messages = parent.path_messages() if parent is not None else []
     delta = list(request_messages[len(parent_messages) :]) + [assistant_message]
-    node = state.tree.create_node(
-        parent,
-        delta_messages=delta,
-        token_ids=all_token_ids,
-        completion_span=(len(prompt_token_ids), len(all_token_ids)),
-        committed_at=record.timestamp,
-        response_id=response_id,
-        record=record,
-        finish_reason=finish_reason,
-    )
-    state.active_leaf = node
+    with commit_record(state.record_store, state.session_id, record) as checkpoint:
+        node = state.tree.create_node(
+            parent,
+            delta_messages=delta,
+            token_ids=all_token_ids,
+            completion_span=(len(prompt_token_ids), len(all_token_ids)),
+            committed_at=record.timestamp,
+            response_id=response_id,
+            record_checkpoint=checkpoint,
+            finish_reason=finish_reason,
+        )
+        state.active_leaf = node
+        state.activity.generation += 1
     return node
 
 
@@ -186,7 +201,7 @@ class SessionRegistryV2(SessionRegistry):
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = SessionStateV2()
+        self.sessions[session_id] = SessionStateV2(session_id=session_id, record_store=self.record_store)
         return session_id
 
     def compute_mismatch(self, messages: list[dict[str, Any]], token_ids: list[int], tools: Any) -> list[dict] | None:
@@ -210,6 +225,5 @@ class SessionRegistryV2(SessionRegistry):
         """The active-path view of ``compute_mismatch``."""
         if state.active_leaf is None:
             return None
-        records = state.active_records()
-        tools = records[-1].request.get("tools") if records else None
+        tools = state.active_leaf.record_checkpoint.tools
         return self.compute_mismatch(state.active_messages(), state.active_token_ids(), tools)

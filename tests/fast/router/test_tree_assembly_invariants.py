@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 from tests.fast.rollout.session.test_samples import _make_record
 
+from miles.rollout.session.recording import RecordCheckpoint
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.v2.core import SessionCoreV2
 from miles.rollout.session.v2.session_state import SessionRegistryV2
@@ -79,7 +80,9 @@ class _Grower:
             completion_span=(len(prompt), len(prompt) + len(completion)),
             committed_at=float(len(self.state.tree.nodes)),
             response_id=f"resp-{len(self.state.tree.nodes)}",
-            record=record,
+            record_checkpoint=RecordCheckpoint(
+                self.state.record_store.put(self.state.session_id, record), record.request.get("tools")
+            ),
             finish_reason=finish_reason,
         )
 

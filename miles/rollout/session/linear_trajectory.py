@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.types import SessionRecord
+from miles.rollout.session.lifecycle import SessionActivity
+from miles.rollout.session.record.store import RecordStore
+from miles.rollout.session.record.types import RecordRef
+from miles.rollout.session.recording import RecordCheckpoint
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcher,
     assert_messages_append_only_with_allowed_role,
@@ -70,10 +73,13 @@ class LinearTrajectory:
     Concurrency contract: all mutating methods must be called under ``self.lock``.
     """
 
+    session_id: str
+    activity: SessionActivity = field(default_factory=SessionActivity, init=False, repr=False, compare=False)
+    record_store: RecordStore = field(repr=False, compare=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     messages: list[dict[str, Any]] = field(default_factory=list)
-    records: list[SessionRecord] = field(default_factory=list)
+    record_checkpoints: list[RecordCheckpoint] = field(default_factory=list)
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
@@ -83,8 +89,13 @@ class LinearTrajectory:
         """Current token IDs — the latest assistant checkpoint."""
         return self.trajectory_token_ids[-1] if self.trajectory_token_ids else []
 
-    def append_record(self, record: SessionRecord) -> None:
-        self.records.append(record)
+    @property
+    def record_refs(self) -> list[RecordRef]:
+        return [checkpoint.ref for checkpoint in self.record_checkpoints]
+
+    def release_records(self) -> None:
+        for ref in self.record_refs:
+            self.record_store.delete(ref)
 
     def prepare_pretokenized(
         self,
@@ -214,7 +225,7 @@ class LinearTrajectory:
             After rollback:
               messages           = [sys, user, assistant₁]
               trajectory_token_ids = [checkpoint_0_ids]
-              records              = [record_0]
+              record_refs          = [ref_0]
               num_assistant        = 1
 
         Example — agent retries the very first turn::
@@ -279,11 +290,15 @@ class LinearTrajectory:
             discard_count,
         )
 
+        self.activity.generation += 1
         self.messages = stored[:rollback_msg_end]
         self.trajectory_token_ids = self.trajectory_token_ids[: checkpoint_index + 1]
-        self.records = self.records[: checkpoint_index + 1]
+        discarded = self.record_checkpoints[checkpoint_index + 1 :]
+        self.record_checkpoints = self.record_checkpoints[: checkpoint_index + 1]
         self.generated_checkpoint_message_ends = self.generated_checkpoint_message_ends[: checkpoint_index + 1]
         self.num_assistant = len(self.generated_checkpoint_message_ends)
+        for checkpoint in discarded:
+            self.record_store.delete(checkpoint.ref)
 
 
 class SessionRegistry:
@@ -300,8 +315,14 @@ class SessionRegistry:
         *,
         tito_tokenizer: TITOTokenizer,
         message_matcher: SessionMessageMatcher | None = None,
+        record_store: RecordStore | None = None,
     ):
         self.sessions: dict[str, LinearTrajectory] = {}
+        self.record_store = (
+            record_store
+            if record_store is not None
+            else RecordStore(run_id=uuid.uuid4().hex, instance_id="memory", backend=None)
+        )
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
         self.comparator = tito_tokenizer.create_comparator()
@@ -311,7 +332,7 @@ class SessionRegistry:
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = LinearTrajectory()
+        self.sessions[session_id] = LinearTrajectory(session_id=session_id, record_store=self.record_store)
         return session_id
 
     def get_session(self, session_id: str) -> LinearTrajectory:
@@ -321,8 +342,10 @@ class SessionRegistry:
         return session
 
     def remove_session(self, session_id: str) -> None:
-        if self.sessions.pop(session_id, None) is None:
+        session = self.sessions.pop(session_id, None)
+        if session is None:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
+        session.release_records()
 
     def compute_session_mismatch(self, session: LinearTrajectory) -> list[dict] | None:
         """Compare accumulated token IDs against canonical chat template output.
@@ -332,7 +355,7 @@ class SessionRegistry:
         if not session.token_ids:
             return None
         try:
-            tools = session.records[-1].request.get("tools") if session.records else None
+            tools = session.record_checkpoints[-1].tools if session.record_checkpoints else None
             expected_ids = self.tito_tokenizer.apply_chat_template(
                 session.messages,
                 tools=tools,

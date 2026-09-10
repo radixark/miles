@@ -3,6 +3,7 @@
 Hierarchy
 ---------
 SessionError (base)
+├── SessionServerClosingError  → 503  server shutting down
 ├── SessionNotFoundError       → 404  session does not exist
 ├── MessageValidationError     → 400  messages structure/content invalid
 ├── TruncatedGenerationError   → 409  extending a length-truncated generation (v2)
@@ -58,3 +59,7 @@ class UpstreamResponseError(SessionError):
     """
 
     status_code: int = 502
+
+
+class SessionServerClosingError(SessionError):
+    status_code = 503

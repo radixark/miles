@@ -34,7 +34,7 @@ import httpx
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
+from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer, SessionCollectError
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -90,9 +90,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if use_v2:
             collect_kwargs["agent_metadata"] = agent_metadata
         try:
-            result = await tracer.collect_samples(input.sample, **collect_kwargs)
-        # Costs this sample, not the run; a non-2xx still raises RuntimeError.
-        except (TimeoutError, httpx.TransportError) as e:
+            collected = await tracer.collect_samples(input.sample, **collect_kwargs)
+            result = collected.reply
+        # Known record unavailability costs this sample; other HTTP errors remain explicit.
+        except (TimeoutError, httpx.TransportError, SessionCollectError) as e:
             collect_failed = True
             logger.warning(f"{log_prefix} Failed collecting samples: {e!r}", exc_info=True)
         else:
@@ -113,7 +114,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             logger.warning("No model calls recorded for sample")
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
-        return GenerateFnOutput(samples=[sample] if use_v2 else sample)
+        output = GenerateFnOutput(samples=[sample] if use_v2 else sample)
+        tracer.schedule_cleanup(collected.generation)
+        return output
 
     samples = result.samples
     if use_v2 and len(samples) > 1:
@@ -138,11 +141,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             s.non_generation_time = ngt
 
     if use_v2:
-        return GenerateFnOutput(samples=samples)
-
-    (sample,) = samples
-    sample.metadata.update(result.session_metadata)
-    return GenerateFnOutput(samples=sample)
+        output = GenerateFnOutput(samples=samples)
+    else:
+        (sample,) = samples
+        sample.metadata.update(result.session_metadata)
+        output = GenerateFnOutput(samples=sample)
+    tracer.schedule_cleanup(collected.generation)
+    return output
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
