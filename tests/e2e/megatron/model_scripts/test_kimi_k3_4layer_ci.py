@@ -4,7 +4,15 @@ from scripts.run_kimi_k3 import ScriptArgs, _prepare_bf16, _prepare_download, _p
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-register_cuda_ci(est_time=3000, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts"])
+register_cuda_ci(
+    est_time=3000,
+    suite="stage-c-8-gpu-h200",
+    labels=["megatron", "model-scripts"],
+    disabled=(
+        "FIXME: the base re-sync needs sglang-miles's in-place MXFP4 reload; today load_weights hits the "
+        "experts repacked by Mxfp4MoEMethod.process_weights_after_loading, which carry no weight_loader"
+    ),
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
