@@ -12,7 +12,15 @@ from starlette.responses import JSONResponse
 
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
-from miles.utils.ft_utils.api_server.fault_receipts import FaultExitSubmission, FaultReceipt, FaultReceiptRegistry
+from miles.utils.ft_utils.api_server.fault_receipts import (
+    FaultDeadlockReceipt,
+    FaultDeadlockSubmission,
+    FaultExitSubmission,
+    FaultReceipt,
+    FaultReceiptRegistry,
+    FaultStopReceipt,
+    FaultStopSubmission,
+)
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import (
     Cell,
@@ -243,7 +251,9 @@ def _create_api_app(registry: _CellRegistry, *, receipt_url: str | None = None) 
         return _OkResponse()
 
     @app.post("/api/v1/fault-receipts/{request_id}")
-    async def publish_fault_receipt(request_id: str, body: FaultExitSubmission) -> FaultReceipt:
+    async def publish_fault_receipt(
+        request_id: str, body: FaultExitSubmission | FaultStopSubmission | FaultDeadlockSubmission
+    ) -> FaultReceipt | FaultStopReceipt | FaultDeadlockReceipt:
         try:
             return fault_receipts.publish(request_id=request_id, submission=body)
         except KeyError as error:
@@ -252,7 +262,7 @@ def _create_api_app(registry: _CellRegistry, *, receipt_url: str | None = None) 
             raise _K8sError(status_code=409, reason="Conflict", message=str(error)) from error
 
     @app.get("/api/v1/fault-receipts/{request_id}")
-    async def get_fault_receipt(request_id: str) -> FaultReceipt | None:
+    async def get_fault_receipt(request_id: str) -> FaultReceipt | FaultStopReceipt | FaultDeadlockReceipt | None:
         try:
             return fault_receipts.read(request_id)
         except KeyError as error:

@@ -41,11 +41,13 @@ def kill_process_tree(process: subprocess.Popen) -> None:
     _signal_process_group(process.pid, signal.SIGKILL)
 
 
-def kill_process_tree_and_wait(process: subprocess.Popen, *, timeout_seconds: float = 5.0) -> list[int]:
+def kill_process_tree_and_wait(
+    process: subprocess.Popen, *, timeout_seconds: float = 5.0, root_pidfd: int | None = None
+) -> list[int]:
     root = psutil.Process(process.pid)
     deadline = time.monotonic() + timeout_seconds
     with ExitStack() as resources:
-        handles = {root.pid: _freeze_process(root, resources=resources, deadline=deadline)}
+        handles = {root.pid: _freeze_process(root, resources=resources, deadline=deadline, expected_pidfd=root_pidfd)}
         while children := [child for child in root.children(recursive=True) if child.pid not in handles]:
             for child in children:
                 handles[child.pid] = _freeze_process(child, resources=resources, deadline=deadline)
@@ -60,14 +62,56 @@ def kill_process_tree_and_wait(process: subprocess.Popen, *, timeout_seconds: fl
     return list(handles)
 
 
-def _freeze_process(observed: psutil.Process, *, resources: ExitStack, deadline: float) -> int:
-    fd = os.pidfd_open(observed.pid)
+def stop_process_tree_and_wait(
+    process: subprocess.Popen, *, timeout_seconds: float = 5.0, root_pidfd: int | None = None
+) -> list[int]:
+    root = psutil.Process(process.pid)
+    deadline = time.monotonic() + timeout_seconds
+    with ExitStack() as resources, ExitStack() as rollback:
+        handles = {
+            root.pid: _freeze_process(
+                root,
+                resources=resources,
+                resume_resources=rollback,
+                deadline=deadline,
+                require_running=True,
+                expected_pidfd=root_pidfd,
+            )
+        }
+        while children := [child for child in root.children(recursive=True) if child.pid not in handles]:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Process tree did not stop before the injection deadline")
+            for child in children:
+                handles[child.pid] = _freeze_process(
+                    child, resources=resources, resume_resources=rollback, deadline=deadline, require_running=True
+                )
+        if any(select.select([fd], [], [], 0)[0] for fd in handles.values()):
+            raise ProcessLookupError("A stopped process exited before the tree observation completed")
+        rollback.pop_all()
+    return list(handles)
+
+
+def _freeze_process(
+    observed: psutil.Process,
+    *,
+    resources: ExitStack,
+    deadline: float,
+    resume_resources: ExitStack | None = None,
+    require_running: bool = False,
+    expected_pidfd: int | None = None,
+) -> int:
+    if time.monotonic() >= deadline:
+        raise TimeoutError("Process freeze deadline expired before dispatch")
+    fd = os.pidfd_open(observed.pid) if expected_pidfd is None else os.dup(expected_pidfd)
     resources.callback(os.close, fd)
     if not observed.is_running() or select.select([fd], [], [], 0)[0]:
         raise ProcessLookupError(f"Process {observed.pid} exited before injection")
-    if observed.status() != psutil.STATUS_STOPPED:
+    stopped = observed.status() == psutil.STATUS_STOPPED
+    if require_running and stopped:
+        raise ProcessLookupError(f"Process {observed.pid} was already stopped before injection")
+    if not stopped:
         signal.pidfd_send_signal(fd, signal.SIGSTOP)
-        resources.callback(_idempotent_resume_process, fd)
+        (resume_resources if resume_resources is not None else resources).callback(_idempotent_resume_process, fd)
     while observed.is_running() and observed.status() != psutil.STATUS_STOPPED:
         if select.select([fd], [], [], 0)[0]:
             raise ProcessLookupError(f"Process {observed.pid} exited before it stopped")

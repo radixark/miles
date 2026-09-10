@@ -10,13 +10,14 @@ from miles.utils.test_utils.fault_hooks import FaultHookRegistry, FaultHookReque
 
 class TestFaultHookRegistry:
     @pytest.mark.parametrize("arm_first", [False, True])
+    @pytest.mark.parametrize("mode", ["exit", "sigstop", "deadlock", "thread_deadlock"])
     def test_cancelled_request_cannot_rearm_or_fire(
-        self, fault_hook_registry: FaultHookRegistry, arm_first: bool
+        self, fault_hook_registry: FaultHookRegistry, arm_first: bool, mode: str
     ) -> None:
         """Retrying a cancelled request cannot revive a fault."""
         registry = fault_hook_registry
         request = FaultHookRequest(
-            request_id="cancelled", instance_id=registry.instance_id, hook="trainer_before_all_gather", mode="exit"
+            request_id="cancelled", instance_id=registry.instance_id, hook="trainer_before_all_gather", mode=mode
         )
         if arm_first:
             registry.arm(request)

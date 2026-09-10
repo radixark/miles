@@ -1,15 +1,20 @@
+import subprocess
+import sys
 from pathlib import Path
+from uuid import uuid4
 
+import psutil
 import pytest
 from pydantic import ValidationError
 from tests.utils.soak import process_target
-from tests.utils.soak.process_target import ProcessExitReceipt, ProcessIdentity, ProcessTarget
+from tests.utils.soak.process_target import ProcessExitReceipt, ProcessIdentity, ProcessStopReceipt, ProcessTarget
 
 from miles.utils.workers.env_vars import POD_UID_ENV_VAR
 
 
 @pytest.mark.parametrize("changed", ["request", "target", "partial", "unknown_field"])
-def test_mismatched_or_incomplete_exit_receipt_is_rejected(changed: str) -> None:
+@pytest.mark.parametrize("stop", [False, True])
+def test_mismatched_or_incomplete_process_receipt_is_rejected(changed: str, stop: bool) -> None:
     """Only a complete receipt for this request and incarnation can establish application."""
     target = ProcessTarget(
         pod_uid="pod",
@@ -19,17 +24,37 @@ def test_mismatched_or_incomplete_exit_receipt_is_rejected(changed: str) -> None
         pattern="sglang::",
         processes=[ProcessIdentity(pid=42, start_ticks=2), ProcessIdentity(pid=43, start_ticks=3)],
     )
-    payload = {"request_id": "request", "target": target.model_dump(mode="json"), "exited_pids": [42, 43]}
+    field = "stopped_pids" if stop else "exited_pids"
+    payload = {"request_id": "request", "target": target.model_dump(mode="json"), field: [42, 43]}
     if changed == "request":
         payload["request_id"] = "other"
     elif changed == "target":
         payload["target"]["pod_uid"] = "replacement"
     elif changed == "partial":
-        payload["exited_pids"] = [42]
+        payload[field] = [42]
     else:
         payload["exit_pids"] = [42, 43]
     with pytest.raises((AssertionError, ValidationError)):
-        ProcessExitReceipt.model_validate(payload).validate_for(request_id="request", target=target)
+        receipt_type = ProcessStopReceipt if stop else ProcessExitReceipt
+        receipt_type.model_validate(payload).validate_for(request_id="request", target=target)
+
+
+def test_observed_process_stays_stopped_and_cannot_count_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exec stop operation confirms its observed process and preserves the stop after returning."""
+    token = uuid4().hex
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)", token])
+    monkeypatch.setenv(POD_UID_ENV_VAR, "test-pod")
+    try:
+        target = process_target.observe_processes(pod_uid="test-pod", pattern=token)
+        assert [one.pid for one in target.processes] == [process.pid]
+        assert process_target.stop_observed_processes(target) == [process.pid]
+        assert psutil.Process(process.pid).status() == psutil.STATUS_STOPPED
+        with pytest.raises(ProcessLookupError, match="already stopped"):
+            process_target.stop_observed_processes(target)
+        assert psutil.Process(process.pid).status() == psutil.STATUS_STOPPED
+    finally:
+        process.kill()
+        process.wait(timeout=5)
 
 
 @pytest.mark.parametrize(

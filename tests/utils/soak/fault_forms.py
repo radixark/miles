@@ -4,6 +4,7 @@ import abc
 import asyncio
 import logging
 import random
+from typing import Literal
 
 import httpx
 import requests
@@ -14,23 +15,30 @@ from tests.utils.soak.pod_manipulation import (
     list_pod_names_of_cell,
     sigkill_process_patterns_in_pod,
 )
-from tests.utils.soak.process_target import ProcessExitReceipt
+from tests.utils.soak.process_target import ProcessExitReceipt, ProcessStopReceipt
 from tests.utils.soak.state import SoakActionRequest, SoakPodTarget
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
-from miles.utils.ft_utils.api_server.fault_receipts import FaultReceipt
+from miles.utils.ft_utils.api_server.fault_receipts import FaultDeadlockReceipt, FaultReceipt, FaultStopReceipt
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 logger = logging.getLogger(__name__)
 
-FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
-RAY_ROLLOUT_ENGINE_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL]
+FAILURE_MODES: list[FailureMode] = [
+    FailureMode.SIGKILL,
+    FailureMode.EXIT,
+    FailureMode.SEGFAULT,
+    FailureMode.SIGSTOP,
+    FailureMode.DEADLOCK,
+]
+RAY_ROLLOUT_ENGINE_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.SIGSTOP]
 
 DELETE_POD_FORM_NAME: str = "delete_pod"
 EXEC_SIGKILL_FORM_NAME: str = "exec_sigkill"
+EXEC_SIGSTOP_FORM_NAME: str = "exec_sigstop"
 ENGINE_CONTAINER_NAME: str = "engine"
 SGLANG_PROCESS_PATTERN: str = "sglang::"
 
@@ -91,7 +99,12 @@ class InjectFaultForm(BaseFaultForm, SoakActionForm):
                     if response.status_code != 404 and response.status_code < 500:
                         response.raise_for_status()
                         if (payload := response.json()) is not None:
-                            receipt = FaultReceipt.model_validate(payload)
+                            receipt_type = (
+                                FaultDeadlockReceipt
+                                if self._failure_mode in {FailureMode.DEADLOCK, FailureMode.THREAD_DEADLOCK}
+                                else FaultStopReceipt if self._failure_mode is FailureMode.SIGSTOP else FaultReceipt
+                            )
+                            receipt = receipt_type.model_validate(payload)
                             if (receipt.request_id, receipt.target, receipt.mode) != (
                                 request.request_id,
                                 request.fault_target,
@@ -159,6 +172,21 @@ class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
         return {self._container: self._process_pattern}
 
     async def execute(self, request: SoakActionRequest) -> dict:
+        return await self._execute_signal(request=request, operation="kill")
+
+    def inject(self, cell: dict, rng: random.Random) -> None:
+        cell_id = cell["metadata"]["name"]
+        pod_names = list_pod_names_of_cell(namespace=self._namespace, release=self._release, cell_id=cell_id)
+        assert pod_names, f"Release {self._release} has no pod of cell {cell_id} in {self._namespace} to crash"
+
+        sigkill_process_patterns_in_pod(
+            namespace=self._namespace,
+            pod_name=rng.choice(pod_names),
+            container=self._container,
+            process_pattern=self._process_pattern,
+        )
+
+    async def _execute_signal(self, *, request: SoakActionRequest, operation: Literal["kill", "stop"]) -> dict:
         pod = _validate_pod_request(
             request=request, form_name=self.name, namespace=self._namespace, release=self._release
         )
@@ -178,7 +206,7 @@ class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
                 "python3",
                 "-m",
                 "tests.utils.soak.process_target",
-                "kill",
+                operation,
                 request.request_id,
             ],
             timeout_seconds=KUBECTL_TIMEOUT_SECONDS,
@@ -186,25 +214,29 @@ class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
             stdin_data=target.model_dump_json(),
         )
         assert result.returncode == 0, (
-            f"No process matching {self._process_pattern!r} was killed inside {pod.name} (exit "
+            f"No process matching {self._process_pattern!r} was confirmed {operation} inside {pod.name} (exit "
             f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}. A crash nobody caused would "
             f"otherwise be counted as one that happened"
         )
-        receipt = ProcessExitReceipt.model_validate_json(result.stdout)
+        receipt = (
+            ProcessExitReceipt.model_validate_json(result.stdout)
+            if operation == "kill"
+            else ProcessStopReceipt.model_validate_json(result.stdout)
+        )
         receipt.validate_for(request_id=request.request_id, target=target)
         return receipt.model_dump(mode="json")
 
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        cell_id = cell["metadata"]["name"]
-        pod_names = list_pod_names_of_cell(namespace=self._namespace, release=self._release, cell_id=cell_id)
-        assert pod_names, f"Release {self._release} has no pod of cell {cell_id} in {self._namespace} to crash"
 
-        sigkill_process_patterns_in_pod(
-            namespace=self._namespace,
-            pod_name=rng.choice(pod_names),
-            container=self._container,
-            process_pattern=self._process_pattern,
-        )
+class ExecSigstopFaultForm(ExecSigkillFaultForm):
+    @property
+    def name(self) -> str:
+        return EXEC_SIGSTOP_FORM_NAME
+
+    async def execute(self, request: SoakActionRequest) -> dict:
+        return await self._execute_signal(request=request, operation="stop")
+
+    def inject(self, cell: dict, rng: random.Random) -> None:
+        raise NotImplementedError("Process-stop injection requires an observed asynchronous request")
 
 
 def _validate_pod_request(
@@ -240,9 +272,15 @@ def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrain
                 container=ENGINE_CONTAINER_NAME,
                 process_pattern=SGLANG_PROCESS_PATTERN,
             )
+            exec_sigstop_form = ExecSigstopFaultForm(
+                namespace=config.namespace,
+                run_id=config.run_id,
+                container=ENGINE_CONTAINER_NAME,
+                process_pattern=SGLANG_PROCESS_PATTERN,
+            )
             return {
                 ACTOR_CELL_TYPE: [*actor_kill_forms, delete_pod_form],
-                ROLLOUT_CELL_TYPE: [exec_sigkill_form, delete_pod_form],
+                ROLLOUT_CELL_TYPE: [exec_sigkill_form, exec_sigstop_form, delete_pod_form],
             }
 
 

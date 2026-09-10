@@ -21,7 +21,7 @@ class FaultHookRequest(FrozenStrictBaseModel):
     request_id: str = Field(min_length=1)
     instance_id: str = Field(min_length=1)
     hook: FaultHookName
-    mode: Literal["sigkill", "exit", "segfault"]
+    mode: Literal["sigkill", "exit", "segfault", "sigstop", "deadlock", "thread_deadlock"]
     lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
     receipt_url: str | None = None
 
@@ -119,7 +119,7 @@ class FaultHookRegistry:
                 request_id=record.request.request_id,
                 receipt_url=record.request.receipt_url,
             )
-            raise RuntimeError("A terminating fault hook unexpectedly returned")
+            raise RuntimeError("A fault hook unexpectedly returned")
         except Exception:
             logger.exception("Fault hook execution failed: %s", record.request.request_id)
             with self._lock:

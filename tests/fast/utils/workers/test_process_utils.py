@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 import miles.utils.workers.process_utils as process_utils
@@ -16,14 +17,16 @@ from miles.utils.workers.process_utils import (
     kill_process_tree,
     kill_process_tree_and_wait,
     launch_bound_subprocess,
+    stop_process_tree_and_wait,
     terminate_process_tree,
 )
 
 _SLEEP_FOREVER = "import time; time.sleep(300)"
 
 
-def test_confirmed_tree_kill_waits_for_a_child_in_another_process_group(tmp_path: Path) -> None:
-    """A detached child must exit before the wrapper can report confirmed tree death."""
+@pytest.mark.parametrize("stop_first", [False, True])
+def test_confirmed_tree_fault_includes_a_child_in_another_process_group(tmp_path: Path, stop_first: bool) -> None:
+    """A detached child must share the confirmed tree fault and stay stopped until cleanup."""
     pid_file = tmp_path / "detached.pid"
     command = (
         "import subprocess, sys, time\n"
@@ -36,6 +39,14 @@ def test_confirmed_tree_kill_waits_for_a_child_in_another_process_group(tmp_path
     try:
         child_pid = int(_read_when_present(pid_file))
         child_fd = os.pidfd_open(child_pid)
+        if stop_first:
+            stopped = stop_process_tree_and_wait(process)
+            assert set(stopped) == {process.pid, child_pid}
+            assert psutil.Process(process.pid).status() == psutil.STATUS_STOPPED
+            assert psutil.Process(child_pid).status() == psutil.STATUS_STOPPED
+            with pytest.raises(ProcessLookupError, match="already stopped"):
+                stop_process_tree_and_wait(process)
+            assert psutil.Process(child_pid).status() == psutil.STATUS_STOPPED
         exited = kill_process_tree_and_wait(process)
         assert set(exited) == {process.pid, child_pid}
         assert select.select([child_fd], [], [], 0)[0] == [child_fd]
@@ -49,6 +60,28 @@ def test_confirmed_tree_kill_waits_for_a_child_in_another_process_group(tmp_path
             os.close(child_fd)
         kill_process_tree(process)
         process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("stop_only", [False, True])
+def test_expired_root_handle_cannot_signal_a_reused_pid(stop_only: bool) -> None:
+    """An original process's pidfd rejects a live process found under a reused numeric PID."""
+    original = subprocess.Popen([sys.executable, "-c", "pass"])
+    original_fd = os.pidfd_open(original.pid)
+    replacement = subprocess.Popen([sys.executable, "-c", _SLEEP_FOREVER])
+    try:
+        original.wait(timeout=5)
+        operation = stop_process_tree_and_wait if stop_only else kill_process_tree_and_wait
+        with pytest.raises(ProcessLookupError, match="exited before injection"):
+            operation(replacement, root_pidfd=original_fd)
+        assert replacement.poll() is None
+        assert psutil.Process(replacement.pid).status() != psutil.STATUS_STOPPED
+        assert select.select([original_fd], [], [], 0)[0] == [original_fd]
+    finally:
+        os.close(original_fd)
+        original.kill()
+        original.wait(timeout=5)
+        replacement.kill()
+        replacement.wait(timeout=5)
 
 
 def _is_alive(pid: int) -> bool:

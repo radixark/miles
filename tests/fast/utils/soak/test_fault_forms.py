@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import subprocess
 from unittest.mock import AsyncMock, MagicMock
@@ -17,8 +18,11 @@ from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 
 @pytest.mark.parametrize("status_code", [200, 412, 503, None])
+@pytest.mark.parametrize(
+    "mode", [FailureMode.SIGKILL, FailureMode.SIGSTOP, FailureMode.DEADLOCK, FailureMode.THREAD_DEADLOCK]
+)
 async def test_async_http_injection_uses_the_recorded_target_and_propagates_failure(
-    monkeypatch: pytest.MonkeyPatch, status_code: int | None
+    monkeypatch: pytest.MonkeyPatch, status_code: int | None, mode: FailureMode
 ) -> None:
     """A receipt resolves an ambiguous submission without submitting the fault twice."""
     sent: list[httpx.Request] = []
@@ -37,7 +41,7 @@ async def test_async_http_injection_uses_the_recorded_target_and_propagates_fail
         "AsyncClient",
         lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs),
     )
-    form = fault_forms.InjectFaultForm(base_url="http://control", failure_mode=FailureMode.SIGKILL)
+    form = fault_forms.InjectFaultForm(base_url="http://control", failure_mode=mode)
     identity = FaultTarget(cell_id="actor-7", sub_index=0, workers_hash="generation-0")
     request = SoakActionRequest(
         form_name=form.name, target=typed_cell("actor-7", "actor"), harms_cell=True, fault_target=identity
@@ -45,9 +49,22 @@ async def test_async_http_injection_uses_the_recorded_target_and_propagates_fail
     receipt = {
         "request_id": request.request_id,
         "target": identity.model_dump(mode="json"),
-        "mode": "sigkill",
-        "exited_pids": [42],
+        "mode": mode.value,
     }
+    if mode in {FailureMode.DEADLOCK, FailureMode.THREAD_DEADLOCK}:
+        receipt.update(
+            blocked_pid=42,
+            blocked_tid=43,
+            lock_device=os.makedev(0, 1),
+            lock_inode=99,
+            holds_gil=mode is FailureMode.DEADLOCK,
+            lock_evidence=[
+                "3: FLOCK ADVISORY WRITE 42 00:01:99 0 EOF",
+                "3: -> FLOCK ADVISORY WRITE 42 00:01:99 0 EOF",
+            ],
+        )
+    else:
+        receipt["stopped_pids" if mode is FailureMode.SIGSTOP else "exited_pids"] = [42]
     if status_code == 412:
         with pytest.raises(httpx.HTTPStatusError):
             await form.execute(request)
@@ -58,7 +75,7 @@ async def test_async_http_injection_uses_the_recorded_target_and_propagates_fail
         assert sent[1].url.path == f"/api/v1/fault-receipts/{request.request_id}"
     assert sent[0].url.path == "/api/v1/cells/actor-7/inject-fault"
     assert json.loads(sent[0].content) == {
-        "mode": "sigkill",
+        "mode": mode.value,
         "sub_index": 0,
         "expected_target": identity.model_dump(mode="json"),
         "request_id": request.request_id,
@@ -66,13 +83,13 @@ async def test_async_http_injection_uses_the_recorded_target_and_propagates_fail
 
 
 @pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.parametrize("operation", ["kill", "stop"])
 async def test_async_pod_exec_uses_the_selected_pod_and_rejects_a_missing_process(
-    monkeypatch: pytest.MonkeyPatch, returncode: int
+    monkeypatch: pytest.MonkeyPatch, returncode: int, operation: str
 ) -> None:
     """No matching process is a failed injection, even when kubectl itself launched successfully."""
-    form = fault_forms.ExecSigkillFaultForm(
-        namespace=NAMESPACE, run_id=RUN_ID, container="engine", process_pattern="sglang::"
-    )
+    form_type = fault_forms.ExecSigkillFaultForm if operation == "kill" else fault_forms.ExecSigstopFaultForm
+    form = form_type(namespace=NAMESPACE, run_id=RUN_ID, container="engine", process_pattern="sglang::")
     release = ReleaseName(run_id=RUN_ID, deploy_component=DeployComponent.ALL, deploy_instance_id=None).serialize()
     request = SoakActionRequest(
         target=typed_cell("rollout-engine-7", "rollout"),
@@ -98,7 +115,7 @@ async def test_async_pod_exec_uses_the_selected_pod_and_rejects_a_missing_proces
     receipt = {
         "request_id": request.request_id,
         "target": request.pod.process_targets["engine"].model_dump(mode="json"),
-        "exited_pids": [42],
+        ("exited_pids" if operation == "kill" else "stopped_pids"): [42],
     }
     command = AsyncMock(
         return_value=subprocess.CompletedProcess(args=[], returncode=returncode, stdout=json.dumps(receipt), stderr="")
@@ -123,7 +140,7 @@ async def test_async_pod_exec_uses_the_selected_pod_and_rejects_a_missing_proces
         "python3",
         "-m",
         "tests.utils.soak.process_target",
-        "kill",
+        operation,
         request.request_id,
     ]
     assert (
@@ -137,13 +154,15 @@ def test_ray_draws_the_in_process_kills_for_a_trainer_cell() -> None:
     forms = api_server_fault_forms()["actor"]
 
     assert [form.name for form in forms] == [f"inject_fault:{one.value}" for one in fault_forms.FAILURE_MODES]
+    assert "inject_fault:deadlock" in [form.name for form in forms]
+    assert "inject_fault:thread_deadlock" not in [form.name for form in forms]
 
 
-def test_ray_draws_a_sigkill_only_for_a_rollout_cell() -> None:
+def test_ray_draws_external_signals_for_a_rollout_cell() -> None:
     """The engine is a subprocess, and exit, segfault and deadlock are faults only its own code can commit."""
     forms = api_server_fault_forms()["rollout"]
 
-    assert [form.name for form in forms] == [f"inject_fault:{FailureMode.SIGKILL.value}"]
+    assert [form.name for form in forms] == ["inject_fault:sigkill", "inject_fault:sigstop"]
 
 
 def test_kubernetes_draws_the_kills_plus_pod_deletion_for_a_trainer_cell() -> None:
@@ -220,6 +239,7 @@ def test_a_kubernetes_engine_can_be_crashed_in_place_as_well_as_deleted() -> Non
 
     assert [form.name for form in forms[fault_forms.ROLLOUT_CELL_TYPE]] == [
         fault_forms.EXEC_SIGKILL_FORM_NAME,
+        fault_forms.EXEC_SIGSTOP_FORM_NAME,
         fault_forms.DELETE_POD_FORM_NAME,
     ]
 
