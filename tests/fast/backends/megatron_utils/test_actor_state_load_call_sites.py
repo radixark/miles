@@ -9,6 +9,7 @@ _CORE_METHOD = "_load_state_core"
 _LOAD_FUNCTION = "load_model_state"
 _INIT_METHOD = "init"
 _SLEEP_METHOD = "sleep"
+_SAVE_METHOD = "save_model"
 _WEIGHT_UPDATER_ATTRIBUTE = "weight_updater"
 
 
@@ -83,3 +84,7 @@ class TestWhenTheTrainerBuildsItsWeightUpdater:
     def test_the_reusable_load_never_offloads_by_itself(self):
         """A reload runs it with the trainer awake, and an offload there would strand the caller asleep."""
         assert _method_call_lines(_CORE_METHOD, _SLEEP_METHOD) == []
+
+    def test_ordinary_checkpoint_save_records_the_weight_version(self):
+        """The counter is persisted by the same actor operation that saves weights."""
+        assert _SAVE_METHOD in _functions_calling("write_weight_version", as_method=False)

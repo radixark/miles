@@ -27,7 +27,7 @@ from miles.rollout.base_types import (
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
-from miles.utils.async_utils import maybe_await
+from miles.utils.async_utils import maybe_await, run
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
@@ -389,13 +389,16 @@ class RolloutExecutor:
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
     def save(self, rollout_id: int) -> None:
+        run(self._save_sample_state(rollout_id))
+        event_logger_checkpoint.snapshot(self.args, rollout_id)
+
+    async def _save_sample_state(self, rollout_id: int) -> None:
         self.data_source.save(rollout_id)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
                 self.generate_rollout.save(rollout_id)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.save(rollout_id)
-        event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id: int | None = None) -> None:
         self.data_source.load(rollout_id)

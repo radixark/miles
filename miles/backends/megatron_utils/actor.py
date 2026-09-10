@@ -6,6 +6,7 @@ import random
 import shutil
 from contextlib import ExitStack, nullcontext
 from functools import partial
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -15,6 +16,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.training_utils.model_companion import ModelCompanionUtils
+from miles.backends.training_utils.weight_version_checkpoint import write_weight_version
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -268,6 +270,7 @@ class MegatronTrainRayActor(TrainRayActor):
             is_lora=is_lora,
             lora_sync_config=build_lora_sync_config(self.args) if is_lora else None,
         )
+        self.weight_updater.weight_version = load_output.weight_version
 
         # Adapters currently loaded into Megatron slots on this rank.
         self.loaded_adapters: dict[str, object] = {}
@@ -366,6 +369,9 @@ class MegatronTrainRayActor(TrainRayActor):
             overrider_for_loading=overrider_for_loading,
         )
         self._last_rollout_id = None
+
+        if self.role != "critic":
+            self.weight_updater.weight_version = load_output.weight_version
 
         logger.info(f"load_state rolled this trainer back to checkpoint iteration {load_output.loaded_rollout_id}")
         return load_output.start_rollout_id
@@ -840,6 +846,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 return
         else:
             save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
+            if self.role != "critic" and dist.get_rank() == 0:
+                write_weight_version(
+                    checkpoint_dir=Path(self.args.save),
+                    iteration=rollout_id,
+                    weight_version=self.weight_updater.weight_version,
+                )
 
         if force_sync:
             self._finalize_pending_async_save()

@@ -14,8 +14,14 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
-def compute_global_dataset_state_path(directory: str, *, rollout_id: int | None) -> str:
-    return os.path.join(directory, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+def compute_global_dataset_state_path(directory: str | Path, *, rollout_id: int | None) -> Path:
+    return compute_rollout_state_path(directory, name="global_dataset_state_dict", rollout_id=rollout_id)
+
+
+def compute_rollout_state_path(
+    directory: str | Path, *, name: str, rollout_id: int | None, suffix: str = ".pt"
+) -> Path:
+    return Path(directory) / "rollout" / f"{name}_{rollout_id}{suffix}"
 
 
 class DataSource(abc.ABC):

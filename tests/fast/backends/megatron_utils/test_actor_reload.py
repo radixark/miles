@@ -3,11 +3,13 @@ import logging
 import sys
 from argparse import Namespace
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
+
+from miles.backends.training_utils.weight_version_checkpoint import write_weight_version
 
 from miles.utils.init_once import InitOnce
 
@@ -123,6 +125,7 @@ def _actor(actor_module, *, role: str, args: Namespace):
     actor.opt_param_scheduler = None
     actor._last_rollout_id = None
     actor._post_init_random_state = _FakeRandomState()
+    actor.weight_updater = SimpleNamespace(weight_version=0)
     return actor
 
 
@@ -179,6 +182,22 @@ class TestLoadStateScheduler:
 
 
 class TestTheCheckpointAReloadRollsBackTo:
+    def test_reload_restores_the_selected_checkpoint_weight_version(
+        self, actor_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reloading weights rewinds the updater counter to the same checkpoint."""
+        directory = tmp_path / "pretrain"
+        _write_checkpoint(directory, iteration=50)
+        write_weight_version(checkpoint_dir=directory, iteration=50, weight_version=9)
+        args = _args(tmp_path)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=50)
+        actor = _actor(actor_module, role="actor", args=args)
+        actor.weight_updater.weight_version = 20
+
+        actor.load_state()
+
+        assert actor.weight_updater.weight_version == 9
+
     def test_a_reload_reads_the_directory_the_run_was_told_to_load_from(self, actor_module, tmp_path, monkeypatch):
         """The data source reads its own state out of that same directory, so the two have to be the same one."""
         load = _write_checkpoint(tmp_path / "pretrain", iteration=50)
