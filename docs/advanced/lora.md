@@ -182,7 +182,7 @@ alternative aligned-expert path.
   adapters.
 - **Checkpoints.** miles saves native per-rank adapter shards and
   optimizer/scheduler state. Exact resume expects the same TP/PP topology. It
-  also attempts a best-effort HF PEFT `adapter_model.bin` plus
+  also attempts a best-effort HF PEFT `adapter_model.safetensors` plus
   `adapter_config.json` export for external serving and warns if that export
   fails. Direct HF PEFT-to-Bridge resume is not implemented yet; native Inkling
   supplies a model-specific HF adapter importer.
