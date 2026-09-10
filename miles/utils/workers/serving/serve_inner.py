@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import sys
 from typing import Any
 
@@ -14,6 +13,7 @@ from miles.utils.workers.backend_capability.factory import get_backend_capabilit
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.serving.utils import (
     compute_serve_worker_spec,
+    create_server_socket,
     override_argv,
     parse_own_args,
     split_worker_argv,
@@ -21,9 +21,6 @@ from miles.utils.workers.serving.utils import (
 from miles.utils.workers.serving.worker_identity import read_worker_identity, read_worker_in_pod_index
 from miles.utils.workers.types import ClusterBackend
 from miles.utils.workers.worker_spec import RPC_PORT_NAME, PortInfo, ServeWorkerSpec
-
-IPV4_WILDCARD_HOST = "0.0.0.0"
-IPV6_WILDCARD_HOST = "::"
 
 
 def main() -> None:
@@ -36,21 +33,10 @@ def main() -> None:
     _log(f"pool_id={args.pool_id} worker_class={spec.worker_class}")
 
     port = _rpc_port_of(spec).effective_static_port(worker_in_pod_index=read_worker_in_pod_index(os.environ))
-    server_socket = _create_server_socket(port=port)
     app = create_rpc_app(worker)
-    _log(f"serve address={server_socket.getsockname()}")
-    with server_socket:
+    with create_server_socket(port=port) as server_socket:
+        _log(f"serve address={server_socket.getsockname()}")
         uvicorn.Server(uvicorn.Config(app)).run(sockets=[server_socket])
-
-
-def _create_server_socket(*, port: int) -> socket.socket:
-    if socket.has_dualstack_ipv6():
-        return socket.create_server(
-            (IPV6_WILDCARD_HOST, port),
-            family=socket.AF_INET6,
-            dualstack_ipv6=True,
-        )
-    return socket.create_server((IPV4_WILDCARD_HOST, port), family=socket.AF_INET)
 
 
 def create_worker(spec: ServeWorkerSpec, *, specs_fn: str, worker_argv: list[str]) -> Any:
