@@ -32,8 +32,6 @@ from miles.utils.workers.types import ClusterBackend
 BASELINE_SIDE: str = "baseline"
 TARGET_SIDE: str = "target"
 
-_DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
-_DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
 _RELEASE_POLL_INTERVAL_SECONDS = 1.0
 _RELEASE_TIMEOUT_SECONDS = 300.0
 
@@ -61,13 +59,6 @@ ResolveModeFn = Callable[[str | None], FTTestMode]
 
 def run_one_release(request: RunSideRequest) -> None:
     run_training(train_args=request.train_args, mode=request.mode, dump_dir=request.dump_dir, config=request.config)
-
-
-def resolve_dump_dir(test_name: str, *, run_id: str) -> str:
-    root = os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT
-    dump_dir = Path(root) / run_id / test_name
-    os.makedirs(dump_dir, exist_ok=True)
-    return str(dump_dir)
 
 
 def _dump_subdir(side: str, phase: str) -> str:

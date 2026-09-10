@@ -19,8 +19,6 @@ from miles.utils.workers.types import ClusterBackend
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="ft_test_dumper_"))
 _MEGATRON_SOURCE_PATCHER_CONFIG_PATH: Path = _RUN_DIR / "megatron_source_patcher.yaml"
 _MEGATRON_PATH: str = os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM")
-MODEL_DIR: str = get_test_model_dir()
-DATA_DIR: str = get_test_data_dir()
 _DEBUG_ROLLOUT_DATA_DIR: str = f"{DATA_DIR}/{DEBUG_ROLLOUT_DATA_HF_REPO.split('/')[-1]}"
 
 
@@ -166,27 +164,6 @@ def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
 
 def get_ft_args(mode: FTTestMode) -> str:
     return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
-
-
-def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) -> str:
-    resolved = config if config is not None else command_utils.default_config()
-    if resolved.cluster_backend is not ClusterBackend.KUBERNETES:
-        return f"--api-server-port {API_SERVER_PORT} "
-    return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
-
-
-DEFAULT_TRAIN_SCRIPT: str = "train.py"
-FULLY_ASYNC_TRAIN_SCRIPT: str = "train_async.py"
-
-
-def get_train_script(*, fully_async: bool) -> str:
-    return FULLY_ASYNC_TRAIN_SCRIPT if fully_async else DEFAULT_TRAIN_SCRIPT
-
-
-def get_fully_async_args(*, fully_async: bool) -> str:
-    if not fully_async:
-        return ""
-    return "--fully-async --pause-generation-mode in_place "
 
 
 DETERMINISTIC_ROLLOUT_ARGS: str = (

@@ -1,0 +1,34 @@
+MODEL_DIR: str = get_test_model_dir()
+DATA_DIR: str = get_test_data_dir()
+def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) -> str:
+    resolved = config if config is not None else command_utils.default_config()
+    if resolved.cluster_backend is not ClusterBackend.KUBERNETES:
+        return f"--api-server-port {API_SERVER_PORT} "
+    return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
+
+
+DEFAULT_TRAIN_SCRIPT: str = "train.py"
+FULLY_ASYNC_TRAIN_SCRIPT: str = "train_async.py"
+
+
+def get_train_script(*, fully_async: bool) -> str:
+    return FULLY_ASYNC_TRAIN_SCRIPT if fully_async else DEFAULT_TRAIN_SCRIPT
+
+
+def get_fully_async_args(*, fully_async: bool) -> str:
+    if not fully_async:
+        return ""
+    return "--fully-async --pause-generation-mode in_place "
+
+
+_DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
+_DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
+
+
+def resolve_dump_dir(test_name: str, *, run_id: str) -> str:
+    root = os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT
+    dump_dir = Path(root) / run_id / test_name
+    os.makedirs(dump_dir, exist_ok=True)
+    return str(dump_dir)
+
+
