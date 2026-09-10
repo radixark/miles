@@ -40,7 +40,13 @@ class EngineWeightUpdateSession:
         self._committed = False
 
     def __enter__(self) -> "EngineWeightUpdateSession":
-        self._rpcs_from_rank0(self._open)
+        try:
+            self._rpcs_from_rank0(self._open)
+        except Exception:
+            # __exit__ never runs when __enter__ raises: _open may have paused
+            # engines or staged a registration before failing partway
+            self._discard_open()
+            raise
         return self
 
     def commit(self, expected_lora_checksums: Mapping | None, weight_version: int | None) -> None:
@@ -57,6 +63,21 @@ class EngineWeightUpdateSession:
             except Exception:
                 # the abort usually shares the failure's root cause; it must not mask it
                 logger.exception("Failed to discard the staged adapter session")
+
+    def _discard_open(self) -> None:
+        """Best-effort rollback of _open's engine state: abort a staged session
+        (also dropping any pending publication) or resume paused engines. Safe
+        only before any weight bytes moved — a failed open, not a failed stream."""
+        if not (self._protocol.use_weight_update_session and dist.get_rank() == 0):
+            return
+        try:
+            if self._staged:
+                end_weight_update(self._protocol.rollout_engines, abort=True)
+            else:
+                resume_engines(self._protocol.rollout_engines)
+        except Exception:
+            # the cleanup usually shares the failure's root cause; it must not mask it
+            logger.exception("Failed to roll back the engines after a failed session open")
 
     def _open(self) -> None:
         engines = self._protocol.rollout_engines
