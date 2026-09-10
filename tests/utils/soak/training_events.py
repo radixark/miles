@@ -7,9 +7,9 @@ import typer
 from pydantic import Field, TypeAdapter
 from tests.utils.soak.action import run_command
 
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, MetricEvent, TrainGroupStepEndEvent
 
-TrainingEvent = Annotated[CellReconfigureEvent | TrainGroupStepEndEvent, Field(discriminator="type")]
+TrainingEvent = Annotated[CellReconfigureEvent | TrainGroupStepEndEvent | MetricEvent, Field(discriminator="type")]
 _adapter = TypeAdapter(list[TrainingEvent])
 app = typer.Typer()
 
@@ -31,7 +31,7 @@ def _read_events(directory: Path) -> list[TrainingEvent]:
     if not directory.is_dir():
         raise FileNotFoundError(directory)
     events: list[dict] = []
-    paths = sorted(directory.glob("trainer_controller_*.jsonl"))
+    paths = sorted([*directory.glob("trainer_controller_*.jsonl"), *directory.glob("rollout_executor.jsonl")])
     for path in paths:
         with path.open("rb") as stream:
             for line in stream:
@@ -41,6 +41,8 @@ def _read_events(directory: Path) -> list[TrainingEvent]:
                     continue
                 payload = json.loads(line)
                 if payload["type"] in {"cell_reconfigure", "train_group_step_end"}:
+                    events.append(payload)
+                elif payload["type"] == "metric" and any(key.startswith("eval/") for key in payload["metrics"]):
                     events.append(payload)
     return _adapter.validate_python(events)
 

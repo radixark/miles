@@ -5,6 +5,23 @@ import pytest
 from tests.utils.soak.training_events import _read_events
 
 
+def test_live_eval_read_preserves_the_evaluated_rollout_and_start_identity(tmp_path: Path) -> None:
+    """Evaluation evidence must survive capture outside the trainer-controller event files."""
+    event = {
+        "type": "metric",
+        "timestamp": "2026-09-11T00:00:02Z",
+        "evaluation_started_at": "2026-09-11T00:00:01Z",
+        "source": {"component": "rollout_executor"},
+        "rollout_id": 12,
+        "metrics": {"eval/gsm8k": 0.6},
+    }
+    (tmp_path / "rollout_executor.jsonl").write_text(json.dumps(event) + "\n")
+    (observed,) = _read_events(tmp_path)
+    assert observed.rollout_id == 12
+    assert observed.evaluation_started_at < observed.timestamp
+    assert observed.metrics == {"eval/gsm8k": 0.6}
+
+
 def test_live_read_defers_an_unfinished_record_but_keeps_completed_progress(tmp_path: Path) -> None:
     """A concurrent append becomes visible only after its terminating newline is written."""
     path = tmp_path / "trainer_controller_actor.jsonl"

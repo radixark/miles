@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
+
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
@@ -12,6 +15,9 @@ from miles.ray.rollout.metrics import (
     log_eval_rollout_data,
     log_rollout_data,
 )
+from miles.utils.audit_utils.event_logger import logger as event_logger
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.tracking_utils import tracking
 from miles.utils.types import AdapterRef, Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
@@ -420,6 +426,24 @@ class TestLogRolloutData:
 
 
 class TestEvalMetrics:
+    def test_eval_event_preserves_the_evaluated_rollout_and_start_time(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An async evaluation records when it started and which rollout it evaluated."""
+        started = datetime(2026, 9, 11, tzinfo=timezone.utc)
+        monkeypatch.setattr(
+            event_logger,
+            "_event_logger",
+            event_logger.EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor")),
+        )
+        monkeypatch.setattr(tracking._manager, "log", lambda *args, **kwargs: None)
+        log_eval_rollout_data(
+            7, make_args(log_passrate=False), {"gsm8k": {"rewards": [1.0, 0.0]}}, evaluation_started_at=started
+        )
+        (event,) = event_logger.read_events(tmp_path)
+        assert event.rollout_id == 7 and event.evaluation_started_at == started
+        assert event.metrics["eval/gsm8k"] == 0.5
+
     def test_eval_metrics_are_not_namespaced_by_policy(self, monkeypatch):
         """Pinning the status quo: a run training several policies is refused an eval, so eval keeps one step axis."""
         calls: list[tuple[dict, str]] = []

@@ -11,7 +11,14 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartReco
 from tests.e2e.deploy.conftest_deploy.hot_restart.soak_form import SoakActionFormHotRestart
 from tests.utils.soak.core import SoakActionScheduler
 from tests.utils.soak.recipes import gsm8k as scenario_realistic_gsm8k
-from tests.utils.soak.state import InjectionEvent, SoakDeploymentTarget, SoakObservation, SoakScheduleEvent
+from tests.utils.soak.state import (
+    InjectionEvent,
+    SoakActionAppliedEvent,
+    SoakActionRequest,
+    SoakDeploymentTarget,
+    SoakObservation,
+    SoakScheduleEvent,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
@@ -80,6 +87,58 @@ class TestTheRecipeIsTheOneFtConverges:
         assert "--use-fault-tolerance" not in argv
         assert "--ft-components" not in argv
         assert "--mini-ft-controller-enable" not in argv
+
+
+class TestIntermediateCheckpoints:
+    @pytest.mark.parametrize("saved", [None, 230, 233, 234])
+    def test_the_next_takeover_waits_for_a_checkpoint_newer_than_the_previous_applied_snapshot(
+        self, saved: int | None
+    ) -> None:
+        """A repeated checkpoint cannot satisfy the save-between-takeovers scenario."""
+        run = _run("/dumps")
+        (form,) = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=249)["deployment"]
+        target = _deployment(finished=231)
+        request = SoakActionRequest(target=target, form_name=scenario.HOT_RESTART_FORM_NAME, harms_cell=False)
+        run.event_log.note_action_requested(request)
+        after = target.model_copy(update={"saved_iteration": 233, "finished_rollout_id": 233})
+        run.event_log.note_action_applied(
+            SoakActionAppliedEvent(request_id=request.request_id, evidence={"after": after.model_dump(mode="json")})
+        )
+        run.event_log.note_observation(
+            SoakObservation(
+                cells=[], deployments=[after.model_copy(update={"saved_iteration": saved, "finished_rollout_id": 235})]
+            )
+        )
+        assert form.is_within_injection_window() is (saved == 234)
+
+    @pytest.mark.parametrize("second_saved", [None, 233, 234])
+    def test_the_final_verdict_requires_two_applied_takeovers_separated_by_a_new_checkpoint(
+        self, second_saved: int | None
+    ) -> None:
+        """One restart or reuse of the preceding checkpoint cannot earn consecutive-restart coverage."""
+        run = _run("/dumps")
+        first = _deployment(finished=231)
+        after = first.model_copy(update={"saved_iteration": 233})
+        for index, saved in enumerate([230] if second_saved is None else [230, second_saved]):
+            request = SoakActionRequest(
+                target=first.model_copy(update={"saved_iteration": saved}),
+                form_name=scenario.HOT_RESTART_FORM_NAME,
+                harms_cell=False,
+            )
+            run.event_log.note_action_requested(request)
+            run.event_log.note_action_applied(
+                SoakActionAppliedEvent(
+                    request_id=request.request_id,
+                    evidence={
+                        "after": after.model_copy(update={"saved_iteration": 233 + index}).model_dump(mode="json")
+                    },
+                )
+            )
+        if second_saved == 234:
+            scenario._assert_checkpoints_advanced_between_takeovers(run.event_log.events)
+        else:
+            with pytest.raises(AssertionError):
+                scenario._assert_checkpoints_advanced_between_takeovers(run.event_log.events)
 
 
 class TestTheInjectionPlan:

@@ -34,6 +34,7 @@ from tests.utils.soak.state import (
     SoakActionAppliedEvent,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakDeploymentTarget,
     SoakObservation,
     event_source,
 )
@@ -46,7 +47,7 @@ app: typer.Typer = typer.Typer()
 
 TEST_NAME: str = "hot_restart_realistic_gsm8k"
 SAVE_INTERVAL: int = 3
-MIN_HOT_RESTARTS: int = 1
+MIN_HOT_RESTARTS: int = 2
 MAX_REDONE_STEPS_PER_TAKE_OVER: int = SAVE_INTERVAL + 1
 DEFAULT_HOT_RESTART_INTERVAL_SECONDS: float = 600.0
 TERMINAL_QUIESCENCE_ROLLOUTS: int = 15
@@ -101,6 +102,7 @@ def run_ci(
 
     events = outcome.injector.event_log.events
     assert_no_take_over_attempt_failed(events)
+    _assert_checkpoints_advanced_between_takeovers(events)
 
     evidence = _project_evidence(events=events, release=compute_release_of_config(config), namespace=config.namespace)
     evidence.write(dump_dir=str(outcome.run.evidence_dir))
@@ -118,6 +120,31 @@ def run_ci(
 
 def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
     return build_checkpoint_args(dump_dir) + f"--wandb-run-id {wandb_run_id} " + "--ci-disable-weight-update-checker "
+
+
+def _assert_checkpoints_advanced_between_takeovers(events: list[Event]) -> None:
+    requests = {
+        event.request.request_id: event.request
+        for event in events
+        if isinstance(event, SoakActionRequestedEvent) and event.request.form_name == HOT_RESTART_FORM_NAME
+    }
+    previous_saved_iteration = -1
+    count = 0
+    for event in events:
+        if not isinstance(event, SoakActionAppliedEvent) or event.request_id not in requests:
+            continue
+        target = requests[event.request_id].target
+        assert isinstance(target, SoakDeploymentTarget)
+        assert target.saved_iteration is not None and target.saved_iteration > previous_saved_iteration, (
+            f"Takeover {event.request_id} lacks a new checkpoint after the preceding takeover: "
+            f"saved={target.saved_iteration}, previous={previous_saved_iteration}"
+        )
+        after = SoakDeploymentTarget.model_validate(event.evidence["after"])
+        previous_saved_iteration = max(
+            target.saved_iteration, after.saved_iteration if after.saved_iteration is not None else -1
+        )
+        count += 1
+    assert count >= MIN_HOT_RESTARTS, f"Expected at least {MIN_HOT_RESTARTS} applied takeovers, got {count}"
 
 
 def assert_no_take_over_attempt_failed(events: list[Event]) -> None:

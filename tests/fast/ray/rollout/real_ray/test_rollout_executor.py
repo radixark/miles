@@ -825,7 +825,9 @@ class TestLifecycle:
         import miles.ray.rollout.rollout_executor as rexec
 
         monkeypatch.setattr(
-            rexec, "log_eval_rollout_data", lambda rollout_id, args, data, metrics: {"eval/accuracy": 0.75}
+            rexec,
+            "log_eval_rollout_data",
+            lambda rollout_id, args, data, metrics, *, evaluation_started_at: {"eval/accuracy": 0.75},
         )
 
         executor = await _make_executor(_make_test_args())

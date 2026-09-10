@@ -56,13 +56,36 @@ class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
         return False
 
     def is_within_injection_window(self) -> bool:
-        observation = next(
-            (event for event in reversed(self._event_log.events) if isinstance(event, SoakObservation)), None
-        )
+        events = self._event_log.events
+        observation = next((event for event in reversed(events) if isinstance(event, SoakObservation)), None)
         if observation is None or len(observation.deployments) != 1:
             return False
-        progress = observation.deployments[0].finished_rollout_id
-        return progress is None or progress < self._max_allowed_rollout_id
+        target = observation.deployments[0]
+        progress = target.finished_rollout_id
+        if progress is None or progress >= self._max_allowed_rollout_id or target.saved_iteration is None:
+            return False
+        requests = {
+            event.request.request_id: event.request
+            for event in events
+            if isinstance(event, SoakActionRequestedEvent) and event.request.form_name == self.name
+        }
+        previous = next(
+            (
+                event
+                for event in reversed(events)
+                if isinstance(event, SoakActionAppliedEvent) and event.request_id in requests
+            ),
+            None,
+        )
+        if previous is None:
+            return True
+        before = requests[previous.request_id].target
+        assert isinstance(before, SoakDeploymentTarget)
+        after = SoakDeploymentTarget.model_validate(previous.evidence["after"])
+        return target.saved_iteration > max(
+            before.saved_iteration if before.saved_iteration is not None else -1,
+            after.saved_iteration if after.saved_iteration is not None else -1,
+        )
 
     async def execute(self, request: SoakActionRequest) -> None:
         target = request.target

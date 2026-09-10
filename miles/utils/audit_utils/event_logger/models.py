@@ -143,6 +143,7 @@ class MetricEvent(EventBase):
     type: Literal["metric"] = "metric"
     rollout_id: int | None = None
     attempt: int | None = None
+    evaluation_started_at: datetime | None = None
     metrics: dict[str, Any]
 
 

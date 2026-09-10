@@ -3,6 +3,7 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 from miles.dashboard import hooks as dashboard_hooks
@@ -203,6 +204,7 @@ class RolloutExecutor:
         if self.args.eval_uses_snapshots:
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
+        evaluation_started_at = datetime.now(timezone.utc)
         with timer("eval_rollout"):
             if not self.use_legacy_rollout_v1:
                 result = await asyncio.to_thread(
@@ -219,7 +221,9 @@ class RolloutExecutor:
                 )
         data = result.data
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
-        metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
+        metrics = log_eval_rollout_data(
+            rollout_id, self.args, data, result.metrics, evaluation_started_at=evaluation_started_at
+        )
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
@@ -232,6 +236,7 @@ class RolloutExecutor:
         assert hf_dir is not None, "checkpoint eval requires an HF snapshot dir"
         start_time = time.time()
         async with self._eval_lock:
+            evaluation_started_at = datetime.now(timezone.utc)
             if require_marker and not is_complete_hf_export(hf_dir):
                 logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
                 return self.report_eval_skip(rollout_id, "ckpt_missing")
@@ -253,7 +258,9 @@ class RolloutExecutor:
             extra_metrics["eval/duration_seconds"] = time.time() - start_time
             if export_time_seconds is not None:
                 extra_metrics["eval/export_time_seconds"] = export_time_seconds
-            metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
+            metrics = log_eval_rollout_data(
+                rollout_id, self.args, data, extra_metrics, evaluation_started_at=evaluation_started_at
+            )
             if self._metric_checker is not None:
                 self._metric_checker.on_eval(metrics)
 

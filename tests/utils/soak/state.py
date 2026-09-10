@@ -16,7 +16,7 @@ from pydantic import Field, field_validator
 from tests.utils.soak.config import SoakPolicy
 from tests.utils.soak.process_target import ProcessTarget
 
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, MetricEvent, TrainGroupStepEndEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.cell_operations.base import FaultTarget
 
@@ -81,7 +81,7 @@ class SoakObservation(BaseEvent):
     details: dict[str, dict] = Field(default_factory=dict)
     errors: dict[str, str] = Field(default_factory=dict)
     fault_targets: dict[str, FaultTarget] = Field(default_factory=dict)
-    training_events: list[CellReconfigureEvent | TrainGroupStepEndEvent] = Field(default_factory=list)
+    training_events: list[CellReconfigureEvent | TrainGroupStepEndEvent | MetricEvent] = Field(default_factory=list)
 
 
 class SoakActionRequest(FrozenStrictBaseModel):

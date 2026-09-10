@@ -1,9 +1,12 @@
 import logging
+from argparse import Namespace
+from datetime import datetime
 from numbers import Number
 from typing import Any
 
 import numpy as np
 
+from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.function_registry import load_function
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
@@ -20,7 +23,19 @@ from miles.utils.types import AdapterRef, Sample
 logger = logging.getLogger(__name__)
 
 
-def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] | None = None):
+@event_logger_context(
+    lambda rollout_id, args, data, extra_metrics=None, evaluation_started_at=None: dict(
+        rollout_id=rollout_id, evaluation_started_at=evaluation_started_at
+    )
+)
+def log_eval_rollout_data(
+    rollout_id: int,
+    args: Namespace,
+    data: dict[str, Any],
+    extra_metrics: dict[str, Any] | None = None,
+    *,
+    evaluation_started_at: datetime | None = None,
+) -> dict[str, Any] | None:
     if (x := args.custom_eval_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
         if custom_log_func(rollout_id, args, data, extra_metrics):

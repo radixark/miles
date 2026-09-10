@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from tests.fast.cluster_backends import create_backend_for_run
+from tests.utils.soak.checks.quality import assert_tail_quality
 from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.config import SoakPolicy, create_policy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
@@ -43,6 +44,7 @@ ROLLOUT_GPUS_PER_ENGINE: int = 1
 # Must stay identical to the threshold asserted by the no-fault baseline
 # tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py: fault recovery must not cost accuracy.
 DEFAULT_METRIC_THRESHOLD: float = 0.55
+_EVAL_INTERVAL: int = 20
 
 
 @dataclass(frozen=True)
@@ -92,7 +94,7 @@ def run_realistic_gsm8k(
     policy: SoakPolicy | None = None,
 ) -> Gsm8kOutcome:
     config = create_soak_config(config)
-    tail_policy = create_tail_policy(num_rollout=num_rollout)
+    tail_policy = create_tail_policy(num_rollout=num_rollout, min_tail_rollouts=2 * _EVAL_INTERVAL)
     U = create_backend_for_run(config)
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
     print(f"Test: {test_name}, train script: {get_train_script(fully_async=fully_async)}")
@@ -169,6 +171,7 @@ def run_realistic_gsm8k(
         )
 
     assert_tail_complete(injector.event_log.events)
+    assert_tail_quality(injector.event_log.events, metric_key="eval/gsm8k", threshold=metric_threshold)
     return Gsm8kOutcome(run=run, injector=injector)
 
 
@@ -216,7 +219,7 @@ def get_gsm8k_train_args(
     ) + get_fully_async_args(fully_async=fully_async)
 
     eval_args = (
-        "--eval-interval 20 "
+        f"--eval-interval {_EVAL_INTERVAL} "
         f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 1024 "
