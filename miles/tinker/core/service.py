@@ -3,6 +3,7 @@
 The backend lock serializes trainer calls across dispatch, model creation, and lease expiry."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -600,7 +601,8 @@ class TinkerService:
         """Persist checkpoint ownership and shape beyond the model lease and gateway process."""
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
         meta = {
-            "tenant": record.tenant,
+            # the digest proves ownership without persisting the bearer credential itself
+            "tenant_digest": _tenant_digest(record.tenant),
             "base_model": record.base_model,
             "lora_rank": record.lora_rank,
             "lora_alpha": record.lora_alpha,
@@ -612,7 +614,7 @@ class TinkerService:
         if not meta_file.exists():
             raise UserInputError(f"unknown checkpoint {shown_path!r}")
         meta = json.loads(meta_file.read_text())
-        if meta["tenant"] != tenant:
+        if meta["tenant_digest"] != _tenant_digest(tenant):
             raise OwnershipError(f"checkpoint {shown_path!r} does not belong to this tenant")
         return meta
 
@@ -621,6 +623,10 @@ class TinkerService:
         path = os.path.realpath(f"{root}/{model_id}/{kind}/{name}")
         assert path.startswith(root + os.sep), f"checkpoint path {path!r} escapes {root!r}"
         return path
+
+
+def _tenant_digest(tenant: str) -> str:
+    return hashlib.sha256(tenant.encode()).hexdigest()
 
 
 def _parse_tinker_path(path: str) -> tuple[str, str, str]:
