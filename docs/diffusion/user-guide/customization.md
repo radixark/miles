@@ -64,7 +64,7 @@ unset.
 
 **Class** (not a function). Default:
 `miles.rollout.data_source.RolloutDataSource`. Partial rollout selects
-`LegacyRolloutDataSourceWithBuffer` unless a custom source is configured.
+the legacy buffered data source unless a custom source is configured.
 
 ```python
 class CustomDataSource:

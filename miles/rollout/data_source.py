@@ -3,10 +3,12 @@ import copy
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import torch
 
 from miles.utils.data import Dataset
+from miles.utils.file_utils import atomic_torch_save
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
@@ -129,16 +131,9 @@ class RolloutDataSource(DataSource):
         if not self.args.rollout_global_dataset:
             return
 
-        state_dict = {
-            "sample_offset": self.sample_offset,
-            "epoch_id": self.epoch_id,
-            "sample_group_index": self.sample_group_index,
-            "sample_index": self.sample_index,
-            "metadata": self.metadata,
-        }
         path = compute_global_dataset_state_path(self.args.save, rollout_id=rollout_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(state_dict, path)
+        atomic_torch_save(path, self._state_dict())
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
@@ -156,15 +151,27 @@ class RolloutDataSource(DataSource):
 
         logger.info(f"load metadata from {path}")
         logger.info(f"load metadata: {self.metadata}")
-        state_dict = torch.load(path)
+        state_dict = torch.load(path, weights_only=False)
+        self._load_state_dict(state_dict)
+
+        if self.args.rollout_global_dataset and self.args.rollout_shuffle:
+            self.dataset.shuffle(self.epoch_id)
+
+    def _state_dict(self) -> dict[str, Any]:
+        return {
+            "sample_offset": self.sample_offset,
+            "epoch_id": self.epoch_id,
+            "sample_group_index": self.sample_group_index,
+            "sample_index": self.sample_index,
+            "metadata": self.metadata,
+        }
+
+    def _load_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
         self.sample_index = state_dict.get("sample_index", 0)
         self.metadata = state_dict.get("metadata", {})
-
-        if self.args.rollout_global_dataset and self.args.rollout_shuffle:
-            self.dataset.shuffle(self.epoch_id)
 
 
 class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
@@ -222,6 +229,13 @@ class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
 
     def get_buffer_length(self):
         return len(self.buffer)
+
+    def _state_dict(self) -> dict[str, Any]:
+        return {**super()._state_dict(), "buffer": self.buffer}
+
+    def _load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        super()._load_state_dict(state_dict)
+        self.buffer = state_dict.get("buffer", [])
 
 
 def pop_first(args, rollout_id, buffer: list[list[Sample]], num_samples: int) -> list[list[Sample]]:
