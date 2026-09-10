@@ -949,6 +949,9 @@ def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: l
         "truncated": [0] * n,
         "loss_masks": [[1] * length for length in lengths],
         "sample_indices": list(range(n)),
+        "source_sample_indices": list(range(n)),
+        "sample_row_indices": [0] * n,
+        "sample_row_counts": [1] * n,
         "rollout_ids": rollout_ids if rollout_ids is not None else list(range(n)),
     }
 

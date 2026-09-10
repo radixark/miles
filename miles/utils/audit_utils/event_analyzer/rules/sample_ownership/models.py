@@ -1,3 +1,5 @@
+from pydantic import Field
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
@@ -19,6 +21,7 @@ class SampleResolutionIssue(FrozenStrictBaseModel):
     sample_index: int
     replica_id: str | None
     trained_rows: list[str]
+    skipped_rows: list[str] = Field(default_factory=list)
     drop_count: int
 
 

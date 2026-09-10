@@ -53,9 +53,9 @@ def _current_witnesses(
     return [latest[replica_id][1] for replica_id in sorted(expected)], []
 
 
-def _rows_by_sample(event: TrainerCpuWitnessEvent) -> dict[int, list[TrainingSampleCount]]:
+def _rows_by_sample(rows: list[TrainingSampleCount]) -> dict[int, list[TrainingSampleCount]]:
     result: dict[int, list[TrainingSampleCount]] = {}
-    for row in event.sample_counts:
+    for row in rows:
         result.setdefault(row.sample.source_sample_index, []).append(row)
     return result
 
@@ -64,7 +64,11 @@ def _describe_rows(rows: list[TrainingSampleCount]) -> list[str]:
     return [f"row {row.sample.row_index}/{row.sample.row_count}: count {row.count}" for row in rows]
 
 
-def _rows_are_trained_once(rows: list[TrainingSampleCount]) -> bool:
+def _rows_have_one_outcome(
+    trained_rows: list[TrainingSampleCount],
+    skipped_rows: list[TrainingSampleCount],
+) -> bool:
+    rows = [*trained_rows, *skipped_rows]
     if not rows:
         return False
 

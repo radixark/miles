@@ -64,6 +64,7 @@ def _row(sample_index: int, row_index: int = 0, row_count: int = 1, count: int =
 def _witness(
     rows: list[TrainingSampleCount],
     *,
+    skipped_rows: list[TrainingSampleCount] | None = None,
     replica_id: str = "cell-0",
     rollout_id: int = 1,
     timestamp: datetime = _NOW,
@@ -75,6 +76,7 @@ def _witness(
         source=_TRAINER,
         replica_id=replica_id,
         sample_counts=rows,
+        skipped_nonfinite_sample_counts=skipped_rows or [],
         rollout_id=rollout_id,
         reason=reason,
         cohort_id=cohort_id,
@@ -136,6 +138,16 @@ class TestPerSlotAccounting:
         rows = [_row(10), _row(11), _row(12)]
         assert _check([_issued([(7, [10, 11, 12])])], witnesses=[_witness(rows)]) == []
 
+    def test_a_nonfinite_skipped_slot_is_complete(self) -> None:
+        """A row consumed and skipped for nonfinite gradients resolves its issued slot."""
+        assert (
+            _check(
+                [_issued([(7, [10])])],
+                witnesses=[_witness([], skipped_rows=[_row(10)])],
+            )
+            == []
+        )
+
     def test_equal_group_totals_do_not_hide_one_missing_and_one_duplicate_slot(self) -> None:
         """Matching group totals cannot hide opposite errors in individual slots."""
         issues = _check([_issued([(7, [10, 11])])], witnesses=[_witness([_row(10, count=2)])])
@@ -149,12 +161,13 @@ class TestPerSlotAccounting:
         issues = _check([_issued([(7, [10, 11])])], witnesses=[_witness([_row(10)])])
         assert issues == [
             SampleResolutionIssue(
-                description="mature issued sample was not trained",
+                description="mature issued sample had no training outcome",
                 group_index=7,
                 slot=1,
                 sample_index=11,
                 replica_id="cell-0",
                 trained_rows=[],
+                skipped_rows=[],
                 drop_count=0,
             )
         ]
@@ -202,6 +215,54 @@ class TestCompactRows:
         rows = [_row(10, row_index=0, row_count=2), _row(10, row_index=1, row_count=2, count=2)]
         assert len(_check([_issued([(7, [10])])], witnesses=[_witness(rows)])) == 1
 
+    def test_compact_rows_may_resolve_across_trained_and_skipped_outcomes(self) -> None:
+        """Compact siblings consumed in different steps still form one complete source outcome."""
+        trained = [_row(10, row_index=0, row_count=3), _row(10, row_index=2, row_count=3)]
+        skipped = [_row(10, row_index=1, row_count=3)]
+
+        assert (
+            _check(
+                [_issued([(7, [10])])],
+                witnesses=[_witness(trained, skipped_rows=skipped)],
+            )
+            == []
+        )
+
+    def test_the_same_compact_row_cannot_be_both_trained_and_skipped(self) -> None:
+        """Two terminal outcomes for one physical row remain a duplicate even when their kinds differ."""
+        issues = _check(
+            [_issued([(7, [10])])],
+            witnesses=[_witness([_row(10)], skipped_rows=[_row(10)])],
+        )
+
+        assert len(issues) == 1
+        assert issues[0].trained_rows == ["row 0/1: count 1"]
+        assert issues[0].skipped_rows == ["row 0/1: count 1"]
+
+    def test_a_nonfinite_skip_counted_twice_is_reported(self) -> None:
+        """Repeated skip evidence is the same duplicate consumption error as repeated training."""
+        issues = _check(
+            [_issued([(7, [10])])],
+            witnesses=[_witness([], skipped_rows=[_row(10, count=2)])],
+        )
+
+        assert len(issues) == 1
+        assert issues[0].skipped_rows == ["row 0/1: count 2"]
+
+    def test_trained_and_skipped_rows_must_agree_on_compact_shape(self) -> None:
+        """Outcome kinds cannot disagree about how many rows one source produced."""
+        issues = _check(
+            [_issued([(7, [10])])],
+            witnesses=[
+                _witness(
+                    [_row(10, row_index=0, row_count=2)],
+                    skipped_rows=[_row(10, row_index=1, row_count=3)],
+                )
+            ],
+        )
+
+        assert len(issues) == 1
+
 
 class TestExplicitDrops:
     def test_one_explicit_drop_resolves_an_untrained_sample(self) -> None:
@@ -211,6 +272,15 @@ class TestExplicitDrops:
     def test_a_dropped_sample_with_any_trained_row_is_reported(self) -> None:
         """An explicitly dropped source sample cannot contribute even one compact row."""
         issues = _check([_issued([(7, [10])]), _dropped(10)], witnesses=[_witness([_row(10)])])
+        assert [(issue.sample_index, issue.drop_count) for issue in issues] == [(10, 1)]
+
+    def test_a_dropped_sample_with_any_skipped_row_is_reported(self) -> None:
+        """A whole-source drop is mutually exclusive with nonfinite row consumption."""
+        issues = _check(
+            [_issued([(7, [10])]), _dropped(10)],
+            witnesses=[_witness([], skipped_rows=[_row(10)])],
+        )
+
         assert [(issue.sample_index, issue.drop_count) for issue in issues] == [(10, 1)]
 
     def test_duplicate_explicit_drops_are_reported_once(self) -> None:

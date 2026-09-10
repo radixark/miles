@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal, TypedDict
 
-from pydantic import Discriminator
+from pydantic import Discriminator, Field
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
@@ -180,6 +180,7 @@ class TrainerCpuWitnessEvent(EventBase):
     rollout_id: int
     cohort_id: str
     sample_counts: list[TrainingSampleCount]
+    skipped_nonfinite_sample_counts: list[TrainingSampleCount] = Field(default_factory=list)
     reason: Literal["train_end", "current", "save", "transfer", "load"]
 
 

@@ -8,8 +8,8 @@ from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.witness import (
     _current_witnesses,
     _describe_rows,
-    _rows_are_trained_once,
     _rows_by_sample,
+    _rows_have_one_outcome,
 )
 from miles.utils.audit_utils.event_analyzer.utils import filter_by_type
 from miles.utils.audit_utils.event_logger.models import (
@@ -42,7 +42,14 @@ def check(
     current_witnesses, witness_issues = _current_witnesses(events)
     if witness_issues:
         return [*identity_issues, *witness_issues]
-    current_rows = [(witness.replica_id, _rows_by_sample(witness)) for witness in current_witnesses]
+    current_rows = [
+        (
+            witness.replica_id,
+            _rows_by_sample(witness.sample_counts),
+            _rows_by_sample(witness.skipped_nonfinite_sample_counts),
+        )
+        for witness in current_witnesses
+    ]
     return [
         *identity_issues,
         *(
@@ -56,23 +63,35 @@ def check(
 def _resolution_issues(
     *,
     sample: _IssuedSample,
-    current_rows: list[tuple[str, dict[int, list[TrainingSampleCount]]]],
+    current_rows: list[
+        tuple[
+            str,
+            dict[int, list[TrainingSampleCount]],
+            dict[int, list[TrainingSampleCount]],
+        ]
+    ],
     drops: dict[int, int],
 ) -> list[SampleResolutionIssue]:
     drop_count = drops.get(sample.sample_index, 0)
     if drop_count > 1:
-        return [_issue(sample=sample, replica_id=None, trained_rows=[], drop_count=drop_count)]
+        return [_issue(sample=sample, replica_id=None, trained_rows=[], skipped_rows=[], drop_count=drop_count)]
 
     issues = []
-    for replica_id, rows_by_sample in current_rows:
-        rows = rows_by_sample.get(sample.sample_index, [])
-        valid = not rows if drop_count == 1 else _rows_are_trained_once(rows)
+    for replica_id, trained_by_sample, skipped_by_sample in current_rows:
+        trained_rows = trained_by_sample.get(sample.sample_index, [])
+        skipped_rows = skipped_by_sample.get(sample.sample_index, [])
+        valid = (
+            not trained_rows and not skipped_rows
+            if drop_count == 1
+            else _rows_have_one_outcome(trained_rows, skipped_rows)
+        )
         if not valid:
             issues.append(
                 _issue(
                     sample=sample,
                     replica_id=replica_id,
-                    trained_rows=_describe_rows(rows),
+                    trained_rows=_describe_rows(trained_rows),
+                    skipped_rows=_describe_rows(skipped_rows),
                     drop_count=drop_count,
                 )
             )
@@ -84,24 +103,30 @@ def _issue(
     sample: _IssuedSample,
     replica_id: str | None,
     trained_rows: list[str],
+    skipped_rows: list[str],
     drop_count: int,
 ) -> SampleResolutionIssue:
     return SampleResolutionIssue(
-        description=_resolution_description(trained_rows=trained_rows, drop_count=drop_count),
+        description=_resolution_description(
+            trained_rows=trained_rows,
+            skipped_rows=skipped_rows,
+            drop_count=drop_count,
+        ),
         group_index=sample.group_index,
         slot=sample.slot,
         sample_index=sample.sample_index,
         replica_id=replica_id,
         trained_rows=trained_rows,
+        skipped_rows=skipped_rows,
         drop_count=drop_count,
     )
 
 
-def _resolution_description(*, trained_rows: list[str], drop_count: int) -> str:
+def _resolution_description(*, trained_rows: list[str], skipped_rows: list[str], drop_count: int) -> str:
     if drop_count > 1:
         return "mature issued sample was explicitly dropped more than once"
     if drop_count == 1:
-        return "mature issued sample was both trained and explicitly dropped"
-    if not trained_rows:
-        return "mature issued sample was not trained"
-    return "mature issued sample does not have one complete set of rows trained once"
+        return "mature issued sample had a row outcome and was explicitly dropped"
+    if not trained_rows and not skipped_rows:
+        return "mature issued sample had no training outcome"
+    return "mature issued sample does not have one complete set of row outcomes"
