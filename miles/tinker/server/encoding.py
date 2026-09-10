@@ -69,6 +69,9 @@ def model_input_tokens(model_input: dict) -> list[int]:
 
 def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) -> dict:
     """One decoded datum (token list + loss_fn_inputs lists) -> internal datum."""
+    unknown = set(inputs) - set(LOSS_INPUT_KEYS) - {"target_tokens"}
+    if unknown:
+        raise UserInputError(f"datum {index}: unknown loss_fn_inputs {sorted(unknown)}")
     for name, values in inputs.items():
         if any(isinstance(value, (list, tuple)) for value in values):
             raise UserInputError(
