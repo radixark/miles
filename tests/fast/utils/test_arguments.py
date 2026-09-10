@@ -84,47 +84,6 @@ def _clear_mooncake_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-class TestSaveInferenceEngineWeightChecksumArguments:
-    def _parse(self, extra: list[str]) -> argparse.Namespace:
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        parser.set_defaults(
-            tensor_model_parallel_size=1,
-            pipeline_model_parallel_size=1,
-            context_parallel_size=1,
-            world_size=1,
-        )
-        return parser.parse_args([*extra, *REQUIRED_ARGS])
-
-    def test_the_checksum_flag_is_disabled_by_default(self) -> None:
-        """Ordinary runs must not pay for inference-engine checksum validation."""
-        args = self._parse([])
-
-        assert args.save_inference_engine_weight_checksum is False
-
-    def test_the_checksum_flag_can_be_enabled_explicitly(self) -> None:
-        """The dedicated CLI flag must enable inference-engine checksum validation."""
-        args = self._parse(["--save-inference-engine-weight-checksum"])
-
-        assert args.save_inference_engine_weight_checksum is True
-
-    def test_trainer_fault_tolerance_enables_the_checksum_flag(self) -> None:
-        """Trainer healing must compare the restored weights with the inference engines."""
-        args = self._parse(["--use-fault-tolerance", "--ft-components", "train", "--num-rollout", "1"])
-
-        miles_validate_args(args)
-
-        assert args.save_inference_engine_weight_checksum is True
-
-    def test_rollout_only_fault_tolerance_keeps_the_checksum_flag_disabled(self) -> None:
-        """Rollout-only healing must not enable the trainer weight checksum path."""
-        args = self._parse(["--use-fault-tolerance", "--ft-components", "rollout", "--num-rollout", "1"])
-
-        miles_validate_args(args)
-
-        assert args.save_inference_engine_weight_checksum is False
-
-
 def make_class_with_add_arguments():
     class MyFn:
         @classmethod

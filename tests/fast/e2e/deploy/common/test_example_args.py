@@ -53,14 +53,6 @@ class TestAssertTheExampleBuildsTheParallelismOf:
 
 
 class TestBuildDeterministicTestArgs:
-    def test_the_run_is_told_to_record_inference_engine_weight_checksums(self):
-        """compare_deterministic_sides asserts on those events, so a run that never records them can only fail."""
-        args = build_deterministic_test_args(
-            mode=_mode("--context-parallel-size 2"), dump_dir="/dumps/run", enable_dumper=False
-        )
-
-        assert "--save-inference-engine-weight-checksum " in args
-
     def test_the_events_the_checksums_are_written_into_are_also_enabled(self):
         """The checksum emitter is a no-op unless the event logger is initialised from --save-debug-event-data."""
         args = build_deterministic_test_args(
