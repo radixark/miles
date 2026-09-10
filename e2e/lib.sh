@@ -17,6 +17,7 @@
 : "${RAY_WORKER_PORT_MAX:=35999}"
 : "${READY_TIMEOUT:=2400}"
 : "${KEEP_GATEWAY:=0}"   # 1: leave the gateway up after a passing client (debugging)
+: "${RAY_TEMP:=/scratch/e2e-ray-$$}"   # short on purpose: ray's AF_UNIX socket paths must stay under 107 bytes
 : "${RUN_DIR:=$RUN_ROOT/$(date +%Y%m%d-%H%M%S)}"
 
 export MILES_E2E_FAMILY=${MILES_E2E_FAMILY:-miles-e2e-$(basename "$RUN_ROOT")}
@@ -66,6 +67,7 @@ e2e_cleanup() {
     fi
     [ -n "$JOB_ID" ] && ray job stop --address "$RAY_ADDRESS" "$JOB_ID" >/dev/null 2>&1 || true
     kill_marked "MILES_E2E_RUN=$MILES_E2E_RUN"
+    rm -rf "$RAY_TEMP"
     log "GPU memory after teardown:"; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader -i "$GPUS" | sed 's/^/    /'
     log "logs: $RUN_DIR (serve.log, client.log, serve-command.txt)"
     if [ $rc -eq 0 ]; then log "E2E PASS"; else log "E2E FAIL (exit $rc)"; fi
@@ -88,7 +90,7 @@ e2e_preflight() {
     for port in "$TINKER_PORT" "$RAY_PORT" "$RAY_DASH_PORT"; do
         if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; then log "port $port is busy"; exit 2; fi
     done
-    mkdir -p "$RUN_DIR/ckpt" "$RUN_DIR/ray"
+    mkdir -p "$RUN_DIR/ckpt" "$RAY_TEMP"
 }
 
 e2e_start_ray() {
@@ -96,7 +98,7 @@ e2e_start_ray() {
     ray start --head --node-ip-address 127.0.0.1 --port "$RAY_PORT" --dashboard-port "$RAY_DASH_PORT" \
         --ray-client-server-port "$RAY_CLIENT_PORT" --dashboard-agent-listen-port "$RAY_AGENT_PORT" \
         --min-worker-port "$RAY_WORKER_PORT_MIN" --max-worker-port "$RAY_WORKER_PORT_MAX" \
-        --num-gpus "$NGPUS" --temp-dir "$RUN_DIR/ray" --disable-usage-stats > "$RUN_DIR/ray-start.log" 2>&1
+        --num-gpus "$NGPUS" --temp-dir "$RAY_TEMP" --disable-usage-stats > "$RUN_DIR/ray-start.log" 2>&1
     log "ray head up at $RAY_ADDRESS (GPUs $GPUS)"
 }
 
