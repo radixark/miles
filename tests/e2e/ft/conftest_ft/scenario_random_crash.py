@@ -2,7 +2,6 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 
-from collections import Counter
 from pathlib import Path
 
 import typer
@@ -23,32 +22,13 @@ from tests.e2e.ft.conftest_ft.execution import (
     run_training,
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
-from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
-from tests.utils.soak.fault_forms import (
-    ACTOR_CELL_TYPE,
-    CELL_TYPE_OF_FT_COMPONENT,
-    ROLLOUT_CELL_TYPE,
-    compute_mean_interval_seconds_of_cell_type,
-    create_cell_fault_forms,
-)
+from tests.utils.soak.checks.ft import assert_healing
+from tests.utils.soak.entrypoint import API_SERVER_PORT, spawn_fault_injector
+from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
 from tests.utils.soak.utils import get_api_server_args, get_fully_async_args, get_train_script
-from tests.utils.soak.views import (
-    compute_cells_not_serving_after_injection,
-    compute_forms_drawn_without_success,
-    compute_injected_cell_names,
-    compute_num_injections,
-    compute_states_of_cell_name,
-    compute_successful_form_names,
-)
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.reconfigure_assertions import (
-    assert_min_soak_injections,
-    assert_soak_reconfigure_events,
-    load_reconfigure_events,
-)
-from miles.utils.workers.naming import parse_cell_id
 
 app: typer.Typer = typer.Typer()
 

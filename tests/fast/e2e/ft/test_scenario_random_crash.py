@@ -1,8 +1,8 @@
 from pathlib import Path
 
 import pytest
-from tests.e2e.ft.conftest_ft.scenario_random_crash import _assert_drawn_fault_forms_worked, assert_healing
 from tests.utils.soak import entrypoint, fault_forms, state, views
+from tests.utils.soak.checks.ft import _assert_drawn_fault_forms_worked, assert_healing
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
