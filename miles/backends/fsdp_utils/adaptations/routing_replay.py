@@ -131,7 +131,7 @@ def install(model: nn.Module, hf_config) -> int:
     return len(layers)
 
 
-def fill(args, model, data_iterator, num_microbatches, rollout_data) -> None:
+def fill(args, model, data_iterator, num_microbatches, rollout_data, align=None) -> None:
     """Load the rollout's routing into the per-layer replay queues.
 
     Takes the iterator list rather than a single iterator: ``fill_replay_data`` resets every
@@ -152,6 +152,12 @@ def fill(args, model, data_iterator, num_microbatches, rollout_data) -> None:
         if_sp_region=routing_replay_manager.if_sp_region,
         indices_are_token_positions=routing_replay_manager.replay_indices_are_token_positions,
     )
+
+    if align is None:
+        return
+    for replay in routing_replay_manager.replays:
+        for i, entry in enumerate(replay.top_indices_list):
+            replay.top_indices_list[i] = align(entry, -1)
 
 
 def log_prob_stage(args) -> str:

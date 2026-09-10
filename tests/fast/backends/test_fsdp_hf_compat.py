@@ -16,8 +16,8 @@ import sys
 import pytest
 import torch
 
+from miles.backends.fsdp_utils import hf_weight_iterator
 from miles.backends.fsdp_utils.adaptations.weight_bridge import _hf_unfuse_experts_expand, get_param_transform
-from miles.backends.fsdp_utils.update_weight_utils import _iter_sync_named_params
 
 
 @pytest.fixture(scope="module")
@@ -128,15 +128,25 @@ def test_param_transform_gating():
     assert not applies(name, torch.zeros(6, 4), "qwen3_moe")
 
 
-def test_iter_passthrough_for_non_expert():
-    # model=None proves the passthrough path never consumes the model
-    p = torch.zeros(4, 4)
-    out = list(_iter_sync_named_params("model.embed_tokens.weight", p, "qwen3_moe", model=None))
-    assert len(out) == 1 and out[0][0] == "model.embed_tokens.weight" and out[0][1] is p
-    # expert-named param under a model type that consumes batched layout -> passthrough
-    g = torch.zeros(2, 6, 4)
-    out = list(_iter_sync_named_params("model.layers.0.mlp.experts.gate_up_proj", g, "qwen3_5_moe", model=None))
-    assert len(out) == 1 and out[0][1] is g
+def test_the_iterator_streams_params_without_a_transform_unchanged():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    embed = torch.zeros(4, 4)
+    experts = torch.zeros(2, 6, 4)
+    model = SimpleNamespace(
+        config=SimpleNamespace(model_type="qwen3_5_moe"),
+        state_dict=lambda: {"model.embed_tokens.weight": embed, "model.layers.0.mlp.experts.gate_up_proj": experts},
+    )
+    iterator = object.__new__(hf_weight_iterator.FSDPHfWeightIterator)
+    iterator.model = model
+    with patch.object(hf_weight_iterator, "gather_full_param", lambda t: t):
+        units = list(iterator._iter_hf_param_units(None, materialize=True))
+    assert [[name for name, _ in unit] for unit in units] == [
+        ["model.embed_tokens.weight"],
+        ["model.layers.0.mlp.experts.gate_up_proj"],
+    ]
+    assert units[0][0][1] is embed and units[1][0][1] is experts
 
 
 def test_nemotron_h_post_load_fixup_gating():

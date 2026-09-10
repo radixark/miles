@@ -1,3 +1,11 @@
+"""Distributed-checkpoint save and resume for the FSDP backend.
+
+Sharded state goes out through ``torch.distributed.checkpoint``, which speaks
+DTensor directly: one directory each for the model, optimizer and LR scheduler
+under ``iter_NNNNNNN``, alongside the RNG state and a metadata file, with
+``latest_checkpointed_iteration.txt`` at the root naming the newest iteration.
+"""
+
 from __future__ import annotations
 
 import json
@@ -87,14 +95,14 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     root_path = Path(load_root).expanduser()
     if not root_path.exists():
-        logger.info(f"[FSDP] Checkpoint directory {root_path} not found; skipping load.")
+        logger.info(f"Checkpoint directory {root_path} not found; skipping load.")
         return None
 
     target_step = getattr(actor.args, "ckpt_step", None)
     if target_step is None:
         tracker_file = root_path / "latest_checkpointed_iteration.txt"
         if not tracker_file.exists():
-            logger.info(f"[FSDP] No tracker file at {tracker_file}; skipping load.")
+            logger.info(f"No tracker file at {tracker_file}; skipping load.")
             return None
         tracker_text = tracker_file.read_text().strip()
         target_step = int(tracker_text)
@@ -105,7 +113,7 @@ def load(actor: Any) -> dict[str, Any] | None:
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
 
     if not model_dir.exists():
-        logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
+        logger.info(f"Model checkpoint {model_dir} not found; skipping load.")
         return None
 
     # Load model weights (always)
@@ -114,9 +122,9 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     try:
         dcp.load(state_dict=state_dict, checkpoint_id=str(model_dir))
-        logger.info(f"[FSDP] Loaded model from {model_dir}")
+        logger.info(f"Loaded model from {model_dir}")
     except Exception as e:
-        logger.error(f"[FSDP] Failed to load model from {model_dir}: {e}")
+        logger.error(f"Failed to load model from {model_dir}: {e}")
         return None
 
     # Load optimizer state (optional)
@@ -126,11 +134,11 @@ def load(actor: Any) -> dict[str, Any] | None:
         optim_state_dict = {"optim_state": optimizer_state}
         try:
             dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
-            logger.info(f"[FSDP] Loaded optimizer from {optimizer_dir}")
+            logger.info(f"Loaded optimizer from {optimizer_dir}")
         except Exception as e:
-            logger.warning(f"[FSDP] Failed to load optimizer from {optimizer_dir}: {e}")
+            logger.warning(f"Failed to load optimizer from {optimizer_dir}: {e}")
     elif load_optimizer:
-        logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
+        logger.info(f"Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
     # Load LR scheduler state (optional)
     load_lr_scheduler = hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
@@ -139,11 +147,11 @@ def load(actor: Any) -> dict[str, Any] | None:
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
         try:
             dcp.load(state_dict=lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))
-            logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
+            logger.info(f"Loaded LR scheduler from {lr_scheduler_dir}")
         except Exception as e:
-            logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
+            logger.warning(f"Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
     elif hasattr(actor, "lr_scheduler"):
-        logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
+        logger.info(f"LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
 
     rng_state = None
     rng_path = checkpoint_dir / "rng.pt"
@@ -245,6 +253,6 @@ def save(actor: Any, iteration: int) -> None:
 
         tracker_file = base_dir / "latest_checkpointed_iteration.txt"
         tracker_file.write_text(str(step_id))
-        logger.info(f"[FSDP] Saved checkpoint to {checkpoint_dir}")
+        logger.info(f"Saved checkpoint to {checkpoint_dir}")
 
     dist.barrier()

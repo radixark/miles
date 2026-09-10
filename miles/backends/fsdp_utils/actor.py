@@ -1,63 +1,45 @@
 import logging
 import os
-import random
 from argparse import Namespace
-from contextlib import ExitStack
-from typing import TYPE_CHECKING
+from contextlib import contextmanager, nullcontext
+from functools import partial
 
 import torch
 import torch.distributed as dist
-from tqdm import tqdm
 
+from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.backends.training_utils.ci_utils import check_grad_norm
-from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
-from miles.backends.training_utils.log_utils import (
-    aggregate_forward_results,
-    aggregate_train_losses,
-    log_rollout_data,
-    log_train_step,
-)
-from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
-from miles.ray.train_actor import TrainRayActor
-from miles.utils import async_utils, train_dump_utils, train_metric_utils
+from miles.backends.training_utils.step_runner import LinearStepRunner, StepMetrics
+from miles.backends.training_utils.torch_native_actor import TorchNativeTrainRayActor
+from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import load_hf_config
-from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.profile_utils import TrainProfiler
-from miles.utils.ray_utils import Box
-from miles.utils.timer import Timer, inverse_timer, timer
+from miles.utils.replay_base import routing_replay_manager
+from miles.utils.timer import Timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
-from . import checkpoint
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
 from .adaptations.packing import apply_packing
 from .adaptations.post_load_fixups import apply_post_load_fixups
 from .adaptations.precision import apply_fp32_master, precision_forward_context, resolve_precision_policy
+from .hf_weight_iterator import get_hf_weight_iterator
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
-from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import UpdatableEngines
-    from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
 
 
-class FSDPTrainRayActor(TrainRayActor):
-    """Simplified TrainRayActor for pure HF+FSDP training.
+class FSDPTrainRayActor(TorchNativeTrainRayActor):
+    """TrainRayActor for stock HF modeling under FSDP2.
 
-    Initializes the stock HF model on rank0 (others on meta), wraps it in FSDP2, and provides the
-    train / save / update_weights hooks. Weight sync: rank0 gathers the full state_dict and broadcasts
-    tensor-by-tensor.
+    The model is built on rank 0 (meta elsewhere), wrapped in FSDP2 and loaded by broadcast;
+    weights are streamed to the engines through the shared WeightUpdater.
     """
+
+    routing_replay = routing_replay
 
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
@@ -86,10 +68,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         torch.manual_seed(args.seed)
 
-        self.train_parallel_config = {
-            "dp_size": get_parallel_state().intra_dp.size,
-        }
-
         if self.args.debug_rollout_only:
             return 0
 
@@ -106,22 +84,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.prof = TrainProfiler(args)
 
-        for i in range(dist.get_world_size()):
-            if i == dist.get_rank():
-                self.hf_config = load_hf_config(self.args.hf_checkpoint)
-                self.tokenizer = load_tokenizer(
-                    self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
-                )
-                if hasattr(self.hf_config, "vision_config"):
-                    self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
-            dist.barrier(group=get_gloo_group())
+        self.load_hf_assets(with_processor=True)
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
-        try:
-            self._flops_args = flops_args_from_hf_config(self.hf_config)
-        except Exception as e:
-            self._flops_args = None
-            logger.warning(f"MFU will not be reported, {type(self.hf_config).__name__} could not be sized: {e}")
 
         routing_replay.enable(args)
 
@@ -197,12 +162,11 @@ class FSDPTrainRayActor(TrainRayActor):
         self.ref_model = None
         if with_ref:
             self.ref_model = self._create_ref_model(args.ref_load)
+            self.ref_runner = LinearStepRunner(partial(self._logprob_forward, self.ref_model))
+        self.model_parts = [self.model]
+        self.optimizers = [self.optimizer]
 
-        self.weight_updater = (
-            UpdateWeightFromTensor(self.args, self.model)
-            if self.args.colocate
-            else UpdateWeightFromDistributed(self.args, self.model)
-        )
+        self.weight_updater = self._build_weight_updater(self.model, get_hf_weight_iterator)
 
         checkpoint.finalize_load(self, checkpoint_payload)
 
@@ -215,8 +179,18 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
+    def _has_image_text_to_text_impl(self) -> bool:
+        if not hasattr(self.hf_config, "vision_config"):
+            return False
+        # A remote-code checkpoint only implements the Auto classes its own auto_map declares, and a
+        # multimodal config does not imply AutoModelForImageTextToText is one of them: Kimi-K2.5 ships
+        # a vision_config but maps only AutoModelForCausalLM. Native archs carry no auto_map and keep
+        # resolving through the transformers registry.
+        auto_map = getattr(self.hf_config, "auto_map", None)
+        return not auto_map or "AutoModelForImageTextToText" in auto_map
+
     def get_model_cls(self):
-        if hasattr(self.hf_config, "vision_config"):
+        if self._has_image_text_to_text_impl():
             from transformers import AutoModelForImageTextToText
 
             return AutoModelForImageTextToText
@@ -317,31 +291,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return model
 
-    @timer
-    def sleep(self) -> None:
-        """Pause CUDA memory for all tracked tensors."""
-        if not self.args.offload_train:
-            return
-
-        print_memory("before offload model")
-
-        self.model.cpu()
-        move_torch_optimizer(self.optimizer, "cpu")
-        clear_memory()
-        dist.barrier(group=get_gloo_group())
-        print_memory("after offload model")
-
-    @timer
-    def wake_up(self) -> None:
-        """Resume CUDA memory for all tracked tensors."""
-        if not self.args.offload_train:
-            return
-
-        self.model.cuda()
-        move_torch_optimizer(self.optimizer, "cuda")
-        dist.barrier(group=get_gloo_group())
-        print_memory("after wake_up model")
-
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Delegate checkpoint saving to the shared checkpoint utilities."""
         if self.args.debug_rollout_only or self.args.save is None:
@@ -350,229 +299,47 @@ class FSDPTrainRayActor(TrainRayActor):
         assert not self.args.async_save, "FSDPTrainRayActor does not support async_save yet."
         checkpoint.save(self, rollout_id)
 
-    def _compute_log_prob(
-        self,
-        model_tag: str,
-        data_iterator: DataIterator,
-        num_microbatches: list[int],
-        store_prefix: str = "",
-    ) -> dict[str, list[torch.Tensor]]:
-        """Compute token log-probabilities over the data iterator. Uses the separate ref model when
-        ``model_tag == "ref"`` (loaded CPU->GPU on demand, offloaded after); keyed by f"{store_prefix}log_probs"."""
-        if model_tag == "ref" and self.ref_model is not None:
-            if not self.fsdp_cpu_offload:
-                self.model.cpu()
-                torch.cuda.empty_cache()
-                dist.barrier(group=get_gloo_group())
+    @contextmanager
+    def _active_model(self, model_tag: str):
+        """Yield the model that owns this pass.
 
-            active_model = self.ref_model
-            active_model.eval()
-        else:
-            active_model = self.model
+        The reference model is a separate FSDP2 module, so both cannot be
+        resident at once unless FSDP is already offloading: park the actor on the
+        host for the duration of the reference pass and bring it back after. The
+        barriers keep the ranks from racing each other's device moves.
+        """
+        if model_tag != "ref" or self.ref_model is None:
+            yield self.model
+            return
 
+        if not self.fsdp_cpu_offload:
+            self.model.cpu()
+            torch.cuda.empty_cache()
+            dist.barrier(group=get_gloo_group())
+        self.ref_model.eval()
         try:
-            forward_data_store = []
-            data_iterator.reset()
-
-            with timer(f"{store_prefix}log_probs"), torch.no_grad():
-                num_steps_per_rollout = len(num_microbatches)
-                for step_id in range(num_steps_per_rollout):
-                    for _ in self.prof.iterate_train_log_probs(
-                        tqdm(
-                            range(num_microbatches[step_id]),
-                            desc=f"{store_prefix}log_probs",
-                            disable=dist.get_rank() != 0,
-                        )
-                    ):
-                        forward_only_keys = [
-                            "tokens",
-                            "loss_masks",
-                            "multimodal_train_inputs",
-                            "total_lengths",
-                            "response_lengths",
-                            "max_seq_lens",
-                        ]
-                        batch = get_batch(
-                            data_iterator,
-                            forward_only_keys,
-                            self.args.data_pad_size_multiplier,
-                            self.args.qkv_format,
-                            get_position_ids=True,
-                        )
-
-                        model_args = self._get_model_inputs_args(batch)
-                        # keep logits in native bf16 (chunks upcast to fp32 downstream); avoids a full-vocab fp32 tensor (~5GB)
-                        with precision_forward_context(self.precision_policy):
-                            logits = active_model(**model_args).logits
-
-                        result = get_log_probs_and_entropy(
-                            logits=logits,
-                            args=self.args,
-                            unconcat_tokens=batch["unconcat_tokens"],
-                            total_lengths=batch["total_lengths"],
-                            response_lengths=batch["response_lengths"],
-                            with_entropy=(store_prefix == ""),
-                            max_seq_lens=batch.get("max_seq_lens", None),
-                        )
-
-                        batch_result = {
-                            f"{store_prefix}log_probs": result["log_probs"],
-                        }
-                        if store_prefix == "" and "entropy" in result:
-                            batch_result["entropy"] = result["entropy"]
-                        forward_data_store.append(batch_result)
-
-            rollout_data = aggregate_forward_results(forward_data_store, data_iterator, self.args, store_prefix)
-
-            return rollout_data
-
+            yield self.ref_model
         finally:
-            # Restore actor model if it was offloaded
-            if model_tag == "ref" and self.ref_model is not None:
-                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
+            dist.barrier(group=get_gloo_group())
+            if not self.fsdp_cpu_offload:
+                self.model.cuda()
                 dist.barrier(group=get_gloo_group())
 
-                if not self.fsdp_cpu_offload:
-                    self.model.cuda()
-                    dist.barrier(group=get_gloo_group())
+    def _logprob_forward(self, model: torch.nn.Module, batch: dict) -> torch.Tensor:
+        """No-grad forward. Logits stay in native bf16; the loss path upcasts
+        per-response chunks, which avoids a full-vocab fp32 tensor."""
+        model_args = self._get_model_inputs_args(batch)
+        with precision_forward_context(self.precision_policy):
+            return model(**model_args).logits
 
-    def train(
-        self,
-        rollout_id: int,
-        rollout_data_ref: Box,
-        witness_info: "WitnessInfo | None" = None,
-        attempt: int = 0,
-    ) -> TrainStepOutput:
-        """Run one training update over a rollout batch (``rollout_data_ref`` is a Box handle to the
-        Ray object ref with the rollout tensors; fetched and partitioned by data-parallel rank)."""
-        assert witness_info is None
-        assert attempt == 0
+    def step_runner(self) -> LinearStepRunner:
+        return LinearStepRunner(self._forward, self._zero_grad, self._apply_step)
 
-        self._heartbeat.bump()
-        if self.args.offload_train:
-            self.wake_up()
+    def ref_context(self):
+        return self._active_model("ref")
 
-        with inverse_timer("train_wait"), timer("train"), ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
-            stack.enter_context(store_get_result)
-            if self.args.debug_rollout_only:
-                return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
-            self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
-
-        train_metric_utils.log_perf_data_raw(
-            rollout_id=rollout_id,
-            args=self.args,
-            is_primary_rank=dist.get_rank() == 0,
-            compute_total_fwd_flops=(
-                (lambda seq_lens: fwd_tflops_per_gpu(seq_lens, self._flops_args, dist.get_world_size()))
-                if self._flops_args is not None
-                else None
-            ),
-        )
-
-        self._heartbeat.bump()
-        return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
-
-    def _train_core(self, rollout_id: int, rollout_data) -> None:
-        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
-
-        routing_replay.fill(self.args, self.model, data_iterator, num_microbatches, rollout_data)
-
-        data_iterator = data_iterator[0]
-
-        assert (
-            len(num_microbatches) > 0
-        ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
-
-        if self.ref_model is not None:
-            with routing_replay.stage(routing_replay.FALLTHROUGH):
-                ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
-            rollout_data.update(ref_results)
-
-        with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
-            actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
-        routing_replay.rewind()
-        rollout_data.update(actor_results)
-
-        compute_advantages_and_returns(self.args, rollout_data)
-
-        log_rollout_data(rollout_id, self.args, rollout_data)
-
-        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
-            data_iterator.reset()
-            num_steps_per_rollout = len(num_microbatches)
-
-            for step_id in range(num_steps_per_rollout):
-                self.optimizer.zero_grad(set_to_none=True)
-
-                losses_reduced = []
-                for _ in self.prof.iterate_train_actor(
-                    tqdm(range(num_microbatches[step_id]), desc="actor_train", disable=dist.get_rank() != 0)
-                ):
-                    batch = get_batch(
-                        data_iterator,
-                        [
-                            "tokens",
-                            "loss_masks",
-                            "multimodal_train_inputs",
-                            "total_lengths",
-                            "response_lengths",
-                            "max_seq_lens",
-                            "log_probs",
-                            "advantages",
-                            "returns",
-                            "ref_log_probs",
-                            "rollout_log_probs",
-                        ],
-                        self.args.data_pad_size_multiplier,
-                        self.args.qkv_format,
-                        get_position_ids=True,
-                    )
-
-                    log_dict = self._train_step(
-                        batch=batch,
-                        step_id=step_id,
-                        num_microbatches=num_microbatches[step_id],
-                    )
-                    losses_reduced.append(log_dict)
-
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-                grad_norm = grad_norm.full_tensor().item()
-
-                self.optimizer.step()
-                self.lr_scheduler.step()
-
-                if self.args.ci_test:
-                    check_grad_norm(
-                        args=self.args,
-                        grad_norm=grad_norm,
-                        rollout_id=rollout_id,
-                        step_id=step_id,
-                        role="actor",
-                        rank=get_parallel_state().intra_dp_cp.rank,
-                    )
-
-                loss_dict = aggregate_train_losses(losses_reduced)
-
-                extra_metrics = {}
-                for param_group_id, param_group in enumerate(self.optimizer.param_groups):
-                    extra_metrics[f"lr-pg_{param_group_id}"] = param_group["lr"]
-
-                log_train_step(
-                    args=self.args,
-                    loss_dict=loss_dict,
-                    grad_norm=grad_norm,
-                    rollout_id=rollout_id,
-                    step_id=step_id,
-                    num_steps_per_rollout=num_steps_per_rollout,
-                    role="actor",
-                    extra_metrics=extra_metrics,
-                )
-
-        routing_replay.reset()
-
-        self.prof.step(rollout_id=rollout_id)
-
+    def after_rollout(self, rollout_id: int, rollout_data) -> None:
         if self.args.save_debug_train_data is not None:
             train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
@@ -587,59 +354,28 @@ class FSDPTrainRayActor(TrainRayActor):
             self.ref_model.load_state_dict(actor_state)
             self.ref_model.cpu()
 
-    def _train_step(self, batch, step_id, num_microbatches):
+    def _forward(self, batch: dict) -> torch.Tensor:
+        """The training pass brackets each real forward in ``replay_forward`` so
+        activation-checkpoint recompute keeps the backward cursor to itself."""
         model_args = self._get_model_inputs_args(batch)
-        # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
-        with routing_replay.stage(routing_replay.REPLAY_FORWARD), precision_forward_context(self.precision_policy):
-            logits = self.model(**model_args).logits
+        replaying = routing_replay_manager.stage == routing_replay.REPLAY_BACKWARD
+        replay_stage = routing_replay.stage(routing_replay.REPLAY_FORWARD) if replaying else nullcontext()
+        with replay_stage, precision_forward_context(self.precision_policy):
+            return self.model(**model_args).logits
 
-        loss, normalizer, log_dict = loss_function(
-            args=self.args,
-            batch=batch,
-            num_microbatches=num_microbatches,
-            logits=logits,
-            apply_megatron_loss_scaling=False,
+    def _zero_grad(self) -> None:
+        self.optimizer.zero_grad(set_to_none=True)
+
+    def _apply_step(self) -> StepMetrics:
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+        if hasattr(grad_norm, "full_tensor"):
+            grad_norm = grad_norm.full_tensor()
+        self.optimizer.step()
+        self.lr_scheduler.step()
+        return StepMetrics(
+            grad_norm=float(grad_norm.item()),
+            extra_metrics={f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)},
         )
-
-        loss.backward()
-
-        return log_dict
-
-    @timer
-    def update_weights(self, info: "UpdatableEngines") -> int | None:  # type: ignore[override]
-        """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
-        if self.args.debug_train_only or self.args.debug_rollout_only:
-            return None
-
-        rollout_engines = info.rollout_engines
-        snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
-        engine_gpu_counts = info.engine_gpu_counts
-        engine_gpu_offsets = info.engine_gpu_offsets
-        del info
-
-        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
-        if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
-            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-            dist.barrier(group=get_gloo_group())
-
-        self.weight_updater.update_weights()
-
-        if self.args.ci_test and len(rollout_engines) > 0:
-            engine = random.choice(rollout_engines)
-            engine_version = async_utils.run(engine.get_weight_version())
-            if str(engine_version) != str(self.weight_updater.weight_version):
-                raise RuntimeError(
-                    f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                )
-
-        clear_memory()
-
-        return self.weight_updater.weight_version
 
     def _create_ref_model(self, ref_load_path: str | None):
         """Create a separate FSDP2 ref model. ALWAYS uses CPUOffloadPolicy (regardless of the actor's
@@ -698,21 +434,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
 
 @torch.no_grad()
-def move_torch_optimizer(optimizer, device):
-    """ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py"""
-    if not optimizer.state:
-        return
-
-    for param_group in optimizer.param_groups:
-        for param in param_group["params"]:
-            state = optimizer.state[param]
-            for key, value in state.items():
-                if isinstance(value, torch.Tensor):
-                    state[key] = value.to(device, non_blocking=True)
-
-    torch.cuda.synchronize()
-
-
 def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None, reduce_dtype=None):
     """Apply FSDP2 (fully_shard) to the model.
 
