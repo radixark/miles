@@ -98,6 +98,41 @@ def test_extract_symbols_to_new_module_drops_relocated_assigns(tmp_path: Path) -
     assert "_FLAG = os.cpu_count()" in (tmp_path / "new.py").read_text()
 
 
+def test_extract_symbols_to_new_module_header_logger_counts_as_the_dropped_source_logger(
+    tmp_path: Path,
+) -> None:
+    """A logger listed in drop_assigns and re-authored in the header is a relocation, not scaffolding."""
+    (tmp_path / "src.py").write_text(
+        "import logging\n"
+        "\n"
+        "logger = logging.getLogger(__name__)\n"
+        "\n"
+        "\n"
+        "def moved():\n"
+        "    logger.info('x')\n"
+    )
+    header = "import logging\n" "\n" "logger = logging.getLogger(__name__)\n"
+    r = Repro("b", "t").extract_symbols_to_new_module(
+        "src.py",
+        "new.py",
+        symbols=["moved"],
+        header=header,
+        order=["moved"],
+        drop_assigns=["logger"],
+    )
+    _apply(r, tmp_path)
+    assert "logger = logging.getLogger(__name__)" not in (tmp_path / "src.py").read_text()
+    assert (tmp_path / "new.py").read_text() == (
+        "import logging\n"
+        "\n"
+        "logger = logging.getLogger(__name__)\n"
+        "\n"
+        "\n"
+        "def moved():\n"
+        "    logger.info('x')\n"
+    )
+
+
 def test_extract_symbols_to_new_module_asserts_unknown_drop_assign(
     tmp_path: Path,
 ) -> None:

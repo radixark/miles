@@ -353,10 +353,10 @@ def _audit_extract_header(
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
             names = [x.id for x in targets if isinstance(x, ast.Name)]
             value_src = ast.unparse(stmt.value) if stmt.value is not None else None
-            if value_src == "logging.getLogger(__name__)":
-                continue
             if names and all(n in removed_assigns and removed_assigns[n] == value_src for n in names):
                 header_assigned.update(names)
+                continue
+            if value_src == "logging.getLogger(__name__)":
                 continue
             if names and all(n in rederivable and rederivable[n] == value_src for n in names):
                 continue
