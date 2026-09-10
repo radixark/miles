@@ -1,9 +1,12 @@
 import logging
 import pickle
+from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
@@ -14,6 +17,17 @@ from miles.utils.audit_utils.witness.cpu import CpuWitness, TrainingSampleIdenti
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 _CKPT_TRANSFER_LOGGER = "miles.backends.megatron_utils.ft.checkpoint_transfer"
+
+
+@pytest.fixture()
+def single_rank_gloo(tmp_path: Path) -> Iterator[dist.ProcessGroup]:
+    """Provide the real single-rank process group required by integrity validation."""
+    rendezvous = tmp_path / "gloo-rendezvous"
+    dist.init_process_group(backend="gloo", init_method=f"file://{rendezvous}", rank=0, world_size=1)
+    try:
+        yield dist.group.WORLD
+    finally:
+        dist.destroy_process_group()
 
 
 class _FakeTransport:
@@ -109,24 +123,30 @@ class TestSerializeForTransport:
 
 
 class TestDeserializeFromTransport:
-    def test_round_trip_preserves_the_real_cpu_witness_sharded_object(self) -> None:
+    def test_round_trip_preserves_the_real_cpu_witness_sharded_object(
+        self, single_rank_gloo: dist.ProcessGroup
+    ) -> None:
         """A surviving cell donor restores both witness outcomes into a healing receiver."""
-        donor = CpuWitness(pipeline_rank=2, chunk_index=1, replica_id=(3, 4, 0))
+        donor = CpuWitness(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
         sample = TrainingSampleIdentity(source_sample_index=7, row_index=0, row_count=1)
         skipped_sample = TrainingSampleIdentity(source_sample_index=8, row_index=0, row_count=1)
         donor.record([sample])
         donor.record_skipped_nonfinite([skipped_sample])
         state_dict, _ = MCoreTensorAwareStateDict.from_state_dict(
-            {"model": donor.sharded_state_dict(prefix="actor.cpu_witness.")}, algo="atomic"
+            {"model": donor.sharded_state_dict(prefix="cpu_witness.")},
+            algo="atomic",
+            parallelization_group=single_rank_gloo,
         )
 
         _, restored = _TransportCodec.decode(_TransportCodec.encode(state_dict=state_dict, iteration=11))
 
-        receiver = CpuWitness(pipeline_rank=2, chunk_index=1, replica_id=(3, 4, 0))
+        receiver = CpuWitness(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
         receiver_state = restored.to_state_dict(
-            {"model": receiver.sharded_state_dict(prefix="actor.cpu_witness.")}, algo="atomic"
+            {"model": receiver.sharded_state_dict(prefix="cpu_witness.")},
+            algo="atomic",
+            parallelization_group=single_rank_gloo,
         )
-        receiver.load_state_dict({"_extra_state": receiver_state["model"]["actor.cpu_witness._extra_state"]})
+        receiver.load_state_dict({"_extra_state": receiver_state["model"]["cpu_witness._extra_state"]})
 
         assert receiver.snapshot() == {sample: 1}
         assert receiver.snapshot_skipped_nonfinite() == {skipped_sample: 1}

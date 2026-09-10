@@ -168,7 +168,8 @@ def _has_local_checkpoint(args: Any, checkpointing_context: dict[str, Any] | Non
     local_checkpoint_manager = (checkpointing_context or {}).get("local_checkpoint_manager")
     if local_checkpoint_manager is None or args.non_persistent_ckpt_type != "local":
         return False
-    return local_checkpoint_manager.find_latest() >= _persistent_checkpoint_iteration(args)
+    local_iteration = local_checkpoint_manager.find_latest()
+    return local_iteration >= 0 and local_iteration >= _persistent_checkpoint_iteration(args)
 
 
 def _persistent_checkpoint_iteration(args: Any) -> int:
