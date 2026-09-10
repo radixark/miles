@@ -117,6 +117,10 @@ class TinkerService:
         lora_config = payload.get("lora_config") or {}
         self._reject_unsupported_lora_config(lora_config)
         rank = lora_config.get("rank", 32)
+        if rank > self.config.max_lora_rank:
+            raise UserInputError(
+                f"lora_config.rank={rank} exceeds this gateway's slot capacity (--lora-rank {self.config.max_lora_rank})"
+            )
         alpha = self.config.lora_alpha if self.config.lora_alpha is not None else float(2 * rank)
         if not self.free_slots:
             raise UserInputError(f"no free adapter slots (capacity {self.config.n_slots})")
@@ -255,6 +259,16 @@ class TinkerService:
                         f"datum {index}: loss_fn_inputs[{wire_key!r}] has {len(values)} values "
                         f"for {datum['target_len']} target tokens"
                     )
+            # an input the loss never reads would train with different semantics than the caller expects
+            unread = [
+                wire_key
+                for wire_key, datum_key in LOSS_INPUT_KEYS.items()
+                if wire_key not in required_inputs and datum_key in datum
+            ]
+            if unread:
+                raise UserInputError(
+                    f"datum {index}: loss_fn {payload['loss_fn']!r} does not read loss_fn_inputs {unread}"
+                )
         if total_tokens > self.config.max_tokens_per_request:
             raise UserInputError(
                 f"{total_tokens} tokens exceeds max_tokens_per_request={self.config.max_tokens_per_request}"
@@ -385,6 +399,8 @@ class TinkerService:
     async def _evict_model(self, model_id: str, error: str, category: str) -> None:
         """Free a model's slot and fail its pending requests; requires the backend lock."""
         record = self.models.pop(model_id)
+        # the poison belongs to the evicted model's gradient window, not the slot
+        self._poisoned_slots.pop(record.slot, None)
         stream = self.planner.stream(model_id)
         self.planner.remove_stream(model_id)
         for request_id in stream.request_id_by_seq.values():

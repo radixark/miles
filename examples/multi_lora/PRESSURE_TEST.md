@@ -1,7 +1,7 @@
 # Standalone Tinker multi-LoRA pressure test
 
 This PR adds example tools only, on top of #2846 at
-`3b97ddc308bf10581d803617aa42f75bf7b88831`. It does not change Miles runtime,
+`17b7ee73d684d9860fd6ec2b9103b7753ba9d735`. It does not change Miles runtime,
 `serve_tinker.py`, the original multi-LoRA example, or CI/unit-test files.
 The scripts are submitted for review **before running the N-user experiment**.
 The standalone GPU probe and N-user E2E are not yet validated on hardware.

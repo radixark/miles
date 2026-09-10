@@ -4,6 +4,7 @@ from contextlib import suppress
 
 import uvicorn
 
+from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_megatron
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
@@ -44,12 +45,14 @@ async def serve(args):
 
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
-    target_modules = set(args.target_modules or ())
+    # args.target_modules holds HF names (q_proj, ...); classify on the megatron names
+    target_modules = set(convert_target_modules_to_megatron(args.target_modules or ()))
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=checkpoint_root,
         lora_alpha=args.lora_alpha,
+        max_lora_rank=args.lora_rank,
         trains_attn=bool(target_modules & {"linear_qkv", "linear_proj"}),
         trains_mlp=bool(target_modules & {"linear_fc1", "linear_fc2"}),
         trains_unembed="output_layer" in target_modules,

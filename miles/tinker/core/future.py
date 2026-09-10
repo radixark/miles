@@ -1,8 +1,9 @@
 """In-memory future results. Request deduplication lasts only for the current process."""
 
+import asyncio
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from miles.tinker.core.types import OwnershipError
 
@@ -23,6 +24,8 @@ class Future:
     error: str | None = None
     error_category: str | None = None
     finished_at: float | None = None
+    # long-poll wakeup: set when the future settles
+    settled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class FutureStore:
@@ -41,6 +44,7 @@ class FutureStore:
         future.state = DONE
         future.result = result
         future.finished_at = time.monotonic()
+        future.settled.set()
 
     def fail(self, request_id: str, error: str, category: str) -> None:
         future = self._futures[request_id]
@@ -50,6 +54,7 @@ class FutureStore:
         future.error = error
         future.error_category = category
         future.finished_at = time.monotonic()
+        future.settled.set()
 
     def get(self, request_id: str, tenant: str) -> Future | None:
         """Return None for unknown or expired futures; enforce tenant ownership otherwise."""
