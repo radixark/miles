@@ -53,7 +53,11 @@ def state_dict() -> MCoreTensorAwareStateDict:
             "step": ShardedTensor.from_rank_offsets("step", torch.tensor([100], dtype=torch.int64)),
         },
     }
-    common = {"iteration": 0, "args_repr": "dummy"}
+    common = {
+        "iteration": 0,
+        "args_repr": "dummy",
+        "cpu_witness": {"version": 1, "sample_counts": {(7, 0, 1): 1}},
+    }
     return MCoreTensorAwareStateDict(common=common, sharded_state_dict=sharded_state_dict)
 
 

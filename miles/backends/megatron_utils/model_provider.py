@@ -191,7 +191,7 @@ def get_model_provider_func(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
-            if role == "actor":
+            if role == "actor" and not args.multi_lora:
                 install_cpu_witness(model=model, chunk_index=vp_stage or 0)
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward
@@ -351,7 +351,7 @@ def _maybe_install_witness(
     role: Literal["actor", "critic"],
     vp_stage: int | None,
 ) -> None:
-    if role == "actor":
+    if role == "actor" and not args.multi_lora:
         install_cpu_witness(model=model, chunk_index=vp_stage or 0)
     if getattr(args, "enable_witness", False):
         install_witness(
