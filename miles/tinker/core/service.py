@@ -274,6 +274,9 @@ class TinkerService:
         return sampling_session_id
 
     def submit_sample(self, tenant: str, payload: dict) -> tuple[str, list[str]]:
+        base_model = payload.get("base_model")
+        if base_model is not None and base_model != self.config.base_model:
+            raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
         model_path = payload.get("model_path")
         if payload.get("sampling_session_id"):
             session = self.sampling_sessions[payload["sampling_session_id"]]
