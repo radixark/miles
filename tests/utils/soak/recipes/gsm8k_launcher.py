@@ -18,6 +18,9 @@ class Gsm8kLaunchSpec(FrozenStrictBaseModel):
 
 
 async def launch(spec: Gsm8kLaunchSpec, *, log_path: Path, timeout_seconds: float) -> int:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.with_suffix(".json").open("x") as stream:
+        stream.write(spec.model_dump_json(indent=2))
     result = await run_command(
         [sys.executable, "-u", "-m", "tests.utils.soak.recipes.gsm8k_launcher"],
         timeout_seconds=timeout_seconds,

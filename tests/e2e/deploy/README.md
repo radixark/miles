@@ -135,7 +135,10 @@ Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's c
    about which take-over left it), the log that followed one keeping a prefix of the log it
    replaced, and the steps past that prefix being what the take-over cost
 4. Artifact: per take-over cost (index, checkpoint held, step reached) in
-   <dump_dir>/hot_restart/evidence.json
+   <dump_dir>-soak/<session_id>/hot_restart/evidence.json; typed events in events.jsonl,
+   launcher specifications and logs beside it, and independent copies of active/discarded
+   training-event generations under sources/. Completed event logs carry a terminal marker
+   and verify the archived files against their recorded SHA-256 digests.
 
 Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
 ```

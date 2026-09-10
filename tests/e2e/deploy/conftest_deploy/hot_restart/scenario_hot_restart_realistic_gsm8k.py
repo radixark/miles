@@ -35,6 +35,7 @@ from tests.utils.soak.state import (
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakObservation,
+    event_source,
 )
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
@@ -102,14 +103,15 @@ def run_ci(
     assert_no_take_over_attempt_failed(events)
 
     evidence = _project_evidence(events=events, release=compute_release_of_config(config), namespace=config.namespace)
-    evidence.write(dump_dir=outcome.run.dump_dir)
+    evidence.write(dump_dir=str(outcome.run.evidence_dir))
     assert_take_overs_replaced_only_script(
         evidence,
         num_restarts=len(evidence.records),
         minimum_restarts=MIN_HOT_RESTARTS,
     )
     assert_take_over_loss_within_save_interval(evidence.records)
-    assert_take_overs_resumed_within_save_interval(outcome.run.dump_dir, records=evidence.records)
+    source = event_source(events, name="training_events", fallback=outcome.run.events_dir)
+    assert_take_overs_resumed_within_save_interval(str(source.parent), records=evidence.records)
 
     print(f"Hot restart realistic gsm8k test PASSED (seed={seed}, rollouts={num_rollout})")
 

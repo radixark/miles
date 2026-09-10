@@ -14,6 +14,7 @@ from tests.utils.soak.state import EventLog
 from tests.utils.soak.utils import (
     DATA_DIR,
     MODEL_DIR,
+    evidence_directory,
     get_api_server_args,
     get_fully_async_args,
     get_train_script,
@@ -54,8 +55,7 @@ class Gsm8kRun:
 
     @property
     def evidence_dir(self) -> Path:
-        path = Path(self.dump_dir)
-        return path.with_name(f"{path.name}-soak") / self.session_id
+        return evidence_directory(Path(self.dump_dir), session_id=self.session_id)
 
 
 @dataclass(frozen=True)
@@ -126,6 +126,8 @@ def run_realistic_gsm8k(
         cell_fault_forms=create_forms(run),
         get_virtual_cells=get_virtual_cells,
         event_log=run.event_log,
+        evidence_path=run.evidence_dir / "events.jsonl",
+        sources={"training_events": run.events_dir},
         observer=create_observer(run) if create_observer is not None else None,
         injection_enabled=injection_enabled,
     )

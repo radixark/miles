@@ -3,6 +3,7 @@ from pathlib import Path
 
 from tests.utils.soak.entrypoint import FaultInjectorHandle
 from tests.utils.soak.fault_forms import ACTOR_CELL_TYPE, CELL_TYPE_OF_FT_COMPONENT, ROLLOUT_CELL_TYPE
+from tests.utils.soak.state import event_source
 from tests.utils.soak.views import (
     compute_cells_not_serving_after_injection,
     compute_forms_drawn_without_success,
@@ -24,6 +25,7 @@ def assert_healing(
     ft_components: tuple[str, ...], *, injector: FaultInjectorHandle, event_dir: Path, context: str
 ) -> None:
     events = injector.event_log.events
+    event_dir = event_source(events, name="training_events", fallback=event_dir)
 
     _assert_drawn_fault_forms_worked(injector)
 
@@ -61,6 +63,7 @@ def _assert_enabled_fault_forms_worked(injector: FaultInjectorHandle, *, ft_comp
 
 
 def assert_trainer_injections_healed(injector: FaultInjectorHandle, *, event_dir: Path) -> None:
+    event_dir = event_source(injector.event_log.events, name="training_events", fallback=event_dir)
     injected: Counter[int] = Counter(
         parse_cell_id(name).cell_index
         for name in compute_injected_cell_names(injector.event_log.events, cell_type=ACTOR_CELL_TYPE)

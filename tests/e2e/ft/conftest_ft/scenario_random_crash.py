@@ -25,7 +25,7 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.utils.soak.checks.ft import assert_healing
 from tests.utils.soak.entrypoint import API_SERVER_PORT, spawn_fault_injector
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
-from tests.utils.soak.utils import get_api_server_args, get_fully_async_args, get_train_script
+from tests.utils.soak.utils import evidence_directory, get_api_server_args, get_fully_async_args, get_train_script
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -90,6 +90,8 @@ def run_ci(
 
     base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     injector = spawn_fault_injector(
+        evidence_path=evidence_directory(Path(dump_dir)) / "events.jsonl",
+        sources={"training_events": Path(dump_dir) / EVENTS_DIRNAME},
         config=config,
         base_url=base_url,
         seed=seed,

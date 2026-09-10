@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Iterator
 from datetime import datetime
+from pathlib import Path
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
@@ -15,9 +16,11 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.utils.soak.checks.ft import assert_rollout_cells_served_after_injection
 from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
 from tests.utils.soak.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
-from tests.utils.soak.utils import get_api_server_args
+from tests.utils.soak.state import event_source
+from tests.utils.soak.utils import evidence_directory, get_api_server_args
 from tests.utils.soak.views import compute_injection_times, compute_num_injections
 
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.misc import MutableBox
 from miles.utils.test_utils.comparisons.metrics import read_rollout_completion_times
@@ -80,6 +83,8 @@ def _inject_rollout_faults(
         if not _wait_for_first_rollout(dump_dir):
             return
         armed.value = spawn_fault_injector(
+            evidence_path=evidence_directory(Path(dump_dir)) / "events.jsonl",
+            sources={"training_events": Path(dump_dir) / EVENTS_DIRNAME},
             config=config,
             base_url=base_url,
             seed=SEED,
@@ -127,9 +132,10 @@ def _rollout_fault_injection_enabled(dump_dir: str) -> bool:
 
 
 def _assert_injections_spread_over_rollouts(injector: FaultInjectorHandle, *, dump_dir: str) -> None:
+    source = event_source(injector.event_log.events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME)
     crashed_rollouts = _compute_crashed_rollouts(
         injected_at=compute_injection_times(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
-        rollout_completions=read_rollout_completion_times(dump_dir),
+        rollout_completions=read_rollout_completion_times(str(source.parent)),
     )
 
     assert len(crashed_rollouts) >= MIN_CRASHED_ROLLOUTS, (

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
 from tests.utils.soak.entrypoint import API_SERVER_PORT
@@ -41,3 +42,7 @@ def resolve_dump_dir(test_name: str, *, run_id: str) -> str:
     dump_dir = Path(root) / run_id / test_name
     os.makedirs(dump_dir, exist_ok=True)
     return str(dump_dir)
+
+
+def evidence_directory(dump_dir: Path, *, session_id: str | None = None) -> Path:
+    return dump_dir.with_name(f"{dump_dir.name}-soak") / (session_id if session_id is not None else uuid4().hex)

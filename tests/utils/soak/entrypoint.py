@@ -4,12 +4,14 @@ import asyncio
 import random
 import threading
 from collections.abc import Callable
+from dataclasses import asdict
+from pathlib import Path
 
 from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler, list_cells, run_fault_injection_loop
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.runner import SoakRunner
-from tests.utils.soak.state import EventLog
+from tests.utils.soak.state import EventLog, SoakRunContextEvent
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
@@ -36,8 +38,11 @@ class FaultInjectorHandle:
         release: str | None = None,
         event_log: EventLog | None = None,
         observer: SoakObserver | None = None,
+        evidence_path: Path | None = None,
     ) -> None:
         self.event_log = event_log if event_log is not None else EventLog()
+        if evidence_path is not None:
+            self.event_log.persist_to(evidence_path)
         self.cell_fault_forms = cell_fault_forms
         self._base_url = base_url
         self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
@@ -99,6 +104,7 @@ class FaultInjectorHandle:
         )
         if self._runner is None:
             self._observe_final_snapshot()
+        self.event_log.finish()
 
     async def _run_async(self, stop_event: threading.Event) -> None:
         assert self._runner is not None
@@ -131,11 +137,14 @@ def spawn_fault_injector(
     config: ExecuteTrainConfig | None = None,
     event_log: EventLog | None = None,
     observer: SoakObserver | None = None,
+    evidence_path: Path | None = None,
+    sources: dict[str, Path] | None = None,
 ) -> FaultInjectorHandle:
     use_kubernetes = config is not None and config.cluster_backend is ClusterBackend.KUBERNETES
     handle = FaultInjectorHandle(
         event_log=event_log,
         observer=observer,
+        evidence_path=evidence_path,
         base_url=base_url,
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
@@ -151,6 +160,18 @@ def spawn_fault_injector(
             if use_kubernetes
             else None
         ),
+    )
+    handle.event_log.note_context(
+        SoakRunContextEvent(
+            details={
+                "base_url": base_url,
+                "seed": seed,
+                "mean_intervals": mean_interval_seconds_of_cell_type,
+                "forms": {kind: [form.name for form in forms] for kind, forms in cell_fault_forms.items()},
+                "config": asdict(config) if config is not None else None,
+            },
+            sources=sources or {},
+        )
     )
     handle.start()
     return handle
