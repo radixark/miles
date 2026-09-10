@@ -37,6 +37,10 @@ class EventLogger:
     def source(self) -> ProcessIdentity:
         return self._source
 
+    @property
+    def log_dir(self) -> Path:
+        return self._log_dir
+
     @contextmanager
     def with_context(self, ctx: dict[str, Any]) -> Generator[None, None, None]:
         """Temporarily merge extra fields into every event logged within this scope.
@@ -78,6 +82,18 @@ class EventLogger:
 
     def close(self) -> None:
         pass
+
+    def read_events_strict_from(self, offset: int) -> tuple[list[Event], int]:
+        events: list[Event] = []
+        with self._lock:
+            if not self._path.exists():
+                return events, 0
+            with self._path.open(encoding="utf-8") as file:
+                file.seek(offset)
+                for raw_line in file:
+                    if raw_line.strip():
+                        events.append(_event_adapter.validate_json(raw_line))
+                return events, file.tell()
 
 
 _event_logger: EventLogger | None = None
