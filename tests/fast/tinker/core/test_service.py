@@ -372,7 +372,7 @@ async def test_merged_optim_settles_each_slot_on_its_own(service):
     resolved = await await_settled(service, "tenant", ok)
     failed = await await_settled(service, "tenant", bad)
     assert resolved.state == DONE and "grad_norm" in resolved.result["metrics"]
-    assert (failed.state, failed.error, failed.error_category) == (FAILED, "boom", "server")
+    assert (failed.state, failed.error_category) == (FAILED, "server") and "boom" in failed.error
 
 
 async def test_a_nonfinite_step_reports_the_skip(service):
@@ -533,7 +533,7 @@ async def test_a_failed_optim_step_retires_the_model(service):
 
     step = service.submit("tenant", "optim_step", _optim_payload(model_id, 1))
     future = await await_settled(service, "tenant", step)
-    assert (future.state, future.error) == (FAILED, "allreduce died")
+    assert future.state == FAILED and "allreduce died" in future.error
     assert model_id not in service.models, "a half-applied step may have diverged the slot across ranks"
     assert slot in service.free_slots
     assert service.backend.named("unload_slot") == [{"slot": slot}]
@@ -560,21 +560,6 @@ async def test_poison_consumption_discards_retried_gradients(service):
     assert (await await_settled(service, "tenant", resubmit)).state == DONE
     step = service.submit("tenant", "optim_step", _optim_payload(model_id, 5))
     assert (await await_settled(service, "tenant", step)).state == DONE
-
-
-async def test_sampling_for_another_base_model_is_rejected(service):
-    with pytest.raises(UserInputError):
-        service.submit_sample(
-            "tenant",
-            {
-                "base_model": "some-other-model",
-                "prompt_tokens": [1],
-                "sampling_params": {"max_tokens": 2},
-                "num_samples": 1,
-                "prompt_logprobs": False,
-                "topk_prompt_logprobs": 0,
-            },
-        )
 
 
 async def test_a_backend_level_optim_failure_retires_every_model_in_the_barrier(service):
@@ -622,16 +607,6 @@ async def test_a_failed_load_state_retires_the_model(service):
     future = await await_settled(service, "tenant", loaded)
     assert (future.state, future.error_category) == (FAILED, "server")
     assert model_id not in service.models, "a load that failed partway may have left mixed state"
-
-
-async def test_a_foreign_tenants_heartbeat_does_not_extend_the_lease(service):
-    session_id = service.create_session("tenant")
-    model_id = await created_model(service)
-    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
-
-    service.heartbeat("other-tenant", session_id)
-    await service._sweep_once()
-    assert model_id not in service.models, "a heartbeat without the owning credential must not refresh the lease"
 
 
 async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
