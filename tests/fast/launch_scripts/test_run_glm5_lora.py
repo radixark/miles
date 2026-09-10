@@ -1,5 +1,4 @@
 import pytest
-import yaml
 from tests.fast.launch_scripts.model_args_harness import expand_model_args
 from tests.fast.launch_scripts.py_harness import (
     REPO_ROOT,
@@ -11,7 +10,7 @@ from tests.fast.launch_scripts.py_harness import (
 )
 from tests.fast.launch_scripts.sh_harness import assert_matches_snapshot
 
-from miles.utils.file_arg_utils import resolve_file_arg
+from miles.backends.sglang_utils.sglang_config import _RawSglangConfig
 
 _SCRIPT = REPO_ROOT / "scripts/run_glm5_2_744b_a40b_lora.py"
 
@@ -63,11 +62,11 @@ def test_explicit_checkpoint_paths_and_engine_size_are_preserved(tmp_path):
     assert args.fp8_rollout_checkpoint == "/models/rollout"
     flags = module._get_sglang_args(args)
     assert "--rollout-num-gpus-per-engine 16 " in flags
-    config = yaml.safe_load(resolve_file_arg(flags.split("--sglang-config ")[1].strip()))
-    engine = config["sglang"][0]
-    assert engine["model_path"] == "/models/rollout"
-    assert engine["update_weights"] is True
-    assert engine["server_groups"][0]["num_gpus"] == 32
+    config = _RawSglangConfig.from_yaml(flags.split("--sglang-config ")[1].strip())
+    engine = config.models[0]
+    assert engine.model_path == "/models/rollout"
+    assert engine.update_weights is True
+    assert engine.server_groups[0].num_gpus == 32
     assert "--expert-model-parallel-size 32 " in module._get_parallel_config(args)
 
 
