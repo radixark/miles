@@ -1,9 +1,10 @@
 import contextlib
 import random
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import MagicMock, patch
 
 from tests.utils.soak import core, fault_forms, state
+from tests.utils.soak.action import SoakActionForm
 
 from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend
@@ -133,6 +134,22 @@ class StubFaultForm(fault_forms.BaseFaultForm):
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         self._on_inject(cell, rng)
+
+
+class AsyncStubFaultForm(fault_forms.BaseFaultForm, SoakActionForm):
+    def __init__(self, *, name: str, execute: Callable[[state.SoakActionRequest], Awaitable[None]]) -> None:
+        self._name = name
+        self._execute = execute
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    async def execute(self, request: state.SoakActionRequest) -> None:
+        await self._execute(request)
+
+    def inject(self, cell: dict, rng: random.Random) -> None:
+        raise AssertionError("An async action must not use the synchronous bridge")
 
 
 def fixed_fault_forms(forms: list[fault_forms.BaseFaultForm]) -> fault_forms.CellFaultForms:

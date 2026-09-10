@@ -106,6 +106,7 @@ def run_realistic_gsm8k(
         launch=partial(_launch_gsm8k, train_args=train_args, fully_async=fully_async),
     )
     injector = spawn_fault_injector(
+        config=config,
         base_url=run.base_url,
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,

@@ -1,13 +1,20 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
+import asyncio
+import random
 import threading
 from collections.abc import Callable
 
-from tests.utils.soak.core import POLL_INTERVAL_SECONDS, list_cells, run_fault_injection_loop
+from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler, list_cells, run_fault_injection_loop
 from tests.utils.soak.fault_forms import CellFaultForms
+from tests.utils.soak.observer import SoakObserver
+from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.state import EventLog
 
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.polling_worker import PollingWorker
+from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 API_SERVER_PORT: int = 18080
 # A pod deletion, the slowest form, cannot be cancelled and is two kubectl calls bounded at a minute.
@@ -25,14 +32,37 @@ class FaultInjectorHandle:
         get_virtual_cells: Callable[[], list[dict]] | None = None,
         injection_enabled: Callable[[], bool] | None = None,
         poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
+        namespace: str | None = None,
+        release: str | None = None,
     ) -> None:
         self.event_log = EventLog()
         self.cell_fault_forms = cell_fault_forms
         self._base_url = base_url
         self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
         self._get_virtual_cells: Callable[[], list[dict]] | None = get_virtual_cells
+        self._runner = (
+            SoakRunner(
+                observer=SoakObserver(
+                    base_url=base_url, cell_types=self._cell_types, namespace=namespace, release=release
+                ),
+                scheduler=SoakActionScheduler(
+                    rng=random.Random(seed),
+                    mean_intervals=mean_interval_seconds_of_cell_type,
+                    forms=cell_fault_forms,
+                    injection_enabled=injection_enabled,
+                ),
+                forms={kind: cell_fault_forms[kind] for kind in self._cell_types},
+                event_log=self.event_log,
+                poll_interval_seconds=poll_interval_seconds,
+            )
+            if get_virtual_cells is None
+            else None
+        )
 
         def inject_until_stopped(stop_event: threading.Event) -> None:
+            if self._runner is not None:
+                asyncio.run(self._run_async(stop_event))
+                return
             run_fault_injection_loop(
                 base_url=base_url,
                 seed=seed,
@@ -58,7 +88,18 @@ class FaultInjectorHandle:
                 f"stop: it may still crash a cell nothing will heal, and reading its log would race it"
             )
         )
-        self._observe_final_snapshot()
+        if self._runner is None:
+            self._observe_final_snapshot()
+
+    async def _run_async(self, stop_event: threading.Event) -> None:
+        assert self._runner is not None
+        stopped = asyncio.Event()
+        async with asyncio.TaskGroup() as tasks:
+            forwarding = tasks.create_task(_forward_stop(source=stop_event, target=stopped))
+            try:
+                await self._runner.run(stopped)
+            finally:
+                forwarding.cancel()
 
     def _observe_final_snapshot(self) -> None:
         cells = list_cells(base_url=self._base_url, cell_types=self._cell_types)
@@ -78,7 +119,9 @@ def spawn_fault_injector(
     get_virtual_cells: Callable[[], list[dict]] | None = None,
     injection_enabled: Callable[[], bool] | None = None,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
+    config: ExecuteTrainConfig | None = None,
 ) -> FaultInjectorHandle:
+    use_kubernetes = config is not None and config.cluster_backend is ClusterBackend.KUBERNETES
     handle = FaultInjectorHandle(
         base_url=base_url,
         seed=seed,
@@ -87,6 +130,20 @@ def spawn_fault_injector(
         get_virtual_cells=get_virtual_cells,
         injection_enabled=injection_enabled,
         poll_interval_seconds=poll_interval_seconds,
+        namespace=config.namespace if use_kubernetes else None,
+        release=(
+            ReleaseName(
+                run_id=config.run_id, deploy_component=DeployComponent.ALL, deploy_instance_id=None
+            ).serialize()
+            if use_kubernetes
+            else None
+        ),
     )
     handle.start()
     return handle
+
+
+async def _forward_stop(*, source: threading.Event, target: asyncio.Event) -> None:
+    while not source.is_set():
+        await asyncio.sleep(0.05)
+    target.set()

@@ -1,0 +1,110 @@
+import asyncio
+import random
+from builtins import ExceptionGroup
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from tests.fast.utils.soak.utils import AsyncStubFaultForm, typed_cell
+from tests.utils.soak.core import SoakActionScheduler
+from tests.utils.soak.observer import SoakObserver
+from tests.utils.soak.runner import SoakRunner
+from tests.utils.soak.state import (
+    EventLog,
+    SoakActionRequest,
+    SoakActionRequestedEvent,
+    SoakActionResultEvent,
+    SoakObservation,
+)
+
+
+def test_pending_action_does_not_block_observation_and_stop_reaps_it_before_final_snapshot() -> None:
+    """Observe during an action, keep admission serial, and collect cancellation before the final reading."""
+
+    async def scenario() -> None:
+        stop = asyncio.Event()
+        entered = asyncio.Event()
+        cleaned = asyncio.Event()
+        log = EventLog()
+        observed: list[SoakObservation] = []
+
+        async def execute(request: SoakActionRequest) -> None:
+            assert any(
+                isinstance(event, SoakActionRequestedEvent) and event.request == request for event in log.events
+            )
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                cleaned.set()
+
+        async def observe() -> SoakObservation:
+            if observed:
+                assert entered.is_set()
+                if len(observed) == 1:
+                    assert not cleaned.is_set()
+                    stop.set()
+                else:
+                    assert cleaned.is_set()
+                    assert isinstance(log.events[-1], SoakActionResultEvent)
+            snapshot = SoakObservation(cells=[typed_cell(f"actor-{i}", "actor") for i in range(3)])
+            observed.append(snapshot)
+            return snapshot
+
+        forms = {"actor": [AsyncStubFaultForm(name="slow", execute=execute)]}
+        runner = SoakRunner(
+            observer=SoakObserver(base_url="http://control", cell_types={"actor"}),
+            scheduler=SoakActionScheduler(rng=random.Random(0), mean_intervals={"actor": 1e-12}, forms=forms),
+            forms=forms,
+            event_log=log,
+            poll_interval_seconds=0,
+        )
+        with patch.object(SoakObserver, "observe", side_effect=observe):
+            async with asyncio.timeout(5):
+                await runner.run(stop)
+
+        assert len(observed) == 3
+        requests = [event for event in log.events if isinstance(event, SoakActionRequestedEvent)]
+        results = [event for event in log.events if isinstance(event, SoakActionResultEvent)]
+        assert len(requests) == len(results) == 1
+        assert results[0].request_id == requests[0].request.request_id
+        assert not results[0].returned
+        assert results[0].error == "CancelledError()"
+        assert isinstance(log.events[-1], SoakObservation)
+
+    asyncio.run(scenario())
+
+
+def test_unexpected_action_failure_stops_runner_without_waiting_for_stop_request() -> None:
+    """Programming failures propagate out of the runner after recording the result and final observation."""
+
+    async def scenario() -> None:
+        async def execute(request: SoakActionRequest) -> None:
+            raise RuntimeError("broken action")
+
+        log = EventLog()
+        forms = {"actor": [AsyncStubFaultForm(name="broken", execute=execute)]}
+        runner = SoakRunner(
+            observer=SoakObserver(base_url="http://control", cell_types={"actor"}),
+            scheduler=SoakActionScheduler(rng=random.Random(0), mean_intervals={"actor": 1e-12}, forms=forms),
+            forms=forms,
+            event_log=log,
+            poll_interval_seconds=0,
+        )
+        stop = asyncio.Event()
+        with patch.object(
+            SoakObserver,
+            "observe",
+            AsyncMock(return_value=SoakObservation(cells=[typed_cell(f"actor-{i}", "actor") for i in range(3)])),
+        ):
+            async with asyncio.timeout(5):
+                with pytest.raises(ExceptionGroup):
+                    await runner.run(stop)
+
+        assert not stop.is_set()
+        results = [event for event in log.events if isinstance(event, SoakActionResultEvent)]
+        assert results
+        assert all(not event.returned and event.error == "RuntimeError('broken action')" for event in results)
+        assert isinstance(log.events[-1], SoakObservation)
+
+    asyncio.run(scenario())

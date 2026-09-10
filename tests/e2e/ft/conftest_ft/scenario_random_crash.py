@@ -90,6 +90,7 @@ def run_ci(
 
     base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     injector = spawn_fault_injector(
+        config=config,
         base_url=base_url,
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,

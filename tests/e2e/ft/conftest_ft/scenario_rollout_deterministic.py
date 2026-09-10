@@ -80,6 +80,7 @@ def _inject_rollout_faults(
         if not _wait_for_first_rollout(dump_dir):
             return
         armed.value = spawn_fault_injector(
+            config=config,
             base_url=base_url,
             seed=SEED,
             mean_interval_seconds_of_cell_type={ROLLOUT_CELL_TYPE: CRASH_INTERVAL_SECONDS},
