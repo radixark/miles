@@ -111,7 +111,10 @@ class MilesBackend(ExecutorBackend):
             sampling_params["sampling_seed"] = params["seed"]
         stop = params.get("stop")
         if stop is not None:
-            if isinstance(stop, list) and stop and isinstance(stop[0], int):
+            if not stop:
+                # tinker defines stop=[] as disabling every stop token, EOS included
+                sampling_params["ignore_eos"] = True
+            elif isinstance(stop, list) and isinstance(stop[0], int):
                 sampling_params["stop_token_ids"] = stop
             else:
                 sampling_params["stop"] = stop
