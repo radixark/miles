@@ -3,7 +3,7 @@
 > **Read the docs:** [Multi-LoRA training](https://miles.radixark.com/docs/advanced/lora#multi-lora-training).
 
 - `run_gateway.py`: prepare Qwen3-30B-A3B and launch the gateway.
-- `client.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
+- `run_multi_tenant_example.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
 
 ## Layout
 
@@ -25,8 +25,8 @@ pip install "tinker==0.26.2"
 Start the gateway:
 
 ```bash
-python examples/multi_lora/run_qwen3_30b_a3b_tinker_server.py prepare   # once per node
-python examples/multi_lora/run_qwen3_30b_a3b_tinker_server.py serve     # Tinker API on :10613
+python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py prepare   # once per node
+python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve     # Tinker API on :10613
 ```
 
 Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to choose another root.
@@ -35,9 +35,9 @@ Install `tinker` on the client, then run the marker checks:
 
 ```bash
 # one client: train, save for sampler, sample back the marker
-python examples/multi_lora/client.py --base-model /root/models/Qwen3-30B-A3B --mode single
+python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models/Qwen3-30B-A3B --mode single
 
 # four tenants training concurrently on the same prompt with different markers;
 # passing means the adapters stayed isolated end to end
-python examples/multi_lora/client.py --base-model /root/models/Qwen3-30B-A3B --mode multi --clients 4
+python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models/Qwen3-30B-A3B --mode multi --clients 4
 ```
