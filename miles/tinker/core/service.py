@@ -332,7 +332,7 @@ class TinkerService:
         if record is not None:
             if record.tenant != tenant:
                 raise OwnershipError(f"model {model_id} does not belong to this tenant")
-            if not name.isdecimal() or int(name) not in record.published_sampler_versions:
+            if name not in record.published_sampler_versions:
                 raise UserInputError(f"unknown sampler version {name} for {model_id}")
         else:
             # the training lease is gone; the checkpoint on disk is the record
@@ -576,9 +576,16 @@ class TinkerService:
         return [{"op": "load_state"}]
 
     async def _publish_sampler_version(self, record: ModelRecord, payload: dict) -> list[dict]:
-        version = record.next_sampler_version
-        record.next_sampler_version += 1
-        path = self._checkpoint_dir(record.model_id, "sampler_weights", str(version))
+        version = payload.get("sampler_path")
+        if version is None:
+            version = str(record.next_sampler_version)
+            record.next_sampler_version += 1
+        else:
+            _validate_checkpoint_segment(version)
+        path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
+        if os.path.exists(os.path.join(path, "META.json")):
+            # engines may already hold this name's bytes; saved versions are immutable
+            raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
         # export commits the version; push only warms the engine cache
         await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
         self._stamp_checkpoint_meta(path, record)
