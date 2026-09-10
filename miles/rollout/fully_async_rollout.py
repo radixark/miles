@@ -38,6 +38,7 @@ from miles.rollout.fully_async_data_buffer import (
     DefaultDataBuffer,
     DefaultMultiDataBuffer,
     Group,
+    UnusedReason,
     add_data_buffer_arguments,
     first_sample,
 )
@@ -45,6 +46,7 @@ from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
+from miles.utils.audit_utils.sample_ownership.flow import log_dropped_groups, log_dropped_samples
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -74,7 +76,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         assert input.args.async_unused_samples_handler in ("retry", "drop")
         # applied to every group we do not train on; "drop" discards instead of recycling
         self._handle_unused = (
-            self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
+            self._recycle if input.args.async_unused_samples_handler == "retry" else self._drop_unused
         )
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._worker: asyncio.Task | None = None
@@ -215,15 +217,25 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
         data.sort(key=lambda group: first_sample(group).index)
 
+        before_filter = list(data)
         if self._sample_filter is not None:
             self._sample_filter(args, data)
+        log_dropped_groups(
+            before_filter,
+            data,
+            reason="rollout_sample_filter",
+            rollout_id=input.rollout_id,
+        )
 
         return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics(input.trainer_model_id))
 
-    def _recycle(self, prompt_group: list[Sample]) -> None:
+    def _recycle(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
         for sample in prompt_group:
             sample.reset_for_retry()
         self._retry_buffer.append(prompt_group)
+
+    def _drop_unused(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
+        log_dropped_samples(prompt_group, reason=reason.value)
 
 
 async def _end_worker(worker: asyncio.Task) -> None:

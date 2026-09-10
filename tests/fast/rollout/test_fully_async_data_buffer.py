@@ -36,7 +36,9 @@ def _multi_buffer(monkeypatch: pytest.MonkeyPatch, *, model_ids: list[str]) -> D
     )
     monkeypatch.setattr(fully_async_data_buffer, "load_function", lambda path: _RecordingBuffer)
     args = Namespace(custom_async_data_buffer_path_per_model=[f"{one}=recording.Buffer" for one in model_ids])
-    return DefaultMultiDataBuffer(DataBufferConstructorInput(args=args, unused_handler_fn=lambda samples: None))
+    return DefaultMultiDataBuffer(
+        DataBufferConstructorInput(args=args, unused_handler_fn=lambda samples, reason: None)
+    )
 
 
 def _composed(multi: DefaultMultiDataBuffer, model_id: str) -> _RecordingBuffer:
@@ -106,7 +108,7 @@ def _make_sample(*, index: int, reward: float, trainer_model_id: str) -> Sample:
     return sample
 
 
-def _ignore_group(group: list[Sample]) -> None:
+def _ignore_group(group: list[Sample], reason: fully_async_data_buffer.UnusedReason) -> None:
     pass
 
 

@@ -9,6 +9,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
+from miles.ray.rollout import train_data_conversion
 from miles.ray.rollout.train_data_conversion import (
     _post_process_rewards,
     can_schedule_on_rollout_side,
@@ -266,7 +267,7 @@ class TestConvertSamplesToTrainData:
 
     def test_custom_convert_func_preserves_output_and_adds_sample_identity(self):
         args = make_args()
-        sentinel = {"foo": "bar"}
+        sentinel = {"foo": "bar", "sample_indices": [0]}
         out = convert_samples_to_train_data(
             args,
             [make_sample()],
@@ -278,6 +279,81 @@ class TestConvertSamplesToTrainData:
         assert out["source_sample_indices"] == [0]
         assert out["sample_row_indices"] == [0]
         assert out["sample_row_counts"] == [1]
+
+    def test_custom_convert_func_accepts_explicit_reordered_identities(self):
+        """A custom converter may reorder rows when it reorders every identity column."""
+        args = make_args()
+        samples = [make_sample(index=7), make_sample(index=8)]
+        converted = {
+            "sample_indices": [8, 7],
+            "source_sample_indices": [8, 7],
+            "sample_row_indices": [0, 0],
+            "sample_row_counts": [1, 1],
+        }
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=lambda a, s: converted,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["source_sample_indices"] == [8, 7]
+
+    def test_custom_convert_func_rejects_duplicate_output_hidden_by_input_identities(self):
+        """A custom converter cannot hide a duplicated row behind the original identities."""
+        args = make_args()
+        samples = [make_sample(index=7), make_sample(index=8)]
+        converted = {
+            "sample_indices": [7, 7],
+            "source_sample_indices": [7, 7],
+            "sample_row_indices": [0, 0],
+            "sample_row_counts": [1, 1],
+        }
+
+        with pytest.raises(AssertionError, match="changed the training sample identity obligations"):
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=lambda a, s: converted,
+                custom_reward_post_process_func=None,
+            )
+
+    def test_custom_convert_func_rejects_duplicate_output_with_relabelled_identities(self):
+        """Correct-looking identity columns cannot relabel a duplicated converter output row."""
+        args = make_args()
+        samples = [make_sample(index=7), make_sample(index=8)]
+        converted = {
+            "sample_indices": [7, 7],
+            "source_sample_indices": [7, 8],
+            "sample_row_indices": [0, 0],
+            "sample_row_counts": [1, 1],
+        }
+
+        with pytest.raises(AssertionError, match="changed the training sample identity obligations"):
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=lambda a, s: converted,
+                custom_reward_post_process_func=None,
+            )
+
+    def test_custom_convert_func_requires_explicit_identities_when_rows_change(self):
+        """A custom converter must identify rows that it filters or reorders."""
+        args = make_args()
+        samples = [make_sample(index=7), make_sample(index=8)]
+
+        with pytest.raises(AssertionError, match="when it reorders or changes rows"):
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=lambda a, s: {"sample_indices": [7, 7]},
+                custom_reward_post_process_func=None,
+            )
 
     def test_dynamic_global_batch_size_metadata_must_match(self):
         args = make_args(use_dynamic_global_batch_size=True, rewards_normalization=False)
@@ -873,6 +949,9 @@ def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: l
         "truncated": [0] * n,
         "loss_masks": [[1] * length for length in lengths],
         "sample_indices": list(range(n)),
+        "source_sample_indices": list(range(n)),
+        "sample_row_indices": [0] * n,
+        "sample_row_counts": [1] * n,
         "rollout_ids": rollout_ids if rollout_ids is not None else list(range(n)),
     }
 
@@ -916,6 +995,28 @@ class TestCanScheduleOnRolloutSide:
 
 
 class TestSplitTrainDataByDpScheduled:
+    def test_warmup_drops_only_rows_retained_after_schedule_trim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Schedule-trimmed and critic-only rows receive one distinct terminal outcome each."""
+        args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
+        calls: list[tuple[list[int], str, int | None]] = []
+        monkeypatch.setattr(
+            train_data_conversion,
+            "log_dropped_sample_indices",
+            lambda indices, *, reason, rollout_id=None: calls.append((list(indices), reason, rollout_id)),
+        )
+
+        split_train_data_by_dp_scheduled_raw(
+            args,
+            _make_split_data(10),
+            train_parallel_config=FULL_SCHEDULE_CONFIG,
+            terminal_drop_reason="critic_only_warmup",
+            rollout_id=4,
+        )
+
+        trimmed, warmup = calls
+        assert trimmed == ([8, 9], "dp_schedule_trim", 4)
+        assert warmup == (list(range(8)), "critic_only_warmup", 4)
+
     def test_static_shards_cover_all_samples(self):
         """Static path: every sample lands in exactly one shard row, the schedule
         tiles each shard's rows exactly, and shard rows match their partition."""
