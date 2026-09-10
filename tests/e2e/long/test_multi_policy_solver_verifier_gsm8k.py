@@ -7,7 +7,7 @@ from tests.e2e.conftest_multi_policy import EvalScoreBounds, execute
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=36000, suite="stage-c-4-gpu-h200", labels=["long"])
+register_cuda_ci(est_time=21600, suite="stage-c-4-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"])
 
 NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "250"))
 
