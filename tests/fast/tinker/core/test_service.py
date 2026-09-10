@@ -248,7 +248,7 @@ async def test_a_fresh_heartbeat_keeps_the_model(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service)
 
-    service.heartbeat(session_id)
+    service.heartbeat("tenant", session_id)
     await service._sweep_once()
 
     assert model_id in service.models
@@ -622,3 +622,81 @@ async def test_a_failed_load_state_retires_the_model(service):
     future = await await_settled(service, "tenant", loaded)
     assert (future.state, future.error_category) == (FAILED, "server")
     assert model_id not in service.models, "a load that failed partway may have left mixed state"
+
+
+async def test_a_foreign_tenants_heartbeat_does_not_extend_the_lease(service):
+    session_id = service.create_session("tenant")
+    model_id = await created_model(service)
+    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
+
+    service.heartbeat("other-tenant", session_id)
+    await service._sweep_once()
+    assert model_id not in service.models, "a heartbeat without the owning credential must not refresh the lease"
+
+
+async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": "v1"}
+    )
+    result = (await await_settled(service, "tenant", save)).result
+    assert result["path"] == f"tinker://{model_id}/sampler_weights/v1"
+    assert "sampling_session_id" not in result
+
+    request_id, _ = service.submit_sample(
+        "tenant",
+        {
+            "model_path": result["path"],
+            "num_samples": 1,
+            "prompt_tokens": [1],
+            "sampling_params": {"max_tokens": 2},
+            "prompt_logprobs": False,
+            "topk_prompt_logprobs": 0,
+        },
+    )
+    await await_settled(service, "tenant", request_id)
+    assert service.backend.named("sample")[0]["lora_name"] == f"{model_id}@v1"
+
+    reuse = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "v1"}
+    )
+    future = await await_settled(service, "tenant", reuse)
+    assert future.state == FAILED and "already exist" in future.error, "saved versions are immutable"
+
+
+async def test_checkpoint_meta_stores_a_digest_not_the_credential(service):
+    import json
+    import os
+
+    model_id = await created_model(service)
+    saved = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+    )
+    await await_settled(service, "tenant", saved)
+    meta_path = os.path.join(service._checkpoint_dir(model_id, "weights", "ck"), "META.json")
+    meta = json.loads(open(meta_path).read())
+    assert "tenant" not in meta and meta["tenant_digest"] != "tenant", "the bearer credential must not be persisted"
+    info = service.weights_info("tenant", f"tinker://{model_id}/weights/ck")
+    assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (True, True, False)
+
+
+async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
+    import json
+    import os
+
+    model_id = await created_model(service)
+    saved = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+    )
+    path = (await await_settled(service, "tenant", saved)).result["path"]
+    meta_path = os.path.join(service._checkpoint_dir(model_id, "weights", "ck"), "META.json")
+    meta = json.loads(open(meta_path).read())
+    meta["lora_alpha"] = meta["lora_alpha"] + 1  # the same tensors would be scaled differently
+    open(meta_path, "w").write(json.dumps(meta))
+
+    loaded = service.submit(
+        "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+    )
+    future = await await_settled(service, "tenant", loaded)
+    assert (future.state, future.error_category) == (FAILED, "user") and "lora_alpha" in future.error
+    assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
