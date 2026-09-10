@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from miles.utils.workers.serving import serve_actor as serve_actor_module
 from miles.utils.workers.serving.serve_actor import ServeActor, serve_until_stopped
+from miles.utils.workers.serving.utils import IPV6_WILDCARD_HOST
 
 
 class DemoWorker:
@@ -19,6 +22,34 @@ class DemoWorker:
 
 def _build_worker(tag: str = "demo"):
     return lambda: DemoWorker(tag=tag)
+
+
+class _FakeServerSocket:
+    def __init__(self, address: tuple[str, int]) -> None:
+        self.address = address
+        self.closed = False
+
+    def getsockname(self) -> tuple[str, int]:
+        return self.address
+
+    def __enter__(self) -> _FakeServerSocket:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.closed = True
+
+
+def _patch_serving(monkeypatch, *, run: Callable[..., None]) -> dict[str, Any]:
+    served: dict[str, Any] = {}
+
+    def create_server_socket(*, port: int) -> _FakeServerSocket:
+        served["created_port"] = port
+        return _FakeServerSocket((IPV6_WILDCARD_HOST, port))
+
+    monkeypatch.setattr(serve_actor_module, "create_server_socket", create_server_socket)
+    monkeypatch.setattr(serve_actor_module.uvicorn, "Config", lambda app: served.update(app=app) or "config")
+    monkeypatch.setattr(serve_actor_module.uvicorn, "Server", lambda config: SimpleNamespace(run=run))
+    return served
 
 
 @pytest.fixture
@@ -92,7 +123,7 @@ class TestTheActorDiesWithItsServer:
     def test_a_server_that_returns_takes_the_process_with_it(self, monkeypatch):
         """A live actor whose server stopped is a worker nobody can call and nothing reports as dead."""
         exits: list[int] = []
-        monkeypatch.setattr(serve_actor_module.uvicorn, "run", lambda *args, **kwargs: None)
+        _patch_serving(monkeypatch, run=lambda *, sockets: None)
         monkeypatch.setattr(serve_actor_module.os, "_exit", lambda code: exits.append(code))
 
         serve_until_stopped(app=object(), port=12345)
@@ -103,25 +134,29 @@ class TestTheActorDiesWithItsServer:
         """Binding an already taken port raises rather than returns, and must end the same way."""
         exits: list[int] = []
 
-        def _explode(*args, **kwargs):
+        def _explode(*, sockets: list[Any]) -> None:
             raise OSError("address already in use")
 
-        monkeypatch.setattr(serve_actor_module.uvicorn, "run", _explode)
+        _patch_serving(monkeypatch, run=_explode)
         monkeypatch.setattr(serve_actor_module.os, "_exit", lambda code: exits.append(code))
 
         serve_until_stopped(app=object(), port=12345)
 
         assert exits == [1]
 
-    def test_the_server_binds_every_interface(self, monkeypatch):
+    def test_the_server_is_handed_the_socket_bound_on_the_wildcard(self, monkeypatch):
         """The driver reaches the worker by the node ip the launcher advertised, never by loopback."""
-        seen: list[dict[str, Any]] = []
-        monkeypatch.setattr(serve_actor_module.uvicorn, "run", lambda app, **kwargs: seen.append(kwargs) or None)
+        handed: list[Any] = []
+        served = _patch_serving(monkeypatch, run=lambda *, sockets: handed.extend(sockets))
         monkeypatch.setattr(serve_actor_module.os, "_exit", lambda code: None)
+        app = object()
 
-        serve_until_stopped(app=object(), port=12345)
+        serve_until_stopped(app=app, port=12345)
 
-        assert seen[0] == dict(host="0.0.0.0", port=12345)
+        assert served["created_port"] == 12345
+        assert served["app"] is app
+        assert handed[0].address == (IPV6_WILDCARD_HOST, 12345)
+        assert handed[0].closed is True
 
 
 class TestFaultInjection:
