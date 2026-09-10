@@ -1,11 +1,9 @@
 import dataclasses
 import ipaddress
-import json
 import logging
 import os
 import shlex
 import sys
-from pathlib import Path
 
 from sglang.srt.server_args import ServerArgs
 
@@ -15,14 +13,6 @@ from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lo
 from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
-
-
-def _adapter_is_megatron_rank_sharded(adapter_path: str) -> bool:
-    config_path = Path(adapter_path) / "adapter_config.json"
-    if not config_path.exists():
-        return False
-    with open(config_path) as f:
-        return json.load(f).get("format") == "megatron_rank_sharded"
 
 
 def format_v6_uri(addr: str | None) -> str | None:
@@ -163,10 +153,7 @@ def _compute_server_args(
         else:
             kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
-        if args.lora_adapter_path is not None and _adapter_is_megatron_rank_sharded(args.lora_adapter_path):
-            # per-rank Megatron shards: the trainer loads them and the first weight sync carries the adapter
-            logger.info("Megatron rank-sharded adapter: skipping startup lora_paths; adapter comes via weight-sync")
-        elif args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
+        if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
             kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
         elif args.lora_adapter_path is not None:
             logger.info("dummy base load: skipping startup lora_paths; adapter comes via weight-sync")
