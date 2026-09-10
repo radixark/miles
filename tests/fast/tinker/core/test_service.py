@@ -702,3 +702,21 @@ async def test_a_recycled_slot_does_not_inherit_poison(service):
     step = service.submit("tenant", "optim_step", _optim_payload(fresh, 2))
     future = await await_settled(service, "tenant", step)
     assert future.state == DONE, "the poison belonged to the evicted model, not the slot"
+
+
+async def test_a_unit_escaping_its_handler_retires_the_model_and_keeps_serving(service, monkeypatch):
+    model_id = await created_model(service)
+
+    async def broken_handler(unit):
+        raise RuntimeError("handler bug")
+
+    monkeypatch.setattr(service, "_run_barrier", broken_handler)
+    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 1))
+    future = await await_settled(service, "tenant", step)
+    assert future.state == FAILED and "unhandled failure" in future.error
+    assert model_id not in service.models, "slots a broken handler touched are unknown state"
+
+    monkeypatch.undo()
+    fresh = await created_model(service)
+    fb = service.submit("tenant", "forward_backward", fb_payload(fresh, 1, [datum()]))
+    assert (await await_settled(service, "tenant", fb)).state == DONE, "the dispatch loop must survive"
