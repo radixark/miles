@@ -2,19 +2,23 @@
 
 import logging
 from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from miles.utils.audit_utils.event_analyzer.analyzer import (
+    _apply_process_startup_grace,
     _partition_by_model_id,
     run_analysis,
     run_analysis_from_args,
 )
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
     InferenceEngineWeightChecksumEvent,
+    IssuedSampleGroup,
     TrainEngineLocalWeightChecksumEvent,
     TrainEngineLocalWeightChecksumState,
 )
@@ -201,3 +205,43 @@ class TestRunAnalysisFromArgs:
 
         args = Namespace(enable_event_analyzer=True, save_debug_event_data=str(tmp_path))
         run_analysis_from_args(args)
+
+
+class TestProcessStartupGrace:
+    @staticmethod
+    def _issued(timestamp: datetime, sample_index: int) -> DataSourceIssuedSamplesEvent:
+        return DataSourceIssuedSamplesEvent(
+            timestamp=timestamp,
+            source=SimpleProcessIdentity(component="main"),
+            groups=[IssuedSampleGroup(group_index=sample_index, sample_indices=[sample_index])],
+        )
+
+    def test_restored_issues_wait_for_one_process_grace_period(self) -> None:
+        """Old checkpoint evidence cannot fail a resumed process before it has run for one grace period."""
+        started_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        old = self._issued(started_at - timedelta(days=1), 1)
+        new = self._issued(started_at + timedelta(seconds=1), 2)
+
+        events = _apply_process_startup_grace(
+            [old, new],
+            process_started_at=started_at,
+            now=started_at + timedelta(seconds=299),
+            grace_period=timedelta(seconds=300),
+        )
+
+        assert events == [new]
+
+    def test_restored_issues_rejoin_every_check_after_startup_grace(self) -> None:
+        """Once startup grace expires, restored samples remain subject to every later check."""
+        started_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        old = self._issued(started_at - timedelta(days=1), 1)
+        new = self._issued(started_at + timedelta(seconds=1), 2)
+
+        events = _apply_process_startup_grace(
+            [old, new],
+            process_started_at=started_at,
+            now=started_at + timedelta(seconds=300),
+            grace_period=timedelta(seconds=300),
+        )
+
+        assert events == [old, new]

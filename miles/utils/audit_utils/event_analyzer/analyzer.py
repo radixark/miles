@@ -3,6 +3,7 @@
 import logging
 import time
 from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,9 @@ from miles.utils.audit_utils.event_analyzer.rules import (
     inference_engine_weight_checksum_consistency,
 )
 from miles.utils.audit_utils.event_analyzer.rules import witness as witness_rule
+from miles.utils.audit_utils.event_analyzer.rules.sample_ownership import check as sample_ownership_check
 from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, Event
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity, TrainProcessIdentity
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,46 @@ def run_analysis(event_dir: Path) -> list[Any]:
         return []
 
     return [issue for model_events in _partition_by_model_id(events) for issue in _check_one_model_id(model_events)]
+
+
+def run_sample_ownership_analysis_from_args(args: Namespace, *, process_started_at: datetime) -> None:
+    event_dir = Path(args.save_debug_event_data)
+    started_at = time.monotonic()
+    try:
+        events = read_events(event_dir)
+        now = datetime.now(timezone.utc)
+        grace_period = timedelta(seconds=args.sample_ownership_grace_period_seconds)
+        events = _apply_process_startup_grace(
+            events,
+            process_started_at=process_started_at,
+            now=now,
+            grace_period=grace_period,
+        )
+        if not any(isinstance(event, DataSourceIssuedSamplesEvent) for event in events):
+            logger.warning("Sample ownership check has no issued-sample evidence in %s", event_dir)
+            return
+        issues = sample_ownership_check.check(events, grace_period=grace_period, now=now)
+    finally:
+        logger.info("Sample ownership analysis of %s took %.3f seconds", event_dir, time.monotonic() - started_at)
+
+    if issues:
+        raise ValueError(f"Sample ownership analysis found issues: {issues}")
+
+
+def _apply_process_startup_grace(
+    events: list[Event],
+    *,
+    process_started_at: datetime,
+    now: datetime,
+    grace_period: timedelta,
+) -> list[Event]:
+    if now - process_started_at >= grace_period:
+        return events
+    return [
+        event
+        for event in events
+        if not isinstance(event, DataSourceIssuedSamplesEvent) or event.timestamp >= process_started_at
+    ]
 
 
 def _check_one_model_id(events: list[Any]) -> list[Any]:

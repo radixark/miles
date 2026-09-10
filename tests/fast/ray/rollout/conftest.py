@@ -159,7 +159,12 @@ def make_args(**overrides: Any) -> Namespace:
         ci_inject_rollout_data_min_match_ratio=0.9,
         # event checkpointing (event_logger.restore/snapshot in RolloutExecutor)
         save_debug_event_data=None,
+        sample_ownership_check=False,
+        sample_ownership_grace_period_seconds=300.0,
+        sample_ownership_check_interval_seconds=30.0,
+        sample_ownership_check_timeout_seconds=90.0,
         load=None,
+        requested_load=None,
         save=None,
         # CI
         ci_test=False,
