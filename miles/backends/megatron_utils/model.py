@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
@@ -30,8 +31,10 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.audit_utils.witness.cpu import TrainingSampleIdentity, record_cpu_witness
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
+from miles.utils.file_utils import atomic_write_text
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
@@ -455,6 +458,7 @@ def train_one_step(
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
     multi_lora = is_multi_lora_enabled(args)
+    witness_start = data_iterator[0].offset
 
     if multi_lora:
         from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
@@ -620,6 +624,12 @@ def train_one_step(
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
 
+    consumed_identities = (
+        _gather_consumed_sample_identities(data_iterator[0], start=witness_start)
+        if not disable_optimizer and valid_step
+        else []
+    )
+
     if not disable_optimizer and valid_step:
         if multi_lora:
             from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
@@ -634,6 +644,11 @@ def train_one_step(
             # Update learning rate.
             assert update_successful
             opt_param_scheduler.step(increment=num_rollouts)
+
+        record_cpu_witness(
+            model=model,
+            samples=consumed_identities,
+        )
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
@@ -666,6 +681,36 @@ def train_one_step(
             return loss_reduced, grad_norm, outcome
 
     return {}, grad_norm, outcome
+
+
+def _consumed_sample_identities(data_iterator: DataIterator, *, start: int) -> list[TrainingSampleIdentity]:
+    data = data_iterator.rollout_data
+    fields = ["source_sample_indices", "sample_row_indices", "sample_row_counts"]
+    if any(field not in data for field in fields):
+        raise ValueError("Training data is missing CPU witness sample identity fields")
+    indices = (
+        [index for batch in data_iterator.micro_batch_indices[start : data_iterator.offset] for index in batch]
+        if data_iterator.micro_batch_indices is not None
+        else list(range(start, data_iterator.offset))
+    )
+    return [
+        TrainingSampleIdentity(
+            source_sample_index=data["source_sample_indices"][index],
+            row_index=data["sample_row_indices"][index],
+            row_count=data["sample_row_counts"][index],
+        )
+        for index in indices
+    ]
+
+
+def _gather_consumed_sample_identities(data_iterator: DataIterator, *, start: int) -> list[TrainingSampleIdentity]:
+    local = _consumed_sample_identities(data_iterator, start=start)
+    parallel = get_parallel_state()
+    if parallel.effective_dp.size == 1:
+        return local
+    gathered: list[list[TrainingSampleIdentity] | None] = [None] * parallel.effective_dp.size
+    dist.all_gather_object(gathered, local, group=parallel.effective_dp.gloo_group)
+    return [identity for identities in gathered if identities is not None for identity in identities]
 
 
 def finalize_model_grads_with_empty_cache(*args, **kwargs):
@@ -891,6 +936,10 @@ def save(
         non_persistent_ckpt (bool): If True, save a non-persistent (in-memory) checkpoint.
     """
     args = get_args()
+    if not non_persistent_ckpt and is_first_replica_megatron_main_rank():
+        checkpoint_dir = Path(args.save) / f"iter_{iteration:07d}"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path=checkpoint_dir / "cpu_witness_version.txt", text="1\n")
     hashes = None
     if args.ci_test and args.ci_save_model_hash:
         hashes = compute_model_hashes_by_layer(model)

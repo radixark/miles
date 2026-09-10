@@ -79,6 +79,9 @@ class Sample:
 
     group_index: int | None = None
     index: int | None = None
+    source_sample_index: int | None = None
+    sample_row_index: int | None = None
+    sample_row_count: int | None = None
     # Rollout execution id; None falls back to ``index``. Compact / subagent
     # siblings must share it so the rollout is counted once.
     rollout_id: int | None = None
