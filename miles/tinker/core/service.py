@@ -500,10 +500,17 @@ class TinkerService:
             outcome = outcomes[stream.slot]
             if "error" in outcome:
                 self.futures.fail(pending.command.request_id, outcome["error"], "server")
+                stream.finish(pending)
+                # the slot may hold a half-applied or rank-divergent step; it must not keep serving
+                await self._evict_model(
+                    stream.model_id,
+                    f"model unloaded after a failed optimizer step ({outcome['error']}); restore from a checkpoint",
+                    "server",
+                )
             else:
                 metrics = {key: float(value) for key, value in outcome.items()}
                 self.futures.resolve(pending.command.request_id, {"op": "optim_step", "metrics": metrics})
-            stream.finish(pending)
+                stream.finish(pending)
 
     def _fail_if_poisoned(self, stream, pending) -> bool:
         """Fail the next optimizer step when a batch discarded its accumulated gradients."""
