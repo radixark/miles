@@ -13,9 +13,8 @@ This plugin is a non-invasive drop-in that:
    blow up on the 2-tuple unpack in ``_forward_attention`` / ``_forward_mlp``.
 3. For Nemotron-H models, patches
    :class:`~megatron.core.models.mamba.MambaModel` ``forward`` to
-   transparently swallow the ``loss_mask`` kwarg so miles' generic training
-   loop (which was designed around ``GPTModel``) can keep passing it
-   unconditionally.
+   adapt Miles' ``mtp_kwargs`` to the model's forward arguments while
+   preserving ``loss_mask``.
 
 Importing this module is idempotent — safe to import multiple times.
 """
@@ -63,7 +62,7 @@ def _build_bridge_subclass():
     """
     from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
     from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge
-    from megatron.bridge.models.conversion.param_mapping import AutoMapping
+    from megatron.bridge.models.conversion.param_mapping import AutoMapping, MambaConv1dMapping
     from megatron.bridge.models.nemotronh.nemotron_h_bridge import NemotronHBridge
     from megatron.core.models.mamba import MambaModel
 
@@ -143,7 +142,16 @@ def _build_bridge_subclass():
             registry = super().mapping_registry()
             base = list(registry.mappings if hasattr(registry, "mappings") else registry._mappings)
             extras = [AutoMapping(megatron_param=m, hf_param=h) for m, h in _NEMOTRONH_MOE_MAPPINGS.items()]
-            return MegatronMappingRegistry(*base, *extras)
+            known_names = {mapping.megatron_param for mapping in base}
+            mamba = [
+                MambaConv1dMapping(
+                    megatron_param=f"decoder.layers.*.mixer.conv1d_{suffix}",
+                    hf_param=f"backbone.layers.*.mixer.conv1d.{suffix}",
+                )
+                for suffix in ("weight", "bias")
+                if f"decoder.layers.*.mixer.conv1d_{suffix}" not in known_names
+            ]
+            return MegatronMappingRegistry(*base, *mamba, *extras)
 
     return MilesNemotronHBridge
 
@@ -182,13 +190,11 @@ def _install_nemotronh_hybrid_layer_shims() -> None:
 
 
 def _install_mamba_model_loss_mask_shim() -> None:
-    """Make ``MambaModel.forward`` silently accept (and drop) ``loss_mask``.
+    """Adapt Miles MTP arguments while preserving the model loss mask.
 
-    Miles' generic training loop was written against ``GPTModel.forward``,
-    which has ``loss_mask: Optional[Tensor] = None`` as a keyword-only arg.
-    ``MambaModel.forward`` does not accept ``loss_mask``, so passing it raises
-    ``TypeError``. The loss itself is still computed downstream from the batch
-    ``loss_masks`` field — it is only the forward call that must drop it.
+    The Megatron HybridModel exposed as MambaModel accepts ``loss_mask`` but
+    not ``mtp_labels``. Omit absent MTP labels so its forward remains usable
+    when MTP is disabled; shift labels for models that support MTP.
     """
     from megatron.core.models.mamba import MambaModel
 
@@ -201,8 +207,9 @@ def _install_mamba_model_loss_mask_shim() -> None:
         # process_mtp_loss expects next-token-shifted labels; miles passes raw tokens.
         mtp_labels = (mtp_kwargs or {}).get("mtp_labels")
         if mtp_labels is not None:
-            mtp_labels = torch.roll(mtp_labels, shifts=-1, dims=-1)
-        return _orig_forward(self, *args, loss_mask=loss_mask, mtp_labels=mtp_labels, **kwargs)
+            # HybridModel.forward does not accept even mtp_labels=None.
+            kwargs["mtp_labels"] = torch.roll(mtp_labels, shifts=-1, dims=-1)
+        return _orig_forward(self, *args, loss_mask=loss_mask, **kwargs)
 
     MambaModel.forward = forward
     MambaModel._miles_loss_mask_shim_installed = True

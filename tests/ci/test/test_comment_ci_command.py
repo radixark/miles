@@ -1,3 +1,4 @@
+import datetime
 import importlib.util
 import json
 import urllib.error
@@ -30,6 +31,45 @@ HEAD_REF = "feature/test"
 WRITE_PERMISSIONS = frozenset({"write", "admin"})
 RUN_FILE_BODY = "/rerun-test tests/e2e/precision/test_hf_attention_cp_relayout.py"
 RUN_FILE_PATH = "tests/e2e/precision/test_hf_attention_cp_relayout.py"
+WORKFLOW_RUN_ID = 987654321
+WORKFLOW_RUN_API_URL = f"https://api.github.com/repos/radixark/miles/actions/runs/{WORKFLOW_RUN_ID}"
+WORKFLOW_RUN_URL = f"https://github.com/radixark/miles/actions/runs/{WORKFLOW_RUN_ID}"
+RUN_MARKER = f"<!-- rerun-test-run:{WORKFLOW_RUN_ID} -->"
+RUN_STARTED_AT = "2026-08-23T09:25:25Z"
+# 3m11s after RUN_STARTED_AT, the shape of a real 4-GPU file run.
+REPORT_NOW = datetime.datetime(2026, 8, 23, 9, 28, 36, tzinfo=datetime.timezone.utc)
+NEW_COMMENT_ID = 4242
+EXISTING_COMMENT_ID = 777
+ANNOUNCE_BODY = (
+    f"⏳ `{RUN_FILE_PATH}` is **running** — [workflow run]({WORKFLOW_RUN_URL})\n\n"
+    "Started at 2026-08-23 09:28:36 UTC; elapsed time and the result will be recorded "
+    f"here when it finishes.\n\n{RUN_MARKER}"
+)
+
+
+def file_run_env(mode, **overrides):
+    environ = {
+        "CI_COMMAND_FILE_RUN_STATUS": mode,
+        "FILE_RUN_PULL_NUMBER": "123",
+        "FILE_RUN_TEST_FILE": RUN_FILE_PATH,
+        "FILE_RUN_RUN_ID": str(WORKFLOW_RUN_ID),
+    }
+    if mode == "report":
+        environ.update(
+            {
+                "FILE_RUN_COMMENT_ID": str(EXISTING_COMMENT_ID),
+                "FILE_RUN_SUITE": "stage-c-4-gpu-h200",
+                "FILE_RUN_RESOLVE_RESULT": "success",
+                "FILE_RUN_CUDA_RESULT": "success",
+                "FILE_RUN_CPU_RESULT": "skipped",
+            }
+        )
+    environ.update(overrides)
+    return environ
+
+
+def file_run_status(mode="report", **overrides):
+    return HANDLER._file_run_status_inputs(file_run_env(mode, **overrides))[1]
 
 
 class FakeAPI:
@@ -49,6 +89,11 @@ class FakeAPI:
         self.rerun_calls = []
         self.list_pull_calls = []
         self.dispatch_calls = []
+        self.reaction_calls = []
+        self.comment_calls = []
+        self.update_calls = []
+        self.run_calls = []
+        self.workflow_run = {"run_started_at": RUN_STARTED_AT}
         self.head_pulls = [pull]
 
     def get_pull(self, pull_number):
@@ -89,15 +134,36 @@ class FakeAPI:
     def create_workflow_dispatch(self, workflow_file, ref, inputs):
         self.calls.append(("create_workflow_dispatch", workflow_file, ref, inputs))
         self.dispatch_calls.append((workflow_file, ref, inputs))
+        return WORKFLOW_RUN_URL
+
+    def add_comment_reaction(self, comment_id, content):
+        self.calls.append(("add_comment_reaction", comment_id, content))
+        self.reaction_calls.append((comment_id, content))
+
+    def create_issue_comment(self, pull_number, body):
+        self.calls.append(("create_issue_comment", pull_number, body))
+        self.comment_calls.append((pull_number, body))
+        return NEW_COMMENT_ID
+
+    def update_issue_comment(self, comment_id, body):
+        self.calls.append(("update_issue_comment", comment_id, body))
+        self.update_calls.append((comment_id, body))
+
+    def get_workflow_run(self, run_id):
+        self.calls.append(("get_workflow_run", run_id))
+        self.run_calls.append(run_id)
+        return self.workflow_run
 
 
-def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
+def event(*, body="/run-ci-short", actor_id=ACTOR_ID, author_association="NONE"):
     return {
         "action": "created",
         "repository": {"id": HANDLER.REPOSITORY_ID, "full_name": HANDLER.REPOSITORY},
         "issue": {"number": 123, "pull_request": {"url": "https://example.invalid/pulls/123"}},
         "comment": {
+            "id": 5678,
             "body": body,
+            "author_association": author_association,
             "user": {"id": actor_id, "login": "actor", "type": "User"},
         },
         "sender": {"id": actor_id, "login": "actor", "type": "User"},
@@ -130,18 +196,27 @@ def policy(
     *,
     permissions=("write", "admin"),
     user_ids=(),
+    prior_user_ids=(),
     labels=("run-ci-short", "bypass-fastfail"),
     repo_permissions=("write", "admin"),
+    author_associations=("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"),
 ):
     return {
         "groups": {
             "add_label_access": {
                 "repository_permissions": frozenset(permissions),
                 "user_ids": frozenset(user_ids),
+                "author_associations": frozenset(),
             },
             "repo_write_access": {
                 "repository_permissions": frozenset(repo_permissions),
                 "user_ids": frozenset(),
+                "author_associations": frozenset(),
+            },
+            "prior_contributor_access": {
+                "repository_permissions": frozenset(repo_permissions),
+                "user_ids": frozenset(prior_user_ids),
+                "author_associations": frozenset(author_associations),
             },
         },
         "commands": {
@@ -150,8 +225,8 @@ def policy(
                 "allowed_labels": frozenset(labels),
             },
             "clear_labels": {"group": "repo_write_access"},
-            "rerun_failed_ci": {"group": "repo_write_access"},
-            "run_test_file": {"group": "repo_write_access"},
+            "rerun_failed_ci": {"group": "prior_contributor_access"},
+            "run_test_file": {"group": "prior_contributor_access"},
         },
     }
 
@@ -258,15 +333,20 @@ def test_command_parser_ignores_unrelated_comments(body):
 
 def test_static_registry_owns_policy_capability_and_handler_routing():
     expected = {
-        HANDLER.AddLabel: ("add_label", "issues", HANDLER._handle_add_label),
-        HANDLER.ClearLabels: ("clear_labels", "issues", HANDLER._handle_clear_labels),
-        HANDLER.RerunFailedCI: ("rerun_failed_ci", "actions", HANDLER._handle_rerun_failed_ci),
-        HANDLER.RunTestFile: ("run_test_file", "actions", HANDLER._handle_run_test_file),
+        HANDLER.AddLabel: ("add_label", "issues", HANDLER._handle_add_label, "none"),
+        HANDLER.ClearLabels: ("clear_labels", "issues", HANDLER._handle_clear_labels, "none"),
+        HANDLER.RerunFailedCI: ("rerun_failed_ci", "actions", HANDLER._handle_rerun_failed_ci, "none"),
+        HANDLER.RunTestFile: ("run_test_file", "actions", HANDLER._handle_run_test_file, "+1"),
     }
     assert set(HANDLER.COMMAND_REGISTRY) == set(expected)
-    for request_type, (policy_key, capability, handler) in expected.items():
+    for request_type, (policy_key, capability, handler, success_reaction) in expected.items():
         spec = HANDLER.COMMAND_REGISTRY[request_type]
-        assert (spec.policy_key, spec.capability, spec.handler) == (policy_key, capability, handler)
+        assert (spec.policy_key, spec.capability, spec.handler, spec.success_reaction) == (
+            policy_key,
+            capability,
+            handler,
+            success_reaction,
+        )
 
 
 def test_unknown_request_type_fails_closed():
@@ -279,13 +359,18 @@ def test_unknown_request_type_fails_closed():
 
 def raw_policy():
     return {
-        "version": 2,
+        "version": 4,
         "groups": {
             "add_label_access": {
                 "repository_permissions": ["write", "admin"],
-                "user_ids": [],
+                "users": [],
             },
             "repo_write_access": {"repository_permissions": ["write", "admin"]},
+            "prior_contributor_access": {
+                "repository_permissions": ["write", "admin"],
+                "users": [],
+                "author_associations": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"],
+            },
         },
         "commands": {
             "add_label": {
@@ -293,8 +378,8 @@ def raw_policy():
                 "allowed_labels": ["run-ci-short", "bypass-fastfail"],
             },
             "clear_labels": {"group": "repo_write_access"},
-            "rerun_failed_ci": {"group": "repo_write_access"},
-            "run_test_file": {"group": "repo_write_access"},
+            "rerun_failed_ci": {"group": "prior_contributor_access"},
+            "run_test_file": {"group": "prior_contributor_access"},
         },
     }
 
@@ -388,17 +473,29 @@ def test_policy_parser_rejects_legacy_or_nonstandard_schema(tmp_path, text, mess
 @pytest.mark.parametrize(
     ("path_parts", "value", "message"),
     [
-        (("version",), 1, "version must be 2"),
+        (("version",), 3, "version must be 4"),
         (("groups", "add_label_access", "repository_permissions"), [True], "only write or admin"),
         (("groups", "add_label_access", "repository_permissions"), ["read"], "only write or admin"),
         (("groups", "add_label_access", "repository_permissions"), ["write", "write"], "duplicate permissions"),
-        (("groups", "add_label_access", "user_ids"), [True], "only positive integers"),
-        (("groups", "add_label_access", "user_ids"), [123, 123], "duplicate user IDs"),
+        (("groups", "prior_contributor_access", "author_associations"), [], "non-empty array"),
+        (("groups", "prior_contributor_access", "author_associations"), [True], "only GitHub author associations"),
+        (
+            ("groups", "prior_contributor_access", "author_associations"),
+            ["read"],
+            "only GitHub author associations",
+        ),
+        (
+            ("groups", "prior_contributor_access", "author_associations"),
+            ["MEMBER", "MEMBER"],
+            "duplicate author associations",
+        ),
         (("commands", "add_label", "allowed_labels"), ["unsafe label"], "invalid exact CI label"),
         (("commands", "add_label", "allowed_labels"), ["run-ci-short", "run-ci-short"], "duplicate labels"),
         (("commands", "add_label", "group"), "missing", "unknown group"),
         (("commands", "clear_labels", "unexpected"), True, "invalid fields"),
-        (("groups", "repo_write_access", "user_ids"), [123], "invalid fields"),
+        (("groups", "repo_write_access", "users"), [{"id": 123, "login": "actor"}], "invalid fields"),
+        (("groups", "repo_write_access", "author_associations"), ["MEMBER"], "invalid fields"),
+        (("groups", "add_label_access", "author_associations"), ["MEMBER"], "invalid fields"),
     ],
 )
 def test_policy_parser_rejects_invalid_group_command_or_resource(tmp_path, path_parts, value, message):
@@ -413,6 +510,43 @@ def test_policy_parser_rejects_invalid_group_command_or_resource(tmp_path, path_
         HANDLER.load_policy(path)
 
 
+def test_policy_parser_loads_independent_users_for_both_customizable_tiers(tmp_path):
+    raw = raw_policy()
+    raw["groups"]["add_label_access"]["users"] = [{"id": 111, "login": "alice"}]
+    raw["groups"]["prior_contributor_access"]["users"] = [{"id": 222, "login": "bob"}]
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(raw))
+
+    loaded = HANDLER.load_policy(path)
+
+    assert loaded["groups"]["add_label_access"]["user_ids"] == {111}
+    assert loaded["groups"]["prior_contributor_access"]["user_ids"] == {222}
+
+
+@pytest.mark.parametrize(
+    ("group", "body"),
+    [
+        ("add_label_access", "/run-ci-short"),
+        ("prior_contributor_access", RUN_FILE_BODY),
+    ],
+)
+def test_user_login_is_display_only_for_authorization(tmp_path, group, body):
+    raw = raw_policy()
+    raw["groups"][group]["users"] = [{"id": ACTOR_ID, "login": "stale-login"}]
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(raw))
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.authorize_policy(
+        event(body=body, author_association="FIRST_TIMER"),
+        HANDLER.load_policy(path),
+        api,
+    )
+
+    assert result[0:2] == (123, ACTOR_ID)
+    assert api.calls == []
+
+
 @pytest.mark.parametrize("section", ["groups", "commands"])
 def test_policy_parser_rejects_unknown_group_or_command(tmp_path, section):
     raw = raw_policy()
@@ -424,9 +558,9 @@ def test_policy_parser_rejects_unknown_group_or_command(tmp_path, section):
         HANDLER.load_policy(path)
 
 
-def test_non_label_commands_cannot_use_a_group_with_explicit_user_ids(tmp_path):
+def test_repo_write_command_cannot_use_a_group_with_explicit_user_ids(tmp_path):
     raw = raw_policy()
-    raw["groups"]["add_label_access"]["user_ids"] = [ACTOR_ID]
+    raw["groups"]["add_label_access"]["users"] = [{"id": ACTOR_ID, "login": "actor"}]
     raw["commands"]["clear_labels"]["group"] = "add_label_access"
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(raw))
@@ -434,7 +568,7 @@ def test_non_label_commands_cannot_use_a_group_with_explicit_user_ids(tmp_path):
         HANDLER.load_policy(path)
 
 
-def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
+def test_checked_in_policy_exposes_exact_labels_and_access_groups():
     loaded = HANDLER.load_policy(POLICY_PATH)
     labels = loaded["commands"]["add_label"]["allowed_labels"]
     assert labels == {f"run-ci-{key}" for key in KNOWN_LABELS} | {
@@ -443,15 +577,22 @@ def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
     }
     assert loaded["groups"]["add_label_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
-        "user_ids": frozenset(),
+        "user_ids": frozenset({82826991, 59716405, 101526713, 106564213}),
+        "author_associations": frozenset(),
     }
     assert loaded["groups"]["repo_write_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
         "user_ids": frozenset(),
+        "author_associations": frozenset(),
+    }
+    assert loaded["groups"]["prior_contributor_access"] == {
+        "repository_permissions": WRITE_PERMISSIONS,
+        "user_ids": frozenset(),
+        "author_associations": frozenset({"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"}),
     }
     assert loaded["commands"]["clear_labels"] == {"group": "repo_write_access"}
-    assert loaded["commands"]["rerun_failed_ci"] == {"group": "repo_write_access"}
-    assert loaded["commands"]["run_test_file"] == {"group": "repo_write_access"}
+    assert loaded["commands"]["rerun_failed_ci"] == {"group": "prior_contributor_access"}
+    assert loaded["commands"]["run_test_file"] == {"group": "prior_contributor_access"}
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in labels)
 
 
@@ -520,6 +661,27 @@ def test_add_label_access_user_id_preflight_does_not_require_repository_permissi
         HANDLER.AddLabel("run-ci-short"),
         HANDLER.COMMAND_REGISTRY[HANDLER.AddLabel],
     )
+    assert api.calls == []
+
+
+@pytest.mark.parametrize(
+    ("body", "request_type"),
+    [
+        (RUN_FILE_BODY, HANDLER.RunTestFile),
+        ("/rerun-failed-ci", HANDLER.RerunFailedCI),
+    ],
+)
+def test_prior_contributor_access_user_id_preflight_does_not_require_repository_permission(body, request_type):
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.authorize_policy(
+        event(body=body, author_association="FIRST_TIMER"),
+        policy(prior_user_ids=(ACTOR_ID,)),
+        api,
+    )
+
+    assert result[0:2] == (123, ACTOR_ID)
+    assert type(result[2]) is request_type
     assert api.calls == []
 
 
@@ -1316,6 +1478,35 @@ def test_label_mutation_api_failure_is_not_retried(monkeypatch, operation, excep
     assert attempts == [15]
 
 
+def test_http_error_names_the_request_and_accepted_permissions(monkeypatch):
+    def urlopen(_request, *, timeout):
+        raise urllib.error.HTTPError(
+            "url", 403, "forbidden", {"X-Accepted-GitHub-Permissions": "pull_requests=write"}, None
+        )
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError) as excinfo:
+        HANDLER.GitHubAPI("secret-token").add_label(123, "run-ci-short")
+    message = str(excinfo.value)
+    assert message == (
+        "GitHub API returned HTTP 403 for POST /repos/radixark/miles/issues/123/labels; "
+        "accepted permissions: pull_requests=write"
+    )
+    assert "secret-token" not in message
+
+
+def test_http_error_without_accepted_permissions_still_names_the_request(monkeypatch):
+    def urlopen(_request, *, timeout):
+        raise urllib.error.HTTPError("url", 404, "missing", {}, None)
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError) as excinfo:
+        HANDLER.GitHubAPI("secret-token").get_permission("actor")
+    assert str(excinfo.value) == (
+        "GitHub API returned HTTP 404 for GET /repos/radixark/miles/collaborators/actor/permission"
+    )
+
+
 def test_unconfirmed_mutation_response_fails_without_rollback():
     api = FakeAPI(pull())
     api.add_label = lambda _pull_number, _label: []
@@ -1363,16 +1554,16 @@ def test_clear_rejects_a_final_response_with_a_new_ci_control_label():
 
 
 @pytest.mark.parametrize(
-    ("body", "capability"),
+    ("body", "capability", "success_reaction"),
     [
-        ("/run-ci-short", "issues"),
-        ("/bypass-fastfail", "issues"),
-        ("/clear-labels", "issues"),
-        ("/rerun-failed-ci", "actions"),
-        (RUN_FILE_BODY, "actions"),
+        ("/run-ci-short", "issues", "none"),
+        ("/bypass-fastfail", "issues", "none"),
+        ("/clear-labels", "issues", "none"),
+        ("/rerun-failed-ci", "actions", "none"),
+        (RUN_FILE_BODY, "actions", "+1"),
     ],
 )
-def test_preflight_writes_only_a_fixed_capability(monkeypatch, tmp_path, body, capability):
+def test_preflight_writes_only_fixed_routing(monkeypatch, tmp_path, body, capability, success_reaction):
     api = FakeAPI(pull())
     output_path = tmp_path / "github-output"
     monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=body))
@@ -1385,7 +1576,7 @@ def test_preflight_writes_only_a_fixed_capability(monkeypatch, tmp_path, body, c
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 
     assert HANDLER.main() == 0
-    assert output_path.read_text() == f"capability={capability}\n"
+    assert output_path.read_text() == (f"capability={capability}\nsuccess_reaction={success_reaction}\n")
     assert api.calls == [("get_permission", "actor")]
 
 
@@ -1395,6 +1586,28 @@ def test_preflight_rejects_an_unknown_registry_capability(monkeypatch, tmp_path)
     spec = HANDLER.COMMAND_REGISTRY[HANDLER.AddLabel]
     monkeypatch.setitem(HANDLER.COMMAND_REGISTRY, HANDLER.AddLabel, spec._replace(capability="unknown"))
     monkeypatch.setattr(HANDLER, "load_json", lambda _path: event())
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: policy())
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_POLICY_PATH", "policy.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "token")
+    monkeypatch.setenv("CI_COMMAND_PREFLIGHT", "true")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    assert HANDLER.main() == 1
+    assert not output_path.exists()
+
+
+def test_preflight_rejects_an_unknown_registry_success_reaction(monkeypatch, tmp_path):
+    api = FakeAPI(pull())
+    output_path = tmp_path / "github-output"
+    spec = HANDLER.COMMAND_REGISTRY[HANDLER.RunTestFile]
+    monkeypatch.setitem(
+        HANDLER.COMMAND_REGISTRY,
+        HANDLER.RunTestFile,
+        spec._replace(success_reaction="heart"),
+    )
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=RUN_FILE_BODY))
     monkeypatch.setattr(HANDLER, "load_policy", lambda _path: policy())
     monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
     monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
@@ -1417,7 +1630,7 @@ def test_unrelated_comment_preflight_uses_no_policy_or_api(monkeypatch, tmp_path
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 
     assert HANDLER.main() == 0
-    assert output_path.read_text() == "capability=none\n"
+    assert output_path.read_text() == "capability=none\nsuccess_reaction=none\n"
 
 
 @pytest.mark.parametrize("permission", ["write", "admin"])
@@ -1439,7 +1652,26 @@ def test_repository_writer_dispatches_a_file_run(permission):
         "head_sha": HEAD_SHA,
         "pull_number": 123,
         "test_file": RUN_FILE_PATH,
+        "workflow_run_url": WORKFLOW_RUN_URL,
     }
+
+
+def test_file_run_main_reports_the_dispatched_run_without_writing_an_output(monkeypatch, tmp_path, capsys):
+    api = FakeAPI(pull())
+    output_path = tmp_path / "github-output"
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=RUN_FILE_BODY))
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: policy())
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_POLICY_PATH", "policy.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "actions-token")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    assert HANDLER.main() == 0
+    # The dispatched run URL stays in the audit record; the dispatched run now
+    # owns the pull-request status comment, so no job output carries it.
+    assert json.loads(capsys.readouterr().out)["workflow_run_url"] == WORKFLOW_RUN_URL
+    assert not output_path.exists()
 
 
 def test_file_run_forwards_validated_pr_body_pins():
@@ -1474,12 +1706,58 @@ def test_file_run_rejects_an_invalid_pr_body_pin(line):
     assert api.dispatch_calls == []
 
 
-def test_file_run_rejects_fork_prs_before_authorization():
-    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1))
+@pytest.mark.parametrize("permission", ["read", "triage", "none"])
+def test_fork_file_run_without_contributor_tier_or_write_is_denied(permission):
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission=permission)
 
-    with pytest.raises(HANDLER.CommentCommandError, match="same-repository"):
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
         HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+    assert api.dispatch_calls == []
+
+
+@pytest.mark.parametrize("permission", ["write", "admin"])
+def test_repository_writer_dispatches_a_fork_file_run(permission):
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission=permission)
+
+    result = HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+
+    assert api.list_pull_calls == [("fork-owner", HEAD_REF)]
+    assert api.dispatch_calls == [
+        (
+            "run-ci-file.yml",
+            "main",
+            {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH},
+        )
+    ]
+    assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
+
+
+@pytest.mark.parametrize("author_association", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"])
+def test_prior_contributor_dispatches_a_fork_file_run_without_a_permission_lookup(author_association):
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission="none")
+
+    result = HANDLER.process_event(event(body=RUN_FILE_BODY, author_association=author_association), policy(), api)
+
     assert api.permission_calls == []
+    assert api.list_pull_calls == [("fork-owner", HEAD_REF)]
+    assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
+
+
+@pytest.mark.parametrize("author_association", ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "MANNEQUIN"])
+def test_first_time_contributor_cannot_dispatch_a_fork_file_run(author_association):
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission="read")
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY, author_association=author_association), policy(), api)
+    assert api.dispatch_calls == []
+
+
+def test_fork_file_run_requires_one_unique_head_pull():
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1))
+    api.head_pulls = []
+
+    with pytest.raises(HANDLER.CommentCommandError, match="exactly one pull request"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
     assert api.dispatch_calls == []
 
 
@@ -1500,11 +1778,135 @@ def test_add_label_access_user_id_cannot_dispatch_a_file_run():
     assert api.dispatch_calls == []
 
 
-def test_create_workflow_dispatch_uses_exact_endpoint_and_accepts_empty_204(monkeypatch):
+@pytest.mark.parametrize("author_association", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"])
+def test_prior_contributor_dispatches_a_file_run_without_a_permission_lookup(author_association):
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.process_event(
+        event(body=RUN_FILE_BODY, author_association=author_association),
+        policy(),
+        api,
+    )
+
+    assert api.permission_calls == []
+    assert api.dispatch_calls == [
+        (
+            "run-ci-file.yml",
+            "main",
+            {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH},
+        )
+    ]
+    assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
+
+
+@pytest.mark.parametrize("author_association", ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "MANNEQUIN"])
+def test_first_time_contributor_cannot_dispatch_a_file_run(author_association):
+    api = FakeAPI(pull(), permission="read")
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(
+            event(body=RUN_FILE_BODY, author_association=author_association),
+            policy(),
+            api,
+        )
+    assert api.dispatch_calls == []
+
+
+def test_prior_contributor_access_user_id_dispatches_a_file_run():
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.process_event(
+        event(body=RUN_FILE_BODY, author_association="FIRST_TIMER"),
+        policy(prior_user_ids=(ACTOR_ID,)),
+        api,
+    )
+
+    assert api.permission_calls == []
+    assert api.dispatch_calls == [
+        (
+            "run-ci-file.yml",
+            "main",
+            {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH},
+        )
+    ]
+    assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
+
+
+@pytest.mark.parametrize("body", ["/run-ci-short", "/clear-labels"])
+def test_contributor_association_grants_no_label_command(body):
+    api = FakeAPI(pull(labels=("run-ci-short",)), permission="read")
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(event(body=body, author_association="CONTRIBUTOR"), policy(), api)
+
+    assert api.add_calls == []
+    assert api.remove_calls == []
+    assert api.rerun_calls == []
+    assert api.dispatch_calls == []
+
+
+@pytest.mark.parametrize("body", ["/run-ci-short", "/clear-labels"])
+def test_prior_contributor_access_user_id_grants_no_label_command(body):
+    api = FakeAPI(pull(labels=("run-ci-short",)), permission="none")
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(
+            event(body=body, author_association="FIRST_TIMER"),
+            policy(prior_user_ids=(ACTOR_ID,)),
+            api,
+        )
+
+    assert api.add_calls == []
+    assert api.remove_calls == []
+    assert api.rerun_calls == []
+    assert api.dispatch_calls == []
+
+
+def test_contributor_reruns_failed_ci_without_a_permission_lookup():
+    api = FakeAPI(pull(), permission="none")
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path)]
+
+    result = HANDLER.process_event(event(body="/rerun-failed-ci", author_association="CONTRIBUTOR"), policy(), api)
+
+    assert api.permission_calls == []
+    assert api.rerun_calls == [10]
+    assert result["decision"] == "ALLOW_RERUN_REQUESTED"
+
+
+def test_prior_contributor_access_user_id_reruns_failed_ci():
+    api = FakeAPI(pull(), permission="none")
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path)]
+
+    result = HANDLER.process_event(
+        event(body="/rerun-failed-ci", author_association="FIRST_TIMER"),
+        policy(prior_user_ids=(ACTOR_ID,)),
+        api,
+    )
+
+    assert api.permission_calls == []
+    assert api.rerun_calls == [10]
+    assert result["decision"] == "ALLOW_RERUN_REQUESTED"
+
+
+@pytest.mark.parametrize("author_association", [None, True, "", "collaborator", "EVERYONE"])
+def test_event_parser_rejects_an_invalid_author_association(author_association):
+    invalid = event(body=RUN_FILE_BODY)
+    if author_association is None:
+        del invalid["comment"]["author_association"]
+    else:
+        invalid["comment"]["author_association"] = author_association
+
+    with pytest.raises(HANDLER.CommentCommandError, match="author association is invalid"):
+        HANDLER.parse_event(invalid)
+
+
+def test_create_workflow_dispatch_requests_and_returns_exact_run_details(monkeypatch):
     requests = []
 
     class Response:
-        status = 204
+        status = 200
 
         def __enter__(self):
             return self
@@ -1513,14 +1915,20 @@ def test_create_workflow_dispatch_uses_exact_endpoint_and_accepts_empty_204(monk
             return False
 
         def read(self):
-            return b""
+            return json.dumps(
+                {
+                    "workflow_run_id": WORKFLOW_RUN_ID,
+                    "run_url": WORKFLOW_RUN_API_URL,
+                    "html_url": WORKFLOW_RUN_URL,
+                }
+            ).encode("utf-8")
 
     def urlopen(request, *, timeout):
         requests.append((request, timeout))
         return Response()
 
     monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
-    HANDLER.GitHubAPI("secret-token").create_workflow_dispatch(
+    result = HANDLER.GitHubAPI("secret-token").create_workflow_dispatch(
         "run-ci-file.yml", "feature/test", {"test_file": "tests/e2e/test_a.py"}
     )
 
@@ -1532,13 +1940,15 @@ def test_create_workflow_dispatch_uses_exact_endpoint_and_accepts_empty_204(monk
     assert json.loads(request.data.decode("utf-8")) == {
         "ref": "feature/test",
         "inputs": {"test_file": "tests/e2e/test_a.py"},
+        "return_run_details": True,
     }
     assert timeout == 15
+    assert result == WORKFLOW_RUN_URL
 
 
 @pytest.mark.parametrize(
     ("status", "body", "message"),
-    [(200, b"", "expected 204"), (204, b"{}", "unexpected response body")],
+    [(204, b"", "expected 200"), (200, b"", "invalid JSON")],
 )
 def test_create_workflow_dispatch_rejects_unconfirmed_response(monkeypatch, status, body, message):
     attempts = 0
@@ -1568,45 +1978,549 @@ def test_create_workflow_dispatch_rejects_unconfirmed_response(monkeypatch, stat
     assert attempts == 1
 
 
+@pytest.mark.parametrize(
+    ("details", "message"),
+    [
+        ({}, "workflow run ID must be a positive integer"),
+        (
+            {
+                "workflow_run_id": WORKFLOW_RUN_ID,
+                "run_url": "https://api.github.com/repos/radixark/miles/actions/runs/1",
+                "html_url": WORKFLOW_RUN_URL,
+            },
+            "mismatched workflow dispatch details",
+        ),
+        (
+            {
+                "workflow_run_id": WORKFLOW_RUN_ID,
+                "run_url": WORKFLOW_RUN_API_URL,
+                "html_url": "https://example.invalid/actions/runs/987654321",
+            },
+            "workflow run URL is invalid",
+        ),
+    ],
+)
+def test_create_workflow_dispatch_rejects_invalid_run_details(monkeypatch, details, message):
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(details).encode("utf-8")
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", lambda _request, timeout: Response())
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER.GitHubAPI("secret-token").create_workflow_dispatch("run-ci-file.yml", "main", {})
+
+
+def test_create_issue_comment_uses_exact_endpoint_and_confirms_body(monkeypatch):
+    requests = []
+
+    class Response:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"body": ANNOUNCE_BODY, "id": NEW_COMMENT_ID}).encode("utf-8")
+
+    def urlopen(request, *, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    assert HANDLER.GitHubAPI("secret-token").create_issue_comment(123, ANNOUNCE_BODY) == NEW_COMMENT_ID
+
+    request, timeout = requests[0]
+    assert request.full_url == "https://api.github.com/repos/radixark/miles/issues/123/comments"
+    assert request.method == "POST"
+    assert json.loads(request.data.decode("utf-8")) == {"body": ANNOUNCE_BODY}
+    assert timeout == 15
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "message"),
+    [
+        (200, {"body": ANNOUNCE_BODY, "id": NEW_COMMENT_ID}, "expected 201"),
+        (201, {"body": "wrong", "id": NEW_COMMENT_ID}, "did not confirm"),
+        (201, {"body": ANNOUNCE_BODY}, "comment ID"),
+    ],
+)
+def test_create_issue_comment_rejects_unconfirmed_response_without_retry(
+    monkeypatch,
+    status,
+    body,
+    message,
+):
+    attempts = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(body).encode("utf-8")
+
+    response = Response()
+    response.status = status
+
+    def urlopen(_request, *, timeout):
+        nonlocal attempts
+        attempts += 1
+        assert timeout == 15
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER.GitHubAPI("secret-token").create_issue_comment(123, ANNOUNCE_BODY)
+    assert attempts == 1
+
+
+@pytest.mark.parametrize("status", [200, 201])
+def test_add_comment_reaction_accepts_created_or_existing_reaction(monkeypatch, status):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"content":"+1"}'
+
+    response = Response()
+    response.status = status
+
+    def urlopen(request, *, timeout):
+        requests.append((request, timeout))
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    HANDLER.GitHubAPI("secret-token").add_comment_reaction(5678, "+1")
+
+    request, timeout = requests[0]
+    assert request.full_url == ("https://api.github.com/repos/radixark/miles/issues/comments/5678/reactions")
+    assert request.method == "POST"
+    assert json.loads(request.data.decode("utf-8")) == {"content": "+1"}
+    assert timeout == 15
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "message"),
+    [
+        (202, b'{"content":"+1"}', "expected 200 or 201"),
+        (204, b"", "expected 200 or 201"),
+        (201, b'{"content":"heart"}', "did not confirm"),
+        (201, b"not-json", "invalid JSON"),
+    ],
+)
+def test_add_comment_reaction_rejects_unconfirmed_response_without_retry(monkeypatch, status, body, message):
+    attempts = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return body
+
+    response = Response()
+    response.status = status
+
+    def urlopen(_request, *, timeout):
+        nonlocal attempts
+        attempts += 1
+        assert timeout == 15
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER.GitHubAPI("secret-token").add_comment_reaction(5678, "+1")
+    assert attempts == 1
+
+
+@pytest.mark.parametrize(
+    ("exception", "message"),
+    [
+        (urllib.error.HTTPError("url", 403, "forbidden", {}, None), "HTTP 403"),
+        (TimeoutError(), "timed out"),
+    ],
+)
+def test_comment_reaction_api_failure_is_not_retried(monkeypatch, exception, message):
+    attempts = []
+
+    def urlopen(_request, *, timeout):
+        attempts.append(timeout)
+        raise exception
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER.GitHubAPI("secret-token").add_comment_reaction(5678, "+1")
+    assert attempts == [15]
+
+
+def test_acknowledge_event_reacts_only_for_run_test_file():
+    api = FakeAPI(pull())
+
+    result = HANDLER.acknowledge_event(event(body=RUN_FILE_BODY), api)
+
+    assert api.reaction_calls == [(5678, "+1")]
+    assert result == {
+        "actor_id": ACTOR_ID,
+        "decision": "ALLOW_SUCCESS_REACTION_CONFIRMED",
+        "pull_number": 123,
+        "reaction": "+1",
+    }
+
+
+def test_acknowledge_event_rejects_commands_without_a_success_reaction():
+    api = FakeAPI(pull())
+
+    with pytest.raises(HANDLER.CommentCommandError, match="does not define"):
+        HANDLER.acknowledge_event(event(body="/rerun-failed-ci"), api)
+    assert api.reaction_calls == []
+
+
+@pytest.mark.parametrize("comment_id", [None, 0, "5678"])
+def test_acknowledge_event_rejects_an_invalid_comment_id(comment_id):
+    api = FakeAPI(pull())
+    command_event = event(body=RUN_FILE_BODY)
+    command_event["comment"]["id"] = comment_id
+
+    with pytest.raises(HANDLER.CommentCommandError, match="comment ID must be a positive integer"):
+        HANDLER.acknowledge_event(command_event, api)
+    assert api.reaction_calls == []
+
+
+def test_acknowledge_mode_reacts_without_loading_policy(monkeypatch, capsys):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=RUN_FILE_BODY))
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: pytest.fail("policy must not be loaded"))
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "reaction-token")
+    monkeypatch.setenv("CI_COMMAND_ACKNOWLEDGE", "true")
+
+    assert HANDLER.main() == 0
+    assert api.calls == [("add_comment_reaction", 5678, "+1")]
+    assert json.loads(capsys.readouterr().out) == {
+        "actor_id": ACTOR_ID,
+        "decision": "ALLOW_SUCCESS_REACTION_CONFIRMED",
+        "pull_number": 123,
+        "reaction": "+1",
+    }
+
+
+def test_acknowledge_mode_rejects_a_command_without_a_success_reaction(monkeypatch):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body="/rerun-failed-ci"))
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: pytest.fail("policy must not be loaded"))
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "reaction-token")
+    monkeypatch.setenv("CI_COMMAND_ACKNOWLEDGE", "true")
+
+    assert HANDLER.main() == 1
+    assert api.calls == []
+
+
+def test_announce_posts_a_running_status_comment_keyed_to_the_run(monkeypatch):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+
+    result = HANDLER.announce_file_run(api, file_run_status("announce"))
+
+    pull_number, body = api.comment_calls[0]
+    assert pull_number == 123
+    assert body == ANNOUNCE_BODY
+    assert result == {
+        "comment_id": NEW_COMMENT_ID,
+        "decision": "FILE_RUN_ANNOUNCED",
+        "pull_number": 123,
+        "run_id": WORKFLOW_RUN_ID,
+        "test_file": RUN_FILE_PATH,
+    }
+
+
+def test_report_updates_the_announced_comment_with_the_result_and_duration(monkeypatch):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+
+    result = HANDLER.report_file_run(api, file_run_status(), EXISTING_COMMENT_ID)
+
+    assert api.comment_calls == []
+    comment_id, body = api.update_calls[0]
+    assert comment_id == EXISTING_COMMENT_ID
+    assert body == (
+        f"\u2705 `{RUN_FILE_PATH}` **passed** on `stage-c-4-gpu-h200` in 3m11s "
+        f"\u2014 [workflow run]({WORKFLOW_RUN_URL})\n\n{RUN_MARKER}"
+    )
+    assert result == {
+        "comment_id": EXISTING_COMMENT_ID,
+        "decision": "FILE_RUN_PASSED",
+        "duration": "3m11s",
+        "pull_number": 123,
+        "run_id": WORKFLOW_RUN_ID,
+        "test_file": RUN_FILE_PATH,
+    }
+
+
+@pytest.mark.parametrize(
+    ("overrides", "decision", "icon", "explanation"),
+    [
+        (
+            {"FILE_RUN_CUDA_RESULT": "failure"},
+            "FILE_RUN_FAILED",
+            "\u274c",
+            "The execution job failed; inspect the workflow run for the failing step.",
+        ),
+        (
+            {"FILE_RUN_RESOLVE_RESULT": "failure", "FILE_RUN_CUDA_RESULT": "skipped"},
+            "FILE_RUN_FAILED",
+            "\u274c",
+            "The run never started: resolving the test file's execution plan failed.",
+        ),
+        (
+            {"FILE_RUN_CUDA_RESULT": "cancelled"},
+            "FILE_RUN_CANCELLED",
+            "\u26aa",
+            "The run was cancelled.",
+        ),
+        (
+            {"FILE_RUN_RESOLVE_RESULT": "cancelled", "FILE_RUN_CUDA_RESULT": "skipped"},
+            "FILE_RUN_CANCELLED",
+            "\u26aa",
+            "The run was cancelled.",
+        ),
+        (
+            {"FILE_RUN_CUDA_RESULT": "skipped", "FILE_RUN_CPU_RESULT": "skipped"},
+            "FILE_RUN_FAILED",
+            "\u274c",
+            "No execution job ran: the resolved plan selected neither the CUDA nor the CPU job.",
+        ),
+    ],
+)
+def test_report_never_calls_a_non_passing_run_a_pass(monkeypatch, overrides, decision, icon, explanation):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+
+    result = HANDLER.report_file_run(api, file_run_status(**overrides), EXISTING_COMMENT_ID)
+
+    body = api.update_calls[0][1]
+    assert body.startswith(icon)
+    assert "**passed**" not in body
+    assert explanation in body
+    assert result["decision"] == decision
+
+
+def test_report_reads_the_run_start_from_the_api_not_from_an_input(monkeypatch):
+    api = FakeAPI(pull())
+    api.workflow_run = {"run_started_at": "2026-08-23T08:25:25Z"}
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+
+    result = HANDLER.report_file_run(api, file_run_status(), EXISTING_COMMENT_ID)
+
+    assert api.run_calls == [WORKFLOW_RUN_ID]
+    assert result["duration"] == "1h03m11s"
+
+
+@pytest.mark.parametrize(
+    "workflow_run",
+    [
+        {},
+        {"created_at": RUN_STARTED_AT},
+        {"run_started_at": ""},
+        {"run_started_at": "not-a-timestamp"},
+        {"run_started_at": "2026-08-23T09:25:25"},
+        {"run_started_at": 17},
+        "nope",
+    ],
+)
+def test_report_fails_closed_on_an_unusable_run_start(monkeypatch, workflow_run):
+    api = FakeAPI(pull())
+    api.workflow_run = workflow_run
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+
+    with pytest.raises(HANDLER.CommentCommandError):
+        HANDLER.report_file_run(api, file_run_status(), EXISTING_COMMENT_ID)
+    assert api.update_calls == []
+    assert api.comment_calls == []
+
+
+@pytest.mark.parametrize(
+    ("seconds", "formatted"),
+    [(0, "0s"), (9, "9s"), (59, "59s"), (60, "1m00s"), (191, "3m11s"), (3600, "1h00m00s"), (3791, "1h03m11s")],
+)
+def test_duration_formatting_is_stable(seconds, formatted):
+    assert HANDLER._format_duration(seconds) == formatted
+
+
+def test_negative_duration_is_a_hard_error():
+    with pytest.raises(HANDLER.CommentCommandError, match="negative"):
+        HANDLER._format_duration(-1)
+
+
+@pytest.mark.parametrize(
+    ("mode", "overrides", "message"),
+    [
+        ("announce", {"CI_COMMAND_FILE_RUN_STATUS": "publish"}, "announce or report"),
+        ("announce", {"FILE_RUN_PULL_NUMBER": "0"}, "pull request number"),
+        ("announce", {"FILE_RUN_PULL_NUMBER": "12a"}, "pull request number"),
+        ("announce", {"FILE_RUN_PULL_NUMBER": ""}, "pull request number"),
+        ("announce", {"FILE_RUN_RUN_ID": "-1"}, "workflow run ID"),
+        ("announce", {"FILE_RUN_TEST_FILE": "tests/../etc/passwd"}, "test file is invalid"),
+        ("announce", {"FILE_RUN_TEST_FILE": ""}, "test file is invalid"),
+        ("report", {"FILE_RUN_SUITE": "stage a cpu; rm -rf /"}, "suite is invalid"),
+        ("report", {"FILE_RUN_RESOLVE_RESULT": "exploded"}, "resolve result is invalid"),
+        ("report", {"FILE_RUN_CPU_RESULT": "success"}, "two executing jobs"),
+        ("report", {"FILE_RUN_COMMENT_ID": ""}, "comment ID"),
+        ("report", {"FILE_RUN_COMMENT_ID": "0"}, "comment ID"),
+    ],
+)
+def test_file_run_status_inputs_fail_closed(mode, overrides, message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER._file_run_status_inputs(file_run_env(mode, **overrides))
+
+
+def test_status_mode_needs_no_event_and_loads_no_policy(monkeypatch, capsys):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: pytest.fail("no event payload may be read"))
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: pytest.fail("policy must not be loaded"))
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "status-token")
+    for name, value in file_run_env("report").items():
+        monkeypatch.setenv(name, value)
+
+    assert HANDLER.main() == 0
+    assert json.loads(capsys.readouterr().out)["decision"] == "FILE_RUN_PASSED"
+
+
+def test_announce_mode_writes_the_created_comment_id(monkeypatch, tmp_path, capsys):
+    api = FakeAPI(pull())
+    output_path = tmp_path / "github-output"
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "status-token")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    for name, value in file_run_env("announce").items():
+        monkeypatch.setenv(name, value)
+
+    assert HANDLER.main() == 0
+    assert output_path.read_text() == f"comment_id={NEW_COMMENT_ID}\n"
+    assert json.loads(capsys.readouterr().out)["decision"] == "FILE_RUN_ANNOUNCED"
+
+
+def test_status_mode_reports_a_handler_error_as_a_failed_step(monkeypatch, capsys):
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: pytest.fail("token is validated first"))
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "status-token")
+    for name, value in file_run_env("report", FILE_RUN_TEST_FILE="not-a-test").items():
+        monkeypatch.setenv(name, value)
+
+    assert HANDLER.main() == 1
+    assert "::error::file run test file is invalid" in capsys.readouterr().out
+
+
+def test_the_gateway_no_longer_owns_a_reply_path():
+    # The run itself reports progress and the result; a second static comment
+    # from the gateway would duplicate it.
+    assert not hasattr(HANDLER, "reply_event")
+    assert not hasattr(HANDLER, "_write_workflow_run_url")
+
+
 def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
-    assert "vars.CI_COMMAND_APP_ENABLED == 'true'" in workflow
     assert "github.event.comment.body" not in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
-    assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 2
-    assert "client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}" in workflow
-    assert "private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}" in workflow
+    # The command App exists only for the issues capability: label mutations
+    # made with GITHUB_TOKEN would never trigger the labeled CI workflows.
+    assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 1
+    assert workflow.count("client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}") == 1
+    assert workflow.count("private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}") == 1
     assert "permission-issues: write" in workflow
-    assert workflow.count("permission-actions: write") == 1
-    assert "permission-pull-requests: read" in workflow
+    assert "permission-actions" not in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}" in workflow
-    assert "CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}" in workflow
     assert "CI_COMMAND_APP_TOKEN" not in workflow
     assert workflow.index("CI_COMMAND_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
+    # The actions capability never waits on the App gate; label commands fail
+    # loudly when the App is not enabled instead of skipping silently.
+    assert "vars.CI_COMMAND_APP_ENABLED != 'true'" in workflow
+    assert "vars.CI_COMMAND_APP_ENABLED == 'true'" not in workflow
     assert "steps.authorize.outputs.capability != 'none'" in workflow
     assert "steps.authorize.outputs.capability != 'issues'" in workflow
     assert "steps.authorize.outputs.capability != 'actions'" in workflow
     assert "capability: ${{ steps.authorize.outputs.capability }}" in workflow
+    assert "success_reaction: ${{ steps.authorize.outputs.success_reaction }}" in workflow
     assert "needs: handle-command" in workflow
     assert "if: needs.handle-command.outputs.capability == 'actions'" in workflow
     assert "group: comment-ci-actions-${{ github.event.issue.number }}" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "queue: max" in workflow
+    handle_job = workflow.split("  handle-command:", 1)[1].split("  actions-command:", 1)[0]
+    actions_job = workflow.split("  actions-command:", 1)[1].split("  acknowledge-command:", 1)[0]
+    acknowledge_job = workflow.split("  acknowledge-command:", 1)[1]
     issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
         "- name: Authorize and run the issues command", 1
     )[0]
-    actions_token = workflow.split("- name: Mint the actions-scoped App token", 1)[1].split(
-        "- name: Authorize and run the actions command", 1
-    )[0]
-    assert "permission-issues: write" in issues_token
-    assert "permission-actions: write" not in issues_token
-    assert "permission-actions: write" in actions_token
-    assert "permission-issues: write" not in actions_token
+    # Exact indented lines, so a commented-out key cannot satisfy the check.
+    assert "\n          permission-issues: write\n" in issues_token
+    assert "\n          permission-pull-requests: write\n" in issues_token
+    assert "permission-pull-requests: read" not in issues_token
+    assert "Require the command App for label commands" in handle_job
+    assert handle_job.index("Require the command App for label commands") < handle_job.index(
+        "Mint the issues-scoped App token"
+    )
+    # Each GITHUB_TOKEN job scopes its own permissions; only the actions job
+    # may dispatch or rerun, and only the acknowledgement job may write issues.
+    assert ("permissions:\n      contents: read\n      actions: write\n      pull-requests: read") in actions_job
+    assert "issues: write" not in actions_job
+    assert "create-github-app-token" not in actions_job
+    assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in actions_job
+    # The acknowledgement job targets a comment on a pull request, and issues-API calls
+    # whose target issue is a PR are gated on pull-requests scope.
+    assert "permissions:\n      contents: read\n      issues: write\n      pull-requests: write" in acknowledge_job
+    assert "actions: write" not in acknowledge_job
+    assert "create-github-app-token" not in acknowledge_job
+    assert workflow.index("Authorize and run the actions command") < workflow.index(
+        "Acknowledge the successful command"
+    )
+    assert "CI_COMMAND_ACKNOWLEDGE" not in actions_job
+    assert "needs: [handle-command, actions-command]" in acknowledge_job
+    assert (
+        "if: >-\n"
+        "      needs.actions-command.result == 'success' &&\n"
+        "      needs.handle-command.outputs.success_reaction == '+1'"
+    ) in acknowledge_job
+    assert "always()" not in acknowledge_job
+    assert 'CI_COMMAND_ACKNOWLEDGE: "true"' in acknowledge_job
+    assert "CI_COMMAND_REPLY" not in actions_job
+    assert "workflow_run_url:" not in actions_job
+    assert "reply-command:" not in workflow
+    assert "CI_COMMAND_REPLY" not in workflow
+    assert "CI_COMMAND_WORKFLOW_RUN_URL" not in workflow
     assert "pull_request_target" not in workflow
     assert "github.event.pull_request.head" not in workflow
     assert "pip install" not in workflow

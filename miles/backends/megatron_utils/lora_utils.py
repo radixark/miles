@@ -110,11 +110,6 @@ _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 # ---------------------------------------------------------------------------
 
 
-def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
-    """LoRA + --colocate + --lora-base-cpu-backup all set."""
-    return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
-
-
 def sglang_lora_target_all_sentinel(args) -> bool:
     """Hand SGLang the ``"all"`` shorthand so it auto-detects module names (required for Inkling)."""
     from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
@@ -180,11 +175,6 @@ def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     return False
 
 
-def is_lora_weight_name(name: str) -> bool:
-    """Check if a weight name corresponds to a LoRA adapter weight."""
-    return ".lora_A." in name or ".lora_B." in name
-
-
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
@@ -216,8 +206,10 @@ def patch_param_grad_buffer_for_colocate_mode_lora() -> None:
     _original_init = _ParamAndGradBuffer.__init__
 
     def _patched_init(self, *args, **kwargs):
-        kwargs["disable_param_buffers_cpu_backup"] = True
-        kwargs["disable_grad_buffers_cpu_backup"] = True
+        # Megatron reads these flags from ddp_config (its first ctor argument).
+        ddp_config = kwargs.get("ddp_config", args[0] if args else None)
+        ddp_config.disable_param_buffers_cpu_backup = True
+        ddp_config.disable_grad_buffers_cpu_backup = True
         _original_init(self, *args, **kwargs)
 
     _ParamAndGradBuffer.__init__ = _patched_init
