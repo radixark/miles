@@ -85,7 +85,6 @@ class TrainerController:
 
         self._cells_by_id: dict[str, TrainerCell] = {}
         self._cpu_witness_operation_lock = asyncio.Lock()
-        self._train_attempt_active = False
 
     @property
     def pool_id(self) -> str:
@@ -179,15 +178,11 @@ class TrainerController:
         """Do one rollout training"""
 
         async with self._cpu_witness_operation_lock:
-            self._train_attempt_active = True
-            try:
-                return await self._train(
-                    rollout_id=rollout_id,
-                    rollout_data_pack=rollout_data_pack,
-                    external_data=external_data,
-                )
-            finally:
-                self._train_attempt_active = False
+            return await self._train(
+                rollout_id=rollout_id,
+                rollout_data_pack=rollout_data_pack,
+                external_data=external_data,
+            )
 
     async def _train(
         self,
@@ -203,7 +198,6 @@ class TrainerController:
         await asyncio.to_thread(event_analyzer.run_analysis_from_args, self.args)
 
         async def _fn(attempt: int) -> list[TrainStepOutput]:
-            cohort_id = uuid.uuid4().hex
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
                 attempt=attempt,
@@ -218,7 +212,6 @@ class TrainerController:
                     rollout_data_ref=rollout_data_pack.data_ref,
                     witness_info=witness_info,
                     attempt=attempt,
-                    cohort_id=cohort_id,
                     external_data=external_data,
                 ),
                 debug_name="execute_all_alive_and_catch#train",
@@ -242,21 +235,6 @@ class TrainerController:
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
-            if self._role == "actor":
-                replica_ids = self._successful_witness_replica_ids(worker_results)
-                if len(replica_ids) == len(snapshot_alive_cells):
-                    self._log_witness_cohort(
-                        rollout_id=rollout_id,
-                        cohort_id=cohort_id,
-                        replica_ids=replica_ids,
-                    )
-                else:
-                    logger.error(
-                        "CPU witness cohort is incomplete after successful training: expected %d replicas, got %d",
-                        len(snapshot_alive_cells),
-                        len(replica_ids),
-                    )
-
             return worker_results
 
         worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
@@ -268,9 +246,6 @@ class TrainerController:
     async def log_current_cpu_witness(self, rollout_id: int) -> TrainerWitnessCohortPayload:
         if self._role != "actor":
             raise RuntimeError("CPU witness snapshots are only supported for the actor trainer")
-        if self._train_attempt_active or self._cpu_witness_operation_lock.locked():
-            raise WorkerStillBusyError("trainer is busy with a training attempt")
-
         async with self._cpu_witness_operation_lock:
             cohort_id = uuid.uuid4().hex
             snapshot_alive_cells = [cell for cell in self._cells if cell.is_alive]
@@ -293,6 +268,13 @@ class TrainerController:
             if snapshot_alive_cells != [cell for cell in self._cells if cell.is_alive]:
                 raise WorkerStillBusyError("trainer cell cohort changed while collecting CPU witness snapshots")
             snapshots = [snapshot for cell_results in results for snapshot in cell_results if snapshot is not None]
+            expected_replica_ids = sorted(f"cell-{cell.cell_index}" for cell in snapshot_alive_cells)
+            actual_replica_ids = sorted(snapshot["replica_id"] for snapshot in snapshots)
+            if actual_replica_ids != expected_replica_ids:
+                raise RuntimeError(
+                    f"CPU witness snapshot replicas {sorted(actual_replica_ids)} do not match "
+                    f"alive replicas {sorted(expected_replica_ids)}"
+                )
             marker = self._log_witness_cohort(
                 rollout_id=rollout_id,
                 cohort_id=cohort_id,
@@ -300,9 +282,6 @@ class TrainerController:
             )
             assert marker is not None
             return {"snapshots": snapshots, "marker": marker}
-
-    async def is_cpu_witness_snapshot_busy(self) -> bool:
-        return self._train_attempt_active or self._cpu_witness_operation_lock.locked()
 
     def _log_witness_cohort(
         self,
@@ -318,18 +297,7 @@ class TrainerController:
             TrainerWitnessCohortEvent,
             {"rollout_id": rollout_id, "cohort_id": cohort_id, "replica_ids": replica_ids},
         )
-        event_logger.log_event(event, print_log=False)
         return event.model_dump(mode="json")
-
-    @staticmethod
-    def _successful_witness_replica_ids(worker_results: list[TrainStepOutput]) -> list[str]:
-        return sorted(
-            {
-                result.witness_replica_id
-                for result in worker_results
-                if result.outcome == TrainStepOutcome.NORMAL and result.witness_replica_id is not None
-            }
-        )
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:

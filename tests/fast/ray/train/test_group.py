@@ -29,29 +29,6 @@ pytestmark = pytest.mark.asyncio
 _DUMMY_DATA_PACK = RolloutDataPack(sample_indices=[0], data_ref=_MooncakeStoreObjectRef(payload="data"))
 
 
-async def test_witness_cohort_uses_only_successful_returned_replica_ids(tmp_path: Path) -> None:
-    """The cohort marker contains only canonical snapshots from the successful attempt."""
-    set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
-    controller = object.__new__(TrainerController)
-
-    controller._log_witness_cohort(
-        rollout_id=7,
-        cohort_id="attempt-2",
-        replica_ids=controller._successful_witness_replica_ids(
-            [
-                TrainStepOutput(outcome=TrainStepOutcome.NORMAL, witness_replica_id="cell-2"),
-                TrainStepOutput(outcome=TrainStepOutcome.NORMAL, witness_replica_id="cell-0"),
-                TrainStepOutput(outcome=TrainStepOutcome.DISCARDED_SHOULD_RETRY, witness_replica_id="cell-9"),
-                TrainStepOutput(outcome=TrainStepOutcome.NORMAL),
-            ]
-        ),
-    )
-
-    [event] = [event for event in read_events(tmp_path) if isinstance(event, TrainerWitnessCohortEvent)]
-    assert event.replica_ids == ["cell-0", "cell-2"]
-    assert event.cohort_id == "attempt-2"
-
-
 async def test_log_current_cpu_witness_collects_live_cell_snapshots(tmp_path: Path) -> None:
     """A live snapshot writes its cohort only after every cell returns."""
     set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
@@ -69,25 +46,45 @@ async def test_log_current_cpu_witness_collects_live_cell_snapshots(tmp_path: Pa
         ),
     }
     controller._cpu_witness_operation_lock = asyncio.Lock()
-    controller._train_attempt_active = False
 
     with patch.object(group_module.uuid, "uuid4", return_value=SimpleNamespace(hex="cohort-current")):
         cohort = await controller.log_current_cpu_witness(rollout_id=7)
 
     assert [snapshot["replica_id"] for snapshot in cohort["snapshots"]] == ["cell-0", "cell-1"]
     assert cohort["marker"]["cohort_id"] == "cohort-current"
-    [event] = [event for event in read_events(tmp_path) if isinstance(event, TrainerWitnessCohortEvent)]
-    assert event.replica_ids == ["cell-0", "cell-1"]
+    assert not list(tmp_path.glob("*.jsonl"))
 
 
-async def test_log_current_cpu_witness_rejects_active_training() -> None:
-    """A periodic snapshot never queues behind an active training attempt."""
+@pytest.mark.parametrize(
+    "returned_replicas",
+    [[{"replica_id": "cell-0"}, None], [{"replica_id": "cell-0"}, {"replica_id": "cell-0"}]],
+    ids=["missing", "duplicate"],
+)
+async def test_log_current_cpu_witness_requires_exact_alive_replicas(
+    tmp_path: Path,
+    returned_replicas: list[dict[str, str] | None],
+) -> None:
+    """A missing or duplicate cell representative cannot produce a completed cohort."""
+    set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
     controller = object.__new__(TrainerController)
+    controller._cells_by_id = {
+        "cell-a": SimpleNamespace(
+            cell_index=0,
+            is_alive=True,
+            execute=AsyncMock(return_value=[returned_replicas[0]]),
+        ),
+        "cell-b": SimpleNamespace(
+            cell_index=1,
+            is_alive=True,
+            execute=AsyncMock(return_value=[returned_replicas[1]]),
+        ),
+    }
     controller._cpu_witness_operation_lock = asyncio.Lock()
-    controller._train_attempt_active = True
 
-    with pytest.raises(group_module.WorkerStillBusyError):
+    with pytest.raises(RuntimeError, match="do not match alive replicas"):
         await controller.log_current_cpu_witness(rollout_id=7)
+
+    assert not [event for event in read_events(tmp_path) if isinstance(event, TrainerWitnessCohortEvent)]
 
 
 def _make_mock_args(

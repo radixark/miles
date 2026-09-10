@@ -21,11 +21,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
-from miles.utils.audit_utils.event_logger.logger import (
-    event_logger_context,
-    get_event_logger,
-    is_event_logger_initialized,
-)
+from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
 from miles.utils.audit_utils.event_logger.models import TrainerCpuWitnessEvent
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.cpu import preserve_cpu_witness, snapshot_cpu_witness
@@ -65,7 +61,7 @@ from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
-from .initialize import RandomState, init, is_first_replica_megatron_main_rank
+from .initialize import RandomState, init, is_first_replica_megatron_main_rank, is_local_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import (
     LoadCheckpointOutput,
@@ -526,7 +522,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @event_logger_context(
-        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, cohort_id=None, external_data=None: dict(
+        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, external_data=None: dict(
             rollout_id=rollout_id, attempt=attempt
         )
     )
@@ -536,7 +532,6 @@ class MegatronTrainRayActor(TrainRayActor):
         rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
         witness_info: WitnessInfo | None = None,
         attempt: int = 0,
-        cohort_id: str | None = None,
         external_data: TrainStepOutput | None = None,
     ) -> TrainStepOutput:
         self._heartbeat.bump()
@@ -564,7 +559,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     external_data=external_data,
                     witness_info=witness_info,
                     attempt=attempt,
-                    cohort_id=cohort_id,
                 )
 
             return result
@@ -621,7 +615,6 @@ class MegatronTrainRayActor(TrainRayActor):
         *,
         witness_info: WitnessInfo | None,
         attempt: int,
-        cohort_id: str | None,
     ) -> TrainStepOutput:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
@@ -769,29 +762,14 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
 
         self._heartbeat.bump()
-        witness_replica_id = None
-        if (
-            train_step_outcome == TrainStepOutcome.NORMAL
-            and not self.args.multi_lora
-            and is_first_replica_megatron_main_rank()
-        ):
-            witness_replica_id = f"cell-{self._cell_index}"
-            if is_event_logger_initialized():
-                assert cohort_id is not None
-                self._log_cpu_witness_snapshot(
-                    rollout_id=rollout_id,
-                    cohort_id=cohort_id,
-                    witness_replica_id=witness_replica_id,
-                    reason="train_end",
-                )
-        return TrainStepOutput(outcome=train_step_outcome, witness_replica_id=witness_replica_id)
+        return TrainStepOutput(outcome=train_step_outcome)
 
     def log_current_cpu_witness(self, rollout_id: int, cohort_id: str) -> dict[str, object] | None:
         if self.role != "actor":
             raise RuntimeError("CPU witness snapshots are only supported for the actor")
         if self.args.multi_lora:
             raise RuntimeError("CPU witness snapshots are not supported with multi-LoRA")
-        if not is_first_replica_megatron_main_rank():
+        if not is_local_replica_megatron_main_rank():
             return None
         witness_replica_id = f"cell-{self._cell_index}"
         event = self._log_cpu_witness_snapshot(
@@ -839,7 +817,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 "reason": reason,
             },
         )
-        event_logger.log_event(event, print_log=False)
         return event
 
     @with_logs

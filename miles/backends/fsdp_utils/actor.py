@@ -441,14 +441,12 @@ class FSDPTrainRayActor(TrainRayActor):
         rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
         witness_info: WitnessInfo | None = None,
         attempt: int = 0,
-        cohort_id: str | None = None,
         external_data: TrainStepOutput | None = None,
     ) -> TrainStepOutput:
         """Run one training update over a rollout batch (``rollout_data_ref`` is a Box handle to the
         Ray object ref with the rollout tensors; fetched and partitioned by data-parallel rank)."""
         assert witness_info is None
         assert attempt == 0
-        del cohort_id
         assert external_data is None, "the fsdp backend trains no critic, so it is never handed critic values"
 
         self._heartbeat.bump()

@@ -18,4 +18,3 @@ class TrainStepOutcome(StrEnum):
 class TrainStepOutput:
     outcome: TrainStepOutcome
     values: StoreObjectRef | None = None
-    witness_replica_id: str | None = None
