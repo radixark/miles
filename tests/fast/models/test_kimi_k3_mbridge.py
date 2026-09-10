@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles_plugins.mbridge.kimi_k3 import KimiK3Bridge
+pytest.importorskip("mbridge")
+from miles_plugins.mbridge.kimi_k3 import KimiK3Bridge  # noqa: E402
 
 
 @pytest.mark.parametrize("name", ("q_conv1d.weight", "k_conv1d.weight", "v_conv1d.weight", "A_log", "dt_bias"))
