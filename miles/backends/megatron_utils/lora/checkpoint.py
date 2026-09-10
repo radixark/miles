@@ -78,10 +78,8 @@ def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
         optimizer.reload_model_params()
         if load_optimizer:
             _load_optimizer_slot_state(optimizer, slot, shards["optim"])
-        # weights-only load keeps the fresh Adam state the slot init just zeroed
 
-    # every rank reads and validates its shards before any rank touches the live slot,
-    # so a missing or mismatched checkpoint cannot leave mixed or rank-divergent state
+    # every rank validates its shards before any rank touches the live slot
     run_checkpoint_phase(read_shards)
     run_checkpoint_phase(apply_shards)
 
@@ -113,15 +111,13 @@ def _check_optimizer_slot_state(optimizer: MegatronOptimizer, slot: int, saved: 
         f"resume requires the same topology (got {_world_size()})"
     )
     children = _slot_children(optimizer, slot)
-    assert len(children) == len(saved["children"]), "optimizer layout changed since save"
+    assert len(children) == len(saved["children"])
     for child, child_state in zip(children, saved["children"], strict=True):
-        assert len(child_state["group_steps"]) == len(
-            child.optimizer.param_groups
-        ), "optimizer layout changed since save"
+        assert len(child_state["group_steps"]) == len(child.optimizer.param_groups)
         params = child.get_parameters()
-        assert len(child_state["params"]) == len(params), "optimizer layout changed since save"
+        assert len(child_state["params"]) == len(params)
         masters = child_state.get("masters")
-        assert masters is None or len(masters) == len(params), "optimizer layout changed since save"
+        assert masters is None or len(masters) == len(params)
 
 
 def _load_optimizer_slot_state(optimizer: MegatronOptimizer, slot: int, saved: dict) -> None:
