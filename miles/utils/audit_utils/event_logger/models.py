@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal, TypedDict
 
-from pydantic import Discriminator, Field
+from pydantic import Discriminator
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
