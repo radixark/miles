@@ -9,12 +9,19 @@ try:
     old_init = deep_ep.Buffer.__init__
 
     def new_init(self, *args, **kwargs):
-        if torch_memory_saver._impl is not None:
-            torch_memory_saver._impl._binary_wrapper.cdll.tms_set_interesting_region(False)
-        old_init(self, *args, **kwargs)
-        torch.cuda.synchronize()
-        if torch_memory_saver._impl is not None:
-            torch_memory_saver._impl._binary_wrapper.cdll.tms_set_interesting_region(True)
+        # Keep DeepEP's buffers out of the memory saver's region for the duration of __init__, then put the flag
+        # back to whatever it was. Restoring True unconditionally clobbered a caller that had the region off (#807).
+        # torch_memory_saver.disable() is not usable here: it asserts the region is on when entered.
+        cdll = torch_memory_saver._impl._binary_wrapper.cdll if torch_memory_saver._impl is not None else None
+        was_interesting = cdll.tms_get_interesting_region() if cdll is not None else None
+        if cdll is not None:
+            cdll.tms_set_interesting_region(False)
+        try:
+            old_init(self, *args, **kwargs)
+            torch.cuda.synchronize()
+        finally:
+            if cdll is not None:
+                cdll.tms_set_interesting_region(was_interesting)
 
     deep_ep.Buffer.__init__ = new_init
 except ImportError:
