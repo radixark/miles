@@ -12,7 +12,7 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 
-from miles.tinker.core.future import PENDING, Future, FutureStore
+from miles.tinker.core.future import Future, FutureStore
 from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
 from miles.tinker.core.stream import ModelStream
 from miles.tinker.core.types import (
@@ -375,16 +375,19 @@ class TinkerService:
             if not lease_expired(record.tenant):
                 continue
             logger.warning(f"lease expired for {model_id}; freeing slot {record.slot}")
-            stream = self.planner.stream(model_id)
-            self.planner.remove_stream(model_id)
-            del self.models[model_id]
-            for request_id in stream.request_id_by_seq.values():
-                future = self.futures.get(request_id, record.tenant)
-                if future is not None and future.state == PENDING:
-                    self.futures.fail(request_id, "lease expired", "user")
             async with self._backend_lock:
-                await self.backend.unload_slot(record.slot)
-            self.free_slots.add(record.slot)
+                await self._evict_model(model_id, "lease expired", "user")
+
+    async def _evict_model(self, model_id: str, error: str, category: str) -> None:
+        """Free a model's slot and fail its pending requests; requires the backend lock."""
+        record = self.models.pop(model_id)
+        stream = self.planner.stream(model_id)
+        self.planner.remove_stream(model_id)
+        for request_id in stream.request_id_by_seq.values():
+            if self.futures.get(request_id, record.tenant) is not None:
+                self.futures.fail(request_id, error, category)
+        await self.backend.unload_slot(record.slot)
+        self.free_slots.add(record.slot)
 
     # -------- dispatch loop --------
 
@@ -392,16 +395,18 @@ class TinkerService:
         sweep_task = asyncio.create_task(self.sweep_leases())
         try:
             while True:
-                unit = self.planner.next_to_run()
-                if unit is None:
-                    await self._wake.wait()
-                    self._wake.clear()
-                    continue
+                # unit selection shares the critical section with execution, so
+                # lease expiry cannot reclaim a stream between the two
                 async with self._backend_lock:
-                    if isinstance(unit, BatchUnit):
-                        await self._run_batch(unit)
-                    else:
-                        await self._run_barrier(unit)
+                    unit = self.planner.next_to_run()
+                    if unit is not None:
+                        if isinstance(unit, BatchUnit):
+                            await self._run_batch(unit)
+                        else:
+                            await self._run_barrier(unit)
+                        continue
+                await self._wake.wait()
+                self._wake.clear()
         finally:
             sweep_task.cancel()
             with suppress(asyncio.CancelledError):
