@@ -490,7 +490,7 @@ class TinkerService:
     async def _step_optimizers(self, entries: list) -> None:
         """Merged optim barriers settle per slot: one slot's failure must not
         mask another slot's completed step."""
-        entries = [entry for entry in entries if not self._fail_if_poisoned(*entry)]
+        entries = [entry for entry in entries if not await self._fail_if_poisoned(*entry)]
         if not entries:
             return
         outcomes = await self.backend.optim_step(
@@ -512,12 +512,14 @@ class TinkerService:
                 self.futures.resolve(pending.command.request_id, {"op": "optim_step", "metrics": metrics})
                 stream.finish(pending)
 
-    def _fail_if_poisoned(self, stream, pending) -> bool:
+    async def _fail_if_poisoned(self, stream, pending) -> bool:
         """Fail the next optimizer step when a batch discarded its accumulated gradients."""
         poison = self._poisoned_slots.pop(stream.slot, None)
         if poison is None:
             return False
         error, category = poison
+        # retried forward/backwards may have accumulated fresh gradients since the discard
+        await self.backend.zero_grads(stream.slot)
         self.futures.fail(
             pending.command.request_id,
             f"the gradient accumulation was discarded after a failed batch ({error}); resubmit the forward/backward requests and optimizer step",
