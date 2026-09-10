@@ -41,6 +41,7 @@ class TestEventModelsDiscriminatedUnion:
                     count=1,
                 )
             ],
+            skipped_nonfinite_sample_counts=[],
             reason="train_end",
         )
 

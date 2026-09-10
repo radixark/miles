@@ -180,7 +180,7 @@ class TrainerCpuWitnessEvent(EventBase):
     rollout_id: int
     cohort_id: str
     sample_counts: list[TrainingSampleCount]
-    skipped_nonfinite_sample_counts: list[TrainingSampleCount] = Field(default_factory=list)
+    skipped_nonfinite_sample_counts: list[TrainingSampleCount]
     reason: Literal["train_end", "current", "save", "transfer", "load"]
 
 

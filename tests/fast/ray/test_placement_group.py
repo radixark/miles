@@ -540,6 +540,18 @@ class TestCreateTrainingModels:
 
         rollout_executor.load.assert_awaited_once_with(-1, require_complete=False)
 
+    async def test_a_restored_trainer_requires_the_matching_complete_rollout_checkpoint(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A positive next rollout id proves the trainer restored the preceding checkpoint."""
+        [handle] = self._patched(monkeypatch, [], initialized=False)
+        handle.init.return_value = [6]
+        rollout_executor = self._rollout_executor()
+
+        await create_training_models(self._args(tmp_path), rollout_executor)
+
+        rollout_executor.load.assert_awaited_once_with(5, require_complete=True)
+
     async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
         """A second handle would identify one connection and drive another, so the check would guard nothing."""
         handles = self._patched(monkeypatch, [])

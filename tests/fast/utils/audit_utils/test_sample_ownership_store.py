@@ -26,6 +26,7 @@ def _payload(cohort_id: str) -> dict:
         rollout_id=1,
         cohort_id=cohort_id,
         sample_counts=[],
+        skipped_nonfinite_sample_counts=[],
         reason="current",
     )
     marker = TrainerWitnessCohortEvent(
