@@ -57,12 +57,8 @@ class EngineWeightUpdateSession:
         if exc_type is None:
             assert self._committed, "the session scope exited without commit()"
             return
-        if self._staged and dist.get_rank() == 0:
-            try:
-                end_weight_update(self._protocol.rollout_engines, abort=True)
-            except Exception:
-                # the abort usually shares the failure's root cause; it must not mask it
-                logger.exception("Failed to discard the staged adapter session")
+        if self._staged:
+            self._discard_open()
 
     def _discard_open(self) -> None:
         """Best-effort rollback of _open's engine state: abort a staged session
