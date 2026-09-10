@@ -3,8 +3,25 @@
 This PR adds example tools only, on top of #2846 at
 `17b7ee73d684d9860fd6ec2b9103b7753ba9d735`. It does not change Miles runtime,
 `serve_tinker.py`, the original multi-LoRA example, or CI/unit-test files.
-The scripts are submitted for review **before running the N-user experiment**.
-The standalone GPU probe and N-user E2E are not yet validated on hardware.
+The scripts were submitted for review before the N-user experiment. After review,
+the standalone GPU probe passed on the topology below; the N-user E2E is running
+and has not passed yet.
+
+## Hardware validation so far
+
+On 2026-09-10, Miles `f7b7961ee87bac2aaf7b630072d80c190aeae940` with SGLang
+`c27edd9949f079c07ab66091219865af454b5cad` completed the standalone probe on
+four H200 nodes (32 GPUs), Qwen3-30B-A3B, rank 16 and 8192 tokens:
+
+- All 16 trainer ranks completed warmup and measured forward/backward plus Adam.
+- The precision/optimizer-ownership formula and measured slot storage both give
+  **121 trainer slots**, taking the worst rank and a 2 GiB memory margin.
+- Each slot occupies 982,056,960 bytes per trainer rank. This is a trainer
+  capacity estimate, **not a separately measured rollout GPU limit**.
+- The engine host budget was omitted. Each of the eight rollout engines is
+  configured with 121 GPU LoRA buffers; that setting is not an inference maximum.
+- The 121-user, three-step DAPO SDK trial is in progress. No passing E2E count
+  or OOM boundary is established yet.
 
 ## Scripts to review
 
