@@ -1,71 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
-import pytest
-
-import miles.utils.workers.worker_provider.ray as ray_worker_provider_mod
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
-from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_spec import HostAndPort
-
-
-class _FakeRemoteMethod:
-    def __init__(self) -> None:
-        self.suspended_cell_ids: list[str] = []
-
-    async def remote(self, *, cell_id: str) -> None:
-        self.suspended_cell_ids.append(cell_id)
 
 
 @dataclass
-class _FakeInferenceControllerActor:
-    stop_cell_between_weight_updates: _FakeRemoteMethod
+class _RecordingRemoteMethod:
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = field(default_factory=list)
 
-
-@dataclass
-class _FakeGetWorkerInfosMethod:
-    controller_info: WorkerInfo
-
-    def remote(self, cell_id: str) -> list[WorkerInfo]:
-        return [self.controller_info]
-
-
-@dataclass
-class _FakeGetActorHandleMethod:
-    controller: _FakeInferenceControllerActor
-
-    def remote(self, worker_name: str, *, expected_generation: int) -> _FakeInferenceControllerActor:
-        return self.controller
+    async def remote(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((args, kwargs))
 
 
 @dataclass
 class _FakeWorkerManagerHandle:
-    get_worker_infos: _FakeGetWorkerInfosMethod
-    get_actor_handle: _FakeGetActorHandleMethod
+    stop_cells: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
 
 
 class TestRayBackendCapabilityCellOperations:
-    async def test_suspend_reaches_the_inference_controller_served_by_the_worker_manager(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Suspending through a capability reaches its registered inference controller."""
-        controller = _FakeInferenceControllerActor(stop_cell_between_weight_updates=_FakeRemoteMethod())
-        controller_info = WorkerInfo(
-            name="inference-controller-00000-00000",
-            generation=3,
-            self_addrs={"primary": HostAndPort(host="10.0.0.7", port=15000)},
-            gpu_ids=[],
-            worker_class=None,
-        )
-        worker_manager = _FakeWorkerManagerHandle(
-            get_worker_infos=_FakeGetWorkerInfosMethod(controller_info=controller_info),
-            get_actor_handle=_FakeGetActorHandleMethod(controller=controller),
-        )
-        monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda value: value)
+    async def test_suspend_reaches_the_worker_manager_directly(self) -> None:
+        """Nothing may route a suspend through the inference controller, whose lock a weight update holds."""
+        worker_manager = _FakeWorkerManagerHandle()
         capability = RayBackendCapability(worker_manager_handle=worker_manager)
 
-        operations = capability.cell_operations()
-        await operations.suspend(cell_id="cell-2")
+        await capability.cell_operations().suspend(cell_id="cell-2")
 
-        assert controller.stop_cell_between_weight_updates.suspended_cell_ids == ["cell-2"]
+        assert worker_manager.stop_cells.calls == [((["cell-2"],), {})]

@@ -46,6 +46,7 @@ class CellInfo(FrozenStrictBaseModel):
     cell_type: str
     state: ObservedCellState
     alive: bool
+    workers_hash: str | None = None
 
 
 class ObservationsEvent(BaseEvent):
@@ -79,6 +80,7 @@ class EventLog:
                         cell_type=cell_type_of(cell),
                         state=compute_observed_cell_state(cell),
                         alive=cell_is_alive(cell),
+                        workers_hash=cell["status"].get("workers_hash"),
                     )
                     for cell in cells
                 }

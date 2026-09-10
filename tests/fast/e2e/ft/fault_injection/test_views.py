@@ -60,7 +60,7 @@ def test_a_serve_that_predates_the_last_injection_does_not_discharge_it() -> Non
 
 
 def test_only_the_last_injection_of_a_cell_needs_a_serve_after_it() -> None:
-    """Injections are serialized by the quiescence gate, so one final fresh serve settles the whole cell."""
+    """A fresh serve after the last injection settles the cell."""
     log = log_of([SERVING, PENDING, SERVING, SERVING], inject_before={1: 1, 3: 1})
 
     assert views.compute_num_injections(log.events, cell_type="rollout") == 2

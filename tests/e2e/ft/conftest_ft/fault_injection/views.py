@@ -164,3 +164,20 @@ def _compute_distinct_states(events: list[_CellEvent]) -> list[ObservedCellState
         if event.kind == "observed" and event.state is not None and (not states or states[-1] != event.state):
             states.append(event.state)
     return states
+
+
+def compute_unrecovered_injected_cells(events: list[Event], *, cell_type: str) -> set[str]:
+    observed: dict[str, str | None] = {}
+    injured: dict[str, str | None] = {}
+    for event in events:
+        if isinstance(event, InjectionEvent):
+            if event.harmed and event.cell_name in observed:
+                injured[event.cell_name] = observed[event.cell_name]
+            continue
+        for name, info in event.cell_infos.items():
+            if info.cell_type != cell_type:
+                continue
+            observed[name] = info.workers_hash
+            if name in injured and info.alive and info.workers_hash is not None and info.workers_hash != injured[name]:
+                del injured[name]
+    return set(injured)

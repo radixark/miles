@@ -16,7 +16,6 @@ from tests.e2e.ft.conftest_ft.execution import (
     get_ft_args,
     get_train_env_vars_arg,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.core import QUIESCENT_POLLS_REQUIRED
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
     FaultInjectorHandle,
@@ -31,13 +30,11 @@ from miles.utils.external_utils import command_utils
 from miles.utils.misc import MutableBox
 from miles.utils.test_utils.comparisons.metrics import read_rollout_completion_times
 from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections
-from miles.utils.workers.types import ClusterBackend
 
 TEST_NAME: str = "rollout_deterministic"
 NUM_ROLLOUTS: int = 8
 SEED: int = 42
 CRASH_INTERVAL_SECONDS: float = 30.0
-RAY_QUIESCENT_POLLS_REQUIRED: int = 1
 POLL_INTERVAL_SECONDS: float = 0.2
 HEALTH_CHECK_INTERVAL_SECONDS: float = 1.0
 MIN_TRAINED_ROLLOUTS: int = 2
@@ -97,7 +94,6 @@ def _inject_rollout_faults(
             cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
             injection_enabled=lambda: _rollout_fault_injection_enabled(dump_dir),
             poll_interval_seconds=POLL_INTERVAL_SECONDS,
-            quiescent_polls_required=_compute_quiescent_polls_required(config),
         )
 
     arming = threading.Thread(target=arm_on_generation_start, daemon=True, name="ft-rollout-injector-arm")
@@ -120,12 +116,6 @@ def _inject_rollout_faults(
     )
     assert_rollout_cells_served_after_injection(injector)
     _assert_injections_spread_over_rollouts(injector, dump_dir=dump_dir)
-
-
-def _compute_quiescent_polls_required(config: command_utils.ExecuteTrainConfig) -> int:
-    if config.cluster_backend is ClusterBackend.RAY:
-        return RAY_QUIESCENT_POLLS_REQUIRED
-    return QUIESCENT_POLLS_REQUIRED
 
 
 def _wait_for_first_rollout(dump_dir: str) -> bool:
