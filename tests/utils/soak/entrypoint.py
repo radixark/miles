@@ -3,11 +3,12 @@
 import asyncio
 import random
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
-from tests.utils.soak.config import SoakPolicy
+from tests.utils.soak.config import SoakPolicy, SoakTailPolicy, SoakTimeouts
 from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler, list_cells, run_fault_injection_loop
 from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
 from tests.utils.soak.observer import SoakObserver
@@ -41,8 +42,13 @@ class FaultInjectorHandle:
         observer: SoakObserver | None = None,
         evidence_path: Path | None = None,
         policy: SoakPolicy | None = None,
+        training_events_dir: Path | None = None,
+        tail_policy: SoakTailPolicy | None = None,
+        timeouts: SoakTimeouts | None = None,
     ) -> None:
         self.event_log = event_log if event_log is not None else EventLog()
+        self.evidence_path = evidence_path
+        self.timeouts = timeouts if timeouts is not None else SoakTimeouts()
         if evidence_path is not None:
             self.event_log.persist_to(evidence_path)
         self.cell_fault_forms = cell_fault_forms
@@ -85,6 +91,9 @@ class FaultInjectorHandle:
                 forms={kind: cell_fault_forms[kind] for kind in self._cell_types},
                 event_log=self.event_log,
                 poll_interval_seconds=poll_interval_seconds,
+                training_events_dir=training_events_dir,
+                tail_policy=tail_policy,
+                timeouts=self.timeouts,
             )
             if get_virtual_cells is None
             else None
@@ -114,17 +123,47 @@ class FaultInjectorHandle:
     def raise_if_failed(self) -> None:
         self._worker.join(timeout_seconds=0)
 
-    def stop_and_join(self) -> None:
-        self._worker.stop_and_join(timeout_seconds=STOP_AND_JOIN_TIMEOUT_SECONDS)
-        self._worker.assert_not_running(
-            message=(
-                f"The fault injector was still mid-injection {STOP_AND_JOIN_TIMEOUT_SECONDS}s after being asked to "
-                f"stop: it may still crash a cell nothing will heal, and reading its log would race it"
+    async def wait_for_training(self, training: Coroutine[Any, Any, int]) -> int:
+        async with asyncio.timeout(self.timeouts.run_seconds):
+            async with asyncio.TaskGroup() as tasks:
+                launched = tasks.create_task(training)
+                monitoring = tasks.create_task(self._monitor_failure())
+                try:
+                    result = await launched
+                    self.raise_if_failed()
+                finally:
+                    monitoring.cancel()
+        return result
+
+    def stop_injecting(self) -> None:
+        self.event_log.close_admission()
+
+    def stop_and_join(self, *, teardown: Callable[[], None] | None = None) -> None:
+        self.stop_injecting()
+        try:
+            self._worker.stop_and_join(timeout_seconds=STOP_AND_JOIN_TIMEOUT_SECONDS)
+        finally:
+            self._worker.assert_not_running(
+                message=(
+                    f"The fault injector was still mid-injection {STOP_AND_JOIN_TIMEOUT_SECONDS}s after being asked to "
+                    f"stop: it may still crash a cell nothing will heal, and reading its log would race it"
+                )
             )
-        )
-        if self._runner is None:
-            self._observe_final_snapshot()
-        self.event_log.finish()
+            try:
+                self._worker.join(timeout_seconds=0)
+                if self._runner is None:
+                    self._observe_final_snapshot()
+            finally:
+                try:
+                    if teardown is not None:
+                        teardown()
+                finally:
+                    self.event_log.finish()
+
+    async def _monitor_failure(self) -> None:
+        while True:
+            self.raise_if_failed()
+            await asyncio.sleep(0.05)
 
     async def _run_async(self, stop_event: threading.Event) -> None:
         assert self._runner is not None
@@ -160,9 +199,14 @@ def spawn_fault_injector(
     evidence_path: Path | None = None,
     sources: dict[str, Path] | None = None,
     policy: SoakPolicy | None = None,
+    tail_policy: SoakTailPolicy | None = None,
+    timeouts: SoakTimeouts | None = None,
 ) -> FaultInjectorHandle:
     use_kubernetes = config is not None and config.cluster_backend is ClusterBackend.KUBERNETES
     handle = FaultInjectorHandle(
+        timeouts=timeouts,
+        tail_policy=tail_policy,
+        training_events_dir=(sources or {}).get("training_events"),
         event_log=event_log,
         observer=observer,
         evidence_path=evidence_path,
@@ -188,6 +232,8 @@ def spawn_fault_injector(
             details={
                 "base_url": base_url,
                 "seed": seed,
+                "tail_policy": tail_policy.model_dump(mode="json") if tail_policy is not None else None,
+                "timeouts": handle.timeouts.model_dump(mode="json"),
                 "mean_intervals": mean_interval_seconds_of_cell_type,
                 "forms": {kind: [form.name for form in forms] for kind, forms in cell_fault_forms.items()},
                 "config": asdict(config) if config is not None else None,

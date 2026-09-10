@@ -1,10 +1,49 @@
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from tests.fast.utils.soak.utils import RUNNING_NOT_SERVING, SERVING, cell, staged
 from tests.utils.soak import state
 from tests.utils.soak.utils import evidence_directory
+
+
+def test_closing_admission_races_with_requests_but_preserves_observation_and_results(tmp_path: Path) -> None:
+    """Closure atomically rejects later requests while accepted actions and observations can finish."""
+    log = state.EventLog()
+    path = tmp_path / "events.jsonl"
+    log.persist_to(path)
+    request = state.SoakActionRequest(target=cell("c", healthy=True), form_name="sigkill", harms_cell=True)
+    barrier = threading.Barrier(2, timeout=5)
+
+    def request_action() -> bool:
+        barrier.wait()
+        return log.note_action_requested(request)
+
+    def close() -> None:
+        barrier.wait()
+        log.close_admission()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        requested = pool.submit(request_action)
+        closed = pool.submit(close)
+        accepted = requested.result(timeout=10)
+        closed.result(timeout=10)
+
+    log.close_admission()
+    assert not log.note_action_requested(request)
+    if accepted:
+        log.note_action_result(state.SoakActionResultEvent(request_id=request.request_id, returned=False))
+    log.note_observation(state.SoakObservation(cells=[]))
+    log.finish()
+
+    events = state.read_events(path)
+    closure = next(index for index, event in enumerate(events) if isinstance(event, state.SoakAdmissionClosedEvent))
+    assert sum(isinstance(event, state.SoakAdmissionClosedEvent) for event in events) == 1
+    assert sum(isinstance(event, state.SoakActionRequestedEvent) for event in events) == int(accepted)
+    assert not any(isinstance(event, state.SoakActionRequestedEvent) for event in events[closure:])
+    assert isinstance(events[-2], state.SoakObservation)
 
 
 def test_cell_is_alive_true_only_when_healthy_condition_is_true() -> None:

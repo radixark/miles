@@ -7,14 +7,17 @@ from pathlib import Path
 from uuid import uuid4
 
 from tests.fast.cluster_backends import create_backend_for_run
-from tests.utils.soak.config import SoakPolicy, create_policy
+from tests.utils.soak.checks.tail import assert_tail_complete
+from tests.utils.soak.config import SoakPolicy, create_policy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.state import EventLog
+from tests.utils.soak.teardown import teardown_run
 from tests.utils.soak.utils import (
     DATA_DIR,
     MODEL_DIR,
+    create_soak_config,
     evidence_directory,
     get_api_server_args,
     get_fully_async_args,
@@ -88,6 +91,8 @@ def run_realistic_gsm8k(
     injection_enabled: Callable[[], bool] | None = None,
     policy: SoakPolicy | None = None,
 ) -> Gsm8kOutcome:
+    config = create_soak_config(config)
+    tail_policy = create_tail_policy(num_rollout=num_rollout)
     U = create_backend_for_run(config)
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
     print(f"Test: {test_name}, train script: {get_train_script(fully_async=fully_async)}")
@@ -123,6 +128,7 @@ def run_realistic_gsm8k(
         launch=partial(launch_gsm8k, train_args=train_args, fully_async=fully_async),
     )
     injector = spawn_fault_injector(
+        tail_policy=tail_policy,
         policy=(
             policy
             if policy is not None
@@ -152,12 +158,17 @@ def run_realistic_gsm8k(
 
     try:
         if execute_session is None:
-            run.launch(config)
+            from tests.utils.soak.recipes.gsm8k_launcher import execute_session as execute_gsm8k_session
+
+            execute_gsm8k_session(run=run, injector=injector, fully_async=fully_async)
         else:
             execute_session(run, injector)
     finally:
-        injector.stop_and_join()
+        injector.stop_and_join(
+            teardown=partial(teardown_run, config=config, event_log=run.event_log, evidence_dir=run.evidence_dir)
+        )
 
+    assert_tail_complete(injector.event_log.events)
     return Gsm8kOutcome(run=run, injector=injector)
 
 

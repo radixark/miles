@@ -63,9 +63,13 @@ class RayCommandBackend(BaseCommandBackend):
 
         if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
             model_args = shell_safe_model_args(request.megatron_model_type)
+            submission_args = (
+                f"--submission-id={shlex.quote(config.ray_submission_id)} " if config.ray_submission_id else ""
+            )
             self.exec_command_cpu(
                 f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
                 f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
+                f"{submission_args}"
                 f"--runtime-env-json={shlex.quote(runtime_env_json)} "
                 f"-- python3 {request.train_script} "
                 f"{model_args} "

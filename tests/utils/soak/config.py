@@ -25,6 +25,24 @@ class SoakPolicy(FrozenStrictBaseModel):
     cell_policies: dict[str, SoakCellPolicy] = Field(default_factory=dict)
 
 
+class SoakTimeouts(FrozenStrictBaseModel):
+    run_seconds: float = Field(default=21600.0, gt=0, allow_inf_nan=False)
+    tail_seconds: float = Field(default=3600.0, gt=0, allow_inf_nan=False)
+    observation_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+    final_observation_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+
+
+class SoakTailPolicy(FrozenStrictBaseModel):
+    close_after_rollout_id: int = Field(ge=0)
+    trainer_id: str = "actor"
+
+
+def create_tail_policy(*, num_rollout: int) -> SoakTailPolicy:
+    if num_rollout < 4:
+        raise ValueError("A soak needs at least four rollouts to reserve a recovery tail")
+    return SoakTailPolicy(close_after_rollout_id=num_rollout - max(3, num_rollout // 5) - 1)
+
+
 def create_policy(
     *,
     expected_cells: dict[str, int],

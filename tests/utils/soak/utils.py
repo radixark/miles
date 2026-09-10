@@ -1,4 +1,5 @@
 import os
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,6 +11,12 @@ from miles.utils.workers.types import ClusterBackend
 
 MODEL_DIR: str = get_test_model_dir()
 DATA_DIR: str = get_test_data_dir()
+
+
+def create_soak_config(config: command_utils.ExecuteTrainConfig) -> command_utils.ExecuteTrainConfig:
+    if config.cluster_backend is not ClusterBackend.RAY:
+        return config
+    return replace(config, ray_submission_id=f"miles-soak-{uuid4().hex}")
 
 
 def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) -> str:

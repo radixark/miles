@@ -55,6 +55,7 @@ class CommandUtilConfig:
 # This class can be extended by concrete scripts
 @dataclass
 class ExecuteTrainConfig(CommandUtilConfig):
+    ray_submission_id: str | None = None
     cuda_core_dump: bool = False
     num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""

@@ -7,10 +7,12 @@ import signal
 import subprocess
 from contextlib import ExitStack
 from pathlib import Path
+from typing import TypeVar
 
 from tests.utils.soak.state import SoakActionRequest
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class SoakActionForm(abc.ABC):
@@ -37,13 +39,26 @@ async def run_command(
             output = resources.enter_context(output_path.open("xb"))
         else:
             output = asyncio.subprocess.PIPE
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
-            stdout=output,
-            stderr=asyncio.subprocess.STDOUT if output_path is not None else asyncio.subprocess.PIPE,
-            start_new_session=True,
+        spawning = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
+                stdout=output,
+                stderr=asyncio.subprocess.STDOUT if output_path is not None else asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
         )
+        try:
+            process = await asyncio.shield(spawning)
+        except asyncio.CancelledError:
+            try:
+                process = await _wait_for_cleanup(spawning)
+            except TimeoutError:
+                spawning.add_done_callback(_idempotent_close_late_spawn)
+                spawning.cancel()
+                raise
+            await _idempotent_kill_and_reap(process=process, communication=asyncio.create_task(process.communicate()))
+            raise
         communication = asyncio.create_task(
             process.communicate(stdin_data.encode()) if stdin_data is not None else process.communicate()
         )
@@ -73,9 +88,42 @@ async def _idempotent_kill_and_reap(
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    while not communication.done():
+    try:
+        await _wait_for_cleanup(communication)
+    except TimeoutError:
+        communication.cancel()
+        process._transport.close()
         try:
-            await asyncio.shield(communication)
+            await _wait_for_cleanup(communication)
+        except asyncio.CancelledError:
+            pass
+        await _wait_for_cleanup(asyncio.create_task(process.wait()))
+        raise
+
+
+async def _wait_for_cleanup(task: asyncio.Task[_T]) -> _T:
+    deadline = asyncio.get_running_loop().time() + 10.0
+    while not task.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError("Subprocess cleanup exceeded 10 seconds")
+        try:
+            await asyncio.wait({task}, timeout=remaining)
         except asyncio.CancelledError:
             continue
-    communication.result()
+    return task.result()
+
+
+def _idempotent_close_late_spawn(task: asyncio.Task[asyncio.subprocess.Process]) -> None:
+    if task.cancelled():
+        return
+    try:
+        process = task.result()
+    except Exception:
+        logger.warning("Cancelled subprocess creation failed", exc_info=True)
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process._transport.close()

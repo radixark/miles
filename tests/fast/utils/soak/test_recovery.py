@@ -6,7 +6,7 @@ from tests.utils.soak.recovery import compute_recovery_episodes
 from tests.utils.soak.state import SoakActionAppliedEvent, SoakActionRequest, SoakActionRequestedEvent, SoakObservation
 
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
-from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
 
 @pytest.mark.parametrize("observe_after_receipt", [False, True])
@@ -66,7 +66,7 @@ def test_trainer_recovery_requires_the_same_new_incarnation_in_a_causal_reconfig
     offset = {"early": -1, "late": 11}.get(evidence, 3)
     reconfigure = CellReconfigureEvent(
         timestamp=start + timedelta(seconds=offset),
-        source=SimpleProcessIdentity(component="trainer"),
+        source=TrainerControllerProcessIdentity(trainer_id="actor"),
         rollout_id=1,
         quorum_id=1,
         src_cell_index=1,

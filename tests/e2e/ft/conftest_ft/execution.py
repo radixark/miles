@@ -9,6 +9,7 @@ from pathlib import Path
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
 from tests.fast.cluster_backends import create_backend_for_run
+from tests.utils.soak.entrypoint import FaultInjectorHandle
 from tests.utils.soak.utils import DATA_DIR, DEFAULT_TRAIN_SCRIPT, MODEL_DIR
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
@@ -202,8 +203,10 @@ def run_training(
     extra_env_vars: dict[str, str] | None = None,
     config: command_utils.ExecuteTrainConfig | None = None,
     train_script: str = DEFAULT_TRAIN_SCRIPT,
+    injector: FaultInjectorHandle | None = None,
 ) -> None:
-    U = _resolve_config(config).create_backend()
+    config = _resolve_config(config)
+    U = config.create_backend()
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
     merged_env_vars = {
@@ -223,6 +226,22 @@ def run_training(
         "SGLANG_LOG_MS": "1",
         **(extra_env_vars or {}),
     }
+    if injector is not None:
+        from tests.e2e.ft.conftest_ft.training_launcher import TrainingLaunchSpec, execute_session
+
+        assert injector.evidence_path is not None, "Monitored training requires a persistent evidence directory"
+        execute_session(
+            spec=TrainingLaunchSpec(
+                config=config,
+                mode=mode,
+                train_args=train_args,
+                extra_env_vars=merged_env_vars,
+                train_script=train_script,
+            ),
+            injector=injector,
+            log_path=injector.evidence_path.parent / "launcher-initial.log",
+        )
+        return
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=mode.total_node_gpus,

@@ -2,6 +2,7 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 
+from functools import partial
 from pathlib import Path
 
 import typer
@@ -26,10 +27,18 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.utils.soak.checks.ft import assert_healing
-from tests.utils.soak.config import create_policy
+from tests.utils.soak.checks.tail import assert_tail_complete
+from tests.utils.soak.config import create_policy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, spawn_fault_injector
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
-from tests.utils.soak.utils import evidence_directory, get_api_server_args, get_fully_async_args, get_train_script
+from tests.utils.soak.teardown import teardown_run
+from tests.utils.soak.utils import (
+    create_soak_config,
+    evidence_directory,
+    get_api_server_args,
+    get_fully_async_args,
+    get_train_script,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -66,10 +75,11 @@ def run_ci(
     manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
     """
     ft_mode: FTTestMode = resolve_mode(mode)
+    tail_policy = create_tail_policy(num_rollout=num_steps)
     if fully_async:
         assert_mode_supports_fully_async(ft_mode, mode=mode)
 
-    config = command_utils.default_config()
+    config = create_soak_config(command_utils.default_config())
     test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
@@ -96,7 +106,9 @@ def run_ci(
     )
 
     base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
+    evidence_dir = evidence_directory(Path(dump_dir))
     injector = spawn_fault_injector(
+        tail_policy=tail_policy,
         policy=create_policy(
             expected_cells={
                 kind: count
@@ -107,7 +119,7 @@ def run_ci(
             min_survivors=min_survivors,
             max_concurrent_actions=max_concurrent_actions,
         ),
-        evidence_path=evidence_directory(Path(dump_dir)) / "events.jsonl",
+        evidence_path=evidence_dir / "events.jsonl",
         sources={"training_events": Path(dump_dir) / EVENTS_DIRNAME},
         config=config,
         base_url=base_url,
@@ -118,6 +130,7 @@ def run_ci(
 
     try:
         run_training(
+            injector=injector,
             train_args=train_args,
             mode=ft_mode,
             dump_dir=dump_dir,
@@ -126,8 +139,11 @@ def run_ci(
             train_script=get_train_script(fully_async=fully_async),
         )
     finally:
-        injector.stop_and_join()
+        injector.stop_and_join(
+            teardown=partial(teardown_run, config=config, event_log=injector.event_log, evidence_dir=evidence_dir)
+        )
 
+    assert_tail_complete(injector.event_log.events)
     assert_healing(
         ft_mode.ft_components,
         injector=injector,

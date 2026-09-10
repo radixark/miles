@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import threading
+import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import Field, field_validator
 from tests.utils.soak.config import SoakPolicy
 from tests.utils.soak.process_target import ProcessTarget
 
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.cell_operations.base import FaultTarget
 
@@ -79,6 +81,7 @@ class SoakObservation(BaseEvent):
     details: dict[str, dict] = Field(default_factory=dict)
     errors: dict[str, str] = Field(default_factory=dict)
     fault_targets: dict[str, FaultTarget] = Field(default_factory=dict)
+    training_events: list[CellReconfigureEvent | TrainGroupStepEndEvent] = Field(default_factory=list)
 
 
 class SoakActionRequest(FrozenStrictBaseModel):
@@ -133,6 +136,16 @@ class SoakCollectionClosedEvent(BaseEvent):
     pass
 
 
+class SoakAdmissionClosedEvent(BaseEvent):
+    monotonic_time: float = Field(default_factory=time.monotonic)
+
+
+class SoakTeardownEvent(BaseEvent):
+    resource: str
+    returned: bool
+    error: str | None = None
+
+
 class SoakEvidenceArchivedEvent(BaseEvent):
     sources: dict[str, Path]
     missing_sources: list[str]
@@ -162,6 +175,8 @@ Event = (
     | SoakLauncherExitedEvent
     | SoakRunContextEvent
     | SoakCollectionClosedEvent
+    | SoakAdmissionClosedEvent
+    | SoakTeardownEvent
     | SoakEvidenceArchivedEvent
 )
 
@@ -242,8 +257,11 @@ class EventLog:
             )
         )
 
-    def note_action_requested(self, request: SoakActionRequest) -> None:
-        self._append(SoakActionRequestedEvent(request=request.model_copy(deep=True)))
+    def close_admission(self) -> None:
+        self._append(SoakAdmissionClosedEvent())
+
+    def note_action_requested(self, request: SoakActionRequest) -> bool:
+        return self._append(SoakActionRequestedEvent(request=request.model_copy(deep=True)))
 
     def note_action_result(self, result: SoakActionResultEvent) -> None:
         self._append(result)
@@ -254,17 +272,24 @@ class EventLog:
     def note_launcher_exited(self, event: SoakLauncherExitedEvent) -> None:
         self._append(event)
 
+    def note_teardown(self, event: SoakTeardownEvent) -> None:
+        self._append(event)
+
     def note_schedule(self, schedule: SoakScheduleEvent) -> None:
         self._append(schedule)
 
     def note_observation(self, observation: SoakObservation) -> None:
         self._append(observation.model_copy(deep=True))
 
-    def _append(self, event: Event) -> None:
+    def _append(self, event: Event) -> bool:
         with self._lock:
             assert not self._events or not isinstance(
                 self._events[-1], SoakCollectionClosedEvent
             ), "Soak evidence is closed"
+            if isinstance(event, (SoakActionRequestedEvent, SoakAdmissionClosedEvent)) and any(
+                isinstance(previous, SoakAdmissionClosedEvent) for previous in self._events
+            ):
+                return False
             snapshot = type(event).model_validate(event.model_dump(mode="json"))
             if self._path is not None:
                 stored = _StoredEvent(
@@ -278,6 +303,7 @@ class EventLog:
                     stream.flush()
                     os.fsync(stream.fileno())
             self._events.append(snapshot)
+            return True
 
 
 def compute_cell_infos(cells: list[dict]) -> dict[str, CellInfo]:

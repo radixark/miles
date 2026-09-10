@@ -1,5 +1,7 @@
 import asyncio
 import threading
+from builtins import ExceptionGroup
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,7 +17,103 @@ from tests.fast.utils.soak.utils import (
 from tests.utils.soak import entrypoint, views
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.runner import SoakRunner
-from tests.utils.soak.state import SoakActionRequest, SoakObservation
+from tests.utils.soak.state import SoakActionRequest, SoakCollectionClosedEvent, SoakObservation, read_events
+
+from miles.utils.test_utils.polling_worker import PollingWorker
+
+
+def test_failure_after_timed_join_is_reported_without_skipping_teardown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A worker dying between the timed join and stopped check cannot silently pass."""
+    release = threading.Event()
+    path = tmp_path / "events.jsonl"
+    torn_down: list[bool] = []
+
+    def fail(stop_event: threading.Event) -> None:
+        assert release.wait(timeout=5)
+        raise RuntimeError("failure at join boundary")
+
+    handle = entrypoint.FaultInjectorHandle(
+        base_url="http://control",
+        seed=0,
+        mean_interval_seconds_of_cell_type={},
+        cell_fault_forms={},
+        evidence_path=path,
+    )
+    worker = PollingWorker(name="join-boundary", run=fail)
+    handle._worker = worker
+    original_is_alive = worker._thread.is_alive
+    first_read = True
+
+    def alive_then_fail() -> bool:
+        nonlocal first_read
+        if first_read:
+            first_read = False
+            assert original_is_alive()
+            release.set()
+            worker._thread.join(timeout=5)
+            assert not original_is_alive()
+            return True
+        return original_is_alive()
+
+    monkeypatch.setattr(entrypoint, "STOP_AND_JOIN_TIMEOUT_SECONDS", 0)
+    worker.start()
+    monkeypatch.setattr(worker._thread, "is_alive", alive_then_fail)
+    try:
+        with pytest.raises(RuntimeError, match="failure at join boundary"):
+            handle.stop_and_join(teardown=lambda: torn_down.append(True))
+    finally:
+        release.set()
+        worker._thread.join(timeout=5)
+
+    assert torn_down == [True]
+    assert isinstance(read_events(path)[-1], SoakCollectionClosedEvent)
+
+
+async def test_worker_failure_cancels_training_and_still_closes_the_evidence(tmp_path: Path) -> None:
+    """A dead injector interrupts the active launcher and preserves a complete failure archive."""
+    started = threading.Event()
+    cleaned = asyncio.Event()
+    failed = threading.Event()
+    path = tmp_path / "events.jsonl"
+    handle = entrypoint.FaultInjectorHandle(
+        base_url="http://control",
+        seed=0,
+        mean_interval_seconds_of_cell_type={},
+        cell_fault_forms={},
+        poll_interval_seconds=0,
+        evidence_path=path,
+    )
+
+    async def observe() -> SoakObservation:
+        if failed.is_set():
+            return SoakObservation(cells=[])
+        async with asyncio.timeout(5):
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+        failed.set()
+        raise RuntimeError("observer failed")
+
+    async def train() -> int:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+        return 0
+
+    with patch.object(SoakObserver, "observe", side_effect=observe):
+        handle.start()
+        try:
+            async with asyncio.timeout(5):
+                with pytest.raises(ExceptionGroup):
+                    await handle.wait_for_training(train())
+            assert cleaned.is_set()
+        finally:
+            with pytest.raises(ExceptionGroup):
+                handle.stop_and_join()
+    assert isinstance(read_events(path)[-1], SoakCollectionClosedEvent)
 
 
 def test_stop_and_join_takes_one_last_snapshot_before_the_log_is_read() -> None:

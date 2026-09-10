@@ -1,9 +1,12 @@
+import asyncio
 import sys
 from pathlib import Path
 
 import typer
 from tests.utils.soak.action import run_command
-from tests.utils.soak.recipes.gsm8k import launch_gsm8k
+from tests.utils.soak.entrypoint import FaultInjectorHandle
+from tests.utils.soak.recipes.gsm8k import Gsm8kRun, launch_gsm8k
+from tests.utils.soak.state import SoakLauncherExitedEvent
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -17,12 +20,27 @@ class Gsm8kLaunchSpec(FrozenStrictBaseModel):
     fully_async: bool
 
 
+def execute_session(*, run: Gsm8kRun, injector: FaultInjectorHandle, fully_async: bool) -> None:
+    log_path = run.evidence_dir / "launcher-initial.log"
+    result = asyncio.run(
+        injector.wait_for_training(
+            launch(
+                Gsm8kLaunchSpec(config=run.config, train_args=run.train_args, fully_async=fully_async),
+                log_path=log_path,
+                timeout_seconds=injector.timeouts.run_seconds,
+            )
+        )
+    )
+    run.event_log.note_launcher_exited(SoakLauncherExitedEvent(request_id=None, returncode=result, log_path=log_path))
+    assert result == 0, f"Training launcher exited {result}; see {log_path}"
+
+
 async def launch(
     spec: Gsm8kLaunchSpec,
     *,
     log_path: Path,
     timeout_seconds: float,
-    module_name: str = "tests.utils.soak.recipes.gsm8k_launcher"
+    module_name: str = "tests.utils.soak.recipes.gsm8k_launcher",
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.with_suffix(".json").open("x") as stream:

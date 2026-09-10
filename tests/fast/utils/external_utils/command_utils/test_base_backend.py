@@ -1,6 +1,7 @@
 import dataclasses
 import inspect
 import os
+import shlex
 from dataclasses import dataclass
 from typing import Literal
 
@@ -181,6 +182,26 @@ class TestCommandUtilConfig:
 
 
 class TestExecuteTrainConfigSelection:
+    @pytest.mark.parametrize("submission_id", [None, "owned-job", "job with 'quotes'"])
+    def test_ray_submission_identity_is_preserved_as_one_cli_argument(
+        self, monkeypatch: pytest.MonkeyPatch, submission_id: str | None
+    ) -> None:
+        """An owned job ID must reach Ray unchanged without altering the training command."""
+        commands: list[str] = []
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
+        monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
+        monkeypatch.setattr(base_backend, "run_shell_command", lambda command, **kwargs: commands.append(command))
+        config = ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY, ray_submission_id=submission_id)
+        config.create_backend().execute_train(
+            train_args="--train-backend fsdp", num_gpus_per_node=1, megatron_model_type=None
+        )
+        (command,) = [command for command in commands if "ray job submit" in command]
+        argv = shlex.split(command)
+        identity_args = [argument for argument in argv if argument.startswith("--submission-id=")]
+        assert identity_args == ([] if submission_id is None else [f"--submission-id={submission_id}"])
+        if submission_id is not None:
+            assert argv.index(identity_args[0]) < argv.index("--")
+
     def test_an_explicit_config_for_another_backend_is_refused_before_launch(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

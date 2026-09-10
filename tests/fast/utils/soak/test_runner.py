@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from tests.fast.utils.soak.utils import AsyncStubFaultForm, typed_cell
+from tests.utils.soak.config import SoakTimeouts
 from tests.utils.soak.core import SoakActionScheduler
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.runner import SoakRunner
@@ -17,6 +18,60 @@ from tests.utils.soak.state import (
     SoakObservation,
 )
 from tests.utils.soak.views import compute_num_successful_injections_of_form
+
+
+async def test_total_budget_cancels_a_stuck_observation_and_records_the_final_snapshot() -> None:
+    """The session deadline remains effective while the observer is blocked."""
+    cleaned = asyncio.Event()
+
+    async def observe() -> SoakObservation:
+        if cleaned.is_set():
+            return SoakObservation(cells=[])
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+        return SoakObservation(cells=None)
+
+    log = EventLog()
+    runner = SoakRunner(
+        observer=SoakObserver(base_url="http://control", cell_types=set()),
+        scheduler=SoakActionScheduler(rng=random.Random(0), mean_intervals={}, forms={}),
+        forms={},
+        event_log=log,
+        poll_interval_seconds=0,
+        timeouts=SoakTimeouts(run_seconds=0.01, observation_seconds=60, final_observation_seconds=1),
+    )
+    with patch.object(SoakObserver, "observe", side_effect=observe):
+        with pytest.raises(TimeoutError):
+            await runner.run(asyncio.Event())
+    assert cleaned.is_set()
+    assert isinstance(log.events[-1], SoakObservation) and log.events[-1].cells == []
+
+
+async def test_observation_timeout_records_failure_after_cancelling_the_read() -> None:
+    """A timed-out observer releases its work and replaces stale facts with an explicit failed reading."""
+    cleaned = asyncio.Event()
+
+    async def observe() -> SoakObservation:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+
+    log = EventLog()
+    log.note_observation(SoakObservation(cells=[typed_cell("actor-0", "actor")]))
+    runner = SoakRunner(
+        observer=SoakObserver(base_url="http://control", cell_types=set()),
+        scheduler=SoakActionScheduler(rng=random.Random(0), mean_intervals={}, forms={}),
+        forms={},
+        event_log=log,
+    )
+    with patch.object(SoakObserver, "observe", side_effect=observe):
+        await runner._observe_and_record(timeout_seconds=0.01)
+    assert cleaned.is_set()
+    assert isinstance(log.events[-1], SoakObservation)
+    assert log.events[-1].cells is None and "observation" in log.events[-1].errors
 
 
 @pytest.mark.parametrize("evidence", [None, {"exited_pids": [42]}])
