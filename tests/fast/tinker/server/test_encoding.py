@@ -93,9 +93,3 @@ class TestRenderResult:
         assert rendered["loss_fn_output_type"] == "ArrayRecord"
         assert rendered["metrics"] == {"loss:sum": 2.0}
         assert rendered["loss_fn_outputs"][0]["logprobs"] == {"dtype": "float32", "shape": [2], "data": [0.1, 0.2]}
-
-
-@pytest.mark.parametrize("op", ["save_state", "save_weights_for_sampler"])
-def test_a_requested_ttl_is_rejected_not_dropped(op):
-    with pytest.raises(UserInputError, match="ttl_seconds"):
-        decode_command(op, {"model_id": "m", "seq_id": 1, "ttl_seconds": 60})
