@@ -164,6 +164,7 @@ def create_comparison_app_and_run_ci(
     target_side_context: TargetSideContextFn | None = None,
     config_for_side: ConfigForSideFn | None = None,
     run_side: RunSideFn = run_one_release,
+    release_side: ReleaseSideFn = _release_comparison_side,
     resolve_mode_fn: ResolveModeFn = resolve_mode,
 ) -> tuple[typer.Typer, Callable[[str | None], None]]:
     """Build, from one wiring, the manual typer app and a run_ci(mode) one-shot runner.
@@ -258,6 +259,7 @@ def create_comparison_app_and_run_ci(
             target_side_context=target_side_context,
             config_for_side=config_for_side,
             run_side=run_side,
+            release_side=release_side,
             resolve_mode_fn=resolve_mode_fn,
         )
 
@@ -291,6 +293,7 @@ def create_comparison_app_and_run_ci(
             target_side_context=target_side_context,
             config_for_side=config_for_side,
             run_side=run_side,
+            release_side=release_side,
             resolve_mode_fn=resolve_mode_fn,
         )
 

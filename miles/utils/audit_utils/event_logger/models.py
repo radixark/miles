@@ -136,6 +136,7 @@ class EnvReportEvent(EventBase):
 class EngineEnvReportEvent(EventBase):
     type: Literal["engine_env_report"] = "engine_env_report"
     cell_id: str
+    workers_hash: str | None = None
     server_url: str
     server_info: dict[str, Any]
 

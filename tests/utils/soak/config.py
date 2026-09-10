@@ -22,6 +22,7 @@ class SoakCellPolicy(FrozenStrictBaseModel):
 
 class SoakPolicy(FrozenStrictBaseModel):
     max_concurrent_actions: int = Field(default=1, ge=1)
+    start_after_rollout_id: int | None = Field(default=None, ge=0)
     cell_policies: dict[str, SoakCellPolicy] = Field(default_factory=dict)
 
 

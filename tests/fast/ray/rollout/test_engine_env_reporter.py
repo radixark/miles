@@ -60,7 +60,9 @@ def fake_clock(monkeypatch) -> list[float]:
 
 
 async def _report(reporter: EngineEnvReporter, api_client: _FakeApiClient, *, cell_id: str = "a") -> None:
-    await reporter.report_if_due(cell_id=cell_id, server_url=f"http://{cell_id}:30000", api_client=api_client)
+    await reporter.report_if_due(
+        cell_id=cell_id, workers_hash="generation-0", server_url=f"http://{cell_id}:30000", api_client=api_client
+    )
 
 
 def _events(log_dir: Path) -> list[EngineEnvReportEvent]:
@@ -123,6 +125,7 @@ class TestRedaction:
         await _report(EngineEnvReporter(interval_seconds=3600.0), _FakeApiClient())
 
         event = _events(event_log_dir)[0]
+        assert event.workers_hash == "generation-0"
         server_info = event.server_info
         assert "hunter" not in event.model_dump_json()
         assert server_info["api_key"].startswith("redacted-sha256:")

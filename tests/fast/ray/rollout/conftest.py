@@ -165,6 +165,7 @@ def make_args(**overrides: Any) -> Namespace:
         ci_test=False,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
+        inference_env_vars={},
         dumper_inference=False,
     )
     defaults.update(router_defaults)

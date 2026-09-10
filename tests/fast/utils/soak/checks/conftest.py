@@ -5,7 +5,12 @@ import pytest
 from tests.fast.utils.soak.utils import typed_cell
 from tests.utils.soak.state import Event, SoakActionAppliedEvent, SoakActionRequest, SoakActionRequestedEvent
 
-from miles.utils.audit_utils.event_logger.models import FaultHookEvent, WeightUpdateResultEvent
+from miles.utils.audit_utils.event_logger.models import (
+    EngineEnvReportEvent,
+    EnvReportEvent,
+    FaultHookEvent,
+    WeightUpdateResultEvent,
+)
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity, TrainProcessIdentity
 from miles.utils.test_utils.fault_hooks import FaultHookRecord, FaultHookRequest
 from miles.utils.workers.cell_operations.base import FaultTarget
@@ -15,6 +20,54 @@ from miles.utils.workers.cell_operations.base import FaultTarget
 class HookEvidence:
     events: list[Event]
     hit: FaultHookEvent
+
+
+@pytest.fixture
+def deterministic_environment() -> list[EnvReportEvent | EngineEnvReportEvent]:
+    timestamp = datetime(2026, 9, 11, tzinfo=timezone.utc)
+    return [
+        EnvReportEvent(
+            timestamp=timestamp,
+            source=TrainProcessIdentity(component="actor", cell_index=0, rank_within_cell=0),
+            report={
+                "process": {
+                    "hostname": "trainer",
+                    "argv": [],
+                    "args": {
+                        "values": {
+                            "deterministic_mode": True,
+                            "debug_deterministic_collective": True,
+                            "ft_components": ["rollout"],
+                            "update_weight_transfer_mode": "p2p",
+                            "sglang_router_policy": "round_robin",
+                            "colocate": False,
+                        },
+                        "skipped_names": [],
+                    },
+                    "env_vars": {"NCCL_ALGO": "Ring"},
+                    "launcher_env_report": None,
+                },
+                "key_versions": {},
+                "editable_packages": [],
+                "git_repos": [],
+                "full_pip_list": [],
+                "packages_probed": False,
+            },
+        ),
+        EngineEnvReportEvent(
+            timestamp=timestamp,
+            source=TrainerControllerProcessIdentity(trainer_id="actor"),
+            cell_id="rollout-0",
+            workers_hash="generation-0",
+            server_url="http://engine",
+            server_info={
+                "enable_deterministic_inference": True,
+                "attention_backend": "flashinfer",
+                "disable_radix_cache": True,
+                "internal_states": [{"env_vars": {"SGLANG_ENABLE_JIT_DEEPGEMM": "false"}}],
+            },
+        ),
+    ]
 
 
 @pytest.fixture

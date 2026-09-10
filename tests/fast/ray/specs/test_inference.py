@@ -461,6 +461,21 @@ class TestSessionServerRouterPoolLookup:
 
 
 class TestInferenceEngineEnvVars:
+    def test_explicit_engine_environment_overrides_launcher_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Numerical prerequisites must reach engines even when the launcher enables the opposite default."""
+        key = "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT"
+        monkeypatch.setenv(key, "true")
+        args = make_args(inference_env_vars={key: "false", "SGLANG_ENABLE_JIT_DEEPGEMM": "false"})
+        envs = compute_inference_engine_env_vars(args)
+        assert envs[key] == "false"
+        assert envs["SGLANG_ENABLE_JIT_DEEPGEMM"] == "false"
+
+    @pytest.mark.parametrize("overrides", [[], None, {"FLAG": False}, {"FLAG": 1}])
+    def test_non_string_environment_overrides_are_rejected(self, overrides: object) -> None:
+        """Invalid JSON values cannot silently change an engine's numerical configuration."""
+        with pytest.raises(ValueError, match="mapping of strings"):
+            compute_inference_engine_env_vars(make_args(inference_env_vars=overrides))
+
     def test_an_enabled_dumper_resolves_the_sglang_environment(self, monkeypatch) -> None:
         """Enabling inference dumping must load the dumper integration and render its startup environment."""
         args = make_args(dumper_inference=["enable=true", "non_intrusive_mode=all"])

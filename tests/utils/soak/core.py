@@ -33,6 +33,10 @@ from tests.utils.soak.state import (
 )
 from tests.utils.soak.views import compute_successful_form_names
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.event_logger.models import TrainGroupStepEndEvent
+from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
+
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS: float = 2.0
@@ -128,6 +132,20 @@ class SoakActionScheduler:
 
     def choose(self, *, events: list[Event], now: float) -> SoakActionRequest | None:
         if any(isinstance(event, SoakAdmissionClosedEvent) for event in events):
+            return None
+        if self.policy.start_after_rollout_id is not None and not any(
+            isinstance(step, TrainGroupStepEndEvent)
+            and isinstance(step.source, TrainerControllerProcessIdentity)
+            and step.source.trainer_id == "actor"
+            and step.rollout_id >= self.policy.start_after_rollout_id
+            and any(
+                isinstance(outcomes, list) and TrainStepOutcome.NORMAL in outcomes
+                for outcomes in step.cell_outcomes.values()
+            )
+            for observation in events
+            if isinstance(observation, SoakObservation)
+            for step in observation.training_events
+        ):
             return None
         if len(pending_actions(events)) >= self.policy.max_concurrent_actions:
             return None

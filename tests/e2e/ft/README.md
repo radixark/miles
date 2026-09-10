@@ -14,7 +14,7 @@
 | `scenario_trainer_no_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
 | `scenario_trainer_deterministic` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
 | `scenario_trainer_with_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2` |
-| `scenario_rollout_deterministic` | `kill_rollout__dp4__colocate` |
+| `scenario_rollout_deterministic` | `kill_rollout__dp4` |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_train_rollout__dp2_cp2`, `kill_rollout__dp4` |
 | `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train_rollout.py`, no modes |
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
@@ -37,6 +37,8 @@
 - **Precise faults**: trainer all-gather hooks inject `sigkill`, GIL deadlock, and training-thread deadlock; every enabled form must produce an effect receipt and matching worker dispatch evidence.
 - **Precise recovery**: the normal healing and completed-tail assertions remain mandatory.
 - **Calibration**: the deadlines and 4800-second CI estimate have not been calibrated by a run.
+- **Generation coverage boundary**: rollout-deterministic faults must span at least two progress windows separated by completed rollouts. This proves temporal spread; there is no atomic evidence that the victim engine was processing a generation request at the fault instant. Precise weight-transfer hooks do not close this separate gap.
+- **Generation coverage boundary**: rollout-deterministic faults must span at least two progress windows separated by completed rollouts. This proves temporal spread; there is no atomic evidence that the victim engine was processing a generation request at the fault instant. Precise weight-transfer hooks do not close this separate gap.
 - **Precise P2P entries**: `scenario_precise_p2p` uses `kill_train__dp2_tp2` for sender faults and `kill_rollout__dp2_tp2` for receiver faults; both have explicit CI entries and reuse the shared soak runner.
 - **Receiver triggers**: an observation-only trainer hook precedes a fault through the selected backend's cell operation; worker hit evidence and the independent victim receipt are both required. Controller polling and network latency separate hook arrival from receiver failure.
 - **Receiver recovery**: single-target receiver scenarios enable only rollout FT. The all-target scenario also enables trainer FT because losing all of a sender's multiple targets retires that sender; fault injection still targets only rollout cells.
@@ -322,9 +324,9 @@ Healing witness: one heal per target phase, at P+2 (healed = last cell, ckpt src
 ### `scenario_rollout_deterministic`
 
 ```
-Type: comparison; both sides run the identical command, only the target is wrapped in the
-      fault injector, through the pipeline's target_side_context hook
-Entry: test_rollout_deterministic__kill_rollout__dp4__colocate.py, ft-long
+Type: comparison; both sides run the identical command under the monitored launcher,
+      with fault forms enabled only on the target
+Entry: test_rollout_deterministic__kill_rollout__dp4.py, ft-long
 Steps: 8 rollouts (NUM_ROLLOUTS)
 Requires: mode.has_real_rollout, and ft_components == ("rollout",) exactly
 Compare: dumps rel <= 0 (bitwise); metrics rtol=0 / atol=0 over train/* and rollout/*,
@@ -340,7 +342,8 @@ Regime (both sides):
 Injection (target side only):
   1. Rollout cells, seed 42, exponential mean CRASH_INTERVAL_SECONDS (30s)
   2. Forms drawn per (cluster backend, cell type), as in the soaks
-  3. Stop accepting faults after six completed rollouts, leaving the final two rollouts for recovery
+  3. Admit faults after the actor's first normal training step; close admission after
+     rollout 4, leaving the final three rollouts for recovery
   4. Stop the injector, waiting out a mid-flight injection for at most
      STOP_AND_JOIN_TIMEOUT_SECONDS (180s), then re-use the soak's rollout witnesses: >= 2
      accepted rollout injections, each paired with one completed recovery cycle
@@ -351,6 +354,7 @@ Assertions:
   3. Dumps: rel <= 0
   4. Engine checksums: baseline and target pushed identical weights per (rollout, engine)
   5. Weights moved, per side: the engine weight checksum is not identical across all rollouts
+  6. Both sides complete the recovery tail and archive evidence through the shared teardown
 ```
 
 - **Why it exists**: an engine dying and being replaced mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak only ever asserted survival.
@@ -359,7 +363,7 @@ Assertions:
 - **Why this recipe disables batch-variant MM fallback**: a rollout worker loss changes co-batching while the pool is healing; permitting an `einsum` fallback would make the same seeded request depend on that temporary batch shape. The scenario injects the environment override without changing the production default.
 - **Why `--rollout-health-check-interval 1`**: the short scenario observes recovery with one-second health probes.
 - **Why this scenario polls the fault window every 0.2 seconds**: the short scenario records recovery transitions more frequently than the generic two-second scheduler.
-- **Why the final two rollouts accept no new fault**: the scheduler keeps observing recovery but closes admission after rollout 5, so teardown cannot race a newly accepted replacement.
+- **Why the final three rollouts accept no new fault**: the scheduler keeps observing recovery but closes admission after rollout 4, so teardown cannot race a newly accepted replacement.
 - **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.
 - **Why the weights-moved gate**: bitwise equality is also satisfied by two runs that trained on nothing.
 - **Why not a loss or reward curve**: neither is a progress signal here — the reward is `deterministic_random`, a hash of the response, and GRPO's surrogate loss is not monotone even while a run learns. Over eight rollouts neither moves for a reason worth asserting, and the weights either changed or they did not.

@@ -1,28 +1,37 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
-import contextlib
+import json
+import shlex
 import shutil
-import threading
-import time
-from collections.abc import Iterator
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
-from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, RunSideRequest, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
-from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
+from tests.e2e.ft.conftest_ft.execution import (
+    _DETERMINISTIC_ENV_VARS,
+    get_common_train_args,
+    get_ft_args,
+    get_train_env_vars_arg,
+    run_training,
+)
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.soak.checks.determinism import assert_deterministic_environment
 from tests.utils.soak.checks.ft import assert_rollout_cells_served_after_injection
+from tests.utils.soak.checks.tail import assert_tail_complete
+from tests.utils.soak.config import SoakCellPolicy, SoakPolicy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
 from tests.utils.soak.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
 from tests.utils.soak.state import event_source
-from tests.utils.soak.utils import evidence_directory, get_api_server_args
+from tests.utils.soak.storage import validate_dump_storage
+from tests.utils.soak.teardown import teardown_run
+from tests.utils.soak.utils import create_soak_config, evidence_directory, get_api_server_args
 from tests.utils.soak.views import compute_injection_times, compute_num_injections
 
-from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.external_utils import command_utils
-from miles.utils.misc import MutableBox
 from miles.utils.test_utils.comparisons.metrics import read_rollout_completion_times
 from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections
 
@@ -33,14 +42,14 @@ CRASH_INTERVAL_SECONDS: float = 30.0
 POLL_INTERVAL_SECONDS: float = 0.2
 HEALTH_CHECK_INTERVAL_SECONDS: float = 1.0
 MIN_TRAINED_ROLLOUTS: int = 2
-FIRST_ROLLOUT_TIMEOUT_SECONDS: float = 3600.0
-FIRST_ROLLOUT_POLL_SECONDS: float = 5.0
-MIN_CRASHED_ROLLOUTS: int = 2
-TERMINAL_FAULT_FREE_ROLLOUTS: int = 2
+MIN_FAULT_PROGRESS_WINDOWS: int = 2
+TERMINAL_FAULT_FREE_ROLLOUTS: int = 3
 
 
-COLOCATED_MEM_FRACTION_STATIC: float = 0.4
-DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {"SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false"}
+DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {
+    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false",
+    "SGLANG_ENABLE_JIT_DEEPGEMM": "false",
+}
 
 
 def _build_args(
@@ -50,6 +59,7 @@ def _build_args(
     config: command_utils.ExecuteTrainConfig | None = None,
 ) -> str:
     assert mode.has_real_rollout, f"{TEST_NAME} needs engines to crash, but mode {mode.model_name} has none"
+    assert not mode.colocate, f"{TEST_NAME} requires disaggregated P2P weight transfer"
     assert tuple(mode.ft_components) == ("rollout",), (
         f"{TEST_NAME} injects into rollout cells only, so the mode must enable ft on rollout alone, "
         f"got ft_components={mode.ft_components}"
@@ -60,8 +70,8 @@ def _build_args(
     args += "--mini-ft-controller-enable "
     args += "--debug-deterministic-collective "
     args += "--sglang-disable-radix-cache "
-    if mode.colocate:
-        args += f"--sglang-mem-fraction-static {COLOCATED_MEM_FRACTION_STATIC} "
+    args += "--update-weight-transfer-mode p2p --sglang-router-policy round_robin "
+    args += f"--inference-env-vars {shlex.quote(json.dumps(DETERMINISTIC_INFERENCE_ENV_VARS))} "
     args += f"--rollout-health-check-interval {HEALTH_CHECK_INTERVAL_SECONDS} "
     args += "--weight-decay 0 "
     args += get_train_env_vars_arg(
@@ -72,85 +82,69 @@ def _build_args(
     return args
 
 
-@contextlib.contextmanager
-def _inject_rollout_faults(
-    mode: FTTestMode, dump_dir: str, config: command_utils.ExecuteTrainConfig
-) -> Iterator[None]:
+def _run_side(request: RunSideRequest) -> None:
+    config = request.config
+    dump_dir = request.dump_dir
+    target = request.side == TARGET_SIDE
+    validate_dump_storage(Path(dump_dir))
+    if Path(dump_dir).exists():
+        shutil.rmtree(dump_dir)
     base_url: str = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
-    print(f"Injecting into {ROLLOUT_CELL_TYPE} cells only, mean interval {CRASH_INTERVAL_SECONDS:.1f}s, seed {SEED}")
-
-    shutil.rmtree(dump_dir, ignore_errors=True)
-
-    armed: MutableBox[FaultInjectorHandle | None] = MutableBox(value=None)
-
-    def arm_on_generation_start() -> None:
-        if not _wait_for_first_rollout(dump_dir):
-            return
-        armed.value = spawn_fault_injector(
-            evidence_path=evidence_directory(Path(dump_dir)) / "events.jsonl",
-            sources={"training_events": Path(dump_dir) / EVENTS_DIRNAME},
-            config=config,
-            base_url=base_url,
-            seed=SEED,
-            mean_interval_seconds_of_cell_type={ROLLOUT_CELL_TYPE: CRASH_INTERVAL_SECONDS},
-            cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
-            injection_enabled=lambda: _rollout_fault_injection_enabled(dump_dir),
-            poll_interval_seconds=POLL_INTERVAL_SECONDS,
-        )
-
-    arming = threading.Thread(target=arm_on_generation_start, daemon=True, name="ft-rollout-injector-arm")
-    arming.start()
+    evidence_dir = evidence_directory(Path(dump_dir))
+    injector = spawn_fault_injector(
+        evidence_path=evidence_dir / "events.jsonl",
+        sources={"training_events": Path(dump_dir) / EVENTS_DIRNAME},
+        config=config,
+        base_url=base_url,
+        seed=SEED,
+        mean_interval_seconds_of_cell_type={ROLLOUT_CELL_TYPE: CRASH_INTERVAL_SECONDS} if target else {},
+        cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config) if target else {},
+        poll_interval_seconds=POLL_INTERVAL_SECONDS,
+        policy=SoakPolicy(
+            start_after_rollout_id=0,
+            cell_policies=(
+                {ROLLOUT_CELL_TYPE: SoakCellPolicy(expected_cells=request.mode.rollout_num_engines)} if target else {}
+            ),
+        ),
+        tail_policy=create_tail_policy(num_rollout=NUM_ROLLOUTS, min_tail_rollouts=TERMINAL_FAULT_FREE_ROLLOUTS),
+    )
     try:
-        yield
+        run_training(
+            train_args=request.train_args,
+            mode=request.mode,
+            dump_dir=dump_dir,
+            config=config,
+            injector=injector,
+        )
     finally:
-        arming.join(timeout=FIRST_ROLLOUT_POLL_SECONDS)
-        if armed.value is not None:
-            armed.value.stop_and_join()
-
-    injector = armed.value
-    assert injector is not None, (
-        f"No injector was ever armed: the target never reported a finished rollout within "
-        f"{FIRST_ROLLOUT_TIMEOUT_SECONDS:.0f}s, so nothing was crashed and the comparison would be vacuous"
-    )
-    assert_min_soak_injections(
-        compute_num_injections(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
-        context=f"{TEST_NAME} rollout cells",
-    )
-    assert_rollout_cells_served_after_injection(injector)
-    _assert_injections_spread_over_rollouts(injector, dump_dir=dump_dir)
+        injector.stop_and_join(
+            teardown=partial(teardown_run, config=config, event_log=injector.event_log, evidence_dir=evidence_dir)
+        )
+    assert_tail_complete(injector.event_log.events)
+    if target:
+        assert_min_soak_injections(
+            compute_num_injections(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
+            context=f"{TEST_NAME} rollout cells",
+        )
+        assert_rollout_cells_served_after_injection(injector)
+        _assert_faults_span_progress_windows(injector, dump_dir=dump_dir)
 
 
-def _wait_for_first_rollout(dump_dir: str) -> bool:
-    deadline = time.monotonic() + FIRST_ROLLOUT_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if read_rollout_completion_times(dump_dir):
-            return True
-        time.sleep(FIRST_ROLLOUT_POLL_SECONDS)
-    return False
-
-
-def _rollout_fault_injection_enabled(dump_dir: str) -> bool:
-    completed_rollout_ids: set[int] = {rollout_id for rollout_id, _ in read_rollout_completion_times(dump_dir)}
-    next_rollout_id = max(completed_rollout_ids, default=-1) + 1
-    return next_rollout_id < NUM_ROLLOUTS - TERMINAL_FAULT_FREE_ROLLOUTS
-
-
-def _assert_injections_spread_over_rollouts(injector: FaultInjectorHandle, *, dump_dir: str) -> None:
+def _assert_faults_span_progress_windows(injector: FaultInjectorHandle, *, dump_dir: str) -> None:
     source = event_source(injector.event_log.events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME)
-    crashed_rollouts = _compute_crashed_rollouts(
+    progress_windows = _compute_fault_progress_windows(
         injected_at=compute_injection_times(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
         rollout_completions=read_rollout_completion_times(str(source.parent)),
     )
 
-    assert len(crashed_rollouts) >= MIN_CRASHED_ROLLOUTS, (
-        f"Every accepted injection landed inside rollout(s) {sorted(crashed_rollouts)}, so this run only shows "
-        f"that {len(crashed_rollouts)} rollout survived a crash rather than that crashes cost the loss curve "
-        f"nothing across the run"
+    assert len(progress_windows) >= MIN_FAULT_PROGRESS_WINDOWS, (
+        f"Fault effects occupy only {sorted(progress_windows)} progress windows; "
+        f"expected at least {MIN_FAULT_PROGRESS_WINDOWS} windows separated by completed rollouts"
     )
-    print(f"Injections landed across rollouts {sorted(crashed_rollouts)}")
+    print(f"Fault effects span progress windows {sorted(progress_windows)}")
 
 
-def _compute_crashed_rollouts(
+def _compute_fault_progress_windows(
     *, injected_at: list[datetime], rollout_completions: list[tuple[int, datetime]]
 ) -> set[int]:
     return {
@@ -160,6 +154,18 @@ def _compute_crashed_rollouts(
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
+    for side in (BASELINE_SIDE, TARGET_SIDE):
+        assert_deterministic_environment(
+            read_events(Path(dump_dir) / side / EVENTS_DIRNAME),
+            trainer_ranks={
+                (cell_index, rank)
+                for cell_index in range(mode.num_cells)
+                for rank in range(mode.train_num_nodes * mode.train_gpus_per_node // mode.num_cells)
+            },
+            engine_count=mode.rollout_num_engines,
+            engine_env=DETERMINISTIC_INFERENCE_ENV_VARS,
+            trainer_env=_DETERMINISTIC_ENV_VARS,
+        )
     compare_deterministic_sides(
         baseline_dir=f"{dump_dir}/{BASELINE_SIDE}",
         target_dir=f"{dump_dir}/{TARGET_SIDE}",
@@ -174,7 +180,9 @@ app, run_ci = create_comparison_app_and_run_ci(
     build_baseline_args=_build_args,
     build_target_args=_build_args,
     compare_fn=_compare,
-    target_side_context=_inject_rollout_faults,
+    config_for_side=lambda side, config: create_soak_config(config),
+    run_side=_run_side,
+    release_side=lambda request: None,
 )
 
 if __name__ == "__main__":

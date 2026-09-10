@@ -464,6 +464,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
             )
             parser.add_argument(
+                "--inference-env-vars",
+                type=json.loads,
+                default="{}",
+                help="Extra environment variables for inference engines, overriding launcher defaults.",
+            )
+            parser.add_argument(
                 "--train-memory-margin-bytes",
                 type=int,
                 default=1024**3,

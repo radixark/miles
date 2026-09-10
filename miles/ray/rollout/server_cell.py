@@ -186,7 +186,10 @@ class ServerCell:
         if not self.is_pending_weights_or_serving:
             return
         await self._env_reporter.report_if_due(
-            cell_id=self.meta.cell_id, server_url=self.server_url, api_client=self.api_client
+            cell_id=self.meta.cell_id,
+            workers_hash=self.meta.workers_hash,
+            server_url=self.server_url,
+            api_client=self.api_client,
         )
 
     async def _tick_when_initializing(self) -> None:
