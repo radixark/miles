@@ -159,6 +159,7 @@ def setup_model_and_optimizer(
                 from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
 
                 provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+            # TODO: will rewrite in native lora refactor
             elif "kimi_k3" in (args.model_name or "").lower():
                 from miles_plugins.models.kimi_k3.lora import wrap_model_provider_with_kimi_k3_lora
 

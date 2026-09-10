@@ -428,6 +428,7 @@ def save_lora_checkpoint(
     import json
 
     save_path = Path(save_dir)
+    # TODO: will rewrite in native lora refactor
     native_kimi_k3 = args.megatron_to_hf_mode == "raw" and "kimi_k3" in (args.model_name or "").lower()
     parallel_state = get_parallel_state()
     is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0

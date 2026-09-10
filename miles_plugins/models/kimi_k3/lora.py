@@ -10,6 +10,9 @@ import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
+# TODO: will rewrite in native lora refactor: the adapter class, parameter registration, gather batch and
+# export collation below duplicate miles_plugins/models/inkling/lora.py
+
 _SUPPORTED_TARGET_SUFFIXES = {
     "self_attention.o_proj",
     "self_attention.q_a_proj",

@@ -62,6 +62,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
+        # TODO: will rewrite in native lora refactor
         if "kimi_k3" in self.model_name.lower():
             from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
 
