@@ -36,6 +36,7 @@
 - **Precise topology**: real rollout engines, disaggregated TP2 trainers, p2p weight transfer, and 600-second training/update deadlines.
 - **Precise faults**: trainer all-gather hooks inject `sigkill`, GIL deadlock, and training-thread deadlock; every enabled form must produce an effect receipt and matching worker dispatch evidence.
 - **Precise recovery**: the normal healing and completed-tail assertions remain mandatory.
+- **Mixed injection**: `scenario_random_crash --precise-p2p --mix-wall-clock` (or `--precise-all-gather`) draws both hook and wall-clock forms through the same scheduler. Every enabled form must produce an effect; hook forms additionally require worker-side hit evidence. The dedicated all-target scenario stays separate.
 - **Calibration**: the deadlines and 4800-second CI estimate have not been calibrated by a run.
 - **Generation coverage boundary**: rollout-deterministic faults must span at least two progress windows separated by completed rollouts. This proves temporal spread; there is no atomic evidence that the victim engine was processing a generation request at the fault instant. Precise weight-transfer hooks do not close this separate gap.
 - **Generation coverage boundary**: rollout-deterministic faults must span at least two progress windows separated by completed rollouts. This proves temporal spread; there is no atomic evidence that the victim engine was processing a generation request at the fault instant. Precise weight-transfer hooks do not close this separate gap.

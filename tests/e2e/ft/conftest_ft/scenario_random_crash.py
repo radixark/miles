@@ -79,6 +79,7 @@ def run_ci(
     precise_all_gather: Annotated[bool, typer.Option()] = False,
     precise_p2p: Annotated[bool, typer.Option()] = False,
     all_p2p_targets: Annotated[bool, typer.Option()] = False,
+    mix_wall_clock: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -95,6 +96,9 @@ def run_ci(
         assert precise_p2p and mode == "kill_rollout__dp2_tp2", "All-target faults require the rollout P2P scenario"
         assert min_survivors == 2, "All-sender-target faults must preserve the other sender's two targets"
     assert not (precise_all_gather and precise_p2p), "Select one precise hook scenario"
+    if mix_wall_clock:
+        assert precise_all_gather or precise_p2p, "Mixed injection requires a precise hook scenario"
+        assert not all_p2p_targets, "All-target recovery requires its dedicated scenario"
     if precise_all_gather:
         assert mode == "kill_train__dp2_tp2", "Precise all-gather requires the real-rollout TP2 mode"
     if precise_p2p:
@@ -112,6 +116,8 @@ def run_ci(
         test_name = f"precise_all_gather{'_fully_async' if fully_async else ''}"
     if precise_p2p:
         test_name = f"precise_p2p{'_all_targets' if all_p2p_targets else ''}{'_fully_async' if fully_async else ''}"
+    if mix_wall_clock:
+        test_name += "_mixed"
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
@@ -152,6 +158,8 @@ def run_ci(
                     failure_mode=failure_mode,
                     hook="trainer_before_all_gather" if precise_all_gather else "trainer_before_weight_send",
                     lifetime_seconds=300,
+                    delay_ms=1000 if mix_wall_clock and failure_mode != FailureMode.THREAD_DEADLOCK else 0,
+                    random_delay=mix_wall_clock and failure_mode != FailureMode.THREAD_DEADLOCK,
                 )
                 for failure_mode in [FailureMode.SIGKILL, FailureMode.DEADLOCK, FailureMode.THREAD_DEADLOCK]
             ]
@@ -168,11 +176,16 @@ def run_ci(
                     hook="trainer_before_weight_send",
                     lifetime_seconds=300,
                     victim_form=victim,
+                    delay_ms=1000 if mix_wall_clock else 0,
+                    random_delay=mix_wall_clock,
                     all_targets=all_p2p_targets,
                 )
                 for victim in cell_fault_forms["rollout"]
             ]
         }
+    if mix_wall_clock:
+        wall_clock_forms = create_cell_fault_forms(base_url=base_url, config=config)
+        cell_fault_forms = {kind: [*forms, *wall_clock_forms[kind]] for kind, forms in cell_fault_forms.items()}
     injector = spawn_fault_injector(
         tail_policy=tail_policy,
         policy=create_policy(

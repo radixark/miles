@@ -17,6 +17,22 @@ from miles.utils.audit_utils.process_identity import TrainerControllerProcessIde
 
 
 class TestHookEffects:
+    @pytest.mark.parametrize("recorded_delay", [500.0, 700.0])
+    def test_random_delay_must_match_the_recorded_draw(
+        self, hook_evidence: HookEvidence, recorded_delay: float
+    ) -> None:
+        """A valid hook hit with a different delay cannot satisfy the persisted random request."""
+        original = hook_evidence.events[0].request
+        request = original.model_copy(
+            update={"form_name": "hook:trainer_before_all_gather:sigkill:random", "hook_delay_ms": recorded_delay}
+        )
+        events = [SoakActionRequestedEvent(request=request), *hook_evidence.events[1:]]
+        if recorded_delay == 500:
+            assert_hook_effects(events, hook_events=[hook_evidence.hit])
+        else:
+            with pytest.raises(AssertionError, match="recorded draw"):
+                assert_hook_effects(events, hook_events=[hook_evidence.hit])
+
     def test_matching_dispatch_and_effect_are_accepted(self, hook_evidence: HookEvidence) -> None:
         """A unique dispatch with the requested delay proves a precise effect."""
         assert_hook_effects(hook_evidence.events, hook_events=[hook_evidence.hit])

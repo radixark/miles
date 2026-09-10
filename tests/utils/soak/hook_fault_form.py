@@ -25,12 +25,16 @@ class HookFaultForm(InjectFaultForm):
         lifetime_seconds: float = 60.0,
         victim_form: SoakActionForm | None = None,
         all_targets: bool = False,
+        random_delay: bool = False,
     ) -> None:
         super().__init__(base_url=base_url, failure_mode=failure_mode)
         self._victim_form = victim_form
         if all_targets and victim_form is None:
             raise ValueError("All-target hooks require a remote victim form")
         self.all_targets = all_targets
+        if random_delay and failure_mode == FailureMode.THREAD_DEADLOCK and victim_form is None:
+            raise ValueError("Training-thread deadlock requires an immediate hook")
+        self.random_delay = random_delay
         self._template = FaultHookRequest(
             request_id="template",
             instance_id="template",
@@ -47,13 +51,21 @@ class HookFaultForm(InjectFaultForm):
 
     @property
     def name(self) -> str:
+        delay = "random" if self.random_delay else f"{self._template.delay_ms:g}ms"
         if self._victim_form is not None:
             suffix = ":all" if self.all_targets else ""
-            return f"remote_hook:{self._template.hook}:{self._victim_form.name}:{self._template.delay_ms:g}ms{suffix}"
-        return f"hook:{self._template.hook}:{self._failure_mode.value}:{self._template.delay_ms:g}ms"
+            return f"remote_hook:{self._template.hook}:{self._victim_form.name}:{delay}{suffix}"
+        return f"hook:{self._template.hook}:{self._failure_mode.value}:{delay}"
+
+    def sample_delay(self, rng: random.Random) -> float | None:
+        return rng.uniform(0, self._template.delay_ms) if self.random_delay else None
 
     async def execute(self, request: SoakActionRequest) -> dict:
         assert request.form_name == self.name
+        if self.random_delay:
+            assert request.hook_delay_ms is not None and 0 <= request.hook_delay_ms <= self._template.delay_ms
+        else:
+            assert request.hook_delay_ms is None
         assert isinstance(request.target, dict)
         if self.all_targets:
             validate_fault_batch(request)
@@ -82,6 +94,7 @@ class HookFaultForm(InjectFaultForm):
                 update={
                     "request_id": request.request_id if self._victim_form is None else f"{request.request_id}:trigger",
                     "instance_id": instance_id,
+                    "delay_ms": request.hook_delay_ms if self.random_delay else self._template.delay_ms,
                 }
             )
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 
 import httpx
 import pytest
@@ -14,6 +15,31 @@ from miles.utils.workers.cell_operations.base import FaultTarget
 
 
 class TestHookFaultForm:
+    def test_random_delay_is_seeded_bounded_and_varies_per_request(self) -> None:
+        """A seeded sequence yields reproducible bounded delays without fixing every action to one delay."""
+        form = HookFaultForm(
+            base_url="http://control",
+            failure_mode=FailureMode.SIGKILL,
+            hook="trainer_before_weight_send",
+            delay_ms=1000,
+            random_delay=True,
+        )
+        first_rng, second_rng = random.Random(42), random.Random(42)
+        first = [form.sample_delay(first_rng) for _ in range(4)]
+        assert first == [form.sample_delay(second_rng) for _ in range(4)]
+        assert len(set(first)) > 1
+        assert all(0 <= delay <= 1000 for delay in first)
+
+    def test_random_delay_cannot_move_training_thread_deadlock_to_timer(self) -> None:
+        """A local training-thread fault must execute on the hook's calling thread."""
+        with pytest.raises(ValueError, match="requires an immediate hook"):
+            HookFaultForm(
+                base_url="http://control",
+                failure_mode=FailureMode.THREAD_DEADLOCK,
+                hook="trainer_before_weight_send",
+                random_delay=True,
+            )
+
     async def test_cancelling_batch_waits_for_every_victim_to_unwind(
         self, batch_request: SoakActionRequest, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -119,6 +145,7 @@ class TestHookFaultForm:
         "outcome",
         [
             "hit",
+            "random_hit",
             "expired",
             "wrong_instance",
             "stale_trigger",
@@ -132,11 +159,14 @@ class TestHookFaultForm:
     ) -> None:
         """A trainer hit authorizes only the recorded inference victim and cannot replace its effect receipt."""
         victim_form = InjectFaultForm(base_url="http://control", failure_mode=FailureMode.SIGKILL)
+        drawn_delay = 375.0 if outcome == "random_hit" else None
         form = HookFaultForm(
             base_url="http://control",
             failure_mode=FailureMode.SIGKILL,
             hook="trainer_before_weight_send",
             victim_form=victim_form,
+            random_delay=drawn_delay is not None,
+            delay_ms=1000 if drawn_delay is not None else 0,
             all_targets=outcome == "changed_assignment",
         )
         trigger = FaultTarget(cell_id="actor-0", sub_index=0, workers_hash="trainer-generation")
@@ -147,6 +177,7 @@ class TestHookFaultForm:
             harms_cell=True,
             fault_target=victim,
             hook_trigger=trigger,
+            hook_delay_ms=drawn_delay,
         )
         operations: list[str] = []
 
@@ -178,6 +209,7 @@ class TestHookFaultForm:
             hook_request = body["command"]["request"]
             assert hook_request["request_id"] == f"{request.request_id}:trigger"
             assert hook_request["action"] == "observe"
+            assert hook_request["delay_ms"] == (drawn_delay or 0)
             if operation == "read" and outcome == "stale_trigger":
                 return httpx.Response(status_code=412)
             status = "armed" if operation == "arm" else "fired"
@@ -191,9 +223,9 @@ class TestHookFaultForm:
                     "request": {**hook_request, "receipt_url": "http://control/receipt"},
                     "status": status,
                     "armed_at": 1.0,
-                    "changed_at": 2.0,
+                    "changed_at": 2.0 + (drawn_delay or 0) / 1000,
                     "reached_at": 2.0,
-                    "due_at": 2.0,
+                    "due_at": 2.0 + (drawn_delay or 0) / 1000,
                     "weight_version": 37,
                     "update_id": None if outcome == "missing_update" else "update-37",
                 },
@@ -204,11 +236,12 @@ class TestHookFaultForm:
             httpx, "AsyncClient", lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs)
         )
 
-        if outcome == "hit":
+        if outcome in {"hit", "random_hit"}:
             result = await form.execute(request)
             assert result["target"] == victim.model_dump(mode="json")
             assert result["hook_trigger"] == trigger.model_dump(mode="json")
             assert result["hook_hit"]["weight_version"] == 37
+            assert result["hook_request"]["delay_ms"] == (drawn_delay or 0)
         else:
             error = (
                 AssertionError
@@ -224,7 +257,7 @@ class TestHookFaultForm:
 
         assert operations == (
             ["inspect", "arm", "read", "inject", "receipt", "cancel"]
-            if outcome in {"hit", "wrong_victim"}
+            if outcome in {"hit", "random_hit", "wrong_victim"}
             else ["inspect", "arm", "read", "cancel"]
         )
 

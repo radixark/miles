@@ -274,6 +274,7 @@ class SoakActionScheduler:
                 "form_name": form.name,
                 "next_due_at": next_due_at,
                 "hook_trigger": hook_trigger,
+                "hook_delay_ms": form.sample_delay(self._rng) if isinstance(form, HookFaultForm) else None,
                 "additional_requests": requests[1:],
             }
         )

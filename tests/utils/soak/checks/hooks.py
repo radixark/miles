@@ -39,12 +39,16 @@ def assert_hook_effects(events: Sequence[Event], *, hook_events: Sequence[FaultH
         assert event.request_id not in applied, "Duplicate hook effect"
         applied.add(event.request_id)
         hook_request = FaultHookRequest.model_validate(event.evidence["hook_request"])
+        delay = f"{hook_request.delay_ms:g}ms"
+        if request.hook_delay_ms is not None:
+            assert hook_request.delay_ms == request.hook_delay_ms, "Hook delay differs from the recorded draw"
+            delay = "random"
         remote = request.form_name.startswith("remote_hook:")
         if remote:
             assert hook_request.action == "observe", "Remote hook must leave its trigger unharmed"
             assert hook_request.request_id == f"{request.request_id}:trigger", "Wrong remote trigger request"
             assert request.form_name == (
-                f"remote_hook:{hook_request.hook}:{event.evidence['victim_form']}:{hook_request.delay_ms:g}ms"
+                f"remote_hook:{hook_request.hook}:{event.evidence['victim_form']}:{delay}"
                 + (":all" if request.additional_requests else "")
             ), "Remote hook evidence names another form"
             assert request.hook_trigger is not None
@@ -53,7 +57,7 @@ def assert_hook_effects(events: Sequence[Event], *, hook_events: Sequence[FaultH
             assert hook_request.action == "inject", "Observation alone is not a local fault effect"
             assert hook_request.request_id == request.request_id, "Hook evidence belongs to another request"
             assert request.form_name == (
-                f"hook:{hook_request.hook}:{hook_request.mode}:{hook_request.delay_ms:g}ms"
+                f"hook:{hook_request.hook}:{hook_request.mode}:{delay}"
             ), "Hook evidence names another form"
         matching = [event for event in hook_events if event.request_id == hook_request.request_id]
         assert matching, "Applied hook has no worker-side evidence"

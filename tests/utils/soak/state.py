@@ -100,6 +100,7 @@ class SoakActionRequest(FrozenStrictBaseModel):
     pod: SoakPodTarget | None = None
     fault_target: FaultTarget | None = None
     hook_trigger: FaultTarget | None = None
+    hook_delay_ms: float | None = Field(default=None, ge=0, le=300000, allow_inf_nan=False)
     additional_requests: list["SoakActionRequest"] = Field(default_factory=list)
 
     @field_validator("target", mode="before")
