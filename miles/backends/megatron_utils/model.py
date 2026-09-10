@@ -198,9 +198,11 @@ def setup_model_and_optimizer(
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
     elif is_multi_lora_enabled(args):
-        from miles.backends.megatron_utils.lora.optimizer import build_multi_lora_optimizer
+        from miles.backends.megatron_utils.lora.optimizer import validate_multi_lora_optimizer_args
 
-        optimizer = build_multi_lora_optimizer(args, config, model)
+        # per-tenant SlotOptimizers are built at load_slot; there is no pool optimizer
+        validate_multi_lora_optimizer_args(args)
+        optimizer = None
     else:
         optimizer = get_megatron_optimizer(
             config=config,

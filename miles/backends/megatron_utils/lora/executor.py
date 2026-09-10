@@ -1,19 +1,15 @@
 """Accumulate gradients across commands and step only the requested LoRA slots."""
 
-import logging
 from argparse import Namespace
 from collections.abc import Sequence
 
 from megatron.core.distributed import DistributedDataParallel as DDP
-from megatron.core.optimizer import MegatronOptimizer
 
 from miles.backends.megatron_utils.lora.optimizer import (
-    _slot_children,
+    SlotOptimizer,
     reset_grad_metadata_keep_grads,
-    step_adapter_slots,
-    zero_adapter_slot_grads,
+    step_slot_optimizers,
 )
-from miles.backends.megatron_utils.lora.slots import zero_optimizer_state_for_adapter
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data import get_data_iterator
 from miles.backends.training_utils.log_utils import aggregate_train_losses
@@ -21,14 +17,11 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.types import RolloutBatch
 
-logger = logging.getLogger(__name__)
-
 
 def forward_backward(
     args: Namespace,
     batch_id: int,
     model: Sequence[DDP],
-    optimizer: MegatronOptimizer,
     rollout_data: RolloutBatch,
 ) -> dict:
     data_iterator, num_microbatches = get_data_iterator(args, model, rollout_data)
@@ -38,7 +31,8 @@ def forward_backward(
         iterator.reset()
     for model_chunk in model:
         model_chunk.train()
-    setup_train_iteration_config(args, model, optimizer, disable_optimizer=False)
+    # disable_optimizer: bf16 loss scaling is the identity, so the pass needs no optimizer
+    setup_train_iteration_config(args, model, None, disable_optimizer=True)
     reset_grad_metadata_keep_grads(model)
 
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=batch_id)
@@ -54,43 +48,26 @@ def forward_backward(
 
 def optim_step(
     args: Namespace,
-    model: Sequence[DDP],
-    optimizer: MegatronOptimizer,
+    slot_optimizers: dict[int, SlotOptimizer],
     adam_params_by_slot: dict[int, dict],
-) -> dict[int, float]:
-    for slot, adam_params in adam_params_by_slot.items():
-        _apply_adam_params(optimizer, slot, adam_params)
+) -> dict[int, dict]:
     # batch size 1: grads step as accumulated; normalization is the client's loss weights
-    return step_adapter_slots(
-        optimizer,
-        model,
-        {slot: 1 for slot in adam_params_by_slot},
-        clip_grad=args.clip_grad,
-    )
+    stepped = {slot: slot_optimizers[slot] for slot in adam_params_by_slot}
+    return step_slot_optimizers(stepped, adam_params_by_slot, clip_grad=args.clip_grad)
 
 
-def _apply_adam_params(optimizer: MegatronOptimizer, slot: int, adam_params: dict) -> None:
-    for child in _slot_children(optimizer, slot):
-        for group in child.param_groups:
-            group["lr"] = adam_params["learning_rate"]
-            group["betas"] = (adam_params["beta1"], adam_params["beta2"])
-            group["eps"] = adam_params["eps"]
-            group["weight_decay"] = adam_params["weight_decay"]
-
-
-def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, rank: int, alpha: float) -> None:
+def load_slot(args: Namespace, model: Sequence[DDP], slot: int, rank: int, alpha: float) -> SlotOptimizer:
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot
 
     init_adapter_slot(model, slot, rank=rank, alpha=alpha)
-    zero_adapter_slot_grads(model, slot)
-    zero_optimizer_state_for_adapter(optimizer, model, slot)
-    optimizer.reload_model_params()
+    slot_optimizer = SlotOptimizer(args, model, slot)
+    slot_optimizer.zero_grads()
+    return slot_optimizer
 
 
-def unload_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int) -> None:
+def unload_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer) -> None:
+    """The caller drops the instance afterwards; its state dies with it."""
     from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
 
-    clear_adapter_slot(model, slot)
-    zero_adapter_slot_grads(model, slot)
-    zero_optimizer_state_for_adapter(optimizer, model, slot)
-    optimizer.reload_model_params()
+    clear_adapter_slot(model, slot_optimizer.slot)
+    slot_optimizer.zero_grads()
