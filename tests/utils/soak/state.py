@@ -51,6 +51,12 @@ class SoakPodTarget(FrozenStrictBaseModel):
     uid: str
 
 
+class SoakObservation(BaseEvent):
+    cells: list[dict] | None
+    pods_of_cell: dict[str, list[SoakPodTarget]] = Field(default_factory=dict)
+    errors: dict[str, str] = Field(default_factory=dict)
+
+
 class SoakActionRequest(FrozenStrictBaseModel):
     request_id: str = Field(default_factory=lambda: uuid4().hex)
     target: dict
@@ -86,7 +92,14 @@ class ObservationsEvent(BaseEvent):
     cells: list[dict] = Field(default_factory=list)
 
 
-Event = InjectionEvent | ObservationsEvent | SoakActionRequestedEvent | SoakActionResultEvent | SoakScheduleEvent
+Event = (
+    InjectionEvent
+    | ObservationsEvent
+    | SoakActionRequestedEvent
+    | SoakActionResultEvent
+    | SoakScheduleEvent
+    | SoakObservation
+)
 
 
 class EventLog:
@@ -108,14 +121,7 @@ class EventLog:
         self._append(
             ObservationsEvent(
                 cells=deepcopy(cells),
-                cell_infos={
-                    cell["metadata"]["name"]: CellInfo(
-                        cell_type=cell_type_of(cell),
-                        state=compute_observed_cell_state(cell),
-                        alive=cell_is_alive(cell),
-                    )
-                    for cell in cells
-                },
+                cell_infos=compute_cell_infos(cells),
             )
         )
 
@@ -128,9 +134,23 @@ class EventLog:
     def note_schedule(self, schedule: SoakScheduleEvent) -> None:
         self._append(schedule)
 
+    def note_observation(self, observation: SoakObservation) -> None:
+        self._append(observation.model_copy(deep=True))
+
     def _append(self, event: Event) -> None:
         with self._lock:
             self._events.append(event)
+
+
+def compute_cell_infos(cells: list[dict]) -> dict[str, CellInfo]:
+    return {
+        cell["metadata"]["name"]: CellInfo(
+            cell_type=cell_type_of(cell),
+            state=compute_observed_cell_state(cell),
+            alive=cell_is_alive(cell),
+        )
+        for cell in cells
+    }
 
 
 def cell_type_of(cell: dict) -> str:

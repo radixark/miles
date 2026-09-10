@@ -12,6 +12,8 @@ from tests.utils.soak.state import (
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakObservation,
+    compute_cell_infos,
 )
 
 STALE_STATUS_GRACE_SECONDS: float = 120.0
@@ -22,7 +24,12 @@ def project_legacy_events(events: list[Event]) -> list[Event]:
     completed: set[str] = set()
     projected: list[Event] = []
     for event in events:
-        if isinstance(event, SoakActionRequestedEvent):
+        if isinstance(event, SoakObservation):
+            if event.cells is not None:
+                projected.append(
+                    ObservationsEvent(timestamp=event.timestamp, cell_infos=compute_cell_infos(event.cells))
+                )
+        elif isinstance(event, SoakActionRequestedEvent):
             assert event.request.request_id not in requests, f"Duplicate soak request: {event.request.request_id}"
             requests[event.request.request_id] = event.request
         elif isinstance(event, SoakActionResultEvent):
@@ -192,6 +199,7 @@ def _compute_matching_cell_events(
 
 
 def _compute_cell_type_of_name(events: list[Event]) -> dict[str, str]:
+    events = project_legacy_events(events)
     cell_type_of_name: dict[str, str] = {}
     for event in events:
         if isinstance(event, ObservationsEvent):

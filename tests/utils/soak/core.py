@@ -17,6 +17,7 @@ from tests.utils.soak.state import (
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakObservation,
     SoakScheduleEvent,
     cell_type_of,
 )
@@ -44,7 +45,7 @@ def run_fault_injection_loop(
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     rng = random.Random(seed)
-    observer = SoakObserver(
+    observer = _SynchronousObserver(
         base_url=base_url, cell_types=set(mean_interval_seconds_of_cell_type), get_virtual_cells=get_virtual_cells
     )
     scheduler = SoakActionScheduler(
@@ -74,7 +75,7 @@ def run_fault_injection_loop(
 
 
 @dataclass(frozen=True)
-class SoakObserver:
+class _SynchronousObserver:
     base_url: str
     cell_types: set[str]
     get_virtual_cells: Callable[[], list[dict]] | None = None
@@ -118,9 +119,9 @@ class SoakActionScheduler:
                 due_of_type.update(event.due_of_type)
             elif isinstance(event, SoakActionRequestedEvent) and event.request.next_due_at is not None:
                 due_of_type[cell_type_of(event.request.target)] = event.request.next_due_at
-            elif isinstance(event, ObservationsEvent):
+            elif isinstance(event, (ObservationsEvent, SoakObservation)):
                 observation = event
-        if observation is None:
+        if observation is None or observation.cells is None:
             return None
         cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
         for cell in observation.cells:
@@ -138,9 +139,19 @@ class SoakActionScheduler:
         form = _draw_form(self._forms[cell_type], events=events, cell_type=cell_type, rng=self._rng)
         if self._injection_enabled is not None and not self._injection_enabled():
             return None
+        candidates = None
+        if isinstance(observation, SoakObservation) and form.name in {"delete_pod", "exec_sigkill"}:
+            candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
+            if not candidates:
+                return None
         next_due_at = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
+        pod = self._rng.choice(candidates) if candidates is not None else None
         return SoakActionRequest(
-            target=deepcopy(target), form_name=form.name, harms_cell=form.harms_cell, next_due_at=next_due_at
+            target=deepcopy(target),
+            form_name=form.name,
+            harms_cell=form.harms_cell,
+            next_due_at=next_due_at,
+            pod=pod,
         )
 
 
