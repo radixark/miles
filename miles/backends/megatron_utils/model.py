@@ -32,7 +32,11 @@ from miles.backends.megatron_utils.local_weight_checksum import dump_local_weigh
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.weight_version_checkpoint import read_weight_version
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.audit_utils.witness.cpu import TrainingSampleIdentity, record_cpu_witness
+from miles.utils.audit_utils.witness.cpu import (
+    TrainingSampleIdentity,
+    record_cpu_witness,
+    record_nonfinite_skip_cpu_witness,
+)
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.file_utils import atomic_write_text
@@ -621,9 +625,9 @@ def train_one_step(
         else:
             grad_norm = optimizer.get_grad_norm()
             if isinstance(grad_norm, torch.Tensor):
-                valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
+                valid_step = valid_step and not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
-                valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+                valid_step = valid_step and not (math.isnan(grad_norm) or math.isinf(grad_norm))
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
@@ -638,7 +642,7 @@ def train_one_step(
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
 
-    if parallel_state.indep_dp.size == 1 and not disable_optimizer and not multi_lora and valid_step:
+    if parallel_state.indep_dp.size == 1 and not disable_optimizer and not multi_lora:
         consumed_identities = _gather_sample_identities(local_consumed_identities)
 
     if not disable_optimizer and valid_step:
@@ -658,6 +662,8 @@ def train_one_step(
 
         if not multi_lora:
             record_cpu_witness(model=model, samples=consumed_identities)
+    elif outcome == TrainStepOutcome.NORMAL and not disable_optimizer and not multi_lora:
+        record_nonfinite_skip_cpu_witness(model=model, samples=consumed_identities)
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)

@@ -3,6 +3,7 @@ import os
 import re
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
+from typing import Any
 
 import torch.distributed as dist
 from megatron.core.utils import unwrap_model
@@ -108,7 +109,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
 
     load_path = args.load
 
-    has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})
+    has_local_checkpoint_manager = _has_local_checkpoint(args, checkpointing_context)
     if has_local_checkpoint_manager:
         logger.info("Skipping disk path validation: using in-memory checkpoint via local_checkpoint_manager")
     else:
@@ -163,16 +164,28 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     return result
 
 
+def _has_local_checkpoint(args: Any, checkpointing_context: dict[str, Any] | None) -> bool:
+    local_checkpoint_manager = (checkpointing_context or {}).get("local_checkpoint_manager")
+    if local_checkpoint_manager is None or args.non_persistent_ckpt_type != "local":
+        return False
+    return local_checkpoint_manager.find_latest() >= _persistent_checkpoint_iteration(args)
+
+
+def _persistent_checkpoint_iteration(args: Any) -> int:
+    if args.ckpt_step:
+        return args.ckpt_step
+    tracker = Path(args.load) / "latest_checkpointed_iteration.txt"
+    if not tracker.is_file() or not tracker.read_text().strip().isdigit():
+        return -1
+    return int(tracker.read_text().strip())
+
+
 def _has_cpu_witness_checkpoint(args) -> bool:
     path = Path(args.load)
     if not re.fullmatch(r"iter_\d{7}", path.name):
-        if args.ckpt_step is not None:
-            iteration = args.ckpt_step
-        else:
-            tracker = path / "latest_checkpointed_iteration.txt"
-            if not tracker.is_file() or not tracker.read_text().strip().isdigit():
-                return False
-            iteration = int(tracker.read_text().strip())
+        iteration = _persistent_checkpoint_iteration(args)
+        if iteration < 0:
+            return False
         path = path / f"iter_{iteration:07d}"
     return (path / "cpu_witness_version.txt").is_file()
 

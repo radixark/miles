@@ -24,7 +24,12 @@ from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
 from miles.utils.audit_utils.event_logger.models import TrainerCpuWitnessEvent
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.audit_utils.witness.cpu import preserve_cpu_witness, snapshot_cpu_witness
+from miles.utils.audit_utils.witness.cpu import (
+    TrainingSampleIdentity,
+    preserve_cpu_witness,
+    snapshot_cpu_witness,
+    snapshot_nonfinite_skip_cpu_witness,
+)
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -788,24 +793,28 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_replica_id: str,
         reason: str,
     ) -> TrainerCpuWitnessEvent:
-        sample_counts = [
-            {
-                "sample": {
-                    "source_sample_index": identity.source_sample_index,
-                    "row_index": identity.row_index,
-                    "row_count": identity.row_count,
-                },
-                "count": count,
-            }
-            for identity, count in sorted(
-                snapshot_cpu_witness(self.model).items(),
-                key=lambda item: (
-                    item[0].source_sample_index,
-                    item[0].row_index,
-                    item[0].row_count,
-                ),
-            )
-        ]
+        def _snapshot_counts(counts: dict[TrainingSampleIdentity, int]) -> list[dict[str, object]]:
+            return [
+                {
+                    "sample": {
+                        "source_sample_index": identity.source_sample_index,
+                        "row_index": identity.row_index,
+                        "row_count": identity.row_count,
+                    },
+                    "count": count,
+                }
+                for identity, count in sorted(
+                    counts.items(),
+                    key=lambda item: (
+                        item[0].source_sample_index,
+                        item[0].row_index,
+                        item[0].row_count,
+                    ),
+                )
+            ]
+
+        sample_counts = _snapshot_counts(snapshot_cpu_witness(self.model))
+        skipped_nonfinite_sample_counts = _snapshot_counts(snapshot_nonfinite_skip_cpu_witness(self.model))
         event_logger = get_event_logger()
         event = event_logger.make_event(
             TrainerCpuWitnessEvent,
@@ -814,6 +823,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 "rollout_id": rollout_id,
                 "cohort_id": cohort_id,
                 "sample_counts": sample_counts,
+                "skipped_nonfinite_sample_counts": skipped_nonfinite_sample_counts,
                 "reason": reason,
             },
         )

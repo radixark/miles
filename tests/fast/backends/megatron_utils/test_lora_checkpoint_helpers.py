@@ -10,7 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.backends.megatron_utils.checkpoint import _is_megatron_checkpoint, save_checkpoint_with_lora
+from miles.backends.megatron_utils.checkpoint import (
+    _has_local_checkpoint,
+    _is_megatron_checkpoint,
+    save_checkpoint_with_lora,
+)
 
 # ---------------------------------------------------------------------------
 # _is_megatron_checkpoint
@@ -61,6 +65,43 @@ class TestIsMegatronCheckpoint:
         d = tmp_path / name
         d.mkdir()
         assert _is_megatron_checkpoint(d) is False
+
+
+class TestHasLocalCheckpoint:
+    @staticmethod
+    def _args(tmp_path, *, ckpt_step=None) -> Namespace:
+        return Namespace(load=str(tmp_path), ckpt_step=ckpt_step, non_persistent_ckpt_type="local")
+
+    def test_empty_manager_uses_the_disk_or_pretrained_fallback(self, tmp_path) -> None:
+        """An allocated but empty local manager is not the selected checkpoint source."""
+        manager = MagicMock()
+        manager.find_latest.return_value = -1
+
+        assert _has_local_checkpoint(self._args(tmp_path), {"local_checkpoint_manager": manager}) is False
+
+    def test_older_manager_uses_the_newer_disk_checkpoint(self, tmp_path) -> None:
+        """A local checkpoint older than the disk tracker is not selected."""
+        manager = MagicMock()
+        manager.find_latest.return_value = 7
+        (tmp_path / "latest_checkpointed_iteration.txt").write_text("8")
+
+        assert _has_local_checkpoint(self._args(tmp_path), {"local_checkpoint_manager": manager}) is False
+
+    def test_newer_manager_is_the_selected_checkpoint_source(self, tmp_path) -> None:
+        """A local checkpoint at least as new as disk supplies the CPU witness."""
+        manager = MagicMock()
+        manager.find_latest.return_value = 8
+        (tmp_path / "latest_checkpointed_iteration.txt").write_text("7")
+
+        assert _has_local_checkpoint(self._args(tmp_path), {"local_checkpoint_manager": manager}) is True
+
+    def test_ckpt_step_takes_precedence_over_the_disk_tracker(self, tmp_path) -> None:
+        """The requested persistent iteration determines whether local state wins."""
+        manager = MagicMock()
+        manager.find_latest.return_value = 8
+        (tmp_path / "latest_checkpointed_iteration.txt").write_text("9")
+
+        assert _has_local_checkpoint(self._args(tmp_path, ckpt_step=7), {"local_checkpoint_manager": manager}) is True
 
 
 # ---------------------------------------------------------------------------

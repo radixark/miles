@@ -8,7 +8,9 @@ from miles.utils.audit_utils.witness.cpu import (
     install_cpu_witness,
     preserve_cpu_witness,
     record_cpu_witness,
+    record_nonfinite_skip_cpu_witness,
     snapshot_cpu_witness,
+    snapshot_nonfinite_skip_cpu_witness,
 )
 
 
@@ -49,11 +51,14 @@ class TestCpuWitness:
         model = torch.nn.Module()
         model.add_module("cpu_witness", CpuWitness())
         model.cpu_witness.record([_identity(7, 0, 1)])
+        model.cpu_witness.record_skipped_nonfinite([_identity(8, 0, 1)])
 
         with preserve_cpu_witness([model]):
-            model.cpu_witness.record([_identity(8, 0, 1)])
+            model.cpu_witness.record([_identity(9, 0, 1)])
+            model.cpu_witness.record_skipped_nonfinite([_identity(10, 0, 1)])
 
         assert model.cpu_witness.snapshot() == {_identity(7, 0, 1): 1}
+        assert model.cpu_witness.snapshot_skipped_nonfinite() == {_identity(8, 0, 1): 1}
 
     def test_hide_excludes_witness_from_legacy_checkpoint_load(self) -> None:
         """Legacy checkpoints can load while the new module is hidden."""
@@ -77,12 +82,32 @@ class TestCpuWitness:
         """Checkpoint restore replaces the current witness state."""
         source = CpuWitness()
         source.record([_identity(7, 0, 2), _identity(7, 1, 2), _identity(7, 0, 2)])
+        source.record_skipped_nonfinite([_identity(8, 0, 1)])
         target = CpuWitness()
         target.record([_identity(9, 0, 1)])
+        target.record_skipped_nonfinite([_identity(10, 0, 1)])
 
         target.set_extra_state(source.get_extra_state())
 
         assert target.snapshot() == {_identity(7, 0, 2): 2, _identity(7, 1, 2): 1}
+        assert target.snapshot_skipped_nonfinite() == {_identity(8, 0, 1): 1}
+
+    def test_version_one_checkpoint_loads_with_no_nonfinite_skips(self) -> None:
+        """Older witness checkpoints restore trained counts and an empty skip counter."""
+        witness = CpuWitness()
+        witness.record_skipped_nonfinite([_identity(8, 0, 1)])
+
+        witness.set_extra_state({"version": 1, "sample_counts": {_identity(7, 0, 1): 1}})
+
+        assert witness.snapshot() == {_identity(7, 0, 1): 1}
+        assert witness.snapshot_skipped_nonfinite() == {}
+
+    def test_version_two_checkpoint_requires_the_nonfinite_skip_counter(self) -> None:
+        """A truncated current checkpoint cannot silently erase nonfinite outcomes."""
+        witness = CpuWitness()
+
+        with pytest.raises(KeyError, match="skipped_nonfinite_sample_counts"):
+            witness.set_extra_state({"version": 2, "sample_counts": {}})
 
     def test_model_chunks_receive_identical_updates(self) -> None:
         """Virtual pipeline chunks retain identical witness mirrors."""
@@ -91,8 +116,10 @@ class TestCpuWitness:
             chunk.add_module("cpu_witness", CpuWitness())
 
         record_cpu_witness(chunks, [_identity(7, 0, 2), _identity(7, 1, 2)])
+        record_nonfinite_skip_cpu_witness(chunks, [_identity(8, 0, 1)])
 
         assert snapshot_cpu_witness(chunks) == {_identity(7, 0, 2): 1, _identity(7, 1, 2): 1}
+        assert snapshot_nonfinite_skip_cpu_witness(chunks) == {_identity(8, 0, 1): 1}
 
     def test_snapshot_rejects_divergent_model_chunks(self) -> None:
         """A snapshot cannot silently choose between divergent chunk mirrors."""

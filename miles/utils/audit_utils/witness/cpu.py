@@ -22,6 +22,7 @@ class CpuWitness(torch.nn.Module):
         self.chunk_index = chunk_index
         self.replica_id = replica_id
         self.sample_counts: Counter[TrainingSampleIdentity] = Counter()
+        self.skipped_nonfinite_sample_counts: Counter[TrainingSampleIdentity] = Counter()
 
     def record(self, samples: Iterable[TrainingSampleIdentity]) -> None:
         self.sample_counts.update(samples)
@@ -29,12 +30,24 @@ class CpuWitness(torch.nn.Module):
     def snapshot(self) -> dict[TrainingSampleIdentity, int]:
         return dict(self.sample_counts)
 
+    def record_skipped_nonfinite(self, samples: Iterable[TrainingSampleIdentity]) -> None:
+        self.skipped_nonfinite_sample_counts.update(samples)
+
+    def snapshot_skipped_nonfinite(self) -> dict[TrainingSampleIdentity, int]:
+        return dict(self.skipped_nonfinite_sample_counts)
+
     def get_extra_state(self) -> dict[str, Any]:
-        return {"version": 1, "sample_counts": self.snapshot()}
+        return {
+            "version": 2,
+            "sample_counts": self.snapshot(),
+            "skipped_nonfinite_sample_counts": self.snapshot_skipped_nonfinite(),
+        }
 
     def set_extra_state(self, state: dict[str, Any]) -> None:
-        assert state["version"] == 1, f"Unsupported CPU witness version: {state['version']}"
+        assert state["version"] in (1, 2), f"Unsupported CPU witness version: {state['version']}"
         self.sample_counts = Counter(copy.deepcopy(state["sample_counts"]))
+        skipped_nonfinite_sample_counts = {} if state["version"] == 1 else state["skipped_nonfinite_sample_counts"]
+        self.skipped_nonfinite_sample_counts = Counter(copy.deepcopy(skipped_nonfinite_sample_counts))
 
     def sharded_state_dict(
         self, prefix: str = "", sharded_offsets: tuple = (), metadata: dict | None = None
@@ -84,9 +97,27 @@ def snapshot_cpu_witness(model: Sequence[torch.nn.Module]) -> dict[TrainingSampl
     return snapshots[0]
 
 
+def record_nonfinite_skip_cpu_witness(
+    model: Sequence[torch.nn.Module], samples: Iterable[TrainingSampleIdentity]
+) -> None:
+    identities = list(samples)
+    for witness in cpu_witnesses(model):
+        witness.record_skipped_nonfinite(identities)
+
+
+def snapshot_nonfinite_skip_cpu_witness(
+    model: Sequence[torch.nn.Module],
+) -> dict[TrainingSampleIdentity, int]:
+    witnesses = cpu_witnesses(model)
+    assert witnesses, "Model is missing its CPU training witness"
+    snapshots = [witness.snapshot_skipped_nonfinite() for witness in witnesses]
+    assert all(snapshot == snapshots[0] for snapshot in snapshots[1:]), "CPU witness model chunks diverged"
+    return snapshots[0]
+
+
 def clear_cpu_witness(model: Sequence[torch.nn.Module]) -> None:
     for witness in cpu_witnesses(model):
-        witness.set_extra_state({"version": 1, "sample_counts": {}})
+        witness.set_extra_state({"version": 2, "sample_counts": {}, "skipped_nonfinite_sample_counts": {}})
 
 
 @contextmanager

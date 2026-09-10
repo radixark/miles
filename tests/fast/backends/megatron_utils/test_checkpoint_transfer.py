@@ -110,18 +110,26 @@ class TestSerializeForTransport:
 
 class TestDeserializeFromTransport:
     def test_round_trip_preserves_the_real_cpu_witness_sharded_object(self) -> None:
-        """FT transport preserves the witness shard data and its intra-DP replica identity."""
-        witness = CpuWitness(pipeline_rank=2, chunk_index=1, replica_id=(3, 4, 0))
+        """A surviving cell donor restores both witness outcomes into a healing receiver."""
+        donor = CpuWitness(pipeline_rank=2, chunk_index=1, replica_id=(3, 4, 0))
         sample = TrainingSampleIdentity(source_sample_index=7, row_index=0, row_count=1)
-        witness.record([sample])
-        sharded_state_dict = {"model": witness.sharded_state_dict(prefix="actor.cpu_witness.")}
-        state_dict = MCoreTensorAwareStateDict(common={}, sharded_state_dict=sharded_state_dict)
+        skipped_sample = TrainingSampleIdentity(source_sample_index=8, row_index=0, row_count=1)
+        donor.record([sample])
+        donor.record_skipped_nonfinite([skipped_sample])
+        state_dict, _ = MCoreTensorAwareStateDict.from_state_dict(
+            {"model": donor.sharded_state_dict(prefix="actor.cpu_witness.")}, algo="atomic"
+        )
 
         _, restored = _TransportCodec.decode(_TransportCodec.encode(state_dict=state_dict, iteration=11))
 
-        [restored_object] = list(restored.sharded_state_dict["model"].values())
-        assert restored_object.replica_id == (3, 4, 0)
-        assert restored_object.data == {"version": 1, "sample_counts": {sample: 1}}
+        receiver = CpuWitness(pipeline_rank=2, chunk_index=1, replica_id=(3, 4, 0))
+        receiver_state = restored.to_state_dict(
+            {"model": receiver.sharded_state_dict(prefix="actor.cpu_witness.")}, algo="atomic"
+        )
+        receiver.load_state_dict({"_extra_state": receiver_state["model"]["actor.cpu_witness._extra_state"]})
+
+        assert receiver.snapshot() == {sample: 1}
+        assert receiver.snapshot_skipped_nonfinite() == {skipped_sample: 1}
 
     def test_round_trip_preserves_tensor_values_iteration_and_common(self, state_dict: MCoreTensorAwareStateDict):
         original_tensors = [t.clone() for t in state_dict.tensors]
