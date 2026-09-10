@@ -79,18 +79,27 @@ def load_slot(model: Sequence[DDP], optimizer: MegatronOptimizer, slot: int, pat
     from megatron.bridge.peft.multi_lora_layers import load_adapter
 
     checkpoint_dir = Path(path)
+    shards: dict = {}
 
-    def load_shards():
-        state_dict = torch.load(checkpoint_dir / _weight_shard_name(), map_location="cpu", weights_only=True)
-        loaded = load_adapter(model, slot, state_dict)
+    def read_shards():
+        shards["weights"] = torch.load(checkpoint_dir / _weight_shard_name(), map_location="cpu", weights_only=True)
+        if load_optimizer:
+            optim_state = torch.load(checkpoint_dir / _optim_shard_name(), map_location="cpu", weights_only=True)
+            _check_optimizer_slot_state(optimizer, slot, optim_state)
+            shards["optim"] = optim_state
+
+    def apply_shards():
+        loaded = load_adapter(model, slot, shards["weights"])
         assert loaded > 0, f"loaded 0 adapter tensors from {checkpoint_dir / _weight_shard_name()}"
         optimizer.reload_model_params()
         if load_optimizer:
-            optim_state = torch.load(checkpoint_dir / _optim_shard_name(), map_location="cpu", weights_only=True)
-            _load_optimizer_slot_state(optimizer, slot, optim_state)
+            _load_optimizer_slot_state(optimizer, slot, shards["optim"])
         # weights-only load keeps the fresh Adam state the slot init just zeroed
 
-    _run_checkpoint_phase(load_shards)
+    # every rank reads and validates its shards before any rank touches the live slot,
+    # so a missing or mismatched checkpoint cannot leave mixed or rank-divergent state
+    _run_checkpoint_phase(read_shards)
+    _run_checkpoint_phase(apply_shards)
 
 
 def _run_checkpoint_phase(operation) -> None:
@@ -131,13 +140,26 @@ def _optimizer_slot_state(optimizer: MegatronOptimizer, slot: int) -> dict:
     return {"world_size": _world_size(), "children": children_states}
 
 
-def _load_optimizer_slot_state(optimizer: MegatronOptimizer, slot: int, saved: dict) -> None:
+def _check_optimizer_slot_state(optimizer: MegatronOptimizer, slot: int, saved: dict) -> None:
+    """Validate the saved layout against the live slot before any state is touched."""
     assert saved["world_size"] == _world_size(), (
         f"optimizer state was saved with world_size={saved['world_size']}; "
         f"resume requires the same topology (got {_world_size()})"
     )
     children = _slot_children(optimizer, slot)
     assert len(children) == len(saved["children"]), "optimizer layout changed since save"
+    for child, child_state in zip(children, saved["children"], strict=True):
+        assert len(child_state["group_steps"]) == len(
+            child.optimizer.param_groups
+        ), "optimizer layout changed since save"
+        params = child.get_parameters()
+        assert len(child_state["params"]) == len(params), "optimizer layout changed since save"
+        masters = child_state.get("masters")
+        assert masters is None or len(masters) == len(params), "optimizer layout changed since save"
+
+
+def _load_optimizer_slot_state(optimizer: MegatronOptimizer, slot: int, saved: dict) -> None:
+    children = _slot_children(optimizer, slot)
     for child, child_state in zip(children, saved["children"], strict=True):
         inner = child.optimizer
         # FusedAdam clocks steps on the param group, not in per-param state
