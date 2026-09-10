@@ -11,7 +11,7 @@ from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray.rollout.train_data_conversion import (
     _post_process_rewards,
-    can_schedule_on_rollout_side,
+    can_precompute_dp_schedule,
     convert_samples_to_train_data,
     split_train_data_by_dp,
     split_train_data_by_dp_raw,
@@ -852,26 +852,26 @@ def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: l
     }
 
 
-class TestCanScheduleOnRolloutSide:
+class TestCanPrecomputeDpSchedule:
     def test_eligible_with_full_megatron_config(self):
         args = make_args(balance_data=False, micro_batch_size=1, use_dynamic_batch_size=False, multi_lora=False)
-        assert can_schedule_on_rollout_side(
+        assert can_precompute_dp_schedule(
             args=args, data=_make_split_data(8), train_parallel_config=FULL_SCHEDULE_CONFIG
         )
 
     def test_rejects_partial_config(self):
         """Reject backends without precomputed schedule support or an advertised config."""
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
-        assert not can_schedule_on_rollout_side(
+        assert not can_precompute_dp_schedule(
             args=args,
             data=_make_split_data(8),
             train_parallel_config=make_train_parallel_config(dp_size=2, supports_precomputed_schedule=False),
         )
-        assert not can_schedule_on_rollout_side(args=args, data=_make_split_data(8), train_parallel_config=None)
+        assert not can_precompute_dp_schedule(args=args, data=_make_split_data(8), train_parallel_config=None)
 
     def test_rejects_multi_lora(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=True)
-        assert not can_schedule_on_rollout_side(
+        assert not can_precompute_dp_schedule(
             args=args, data=_make_split_data(8), train_parallel_config=FULL_SCHEDULE_CONFIG
         )
 
@@ -879,18 +879,18 @@ class TestCanScheduleOnRolloutSide:
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
         data = _make_split_data(8)
         data["multimodal_train_inputs"] = [None] * 8
-        assert not can_schedule_on_rollout_side(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
     def test_rejects_fewer_rollouts_than_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
-        assert not can_schedule_on_rollout_side(
+        assert not can_precompute_dp_schedule(
             args=args, data=_make_split_data(6), train_parallel_config=FULL_SCHEDULE_CONFIG
         )
 
     def test_accepts_trailing_partial_step(self):
         """Extra rollouts beyond a full step are fine — the schedule drops them."""
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
-        assert can_schedule_on_rollout_side(
+        assert can_precompute_dp_schedule(
             args=args, data=_make_split_data(10), train_parallel_config=FULL_SCHEDULE_CONFIG
         )
 
@@ -898,7 +898,7 @@ class TestCanScheduleOnRolloutSide:
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
         data = _make_split_data(6)
         data["dynamic_global_batch_size"] = 6
-        assert can_schedule_on_rollout_side(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
 
 class TestSplitTrainDataByDpScheduled:

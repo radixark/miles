@@ -299,14 +299,14 @@ def split_train_data_by_dp(
     When the training backend can consume a rollout-side schedule, the shards
     also carry the precomputed micro-batch layout; otherwise this falls back to
     the legacy split (the training side schedules locally)."""
-    if can_schedule_on_rollout_side(args, data, train_parallel_config):
+    if can_precompute_dp_schedule(args, data, train_parallel_config):
         shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     else:
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config.dp_size)
     return shards
 
 
-def can_schedule_on_rollout_side(
+def can_precompute_dp_schedule(
     args: Any, data: dict[str, Any], train_parallel_config: TrainParallelConfig | None
 ) -> bool:
     """Whether the rollout side can precompute the full DP/mbs schedule."""
