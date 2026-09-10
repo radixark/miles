@@ -3,7 +3,7 @@ import os
 from model_args_utils import moe_layer_freq
 
 
-def model_args(nlayers: int | None = None, rotary_base: str = "10000") -> str:
+def model_args(nlayers: int | None = None) -> str:
     nlayers = nlayers if nlayers is not None else int(os.environ.get("MODEL_ARGS_NUM_LAYERS") or 93)
     return (
         "--spec miles_plugins.models.kimi_k3 get_kimi_k3_spec "
@@ -16,7 +16,7 @@ def model_args(nlayers: int | None = None, rotary_base: str = "10000") -> str:
         "--kv-channels 256 "
         "--normalization RMSNorm "
         "--position-embedding-type none "
-        f"--rotary-base {rotary_base} "
+        "--rotary-base 10000 "
         "--norm-epsilon 1e-5 "
         "--hidden-dropout 0 "
         "--attention-dropout 0 "

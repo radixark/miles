@@ -1,4 +1,5 @@
 "--spec"
+
 "miles_plugins.models.kimi_k3"
 "get_kimi_k3_spec"
 "--disable-bias-linear"
@@ -19,7 +20,7 @@
 "--position-embedding-type"
 "none"
 "--rotary-base"
-"50000"
+"10000"
 "--norm-epsilon"
 "1e-5"
 "--hidden-dropout"
