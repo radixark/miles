@@ -1,14 +1,21 @@
 import asyncio
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
+import torch
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
-from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
+from miles.ray.rollout.rollout_executor import (
+    RolloutExecutor,
+    compute_checkpoint_complete_marker_path,
+    compute_executor_state_path,
+)
+from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -136,3 +143,200 @@ class TestSetEvalFleetInfo:
         assert first.generate_state.args.rollout_num_gpus == info.num_gpus
         assert first.generate_state.args.rollout_num_gpus_per_engine == info.num_gpus_per_engine
         assert second.generate_state is None
+
+
+class _FakeDataSource:
+    def __init__(self) -> None:
+        self.loaded: list[int | None] = []
+
+    def save(self, rollout_id: int) -> None:
+        pass
+
+    def load(self, rollout_id: int | None) -> None:
+        self.loaded.append(rollout_id)
+
+
+class _CountingRolloutFn:
+    def __init__(self, start_index: int = 0) -> None:
+        self.next_index = start_index
+        self.num_calls = 0
+
+    def __call__(self, args, rollout_id, data_source, evaluation) -> RolloutFnTrainOutput:
+        self.num_calls += 1
+        self.next_index += 1
+        sample = Sample(
+            index=self.next_index,
+            group_index=self.next_index,
+            prompt="p",
+            status=Sample.Status.COMPLETED,
+        )
+        return RolloutFnTrainOutput(samples=[[sample]])
+
+
+def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor.args = Namespace(load=str(tmp_path), save=str(tmp_path), load_debug_rollout_data=None)
+    executor.use_legacy_rollout_v1 = True
+    executor.generate_rollout = rollout_fn
+    executor.eval_generate_rollout = rollout_fn
+    executor.data_source = _FakeDataSource()
+    executor._train_parallel_configs_of_model_id = {None: {}}
+    executor._weight_versions_of_model_id = {}
+    executor._last_batch = None
+    executor._replay = None
+    return executor
+
+
+@pytest.fixture(autouse=True)
+def _stub_rollout_postprocessing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rollout_executor_module, "postprocess_rollout_data", lambda args, data, **kwargs: (data, {}))
+    monkeypatch.setattr(rollout_executor_module, "assert_samples_weight_version_sane", lambda args, samples: None)
+    monkeypatch.setattr(rollout_executor_module.event_logger_checkpoint, "snapshot", lambda args, rollout_id: None)
+
+
+class TestLastBatchReplay:
+    async def test_a_prefetched_batch_after_the_checkpoint_is_replayed_after_restore(self, tmp_path: Path) -> None:
+        """A crash between get(r+1) and train(r+1) cannot silently lose the prefetched batch."""
+        rollout_fn = _CountingRolloutFn()
+        executor = _make_executor(tmp_path, rollout_fn)
+        before, _, _ = await executor._get_rollout_data(rollout_id=1)
+        executor.save(0)
+
+        resumed_fn = _CountingRolloutFn(start_index=rollout_fn.next_index)
+        resumed = _make_executor(tmp_path, resumed_fn)
+        resumed.load(0)
+        after, _, _ = await resumed._get_rollout_data(rollout_id=1)
+
+        assert [[sample.index for sample in group] for group in after] == [
+            [sample.index for sample in group] for group in before
+        ]
+        assert resumed_fn.num_calls == 0
+
+    async def test_a_replay_is_consumed_once(self, tmp_path: Path) -> None:
+        """A restored batch stands in for one get and the following rollout generates normally."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        await executor._get_rollout_data(rollout_id=1)
+        executor.save(0)
+        resumed = _make_executor(tmp_path, _CountingRolloutFn())
+        resumed.load(0)
+
+        await resumed._get_rollout_data(rollout_id=1)
+        await resumed._get_rollout_data(rollout_id=2)
+
+        assert resumed.generate_rollout.num_calls == 1
+
+    async def test_a_different_rollout_id_does_not_consume_the_pending_replay(self, tmp_path: Path) -> None:
+        """An unrelated get leaves the exact recorded rollout available for its own id."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        await executor._get_rollout_data(rollout_id=1)
+        executor.save(0)
+        resumed = _make_executor(tmp_path, _CountingRolloutFn())
+        resumed.load(0)
+
+        await resumed._get_rollout_data(rollout_id=2)
+        await resumed._get_rollout_data(rollout_id=1)
+
+        assert resumed.generate_rollout.num_calls == 1
+
+    async def test_a_batch_covered_by_the_checkpoint_is_not_saved_for_replay(self, tmp_path: Path) -> None:
+        """A batch at or before the saved weight step is already represented by the checkpoint."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        await executor._get_rollout_data(rollout_id=3)
+
+        executor.save(3)
+
+        state = torch.load(compute_executor_state_path(tmp_path, rollout_id=3), weights_only=False)
+        assert state["last_batch"] is None
+
+    def test_downstream_mutation_does_not_change_the_recorded_raw_batch(self, tmp_path: Path) -> None:
+        """Conversion and metadata mutation cannot corrupt the raw batch kept for checkpoint replay."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        batch = [
+            [
+                Sample(
+                    index=1,
+                    group_index=1,
+                    prompt="p",
+                    metadata={"slots": [3]},
+                    status=Sample.Status.COMPLETED,
+                )
+            ]
+        ]
+        executor._record_last_batch(rollout_id=1, samples=batch)
+        batch[0][0].metadata.pop("slots")
+
+        executor.save(0)
+
+        state = torch.load(compute_executor_state_path(tmp_path, rollout_id=0), weights_only=False)
+        assert state["last_batch"].samples[0][0].metadata == {"slots": [3]}
+
+
+class TestCheckpointCompleteMarker:
+    def test_save_publishes_the_complete_marker_after_all_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The marker exists only after data source, rollout, executor, and event state finish saving."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=2)
+
+        def snapshot(args: Namespace, rollout_id: int) -> None:
+            assert not marker.exists()
+
+        monkeypatch.setattr(rollout_executor_module.event_logger_checkpoint, "snapshot", snapshot)
+
+        executor.save(2)
+
+        assert compute_executor_state_path(tmp_path, rollout_id=2).is_file()
+        assert marker.is_file()
+
+    def test_a_failed_overwrite_removes_the_previous_complete_marker(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An interrupted overwrite cannot leave an old marker claiming the new state is complete."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.save(2)
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=2)
+
+        async def fail_save(rollout_id: int) -> None:
+            assert not marker.exists()
+            raise RuntimeError("save interrupted")
+
+        monkeypatch.setattr(executor, "_save_state", fail_save)
+        with pytest.raises(RuntimeError, match="save interrupted"):
+            executor.save(2)
+        assert not marker.exists()
+
+    def test_partial_rollout_state_without_a_marker_is_refused(self, tmp_path: Path) -> None:
+        """Files from a mid-save crash cannot be mistaken for a restorable checkpoint."""
+        state_dir = tmp_path / "rollout"
+        state_dir.mkdir()
+        (state_dir / "executor_state_5.pt").write_text("partial")
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        with pytest.raises(AssertionError, match="no complete_5 marker"):
+            executor.load(5)
+
+    def test_a_restored_trainer_requires_complete_rollout_state(self, tmp_path: Path) -> None:
+        """A numbered trainer checkpoint cannot resume with absent rollout-side state."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        with pytest.raises(AssertionError, match="no complete_5 marker"):
+            executor.load(5, require_complete=True)
+
+    def test_a_marker_without_executor_state_is_refused(self, tmp_path: Path) -> None:
+        """A corrupt checkpoint cannot use its marker to hide a missing mandatory executor file."""
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=5)
+        marker.parent.mkdir()
+        marker.write_text("")
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        with pytest.raises(AssertionError, match="no executor_state_5.pt"):
+            executor.load(5)
+
+    def test_an_empty_optional_load_warns_and_continues(self, tmp_path: Path) -> None:
+        """A fresh run with no trainer checkpoint may start without rollout state."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        executor.load(5)
+
+        assert executor.data_source.loaded == [5]

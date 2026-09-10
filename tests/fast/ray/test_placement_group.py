@@ -538,7 +538,7 @@ class TestCreateTrainingModels:
 
         await create_training_models(self._args(tmp_path), rollout_executor)
 
-        rollout_executor.load.assert_awaited_once_with(-1)
+        rollout_executor.load.assert_awaited_once_with(-1, require_complete=False)
 
     async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
         """A second handle would identify one connection and drive another, so the check would guard nothing."""
