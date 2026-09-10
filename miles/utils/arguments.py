@@ -1171,6 +1171,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Delay in seconds between suspending and resuming a cell during heal.",
             )
             SimpleHealthCheckerConfig.add_arguments(parser, prefix="trainer-heartbeat-checker")
+            parser.add_argument(
+                "--train-step-timeout",
+                type=float,
+                default=None,
+                help="Maximum seconds for one trainer cell's training attempt; expiration retires that cell.",
+            )
             return parser
 
         # data
@@ -3764,6 +3770,10 @@ def miles_validate_args(args):
         f"--update-weights-timeout is the controller's deadline for one weight update, got "
         f"{args.update_weights_timeout!r}; an infinite or non-positive one either never fires or kills every update"
     )
+    if args.train_step_timeout is not None:
+        assert (
+            math.isfinite(args.train_step_timeout) and args.train_step_timeout > 0
+        ), "--train-step-timeout must be positive and finite when configured"
 
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":

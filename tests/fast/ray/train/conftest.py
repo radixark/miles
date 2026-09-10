@@ -174,7 +174,7 @@ def make_cell(
 ) -> TrainerCell:
     fake_worker_manager.actor_count_per_cell = actor_count
     return TrainerCell(
-        args=MagicMock(),
+        args=MagicMock(train_step_timeout=None),
         role="actor",
         with_ref=False,
         cell_id=compute_cell_id(pool_id="trainer-engine-actor", cell_index=cell_index),

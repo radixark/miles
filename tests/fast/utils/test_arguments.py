@@ -2648,6 +2648,23 @@ class TestUpdateWeightsTimeoutArgument:
 
         assert args.update_weights_timeout >= 600.0
 
+    @pytest.mark.parametrize("value", ["0", "-1", "inf", "nan"])
+    def test_invalid_training_deadline_is_rejected(self, value: str) -> None:
+        """Configured training deadlines must terminate after a positive finite interval."""
+        args = self._parse([f"--train-step-timeout={value}"])
+
+        with pytest.raises(AssertionError, match="train-step-timeout"):
+            miles_validate_args(args)
+
+    @pytest.mark.parametrize("value", [None, "300"])
+    def test_training_deadline_is_opt_in(self, value: str | None) -> None:
+        """Training remains unlimited unless an explicit attempt budget is supplied."""
+        args = self._parse([] if value is None else ["--train-step-timeout", value])
+
+        miles_validate_args(args)
+
+        assert args.train_step_timeout == (None if value is None else 300.0)
+
     def test_a_shorter_deadline_can_be_configured(self) -> None:
         """The fault-injection tests need a deadline they can actually reach."""
         args = self._parse(["--update-weights-timeout", "5"])

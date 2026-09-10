@@ -110,6 +110,7 @@ class TrainerCell:
 
         return await self._execute_raw(
             "train",
+            timeout=self.args.train_step_timeout,
             compute_kwargs=lambda i: dict(
                 rollout_id=rollout_id,
                 rollout_data_ref=rollout_data_ref,

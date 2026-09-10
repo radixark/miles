@@ -460,6 +460,36 @@ class _NeverReturningWorkerHandle:
 class TestExecuteDeadline:
     """A worker that never answers has to be given up on, because nothing else can unblock the caller."""
 
+    async def test_training_deadline_retires_a_blocked_cell(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A configured training deadline retires a worker without waiting for heartbeat failure."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        cell.args.train_step_timeout = 0.05
+        handle = _NeverReturningWorkerHandle()
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [handle])
+
+        with pytest.raises(asyncio.TimeoutError):
+            await cell.train(rollout_id=0, rollout_data_ref=None, witness_info=None, attempt=0)
+
+        assert cell.is_errored
+        assert handle.killed
+        assert handle.probes > 0
+
+    async def test_training_without_configured_deadline_preserves_cell_on_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """External cancellation does not turn an unlimited training attempt into a cell failure."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        handle = _NeverReturningWorkerHandle()
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [handle])
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                cell.train(rollout_id=0, rollout_data_ref=None, witness_info=None, attempt=0), timeout=0.05
+            )
+
+        assert cell.is_alive
+        assert not handle.killed
+
     async def test_a_wedged_worker_errors_the_cell_and_is_killed(self, monkeypatch: pytest.MonkeyPatch):
         """A trainer stuck in a native collective answers no heartbeat, so only the caller's deadline frees the run."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
