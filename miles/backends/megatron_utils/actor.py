@@ -11,6 +11,7 @@ import torch.distributed as dist
 from megatron.training.async_utils import maybe_finalize_async_save
 from torch_memory_saver import torch_memory_saver
 
+from miles.backends.megatron_utils.cpu_witness import log_cpu_witness
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
@@ -21,6 +22,7 @@ from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.audit_utils.witness.cpu import preserve_cpu_witness
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -383,6 +385,15 @@ class MegatronTrainRayActor(TrainRayActor):
             self._load_auxiliary_checkpoints()
             self._switch_model("actor")
 
+        log_cpu_witness(
+            model=self.model,
+            lineage_id=None,
+            trainer_model_id=self.args.trainer_model_id,
+            rollout_id=load_output.loaded_rollout_id,
+            reset=True,
+            reason="load",
+        )
+
         # empty cache after initialization
         clear_memory()
 
@@ -552,6 +563,13 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
+            log_cpu_witness(
+                model=self.model,
+                lineage_id=rollout_data.get("ownership_lineage_id"),
+                trainer_model_id=self.args.trainer_model_id,
+                rollout_id=rollout_id,
+                reason="train_end",
+            )
             return result
 
     @with_logs
@@ -808,7 +826,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 asyncio.run(get_multi_lora_controller().free_slot(name))
 
     @timer
-    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
+    def save_model(self, rollout_id: int, force_sync: bool = False, checkpoint_id: str | None = None) -> None:
         self._heartbeat.bump()
         if self.args.debug_rollout_only:
             return
@@ -821,7 +839,13 @@ class MegatronTrainRayActor(TrainRayActor):
             if not save_due_adapter_checkpoints(self.args, self.model):
                 return
         else:
-            save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
+            save(
+                iteration=rollout_id,
+                model=self.model,
+                optimizer=self.optimizer,
+                opt_param_scheduler=self.opt_param_scheduler,
+                checkpoint_id=checkpoint_id,
+            )
 
         if force_sync:
             self._finalize_pending_async_save()
@@ -846,6 +870,18 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
             post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
+
+    def log_checkpoint_witness(self, rollout_id: int, checkpoint_id: str) -> None:
+        self._heartbeat.bump()
+        log_cpu_witness(
+            model=self.model,
+            lineage_id=None,
+            trainer_model_id=self.args.trainer_model_id,
+            rollout_id=rollout_id,
+            reset=True,
+            reason="save",
+            checkpoint_id=checkpoint_id,
+        )
 
     @with_logs
     @timer
@@ -980,13 +1016,14 @@ class MegatronTrainRayActor(TrainRayActor):
             old_ckpt_step = self.args.ckpt_step
             self.args.ckpt_step = self.args.opd_teacher_ckpt_step
 
-        _, _ = load_checkpoint(
-            self.model,
-            None,
-            None,
-            checkpointing_context={},
-            skip_load_to_model_and_opt=False,
-        )
+        with preserve_cpu_witness(self.model):
+            _, _ = load_checkpoint(
+                self.model,
+                None,
+                None,
+                checkpointing_context={},
+                skip_load_to_model_and_opt=False,
+            )
         self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune = old_args
 
         if model_tag == "ref" and self.args.ref_ckpt_step is not None:

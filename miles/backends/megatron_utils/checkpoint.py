@@ -1,7 +1,8 @@
 import logging
 import os
 import re
-from contextlib import contextmanager
+from argparse import Namespace
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch.distributed as dist
@@ -13,6 +14,7 @@ from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
 from miles.utils import megatron_bridge_utils
+from miles.utils.audit_utils.witness.cpu import clear_cpu_witness, hide_cpu_witness
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
 from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
@@ -118,13 +120,17 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
-        result = _load_checkpoint_megatron(
-            ddp_model=ddp_model,
-            optimizer=optimizer,
-            opt_param_scheduler=opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=skip_load_to_model_and_opt,
-        )
+        has_cpu_witness = has_local_checkpoint_manager or _has_cpu_witness_checkpoint(args)
+        if not has_cpu_witness and not skip_load_to_model_and_opt:
+            clear_cpu_witness(ddp_model)
+        with nullcontext() if has_cpu_witness else hide_cpu_witness(ddp_model):
+            result = _load_checkpoint_megatron(
+                ddp_model=ddp_model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
     else:
         result = _load_checkpoint_hf(
             ddp_model=ddp_model,
@@ -155,6 +161,20 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                 )
 
     return result
+
+
+def _has_cpu_witness_checkpoint(args: Namespace) -> bool:
+    path = Path(args.load)
+    if not re.fullmatch(r"iter_\d{7}", path.name):
+        if args.ckpt_step is not None:
+            iteration = args.ckpt_step
+        else:
+            tracker = path / "latest_checkpointed_iteration.txt"
+            if not tracker.is_file() or not tracker.read_text().strip().isdigit():
+                return False
+            iteration = int(tracker.read_text().strip())
+        path = path / f"iter_{iteration:07d}"
+    return (path / "cpu_witness_version.txt").is_file()
 
 
 def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
@@ -204,6 +224,7 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
     from megatron.bridge import AutoBridge
 
     logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
+    clear_cpu_witness(ddp_model)
 
     with megatron_bridge_utils.patch_megatron_model(ddp_model), _hide_critic_value_head_from_hf_load(ddp_model):
         bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any
@@ -67,6 +68,7 @@ class RolloutExecutor:
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
         self.args = args
+        self._lineage_id = uuid.uuid4().hex
         # set by the training actor after each weight update, keyed by trainer model id (None for one policy)
         self._weight_versions_of_model_id: dict[str | None, int] = {}
         self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
@@ -173,6 +175,7 @@ class RolloutExecutor:
         log_rollout_data(
             rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
         )
+        group_of_index = {sample.index: sample.group_index for sample in data}
         data = convert_samples_to_train_data(
             self.args,
             data,
@@ -181,6 +184,10 @@ class RolloutExecutor:
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
         sample_indices = data.get("sample_indices")
+        assert sample_indices is not None, "Training data must retain sample_indices for ownership verification"
+        data["group_indices"] = [group_of_index[index] for index in sample_indices]
+        assert all(index is not None for index in data["group_indices"]), "Training samples must have group_index"
+        data["ownership_lineage_id"] = self._lineage_id
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:

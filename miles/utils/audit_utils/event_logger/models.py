@@ -145,6 +145,29 @@ class MetricEvent(EventBase):
     metrics: dict[str, Any]
 
 
+class TrainerGroupMappingEvent(EventBase):
+    type: Literal["trainer_group_mapping"] = "trainer_group_mapping"
+    lineage_id: str | None
+    rollout_id: int
+    step_id: int
+    attempt: int
+    trainer_model_id: str | None
+    groups: dict[int, list[int]]
+    slot: int | None = None
+
+
+class TrainerCpuWitnessEvent(EventBase):
+    type: Literal["trainer_cpu_witness"] = "trainer_cpu_witness"
+    lineage_id: str | None
+    trainer_model_id: str | None
+    rollout_id: int
+    records: list[dict[str, Any]]
+    pending_records: list[dict[str, Any]] = []
+    reset: bool = True
+    reason: Literal["step", "train_end", "save", "transfer", "load"] = "step"
+    checkpoint_id: str | None = None
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -155,7 +178,9 @@ Event = Annotated[
     | TrainAdvantageComputationEvent
     | EnvReportEvent
     | EngineEnvReportEvent
-    | MetricEvent,
+    | MetricEvent
+    | TrainerGroupMappingEvent
+    | TrainerCpuWitnessEvent,
     Discriminator("type"),
 ]
 

@@ -17,6 +17,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from miles.utils.audit_utils.witness.cpu import install_cpu_witness
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -157,6 +158,7 @@ def get_model_provider_func(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
             _maybe_install_witness(args, model)
+            install_cpu_witness(model=model, chunk_index=vp_stage)
             return model
 
         return wrapped_model_provider
@@ -190,6 +192,7 @@ def get_model_provider_func(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
+            install_cpu_witness(model=model, chunk_index=vp_stage)
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward
 
@@ -335,6 +338,7 @@ def get_model_provider_func(
             model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
 
         _maybe_install_witness(args, model)
+        install_cpu_witness(model=model, chunk_index=vp_stage)
 
         return model
 

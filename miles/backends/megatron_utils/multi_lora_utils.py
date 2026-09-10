@@ -5,6 +5,7 @@ import os
 from argparse import Namespace
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -12,6 +13,11 @@ import torch.distributed as dist
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.utils.adapter_config import AdapterRun
+from miles.utils.audit_utils.witness.cpu import (
+    clear_adapter_cpu_witness,
+    restore_adapter_cpu_witness,
+    snapshot_adapter_cpu_witness,
+)
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
@@ -239,13 +245,14 @@ def save_multi_lora_checkpoints(
         with expose_adapter_slot(model, adapter.slot):
             # Megatron checkpoints
             if is_shard_writer:
-                shard: dict[str, torch.Tensor] = {
+                shard: dict[str, Any] = {
                     name: param.data.cpu()
                     for batch in model
                     for name, param in batch.named_parameters()
                     if ".adapter." in name
                 }
                 native_path = tmp_dir / megatron_shard_name(tp_rank, pp_rank, ep_rank, ep_size)
+                shard["__miles_cpu_witness__"] = snapshot_adapter_cpu_witness(model=model, slot=adapter.slot)
                 torch.save(shard, native_path)
                 logger.info(f"{log_prefix} saved Megatron shard " f"({len(shard)} tensors) to {native_path}")
 
@@ -277,6 +284,7 @@ def save_multi_lora_checkpoints(
             }
             with open(tmp_dir / "adapter_config.json", "w") as f:
                 json.dump(adapter_config_json, f, indent=2)
+            (tmp_dir / "cpu_witness_version.txt").write_text("1\n")
             os.sync()
             logger.info(f"{log_prefix} saved HF PEFT to {tmp_dir} " f"({len(hf_state)} tensors)")
 
@@ -305,6 +313,7 @@ def _register_adapter(adapter: AdapterRun, model) -> int:
     config = adapter.config
     slot = adapter.slot
     log_prefix = f"[multilora] ({name})"
+    clear_adapter_cpu_witness(model=model, slot=slot)
 
     step = 0
     if config.save is not None:
@@ -318,6 +327,12 @@ def _register_adapter(adapter: AdapterRun, model) -> int:
         step = 0
     else:
         state_dict = torch.load(ckpt, map_location="cpu", weights_only=True)
+        witness_state = state_dict.pop("__miles_cpu_witness__", None)
+        assert (
+            witness_state is not None or not (ckpt.parent / "cpu_witness_version.txt").is_file()
+        ), "Adapter CPU witness state is missing"
+        if witness_state is not None:
+            restore_adapter_cpu_witness(model=model, states=witness_state, slot=slot)
         loaded = load_adapter(model, slot, state_dict)
         assert loaded > 0, (
             f"{log_prefix} loaded 0 tensors from {ckpt} "
@@ -352,7 +367,6 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
     # Prevent future slot tenants from inheriting optimizer momentum or the
     # previous tenant's partially accumulated gradients.
     from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
-
     from miles.backends.megatron_utils.multi_lora_scheduler import drop_slot_scheduler
 
     zero_optimizer_state_for_adapter(optimizer, model, slot)

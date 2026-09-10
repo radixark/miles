@@ -25,13 +25,16 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
+from miles.backends.megatron_utils.cpu_witness import collect_consumed_groups, log_cpu_witness, record_optimizer_step
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.audit_utils.witness.cpu import cpu_witnesses
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
+from miles.utils.file_utils import atomic_write_text
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
@@ -455,6 +458,12 @@ def train_one_step(
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
     multi_lora = is_multi_lora_enabled(args)
+    witness_start = data_iterator[0].offset if not disable_optimizer else 0
+    consumed_rows: list[list[int]] = []
+
+    def _collect_training_metadata() -> None:
+        if not disable_optimizer:
+            consumed_rows.extend(collect_consumed_groups(iterator=data_iterator[0], start=witness_start))
 
     if multi_lora:
         from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
@@ -590,11 +599,19 @@ def train_one_step(
 
         metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced, num_rollouts=metric_num_rollouts
+            args,
+            model,
+            parallel_state,
+            losses_reduced=losses_reduced,
+            num_rollouts=metric_num_rollouts,
+            collect_training_metadata=_collect_training_metadata,
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
             valid_step = False
+
+    else:
+        _collect_training_metadata()
 
     if (not disable_optimizer) and (not multi_lora) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
         found_inf_flag = optimizer.prepare_grads()
@@ -634,6 +651,16 @@ def train_one_step(
             # Update learning rate.
             assert update_successful
             opt_param_scheduler.step(increment=num_rollouts)
+
+        record_optimizer_step(
+            args=args,
+            model=model,
+            rows=consumed_rows,
+            rollout_data=data_iterator[0].rollout_data,
+            rollout_id=rollout_id,
+            step_id=step_id,
+            attempt=attempt,
+        )
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
@@ -878,6 +905,7 @@ def save(
     opt_param_scheduler: OptimizerParamScheduler | None,
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
+    checkpoint_id: str | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -891,6 +919,22 @@ def save(
         non_persistent_ckpt (bool): If True, save a non-persistent (in-memory) checkpoint.
     """
     args = get_args()
+    parallel = get_parallel_state()
+    for witness in cpu_witnesses(model):
+        witness.replica_id = (parallel.tp.rank, parallel.cp.rank, parallel.effective_dp.rank)
+    log_cpu_witness(
+        model=model,
+        lineage_id=None,
+        trainer_model_id=args.trainer_model_id,
+        rollout_id=iteration,
+        reset=True,
+        reason="transfer" if non_persistent_ckpt else "save",
+        checkpoint_id=checkpoint_id,
+    )
+    if not non_persistent_ckpt and is_first_replica_megatron_main_rank():
+        checkpoint_dir = Path(args.save) / f"iter_{iteration:07d}"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path=checkpoint_dir / "cpu_witness_version.txt", text="1\n")
     hashes = None
     if args.ci_test and args.ci_save_model_hash:
         hashes = compute_model_hashes_by_layer(model)

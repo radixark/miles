@@ -168,7 +168,7 @@ def step_adapter_slots(
         children = _slot_children(optimizer, slot)
         # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the adapter-batch mean.
         for child in children:
-            child.prepare_grads()
+            assert not child.prepare_grads(), f"Adapter slot {slot} has invalid gradients"
             for main_param in child.get_parameters():
                 if main_param.grad is not None:
                     main_param.grad.mul_(1.0 / batch_size)
@@ -185,7 +185,7 @@ def step_adapter_slots(
         grad_norms[slot] = float(slot_norm)
 
         for child in children:
-            child.step_with_ready_grads()
+            assert child.step_with_ready_grads(), f"Adapter slot {slot} optimizer update failed"
 
         zero_adapter_slot_grads(model, slot)
 

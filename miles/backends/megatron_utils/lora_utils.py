@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.audit_utils.witness.cpu import clear_cpu_witness, restore_cpu_witness, snapshot_cpu_witness
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -493,17 +494,19 @@ def save_lora_checkpoint(
         )
 
     # ---- Training state (optimizer + scheduler) for resume ----
-    if optimizer is not None:
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        torch.save(
-            {
-                "iteration": iteration,
-                "optimizer": optimizer.state_dict(),
-                "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
-            },
-            save_path / f"training_state_rank{rank}.pt",
-        )
-        logger.info(f"Saved optimizer/scheduler state to {save_path}")
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    torch.save(
+        {
+            "iteration": iteration,
+            "optimizer": optimizer.state_dict() if optimizer is not None else None,
+            "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
+            "cpu_witness": snapshot_cpu_witness(model),
+        },
+        save_path / f"training_state_rank{rank}.pt",
+    )
+    logger.info(f"Saved optimizer/scheduler state to {save_path}")
+    if rank == 0:
+        (save_path / "cpu_witness_version.txt").write_text("1\n")
 
     if dist.is_initialized():
         dist.barrier()
@@ -565,7 +568,7 @@ def load_lora_adapter(
                     loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
+        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler, model=model)
         return True, iteration
 
     # ---- HF PEFT format (future work) ----
@@ -586,22 +589,30 @@ def _load_training_state(
     adapter_dir: Path,
     optimizer: Any | None,
     opt_param_scheduler: Any | None,
+    *,
+    model: Sequence[torch.nn.Module],
 ) -> int | None:
     """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
-    if optimizer is None:
-        return None
-
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
+    requires_witness = any((path / "cpu_witness_version.txt").is_file() for path in (adapter_dir, adapter_dir.parent))
     if not state_path.exists():
+        assert not requires_witness, "LoRA CPU witness state is missing"
+        clear_cpu_witness(model)
         return None
 
     # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
     # param group metadata), so full unpickling is required here.
     training_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
-    optimizer.load_state_dict(training_state["optimizer"])
-    logger.info("Restored optimizer state from LoRA checkpoint")
+    if "cpu_witness" in training_state:
+        restore_cpu_witness(model=model, states=training_state["cpu_witness"])
+    else:
+        assert not requires_witness, "LoRA CPU witness state is missing"
+        clear_cpu_witness(model)
+    if optimizer is not None and training_state["optimizer"] is not None:
+        optimizer.load_state_dict(training_state["optimizer"])
+        logger.info("Restored optimizer state from LoRA checkpoint")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])

@@ -34,6 +34,8 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "group_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "ownership_lineage_id": ValueSpec(codec="auto"),
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
@@ -384,6 +386,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "loss_masks",
             "round_number",
             "sample_indices",
+            "group_indices",
             "rollout_ids",
             "rollout_mask_sums",
             "rollout_log_probs",
@@ -411,6 +414,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "step_adapter_names",
             "step_adapter_batch_sizes",
             "prompt_group_sizes",
+            "ownership_lineage_id",
         ]:
             if key not in data:
                 continue
