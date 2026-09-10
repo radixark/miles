@@ -193,6 +193,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
         debug_skip_weight_update=True,
         debug_train_only=False,
         offload_train=True,
+        colocate=False,
         rematerialize_param_from_master_weight=False,
     )
     worker._asleep = asleep
@@ -208,8 +209,11 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     )
     reload_groups = Mock()
     destroy_groups = Mock()
+    saver = Mock()
+    saver.disable.return_value = nullcontext()
     monkeypatch.setattr(actor_module, "reload_process_groups", reload_groups)
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
+    monkeypatch.setattr(actor_module, "torch_memory_saver", saver)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
 
     worker.update_weights(info)
