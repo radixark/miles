@@ -1,6 +1,5 @@
 """Snapshot/restore the event directory alongside model checkpoints."""
 
-import json
 import logging
 import shutil
 import time
@@ -12,7 +11,7 @@ from pydantic import TypeAdapter
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir, resolve_megatron_config
-from miles.utils.audit_utils.event_logger.models import Event
+from miles.utils.audit_utils.event_logger.models import Event, TrainerWitnessCohortSnapshot
 
 logger = logging.getLogger(__name__)
 _event_adapter: TypeAdapter[Event] = TypeAdapter(Event)
@@ -112,7 +111,6 @@ def validate_event_snapshot(directory: Path, *, history_files: list[str], has_cu
     ), f"{directory} current witness presence is {current.is_file()}, expected {has_current}; the checkpoint is corrupt"
     if has_current:
         try:
-            value = json.loads(current.read_text())
-        except json.JSONDecodeError as error:
-            raise AssertionError(f"{current} is not valid JSON") from error
-        assert isinstance(value, dict), f"{current} must contain a JSON object"
+            TrainerWitnessCohortSnapshot.model_validate_json(current.read_text())
+        except Exception as error:
+            raise AssertionError(f"{current} is not a valid current witness cohort") from error

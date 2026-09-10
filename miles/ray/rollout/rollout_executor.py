@@ -36,7 +36,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
-from miles.rollout.data_source import compute_global_dataset_state_path
+from miles.rollout.data_source import RolloutDataSource, compute_global_dataset_state_path
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.fully_async_rollout import compute_fully_async_state_path
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
@@ -49,7 +49,7 @@ from miles.utils.audit_utils.event_logger.models import TrainerWitnessCohortPayl
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_flow import (
     log_dropped_groups,
-    log_dropped_samples,
+    log_dropped_sample_indices,
     record_data_source_issues,
     suppress_drop_logging,
 )
@@ -231,15 +231,12 @@ class RolloutExecutor:
             rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
         )
         processed_samples = data
+        terminal_drop_reason = (
+            "critic_only_warmup" if self.args.use_critic and rollout_id < self.args.num_critic_only_steps else None
+        )
         drop_context = suppress_drop_logging() if self._replay_stage == "delivered" else nullcontext()
         try:
             with drop_context:
-                if self.args.use_critic and rollout_id < self.args.num_critic_only_steps:
-                    log_dropped_samples(
-                        processed_samples,
-                        reason="critic_only_warmup",
-                        rollout_id=rollout_id,
-                    )
                 if self._replay_train_data is not None:
                     data = copy.deepcopy(self._replay_train_data)
                 else:
@@ -252,10 +249,20 @@ class RolloutExecutor:
                     )
                 sample_indices = data.get("sample_indices")
                 if self.args.delay_split_train_data_by_dp:
+                    if terminal_drop_reason is not None:
+                        log_dropped_sample_indices(
+                            list(dict.fromkeys(data["source_sample_indices"])),
+                            reason=terminal_drop_reason,
+                            rollout_id=rollout_id,
+                        )
                     data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
                 else:
                     data_ref = split_train_data_by_dp(
-                        self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
+                        self.args,
+                        data,
+                        self._train_parallel_configs_of_model_id[trainer_model_id],
+                        terminal_drop_reason=terminal_drop_reason,
+                        rollout_id=rollout_id,
                     )
             if trainer_model_id is None:
                 self._record_processed_batch(
@@ -672,13 +679,15 @@ class RolloutExecutor:
                 has_current=event_snapshot["has_current"],
             )
 
-        data_source_path = compute_global_dataset_state_path(directory, rollout_id=rollout_id)
-        data_source_state = torch.load(data_source_path, weights_only=False)
-        for field in ("sample_group_index", "sample_index"):
-            value = data_source_state.get(field)
-            assert (
-                isinstance(value, int) and not isinstance(value, bool) and value >= 0
-            ), f"{data_source_path} has invalid {field}={value!r}; the checkpoint cannot preserve sample identity"
+        if isinstance(self.data_source, RolloutDataSource):
+            data_source_path = compute_global_dataset_state_path(directory, rollout_id=rollout_id)
+            data_source_state = torch.load(data_source_path, weights_only=False)
+            for field in ("sample_group_index", "sample_index"):
+                value = data_source_state.get(field)
+                assert isinstance(value, int) and not isinstance(value, bool) and value >= 0, (
+                    f"{data_source_path} has invalid {field}={value!r}; "
+                    "the checkpoint cannot preserve sample identity"
+                )
 
         executor_state = torch.load(compute_executor_state_path(directory, rollout_id=rollout_id), weights_only=False)
         if (last_batch := executor_state["last_batch"]) is not None:
@@ -691,10 +700,9 @@ class RolloutExecutor:
 
     def _checkpoint_manifest(self, rollout_id: int, directory: str | Path | None = None) -> dict[str, Any]:
         assert self.args.save is not None or self.args.load is not None
-        files = [
-            str(Path("rollout") / compute_executor_state_path(".", rollout_id=rollout_id).name),
-            str(Path("rollout") / compute_global_dataset_state_path(".", rollout_id=rollout_id).name),
-        ]
+        files = [str(Path("rollout") / compute_executor_state_path(".", rollout_id=rollout_id).name)]
+        if isinstance(self.data_source, RolloutDataSource):
+            files.append(str(Path("rollout") / compute_global_dataset_state_path(".", rollout_id=rollout_id).name))
         if self.args.fully_async:
             files.append(str(Path("rollout") / compute_fully_async_state_path(".", rollout_id=rollout_id).name))
         directories = []

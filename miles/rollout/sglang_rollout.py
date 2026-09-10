@@ -505,7 +505,7 @@ async def generate_rollout_async(
                 log_dropped_groups(
                     group,
                     [],
-                    reason=f"dynamic_filter:{dynamic_filter_output.reason}",
+                    reason="dynamic_filter",
                     rollout_id=rollout_id,
                 )
                 state.remaining_batch_size -= 1

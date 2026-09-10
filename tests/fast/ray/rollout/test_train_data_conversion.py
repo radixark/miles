@@ -9,6 +9,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
+from miles.ray.rollout import train_data_conversion
 from miles.ray.rollout.train_data_conversion import (
     _post_process_rewards,
     can_schedule_on_rollout_side,
@@ -307,6 +308,26 @@ class TestConvertSamplesToTrainData:
         converted = {
             "sample_indices": [7, 7],
             "source_sample_indices": [7, 7],
+            "sample_row_indices": [0, 0],
+            "sample_row_counts": [1, 1],
+        }
+
+        with pytest.raises(AssertionError, match="changed the training sample identity obligations"):
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=lambda a, s: converted,
+                custom_reward_post_process_func=None,
+            )
+
+    def test_custom_convert_func_rejects_duplicate_output_with_relabelled_identities(self):
+        """Correct-looking identity columns cannot relabel a duplicated converter output row."""
+        args = make_args()
+        samples = [make_sample(index=7), make_sample(index=8)]
+        converted = {
+            "sample_indices": [7, 7],
+            "source_sample_indices": [7, 8],
             "sample_row_indices": [0, 0],
             "sample_row_counts": [1, 1],
         }
@@ -971,6 +992,28 @@ class TestCanScheduleOnRolloutSide:
 
 
 class TestSplitTrainDataByDpScheduled:
+    def test_warmup_drops_only_rows_retained_after_schedule_trim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Schedule-trimmed and critic-only rows receive one distinct terminal outcome each."""
+        args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
+        calls: list[tuple[list[int], str, int | None]] = []
+        monkeypatch.setattr(
+            train_data_conversion,
+            "log_dropped_sample_indices",
+            lambda indices, *, reason, rollout_id=None: calls.append((list(indices), reason, rollout_id)),
+        )
+
+        split_train_data_by_dp_scheduled_raw(
+            args,
+            _make_split_data(10),
+            train_parallel_config=FULL_SCHEDULE_CONFIG,
+            terminal_drop_reason="critic_only_warmup",
+            rollout_id=4,
+        )
+
+        trimmed, warmup = calls
+        assert trimmed == ([8, 9], "dp_schedule_trim", 4)
+        assert warmup == (list(range(8)), "critic_only_warmup", 4)
+
     def test_static_shards_cover_all_samples(self):
         """Static path: every sample lands in exactly one shard row, the schedule
         tiles each shard's rows exactly, and shard rows match their partition."""

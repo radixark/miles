@@ -15,7 +15,7 @@ from miles.ray.rollout.rollout_executor import (
     compute_executor_state_path,
 )
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
-from miles.rollout.data_source import compute_global_dataset_state_path
+from miles.rollout.data_source import RolloutDataSource, compute_global_dataset_state_path
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.types import Sample
@@ -148,7 +148,7 @@ class TestSetEvalFleetInfo:
         assert second.generate_state is None
 
 
-class _FakeDataSource:
+class _FakeDataSource(RolloutDataSource):
     def __init__(self, path: Path) -> None:
         self._path = path
         self.loaded: list[int | None] = []
@@ -160,6 +160,14 @@ class _FakeDataSource:
 
     def load(self, rollout_id: int | None) -> None:
         self.loaded.append(rollout_id)
+
+
+class _CustomDataSource:
+    def save(self, rollout_id: int) -> None:
+        pass
+
+    def load(self, rollout_id: int | None) -> None:
+        pass
 
 
 class _CountingRolloutFn:
@@ -377,6 +385,16 @@ class TestCheckpointCompleteMarker:
 
         with pytest.raises(AssertionError, match="global_dataset_state_dict_5.pt"):
             executor.load(5)
+
+    def test_custom_data_source_does_not_imply_the_builtin_state_file(self, tmp_path: Path) -> None:
+        """A custom source keeps its own checkpoint contract instead of writing the built-in cursor file."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.data_source = _CustomDataSource()
+
+        executor.save(5)
+        executor.load(5)
+
+        assert compute_checkpoint_complete_marker_path(tmp_path, rollout_id=5).is_file()
 
     def test_a_marker_rejects_invalid_data_source_identity(self, tmp_path: Path) -> None:
         """A complete checkpoint cannot resume with missing sample identity cursors."""

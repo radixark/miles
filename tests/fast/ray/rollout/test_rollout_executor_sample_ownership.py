@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -143,6 +144,22 @@ class TestPeriodicSampleOwnershipCheck:
                 await asyncio.Event().wait()
 
         executor = self._executor(controller=Controller(), store=SimpleNamespace(), grace=0.001, timeout=0.001)
+
+        with pytest.raises(TimeoutError):
+            await executor._run_one_sample_ownership_check()
+
+    async def test_current_store_timeout_is_fatal(self) -> None:
+        """A blocked current-cohort replacement cannot stop checker error propagation."""
+
+        class Controller:
+            async def log_current_cpu_witness(self, *, rollout_id: int) -> dict[str, Any]:
+                return {"snapshots": [], "marker": {}}
+
+        class Store:
+            def replace_current(self, payload: dict[str, Any]) -> None:
+                time.sleep(1)
+
+        executor = self._executor(controller=Controller(), store=Store(), grace=0.001, timeout=0.001)
 
         with pytest.raises(TimeoutError):
             await executor._run_one_sample_ownership_check()

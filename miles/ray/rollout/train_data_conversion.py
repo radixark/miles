@@ -194,19 +194,22 @@ def _add_training_sample_identities(train_data: dict[str, Any], samples: list[Sa
     expected = _training_sample_identity_columns(samples)
     fields = tuple(expected)
     supplied_fields = [field for field in fields if field in train_data]
+    assert "sample_indices" in train_data, "custom converter must return sample_indices"
+    output_sample_indices = list(train_data["sample_indices"])
 
     if supplied_fields:
         assert len(supplied_fields) == len(fields), "custom converter must return all training sample identity columns"
         actual = {field: list(train_data[field]) for field in fields}
         lengths = {len(values) for values in actual.values()}
-        assert lengths == {len(samples)}, "custom converter returned invalid training sample identity column lengths"
-        assert Counter(zip(*(actual[field] for field in fields), strict=True)) == Counter(
-            zip(*(expected[field] for field in fields), strict=True)
+        assert lengths == {
+            len(output_sample_indices)
+        }, "custom converter returned invalid training sample identity column lengths"
+        assert Counter(zip(output_sample_indices, *(actual[field] for field in fields), strict=True)) == Counter(
+            zip([sample.index for sample in samples], *(expected[field] for field in fields), strict=True)
         ), "custom converter changed the training sample identity obligations"
         return
 
-    assert "sample_indices" in train_data, "custom converter must return sample_indices"
-    assert list(train_data["sample_indices"]) == [
+    assert output_sample_indices == [
         sample.index for sample in samples
     ], "custom converter must return training sample identities when it reorders or changes rows"
     train_data.update(expected)
@@ -339,16 +342,35 @@ def _post_process_rewards(
     return raw_rewards, raw_rewards
 
 
-def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
+def split_train_data_by_dp(
+    args,
+    data: dict[str, Any],
+    train_parallel_config: dict | None,
+    *,
+    terminal_drop_reason: str | None = None,
+    rollout_id: int | None = None,
+):
     """Split the train data across DP ranks and put the shards into the object store.
 
     When the training backend can consume a rollout-side schedule, the shards
     also carry the precomputed micro-batch layout; otherwise this falls back to
     the legacy split (the training side schedules locally)."""
     if can_schedule_on_rollout_side(args, data, train_parallel_config):
-        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
+        shards = split_train_data_by_dp_scheduled_raw(
+            args,
+            data,
+            train_parallel_config=train_parallel_config,
+            terminal_drop_reason=terminal_drop_reason,
+            rollout_id=rollout_id,
+        )
     else:
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
+        if terminal_drop_reason is not None:
+            log_dropped_sample_indices(
+                list(dict.fromkeys(data["source_sample_indices"])),
+                reason=terminal_drop_reason,
+                rollout_id=rollout_id,
+            )
     store = object_store.get_instance()
     return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
 
@@ -368,7 +390,12 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
 
 
 def split_train_data_by_dp_scheduled_raw(
-    args, data: dict[str, Any], *, train_parallel_config: dict
+    args,
+    data: dict[str, Any],
+    *,
+    train_parallel_config: dict,
+    terminal_drop_reason: str | None = None,
+    rollout_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """DP split with the micro-batch schedule precomputed on the rollout side."""
     total_lengths = [len(t) for t in data["tokens"]]
@@ -389,7 +416,13 @@ def split_train_data_by_dp_scheduled_raw(
         for index, source_index in enumerate(data["source_sample_indices"])
         if index not in retained_rows and source_index not in retained_sources
     ]
-    log_dropped_sample_indices(dropped_sources, reason="dp_schedule_trim")
+    log_dropped_sample_indices(dropped_sources, reason="dp_schedule_trim", rollout_id=rollout_id)
+    if terminal_drop_reason is not None:
+        log_dropped_sample_indices(
+            sorted(retained_sources),
+            reason=terminal_drop_reason,
+            rollout_id=rollout_id,
+        )
     logger.info(
         f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
         f"num_rollouts={num_rollouts}, num_microbatches={num_microbatches}"
