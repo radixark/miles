@@ -15,14 +15,7 @@ def kda(
     cu_seqlens: torch.Tensor | None = None,
     cp_context=None,
 ) -> torch.Tensor:
-    """Delta-rule core, fla in both directions.
-
-    Sequence boundaries reach fla through exactly one of two channels, never
-    both: ``cu_seqlens`` without CP, and ``cp_context`` under CP, where fla
-    derives the rank-local boundaries itself and the caller's ``cu_seqlens`` is
-    already a copy of the context's own. Passing both is a combination fla has
-    never been run with here, so the selection stays exclusive.
-    """
+    """fla delta-rule core; boundaries travel as ``cu_seqlens`` without CP or ``cp_context`` under CP, never both."""
     from fla.ops.kda import chunk_kda
 
     boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
