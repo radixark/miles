@@ -36,7 +36,6 @@ from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.types import DeploymentIdentity
-from miles.utils.workers.worker_handle import WorkerStillBusyError
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
@@ -247,41 +246,43 @@ class TrainerController:
         if self._role != "actor":
             raise RuntimeError("CPU witness snapshots are only supported for the actor trainer")
         async with self._cpu_witness_operation_lock:
-            cohort_id = uuid.uuid4().hex
-            snapshot_alive_cells = [cell for cell in self._cells if cell.is_alive]
-            if not snapshot_alive_cells:
-                raise WorkerStillBusyError("trainer has no alive cells to snapshot")
-            results = await asyncio.wait_for(
-                asyncio.gather(
-                    *(
-                        cell.execute(
-                            "log_current_cpu_witness",
-                            rollout_id=rollout_id,
-                            cohort_id=cohort_id,
-                            kill_on_failure=False,
+            while True:
+                cohort_id = uuid.uuid4().hex
+                snapshot_alive_cells = [cell for cell in self._cells if cell.is_alive]
+                if not snapshot_alive_cells:
+                    await asyncio.sleep(0.1)
+                    continue
+                results = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(
+                            cell.execute(
+                                "log_current_cpu_witness",
+                                rollout_id=rollout_id,
+                                cohort_id=cohort_id,
+                                kill_on_failure=False,
+                            )
+                            for cell in snapshot_alive_cells
                         )
-                        for cell in snapshot_alive_cells
-                    )
-                ),
-                timeout=_CPU_WITNESS_SNAPSHOT_TIMEOUT_SECONDS,
-            )
-            if snapshot_alive_cells != [cell for cell in self._cells if cell.is_alive]:
-                raise WorkerStillBusyError("trainer cell cohort changed while collecting CPU witness snapshots")
-            snapshots = [snapshot for cell_results in results for snapshot in cell_results if snapshot is not None]
-            expected_replica_ids = sorted(f"cell-{cell.cell_index}" for cell in snapshot_alive_cells)
-            actual_replica_ids = sorted(snapshot["replica_id"] for snapshot in snapshots)
-            if actual_replica_ids != expected_replica_ids:
-                raise RuntimeError(
-                    f"CPU witness snapshot replicas {sorted(actual_replica_ids)} do not match "
-                    f"alive replicas {sorted(expected_replica_ids)}"
+                    ),
+                    timeout=_CPU_WITNESS_SNAPSHOT_TIMEOUT_SECONDS,
                 )
-            marker = self._log_witness_cohort(
-                rollout_id=rollout_id,
-                cohort_id=cohort_id,
-                replica_ids=sorted(snapshot["replica_id"] for snapshot in snapshots),
-            )
-            assert marker is not None
-            return {"snapshots": snapshots, "marker": marker}
+                if snapshot_alive_cells != [cell for cell in self._cells if cell.is_alive]:
+                    continue
+                snapshots = [snapshot for cell_results in results for snapshot in cell_results if snapshot is not None]
+                expected_replica_ids = sorted(f"cell-{cell.cell_index}" for cell in snapshot_alive_cells)
+                actual_replica_ids = sorted(snapshot["replica_id"] for snapshot in snapshots)
+                if actual_replica_ids != expected_replica_ids:
+                    raise RuntimeError(
+                        f"CPU witness snapshot replicas {sorted(actual_replica_ids)} do not match "
+                        f"alive replicas {sorted(expected_replica_ids)}"
+                    )
+                marker = self._log_witness_cohort(
+                    rollout_id=rollout_id,
+                    cohort_id=cohort_id,
+                    replica_ids=sorted(snapshot["replica_id"] for snapshot in snapshots),
+                )
+                assert marker is not None
+                return {"snapshots": snapshots, "marker": marker}
 
     def _log_witness_cohort(
         self,

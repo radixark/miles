@@ -16,6 +16,7 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.compatibility import load_generate_function
+from miles.rollout.sample_identity import stamp_training_sample_identities
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.audit_utils.sample_flow import log_dropped_groups
@@ -285,6 +286,8 @@ async def generate_and_rm(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
+    input_sample_index = sample.index
+
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
         sample.loss_mask = [0] * sample.response_length
@@ -326,6 +329,8 @@ async def generate_and_rm(
                 sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
+            if not evaluation:
+                stamp_training_sample_identities(sample, source_sample_index=input_sample_index)
 
     if sink is not None:
         sink.attempt_end(sample)
@@ -423,6 +428,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
 
         if not args.partial_rollout:
+            groups = [task.result() for task in done]
+            log_dropped_groups(groups, [], reason="abort", rollout_id=rollout_id)
             continue
 
         # for partial rollout, collect the partial samples into the data buffer

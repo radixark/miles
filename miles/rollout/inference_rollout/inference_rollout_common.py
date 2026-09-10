@@ -21,6 +21,7 @@ from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
+from miles.rollout.sample_identity import stamp_training_sample_identities
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
@@ -105,7 +106,7 @@ async def generate_and_rm(
             )
             sample = output.samples
             if not evaluation:
-                _stamp_training_sample_identities(sample, source_sample_index=input_sample_index)
+                stamp_training_sample_identities(sample, source_sample_index=input_sample_index)
             logger.debug(f"{log_prefix} generate_function returned")
     finally:
         if sink is not None:
@@ -136,16 +137,6 @@ async def generate_and_rm(
 
     logger.debug(f"{log_prefix} generate_and_rm complete")
     return sample
-
-
-def _stamp_training_sample_identities(output: Sample | list[Sample], *, source_sample_index: int | None) -> None:
-    samples = output if isinstance(output, list) else [output]
-    source_sample_index = source_sample_index if source_sample_index is not None else samples[0].index
-    assert source_sample_index is not None, "Training samples require a source sample index"
-    for row_index, sample in enumerate(samples):
-        sample.source_sample_index = source_sample_index
-        sample.sample_row_index = row_index
-        sample.sample_row_count = len(samples)
 
 
 async def generate_and_rm_group(

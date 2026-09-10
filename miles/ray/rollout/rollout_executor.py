@@ -41,7 +41,7 @@ from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.fully_async_rollout import compute_fully_async_state_path
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
-from miles.utils.async_utils import maybe_await, run, submit
+from miles.utils.async_utils import maybe_await, submit
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
@@ -68,7 +68,7 @@ from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.types import Sample
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
-from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerStillBusyError
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -230,6 +230,26 @@ class RolloutExecutor:
         log_rollout_data(
             rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
         )
+        data_pack = await asyncio.wrap_future(
+            submit(
+                self._prepare_train_data(
+                    rollout_id=rollout_id,
+                    trainer_model_id=trainer_model_id,
+                    data=data,
+                    metadata=metadata,
+                )
+            )
+        )
+        return data_pack
+
+    async def _prepare_train_data(
+        self,
+        *,
+        rollout_id: int,
+        trainer_model_id: str | None,
+        data: list[Group],
+        metadata: dict[str, Any],
+    ) -> RolloutDataPack:
         processed_samples = data
         terminal_drop_reason = (
             "critic_only_warmup" if self.args.use_critic and rollout_id < self.args.num_critic_only_steps else None
@@ -390,7 +410,7 @@ class RolloutExecutor:
                 if isinstance(self.generate_rollout, BaseRolloutFn) and inspect.iscoroutinefunction(
                     self.generate_rollout.__call__
                 ):
-                    data = await asyncio.wrap_future(submit(self._call_and_record(input)))
+                    data = await asyncio.create_task(self._call_and_record(input))
                 else:
                     data = await asyncio.to_thread(call_rollout_function, self.generate_rollout, input)
                     if trainer_model_id is None:
@@ -433,10 +453,14 @@ class RolloutExecutor:
         trainer_model_id: str | None,
     ) -> tuple[Any, Any, Any]:
         if self._sample_ownership_task is None:
-            return await self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id)
+            return await asyncio.wrap_future(
+                submit(self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
+            )
 
-        rollout_task = asyncio.create_task(
-            self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id)
+        rollout_task = asyncio.ensure_future(
+            asyncio.wrap_future(
+                submit(self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
+            )
         )
         done, _ = await asyncio.wait(
             (rollout_task, self._sample_ownership_task),
@@ -496,14 +520,9 @@ class RolloutExecutor:
     async def _collect_current_cpu_witness(self, *, timeout: float) -> tuple[TrainerWitnessCohortPayload, datetime]:
         assert self._actor_controller is not None
         async with asyncio.timeout(timeout):
-            while True:
-                now = datetime.now(timezone.utc)
-                try:
-                    payload = await self._actor_controller.log_current_cpu_witness(rollout_id=self.rollout_id)
-                except WorkerStillBusyError:
-                    await asyncio.sleep(min(self.args.sample_ownership_check_interval_seconds, 1.0))
-                    continue
-                return payload, now
+            now = datetime.now(timezone.utc)
+            payload = await self._actor_controller.log_current_cpu_witness(rollout_id=self.rollout_id)
+            return payload, now
 
     async def _stop_sample_ownership_checker(self) -> BaseException | None:
         if (task := self._sample_ownership_task) is None:
@@ -547,10 +566,13 @@ class RolloutExecutor:
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
-    def save(self, rollout_id: int) -> None:
+    async def save(self, rollout_id: int) -> None:
+        await asyncio.wrap_future(submit(self._save_checkpoint(rollout_id)))
+
+    async def _save_checkpoint(self, rollout_id: int) -> None:
         if self.args.save is not None:
             compute_checkpoint_complete_marker_path(self.args.save, rollout_id=rollout_id).unlink(missing_ok=True)
-        run(self._save_state(rollout_id))
+        await self._save_state(rollout_id)
         if self.args.save is not None:
             self._assert_saved_checkpoint_state(rollout_id)
             marker = compute_checkpoint_complete_marker_path(self.args.save, rollout_id=rollout_id)
@@ -582,17 +604,20 @@ class RolloutExecutor:
         atomic_torch_save(path=path, obj={"last_batch": pending})
         logger.info(f"Saved {int(pending is not None)} untrained rollout batch to {path}")
 
-    def load(self, rollout_id: int | None = None, *, require_complete: bool = False) -> None:
+    async def load(self, rollout_id: int | None = None, *, require_complete: bool = False) -> None:
+        await asyncio.wrap_future(submit(self._load_state(rollout_id, require_complete=require_complete)))
+        self._start_sample_ownership_checker()
+
+    async def _load_state(self, rollout_id: int | None, *, require_complete: bool) -> None:
         self._assert_checkpoint_complete(rollout_id, require_complete=require_complete)
         self._load_last_batch(rollout_id)
         self.data_source.load(rollout_id)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.load(rollout_id)
+                await maybe_await(self.generate_rollout.load(rollout_id))
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.load(rollout_id)
+                await maybe_await(eval_fn.load(rollout_id))
         event_logger_checkpoint.restore(self.args)
-        self._start_sample_ownership_checker()
 
     def _load_last_batch(self, rollout_id: int | None) -> None:
         if (load_dir := self.args.load) is None:
