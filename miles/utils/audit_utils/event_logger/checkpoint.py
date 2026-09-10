@@ -7,10 +7,14 @@ import uuid
 from argparse import Namespace
 from pathlib import Path
 
+from pydantic import TypeAdapter
+
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir, resolve_megatron_config
+from miles.utils.audit_utils.event_logger.models import Event, TrainerWitnessCohortSnapshot
 
 logger = logging.getLogger(__name__)
+_event_adapter: TypeAdapter[Event] = TypeAdapter(Event)
 
 
 def snapshot(args: Namespace, iteration: int) -> None:
@@ -21,7 +25,7 @@ def snapshot(args: Namespace, iteration: int) -> None:
     if not src.is_dir():
         return
 
-    dst = _snapshot_dir(Path(args.save), iteration)
+    dst = compute_event_snapshot_path(Path(args.save), iteration)
     if dst.exists():
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +42,7 @@ def restore(args: Namespace) -> None:
     if iteration is None:
         return
 
-    src = _snapshot_dir(requested_load, iteration)
+    src = compute_event_snapshot_path(requested_load, iteration)
     if not src.is_dir():
         return
 
@@ -81,5 +85,32 @@ def _move_aside(dst: Path) -> Path:
     return trash
 
 
-def _snapshot_dir(checkpoint_root: Path, iteration: int) -> Path:
+def compute_event_snapshot_path(checkpoint_root: Path, iteration: int) -> Path:
     return checkpoint_root / f"iter_{iteration:07d}" / "debug_events"
+
+
+def validate_event_snapshot(directory: Path, *, history_files: list[str], has_current: bool) -> None:
+    actual_history_files = sorted(str(path.relative_to(directory)) for path in directory.glob("**/*.jsonl"))
+    assert (
+        actual_history_files == history_files
+    ), f"{directory} contains event history {actual_history_files}, expected {history_files}; the checkpoint is corrupt"
+    for relative in history_files:
+        with (directory / relative).open(encoding="utf-8") as file:
+            for line_number, raw_line in enumerate(file, start=1):
+                if raw_line.strip():
+                    try:
+                        _event_adapter.validate_json(raw_line)
+                    except Exception as error:
+                        raise AssertionError(
+                            f"{directory / relative}:{line_number} is not a valid audit event"
+                        ) from error
+
+    current = directory / "sample_ownership_current.json"
+    assert (
+        current.is_file() == has_current
+    ), f"{directory} current witness presence is {current.is_file()}, expected {has_current}; the checkpoint is corrupt"
+    if has_current:
+        try:
+            TrainerWitnessCohortSnapshot.model_validate_json(current.read_text())
+        except Exception as error:
+            raise AssertionError(f"{current} is not a valid current witness cohort") from error

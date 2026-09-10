@@ -661,12 +661,12 @@ class TestPerPolicyQueues:
         class _RecordingInner:
             async def get(self, **context):
                 seen.append(context)
-                return "entry"
+                return ["entry"]
 
         buffer._inners["solver"] = _RecordingInner()
 
         assert await buffer.get(num_groups=1, current_version=4, trainer_model_id="solver") == ["entry"]
-        assert seen == [{"current_version": 4, "trainer_model_id": "solver"}]
+        assert seen == [{"num_groups": 1, "current_version": 4, "trainer_model_id": "solver"}]
 
 
 def make_tagged_sample(index: int, trainer_model_id: str | None) -> Sample:

@@ -11,6 +11,7 @@ from miles.utils.audit_utils.sample_ownership.flow import (
     log_dropped_groups,
     log_dropped_samples,
     record_data_source_issues,
+    suppress_drop_logging,
 )
 from miles.utils.types import Sample
 
@@ -83,3 +84,15 @@ class TestLogDroppedSamples:
         [event] = read_events(event_dir)
         assert isinstance(event, ExplicitlyDroppedSamplesEvent)
         assert event.sample_indices == [8]
+
+    def test_delivered_replay_does_not_repeat_terminal_drop_events(self, event_dir: Path) -> None:
+        """Replaying a delivered batch preserves the original trim decision exactly once."""
+        sample = Sample(index=8)
+        log_dropped_samples([sample], reason="dp_schedule_trim", rollout_id=5)
+
+        with suppress_drop_logging():
+            log_dropped_samples([sample], reason="dp_schedule_trim", rollout_id=5)
+
+        events = read_events(event_dir)
+        assert len(events) == 1
+        assert isinstance(events[0], ExplicitlyDroppedSamplesEvent)
