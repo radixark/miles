@@ -9,6 +9,7 @@ import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment_identity, make_provider
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 import miles.ray.train.group as group_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
@@ -19,6 +20,7 @@ from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.data import RolloutDataPack
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
@@ -302,7 +304,7 @@ class TestExecuteFirstAlive:
 
 class TestGetTrainParallelConfig:
     @staticmethod
-    def _set_configs(cell, configs: list[dict]) -> None:
+    def _set_configs(cell, configs: list[TrainParallelConfig | None]) -> None:
         handles = get_raw_actor_handles(cell)
         ray.get(
             [handle.set_train_parallel_config.remote(config) for handle, config in zip(handles, configs, strict=True)]
@@ -311,17 +313,20 @@ class TestGetTrainParallelConfig:
     async def test_returns_config_of_rank_zero_of_the_first_alive_cell(self):
         """The driver reads the config the cell's own rank 0 computed at init."""
         group = await _make_alive_controller(num_cells=2, actor_count_per_cell=2)
-        self._set_configs(group._cells[0], [{"dp_size": 4}, {"dp_size": 99}])
+        self._set_configs(
+            cell=group._cells[0],
+            configs=[make_train_parallel_config(dp_size=4), make_train_parallel_config(dp_size=99)],
+        )
 
-        assert await group.get_train_parallel_config() == {"dp_size": 4}
+        assert await group.get_train_parallel_config() == make_train_parallel_config(dp_size=4)
 
     async def test_skips_stopped_cells(self):
         """A stopped cell 0 must not be asked; the next alive cell answers instead."""
         group = await _make_alive_controller(num_cells=2)
-        self._set_configs(_cell(group, 1), [{"dp_size": 2}])
+        self._set_configs(cell=_cell(group, 1), configs=[make_train_parallel_config(dp_size=2)])
         await _stop_cell(group, 0)
 
-        assert await group.get_train_parallel_config() == {"dp_size": 2}
+        assert await group.get_train_parallel_config() == make_train_parallel_config(dp_size=2)
 
 
 class TestComputeIndepDPInfo:

@@ -4,7 +4,7 @@ import os
 import random
 from argparse import Namespace
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Literal
 
 import ray
 import torch
@@ -17,6 +17,7 @@ from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.init_once import InitOnce, init_once
@@ -219,5 +220,5 @@ class TrainRayActor(NodeProbeMixin):
     def _get_parallel_config(self):
         raise NotImplementedError
 
-    def get_train_parallel_config(self) -> dict[str, Any]:
+    def get_train_parallel_config(self) -> TrainParallelConfig | None:
         return self.train_parallel_config

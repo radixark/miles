@@ -3,7 +3,7 @@ from typing import Any
 
 import torch
 
-from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
@@ -291,7 +291,9 @@ def _post_process_rewards(
     return raw_rewards, raw_rewards
 
 
-def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
+def split_train_data_by_dp(
+    args: Any, data: dict[str, Any], train_parallel_config: TrainParallelConfig | None
+) -> list[dict[str, Any]]:
     """Split the train data across DP ranks.
 
     When the training backend can consume a rollout-side schedule, the shards
@@ -300,13 +302,15 @@ def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: di
     if can_schedule_on_rollout_side(args, data, train_parallel_config):
         shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     else:
-        shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
+        shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config.dp_size)
     return shards
 
 
-def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:
+def can_schedule_on_rollout_side(
+    args: Any, data: dict[str, Any], train_parallel_config: TrainParallelConfig | None
+) -> bool:
     """Whether the rollout side can precompute the full DP/mbs schedule."""
-    if not has_full_schedule_config(train_parallel_config):
+    if train_parallel_config is None or not train_parallel_config.supports_precomputed_schedule:
         return False
     if is_multi_lora_enabled(args):
         return False
@@ -319,7 +323,7 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
 
 
 def split_train_data_by_dp_scheduled_raw(
-    args, data: dict[str, Any], *, train_parallel_config: dict
+    args: Any, data: dict[str, Any], *, train_parallel_config: TrainParallelConfig
 ) -> list[dict[str, Any]]:
     """DP split with the micro-batch schedule precomputed on the rollout side."""
     total_lengths = [len(t) for t in data["tokens"]]

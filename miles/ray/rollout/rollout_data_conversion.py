@@ -1,13 +1,17 @@
 import itertools
 import logging
+from typing import Any
 
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
 
-def postprocess_rollout_data(args, data, train_parallel_config):
+def postprocess_rollout_data(
+    args: Any, data: list[Any], train_parallel_config: TrainParallelConfig | None
+) -> tuple[list[Sample], dict[str, Any]]:
     metadata = {}
 
     validate_compact_rollout_ids(data)
@@ -82,13 +86,16 @@ def _nested_sample_count(group) -> int:
     return sum(_nested_sample_count(item) for item in group)
 
 
-def _compute_dynamic_global_batch_size(args, train_parallel_config, num_samples: int) -> int:
+def _compute_dynamic_global_batch_size(
+    args: Any, train_parallel_config: TrainParallelConfig | None, num_samples: int
+) -> int:
     """Calculate dynamic global_batch_size to ensure only one training step.
 
     Strategy: global_batch_size = num_samples rounded down to a multiple of dp_size
     This ensures num_steps_per_rollout = num_samples // global_batch_size = 1
     """
-    dp_size = train_parallel_config["dp_size"]
+    assert train_parallel_config is not None
+    dp_size = train_parallel_config.dp_size
     original_gbs = args.global_batch_size
 
     if is_multi_lora_enabled(args):

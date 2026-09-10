@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray.rollout.debug_data import save_debug_rollout_data
 from miles.ray.rollout.rollout_executor import RolloutExecutor
@@ -197,7 +198,7 @@ class TestGenerate:
         args.global_batch_size = 8
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
 
         captured: list = []
 
@@ -234,7 +235,7 @@ class TestGenerate:
         args.multi_lora = True
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
 
         def timing_out_rollout_fn(input):
             raise EmptyBatchTimeoutError("no trainable group arrived")
@@ -251,7 +252,7 @@ class TestGenerate:
         args.global_batch_size = 8
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
 
         samples = make_samples_grouped(n_groups=2, group_size=4)
         samples[0].weight_versions = [
@@ -269,7 +270,7 @@ class TestGenerate:
         args.global_batch_size = 8
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=2, group_size=4)], metrics=None
         )
@@ -284,7 +285,7 @@ class TestGenerate:
         args.global_batch_size = 8
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=2, group_size=4)], metrics=None
         )
@@ -299,7 +300,7 @@ class TestGenerate:
         args.global_batch_size = 4
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 1})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=1))
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
         )
@@ -560,7 +561,7 @@ class TestCustomHooks:
         args = _make_test_args(global_batch_size=4, custom_convert_samples_to_train_data_path="pkg.convert")
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
         )
@@ -592,7 +593,7 @@ class TestCustomHooks:
         args = _make_test_args(global_batch_size=4, custom_reward_post_process_path="pkg.reward")
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
         )
@@ -611,7 +612,7 @@ class TestWeightVersion:
         args = _make_test_args(global_batch_size=4, indep_dp=False)
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 1})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=1))
         captured: list = []
 
         def fake_rollout_fn(input):
@@ -657,7 +658,7 @@ class TestDelayedDpSplit:
         args = _make_test_args(global_batch_size=4, delay_split_train_data_by_dp=True)
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
         )
@@ -719,7 +720,7 @@ class TestDebugRolloutData:
         )
 
         executor = await _make_executor(args)
-        executor.set_train_parallel_config({"dp_size": 1})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=1))
 
         mismatched = make_samples_grouped(n_groups=1, group_size=4)
         for sample in mismatched:
@@ -750,7 +751,7 @@ class TestLegacyRolloutProtocol:
         executor = await _make_executor(args)
         executor.use_legacy_rollout_v1 = True
         executor.data_source = SimpleNamespace()
-        executor.set_train_parallel_config({"dp_size": 1})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=1))
         calls: list[tuple] = []
 
         def legacy_rollout_fn(passed_args, rollout_id, data_source, evaluation):

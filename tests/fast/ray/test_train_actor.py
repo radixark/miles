@@ -3,9 +3,11 @@ import socket
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray import placement_group, train_actor
 from miles.ray.train_actor import TrainRayActor
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.init_once import InitOnce
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
 
@@ -108,18 +110,18 @@ class TestConfigureMasterAddrAndPort:
 class TestTrainParallelConfigWiring:
     async def test_the_driver_passes_the_resolved_actor_config_to_the_rollout_executor(self, monkeypatch):
         """The driver resolves the actor config before handing it to the rollout executor."""
-        train_parallel_config = {"dp_size": 4, "topology": {"tp_size": 2}}
+        train_parallel_config = make_train_parallel_config(dp_size=4)
         trainer_config = SimpleNamespace(role="actor", trainer_id="actor")
 
         class FakeActorHandle:
-            async def get_train_parallel_config(self):
+            async def get_train_parallel_config(self) -> TrainParallelConfig | None:
                 return train_parallel_config
 
         class FakeRolloutExecutor:
             def __init__(self):
                 self.received_config = None
 
-            async def set_train_parallel_config(self, config):
+            async def set_train_parallel_config(self, config: TrainParallelConfig | None) -> None:
                 assert not isinstance(config, FakeActorHandle)
                 self.received_config = config
 

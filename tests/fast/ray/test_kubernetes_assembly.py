@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 from tests.fast.utils.workers.worker_provider.kubernetes import fake_pod_api
 from tests.fast.utils.workers.worker_provider.kubernetes.core.test_pod_view import make_pod
 
@@ -20,6 +21,7 @@ from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
 from miles.ray.train.cell import TrainerCell
 from miles.utils import http_utils
 from miles.utils.data import RolloutDataPack
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.init_once import InitState
 from miles.utils.object_store import _MooncakeStoreObjectRef
@@ -68,7 +70,7 @@ class FakeRolloutExecutor:
     def __init__(self) -> None:
         self.initialized = False
         self.loaded: list[int | None] = []
-        self.train_parallel_config: dict[str, Any] | None = None
+        self.train_parallel_config: TrainParallelConfig | None = None
         self.eval_fleet_info: EvalFleetInfo | None = None
 
     async def init(self) -> None:
@@ -95,7 +97,7 @@ class FakeRolloutExecutor:
     def get_num_rollout_per_epoch(self) -> int:
         return 7
 
-    def set_train_parallel_config(self, config: dict[str, Any]) -> None:
+    def set_train_parallel_config(self, config: TrainParallelConfig | None) -> None:
         self.train_parallel_config = config
 
     async def set_eval_fleet_info(self, eval_fleet_info: EvalFleetInfo | None) -> None:
@@ -169,8 +171,8 @@ class FakeTrainerController:
     async def reconcile_adapters(self) -> None:
         return None
 
-    async def get_train_parallel_config(self) -> dict[str, Any]:
-        return {"dp_size": 2}
+    async def get_train_parallel_config(self) -> TrainParallelConfig | None:
+        return make_train_parallel_config(dp_size=2)
 
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {}
@@ -429,7 +431,7 @@ class TestKubernetesDriverAssembly:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
                 await app.router.lifespan_context(app).__aenter__()
                 handle = specs_rollout.create_rollout_executor_handle(capability=capability)
-                await handle.set_train_parallel_config(config={"dp_size": 4})
+                await handle.set_train_parallel_config(config=make_train_parallel_config(dp_size=4))
                 await handle.load(rollout_id=11)
                 return handle, await handle.get(rollout_id=3)
 
@@ -438,7 +440,7 @@ class TestKubernetesDriverAssembly:
         assert isinstance(handle, RpcWorkerHandle)
         assert rollout_data == _data_pack(3)
         assert isinstance(rollout_data.data_ref, _MooncakeStoreObjectRef)
-        assert executor.train_parallel_config == {"dp_size": 4}
+        assert executor.train_parallel_config == make_train_parallel_config(dp_size=4)
         assert executor.loaded == [11]
         assert set(transport.hosts_called) == {host}
 
@@ -512,5 +514,5 @@ class TestKubernetesDriverAssembly:
         assert isinstance(handle, RpcWorkerHandle)
         assert controller.initialized.num_rollout == 7
         assert controller.trained == [(3, _data_pack(3))]
-        assert parallel_config == {"dp_size": 2}
+        assert parallel_config == make_train_parallel_config(dp_size=2)
         assert set(transport.hosts_called) == {host}

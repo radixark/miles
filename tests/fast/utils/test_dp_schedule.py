@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 
 
 def make_args(
@@ -51,12 +51,14 @@ def make_args(
 
 
 def make_tp(dp_size=1, cp_size=1, vpp_size=1, microbatch_group_size_per_vp_stage=None):
-    return {
-        "dp_size": dp_size,
-        "cp_size": cp_size,
-        "vpp_size": vpp_size,
-        "microbatch_group_size_per_vp_stage": microbatch_group_size_per_vp_stage,
-    }
+    return TrainParallelConfig(
+        dp_size=dp_size,
+        cp_size=cp_size,
+        vpp_size=vpp_size,
+        microbatch_group_size_per_vp_stage=microbatch_group_size_per_vp_stage,
+        independent_dp=False,
+        supports_precomputed_schedule=True,
+    )
 
 
 def assert_invariants(
@@ -429,11 +431,14 @@ def test_balance_by_flops_singleton_fallback():
             assert len(micro_batch) == 1
 
 
-def test_has_full_schedule_config():
-    assert has_full_schedule_config(make_tp())
-    assert not has_full_schedule_config({})
-    assert not has_full_schedule_config(None)
-    assert not has_full_schedule_config({"dp_size": 4})  # fsdp/torchtitan shape
+def test_train_parallel_config_declares_schedule_support() -> None:
+    """The model carries an explicit backend scheduling capability."""
+    assert make_tp().supports_precomputed_schedule
+    assert (
+        not make_tp(dp_size=4)
+        .model_copy(update={"supports_precomputed_schedule": False})
+        .supports_precomputed_schedule
+    )  # fsdp/torchtitan shape
 
 
 if __name__ == "__main__":

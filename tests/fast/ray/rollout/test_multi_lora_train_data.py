@@ -3,12 +3,12 @@ batch size, per-adapter batch loss scales, step stamping, and per-group reward
 normalization with heterogeneous group sizes."""
 
 import pytest
-
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 from tests.fast.ray.rollout.conftest import make_args, make_sample
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
@@ -57,7 +57,9 @@ def make_batch():
 
 def run_pipeline(dp_size: int = 2):
     args = multi_lora_args()
-    data, metadata = postprocess_rollout_data(args, make_batch(), train_parallel_config={"dp_size": dp_size})
+    data, metadata = postprocess_rollout_data(
+        args=args, data=make_batch(), train_parallel_config=make_train_parallel_config(dp_size=dp_size)
+    )
     train_data = convert_samples_to_train_data(
         args,
         data,
@@ -81,7 +83,9 @@ def test_postprocess_extracts_batch_metadata_and_exact_batch_size():
 def test_multi_lora_rejects_dp_indivisible_batch():
     args = multi_lora_args()
     with pytest.raises(ValueError, match="not divisible by dp_size"):
-        postprocess_rollout_data(args, make_batch(), train_parallel_config={"dp_size": 4})
+        postprocess_rollout_data(
+            args=args, data=make_batch(), train_parallel_config=make_train_parallel_config(dp_size=4)
+        )
 
 
 def test_step_fields():

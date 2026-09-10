@@ -7,6 +7,7 @@ import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray.rollout.train_data_conversion import (
     _post_process_rewards,
@@ -682,7 +683,9 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1, 1]] * 4,
             "sample_indices": [0, 1, 2, 3],
         }
-        parts = split_train_data_by_dp(args, data, {"dp_size": 2})
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
         # stride: dp=0 takes [0, 2], dp=1 takes [1, 3]
         assert list(parts[0]["partition"]) == [0, 2]
         assert list(parts[1]["partition"]) == [1, 3]
@@ -699,7 +702,9 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1] * n for n in (1, 2, 3, 4)],
             "sample_indices": [0, 1, 2, 3],
         }
-        parts = split_train_data_by_dp(args, data, {"dp_size": 2})
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
         sizes = [len(p["tokens"]) for p in parts]
         assert max(sizes) - min(sizes) <= 1
 
@@ -715,7 +720,9 @@ class TestSplitTrainDataByDp:
             "rollout_log_probs": [[-0.1], [-0.2]],
             "round_number": [1, 2],
         }
-        parts = split_train_data_by_dp(args, data, {"dp_size": 2})
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
         assert "rollout_log_probs" in parts[0]
         assert "round_number" in parts[0]
 
@@ -732,7 +739,9 @@ class TestSplitTrainDataByDp:
             "raw_reward": [9.0, 8.0, 7.0, 6.0],
             "dynamic_global_batch_size": 4,
         }
-        parts = split_train_data_by_dp(args, data, {"dp_size": 2})
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
         for p in parts:
             assert p["raw_reward"] == [9.0, 8.0, 7.0, 6.0]
             assert p["dynamic_global_batch_size"] == 4
@@ -749,7 +758,9 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1]] * n,
             "sample_indices": list(range(n)),
         }
-        parts = split_train_data_by_dp(args, data, {"dp_size": 4})
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=4)
+        )
         all_indices = sorted(i for p in parts for i in p["partition"])
         assert all_indices == list(range(n))
 
@@ -774,7 +785,7 @@ class TestSplitTrainDataRaw:
         args = MagicMock()
         args.balance_data = False
 
-        result = split_train_data_by_dp_raw(args, data, dp_size=2)
+        result = split_train_data_by_dp_raw(args=args, data=data, dp_size=2)
 
         assert len(result) == 2
         assert "seq_witness_ids" in result[0]
@@ -795,7 +806,7 @@ class TestSplitTrainDataRaw:
         args = MagicMock()
         args.balance_data = False
 
-        result = split_train_data_by_dp_raw(args, data, dp_size=2)
+        result = split_train_data_by_dp_raw(args=args, data=data, dp_size=2)
 
         assert len(result) == 2
         for part in result:
@@ -813,16 +824,18 @@ class TestSplitTrainDataRaw:
         args = MagicMock()
         args.balance_data = False
 
-        result = split_train_data_by_dp_raw(args, data, dp_size=1)
+        result = split_train_data_by_dp_raw(args=args, data=data, dp_size=1)
         assert "seq_witness_ids" not in result[0]
 
 
-FULL_SCHEDULE_CONFIG = {
-    "dp_size": 2,
-    "cp_size": 1,
-    "vpp_size": 1,
-    "microbatch_group_size_per_vp_stage": None,
-}
+FULL_SCHEDULE_CONFIG = make_train_parallel_config(
+    dp_size=2,
+    cp_size=1,
+    vpp_size=1,
+    microbatch_group_size_per_vp_stage=None,
+    independent_dp=False,
+    supports_precomputed_schedule=True,
+)
 
 
 def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: list[int] | None = None) -> dict:
@@ -842,39 +855,50 @@ def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: l
 class TestCanScheduleOnRolloutSide:
     def test_eligible_with_full_megatron_config(self):
         args = make_args(balance_data=False, micro_batch_size=1, use_dynamic_batch_size=False, multi_lora=False)
-        assert can_schedule_on_rollout_side(args, _make_split_data(8), FULL_SCHEDULE_CONFIG)
+        assert can_schedule_on_rollout_side(
+            args=args, data=_make_split_data(8), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
     def test_rejects_partial_config(self):
-        """fsdp / torchtitan advertise only dp_size; indep_dp advertises {}."""
+        """Reject backends without precomputed schedule support or an advertised config."""
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), {"dp_size": 2})
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), {})
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), None)
+        assert not can_schedule_on_rollout_side(
+            args=args,
+            data=_make_split_data(8),
+            train_parallel_config=make_train_parallel_config(dp_size=2, supports_precomputed_schedule=False),
+        )
+        assert not can_schedule_on_rollout_side(args=args, data=_make_split_data(8), train_parallel_config=None)
 
     def test_rejects_multi_lora(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=True)
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), FULL_SCHEDULE_CONFIG)
+        assert not can_schedule_on_rollout_side(
+            args=args, data=_make_split_data(8), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
     def test_rejects_multimodal(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
         data = _make_split_data(8)
         data["multimodal_train_inputs"] = [None] * 8
-        assert not can_schedule_on_rollout_side(args, data, FULL_SCHEDULE_CONFIG)
+        assert not can_schedule_on_rollout_side(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
     def test_rejects_fewer_rollouts_than_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
-        assert not can_schedule_on_rollout_side(args, _make_split_data(6), FULL_SCHEDULE_CONFIG)
+        assert not can_schedule_on_rollout_side(
+            args=args, data=_make_split_data(6), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
     def test_accepts_trailing_partial_step(self):
         """Extra rollouts beyond a full step are fine — the schedule drops them."""
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
-        assert can_schedule_on_rollout_side(args, _make_split_data(10), FULL_SCHEDULE_CONFIG)
+        assert can_schedule_on_rollout_side(
+            args=args, data=_make_split_data(10), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
     def test_dynamic_gbs_overrides_args_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
         data = _make_split_data(6)
         data["dynamic_global_batch_size"] = 6
-        assert can_schedule_on_rollout_side(args, data, FULL_SCHEDULE_CONFIG)
+        assert can_schedule_on_rollout_side(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
 
 class TestSplitTrainDataByDpScheduled:
@@ -883,7 +907,9 @@ class TestSplitTrainDataByDpScheduled:
         tiles each shard's rows exactly, and shard rows match their partition."""
         args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
         data = _make_split_data(8)
-        scheduled = split_train_data_by_dp_scheduled_raw(args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG)
+        scheduled = split_train_data_by_dp_scheduled_raw(
+            args=args, data=dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
         assert len(scheduled) == 2
         seen = []
@@ -905,7 +931,9 @@ class TestSplitTrainDataByDpScheduled:
         rollout_ids = [0, 1, 1, 1, 2, 3]  # rollout 1 emits 3 samples
         data = _make_split_data(6, rollout_ids=rollout_ids)
         data["dynamic_global_batch_size"] = 2
-        shards = split_train_data_by_dp_scheduled_raw(args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG)
+        shards = split_train_data_by_dp_scheduled_raw(
+            args=args, data=dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
         assert shards[0]["num_rollouts"] == [2, 2]
         assert len(shards[0]["num_microbatches"]) == 2
@@ -921,7 +949,7 @@ class TestSplitTrainDataByDpScheduled:
         )
         lengths = [5, 1, 4, 2, 3, 3, 2, 4]
         data = _make_split_data(8, lengths=lengths)
-        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        shards = split_train_data_by_dp_scheduled_raw(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
         nmb = shards[0]["num_microbatches"]
         for shard in shards:
@@ -937,7 +965,7 @@ class TestSplitTrainDataByDpScheduled:
         args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
         data = _make_split_data(16)
         data["dynamic_global_batch_size"] = 8
-        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        shards = split_train_data_by_dp_scheduled_raw(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
         assert shards[0]["num_microbatches"] == [2, 2]
         assert shards[0]["dynamic_global_batch_size"] == 8
