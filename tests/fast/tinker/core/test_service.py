@@ -575,3 +575,50 @@ async def test_sampling_for_another_base_model_is_rejected(service):
                 "topk_prompt_logprobs": 0,
             },
         )
+
+
+async def test_a_backend_level_optim_failure_retires_every_model_in_the_barrier(service):
+    model_a = await created_model(service)
+    model_b = await created_model(service)
+    service.backend.fail_on["optim_step"] = RuntimeError("allgather died")
+
+    first = service.submit("tenant", "optim_step", _optim_payload(model_a, 1))
+    second = service.submit("tenant", "optim_step", _optim_payload(model_b, 1))
+    for request_id in (first, second):
+        future = await await_settled(service, "tenant", request_id)
+        assert future.state == FAILED and "restore from a checkpoint" in future.error
+    assert model_a not in service.models and model_b not in service.models
+    assert len(service.backend.named("unload_slot")) == 2
+
+    fresh = await created_model(service)  # the dispatch loop survived the failure
+    assert fresh in service.models
+
+
+async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
+    session_id = service.create_session("tenant")
+    model_id = await created_model(service)
+    slot = service.models[model_id].slot
+    service.backend.fail_on["unload_slot"] = RuntimeError("engine gone")
+
+    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
+    await service._sweep_once()
+
+    assert model_id not in service.models
+    assert slot not in service.free_slots, "a slot whose unload failed is dirty and must not be reused"
+    await service._sweep_once()  # the sweep itself survived
+
+
+async def test_a_failed_load_state_retires_the_model(service):
+    model_id = await created_model(service)
+    saved = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+    )
+    path = (await await_settled(service, "tenant", saved)).result["path"]
+
+    service.backend.fail_on["load_slot"] = RuntimeError("shard corrupt")
+    loaded = service.submit(
+        "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+    )
+    future = await await_settled(service, "tenant", loaded)
+    assert (future.state, future.error_category) == (FAILED, "server")
+    assert model_id not in service.models, "a load that failed partway may have left mixed state"
