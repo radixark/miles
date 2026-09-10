@@ -6,6 +6,13 @@ Miles runs a job on one of two cluster backends. Ray is the default and needs no
 Kubernetes installs the run as a helm release, so the cluster schedules every worker. The training
 script is the same either way.
 
+## Ray
+
+Ray is the default backend, so `python scripts/run_*.py train` launches a run as is, with nothing to
+configure. Nothing in the Kubernetes chapter below applies to it.
+
+## Kubernetes
+
 <Warning>
 
 **Status.** Under active development: flags, chart values and failure semantics still change. Ray
@@ -14,7 +21,7 @@ Miles to create the cluster's objects itself.
 
 </Warning>
 
-## Launch
+### Launch
 
 Run everything from the repository root, with `kubectl` and `helm` on your PATH.
 
@@ -41,7 +48,7 @@ The recipe defaults to `/root/models`, `/root/datasets` and `/root/shared_data`;
 with `python scripts/run_qwen3_4b.py prepare`, or pass `--model-dir`, `--data-dir` and
 `--output-dir` to point the recipe elsewhere.
 
-## Observability
+### Observability
 
 **Built in**
 
@@ -57,7 +64,7 @@ with `python scripts/run_qwen3_4b.py prepare`, or pass `--model-dir`, `--data-di
   collector, the platform's own dashboards — sees them with no wiring from Miles.
 - Prefer it at scale. The built-in following is meant for watching one run, not hundreds of pods.
 
-## Clean up
+### Clean up
 
 ```bash
 python -m miles.utils.external_utils.miles_workbench stop -n "$MILES_NS" 260811-143000-042
@@ -66,30 +73,22 @@ python -m miles.utils.external_utils.miles_workbench uninstall -n "$MILES_NS"
 
 `stop` removes the run and frees its GPUs; `uninstall` removes the workbench.
 
-## Folder convention
+### Folder convention
 
 A run is many pods on many machines, and they share nothing but the volumes `infra.yaml` mounts.
-A path that is on none of them is the most common way a run fails.
 
-- Every path your script names — `/root/models`, `/root/datasets` — has to be under one of the
-  mounts, and so does `infra.paths.runsRoot`, where the launcher keeps each run's directory.
-- `infra.paths.runsRoot` has to be under a volume every pod shares — a `hostPath` on shared storage
-  or a read-write-many claim. An `emptyDir` there is rejected: each pod would get its own copy, and
-  the verdict one pod writes is a file no other pod can read.
-- Copying a file into a pod is pointless: pods come and go, the mount survives.
-- To run your own branch instead of the image's copy, mount it at the platform-owned source root:
-  `/root/miles`, `/root/Megatron-LM`, or `/sgl-workspace/sglang`. The chart injects these canonical
-  roots into `PYTHONPATH`; `infra.env.PYTHONPATH` cannot override them, and a copy mounted anywhere
-  else is not imported.
+- Every path your script names — `/root/models`, `/root/datasets`, `infra.paths.runsRoot` — has to
+  be under one of those mounts.
+- To run your own branch, mount it at `/root/miles`, `/root/Megatron-LM` or `/sgl-workspace/sglang`;
+  a copy anywhere else is not imported.
 
-## For cluster administrator
+### For cluster administrator
 
 Everything above assumes this was done once.
 
 **Install LWS.** Miles deploys its worker pools as
 [LeaderWorkerSets](https://github.com/kubernetes-sigs/lws). Install the CRDs and controller, and
-grant users rights over them explicitly: LWS ships no aggregation labels, so a namespace `admin`
-role does not include them.
+grant users rights over them explicitly.
 
 **Give each user a namespace.** The namespace is the real boundary, not the Role: anything that
 may create workloads can name another ServiceAccount and read its token. Keep privileged accounts
