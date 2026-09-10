@@ -2,7 +2,19 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.fast.rollout.conftest import ReadOnlyDataSource
+
 from miles.rollout.data_source import RolloutDataSource
+
+
+class TestReadOnlyDataSource:
+    def test_a_custom_source_only_implements_read_and_checkpoint_operations(self) -> None:
+        """A custom source can instantiate without implementing sample recycling."""
+        source = ReadOnlyDataSource()
+
+        assert source.get_samples(num_samples=1)[0][0].prompt == "0"
+        source.save(rollout_id=0)
+        source.load(rollout_id=0)
 
 
 def _make_args(**overrides) -> SimpleNamespace:
