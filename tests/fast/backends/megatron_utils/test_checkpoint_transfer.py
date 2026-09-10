@@ -13,7 +13,7 @@ from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
 from miles.backends.megatron_utils.ft import checkpoint_transfer, in_memory_checkpoint
 from miles.backends.megatron_utils.ft.checkpoint_transfer import _TensorViewCodec, _TransportCodec
-from miles.utils.audit_utils.witness.cpu import CpuWitness, TrainingSampleIdentity
+from miles.backends.training_utils.weight_companion import WeightCompanion, TrainingSampleIdentity
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 _CKPT_TRANSFER_LOGGER = "miles.backends.megatron_utils.ft.checkpoint_transfer"
@@ -127,7 +127,7 @@ class TestDeserializeFromTransport:
         self, single_rank_gloo: dist.ProcessGroup
     ) -> None:
         """A surviving cell donor restores both witness outcomes into a healing receiver."""
-        donor = CpuWitness(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        donor = WeightCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
         sample = TrainingSampleIdentity(source_sample_index=7, row_index=0, row_count=1)
         skipped_sample = TrainingSampleIdentity(source_sample_index=8, row_index=0, row_count=1)
         donor.record([sample])
@@ -140,7 +140,7 @@ class TestDeserializeFromTransport:
 
         _, restored = _TransportCodec.decode(_TransportCodec.encode(state_dict=state_dict, iteration=11))
 
-        receiver = CpuWitness(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        receiver = WeightCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
         receiver_state = restored.to_state_dict(
             {"model": receiver.sharded_state_dict(prefix="cpu_witness.")},
             algo="atomic",

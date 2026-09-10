@@ -7,14 +7,14 @@ import pytest
 import torch
 
 from miles.backends.training_utils.data import DataIterator
-from miles.utils.audit_utils.witness.cpu import CpuWitness
+from miles.backends.training_utils.weight_companion import WeightCompanion
 
 
 class FakeModelChunk(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.zero_grad_buffer_count = 0
-        self.add_module("cpu_witness", CpuWitness())
+        self.add_module("cpu_witness", WeightCompanion())
 
     def zero_grad_buffer(self) -> None:
         self.zero_grad_buffer_count += 1
@@ -161,7 +161,7 @@ class TestTrainOneStepStructuredLog:
         assert "train op=train_step rollout=7 step=3 attempt=2 outcome=NORMAL valid_step=true" in caplog.messages
 
 
-class TestTrainOneStepCpuWitness:
+class TestTrainOneStepWeightCompanion:
     def test_successful_step_records_consumed_rows_as_trained(
         self, train_one_step_env: TrainOneStepEnv, monkeypatch: pytest.MonkeyPatch
     ) -> None:

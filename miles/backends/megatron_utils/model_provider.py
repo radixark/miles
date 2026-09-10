@@ -17,7 +17,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
-from miles.utils.audit_utils.witness.cpu import install_cpu_witness
+from miles.backends.training_utils.weight_companion import install_weight_companion
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -192,7 +192,7 @@ def get_model_provider_func(
                 )
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
             if role == "actor" and not args.multi_lora:
-                install_cpu_witness(model=model, chunk_index=vp_stage or 0)
+                install_weight_companion(model=model, chunk_index=vp_stage or 0)
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward
 
@@ -352,7 +352,7 @@ def _maybe_install_witness(
     vp_stage: int | None,
 ) -> None:
     if role == "actor" and not args.multi_lora:
-        install_cpu_witness(model=model, chunk_index=vp_stage or 0)
+        install_weight_companion(model=model, chunk_index=vp_stage or 0)
     if getattr(args, "enable_witness", False):
         install_witness(
             model,

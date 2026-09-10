@@ -32,10 +32,10 @@ from miles.backends.megatron_utils.local_weight_checksum import dump_local_weigh
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.weight_version_checkpoint import read_weight_version
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.audit_utils.witness.cpu import (
+from miles.backends.training_utils.weight_companion import (
     TrainingSampleIdentity,
-    record_cpu_witness,
-    record_nonfinite_skip_cpu_witness,
+    record_weight_companion,
+    record_nonfinite_skip_weight_companion,
 )
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -661,9 +661,9 @@ def train_one_step(
             opt_param_scheduler.step(increment=num_rollouts)
 
         if not multi_lora:
-            record_cpu_witness(model=model, samples=consumed_identities)
+            record_weight_companion(model=model, samples=consumed_identities)
     elif outcome == TrainStepOutcome.NORMAL and not disable_optimizer and not multi_lora:
-        record_nonfinite_skip_cpu_witness(model=model, samples=consumed_identities)
+        record_nonfinite_skip_weight_companion(model=model, samples=consumed_identities)
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)

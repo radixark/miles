@@ -14,7 +14,7 @@ from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
 from miles.utils import megatron_bridge_utils
-from miles.utils.audit_utils.witness.cpu import clear_cpu_witness, hide_cpu_witness
+from miles.backends.training_utils.weight_companion import clear_weight_companion, hide_weight_companion
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
 from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
@@ -123,8 +123,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
         has_cpu_witness = has_local_checkpoint_manager or _has_cpu_witness_checkpoint(args)
         if not has_cpu_witness and not skip_load_to_model_and_opt:
             logger.warning("Checkpoint has no CPU training witness; starting with an empty witness")
-            clear_cpu_witness(ddp_model)
-        with nullcontext() if has_cpu_witness else hide_cpu_witness(ddp_model):
+            clear_weight_companion(ddp_model)
+        with nullcontext() if has_cpu_witness else hide_weight_companion(ddp_model):
             result = _load_checkpoint_megatron(
                 ddp_model=ddp_model,
                 optimizer=optimizer,
@@ -239,12 +239,12 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
 
     logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
     logger.warning("Pretrained checkpoint has no CPU training witness; starting with an empty witness")
-    clear_cpu_witness(ddp_model)
+    clear_weight_companion(ddp_model)
 
     with (
         megatron_bridge_utils.patch_megatron_model(ddp_model),
         _hide_critic_value_head_from_hf_load(ddp_model),
-        hide_cpu_witness(ddp_model),
+        hide_weight_companion(ddp_model),
     ):
         bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
         bridge.load_hf_weights(ddp_model)

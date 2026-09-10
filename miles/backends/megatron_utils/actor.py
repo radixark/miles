@@ -24,11 +24,11 @@ from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
 from miles.utils.audit_utils.event_logger.models import TrainerCpuWitnessEvent
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.audit_utils.witness.cpu import (
+from miles.backends.training_utils.weight_companion import (
     TrainingSampleIdentity,
-    preserve_cpu_witness,
-    snapshot_cpu_witness,
-    snapshot_nonfinite_skip_cpu_witness,
+    preserve_weight_companion,
+    snapshot_weight_companion,
+    snapshot_nonfinite_skip_weight_companion,
 )
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -813,8 +813,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
             ]
 
-        sample_counts = _snapshot_counts(snapshot_cpu_witness(self.model))
-        skipped_nonfinite_sample_counts = _snapshot_counts(snapshot_nonfinite_skip_cpu_witness(self.model))
+        sample_counts = _snapshot_counts(snapshot_weight_companion(self.model))
+        skipped_nonfinite_sample_counts = _snapshot_counts(snapshot_nonfinite_skip_weight_companion(self.model))
         event_logger = get_event_logger()
         event = event_logger.make_event(
             TrainerCpuWitnessEvent,
@@ -1060,7 +1060,7 @@ class MegatronTrainRayActor(TrainRayActor):
             old_ckpt_step = self.args.ckpt_step
             self.args.ckpt_step = self.args.opd_teacher_ckpt_step
 
-        with preserve_cpu_witness(self.model):
+        with preserve_weight_companion(self.model):
             _, _ = load_checkpoint(
                 self.model,
                 None,

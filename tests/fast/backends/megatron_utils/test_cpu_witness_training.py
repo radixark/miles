@@ -1,6 +1,6 @@
 from miles.backends.megatron_utils.model import _consumed_sample_identities
 from miles.backends.training_utils.data import DataIterator
-from miles.utils.audit_utils.witness.cpu import TrainingSampleIdentity
+from miles.backends.training_utils.weight_companion import TrainingSampleIdentity
 
 
 class TestConsumedSampleIdentities:
