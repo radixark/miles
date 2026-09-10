@@ -18,7 +18,9 @@ def _round_trip(pack: RolloutDataPack) -> RolloutDataPack:
 class TestWhatARolloutHandsToTheDriver:
     def test_the_data_reference_arrives_as_a_store_reference(self):
         """A pack typed as a plain mapping degrades the reference to a dict, and nothing can free it again."""
-        pack = RolloutDataPack(sample_indices=[1, 2], data_ref=_MooncakeStoreObjectRef(payload={"key": "store/7"}))
+        pack = RolloutDataPack(
+            sample_indices=[1, 2], data_ref=_MooncakeStoreObjectRef(payload={"key": "store/7"}), lineage_id="branch-b"
+        )
 
         restored = _round_trip(pack)
 
@@ -51,7 +53,9 @@ class TestThePackTheTrainerControllerIsGiven:
     def test_the_controller_receives_the_same_pack_the_executor_returned(self):
         """The controller forwards data_ref to its cells, so it must arrive as a reference here too."""
         spec = collect_rpc_method_specs(TrainerController)["train"]
-        pack = RolloutDataPack(sample_indices=[4], data_ref=_MooncakeStoreObjectRef(payload={"key": "store/4"}))
+        pack = RolloutDataPack(
+            sample_indices=[4], data_ref=_MooncakeStoreObjectRef(payload={"key": "store/4"}), lineage_id="branch-b"
+        )
 
         decoded = spec.serializer.decode_query(
             spec.serializer.encode_query(dict(rollout_id=1, rollout_data_pack=pack))

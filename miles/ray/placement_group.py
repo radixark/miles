@@ -1,13 +1,14 @@
 import asyncio
 import logging
 import socket
+from argparse import Namespace
 from typing import NamedTuple
 
 import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
+from miles.backends.megatron_utils.checkpoint_tracker import read_trainer_checkpoint_iteration
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
@@ -179,15 +180,14 @@ async def take_over_trainers(args, *, handles: dict[str, BaseWorkerHandle]) -> b
     await wait_external_trainers(args, handles=handles)
     resumed = await wait_trainers_idle(handles)
 
-    if resumed and not _trainer_has_checkpoint(args):
+    if resumed and not trainer_has_checkpoint(args):
         event_logger_checkpoint.discard(args)
 
     return resumed
 
 
-def _trainer_has_checkpoint(args) -> bool:
-    assert args.megatron_config is None, "a multi policy run's base --load holds no tracker to read"
-    return read_checkpoint_tracker_iteration(args.requested_load) is not None
+def trainer_has_checkpoint(args: Namespace) -> bool:
+    return read_trainer_checkpoint_iteration(args) is not None
 
 
 # TODO: move (when reorganizing files)
@@ -247,7 +247,7 @@ async def create_training_models(
     args.start_rollout_id = actor_info.start_rollout_id
 
     await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
-    await rollout_executor.load(args.start_rollout_id - 1)
+    await rollout_executor.load(args.start_rollout_id - 1, require_complete=trainer_has_checkpoint(args))
 
     return actor_info.handle, critic_info.handle if critic_info is not None else None
 

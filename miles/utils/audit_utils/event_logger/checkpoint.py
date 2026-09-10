@@ -7,8 +7,7 @@ import uuid
 from argparse import Namespace
 from pathlib import Path
 
-from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
-from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir, resolve_megatron_config
+from miles.backends.megatron_utils.checkpoint_tracker import read_trainer_checkpoint_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -30,19 +29,21 @@ def snapshot(args: Namespace, iteration: int) -> None:
 
 
 def restore(args: Namespace) -> None:
-    if args.save_debug_event_data is None or args.requested_load is None:
+    if args.save_debug_event_data is None:
         return
 
-    requested_load = Path(args.requested_load)
-    iteration = _read_checkpoint_iteration(args)
-    if iteration is None:
-        return
-
-    src = _snapshot_dir(requested_load, iteration)
-    if not src.is_dir():
-        return
+    src = None
+    if args.requested_load is not None and (iteration := _read_checkpoint_iteration(args)) is not None:
+        src = _snapshot_dir(checkpoint_root=Path(args.requested_load), iteration=iteration)
 
     dst = Path(args.save_debug_event_data)
+    if src is None or not src.is_dir():
+        if dst.is_dir() and any(dst.iterdir()):
+            trash = _move_aside(dst)
+            dst.mkdir(parents=True)
+            logger.info("Moved the log of the run a fresh start replaces %s -> %s", dst, trash)
+        return
+
     if dst.exists():
         trash = _move_aside(dst)
         logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
@@ -66,13 +67,7 @@ def discard(args: Namespace) -> None:
 
 
 def _read_checkpoint_iteration(args: Namespace) -> int | None:
-    leader = resolve_megatron_config(args).trainers[0]
-    load_dir = (
-        compute_trainer_checkpoint_dir(base_dir=args.requested_load, trainer_id=leader.trainer_id)
-        if leader.model_id is not None
-        else args.requested_load
-    )
-    return read_checkpoint_tracker_iteration(load_dir)
+    return read_trainer_checkpoint_iteration(args)
 
 
 def _move_aside(dst: Path) -> Path:

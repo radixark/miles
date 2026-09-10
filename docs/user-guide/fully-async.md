@@ -117,18 +117,28 @@ The implementation lives in
 
 The **data buffer** is the store of finished groups between the two loops, and every
 group-level decision lives in it. The producer puts each group in as it completes, the
-trainer takes groups back out one at a time, and everything in between — what to keep,
+trainer takes whole batches back out, and everything in between — what to keep,
 what to discard, what to send back for regeneration — is the buffer's call. It is one
-replaceable component with three methods:
+replaceable component with the following methods:
 
 | Method | Called by | Purpose |
 |---|---|---|
-| `put()` | The rollout worker, once per finished group | Store the group, or reject it |
-| `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
+| `put()` | The rollout worker, once per finished group | Store the group, or reject it. Returns a `PutOutcomes` dict with one `PutOutcome` per policy, keyed by `trainer_model_id` and by `None` in a run of one policy |
+| `get(num_groups=...)` | The trainer, once per step | Return a whole batch of `num_groups` groups, waiting until that many pass every filter. A partial batch is never handed out |
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
+| `snapshot()` / `restore()` | Checkpointing and the sample ownership checker | Report every entry held, and put a reported set back on an empty buffer |
+| `partition(input)` | The multi-policy rollout worker | Split finished samples into independently admitted policy entries; the default groups by `trainer_model_id` |
 
-Those three methods are the whole interface: the worker and the trainer see nothing
-else, and everything inside the box below is the built-in `DefaultDataBuffer`.
+- `put()` must set `input.completed_outcomes` in the same synchronous section that
+  stores, drops, or recycles the entry, before any later `await`. A checkpoint can then
+  distinguish an uncompleted put from a stored or already consumed entry.
+- Save admission decisions on the input before waiting for capacity. The built-in
+  buffer uses `admission_passed`, so restoring an accepted put does not rerun filtering.
+- Multi-policy custom buffers receive one policy entry per `put()`. Override
+  `partition()` when necessary, preserving actual policy keys and sample ownership.
+- Single-policy runs use `None` ownership regardless of optional sample tags.
+
+Everything inside the box below is the built-in `DefaultDataBuffer`.
 
 ```mermaid
 flowchart LR
@@ -145,9 +155,15 @@ flowchart LR
         U -->|drop| X
     end
     GF -->|"get()"| T["Trainer drains<br/>rollout_batch_size groups"]
-    U -->|retry| DS
+    U -->|retry| R[Rollout retry buffer]
+    R --> W
     T --> S[Optimizer step, weight sync]
 ```
+
+- `get()` hands out whole batches, keeping partial batches from being held by callers
+  outside checkpoint visibility.
+- `get()` evicts stale groups before waiting, preventing a stale-filled buffer from
+  blocking the producer while the batch waits for more groups.
 
 Groups are filtered at two points, because the two decisions become available at
 different times. Whether a group was aborted, and whether
@@ -173,14 +189,81 @@ Staleness control decides which of those groups training is allowed to see:
 | Flag | Effect |
 |---|---|
 | `--max-weight-staleness` | Maximum gap between a group's oldest weight version and the current engine version. Unset by default, which disables the filter |
-| `--async-unused-samples-handler` | What happens to a group training does not use, either aborted or too stale. The default `drop` discards it; `retry` recycles its prompts into the data source for regeneration. Dynamic-filter rejects are always dropped |
+| `--async-unused-samples-handler` | What happens to a group training does not use, either aborted or too stale. The default `drop` discards it; `retry` recycles its prompts into the rollout retry buffer for regeneration. Dynamic-filter rejects are always dropped |
+
+- `--async-data-buffer-capacity-factor` must allow at least `rollout_batch_size` groups;
+  smaller capacities fail at startup to prevent producer/batch-wait deadlock.
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
-takes over all three methods and therefore every group-level decision, and the flags in
+takes over these methods and therefore every group-level decision, and the flags in
 this section apply only if your class reads them. The one decision that stays outside is
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
+
+### Checkpointing
+
+`--save` writes every rollout-side sample state, so a resumed run neither loses prompts
+nor trains any twice.
+
+| State | Where it lives | File |
+|---|---|---|
+| Prompts not yet handed out | Data source cursor | `rollout/global_dataset_state_dict_<rollout_id>.pt` |
+| Prompts waiting for a retry | `FullyAsyncRolloutFn` retry buffer | `rollout/fully_async_state_<rollout_id>.pt` |
+| Prompt groups in flight | `FullyAsyncRolloutFn` in-flight registry | `rollout/fully_async_state_<rollout_id>.pt` |
+| Finished groups waiting for a step | `DataBuffer.snapshot()` | `rollout/fully_async_state_<rollout_id>.pt` |
+| The batch the orchestration script holds | `RolloutExecutor` | `rollout/executor_state_<rollout_id>.pt` |
+
+Notes:
+
+- Each trainer saves its counter in `iter_<NNNNNNN>/weight_version.txt`;
+  older checkpoints without the file start at 0.
+- Resume restores the loaded iteration's counter before publishing weights,
+  preserving absolute sample versions.
+- The whole set is collected in one stretch of the rollout event loop, so the files
+  record one instant rather than a moving target.
+- `rollout/complete_<rollout_id>` is removed before overwriting rollout state
+  and written last.
+- Loading rollout state without the marker fails: the run died mid-save
+  or predates the marker.
+- Marker invalidation starts at executor save; overwriting a checkpoint id leaves
+  the earlier trainer-save window uncovered.
+- An in-flight group restarts from its prompt under the restored weights; the tokens it
+  had already generated are discarded.
+- If buffered groups were restored, an assertion requires the orchestration script
+  to push a weight version before the first `get()` after resume.
+- This prevents the staleness filter from discarding restored batches against
+  an unknown version.
+- `DefaultMultiDataBuffer.replays_samples_of(trainer_model_id)` reports each
+  inner buffer's replay contract independently.
+- Holdings snapshots contain only that policy's output and handed batch,
+  plus shared retry and in-flight prompts.
+- Executor state stores `lineage_id` alongside `last_batches`;
+  restore creates a fresh lineage with the saved lineage as its parent.
+- Trainer events receive the lineage through `RolloutDataPack`.
+- The checker follows ancestor checkpoint steps, including per-policy restore points,
+  without selecting lineage by trainer wall-clock timestamps.
+- Save and final snapshots permit no missing samples.
+- Megatron checks CPU weight histories for every active rank, separately by policy
+  and actor/critic role; replicated records count as one logical consumption.
+- Each save attempt has a unique checkpoint ID. The saved cell and every other
+  active cell report their current full witness with that ID before save completion.
+- Runtime rank defects must persist across three snapshots. Online analysis checks
+  the latest three snapshots; offline analysis checks the full snapshot history.
+- Final snapshots are emitted after the producer stops, even without a final checkpoint.
+
+Custom `DataBuffer` contract:
+
+- `get(num_groups=...)`: return a whole batch.
+- `put() -> PutOutcomes`: return an outcomes dict; `None` is invalid.
+- `snapshot()/restore()`: report holdings without relinquishing ownership;
+  restore once into an empty buffer before the producer starts.
+- `unused_handler_fn(prompt_group, *, reason, trainer_model_id)`: both keywords required;
+  use `UnusedReason.ABORTED` on put and `UnusedReason.STALE` on get.
+- Calls pass `trainer_model_id=None` for unused prompts;
+  `DefaultMultiDataBuffer` wraps inner handlers to supply the policy's model id.
+- Set class attribute `replays_samples = True` if samples may be handed out repeatedly;
+  the always-on ownership checker then enforces only that no sample is lost.
 
 ## Evaluation
 

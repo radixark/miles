@@ -49,6 +49,11 @@ def _make_executor() -> RolloutExecutor:
     executor._train_parallel_configs_of_model_id = {}
     executor._rollouts_since_publish_of_model_id = defaultdict(int)
     executor.rollout_id = -1
+    executor.use_legacy_rollout_v1 = False
+    executor.generate_rollout = None
+    executor._last_batches = {}
+    executor._replay = {}
+    executor._lineage_id = "initial"
     return executor
 
 
@@ -133,9 +138,10 @@ class TestPerPolicyKeying:
 
         executor._get_rollout_data = _get_rollout_data
 
-        await executor.get(0, trainer_model_id="b")
+        pack = await executor.get(0, trainer_model_id="b")
 
         assert seen == [{"dp_size": 4}]
+        assert pack.lineage_id == "initial"
 
     async def test_a_policy_asks_for_data_against_its_own_weight_version(self, monkeypatch):
         """The rollout function stamps its samples with the version it is told, so the wrong one mislabels a batch."""

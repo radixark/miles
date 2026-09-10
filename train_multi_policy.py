@@ -200,7 +200,7 @@ async def _maybe_save_globally(
                 for trainer_model_id, trainer in trainers.items()
             )
         )
-        await rollout_executor.save(rollout_id)
+        await rollout_executor.save(rollout_id, rollout_ids=dict(rollout_ids))
         if args.save is not None:
             MultiPolicyCheckpointState(leader_model_id=model_id, rollout_ids=dict(rollout_ids)).save(Path(args.save))
 

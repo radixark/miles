@@ -19,10 +19,15 @@ import torch
 
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
+from miles.ray.rollout import rollout_executor as executor_module
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.utils.audit_utils.event_logger.logger import read_events
-from miles.utils.audit_utils.event_logger.models import RolloutHoldingsSnapshotEvent, SampleOwner
+from miles.utils.audit_utils.event_logger.models import (
+    RolloutHoldingsSnapshotEvent,
+    SampleOwner,
+    SampleOwnerTransitionEvent,
+)
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
@@ -1159,6 +1164,73 @@ class TestInFlightRegistry:
 
 
 class TestSaveAndLoad:
+    def test_restored_owners_are_registered_under_the_new_executor_lineage(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ownership_event_dir: Path
+    ) -> None:
+        """Restored retry, output, and handed batches must all enter the new lineage."""
+        monkeypatch.setattr(executor_module.event_logger_checkpoint, "snapshot", lambda args, rollout_id: None)
+        args = make_checkpointing_args(tmp_path)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn._retry_buffer.append(fully_async._PendingPrompt(samples=make_group(1)))
+        group = make_group(2)
+        fn._pending_restore = {None: [data_buffer.DataBufferInput(prompt_group=group, group=group)]}
+        executor = make_executor(tmp_path, rollout_fn=fn)
+        executor.use_legacy_rollout_v1 = False
+        executor._record_last_batch(rollout_id=1, trainer_model_id=None, samples=[make_group(3)])
+        executor.save(0)
+        restored_fn = make_fn(monkeypatch, args, FakeDataSource())
+        restored = make_executor(tmp_path, rollout_fn=restored_fn)
+        restored.use_legacy_rollout_v1 = False
+
+        restored.load(0)
+
+        transitions = [
+            event
+            for event in read_events(ownership_event_dir)
+            if isinstance(event, SampleOwnerTransitionEvent) and event.reason == "restored"
+        ]
+        assert {event.to_owner: event.sample_indices for event in transitions} == {
+            SampleOwner.RETRY_BUFFER: [10, 11],
+            SampleOwner.OUTPUT_BUFFER: [20, 21],
+            SampleOwner.HANDED_TO_TRAINER: [30, 31],
+        }
+        assert {event.lineage_id for event in transitions} == {restored._lineage_id}
+        assert restored._lineage_id != executor._lineage_id
+
+    async def test_executor_replay_then_save_preserves_the_unstarted_restored_buffer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Replaying the executor batch must not erase the still-unstarted output buffer."""
+        monkeypatch.setattr(executor_module, "postprocess_rollout_data", lambda args, data, **kwargs: (data, {}))
+        monkeypatch.setattr(executor_module, "assert_samples_weight_version_sane", lambda args, samples: None)
+        monkeypatch.setattr(executor_module.event_logger_checkpoint, "snapshot", lambda args, rollout_id: None)
+        args = make_checkpointing_args(tmp_path, rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        buffered = make_group(7, weight_versions=["9"])
+        fn._pending_restore = {None: [data_buffer.DataBufferInput(prompt_group=buffered, group=buffered)]}
+        executor = make_executor(tmp_path, rollout_fn=fn)
+        executor.use_legacy_rollout_v1 = False
+        executor._record_last_batch(rollout_id=1, trainer_model_id=None, samples=[make_group(6)])
+        executor.save(0)
+
+        resumed_fn = make_fn(monkeypatch, args, FakeDataSource())
+        resumed = make_executor(tmp_path, rollout_fn=resumed_fn)
+        resumed.use_legacy_rollout_v1 = False
+        resumed.load(0)
+        data, _, _ = await resumed._get_rollout_data(1)
+        assert [s.index for group in data for s in group] == [60, 61]
+        assert resumed_fn._worker is None
+        resumed.save(1)
+
+        final_fn = make_fn(monkeypatch, args, FakeDataSource())
+        final = make_executor(tmp_path, rollout_fn=final_fn)
+        final.use_legacy_rollout_v1 = False
+        final.load(1)
+
+        assert final_fn.describe_holdings(trainer_model_id=None)[SampleOwner.OUTPUT_BUFFER] == [70, 71]
+        restored_group = final_fn._pending_restore[None][0].group
+        assert all(sample.weight_versions == buffered[0].weight_versions for sample in restored_group)
+        assert data_buffer.DefaultDataBuffer._staleness(group=restored_group, current_version=10) == 1
 
     async def test_a_group_blocked_in_put_is_saved_and_delivered_without_regeneration(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

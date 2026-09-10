@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -471,6 +472,23 @@ def _make_trainer_handle(
 
 
 class TestCreateTrainingModels:
+    @pytest.mark.parametrize("tracker", ["release", "3"])
+    async def test_numbered_trainer_checkpoints_require_complete_rollout_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tracker: str
+    ) -> None:
+        """A numbered checkpoint requires rollout completeness while converted release weights do not."""
+        self._patched(monkeypatch, requested=[])
+        checkpoint_dir = tmp_path / "trainers" / "alpha-actor"
+        checkpoint_dir.mkdir(parents=True)
+        (checkpoint_dir / "latest_checkpointed_iteration.txt").write_text(tracker)
+        rollout_executor = self._rollout_executor()
+
+        await create_training_models(
+            args=self._args(tmp_path, requested_load=str(tmp_path)), rollout_executor=rollout_executor
+        )
+
+        rollout_executor.load.assert_awaited_once_with(-1, require_complete=tracker == "3")
+
     @staticmethod
     def _patched(monkeypatch, requested: list[str], *, initialized: bool = False) -> list[MagicMock]:
         handles: list[MagicMock] = []
@@ -496,6 +514,7 @@ class TestCreateTrainingModels:
     def _args(tmp_path, **overrides) -> Namespace:
         defaults = dict(
             megatron_config=write_megatron_config(tmp_path, "alpha"),
+            requested_load=None,
             use_critic=False,
             start_rollout_id=None,
             trainer_controller_addrs=None,
@@ -538,7 +557,7 @@ class TestCreateTrainingModels:
 
         await create_training_models(self._args(tmp_path), rollout_executor)
 
-        rollout_executor.load.assert_awaited_once_with(-1)
+        rollout_executor.load.assert_awaited_once_with(-1, require_complete=False)
 
     async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
         """A second handle would identify one connection and drive another, so the check would guard nothing."""
@@ -566,6 +585,7 @@ class TestCreateTrainingModels:
             use_opd=False,
             disable_param_buffers_cpu_backup=False,
             load=None,
+            requested_load=None,
             save=None,
             lr=1e-6,
             lr_warmup_iters=None,

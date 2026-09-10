@@ -79,18 +79,20 @@ class TestSnapshotRestoreRoundtrip:
 
 
 class TestNoOpCases:
-    def test_restore_skips_when_not_resuming(self, tmp_path: Path) -> None:
-        """No --load means no restore."""
+    def test_fresh_start_moves_the_previous_run_aside(self, tmp_path: Path) -> None:
+        """A fresh run must not inherit an earlier run's restore lineage."""
         events = tmp_path / "events"
         events.mkdir()
         (events / "main.jsonl").write_text("keep\n")
 
         event_logger_checkpoint.restore(_args(event_dir=events))
 
-        assert (events / "main.jsonl").read_text() == "keep\n"
+        [trash] = list(tmp_path.glob(".trash_*"))
+        assert (trash / "main.jsonl").read_text() == "keep\n"
+        assert events.is_dir() and list(events.iterdir()) == []
 
-    def test_restore_skips_when_checkpoint_has_no_snapshot(self, tmp_path: Path) -> None:
-        """Checkpoints predating event snapshots leave the live dir untouched."""
+    def test_restore_moves_old_events_aside_when_checkpoint_has_no_snapshot(self, tmp_path: Path) -> None:
+        """Without a snapshot the existing event lineage cannot describe the loaded weights."""
         ckpt = tmp_path / "ckpt"
         _write_tracker(ckpt, "2")
         events = tmp_path / "events"
@@ -99,7 +101,9 @@ class TestNoOpCases:
 
         event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt))
 
-        assert (events / "main.jsonl").read_text() == "keep\n"
+        [trash] = list(tmp_path.glob(".trash_*"))
+        assert (trash / "main.jsonl").read_text() == "keep\n"
+        assert events.is_dir() and list(events.iterdir()) == []
 
     def test_restore_skips_a_reference_checkpoint_a_fresh_run_fell_back_to(self, tmp_path: Path) -> None:
         """A run whose --load holds nothing resumable must not import the reference events."""
@@ -112,7 +116,9 @@ class TestNoOpCases:
 
         event_logger_checkpoint.restore(_args(event_dir=events, load=ref, requested_load=tmp_path / "run"))
 
-        assert (events / "main.jsonl").read_text() == "fresh\n"
+        [trash] = list(tmp_path.glob(".trash_*"))
+        assert (trash / "main.jsonl").read_text() == "fresh\n"
+        assert events.is_dir() and list(events.iterdir()) == []
 
     def test_restore_skips_release_tracker(self, tmp_path: Path) -> None:
         """A non-numeric tracker (e.g. 'release') is not a resumable iteration."""
@@ -124,7 +130,9 @@ class TestNoOpCases:
 
         event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt))
 
-        assert (events / "main.jsonl").read_text() == "keep\n"
+        [trash] = list(tmp_path.glob(".trash_*"))
+        assert (trash / "main.jsonl").read_text() == "keep\n"
+        assert events.is_dir() and list(events.iterdir()) == []
 
     def test_restore_of_a_named_trainer_ignores_a_tracker_left_at_the_root(self, tmp_path: Path) -> None:
         """The cursor such a run rewinds to is its own, so a root tracker is some other layout's."""
@@ -139,7 +147,21 @@ class TestNoOpCases:
             _args(event_dir=events, load=ckpt, megatron_config=encode_megatron_config("policy"))
         )
 
-        assert (events / "main.jsonl").read_text() == "keep\n"
+        [trash] = list(tmp_path.glob(".trash_*"))
+        assert (trash / "main.jsonl").read_text() == "keep\n"
+        assert events.is_dir() and list(events.iterdir()) == []
+
+    @pytest.mark.parametrize("exists", [False, True])
+    def test_fresh_start_leaves_missing_or_empty_event_dirs_alone(self, tmp_path: Path, exists: bool) -> None:
+        """A fresh start only archives a directory that contains events."""
+        events = tmp_path / "events"
+        if exists:
+            events.mkdir()
+
+        event_logger_checkpoint.restore(_args(event_dir=events))
+
+        assert events.exists() == exists
+        assert list(tmp_path.glob(".trash_*")) == []
 
     def test_snapshot_skips_when_events_disabled_or_no_save(self, tmp_path: Path) -> None:
         """Disabled events or no save dir means no snapshot."""

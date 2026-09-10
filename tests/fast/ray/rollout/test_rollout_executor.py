@@ -3,15 +3,30 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+import torch
+from tests.fast.ray.rollout.conftest import UnevenLegacyRolloutFn, make_args
 
+from miles.backends.megatron_utils.cpu_witness import record_optimizer_step
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
-from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
+from miles.ray.rollout.rollout_executor import (
+    RolloutExecutor,
+    compute_checkpoint_complete_marker_path,
+    compute_executor_state_path,
+)
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.audit_utils import sample_ownership
+from miles.utils.audit_utils.event_analyzer.rules.sample_ownership import check
 from miles.utils.audit_utils.event_logger.logger import read_events
-from miles.utils.audit_utils.event_logger.models import SampleOwner, SampleOwnerTransitionEvent
+from miles.utils.audit_utils.event_logger.models import (
+    RolloutStateRestoreEvent,
+    SampleOwner,
+    SampleOwnerTransitionEvent,
+)
+from miles.utils.audit_utils.witness.cpu import CpuWitness
 from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -169,6 +184,63 @@ class CountingLegacyRolloutFn:
         return RolloutFnTrainOutput(samples=[[sample]])
 
 
+class TestTrimmedSampleOwnership:
+    @pytest.mark.parametrize("dynamic", [False, True])
+    async def test_trimmed_tail_is_dropped_on_generation_and_checkpoint_replay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ownership_event_dir: Path, dynamic: bool
+    ) -> None:
+        """Fixed and dynamic batch trimming must account for the same raw tail after resume."""
+        monkeypatch.setattr(rollout_executor_module, "postprocess_rollout_data", postprocess_rollout_data)
+        rollout_fn = UnevenLegacyRolloutFn()
+        executor = make_executor(tmp_path, rollout_fn=rollout_fn)
+        executor.args = make_args(
+            save=str(tmp_path), load=str(tmp_path), global_batch_size=2, use_dynamic_global_batch_size=dynamic
+        )
+        executor._train_parallel_configs_of_model_id[None] = {"dp_size": 2}
+
+        data, metadata, _ = await executor._get_rollout_data(rollout_id=1)
+        assert [sample.index for sample in data] == [0, 1, 2, 3]
+        if dynamic:
+            assert metadata["dynamic_global_batch_size"] == 4
+        assert prompt_indices(executor._last_batches[None].samples) == [0, 1, 2, 3, 4]
+        executor.save(0)
+
+        resumed = make_executor(tmp_path, rollout_fn=rollout_fn)
+        resumed.args = executor.args
+        resumed._train_parallel_configs_of_model_id = executor._train_parallel_configs_of_model_id
+        resumed.load(0)
+        replayed, _, _ = await resumed._get_rollout_data(rollout_id=1)
+
+        assert [sample.index for sample in replayed] == [0, 1, 2, 3]
+        assert rollout_fn.num_calls == 1
+        assert prompt_indices(resumed._last_batches[None].samples) == [0, 1, 2, 3, 4]
+        model = torch.nn.Module()
+        model.add_module("cpu_witness", CpuWitness(pipeline_rank=0, chunk_index=0, replica_id=(0,)))
+        record_optimizer_step(
+            args=Namespace(trainer_model_id=None),
+            model=[model],
+            rows=[[index, index, -1] for index in range(4)],
+            rollout_data={"ownership_lineage_id": resumed._lineage_id},
+            rollout_id=1,
+            step_id=0,
+            attempt=0,
+        )
+        sample_ownership.log_holdings_snapshot(
+            rollout_id=1, trainer_model_id=None, holdings={}, replays_samples=False, reason="final"
+        )
+        events = read_events(ownership_event_dir)
+        drops = [event for event in events if isinstance(event, SampleOwnerTransitionEvent) and event.reason == "trim"]
+        assert len(drops) == 2
+        assert all(event.sample_indices == [4] for event in drops)
+        assert all(
+            event.from_owner == SampleOwner.HANDED_TO_TRAINER and event.to_owner == SampleOwner.DROPPED
+            for event in drops
+        )
+        assert all(event.rollout_id == 1 and event.trainer_model_id is None for event in drops)
+        assert check(events) == []
+        assert check([*events, drops[-1]]) == []
+
+
 class TestDeliveryOwnership:
     async def test_generated_delivery_and_trim_have_distinct_ownership_events(
         self, tmp_path: Path, ownership_event_dir: Path
@@ -225,3 +297,222 @@ def _stub_rollout_data_postprocessing(monkeypatch: pytest.MonkeyPatch):
 
 def prompt_indices(data) -> list[int]:
     return [sample.index for group in data for sample in group]
+
+
+async def _resumed_executor(tmp_path: Path) -> RolloutExecutor:
+    executor = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+    await executor._get_rollout_data(1)
+    executor.save(0)
+    resumed = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+    resumed.load(0)
+    return resumed
+
+
+class TestLastBatchReplay:
+    def test_each_actual_restore_forks_the_saved_lineage(self, tmp_path: Path, ownership_event_dir: Path) -> None:
+        """Executor checkpoints persist lineage and only actual state restoration forks it."""
+        executor = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+        executor.save(0)
+        resumed = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+        resumed.load(0, rollout_ids={"solver": 0, "verifier": 2})
+        resumed.save(1)
+        restored = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+        restored.load(1)
+
+        first, second = [e for e in read_events(ownership_event_dir) if isinstance(e, RolloutStateRestoreEvent)]
+        assert first.parent_lineage_id == executor._lineage_id
+        assert first.lineage_id == resumed._lineage_id
+        assert first.rollout_ids == {"solver": 0, "verifier": 2}
+        assert second.parent_lineage_id == resumed._lineage_id
+        assert second.lineage_id == restored._lineage_id
+        assert len({executor._lineage_id, resumed._lineage_id, restored._lineage_id}) == 3
+
+    async def test_invalid_prefetched_weights_are_rejected_again_after_restore(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A checkpoint cannot turn a rejected prefetch into an accepted replay."""
+
+        def reject_weights(args: Namespace, *, samples: list[list[Sample]]) -> None:
+            raise AssertionError("invalid sample weight version")
+
+        monkeypatch.setattr(rollout_executor_module, "assert_samples_weight_version_sane", reject_weights)
+        executor = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+        with pytest.raises(AssertionError, match="invalid sample weight version"):
+            await executor._get_rollout_data(1)
+        executor.save(0)
+        resumed = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+        resumed.load(0)
+
+        with pytest.raises(AssertionError, match="invalid sample weight version"):
+            await resumed._get_rollout_data(1)
+
+    async def test_downstream_metadata_mutation_does_not_change_the_saved_batch(self, tmp_path: Path) -> None:
+        """Postprocessing a handed batch must preserve the metadata needed to replay it."""
+        executor = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+        batch = [[Sample(index=1, metadata={"step_slots": [3]})]]
+        executor._record_last_batch(rollout_id=1, trainer_model_id=None, samples=batch)
+        assert batch[0][0].metadata.pop("step_slots") == [3]
+
+        executor.save(0)
+
+        state = torch.load(compute_executor_state_path(tmp_path, rollout_id=0), weights_only=False)
+        assert state["last_batches"][None].samples[0][0].metadata == {"step_slots": [3]}
+
+    async def test_a_batch_taken_out_but_not_trained_comes_back_after_a_restart(self, tmp_path) -> None:
+        """train_async prefetches a step ahead, so a crash between get(r+1) and train(r+1) used to lose it."""
+        rollout_fn = CountingLegacyRolloutFn()
+        executor = make_executor(tmp_path, rollout_fn)
+        before, _, _ = await executor._get_rollout_data(1)
+        executor.save(0)
+
+        resumed = make_executor(tmp_path, CountingLegacyRolloutFn(start_index=rollout_fn.next_index))
+        resumed.load(0)
+        after, _, _ = await resumed._get_rollout_data(1)
+
+        assert prompt_indices(after) == prompt_indices(before)
+
+    async def test_a_replayed_batch_does_not_go_through_the_rollout_function_again(self, tmp_path) -> None:
+        """Regenerating it would consume fresh prompts and leave the recorded ones unowned."""
+        resumed = await _resumed_executor(tmp_path)
+        rollout_fn = resumed.generate_rollout
+        await resumed._get_rollout_data(1)
+
+        assert rollout_fn.num_calls == 0
+
+    async def test_a_replay_is_consumed_once(self, tmp_path) -> None:
+        """It stands in for one step only; a second step must generate as usual."""
+        resumed = await _resumed_executor(tmp_path)
+        rollout_fn = resumed.generate_rollout
+        await resumed._get_rollout_data(1)
+        await resumed._get_rollout_data(2)
+
+        assert rollout_fn.num_calls == 1
+
+    async def test_a_different_rollout_id_preserves_the_pending_replay(self, tmp_path: Path) -> None:
+        """An unrelated get generates normally without consuming the recorded batch."""
+        resumed = await _resumed_executor(tmp_path)
+        await resumed._get_rollout_data(2)
+        assert resumed.generate_rollout.num_calls == 1
+
+        await resumed._get_rollout_data(1)
+        assert resumed.generate_rollout.num_calls == 1
+
+    async def test_a_batch_the_checkpoint_already_covers_is_not_persisted(self, tmp_path) -> None:
+        """get(k) precedes train(k) and save(r) follows train(r), so anything up to r is in the weights."""
+        executor = make_executor(tmp_path, CountingLegacyRolloutFn())
+        await executor._get_rollout_data(3)
+
+        executor.save(3)
+
+        state = torch.load(compute_executor_state_path(tmp_path, rollout_id=3), weights_only=False)
+        assert state["last_batches"] == {}
+
+    async def test_every_policy_is_measured_against_its_own_rollout_id(self, tmp_path) -> None:
+        """Each policy of a multi policy run counts its own rollouts, and one shared bound would drop batches."""
+        executor = make_executor(tmp_path, CountingLegacyRolloutFn())
+        await executor._get_rollout_data(4, trainer_model_id="solver")
+        await executor._get_rollout_data(9, trainer_model_id="verifier")
+
+        executor.save(4, rollout_ids={"solver": 4, "verifier": 8})
+
+        state = torch.load(compute_executor_state_path(tmp_path, rollout_id=4), weights_only=False)
+        assert list(state["last_batches"]) == ["verifier"]
+
+
+class TestCheckpointCompleteMarker:
+    def test_overwriting_a_checkpoint_removes_the_marker_before_a_failed_save(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed overwrite must not leave the previous completeness marker valid."""
+        executor = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+        executor.save(2)
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=2)
+        assert marker.is_file()
+
+        async def fail_save(rollout_id: int, *, rollout_ids: dict[str, int] | None) -> None:
+            assert not marker.exists()
+            raise RuntimeError("save interrupted")
+
+        monkeypatch.setattr(executor, "_save_sample_state", fail_save)
+        with pytest.raises(RuntimeError, match="save interrupted"):
+            executor.save(2)
+
+        assert not marker.exists()
+        with pytest.raises(AssertionError, match="no complete_2 marker"):
+            executor.load(2, require_complete=True)
+
+    def test_a_trainer_checkpoint_requires_a_marker_even_without_rollout_files(self, tmp_path: Path) -> None:
+        """A crash before the first rollout state write must not restart a restored trainer with empty state."""
+        executor = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+
+        with pytest.raises(AssertionError, match=str(tmp_path / "rollout")):
+            executor.load(5, require_complete=True)
+
+    @pytest.mark.parametrize("require_complete", [False, True])
+    def test_a_rollout_state_without_the_marker_is_refused(self, tmp_path: Path, require_complete: bool) -> None:
+        """A run that died mid-save leaves the trainer and the rollout side at different points."""
+        directory = tmp_path / "rollout"
+        directory.mkdir()
+        (directory / "global_dataset_state_dict_5.pt").write_text("")
+
+        executor = make_executor(tmp_path, CountingLegacyRolloutFn())
+
+        with pytest.raises(AssertionError, match="no complete_5 marker"):
+            executor.load(5, require_complete=require_complete)
+
+    def test_an_empty_load_directory_only_warns(self, tmp_path) -> None:
+        """A hot restart before the first checkpoint has nothing to restore and must still start."""
+        executor = make_executor(tmp_path, CountingLegacyRolloutFn())
+
+        executor.load(5)
+
+        assert executor.data_source.loaded == [5]
+
+    def test_save_writes_the_marker_last(self, tmp_path) -> None:
+        """Its presence is what proves every other rollout state file of that rollout id is complete."""
+        executor = make_executor(tmp_path, CountingLegacyRolloutFn())
+
+        executor.save(2)
+
+        assert compute_checkpoint_complete_marker_path(tmp_path, rollout_id=2).exists()
+
+    @pytest.mark.parametrize("require_complete", [False, True])
+    def test_a_marked_checkpoint_loads(self, tmp_path: Path, require_complete: bool) -> None:
+        """The round trip a resumed run actually takes."""
+        executor = make_executor(tmp_path, CountingLegacyRolloutFn())
+        executor.save(2)
+
+        resumed = make_executor(tmp_path, CountingLegacyRolloutFn())
+        resumed.load(2, require_complete=require_complete)
+
+        assert resumed.data_source.loaded == [2]
+
+
+class TestOwnershipSafePoints:
+    def test_save_reports_lost_samples_with_the_optional_analyzer_off(
+        self, tmp_path: Path, lost_sample_event_dir: Path
+    ) -> None:
+        """Save reports lost samples even without enabling the full analyzer."""
+        executor = _executor_with_lost_samples(tmp_path, event_dir=lost_sample_event_dir)
+
+        with pytest.raises(ValueError, match="Event analysis found issues"):
+            executor.save(0)
+
+        assert compute_checkpoint_complete_marker_path(tmp_path, rollout_id=0).is_file()
+
+    async def test_dispose_reports_lost_samples_with_the_optional_analyzer_off(
+        self, tmp_path: Path, lost_sample_event_dir: Path
+    ) -> None:
+        """Disposal reports lost samples even without enabling the full analyzer."""
+        executor = _executor_with_lost_samples(tmp_path, event_dir=lost_sample_event_dir)
+
+        with pytest.raises(ValueError, match="Event analysis found issues"):
+            await executor.dispose()
+
+
+def _executor_with_lost_samples(tmp_path: Path, *, event_dir: Path) -> RolloutExecutor:
+    executor = make_executor(tmp_path, rollout_fn=CountingLegacyRolloutFn())
+    executor.args.save_debug_event_data = str(event_dir)
+    executor.args.enable_event_analyzer = False
+    executor._metric_checker = None
+    return executor

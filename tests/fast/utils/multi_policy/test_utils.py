@@ -141,6 +141,7 @@ def _make_trainer_args(*model_ids: str, **overrides: Any) -> Namespace:
         hf_checkpoint="/ckpt/hf",
         save=None,
         load=None,
+        requested_load=None,
         ref_load=None,
         ref_ckpt_step=None,
         megatron_to_hf_mode="core",
@@ -214,7 +215,7 @@ class TestCreatePolicyTrainers:
 
         await multi_policy_utils.create_trainers(_make_trainer_args("a", "b"), rollout_executor=rollout_executor)
 
-        rollout_executor.load.assert_awaited_once_with(3)
+        rollout_executor.load.assert_awaited_once_with(3, rollout_ids=None, require_complete=False)
 
     async def test_a_lagging_leader_still_decides_where_the_executor_loads(self, monkeypatch):
         """Picking any other trainer would replay the global rollout data from a position the leader never stood at."""
@@ -223,7 +224,7 @@ class TestCreatePolicyTrainers:
 
         await multi_policy_utils.create_trainers(_make_trainer_args("a", "b"), rollout_executor=rollout_executor)
 
-        rollout_executor.load.assert_awaited_once_with(1)
+        rollout_executor.load.assert_awaited_once_with(1, rollout_ids=None, require_complete=False)
 
     async def test_a_taken_over_run_loads_the_executor_at_the_leaders_position(self, monkeypatch):
         """Every policy resumed from a checkpoint, so the shared dataset has to be asked for the same position."""
@@ -233,7 +234,7 @@ class TestCreatePolicyTrainers:
         await multi_policy_utils.create_trainers(_make_trainer_args("a", "b"), rollout_executor=rollout_executor)
 
         assert [entry["resumed"] for entry in created] == [True, True]
-        rollout_executor.load.assert_awaited_once_with(3)
+        rollout_executor.load.assert_awaited_once_with(3, rollout_ids=None, require_complete=False)
 
     async def test_a_resume_without_the_global_rollout_state_is_refused(self, monkeypatch, tmp_path):
         """The models would resume at rollout 4 while the data source silently restarts at the first prompt."""
@@ -256,7 +257,31 @@ class TestCreatePolicyTrainers:
             _make_trainer_args("a", "b", load=str(tmp_path)), rollout_executor=rollout_executor
         )
 
-        rollout_executor.load.assert_awaited_once_with(3)
+        rollout_executor.load.assert_awaited_once_with(3, rollout_ids=None, require_complete=False)
+
+    @pytest.mark.parametrize("tracker", ["release", "3"])
+    async def test_the_leader_tracker_and_policy_restore_points_reach_the_executor(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tracker: str
+    ) -> None:
+        """Only numbered leader checkpoints require a marker and each policy retains its recorded restore point."""
+        self._stub_create_training_model(monkeypatch, start_rollout_ids=dict(a=4, b=9))
+        leader_dir = tmp_path / "trainers" / "a-actor"
+        leader_dir.mkdir(parents=True)
+        (leader_dir / "latest_checkpointed_iteration.txt").write_text(tracker)
+        state = MultiPolicyCheckpointState(leader_model_id="a", rollout_ids={"a": 3, "b": 8})
+        state.save(tmp_path)
+        rollout_executor = AsyncMock()
+
+        await multi_policy_utils.create_trainers(
+            _make_trainer_args(
+                "a", "b", requested_load=str(tmp_path), load=str(tmp_path), rollout_global_dataset=False
+            ),
+            rollout_executor=rollout_executor,
+        )
+
+        rollout_executor.load.assert_awaited_once_with(
+            3, rollout_ids=state.rollout_ids, require_complete=tracker == "3"
+        )
 
     async def test_a_trainer_config_without_a_policy_model_id_is_refused(self, monkeypatch):
         """Every state this driver keys is keyed by model id, so an unnamed trainer has nowhere to live."""
