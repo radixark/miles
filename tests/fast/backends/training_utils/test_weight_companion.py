@@ -2,15 +2,15 @@ import pytest
 import torch
 
 from miles.backends.training_utils.weight_companion import (
-    WeightCompanion,
     TrainingSampleIdentity,
+    WeightCompanion,
     hide_weight_companion,
     install_weight_companion,
     preserve_weight_companion,
-    record_weight_companion,
     record_nonfinite_skip_weight_companion,
-    snapshot_weight_companion,
+    record_weight_companion,
     snapshot_nonfinite_skip_weight_companion,
+    snapshot_weight_companion,
 )
 
 

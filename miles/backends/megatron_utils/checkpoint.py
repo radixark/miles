@@ -13,8 +13,8 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
-from miles.utils import megatron_bridge_utils
 from miles.backends.training_utils.weight_companion import clear_weight_companion, hide_weight_companion
+from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
 from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint

@@ -30,13 +30,13 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
-from miles.backends.training_utils.weight_version_checkpoint import read_weight_version
-from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.backends.training_utils.weight_companion import (
     TrainingSampleIdentity,
-    record_weight_companion,
     record_nonfinite_skip_weight_companion,
+    record_weight_companion,
 )
+from miles.backends.training_utils.weight_version_checkpoint import read_weight_version
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.file_utils import atomic_write_text

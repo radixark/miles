@@ -13,7 +13,7 @@ from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
 from miles.backends.megatron_utils.ft import checkpoint_transfer, in_memory_checkpoint
 from miles.backends.megatron_utils.ft.checkpoint_transfer import _TensorViewCodec, _TransportCodec
-from miles.backends.training_utils.weight_companion import WeightCompanion, TrainingSampleIdentity
+from miles.backends.training_utils.weight_companion import TrainingSampleIdentity, WeightCompanion
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 _CKPT_TRANSFER_LOGGER = "miles.backends.megatron_utils.ft.checkpoint_transfer"

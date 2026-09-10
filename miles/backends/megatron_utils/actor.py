@@ -14,6 +14,12 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
+from miles.backends.training_utils.weight_companion import (
+    TrainingSampleIdentity,
+    preserve_weight_companion,
+    snapshot_nonfinite_skip_weight_companion,
+    snapshot_weight_companion,
+)
 from miles.backends.training_utils.weight_version_checkpoint import write_weight_version
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -24,12 +30,6 @@ from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context, get_event_logger
 from miles.utils.audit_utils.event_logger.models import TrainerCpuWitnessEvent
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.backends.training_utils.weight_companion import (
-    TrainingSampleIdentity,
-    preserve_weight_companion,
-    snapshot_weight_companion,
-    snapshot_nonfinite_skip_weight_companion,
-)
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
