@@ -154,7 +154,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.rollout_num_gpus_per_engine < 1 or self.total_gpus % self.rollout_num_gpus_per_engine != 0:
             raise ValueError("The actor GPU count must be divisible by rollout_num_gpus_per_engine")
         if self.sglang_mem_fraction_static is None:
-            self.sglang_mem_fraction_static = 0.8 if self.model_name == "GLM-5.3" else 0.5
+            if self.model_name == "GLM-5.2" and self.fp8_rollout:
+                self.sglang_mem_fraction_static = 0.9
+            elif self.model_name == "GLM-5.3":
+                self.sglang_mem_fraction_static = 0.8
+            else:
+                self.sglang_mem_fraction_static = 0.5
         if self.rollout_max_response_len == 0:
             self.rollout_max_response_len = 4096 if self.task == "dapo-math" else 512
         if self.seq_window == 0 and self.task == "dapo-math":
