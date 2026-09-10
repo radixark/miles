@@ -36,12 +36,16 @@ class FutureStore:
 
     def resolve(self, request_id: str, result: dict) -> None:
         future = self._futures[request_id]
+        if future.state != PENDING:  # e.g. already failed by lease expiry
+            return
         future.state = DONE
         future.result = result
         future.finished_at = time.monotonic()
 
     def fail(self, request_id: str, error: str, category: str) -> None:
         future = self._futures[request_id]
+        if future.state != PENDING:
+            return
         future.state = FAILED
         future.error = error
         future.error_category = category
