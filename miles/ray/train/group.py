@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,6 +17,8 @@ from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
+    TrainerWitnessCohortEvent,
+    TrainerWitnessCohortPayload,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
@@ -41,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 _RETRY_MAX_ATTEMPTS = 30
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
+_CPU_WITNESS_SNAPSHOT_TIMEOUT_SECONDS = 60.0
 
 
 def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> SimpleHealthCheckerConfig | None:
@@ -79,6 +83,7 @@ class TrainerController:
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
+        self._cpu_witness_operation_lock = asyncio.Lock()
 
     @property
     def pool_id(self) -> str:
@@ -171,6 +176,20 @@ class TrainerController:
     ) -> list[TrainStepOutput]:
         """Do one rollout training"""
 
+        async with self._cpu_witness_operation_lock:
+            return await self._train(
+                rollout_id=rollout_id,
+                rollout_data_pack=rollout_data_pack,
+                external_data=external_data,
+            )
+
+    async def _train(
+        self,
+        rollout_id: int,
+        rollout_data_pack: RolloutDataPack,
+        external_data: list[TrainStepOutput] | None = None,
+    ) -> list[TrainStepOutput]:
+
         assert (
             external_data is None or len(self._cells) == 1
         ), "external_data is only supported for a single cell, i.e. without independent DP"
@@ -215,7 +234,6 @@ class TrainerController:
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
-
             return worker_results
 
         worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
@@ -223,6 +241,73 @@ class TrainerController:
         await self._test_action_executor.run_after_step(rollout_id=rollout_id)
 
         return worker_results
+
+    async def log_current_cpu_witness(self, rollout_id: int) -> TrainerWitnessCohortPayload:
+        if self._role != "actor":
+            raise RuntimeError("CPU witness snapshots are only supported for the actor trainer")
+        timeout = max(
+            self.args.sample_ownership_grace_period_seconds,
+            self.args.sample_ownership_check_timeout_seconds,
+        )
+        async with asyncio.timeout(timeout):
+            while True:
+                async with self._cpu_witness_operation_lock:
+                    if (payload := await self._collect_current_cpu_witness(rollout_id=rollout_id)) is not None:
+                        return payload
+                await asyncio.sleep(0.1)
+
+    async def _collect_current_cpu_witness(self, *, rollout_id: int) -> TrainerWitnessCohortPayload | None:
+        cohort_id = uuid.uuid4().hex
+        snapshot_alive_cells = [cell for cell in self._cells if cell.is_alive]
+        if not snapshot_alive_cells:
+            return None
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    cell.execute(
+                        "log_current_cpu_witness",
+                        rollout_id=rollout_id,
+                        cohort_id=cohort_id,
+                        kill_on_failure=False,
+                    )
+                    for cell in snapshot_alive_cells
+                )
+            ),
+            timeout=_CPU_WITNESS_SNAPSHOT_TIMEOUT_SECONDS,
+        )
+        if snapshot_alive_cells != [cell for cell in self._cells if cell.is_alive]:
+            return None
+        snapshots = [snapshot for cell_results in results for snapshot in cell_results if snapshot is not None]
+        expected_replica_ids = sorted(f"cell-{cell.cell_index}" for cell in snapshot_alive_cells)
+        actual_replica_ids = sorted(snapshot["replica_id"] for snapshot in snapshots)
+        if actual_replica_ids != expected_replica_ids:
+            raise RuntimeError(
+                f"CPU witness snapshot replicas {sorted(actual_replica_ids)} do not match "
+                f"alive replicas {sorted(expected_replica_ids)}"
+            )
+        marker = self._log_witness_cohort(
+            rollout_id=rollout_id,
+            cohort_id=cohort_id,
+            replica_ids=sorted(snapshot["replica_id"] for snapshot in snapshots),
+        )
+        assert marker is not None
+        return {"snapshots": snapshots, "marker": marker}
+
+    def _log_witness_cohort(
+        self,
+        *,
+        rollout_id: int,
+        cohort_id: str,
+        replica_ids: list[str],
+    ) -> dict[str, Any] | None:
+        if not is_event_logger_initialized():
+            return None
+        event_logger = get_event_logger()
+        event = event_logger.make_event(
+            TrainerWitnessCohortEvent,
+            {"rollout_id": rollout_id, "cohort_id": cohort_id, "replica_ids": replica_ids},
+        )
+        return event.model_dump(mode="json")
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:

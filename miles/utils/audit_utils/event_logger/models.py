@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import Discriminator
 
@@ -162,6 +162,39 @@ class ExplicitlyDroppedSamplesEvent(EventBase):
     rollout_id: int | None = None
 
 
+class TrainingSampleIdentity(FrozenStrictBaseModel):
+    source_sample_index: int
+    row_index: int
+    row_count: int
+
+
+class TrainingSampleCount(FrozenStrictBaseModel):
+    sample: TrainingSampleIdentity
+    count: int
+
+
+class TrainerCpuWitnessEvent(EventBase):
+    type: Literal["trainer_cpu_witness"] = "trainer_cpu_witness"
+    replica_id: str
+    rollout_id: int
+    cohort_id: str
+    sample_counts: list[TrainingSampleCount]
+    skipped_nonfinite_sample_counts: list[TrainingSampleCount]
+    reason: Literal["train_end", "current", "save", "transfer", "load"]
+
+
+class TrainerWitnessCohortEvent(EventBase):
+    type: Literal["trainer_witness_cohort"] = "trainer_witness_cohort"
+    rollout_id: int
+    cohort_id: str
+    replica_ids: list[str]
+
+
+class TrainerWitnessCohortPayload(TypedDict):
+    snapshots: list[dict[str, Any]]
+    marker: dict[str, Any]
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -174,7 +207,9 @@ Event = Annotated[
     | EngineEnvReportEvent
     | MetricEvent
     | DataSourceIssuedSamplesEvent
-    | ExplicitlyDroppedSamplesEvent,
+    | ExplicitlyDroppedSamplesEvent
+    | TrainerCpuWitnessEvent
+    | TrainerWitnessCohortEvent,
     Discriminator("type"),
 ]
 
