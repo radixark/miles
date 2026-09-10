@@ -19,26 +19,27 @@ def _write_weight_shard(tmp_path):
 
 def test_a_missing_optim_shard_leaves_the_slot_untouched(tmp_path):
     weight_name = _write_weight_shard(tmp_path)
-    optimizer = MagicMock()
+    slot_optimizer = MagicMock(slot=0)
     with (
         patch.object(ckpt, "_weight_shard_name", return_value=weight_name),
         patch.dict("sys.modules", {"megatron.bridge.peft.multi_lora_layers": (bridge := MagicMock())}),
     ):
         with pytest.raises(RuntimeError, match="FileNotFoundError"):
-            ckpt.load_slot([MagicMock()], optimizer, slot=0, path=str(tmp_path), load_optimizer=True)
+            ckpt.load_slot([MagicMock()], slot_optimizer, path=str(tmp_path), load_optimizer=True)
     bridge.load_adapter.assert_not_called()
-    optimizer.reload_model_params.assert_not_called()
+    slot_optimizer.reload_masters.assert_not_called()
 
 
 def test_a_layout_mismatch_is_rejected_before_apply(tmp_path):
     weight_name = _write_weight_shard(tmp_path)
     torch.save({"world_size": 8, "children": []}, tmp_path / ckpt._optim_shard_name())
-    optimizer = MagicMock()
+    slot_optimizer = MagicMock(slot=0)
+    slot_optimizer.validate_state.side_effect = AssertionError("optimizer state was saved with world_size=8")
     with (
         patch.object(ckpt, "_weight_shard_name", return_value=weight_name),
         patch.dict("sys.modules", {"megatron.bridge.peft.multi_lora_layers": (bridge := MagicMock())}),
     ):
         with pytest.raises(RuntimeError, match="world_size"):
-            ckpt.load_slot([MagicMock()], optimizer, slot=0, path=str(tmp_path), load_optimizer=True)
+            ckpt.load_slot([MagicMock()], slot_optimizer, path=str(tmp_path), load_optimizer=True)
     bridge.load_adapter.assert_not_called()
-    optimizer.reload_model_params.assert_not_called()
+    slot_optimizer.reload_masters.assert_not_called()
