@@ -63,16 +63,18 @@ unset.
 ### `--data-source-path`
 
 **Class** (not a function). Default:
-`miles.rollout.data_source.RolloutDataSourceWithBuffer`.
+`miles.rollout.data_source.RolloutDataSource`. Partial rollout selects
+`LegacyRolloutDataSourceWithBuffer` unless a custom source is configured.
 
 ```python
 class CustomDataSource:
     def __init__(self, args): ...
     def get_samples(self, num_samples) -> list[list[Sample]]: ...
-    def add_samples(self, samples) -> None: ...
     def save(self, rollout_id) -> None: ...
     def load(self, rollout_id=None) -> None: ...
 ```
+
+Custom sources used with partial rollout must also implement `add_samples`.
 
 ### `--custom-generate-function-path`
 

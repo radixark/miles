@@ -224,7 +224,8 @@ class InferenceRolloutFn(BaseRolloutFn):
         output, aborted_samples = await generate_rollout_async(
             self.state, input.rollout_id, self.data_source.get_samples
         )
-        self.data_source.add_samples(aborted_samples)
+        if aborted_samples:
+            self.data_source.add_samples(aborted_samples)
         return output
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:

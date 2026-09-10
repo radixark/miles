@@ -47,6 +47,11 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 logger = logging.getLogger(__name__)
 
 
+def _resolve_data_source_path(args: argparse.Namespace) -> None:
+    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+        args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
+
+
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
     """The (rollout, eval) function paths the arguments select."""
     if use_legacy_rollout_v1():
@@ -1187,7 +1192,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--data-source-path",
                 type=str,
-                default="miles.rollout.data_source.RolloutDataSourceWithBuffer",
+                default="miles.rollout.data_source.RolloutDataSource",
                 help="The data source class for rollout data.",
             )
             parser.add_argument(
@@ -3599,6 +3604,7 @@ def miles_validate_args(args):
     from miles.utils.multi_lora import validate_multi_lora_args
 
     validate_multi_lora_args(args)
+    _resolve_data_source_path(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

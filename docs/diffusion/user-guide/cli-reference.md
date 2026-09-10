@@ -209,7 +209,7 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--prompt-data` | str | – | jsonl, one row per prompt. |
 | `--input-key` | str | `input` | |
 | `--metadata-key` | str | `metadata` | |
-| `--data-source-path` | str | – | Defaults to `RolloutDataSourceWithBuffer`. |
+| `--data-source-path` | str | – | Defaults to `RolloutDataSource`; partial rollout selects `LegacyRolloutDataSourceWithBuffer`. |
 | `--disable-rollout-global-dataset` | flag | off | Manage data yourself. |
 | `--rollout-batch-size` | int | – | |
 | `--n-samples-per-prompt` | int | `1` | |

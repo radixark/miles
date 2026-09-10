@@ -1856,6 +1856,27 @@ def test_critic_rejects_reward_level_kl(tmp_path):
         miles_validate_args(args)
 
 
+class TestDataSourceSelection:
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            ([], "miles.rollout.data_source.RolloutDataSource"),
+            (["--fully-async"], "miles.rollout.data_source.RolloutDataSource"),
+            (["--partial-rollout"], "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"),
+            (["--partial-rollout", "--data-source-path", "custom.Source"], "custom.Source"),
+        ],
+    )
+    def test_validation_selects_the_source_for_the_rollout_mode(self, extra: list[str], expected: str) -> None:
+        """Only partial rollout needs the built-in source to retain aborted groups."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args([*REQUIRED_ARGS, "--num-rollout", "1", *extra])
+
+        miles_validate_args(args)
+
+        assert args.data_source_path == expected
+
+
 class TestMultiLoRAValidation:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
