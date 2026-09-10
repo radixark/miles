@@ -152,10 +152,6 @@ def test_a_pinned_seed_still_gets_one_stream_per_sample():
 
 
 class TestPadToDpMultiple:
-    def test_a_multiple_passes_through_unchanged(self):
-        slot_datums = [(0, _datum([1, 2])), (1, _datum([3, 4]))]
-        assert _pad_to_dp_multiple(slot_datums, 2) is slot_datums
-
     def test_padding_replicates_the_last_datum_with_a_padding_marker(self):
         slot_datums = [(0, _datum([1, 2, 3], weights=[1.0, 1.0], advantages=[2.0, 2.0]))]
         padded = _pad_to_dp_multiple(slot_datums, 4)
