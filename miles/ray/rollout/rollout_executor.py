@@ -3,6 +3,7 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -10,6 +11,7 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
+from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.rollout.train_data_conversion import (
@@ -24,6 +26,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store
 from miles.utils.async_utils import maybe_await
@@ -55,6 +58,7 @@ logger = logging.getLogger(__name__)
 _DATA_SOURCE_DIRNAME = "data_source"
 _GENERATE_ROLLOUT_DIRNAME = "generate_rollout"
 _EVAL_GENERATE_ROLLOUT_DIRNAME = "eval_generate_rollout"
+_EXECUTOR_DIRNAME = "executor"
 
 
 class RolloutExecutor:
@@ -81,6 +85,7 @@ class RolloutExecutor:
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
+        self._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=args)
 
     @init_once
     async def init(self) -> None:
@@ -154,9 +159,42 @@ class RolloutExecutor:
 
     @event_logger_context(lambda _self, rollout_id, trainer_model_id=None: dict(rollout_id=rollout_id))
     async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
-        start_time = time.time()
         self.last_get_rollout_id_of_model_id[trainer_model_id] = rollout_id
         event_analyzer.run_sample_ownership_analysis(args=self.args)
+        replay = self._output_snapshotter.get(trainer_model_id=trainer_model_id, rollout_id=rollout_id)
+        if replay is None:
+            generated = await self._generate_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id)
+            if generated is None:
+                return RolloutDataPack(empty_batch_timeout=True)
+            data, metadata = generated
+            # No await may sit between the generated batch arriving and its capture: a save in that window
+            self._output_snapshotter.capture(
+                trainer_model_id=trainer_model_id, rollout_id=rollout_id, data=data, metadata=metadata
+            )
+        else:
+            data, metadata = replay.data, replay.metadata
+
+        with SampleOwnershipRecorder.suppress_drop_logging() if replay is not None else nullcontext():
+            train_data = convert_samples_to_train_data(
+                self.args,
+                data,
+                metadata=metadata,
+                custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+                custom_reward_post_process_func=self.custom_reward_post_process_func,
+            )
+            sample_indices = train_data.get("sample_indices")
+            if self.args.delay_split_train_data_by_dp:
+                data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+            else:
+                data_ref = split_train_data_by_dp(
+                    self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
+                )
+            return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
+
+    async def _generate_rollout_data(
+        self, *, rollout_id: int, trainer_model_id: str | None
+    ) -> tuple[list[Group], dict[str, Any]] | None:
+        start_time = time.time()
         self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
         assert_weight_version_is_published(
             self.args, rollouts_since_publish=self._rollouts_since_publish_of_model_id[trainer_model_id]
@@ -178,21 +216,7 @@ class RolloutExecutor:
         log_rollout_data(
             rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
         )
-        data = convert_samples_to_train_data(
-            self.args,
-            data,
-            metadata=metadata,
-            custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
-            custom_reward_post_process_func=self.custom_reward_post_process_func,
-        )
-        sample_indices = data.get("sample_indices")
-        if self.args.delay_split_train_data_by_dp:
-            data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
-        else:
-            data_ref = split_train_data_by_dp(
-                self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
-            )
-        return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
+        return data, metadata
 
     async def eval(
         self,
@@ -313,6 +337,7 @@ class RolloutExecutor:
                 if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                     eval_fn.save(dir_temp / _EVAL_GENERATE_ROLLOUT_DIRNAME)
             event_logger_checkpoint.snapshot(self.args, directory=dir_temp / event_logger_checkpoint.SNAPSHOT_DIRNAME)
+            self._output_snapshotter.save(dir_temp / _EXECUTOR_DIRNAME)
 
     # async but never awaits, for the same reason as save
     async def load(self, rollout_id: int) -> None:
@@ -327,6 +352,7 @@ class RolloutExecutor:
             f"rollout-side state moved into one directory per rollout cannot resume that state"
         )
 
+        self._output_snapshotter.load(directory / _EXECUTOR_DIRNAME)
         self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
+from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainInput
 from miles.utils.timer import Timer
@@ -48,6 +49,7 @@ def _make_executor() -> RolloutExecutor:
         lora_rank=0,
         update_weights_interval=1,
     )
+    executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
     executor.data_source = Namespace()
     executor.custom_convert_samples_to_train_data_func = None
     executor.custom_reward_post_process_func = None
