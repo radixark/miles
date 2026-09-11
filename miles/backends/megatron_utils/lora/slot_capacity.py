@@ -43,6 +43,7 @@ class RankProbe:
     slot_bytes: int  # CUDA bytes the resident slot owns: weights, grad buffers, fp32 masters, Adam moments
     act_peak: int  # transient peak of one max-size forward/backward; shared across slots (single issue)
     adapter_local_params: int  # this rank's shard of one max-rank adapter
+    adapter_expert_params: int = 0  # the part of that shard living on MoE experts (sharded EP-wise, not DP-wise)
 
     def capacity(self, margin_bytes: int) -> int:
         if self.slot_bytes <= 0:
@@ -51,17 +52,47 @@ class RankProbe:
         return max((self.free + self.slot_bytes - self.act_peak - margin_bytes) // self.slot_bytes, 0)
 
 
+def _weight_and_grad_bytes(args: Namespace) -> int:
+    """Per LoRA param on every rank: the replicated weight and the all-reduced gradient."""
+    weight = 2 if (args.bf16 or args.fp16) else 4
+    grad = 4 if args.accumulate_allreduce_grads_in_fp32 else weight
+    return weight + grad
+
+
+def _optimizer_state_bytes(args: Namespace) -> int:
+    """Per LoRA param the owning rank keeps: fp32 master under mixed precision, fp32 Adam moments."""
+    weight = 2 if (args.bf16 or args.fp16) else 4
+    master = 4 if weight < 4 else 0  # mixed precision keeps an fp32 master; pure fp32 does not
+    return master + 8
+
+
 def bytes_per_train_param(args: Namespace, dp_size: int = 1) -> float:
-    """Per-slot resident bytes per LoRA param on one rank, from the precision flags.
+    """Per-slot resident bytes per dense LoRA param on one rank, from the precision flags.
 
     The weights are replicated and DDP all-reduces full gradients, but the LayerWise
     optimizer scatters whole params across data-parallel ranks, so each rank keeps the
     fp32 master and the Adam moments for only its share of the slot."""
-    weight = 2 if (args.bf16 or args.fp16) else 4
-    grad = 4 if args.accumulate_allreduce_grads_in_fp32 else weight
-    master = 4 if weight < 4 else 0  # mixed precision keeps an fp32 master; pure fp32 does not
-    moments = 8  # per-slot Adam: fp32 exp_avg + exp_avg_sq
-    return weight + grad + (master + moments) / dp_size
+    return _weight_and_grad_bytes(args) + _optimizer_state_bytes(args) / dp_size
+
+
+def expert_data_parallel_size(args: Namespace, dp_size: int) -> int:
+    """Ranks that replicate one expert's params: experts are already split EP (and ETP) ways,
+    so their optimizer state is scattered over only world / (EP * ETP * PP) ranks."""
+    tp = getattr(args, "tensor_model_parallel_size", 1) or 1
+    cp = getattr(args, "context_parallel_size", 1) or 1
+    ep = getattr(args, "expert_model_parallel_size", 1) or 1
+    etp = getattr(args, "expert_tensor_parallel_size", None) or tp
+    return max(1, dp_size * tp * cp // (ep * etp))
+
+
+def predicted_slot_bytes(args: Namespace, probe: RankProbe, dp_size: int) -> float:
+    """The closed-form counterpart of the measurement: dense adapters share optimizer state
+    across the data-parallel ranks, expert adapters across the expert-data-parallel ranks."""
+    shared, state = _weight_and_grad_bytes(args), _optimizer_state_bytes(args)
+    dense = probe.adapter_local_params - probe.adapter_expert_params
+    return dense * (shared + state / dp_size) + probe.adapter_expert_params * (
+        shared + state / expert_data_parallel_size(args, dp_size)
+    )
 
 
 def memory_snapshot(model, optimizer, phase: str) -> dict:
@@ -75,12 +106,29 @@ def memory_snapshot(model, optimizer, phase: str) -> dict:
     act_peak = torch.cuda.max_memory_allocated() - torch.cuda.memory_allocated()
     torch.cuda.empty_cache()  # cached-but-unused blocks are head-room, not residency
     free, _ = torch.cuda.mem_get_info()
+    local_params, expert_params = adapter_param_counts(model, PROBE_SLOT)
     return {
         "free": free,
         "slot_bytes": resident_slot_bytes(model, optimizer, PROBE_SLOT),
         "act_peak": max(act_peak, 0),
-        "adapter_local_params": sum(param.numel() for param in adapter_slot_parameters(model, PROBE_SLOT)),
+        "adapter_local_params": local_params,
+        "adapter_expert_params": expert_params,
     }
+
+
+def adapter_param_counts(model, slot: int) -> tuple[int, int]:
+    """(all, on MoE experts) params of one slot on this rank, by the adapter modules' names."""
+    slot_ids = {id(param) for param in adapter_slot_parameters(model, slot)}
+    chunks = model if isinstance(model, (list, tuple)) else [model]
+    local = expert = 0
+    for chunk in chunks:
+        for name, param in chunk.named_parameters():
+            if id(param) not in slot_ids:
+                continue
+            local += param.numel()
+            if ".experts." in name:
+                expert += param.numel()
+    return local, expert
 
 
 def resident_slot_bytes(model, optimizer, slot: int) -> int:
@@ -119,7 +167,7 @@ async def probe_slot_capacity(args: Namespace, backend, trainer, dp_size: int = 
     await backend.unload_slot(PROBE_SLOT)
 
     probes = [RankProbe(**snapshot) for snapshot in snapshots]
-    predicted = probes[0].adapter_local_params * bytes_per_train_param(args, dp_size)
+    predicted = predicted_slot_bytes(args, probes[0], dp_size)
     if abs(probes[0].slot_bytes - predicted) > 0.2 * max(predicted, 1):
         logger.warning(
             f"measured slot bytes {probes[0].slot_bytes} diverge from predicted {predicted:.0f}: "
