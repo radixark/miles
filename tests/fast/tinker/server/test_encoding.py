@@ -8,7 +8,6 @@ from miles.tinker.server.encoding import (
     build_datum,
     decode_command,
     decode_sample_request,
-    materialize_adam_params,
     render_result,
     tensor_data_to_list,
 )
@@ -65,14 +64,21 @@ def test_build_datum_maps_the_wire_input_names():
 
 class TestAdamParams:
     def test_defaults_fill_missing_keys(self):
-        materialized = materialize_adam_params({"learning_rate": 3e-4})
-        assert materialized["learning_rate"] == 3e-4
-        assert materialized["eps"] == ADAM_PARAM_DEFAULTS["eps"]
-        assert set(materialized) == set(ADAM_PARAM_DEFAULTS)
+        _, decoded = decode_command(
+            "optim_step", {"model_id": "m", "seq_id": 1, "adam_params": {"learning_rate": 3e-4}}
+        )
+        assert decoded["adam_params"]["learning_rate"] == 3e-4
+        assert set(decoded["adam_params"]) == set(ADAM_PARAM_DEFAULTS)
 
     def test_unknown_keys_are_rejected(self):
-        with pytest.raises(UserInputError, match="unknown adam_params"):
-            materialize_adam_params({"momentum": 0.9})
+        """The SDK's AdamParams model is the contract; a key it lacks must not be silently dropped."""
+        with pytest.raises(UserInputError, match="momentum"):
+            decode_command("optim_step", {"model_id": "m", "seq_id": 1, "adam_params": {"momentum": 0.9}})
+
+
+def test_an_off_model_key_is_rejected():
+    with pytest.raises(UserInputError, match="bogus"):
+        decode_command("save_state", {"model_id": "m", "seq_id": 1, "bogus": 1})
 
 
 class TestTensorData:
@@ -85,7 +91,9 @@ class TestTensorData:
 
 
 def test_decode_sample_request_defaults():
-    decoded = decode_sample_request({"prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]}})
+    decoded = decode_sample_request(
+        {"prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]}, "sampling_params": {"max_tokens": 1}}
+    )
     assert decoded["num_samples"] == 1
     assert decoded["prompt_tokens"] == [1, 2]
     assert decoded["topk_prompt_logprobs"] == 0
