@@ -42,6 +42,7 @@ from miles.utils.audit_utils.sample_ownership.flow import (
     insert_data_source_issue_recorder,
     log_dropped_groups,
     log_dropped_sample_indices,
+    suppress_drop_logging,
 )
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
@@ -179,11 +180,12 @@ class RolloutExecutor:
             await self._sample_ownership_checker.check(rollout_id=rollout_id)
             if trainer_model_id is None and self._replay is not None:
                 assert self._replay.rollout_id == rollout_id
-                result = self._publish_train_data(
-                    rollout_id=rollout_id,
-                    trainer_model_id=trainer_model_id,
-                    data=copy.deepcopy(self._replay.train_data),
-                )
+                with suppress_drop_logging():
+                    result = self._publish_train_data(
+                        rollout_id=rollout_id,
+                        trainer_model_id=trainer_model_id,
+                        data=copy.deepcopy(self._replay.train_data),
+                    )
                 self._replay = None
                 return result
             return await self._get(rollout_id=rollout_id, trainer_model_id=trainer_model_id)

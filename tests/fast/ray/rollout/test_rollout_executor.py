@@ -5,17 +5,29 @@ from pathlib import Path
 
 import pytest
 import torch
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.conftest import make_args, make_sample
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
+from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_executor import LastBatch, RolloutExecutor, compute_executor_state_path
-from miles.rollout.base_types import BaseRolloutFn, RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.rollout.base_types import (
+    BaseRolloutFn,
+    RolloutFnConstructorInput,
+    RolloutFnEvalInput,
+    RolloutFnEvalOutput,
+    RolloutFnTrainInput,
+    RolloutFnTrainOutput,
+)
 from miles.rollout.data_source import RolloutDataSource, compute_global_dataset_state_path
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
+from miles.utils.audit_utils.event_logger.logger import EventLogger, set_event_logger
+from miles.utils.audit_utils.event_logger.models import ExplicitlyDroppedSamplesEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.checker import SampleOwnershipChecker
+from miles.utils.audit_utils.sample_ownership.flow import insert_data_source_issue_recorder
 from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -211,6 +223,77 @@ def _stub_rollout_postprocessing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestLastBatchReplay:
+    async def test_checkpoint_stage_round_trips_real_event_snapshot_and_replay_pipeline(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A checkpoint restores issued history without repeating terminal drops from any saved stage."""
+        event_dir = tmp_path / "active-events"
+        args = make_args(
+            load=str(tmp_path),
+            requested_load=str(tmp_path),
+            save=str(tmp_path),
+            save_debug_event_data=str(event_dir),
+            global_batch_size=2,
+            rewards_normalization=False,
+        )
+        raw = [[make_sample(group_index=group, index=group * 10)] for group in range(1, 4)]
+
+        class AsyncRolloutFn(BaseRolloutFn):
+            async def __call__(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
+                return RolloutFnTrainOutput(samples=raw)
+
+        class FailingRolloutFn(BaseRolloutFn):
+            async def __call__(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
+                raise AssertionError("restored raw handoff must replace generation")
+
+        class Store:
+            def put(self, *, value, value_spec):
+                return value
+
+        monkeypatch.setattr(rollout_executor_module.event_logger_checkpoint, "snapshot", _REAL_EVENT_SNAPSHOT)
+        monkeypatch.setattr(rollout_executor_module, "postprocess_rollout_data", postprocess_rollout_data)
+        monkeypatch.setattr(rollout_executor_module, "log_rollout_data", lambda *args, **kwargs: None)
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", Store)
+        monkeypatch.setattr(
+            "miles.ray.rollout.train_data_conversion.can_schedule_on_rollout_side",
+            lambda *args, **kwargs: True,
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.train_data_conversion.build_dp_schedule",
+            lambda *args, **kwargs: ([[0]], [[[0]]], 1, 1),
+        )
+        event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="rollout_executor"))
+        set_event_logger(event_logger)
+        try:
+            data_source = _FakeDataSource(tmp_path)
+            data_source.get_samples = lambda _num_samples: raw
+            insert_data_source_issue_recorder(data_source)
+            data_source.get_samples(1)
+            rollout_fn = AsyncRolloutFn(RolloutFnConstructorInput(args=args, data_source=data_source))
+            executor = _make_executor(tmp_path, _CountingRolloutFn())
+            executor.data_source = data_source
+            self._configure_async_executor(executor, args=args, rollout_fn=rollout_fn)
+            await executor.get(rollout_id=1)
+            await executor.save(0)
+            (tmp_path / "latest_checkpointed_iteration.txt").write_text("0")
+
+            resumed_fn = FailingRolloutFn(RolloutFnConstructorInput(args=args, data_source=_FakeDataSource(tmp_path)))
+            resumed = _make_executor(tmp_path, _CountingRolloutFn())
+            self._configure_async_executor(resumed, args=args, rollout_fn=resumed_fn)
+            await resumed.load(0)
+            await resumed.get(rollout_id=1)
+        finally:
+            set_event_logger(None)
+
+        events = event_logger.read_events_strict()
+        drops = [event for event in events if isinstance(event, ExplicitlyDroppedSamplesEvent)]
+        assert [(event.sample_indices, event.reason) for event in drops] == [
+            ([30], "trim"),
+            ([20], "dp_schedule_trim"),
+        ]
+
     @staticmethod
     def _configure_async_executor(executor: RolloutExecutor, *, args: Namespace, rollout_fn: BaseRolloutFn) -> None:
         executor.args = args
