@@ -30,6 +30,7 @@ from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.sample_ownership.flow import insert_data_source_issue_recorder
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
@@ -91,6 +92,7 @@ class RolloutExecutor:
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
+        insert_data_source_issue_recorder(self.data_source)
 
         self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
         if not self.use_legacy_rollout_v1:
