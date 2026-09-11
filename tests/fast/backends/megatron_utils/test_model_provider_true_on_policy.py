@@ -2,6 +2,7 @@ from argparse import Namespace
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 # TODO: add back after megatron bump
 pytestmark = pytest.mark.skip(
@@ -12,6 +13,7 @@ pytestmark = pytest.mark.skip(
 def _make_args():
     return Namespace(
         custom_model_provider_path=None,
+        enable_sample_ownership_checker=False,
         megatron_to_hf_mode="raw",
         transformer_impl="local",
         spec=None,
@@ -37,6 +39,11 @@ def _make_args():
 def _patch_local_model_provider(monkeypatch):
     from miles.backends.megatron_utils import model_provider as provider_module
 
+    group = SimpleNamespace(rank=0)
+    monkeypatch.setattr(
+        "miles.backends.training_utils.parallel.get_parallel_state",
+        lambda: SimpleNamespace(pp=group, tp=group, cp=group, intra_dp=group),
+    )
     captured = {}
 
     def fake_core_transformer_config_from_args(_args):
@@ -53,8 +60,9 @@ def _patch_local_model_provider(monkeypatch):
         captured.update(kwargs)
         return "layer-spec"
 
-    class FakeGPTModel:
+    class FakeGPTModel(torch.nn.Module):
         def __init__(self, **kwargs):
+            super().__init__()
             self.kwargs = kwargs
             self.config = kwargs["config"]
             self.share_embeddings_and_output_weights = kwargs["share_embeddings_and_output_weights"]
