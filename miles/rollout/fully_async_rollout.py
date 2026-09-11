@@ -38,6 +38,7 @@ from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
     DataBufferConstructorInput,
     DataBufferInput,
+    DataBufferState,
     DefaultDataBuffer,
     DefaultMultiDataBuffer,
     Group,
@@ -263,6 +264,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._retry_buffer.extend(state.retry_buffer)
         self._retry_buffer.extend(state.in_flight)
         self._ensure_output()
+        self._output.restore(state.output)
 
     def _ensure_output(self) -> None:
         if self._output is not None:
@@ -274,9 +276,14 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._output = buffer_cls(DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused))
 
     def _collect_state(self) -> "_FullyAsyncRolloutState":
+        output: DataBufferState = {}
+        if self._output is not None:
+            for key, entries in self._output.snapshot().items():
+                output.setdefault(key, []).extend(entries)
         return _FullyAsyncRolloutState(
             retry_buffer=list(self._retry_buffer),
             in_flight=[_copy_reset_for_retry(pending) for pending in self._in_flight.values()],
+            output=output,
         )
 
 
@@ -284,6 +291,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 class _FullyAsyncRolloutState:
     retry_buffer: list[list[Sample]]
     in_flight: list[list[Sample]]
+    output: DataBufferState
 
 
 def _copy_reset_for_retry(prompt_group: list[Sample]) -> list[Sample]:

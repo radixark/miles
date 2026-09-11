@@ -126,3 +126,23 @@ class TestPerPolicyMetrics:
         assert buffer.get_metrics("solver")["rollout/raw_reward_unfiltered"] == 1.0
         assert buffer.get_metrics("verifier")["rollout/raw_reward_unfiltered"] == 3.0
         assert "rollout/raw_reward_unfiltered" not in buffer.get_metrics("verifier")
+
+
+class TestCheckpointQueueOrder:
+    async def test_restored_queue_preserves_sample_identities_and_fifo_order(self) -> None:
+        """Restoring a queue preserves every accepted group in its original order."""
+        args = _make_args()
+        args.rollout_batch_size = 2
+        constructor = DataBufferConstructorInput(args=args, unused_handler_fn=_ignore_group)
+        buffer = fully_async_data_buffer.DefaultDataBuffer(constructor)
+        groups = [[_make_sample(index=index, reward=1.0, trainer_model_id="solver")] for index in (8, 3)]
+        for group in groups:
+            await buffer.put(DataBufferInput(prompt_group=group, group=group))
+
+        restored = fully_async_data_buffer.DefaultDataBuffer(constructor)
+        restored.restore(buffer.snapshot())
+        first = await restored.get()
+        second = await restored.get()
+
+        assert [[sample.index for sample in entry.group] for entry in (first, second)] == [[8], [3]]
+        assert restored.snapshot() == {None: []}

@@ -119,15 +119,17 @@ The **data buffer** is the store of finished groups between the two loops, and e
 group-level decision lives in it. The producer puts each group in as it completes, the
 trainer takes groups back out one at a time, and everything in between — what to keep,
 what to discard, what to send back for regeneration — is the buffer's call. It is one
-replaceable component with three methods:
+replaceable component with the following interface:
 
 | Method | Called by | Purpose |
 |---|---|---|
 | `put()` | The rollout worker, once per finished group | Store the group, or reject it |
 | `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
+| `snapshot()` | Checkpoint save | Return all accepted, pending, and retry-relevant entries needed to resume without loss or duplicate admission |
+| `restore(state)` | Checkpoint load | Replace the buffer state with a previous snapshot |
 
-Those three methods are the whole interface: the worker and the trainer see nothing
+These methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.
 
 ```mermaid
@@ -177,7 +179,7 @@ Staleness control decides which of those groups training is allowed to see:
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
-takes over all three methods and therefore every group-level decision, and the flags in
+takes over the full interface and therefore every group-level decision, and the flags in
 this section apply only if your class reads them. The one decision that stays outside is
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
