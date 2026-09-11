@@ -52,7 +52,9 @@ def smoke() -> ModuleType:
 @pytest.mark.parametrize("backend", sorted(PROVIDER_CREDENTIALS))
 def test_golden_episode(smoke: ModuleType, backend: str):
     spec = PROVIDER_CREDENTIALS[backend]
-    if not credential_available(spec):
+    # the override too, not just the default path: a machine that keeps its key
+    # elsewhere runs rollouts fine and must not report as having no credential
+    if not credential_available(spec, arg_path=os.environ.get(spec["file_env_var"], "")):
         pytest.skip(f"no {spec['provider']} credential here; provision it with: {spec['provision_hint']}")
     # lacking the SDK or harbor means this case cannot run, not that it failed
     pytest.importorskip(spec["sdk"], reason=f"{spec['provider']} SDK missing: {spec['sdk_hint']}")
