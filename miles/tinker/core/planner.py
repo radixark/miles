@@ -1,4 +1,4 @@
-"""Pack compatible datums and merge ready optimizer barriers in arrival order."""
+"""Choose the earliest ready seed, then pack compatible work across streams."""
 
 from dataclasses import dataclass
 
@@ -56,18 +56,19 @@ class Planner:
         return self._streams[model_id]
 
     def next_to_run(self) -> BatchUnit | BarrierUnit | None:
+        """Arrival order selects the seed; compatible work may overtake intervening requests."""
         datums = self._ready_datums()
         barriers = self._ready_barriers()
 
-        oldest_datum = min(datums, key=lambda ref: ref.arrival) if datums else None
-        oldest_barrier = min(barriers, key=lambda e: e[1].command.arrival) if barriers else None
-        if oldest_datum is None and oldest_barrier is None:
+        datum_seed = min(datums, key=lambda ref: ref.arrival) if datums else None
+        barrier_seed = min(barriers, key=lambda e: e[1].command.arrival) if barriers else None
+        if datum_seed is None and barrier_seed is None:
             return None
-        if oldest_barrier is not None and (
-            oldest_datum is None or oldest_barrier[1].command.arrival < oldest_datum.arrival
+        if barrier_seed is not None and (
+            datum_seed is None or barrier_seed[1].command.arrival < datum_seed.arrival
         ):
-            return self._merge_barriers(oldest_barrier, barriers)
-        return self._pack_batch(oldest_datum, datums)
+            return self._merge_barriers(barrier_seed, barriers)
+        return self._pack_batch(datum_seed, datums)
 
     def _ready_datums(self) -> list[DatumRef]:
         datums = []
@@ -107,13 +108,13 @@ class Planner:
 
     def _merge_barriers(
         self,
-        oldest: tuple[ModelStream, PendingRequest],
+        seed: tuple[ModelStream, PendingRequest],
         barriers: list[tuple[ModelStream, PendingRequest]],
     ) -> BarrierUnit:
-        op = oldest[1].command.op
+        op = seed[1].command.op
         if op == CommandOp.OPTIM_STEP:
             # optim barriers of different models step in one trainer call
             entries = [(stream, barrier) for stream, barrier in barriers if barrier.command.op == op]
         else:
-            entries = [oldest]
+            entries = [seed]
         return BarrierUnit(op=op, entries=entries)

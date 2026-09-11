@@ -1,4 +1,4 @@
-"""The planner packs compatible datums within its token budget and preserves arrival order."""
+"""The planner selects the oldest ready seed and packs compatible work within its budget."""
 
 from tests.fast.tinker.harness import ADAM, command, datum, fb_payload
 
@@ -113,3 +113,29 @@ def test_forward_only_packs_only_within_one_loss():
     assert [ref.request.command.payload["loss_fn"] for ref in first.datums] == [
         "cross_entropy"
     ], "a DRO request must not execute under another request's loss"
+
+
+def test_compatible_datums_overtake_an_intervening_ready_barrier():
+    planner, (early, barrier, late) = _planner_with_streams(3)
+    _submit_fb(early, 1, arrival=1, datums=[datum()])
+    _submit_optim(barrier, 1, arrival=2)
+    _submit_fb(late, 1, arrival=3, datums=[datum()])
+
+    batch = planner.next_to_run()
+    assert isinstance(batch, BatchUnit)
+    assert [ref.arrival for ref in batch.datums] == [1, 3]
+    assert planner.next_to_run().entries[0][0] is barrier
+
+
+def test_compatible_optimizer_barriers_overtake_an_intervening_ready_datum():
+    planner, (early, batch, late) = _planner_with_streams(3)
+    _submit_optim(early, 1, arrival=1)
+    _submit_fb(batch, 1, arrival=2, datums=[datum()])
+    _submit_optim(late, 1, arrival=3)
+
+    barriers = planner.next_to_run()
+    assert isinstance(barriers, BarrierUnit)
+    assert [pending.command.arrival for _, pending in barriers.entries] == [1, 3]
+    for stream, pending in barriers.entries:
+        stream.finish(pending)
+    assert planner.next_to_run().datums[0].stream is batch
