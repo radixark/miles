@@ -821,3 +821,9 @@ async def test_an_expired_lease_sweeps_its_sessions(service):
     await service._sweep_once()
     with pytest.raises(UserInputError, match="unknown session"):
         service.create_model("tenant", model_payload(service, session_id=session_id))
+
+
+async def test_a_sampling_session_for_another_base_model_is_rejected(service):
+    payload = {"session_id": service.create_session("tenant"), "sampling_session_seq_id": 1, "base_model": "other"}
+    with pytest.raises(UserInputError, match="serves"):
+        service.create_sampling_session("tenant", payload)

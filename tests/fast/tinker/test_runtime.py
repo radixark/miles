@@ -185,3 +185,10 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
 def test_an_actor_error_verdict_becomes_an_exception():
     with pytest.raises(RuntimeError, match="bad shard"):
         _raise_slot_errors([None, {"error": "ValueError: bad shard"}])
+
+
+def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
+    """A truncated sequence fed to RL as a completed sample corrupts training data silently."""
+    response = {"meta_info": {"output_token_logprobs": [(-0.1, 11)], "finish_reason": {"type": "abort"}}}
+    with pytest.raises(RuntimeError, match="abort"):
+        _to_sequence(response)
