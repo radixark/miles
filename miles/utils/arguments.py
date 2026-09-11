@@ -456,6 +456,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
             parser.add_argument(
+                "--sft-checkpointed-output-projection",
+                action="store_true",
+                help=(
+                    "Checkpoint SFT output projection and FP32 tensor-parallel cross-entropy in sequence chunks; "
+                    "requires --loss-type sft_loss and a positive --log-probs-chunk-size."
+                ),
+            )
+            parser.add_argument(
                 "--indep-dp",
                 action="store_true",
                 default=False,
@@ -3577,6 +3585,11 @@ def miles_validate_args(args):
         args.use_routing_replay = True
 
     args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
+
+    if args.sft_checkpointed_output_projection:
+        assert args.loss_type == "sft_loss", "checkpointed SFT output requires --loss-type sft_loss"
+        assert args.log_probs_chunk_size > 0, "checkpointed SFT output requires a positive --log-probs-chunk-size"
+        assert not args.true_on_policy_mode, "checkpointed SFT output does not support --true-on-policy-mode"
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True

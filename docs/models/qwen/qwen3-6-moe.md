@@ -77,6 +77,33 @@ Default knobs in the launcher: `--mode debug_minimal`, 8 GPUs, `max_tokens_per_g
 `rollout_batch_size=8`, `n_samples_per_prompt=2`, `global_batch_size=16`,
 `rollout_max_response_len=1024`. Override via flags for longer runs.
 
+### 4.2 Long-context supervised fine-tuning
+
+The shared Qwen SFT launcher also supports this model on eight GPUs, with
+TP=2, CP=4, EP=8, and FP32 gradient accumulation. Supply JSONL rows with a
+`messages` field; the Qwen3 mask trains assistant turns, including reasoning,
+and masks user/system/tool observations. No inference engines are started.
+
+```bash
+python scripts/run_qwen3_sft.py \
+   --model-name Qwen3.6-35B-A3B \
+   --prompt-data /data/sft_train.jsonl \
+   --output-dir /scratch/sft-run \
+   --num-epoch 2 --rollout-batch-size 4 --global-batch-size 4 \
+   --learning-rate 1e-5 --min-learning-rate 1e-5 \
+   --checkpointed-output-projection --log-probs-chunk-size 256 \
+   --save-interval 560 \
+   --extra-args '--seq-length 262144 --rollout-max-context-len 262144 --lr-warmup-fraction 0'
+```
+
+For 1,120 rows, this is 560 optimizer updates. Checkpoint saving is also
+triggered at epoch boundaries and the final update. Use an output directory
+with sufficient space; optimizer checkpoints are considerably larger than
+the inference weights. The checkpointed projection recomputes bounded logits
+chunks during backward. Cross-entropy reductions remain FP32, and parameter
+gradient precision is unchanged. This option requires a Megatron GPT model
+with the output-processor interface and `LinearCrossEntropyModule` support.
+
 ## 5. Recipe Configuration
 
 ### 5.1 Parallelism
@@ -148,7 +175,25 @@ From `scripts/models/qwen3.6-35B-A3B.py` and `scripts/run_qwen3_6_35b_a3b_mtp.py
 
 See [Backends Beyond Megatron](/advanced/architecture-support) for FP32 parameter handling and how miles wires the spec.
 
-## 6. Pairs Well With
+## 6. SFT data preflight
+
+Before training a new JSONL corpus, compare the SFT tokenizer and assistant-only loss
+mask against the complete chat template with `preserve_thinking=True`:
+
+```bash
+python tools/check_qwen_sft_masks.py \
+    --data /data/sft.jsonl \
+    --tokenizer /models/Qwen3.6-35B-A3B \
+    --output /data/mask-audit.json \
+    --workers 8
+```
+
+The audit checks every row, includes top-level tool definitions, and rejects token
+mismatches, empty loss targets, and sequences beyond 262,144 tokens. It writes numeric
+diagnostics without conversation text. For corpora with a top-level `tools` field,
+also pass `--tool-key tools` to training so the data loader forwards those definitions.
+
+## 7. Pairs Well With
 
 - [Speculative Decoding](/advanced/speculative-decoding)
 - [Backends Beyond Megatron](/advanced/architecture-support)
