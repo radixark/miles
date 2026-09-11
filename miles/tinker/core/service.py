@@ -13,6 +13,7 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 
+from miles.tinker.core.backend import ExecutorBackend
 from miles.tinker.core.future import Future, FutureStore
 from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
 from miles.tinker.core.stream import ModelStream
@@ -28,58 +29,6 @@ from miles.tinker.core.types import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class ExecutorBackend:
-    """Backend contract using datums and plain lists, without torch or trainer dependencies."""
-
-    def trainer_dead(self) -> bool:
-        """Whether the training workers are gone; the dispatch loop exits instead of containing."""
-        return False
-
-    async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> None:
-        raise NotImplementedError
-
-    async def unload_slot(self, slot: int) -> None:
-        raise NotImplementedError
-
-    async def forward_backward(
-        self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
-    ) -> list[dict]:
-        """slot_datums: slot-sorted [(slot, datum)]. Returns one
-        {"loss": float, "logprobs": [float]} per datum, in order."""
-        raise NotImplementedError
-
-    async def forward_only(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
-        raise NotImplementedError
-
-    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
-        """-> per-slot outcome: {"grad_norm": x} stepped, {"skipped_nonfinite": 1.0}
-        dropped non-finite grads, {"error": msg} failed."""
-        raise NotImplementedError
-
-    async def zero_grads(self, slot: int) -> None:
-        """Drop the slot's accumulated gradients."""
-        raise NotImplementedError
-
-    async def save_slot(self, slot: int, path: str) -> None:
-        raise NotImplementedError
-
-    async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
-        """Write the slot's adapter as an engine-loadable dir."""
-        raise NotImplementedError
-
-    async def push_slot(
-        self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
-    ) -> None:
-        raise NotImplementedError
-
-    async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
-        """-> {"sequences": [{"tokens", "logprobs", "stop_reason"}],
-        "prompt_logprobs"?, "topk_prompt_logprobs"?}"""
-        raise NotImplementedError
 
 
 class TinkerService:
@@ -102,8 +51,6 @@ class TinkerService:
         self._poisoned_slots: dict[int, tuple[str, str]] = {}
         # why each evicted model died, so later requests get the reason instead of "unknown model"
         self._eviction_reasons: dict[str, str] = {}
-
-    # -------- control plane --------
 
     def create_session(self, tenant: str) -> str:
         session_id = f"session-{uuid.uuid4().hex}"
@@ -205,7 +152,7 @@ class TinkerService:
             raise OwnershipError(f"model {model_id} does not belong to this tenant")
         return record
 
-    # -------- command plane --------
+    # -------- client submit path --------
 
     def submit(self, tenant: str, op: str, payload: dict) -> str:
         """Admit a decoded command; content errors settle its future as a user failure."""
@@ -300,170 +247,6 @@ class TinkerService:
     def retrieve_future(self, tenant: str, request_id: str) -> Future | None:
         """None -> the HTTP layer answers 410 and the SDK resubmits."""
         return self.futures.get(request_id, tenant)
-
-    # -------- sampling plane (future-based but never queues) --------
-
-    def create_sampling_session(self, tenant: str, payload: dict) -> str:
-        session = self._session_for(tenant, payload["session_id"])
-        seq_id = _validate_seq_id(payload["sampling_session_seq_id"], "sampling_session_seq_id")
-        if (previous := session["sampling_sessions_by_seq"].get(seq_id)) is not None:
-            return previous
-        sampling_session_id = self._new_sampling_session(tenant, payload.get("model_path"))
-        session["sampling_sessions_by_seq"][seq_id] = sampling_session_id
-        return sampling_session_id
-
-    def _new_sampling_session(self, tenant: str, model_path: str | None) -> str:
-        sampling_session_id = f"sampling-{uuid.uuid4().hex}"
-        self.sampling_sessions[sampling_session_id] = {
-            "tenant": tenant,
-            "model_path": model_path,
-            "samples_by_seq": {},
-        }
-        return sampling_session_id
-
-    def submit_sample(self, tenant: str, payload: dict) -> tuple[str, list[str]]:
-        base_model = payload.get("base_model")
-        if base_model is not None and base_model != self.config.base_model:
-            raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
-        model_path = payload.get("model_path")
-        sampling_session = None
-        if payload.get("sampling_session_id"):
-            sampling_session = self.sampling_sessions[payload["sampling_session_id"]]
-            if sampling_session["tenant"] != tenant:
-                raise OwnershipError("sampling session does not belong to this tenant")
-            model_path = model_path or sampling_session["model_path"]
-            seq_id = _validate_seq_id(payload["seq_id"], "seq_id")
-            if (previous := sampling_session["samples_by_seq"].get(seq_id)) is not None:
-                return previous
-        if payload.get("num_samples", 1) > self.config.max_samples_per_request:
-            raise UserInputError(
-                f"num_samples {payload['num_samples']} exceeds max_samples_per_request="
-                f"{self.config.max_samples_per_request}"
-            )
-        lora_name, lora_path = self._resolve_sampler(tenant, model_path) if model_path else (None, None)
-        future = self.futures.create(model_path or "base", tenant)
-        sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
-        task = asyncio.create_task(self._run_sample(future.request_id, payload, lora_name, lora_path))
-        self._sample_tasks[future.request_id] = (task, tenant)
-        task.add_done_callback(lambda _t, rid=future.request_id: self._sample_tasks.pop(rid, None))
-        if sampling_session is not None:
-            sampling_session["samples_by_seq"][seq_id] = (future.request_id, sequence_ids)
-        return future.request_id, sequence_ids
-
-    async def _run_sample(
-        self, request_id: str, payload: dict, lora_name: str | None, lora_path: str | None = None
-    ) -> None:
-        try:
-            result = await self.backend.sample(payload, lora_name, lora_path)
-        except asyncio.CancelledError:
-            self.futures.fail(request_id, "cancelled", "user")
-        except UserInputError as error:
-            self.futures.fail(request_id, str(error), "user")
-        except Exception as error:  # noqa: BLE001
-            logger.exception("sample failed")
-            self.futures.fail(request_id, f"{type(error).__name__}: {error}", "server")
-        else:
-            self.futures.resolve(request_id, {"op": "sample", **result})
-
-    def cancel(self, tenant: str, request_id: str) -> None:
-        """Cancel an in-flight sampling future; training commands have no
-        cancel in the protocol and are ignored."""
-        if self.futures.get(request_id, tenant) is None:
-            return
-        entry = self._sample_tasks.get(request_id)
-        if entry is not None:
-            entry[0].cancel()
-
-    def _resolve_sampler(self, tenant: str, model_path: str) -> tuple[str, str]:
-        """-> (engine lora_name, adapter dir): the request carries both, so the
-        engine can backfill an evicted version from disk on its own."""
-        model_id, kind, name = _parse_tinker_path(model_path)
-        if kind != "sampler_weights":
-            raise UserInputError(f"cannot sample from {model_path!r}: not a sampler_weights path")
-        checkpoint_dir = self._checkpoint_dir(model_id, "sampler_weights", name)
-        record = self.models.get(model_id)
-        if record is not None:
-            if record.tenant != tenant:
-                raise OwnershipError(f"model {model_id} does not belong to this tenant")
-            if name not in record.published_sampler_versions:
-                raise UserInputError(f"unknown sampler version {name} for {model_id}")
-        else:
-            # the training lease is gone; the checkpoint on disk is the record
-            self._checkpoint_meta(checkpoint_dir, tenant, model_path)
-        return f"{model_id}@{name}", checkpoint_dir
-
-    def weights_info(self, tenant: str, tinker_path: str) -> dict:
-        """What the SDK needs to rebuild a training client from a checkpoint."""
-        model_id, kind, name = _parse_tinker_path(tinker_path)
-        meta = self._checkpoint_meta(self._checkpoint_dir(model_id, kind, name), tenant, tinker_path)
-        return {
-            "base_model": meta["base_model"],
-            "is_lora": True,
-            "lora_rank": meta["lora_rank"],
-            "train_attn": meta["train_attn"],
-            "train_mlp": meta["train_mlp"],
-            "train_unembed": meta["train_unembed"],
-        }
-
-    async def sweep_leases(self) -> None:
-        """Reclaim from stale tenants: cancel sampling, unload models, free
-        slots. Training state dies with the lease; only checkpoints survive."""
-        while True:
-            await asyncio.sleep(30)
-            await self._sweep_once()
-
-    async def _sweep_once(self) -> None:
-        now = time.monotonic()
-        had_sessions = bool(self.sessions)
-        fresh_tenants = {
-            session["tenant"]
-            for session in self.sessions.values()
-            if now - session["last_heartbeat"] < self.config.lease_timeout_s
-        }
-
-        def lease_expired(tenant: str) -> bool:
-            # with no sessions at all there is no lease to expire
-            return had_sessions and tenant not in fresh_tenants
-
-        for session_id, session in list(self.sessions.items()):
-            if lease_expired(session["tenant"]):
-                del self.sessions[session_id]
-        for sampling_session_id, record in list(self.sampling_sessions.items()):
-            if lease_expired(record["tenant"]):
-                del self.sampling_sessions[sampling_session_id]
-
-        for request_id, (task, tenant) in list(self._sample_tasks.items()):
-            if lease_expired(tenant):
-                logger.warning(f"lease expired for tenant of sample {request_id}; cancelling")
-                task.cancel()
-        for model_id, record in list(self.models.items()):
-            if not lease_expired(record.tenant):
-                continue
-            logger.warning(f"lease expired for {model_id}; freeing slot {record.slot}")
-            async with self._backend_lock:
-                await self._evict_model(model_id, "lease expired", "user")
-
-    async def _evict_model(self, model_id: str, error: str, category: str) -> None:
-        """Free a model's slot and fail its pending requests; requires the backend lock. Idempotent."""
-        record = self.models.pop(model_id, None)
-        if record is None:
-            return
-        self._eviction_reasons[model_id] = error
-        while len(self._eviction_reasons) > 4 * self.config.n_slots:
-            self._eviction_reasons.pop(next(iter(self._eviction_reasons)))
-        # the poison belongs to the evicted model's gradient window, not the slot
-        self._poisoned_slots.pop(record.slot, None)
-        stream = self.planner.stream(model_id)
-        self.planner.remove_stream(model_id)
-        for request_id in stream.request_id_by_seq.values():
-            if self.futures.get(request_id, record.tenant) is not None:
-                self.futures.fail(request_id, error, category)
-        try:
-            await self.backend.unload_slot(record.slot)
-        except Exception:  # noqa: BLE001  a dirty slot must not kill the sweep or dispatch loop
-            logger.exception(f"failed to unload slot {record.slot}; keeping it out of the free pool")
-            return
-        self.free_slots.add(record.slot)
 
     # -------- dispatch loop --------
 
@@ -743,6 +526,170 @@ class TinkerService:
         path = os.path.realpath(f"{root}/{model_id}/{kind}/{name}")
         assert path.startswith(root + os.sep), f"checkpoint path {path!r} escapes {root!r}"
         return path
+
+    # -------- sampling plane (future-based but never queues) --------
+
+    def create_sampling_session(self, tenant: str, payload: dict) -> str:
+        session = self._session_for(tenant, payload["session_id"])
+        seq_id = _validate_seq_id(payload["sampling_session_seq_id"], "sampling_session_seq_id")
+        if (previous := session["sampling_sessions_by_seq"].get(seq_id)) is not None:
+            return previous
+        sampling_session_id = self._new_sampling_session(tenant, payload.get("model_path"))
+        session["sampling_sessions_by_seq"][seq_id] = sampling_session_id
+        return sampling_session_id
+
+    def _new_sampling_session(self, tenant: str, model_path: str | None) -> str:
+        sampling_session_id = f"sampling-{uuid.uuid4().hex}"
+        self.sampling_sessions[sampling_session_id] = {
+            "tenant": tenant,
+            "model_path": model_path,
+            "samples_by_seq": {},
+        }
+        return sampling_session_id
+
+    def submit_sample(self, tenant: str, payload: dict) -> tuple[str, list[str]]:
+        base_model = payload.get("base_model")
+        if base_model is not None and base_model != self.config.base_model:
+            raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
+        model_path = payload.get("model_path")
+        sampling_session = None
+        if payload.get("sampling_session_id"):
+            sampling_session = self.sampling_sessions[payload["sampling_session_id"]]
+            if sampling_session["tenant"] != tenant:
+                raise OwnershipError("sampling session does not belong to this tenant")
+            model_path = model_path or sampling_session["model_path"]
+            seq_id = _validate_seq_id(payload["seq_id"], "seq_id")
+            if (previous := sampling_session["samples_by_seq"].get(seq_id)) is not None:
+                return previous
+        if payload.get("num_samples", 1) > self.config.max_samples_per_request:
+            raise UserInputError(
+                f"num_samples {payload['num_samples']} exceeds max_samples_per_request="
+                f"{self.config.max_samples_per_request}"
+            )
+        lora_name, lora_path = self._resolve_sampler(tenant, model_path) if model_path else (None, None)
+        future = self.futures.create(model_path or "base", tenant)
+        sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
+        task = asyncio.create_task(self._run_sample(future.request_id, payload, lora_name, lora_path))
+        self._sample_tasks[future.request_id] = (task, tenant)
+        task.add_done_callback(lambda _t, rid=future.request_id: self._sample_tasks.pop(rid, None))
+        if sampling_session is not None:
+            sampling_session["samples_by_seq"][seq_id] = (future.request_id, sequence_ids)
+        return future.request_id, sequence_ids
+
+    async def _run_sample(
+        self, request_id: str, payload: dict, lora_name: str | None, lora_path: str | None = None
+    ) -> None:
+        try:
+            result = await self.backend.sample(payload, lora_name, lora_path)
+        except asyncio.CancelledError:
+            self.futures.fail(request_id, "cancelled", "user")
+        except UserInputError as error:
+            self.futures.fail(request_id, str(error), "user")
+        except Exception as error:  # noqa: BLE001
+            logger.exception("sample failed")
+            self.futures.fail(request_id, f"{type(error).__name__}: {error}", "server")
+        else:
+            self.futures.resolve(request_id, {"op": "sample", **result})
+
+    def cancel(self, tenant: str, request_id: str) -> None:
+        """Cancel an in-flight sampling future; training commands have no
+        cancel in the protocol and are ignored."""
+        if self.futures.get(request_id, tenant) is None:
+            return
+        entry = self._sample_tasks.get(request_id)
+        if entry is not None:
+            entry[0].cancel()
+
+    def _resolve_sampler(self, tenant: str, model_path: str) -> tuple[str, str]:
+        """-> (engine lora_name, adapter dir): the request carries both, so the
+        engine can backfill an evicted version from disk on its own."""
+        model_id, kind, name = _parse_tinker_path(model_path)
+        if kind != "sampler_weights":
+            raise UserInputError(f"cannot sample from {model_path!r}: not a sampler_weights path")
+        checkpoint_dir = self._checkpoint_dir(model_id, "sampler_weights", name)
+        record = self.models.get(model_id)
+        if record is not None:
+            if record.tenant != tenant:
+                raise OwnershipError(f"model {model_id} does not belong to this tenant")
+            if name not in record.published_sampler_versions:
+                raise UserInputError(f"unknown sampler version {name} for {model_id}")
+        else:
+            # the training lease is gone; the checkpoint on disk is the record
+            self._checkpoint_meta(checkpoint_dir, tenant, model_path)
+        return f"{model_id}@{name}", checkpoint_dir
+
+    def weights_info(self, tenant: str, tinker_path: str) -> dict:
+        """What the SDK needs to rebuild a training client from a checkpoint."""
+        model_id, kind, name = _parse_tinker_path(tinker_path)
+        meta = self._checkpoint_meta(self._checkpoint_dir(model_id, kind, name), tenant, tinker_path)
+        return {
+            "base_model": meta["base_model"],
+            "is_lora": True,
+            "lora_rank": meta["lora_rank"],
+            "train_attn": meta["train_attn"],
+            "train_mlp": meta["train_mlp"],
+            "train_unembed": meta["train_unembed"],
+        }
+
+    async def sweep_leases(self) -> None:
+        """Reclaim from stale tenants: cancel sampling, unload models, free
+        slots. Training state dies with the lease; only checkpoints survive."""
+        while True:
+            await asyncio.sleep(30)
+            await self._sweep_once()
+
+    async def _sweep_once(self) -> None:
+        now = time.monotonic()
+        had_sessions = bool(self.sessions)
+        fresh_tenants = {
+            session["tenant"]
+            for session in self.sessions.values()
+            if now - session["last_heartbeat"] < self.config.lease_timeout_s
+        }
+
+        def lease_expired(tenant: str) -> bool:
+            # with no sessions at all there is no lease to expire
+            return had_sessions and tenant not in fresh_tenants
+
+        for session_id, session in list(self.sessions.items()):
+            if lease_expired(session["tenant"]):
+                del self.sessions[session_id]
+        for sampling_session_id, record in list(self.sampling_sessions.items()):
+            if lease_expired(record["tenant"]):
+                del self.sampling_sessions[sampling_session_id]
+
+        for request_id, (task, tenant) in list(self._sample_tasks.items()):
+            if lease_expired(tenant):
+                logger.warning(f"lease expired for tenant of sample {request_id}; cancelling")
+                task.cancel()
+        for model_id, record in list(self.models.items()):
+            if not lease_expired(record.tenant):
+                continue
+            logger.warning(f"lease expired for {model_id}; freeing slot {record.slot}")
+            async with self._backend_lock:
+                await self._evict_model(model_id, "lease expired", "user")
+
+    async def _evict_model(self, model_id: str, error: str, category: str) -> None:
+        """Free a model's slot and fail its pending requests; requires the backend lock. Idempotent."""
+        record = self.models.pop(model_id, None)
+        if record is None:
+            return
+        self._eviction_reasons[model_id] = error
+        while len(self._eviction_reasons) > 4 * self.config.n_slots:
+            self._eviction_reasons.pop(next(iter(self._eviction_reasons)))
+        # the poison belongs to the evicted model's gradient window, not the slot
+        self._poisoned_slots.pop(record.slot, None)
+        stream = self.planner.stream(model_id)
+        self.planner.remove_stream(model_id)
+        for request_id in stream.request_id_by_seq.values():
+            if self.futures.get(request_id, record.tenant) is not None:
+                self.futures.fail(request_id, error, category)
+        try:
+            await self.backend.unload_slot(record.slot)
+        except Exception:  # noqa: BLE001  a dirty slot must not kill the sweep or dispatch loop
+            logger.exception(f"failed to unload slot {record.slot}; keeping it out of the free pool")
+            return
+        self.free_slots.add(record.slot)
 
 
 def _validate_seq_id(value, name: str) -> int:
