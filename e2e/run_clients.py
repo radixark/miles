@@ -14,14 +14,48 @@ import re
 import statistics
 import sys
 import time
+import urllib.request
 
 CLIENT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "e2e_client.py")
 PHASES = ("fwd_bwd", "optim", "publish", "rollout")
+HEALTH_INTERVAL_S = 30
+HEALTH_FAILURES_TO_ABORT = 3  # the SDK retries a dead gateway forever; the run must not
 _STEP_LINE = re.compile(r"\bstep=(\d+)\b")
 _PHASE_VALUE = re.compile(r"\b(\w+)=([0-9.]+)s\b")
 
 
-async def run_client(index: int, client_args: list[str]) -> tuple[str, int, list[str]]:
+def base_url(client_args: list[str]) -> str:
+    if "--base-url" in client_args:
+        return client_args[client_args.index("--base-url") + 1]
+    return "http://127.0.0.1:9646"
+
+
+def gateway_alive(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{url}/api/v1/healthz", timeout=10) as response:
+            return response.status == 200
+    except OSError:
+        return False
+
+
+async def watch_gateway(url: str, processes: list) -> None:
+    """Stop every client once the gateway has been unreachable for a while."""
+    failures = 0
+    while True:
+        await asyncio.sleep(HEALTH_INTERVAL_S)
+        failures = 0 if await asyncio.to_thread(gateway_alive, url) else failures + 1
+        if failures >= HEALTH_FAILURES_TO_ABORT:
+            print(
+                f"[summary] gateway {url} unreachable for {failures * HEALTH_INTERVAL_S}s; stopping the clients",
+                flush=True,
+            )
+            for process in processes:
+                if process.returncode is None:
+                    process.terminate()
+            return
+
+
+async def run_client(index: int, client_args: list[str], processes: list) -> tuple[str, int, list[str]]:
     tag = f"user-{index:02d}"
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -32,6 +66,7 @@ async def run_client(index: int, client_args: list[str]) -> tuple[str, int, list
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
+    processes.append(process)
     lines = []
     async for raw in process.stdout:
         line = raw.decode(errors="replace").rstrip()
@@ -74,7 +109,12 @@ def summarize(results: list[tuple[str, int, list[str]]]) -> None:
 async def main(args) -> int:
     started = time.time()
     print(f"[summary] {args.n_clients} clients x e2e_client.py {' '.join(args.client_args)}", flush=True)
-    results = await asyncio.gather(*(run_client(index, args.client_args) for index in range(args.n_clients)))
+    processes: list = []
+    watchdog = asyncio.create_task(watch_gateway(base_url(args.client_args), processes))
+    results = await asyncio.gather(
+        *(run_client(index, args.client_args, processes) for index in range(args.n_clients))
+    )
+    watchdog.cancel()
     summarize(results)
     failed = [tag for tag, code, _ in results if code != 0]
     elapsed = time.time() - started
