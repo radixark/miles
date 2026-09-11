@@ -725,7 +725,7 @@ async def test_a_recycled_slot_does_not_inherit_poison(service):
     await service._sweep_once()
     assert slot in service.free_slots
 
-    del service.sessions[session_id]  # no live sessions: no lease to expire
+    assert session_id not in service.sessions, "the sweep takes the expired session with it"
     fresh = await created_model(service)
     assert service.models[fresh].slot == slot
     step_after_fb = service.submit("tenant", "forward_backward", fb_payload(fresh, 1, [datum()]))
