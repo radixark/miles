@@ -33,6 +33,11 @@ async def _poll(client, request_id: str, tenant: str = "tenant-a") -> dict:
     raise AssertionError(f"{request_id} never settled")
 
 
+async def _model_body(client, tenant: str = "tenant-a", **extra) -> dict:
+    session = (await client.post("/api/v1/create_session", json={}, headers=_headers(tenant))).json()
+    return {"base_model": "base", "session_id": session["session_id"], "model_seq_id": 1, **extra}
+
+
 def _fb_body(model_id: str, seq_id: int) -> dict:
     return {
         "model_id": model_id,
@@ -53,7 +58,8 @@ async def test_the_training_conversation(client):
     session = await client.post("/api/v1/create_session", json={}, headers=_headers())
     assert session.json()["session_id"].startswith("session-")
 
-    created = (await client.post("/api/v1/create_model", json={"base_model": "base"}, headers=_headers())).json()
+    body = {"base_model": "base", "session_id": session.json()["session_id"], "model_seq_id": 1}
+    created = (await client.post("/api/v1/create_model", json=body, headers=_headers())).json()
     assert (await _poll(client, created["request_id"]))["type"] == "create_model"
     model_id = created["model_id"]
 
@@ -106,7 +112,7 @@ async def test_bad_input_answers_400(client):
 
 async def test_a_foreign_future_answers_403(client):
     created = (
-        await client.post("/api/v1/create_model", json={"base_model": "base"}, headers=_headers("tenant-a"))
+        await client.post("/api/v1/create_model", json=await _model_body(client), headers=_headers("tenant-a"))
     ).json()
     response = await client.post(
         "/api/v1/retrieve_future", json={"request_id": created["request_id"]}, headers=_headers("tenant-b")
@@ -120,8 +126,9 @@ async def test_an_unknown_future_answers_410(client):
 
 
 async def test_a_failed_future_reports_the_category(client):
+    body = await _model_body(client)
     client.service.backend.fail_next = RuntimeError("boom")
-    created = (await client.post("/api/v1/create_model", json={"base_model": "base"}, headers=_headers())).json()
+    created = (await client.post("/api/v1/create_model", json=body, headers=_headers())).json()
     body = await _poll(client, created["request_id"])
     assert (body["category"], "boom" in body["error"]) == ("server", True)
 
@@ -147,7 +154,7 @@ async def test_weights_info_answers_the_sdk_resume_probe(client):
     created = (
         await client.post(
             "/api/v1/create_model",
-            json={"base_model": "base", "lora_config": {"rank": 8}},
+            json=await _model_body(client, lora_config={"rank": 8}),
             headers=_headers(),
         )
     ).json()
