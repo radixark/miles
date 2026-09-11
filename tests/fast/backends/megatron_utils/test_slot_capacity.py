@@ -13,6 +13,8 @@ from miles.backends.megatron_utils.lora.slot_capacity import (
     PROBE_SLOT,
     RankProbe,
     bytes_per_train_param,
+    expert_data_parallel_size,
+    predicted_slot_bytes,
     probe_slot_capacity,
     resident_slot_bytes,
     resolve_slot_capacity,
@@ -40,6 +42,26 @@ def test_optimizer_state_is_split_across_data_parallel_ranks():
     # bf16 weight + fp32 grad on every rank; the fp32 master and moments (12 B) are scattered over DP=2
     args = Namespace(bf16=True, fp16=False, accumulate_allreduce_grads_in_fp32=True)
     assert bytes_per_train_param(args, dp_size=2) == 12
+
+
+def test_expert_adapters_share_optimizer_state_over_the_expert_data_parallel_ranks():
+    # 8 GPUs, TP2 / EP8 / ETP1: DP=4 for dense params, but every rank owns its experts alone
+    args = Namespace(
+        bf16=True,
+        fp16=False,
+        accumulate_allreduce_grads_in_fp32=True,
+        tensor_model_parallel_size=2,
+        context_parallel_size=1,
+        expert_model_parallel_size=8,
+        expert_tensor_parallel_size=1,
+    )
+    assert expert_data_parallel_size(args, dp_size=4) == 1
+    probe = RankProbe(free=0, slot_bytes=0, act_peak=0, adapter_local_params=100_000, adapter_expert_params=99_000)
+    # dense: 1_000 * (6 + 12 / 4); expert: 99_000 * (6 + 12 / 1)
+    assert predicted_slot_bytes(args, probe, dp_size=4) == 1_000 * 9 + 99_000 * 18
+    # twice the GPUs (DP=8) halve both shares' state, the experts' now over two ranks
+    assert expert_data_parallel_size(args, dp_size=8) == 2
+    assert predicted_slot_bytes(args, probe, dp_size=8) == 1_000 * 7.5 + 99_000 * 12
 
 
 def _probe(free=100 * GIB, slot=2 * GIB, act_peak=10 * GIB) -> RankProbe:
@@ -111,7 +133,13 @@ def _backend(calls, step_outcome) -> SimpleNamespace:
 
 async def test_the_probe_warms_up_then_measures_one_max_size_step():
     calls = []
-    snapshot = {"free": 50 * GIB, "slot_bytes": 2 * GIB, "act_peak": 10 * GIB, "adapter_local_params": 2 * GIB // 12}
+    snapshot = {
+        "free": 50 * GIB,
+        "slot_bytes": 2 * GIB,
+        "act_peak": 10 * GIB,
+        "adapter_local_params": 2 * GIB // 12,
+        "adapter_expert_params": 0,
+    }
     trainer = SimpleNamespace(
         multi_lora_memory_probe=AsyncMock(
             side_effect=lambda phase: calls.append(phase) or ([{}] if phase == "reset" else [snapshot])
