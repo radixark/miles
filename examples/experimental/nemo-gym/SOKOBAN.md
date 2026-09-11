@@ -60,3 +60,10 @@ with `pytest tests/fast/examples/experimental/nemo_gym/test_sokoban_reward.py`.
 During training,
 inspect solve-rate variation, nonzero gradients, routing-replay diagnostics, and
 sample traces. Training reward on the training puzzles is not a held-out score.
+
+For policy-only Nemotron-H training, leave `MILES_NEMOTRONH_KEEP_MTP` unset or
+set it to `0`. A constructed MTP head can add a next-token loss independently
+of task rewards. For a fresh HF run, add
+`--custom-megatron-before-train-step-hook-path sokoban_training_checks.before_train_step`
+to fail before an optimizer update if the actual model contains an MTP head
+or the initialization flags allow resumed training state.
