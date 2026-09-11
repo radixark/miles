@@ -64,7 +64,7 @@ class Command:
     op: CommandOp
     payload: dict
     request_id: str
-    arrival: int  # global submit order, the planner's FCFS key
+    arrival: int  # global submit order for selecting the planner's seed
 
 
 @dataclass
