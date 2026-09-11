@@ -201,6 +201,8 @@ class MegatronTrainRayActor(TrainRayActor):
             self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
                 args, role, checkpointing_context=checkpointing_context
             )
+        # multi-LoRA: one SlotOptimizer per loaded slot, created by load_slot and dropped by unload_slot
+        self.slot_optimizers = {}
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
