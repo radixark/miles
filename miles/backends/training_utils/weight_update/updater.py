@@ -121,7 +121,6 @@ class WeightUpdater:
             lora_path=lora_path,
         )
         with session:
-            self._registered_adapters.update(lora_name for lora_name, _ in registrations)
             checksums = self._expected_lora_checksums(adapters, staged)
             records_checksums = checksums is not None and dist.get_rank() == 0
             with timer("update_weights_implementation"):
@@ -143,6 +142,9 @@ class WeightUpdater:
             with timer("finalize_and_resume_engines"):
                 protocol.finalize(self.weight_version)
                 session.commit(checksums, weight_version)
+                # only now is the engine-side registration durable; a failed push aborts
+                # it engine-side, and a cached name would skip the re-push on retry
+                self._registered_adapters.update(lora_name for lora_name, _ in registrations)
             protocol.after_engines_resumed()
 
     def _expected_lora_checksums(self, adapters: list, staged: bool) -> dict | None:
