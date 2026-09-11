@@ -103,6 +103,9 @@ def _cap_loaded_adapters(args) -> None:
     engine specs snapshot args when they are computed, so this runs before them."""
     if getattr(args, "sglang_max_loaded_loras", None) is None:
         args.sglang_max_loaded_loras = engine_loaded_adapter_cap(args.multi_lora_n_adapters)
+        logger.info(
+            f"engines keep at most {args.sglang_max_loaded_loras} adapter versions loaded (derived from the slot count)"
+        )
 
 
 def _trainer_controller(args, inference_controller) -> TrainerController:
