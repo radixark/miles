@@ -6,6 +6,7 @@ import torch
 from tests.fast.rollout.test_fully_async_rollout import FakeDataSource, make_args, make_fn, make_group
 
 import miles.rollout.fully_async_rollout as fully_async
+from miles.rollout.base_types import RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.fully_async_data_buffer import DataBufferConstructorInput, DataBufferInput, DefaultDataBuffer
 from miles.utils.types import Sample
@@ -29,6 +30,50 @@ async def test_in_flight_generation_is_restored_as_a_clean_retry(monkeypatch, tm
 
     [pending] = restored._retry_buffer
     assert all(sample.response == "" for sample in pending)
+
+
+async def test_partial_batch_removed_from_buffer_remains_in_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    """A batch between buffer removal and caller return is still persisted."""
+    fn = make_fn(monkeypatch, _checkpoint_args(tmp_path), FakeDataSource())
+    fn._ensure_output()
+    group = make_group(5)
+    await fn._output.put(DataBufferInput(prompt_group=group, group=group))
+    draining = asyncio.create_task(fn._take_group(current_version=1, trainer_model_id=None))
+    await asyncio.sleep(0)
+
+    fn.save(2)
+    draining.cancel()
+    await asyncio.gather(draining, return_exceptions=True)
+    state = torch.load(fully_async.compute_fully_async_state_path(tmp_path, rollout_id=2), weights_only=False)
+
+    assert [sample.index for sample in state["output"][None][0].group] == [50, 51]
+
+
+async def test_completed_take_batch_is_restored_before_its_parent_resumes(monkeypatch, tmp_path: Path) -> None:
+    """A full batch returned by the buffer remains checkpointed until the drain coroutine receives it."""
+    args = _checkpoint_args(tmp_path)
+    fn = make_fn(monkeypatch, args, FakeDataSource())
+    fn._ensure_output()
+    group = make_group(9)
+    await fn._output.put(DataBufferInput(prompt_group=group, group=group))
+    taking = asyncio.create_task(fn._take_group(current_version=1, trainer_model_id=None))
+    await asyncio.sleep(0)
+    assert taking.done()
+
+    fn.save(6)
+    await taking
+    restored = make_fn(monkeypatch, args, FakeDataSource())
+    restored.load(6)
+    restored._ensure_output()
+    restored._worker = asyncio.create_task(asyncio.Event().wait())
+    try:
+        output = await restored._drain(RolloutFnTrainInput(rollout_id=7, weight_version=1))
+    finally:
+        restored._worker.cancel()
+        await asyncio.gather(restored._worker, return_exceptions=True)
+
+    assert [[sample.index for sample in drained] for drained in output.samples] == [[90, 91]]
+    assert restored._in_transit == {}
 
 
 async def test_aborted_group_in_retry_queue_survives_checkpoint(monkeypatch, tmp_path: Path) -> None:
