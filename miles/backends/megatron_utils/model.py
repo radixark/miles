@@ -29,6 +29,10 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.loss_hub.checkpointed_cross_entropy import (
+    SFTCheckpointedOutputContext,
+    checkpointed_sft_output_processor,
+)
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -413,6 +417,12 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+def _empty_unused_cuda_memory(args: Namespace, *, level: int) -> None:
+    """Honor Megatron's cache-release levels in the custom training loop."""
+    if getattr(args, "empty_unused_memory_level", 0) >= level:
+        torch.cuda.empty_cache()
+
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -526,6 +536,9 @@ def train_one_step(
             m.stage = "replay_forward"
 
         if return_schedule_plan:
+            assert not getattr(
+                args, "sft_checkpointed_output_projection", False
+            ), "checkpointed SFT output projection is not supported with combined 1f1b"
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
@@ -550,7 +563,16 @@ def train_one_step(
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
-            output_tensor = model(**forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss"))
+            if getattr(args, "sft_checkpointed_output_projection", False):
+                forward_kwargs.update(
+                    output_processor=checkpointed_sft_output_processor,
+                    output_processor_context=SFTCheckpointedOutputContext(
+                        args=args, batch=batch, chunk_size=args.log_probs_chunk_size
+                    ),
+                )
+                output_tensor = model(**forward_kwargs)
+            else:
+                output_tensor = model(**forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss"))
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
@@ -576,6 +598,8 @@ def train_one_step(
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
     )
+
+    _empty_unused_cuda_memory(args, level=1)
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
@@ -639,6 +663,8 @@ def train_one_step(
     # zeroed selectively inside step_adapter_slots)
     if not multi_lora:
         _zero_grads(model, optimizer, disable_optimizer)
+
+    _empty_unused_cuda_memory(args, level=2)
 
     log_structured(
         logger.info,
