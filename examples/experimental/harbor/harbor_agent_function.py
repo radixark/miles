@@ -47,6 +47,8 @@ Env vars (read on the rollout worker):
   HARBOR_VERIFIER_TIMEOUT_SEC, HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER,
   HARBOR_AGENT_ALLOWED_HOSTS
                          same meaning as on the agent server
+  HARBOR_OVERRIDE_STORAGE_MB
+                         per-sandbox disk, Harbor's ``override_storage_mb``
   MILES_ROUTER_EXTERNAL_HOST
                          host the sandbox uses to reach the session server
                          (in-sandbox agents call the model from inside the
@@ -65,6 +67,7 @@ contract lands.
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 from collections.abc import Callable
@@ -83,6 +86,11 @@ _SAFE_INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # Harbor exception class names -> the exit_status vocabulary the reward path reads.
 _TIMEOUT_EXCEPTIONS = {"AgentTimeoutError", "VerifierTimeoutError", "EnvironmentStartTimeoutError"}
 _OUTPUT_LIMIT_EXCEPTIONS = {"MaxSeqLenExceededError", "SingleTurnMaxSeqLenExceededError"}
+
+
+def _trial_timeout_s() -> int:
+    """The wall-clock cap run() puts on one trial; the longest a trial can live."""
+    return int(os.environ.get("AGENT_TRIAL_TIMEOUT", _DEFAULT_AGENT_TRIAL_TIMEOUT_S))
 
 
 def _env_flag(var: str) -> bool:
@@ -301,10 +309,27 @@ def _environment_config():
         raise ValueError("set HARBOR_ENV_TYPE to the Harbor environment type to run trials on (e.g. e2b, daytona)")
     env_type = EnvironmentType(raw)  # raises on an unknown backend instead of guessing
     kwargs = json.loads(os.getenv("HARBOR_ENV_KWARGS", "{}") or "{}")
-    override_memory_mb = _env_int("HARBOR_OVERRIDE_MEMORY_MB")
-    if override_memory_mb is not None and override_memory_mb <= 0:
-        raise ValueError("HARBOR_OVERRIDE_MEMORY_MB must be a positive integer")
-    return EnvironmentConfig(type=env_type, delete=True, override_memory_mb=override_memory_mb, kwargs=kwargs)
+    if env_type == EnvironmentType.DAYTONA:
+        # a killed worker never reaches Harbor's teardown, and Harbor's Daytona defaults (0) never reclaim;
+        # the stop timer outlasts the trial cap because an in-sandbox agent looks idle to Daytona
+        trial_min = math.ceil(_trial_timeout_s() / 60)
+        kwargs.setdefault("auto_stop_interval_mins", trial_min + 30)
+        kwargs.setdefault("auto_delete_interval_mins", 1440)
+        if int(kwargs["auto_stop_interval_mins"]) <= trial_min:
+            raise ValueError(
+                f"auto_stop_interval_mins={kwargs['auto_stop_interval_mins']} would stop a Daytona sandbox "
+                f"mid-trial: AGENT_TRIAL_TIMEOUT allows {trial_min} minutes"
+            )
+    overrides = {}
+    for field, var in (
+        ("override_memory_mb", "HARBOR_OVERRIDE_MEMORY_MB"),
+        ("override_storage_mb", "HARBOR_OVERRIDE_STORAGE_MB"),
+    ):
+        value = _env_int(var)
+        if value is not None and value <= 0:
+            raise ValueError(f"{var} must be a positive integer")
+        overrides[field] = value
+    return EnvironmentConfig(type=env_type, delete=True, kwargs=kwargs, **overrides)
 
 
 def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwargs: dict[str, Any]):
@@ -425,7 +450,7 @@ async def run(
     request_kwargs = request_kwargs or {}
     session_url = resolve_session_url(base_url)
     instance_id = metadata.get("instance_id")
-    trial_timeout_s = int(os.environ.get("AGENT_TRIAL_TIMEOUT", _DEFAULT_AGENT_TRIAL_TIMEOUT_S))
+    trial_timeout_s = _trial_timeout_s()
 
     # Config errors (missing task dir, bad env vars, unresolvable provider key)
     # fail every sample the same way; raising beats training on silent all-zero
