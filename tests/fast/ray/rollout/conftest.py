@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 import pytest
 import ray
 from sglang_router.launch_router import RouterArgs
-
 from tests.fast.fixtures.args_fixtures import parser_defaults
 
 from miles.utils import object_store
@@ -159,6 +158,7 @@ def make_args(**overrides: Any) -> Namespace:
         ci_inject_rollout_data_min_match_ratio=0.9,
         # event checkpointing (event_logger.restore/snapshot in RolloutExecutor)
         save_debug_event_data=None,
+        enable_sample_ownership_checker=False,
         load=None,
         save=None,
         # CI

@@ -32,6 +32,38 @@ def _ray_minicluster(ray_local_mode):
 
 
 class TestConvertSamplesToTrainData:
+    def test_disabled_checker_leaves_custom_converter_output_untouched(self) -> None:
+        """An unaudited converter does not need to supply witness identity columns."""
+        converted = {"custom_payload": [1, 2]}
+
+        out = convert_samples_to_train_data(
+            make_args(enable_sample_ownership_checker=False),
+            [make_sample()],
+            metadata={},
+            custom_convert_samples_to_train_data_func=lambda args, samples: converted,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out is converted
+        assert out == {"custom_payload": [1, 2]}
+
+    def test_repeated_unstamped_sample_index_remains_duplicate_identity(self):
+        """Unstamped duplicate indices remain visible as duplicate rows."""
+        args = make_args(advantage_estimator="grpo", rewards_normalization=False, enable_sample_ownership_checker=True)
+        samples = [make_sample(index=7), make_sample(index=7), make_sample(index=8)]
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["source_sample_indices"] == [7, 7, 8]
+        assert out["sample_output_indices"] == [0, 0, 0]
+        assert out["sample_output_counts"] == [1, 1, 1]
+
     def test_default_path_produces_required_keys(self):
         args = make_args(advantage_estimator="grpo", rewards_normalization=False)
         samples = make_samples_grouped(n_groups=2, group_size=4)
@@ -246,18 +278,6 @@ class TestConvertSamplesToTrainData:
         )
 
         assert out["weight_versions"] == [[[], [{"version": "v1", "abs_start": 2, "abs_end": 4}]], []]
-
-    def test_custom_convert_func_short_circuits(self):
-        args = make_args()
-        sentinel = {"foo": "bar"}
-        out = convert_samples_to_train_data(
-            args,
-            [make_sample()],
-            metadata={},
-            custom_convert_samples_to_train_data_func=lambda a, s: sentinel,
-            custom_reward_post_process_func=None,
-        )
-        assert out is sentinel
 
     def test_dynamic_global_batch_size_metadata_must_match(self):
         args = make_args(use_dynamic_global_batch_size=True, rewards_normalization=False)

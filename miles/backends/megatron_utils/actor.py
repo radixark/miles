@@ -5,6 +5,7 @@ import os
 import random
 import shutil
 from contextlib import ExitStack, nullcontext
+from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -13,6 +14,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
+from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -229,7 +231,7 @@ class MegatronTrainRayActor(TrainRayActor):
             main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
-            source_getter=self._named_actor_weights,
+            source_getter=partial(self._named_actor_weights, include_model_companion=True),
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
@@ -862,12 +864,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
 
-    def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False):
+    def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False, include_model_companion: bool = False):
         return named_params_and_buffers(
             self.args,
             self.model,
             convert_to_global_name=self.args.megatron_to_hf_mode == "raw",
             translate_gpu_to_cpu=translate_gpu_to_cpu,
+            include_model_companion=include_model_companion,
         )
 
     def _get_actor_weights(self):
@@ -875,7 +878,11 @@ class MegatronTrainRayActor(TrainRayActor):
             return dict(self._named_actor_weights(translate_gpu_to_cpu=True))
         # use cpu backup only when weight is not live on gpu
         if self.args.colocate or self._active_model_tag != "actor":
-            return self.weights_backuper.get("actor")
+            return {
+                name: tensor
+                for name, tensor in self.weights_backuper.get("actor").items()
+                if not ModelCompanionInstallationUtils.is_companion_parameter(name)
+            }
         return dict(self._named_actor_weights())
 
     @with_logs
