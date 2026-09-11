@@ -39,6 +39,8 @@ async def serve(args):
     if auto_capacity:
         # the trainer sizes its slot pool at construction: probe with one slot, rebuild at the measured count
         args.multi_lora_n_adapters = PROBE_SLOTS
+    else:
+        _cap_loaded_adapters(args)
     worker_manager = launch_worker_manager(args, trainer_only=auto_capacity)
     object_store.init_instance(args, contribute_segment=False)
 
@@ -51,12 +53,10 @@ async def serve(args):
         probe_backend = MilesBackend(probe_trainer, router_url="", dp_size=dp_size)
         probes = await probe_slot_capacity(args, probe_backend, probe_trainer, dp_size)
         args.multi_lora_n_adapters = resolve_slot_capacity(args, probes)
+        _cap_loaded_adapters(args)
         await probe_trainer.dispose()
         # fresh worker processes rebuild the pool at the resolved size; the engine specs read it from args
         await worker_manager.restart_with_specs.remote(compute_specs(args))
-    if getattr(args, "sglang_max_loaded_loras", None) is None:
-        # the engines hold every published version in host RAM otherwise; see engine_loaded_adapter_cap
-        args.sglang_max_loaded_loras = engine_loaded_adapter_cap(args.multi_lora_n_adapters)
     await inference_controller.init()
 
     trainer = _trainer_controller(args, inference_controller)
@@ -96,6 +96,13 @@ async def serve(args):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+
+
+def _cap_loaded_adapters(args) -> None:
+    """Bound the adapter versions every engine keeps in host RAM unless the flag says otherwise; the
+    engine specs snapshot args when they are computed, so this runs before them."""
+    if getattr(args, "sglang_max_loaded_loras", None) is None:
+        args.sglang_max_loaded_loras = engine_loaded_adapter_cap(args.multi_lora_n_adapters)
 
 
 def _trainer_controller(args, inference_controller) -> TrainerController:

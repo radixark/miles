@@ -48,7 +48,7 @@ async def test_engines_launch_with_the_resolved_slot_count(monkeypatch, requeste
         events.append(("restart", specs))
 
     def launch(namespace, *, trainer_only):
-        events.append(("launch", namespace.multi_lora_n_adapters, trainer_only))
+        events.append(("launch", namespace.multi_lora_n_adapters, trainer_only, namespace.sglang_max_loaded_loras))
         return SimpleNamespace(restart_with_specs=SimpleNamespace(remote=restart))
 
     async def init_engines():
@@ -62,7 +62,12 @@ async def test_engines_launch_with_the_resolved_slot_count(monkeypatch, requeste
     monkeypatch.setattr(serve_tinker, "MainProcessIdentity", lambda: None)
     monkeypatch.setattr(serve_tinker.object_store, "init_instance", lambda *a, **kw: None)
     monkeypatch.setattr(serve_tinker, "launch_worker_manager", launch)
-    monkeypatch.setattr(serve_tinker, "compute_specs", lambda namespace: ("specs", namespace.multi_lora_n_adapters))
+    # the specs snapshot args: the engine command is fixed here, not at the engines' init
+    monkeypatch.setattr(
+        serve_tinker,
+        "compute_specs",
+        lambda namespace: ("specs", namespace.multi_lora_n_adapters, namespace.sglang_max_loaded_loras),
+    )
     monkeypatch.setattr(serve_tinker, "InferenceController", lambda _: SimpleNamespace(init=init_engines))
     monkeypatch.setattr(serve_tinker, "TrainerController", Trainer)
     monkeypatch.setattr(
@@ -91,8 +96,14 @@ async def test_engines_launch_with_the_resolved_slot_count(monkeypatch, requeste
     assert configs[0].n_slots == resolved
     assert backends[-1] == (resolved, "http://10.0.0.1:30000", 2)
     if requested == -1:
-        assert events[:4] == [("launch", 1, True), ("trainer", 1), ("dispose", 1), ("restart", ("specs", 3))]
+        # the probe trainer launches alone and uncapped; the rebuilt specs carry the count and the cap
+        assert events[:4] == [
+            ("launch", 1, True, loaded_loras),
+            ("trainer", 1),
+            ("dispose", 1),
+            ("restart", ("specs", 3, cap)),
+        ]
         assert backends[0] == (1, "", 2)  # the probe backend never reaches a router
     else:
-        assert events[0] == ("launch", 4, False)
+        assert events[0] == ("launch", 4, False, cap)
         assert len(backends) == 1
