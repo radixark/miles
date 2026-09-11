@@ -12,6 +12,7 @@ from tests.fast.backends.training_utils.weight_update.test_dist_weight_update_li
     _RecordingApiClient,
 )
 
+from miles.backends.training_utils.weight_update import session as session_module
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -140,3 +141,27 @@ def test_a_failed_open_resumes_the_paused_engines():
         with pytest.raises(RuntimeError):
             updater.update_weights()
     assert "continue_generation" in _phases(calls), "no bytes moved yet, so the engines can resume serving"
+
+
+@pytest.mark.parametrize("staged", [True, False], ids=["staged-aborts", "in-place-stays-paused"])
+def test_failed_stream_cleanup_preserves_engine_visibility(monkeypatch, staged):
+    calls = []
+    monkeypatch.setattr(
+        session_module, "dist", SimpleNamespace(get_rank=lambda: 0, broadcast_object_list=lambda *a, **kw: None)
+    )
+    monkeypatch.setattr(session_module, "get_gloo_group", lambda: None)
+    monkeypatch.setattr(session_module, "pause_engines", lambda *a: calls.append("pause"))
+    monkeypatch.setattr(session_module, "resume_engines", lambda *a: calls.append("resume"))
+    monkeypatch.setattr(session_module, "begin_weight_update", lambda *a, **kw: calls.append("begin"))
+    monkeypatch.setattr(session_module, "end_weight_update", lambda *a, **kw: calls.append(("end", kw["abort"])))
+    session = session_module.EngineWeightUpdateSession(
+        SimpleNamespace(use_weight_update_session=True, rollout_engines=[]),
+        SimpleNamespace(),
+        staged=staged,
+        sync_base=not staged,
+        selector="all",
+    )
+    with pytest.raises(RuntimeError, match="stream failed"):
+        with session:
+            raise RuntimeError("stream failed")
+    assert calls == (["begin", ("end", True)] if staged else ["pause", "begin"])
