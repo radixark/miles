@@ -140,19 +140,23 @@ async def train(args):
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
-        if args.colocate_memory_peak_device == "gpu":
-            await actor_model.clear_memory()
-            if lora_rollout_enabled(args):
-                await actor_model.offload_grad_buffer()
-            await inference_controller.onload_weights()
-            await offload_train()
-        else:
-            await offload_train()
-            if args.offload_rollout:
+        # nothing generates after the last rollout, so its offload/reload/update only serves a final eval
+        if rollout_id + 1 < args.num_rollout or should_run_periodic_action(
+            rollout_id, args.eval_interval, num_rollout_per_epoch
+        ):
+            if args.colocate_memory_peak_device == "gpu":
+                await actor_model.clear_memory()
+                if lora_rollout_enabled(args):
+                    await actor_model.offload_grad_buffer()
                 await inference_controller.onload_weights()
-        await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
-        if args.offload_rollout:
-            await inference_controller.onload_kv()
+                await offload_train()
+            else:
+                await offload_train()
+                if args.offload_rollout:
+                    await inference_controller.onload_weights()
+            await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
+            if args.offload_rollout:
+                await inference_controller.onload_kv()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await inference_controller.prepare_eval()
