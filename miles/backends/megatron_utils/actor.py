@@ -17,6 +17,7 @@ from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.training_utils.checkpoint_io import NonGlobalFatalError, run_with_failure_collective
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
@@ -850,9 +851,11 @@ class MegatronTrainRayActor(TrainRayActor):
         failure = [None]
         if dist.get_rank() == 0:
             try:
-                async_utils.wait_futures(
+                results = async_utils.wait_futures(
                     [async_utils.submit(client.unload_lora_adapter(lora_name)) for client in info.rollout_engines]
                 )
+                # an engine can answer HTTP 200 with {"success": false, "error_message": ...}
+                check_weight_sync_results(results, is_lora=True)
             except Exception as error:  # noqa: BLE001
                 failure[0] = f"{type(error).__name__}: {error}"
         dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
