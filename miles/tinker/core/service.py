@@ -374,7 +374,7 @@ class TinkerService:
         if barrier.op == CommandOp.LOAD_STATE:
             return [await self._load_state(record, payload)]
         if barrier.op == CommandOp.SAVE_WEIGHTS_FOR_SAMPLER:
-            return [await self._publish_sampler_version(record, payload)]
+            return [await self._save_weights_for_sampler(record, payload)]
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
     async def _step_optimizers(self, entries: list) -> list[dict]:
@@ -452,8 +452,19 @@ class TinkerService:
             }
         return {"op": "load_state"}
 
-    async def _publish_sampler_version(self, record: ModelRecord, payload: dict) -> dict:
-        version = payload.get("sampler_path")
+    async def _save_weights_for_sampler(self, record: ModelRecord, payload: dict) -> dict:
+        version, path = await self._save_sampler_snapshot(record, payload.get("sampler_path"))
+        await self._warm_sampler_cache(record, version, path)
+        result = {
+            "op": "save_weights_for_sampler",
+            "path": f"tinker://{record.model_id}/sampler_weights/{version}",
+        }
+        if payload.get("sampler_path") is None:
+            # unnamed saves return a sampling session bound to the new version
+            result["sampling_session_id"] = self._new_sampling_session(record.tenant, result["path"])
+        return result
+
+    async def _save_sampler_snapshot(self, record: ModelRecord, version: str | None) -> tuple[str, str]:
         if version is None:
             version = str(record.next_sampler_version)
             record.next_sampler_version += 1
@@ -463,24 +474,18 @@ class TinkerService:
         if os.path.exists(os.path.join(path, "META.json")):
             # engines may already hold this name's bytes; saved versions are immutable
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
-        # export commits the version; push only warms the engine cache
         await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
         self._stamp_checkpoint_meta(path, record)
         record.published_sampler_versions.add(version)
+        return version, path
+
+    async def _warm_sampler_cache(self, record: ModelRecord, version: str, path: str) -> None:
         try:
             await self.backend.push_slot(
                 record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha, lora_path=path
             )
         except Exception:  # noqa: BLE001
-            logger.exception("adapter warm push failed; version %s will backfill from disk", version)
-        result = {
-            "op": "save_weights_for_sampler",
-            "path": f"tinker://{record.model_id}/sampler_weights/{version}",
-        }
-        if payload.get("sampler_path") is None:
-            # unnamed saves return a sampling session bound to the new version
-            result["sampling_session_id"] = self._new_sampling_session(record.tenant, result["path"])
-        return result
+            logger.exception("engine cache warmup failed; sampler snapshot %s will backfill from disk", version)
 
     def _reject_checkpoint_mismatch(self, meta: dict, record: ModelRecord, shown_path: str) -> None:
         """The tensors only keep their meaning under the config that wrote them (alpha scales them,
