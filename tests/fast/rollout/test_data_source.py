@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.rollout.data_source import DataSource, RolloutDataSource
+from miles.rollout.data_source import DataSource, LegacyRolloutDataSourceWithBuffer, RolloutDataSource
 from miles.utils.types import Sample
 
 
@@ -87,3 +87,10 @@ class _ReadOnlyDataSource(DataSource):
 
     def load(self, directory: Path) -> None:
         pass
+
+
+def test_legacy_source_rejects_checkpoint_loading(tmp_path: Path) -> None:
+    """Legacy buffered sources explicitly refuse checkpoint loading."""
+    source = LegacyRolloutDataSourceWithBuffer.__new__(LegacyRolloutDataSourceWithBuffer)
+    with pytest.raises(NotImplementedError, match="does not support checkpoint loading"):
+        source.load(tmp_path)
