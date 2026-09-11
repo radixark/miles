@@ -41,6 +41,7 @@ SGLANG_MEM_FRACTION=${SGLANG_MEM_FRACTION:-0.85}     # raise for large slot coun
 SGLANG_MAX_RUNNING_REQUESTS=${SGLANG_MAX_RUNNING_REQUESTS:-128}
 SGLANG_CUDA_GRAPH_MAX_BS=${SGLANG_CUDA_GRAPH_MAX_BS:-16}   # decode batch captured in cuda graphs; raise to let many tenants decode together
 SGLANG_MOE_RUNNER=${SGLANG_MOE_RUNNER:-triton}             # the runner that applies expert LoRA
+ENGINE_BOUND=${ENGINE_BOUND:-0}     # 1: also bound `auto` by the engines' memory (adapter buffers + KV for every slot sampling at once)
 ENABLE_THINKING=${ENABLE_THINKING:-0}           # 1: Qwen3 thinking mode (long rollouts)
 TINKER_PORT=${TINKER_PORT:-9646}
 READY_TIMEOUT=${READY_TIMEOUT:-3600}
@@ -71,6 +72,10 @@ SERVE_ARGS="--hf-checkpoint $MODEL --megatron-to-hf-mode bridge \
  --sglang-lora-backend triton --sglang-mem-fraction-static $SGLANG_MEM_FRACTION --sglang-context-length $CONTEXT_LEN \
  --sglang-max-running-requests $SGLANG_MAX_RUNNING_REQUESTS --sglang-chunked-prefill-size $CONTEXT_LEN \
  --sglang-cuda-graph-max-bs-decode $SGLANG_CUDA_GRAPH_MAX_BS --sglang-moe-runner-backend $SGLANG_MOE_RUNNER"
+if [ "$ENGINE_BOUND" = "1" ]; then
+    SERVE_ARGS="$SERVE_ARGS --multi-lora-rollout-seqs-per-slot $((PROMPTS_PER_STEP * SAMPLES_PER_PROMPT)) \
+ --multi-lora-rollout-tokens-per-seq $CONTEXT_LEN"
+fi
 e2e_submit_gateway "$(e2e_model_args "$MODEL_TYPE")" "$SERVE_ARGS"
 e2e_wait_ready
 

@@ -211,6 +211,7 @@ e2e_wait_ready() {
     log "gateway ready after $SECONDS s"
     grep -m1 "agree with predicted\|diverge from predicted" "$RUN_DIR/serve.log" | sed 's/^/[e2e] /' || true
     grep -m1 "multi-LoRA capacity" "$RUN_DIR/serve.log" | sed 's/^/[e2e] /' || log "(no capacity line: explicit slot count)"
+    grep -m1 "capacity is bound by" "$RUN_DIR/serve.log" | sed 's/^/[e2e] WARNING /' || true
 }
 
 e2e_resolved_slots() {  # the slot count the gateway ended up with
