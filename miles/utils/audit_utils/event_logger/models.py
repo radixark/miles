@@ -152,6 +152,7 @@ class IssuedSampleGroup(FrozenStrictBaseModel):
 
 class DataSourceIssuedSamplesEvent(EventBase):
     type: Literal["data_source_issued_samples"] = "data_source_issued_samples"
+    rollout_id: int | None = None
     groups: list[IssuedSampleGroup]
 
 
@@ -160,6 +161,40 @@ class ExplicitlyDroppedSamplesEvent(EventBase):
     sample_indices: list[int]
     reason: str
     rollout_id: int | None = None
+
+
+class SampleLineagePayload(FrozenStrictBaseModel):
+    source_sample_index: int
+    output_index: int
+    output_count: int
+
+
+class TrainingSampleCount(FrozenStrictBaseModel):
+    sample: SampleLineagePayload
+    count: int
+
+
+class TrainerCpuWitnessEvent(EventBase):
+    type: Literal["trainer_cpu_witness"] = "trainer_cpu_witness"
+    replica_id: str
+    rollout_id: int
+    cohort_id: str
+    sample_counts: list[TrainingSampleCount]
+    skipped_nonfinite_sample_counts: list[TrainingSampleCount]
+    reason: Literal["train_end", "current", "save", "transfer", "load"]
+
+
+class TrainerWitnessCohortEvent(EventBase):
+    type: Literal["trainer_witness_cohort"] = "trainer_witness_cohort"
+    rollout_id: int
+    cohort_id: str
+    replica_ids: list[str]
+    mature_before: datetime | None = None
+
+
+class TrainerWitnessCohortSnapshot(FrozenStrictBaseModel):
+    snapshots: list[TrainerCpuWitnessEvent]
+    marker: TrainerWitnessCohortEvent
 
 
 Event = Annotated[
@@ -174,7 +209,9 @@ Event = Annotated[
     | EngineEnvReportEvent
     | MetricEvent
     | DataSourceIssuedSamplesEvent
-    | ExplicitlyDroppedSamplesEvent,
+    | ExplicitlyDroppedSamplesEvent
+    | TrainerCpuWitnessEvent
+    | TrainerWitnessCohortEvent,
     Discriminator("type"),
 ]
 

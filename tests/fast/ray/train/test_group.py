@@ -15,7 +15,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainerWitnessCohortEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.data import RolloutDataPack
@@ -27,6 +27,110 @@ from miles.utils.workers.naming import compute_cell_id
 pytestmark = pytest.mark.asyncio
 
 _DUMMY_DATA_PACK = RolloutDataPack(sample_indices=[0], data_ref=_MooncakeStoreObjectRef(payload="data"))
+
+
+async def test_log_current_cpu_witness_collects_live_cell_snapshots(tmp_path: Path) -> None:
+    """A live snapshot writes its cohort only after every cell returns."""
+    set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+    controller = object.__new__(TrainerController)
+    controller._role = "actor"
+    controller.args = SimpleNamespace(
+        sample_ownership_grace_period_seconds=300,
+        sample_ownership_check_timeout_seconds=90,
+    )
+    controller._cells_by_id = {
+        "cell-a": SimpleNamespace(
+            cell_index=0,
+            is_alive=True,
+            execute=AsyncMock(return_value=[{"replica_id": "cell-0"}, None]),
+        ),
+        "cell-b": SimpleNamespace(
+            cell_index=1,
+            is_alive=True,
+            execute=AsyncMock(return_value=[{"replica_id": "cell-1"}, None]),
+        ),
+    }
+    controller._cpu_witness_operation_lock = asyncio.Lock()
+
+    with patch.object(group_module.uuid, "uuid4", return_value=SimpleNamespace(hex="cohort-current")):
+        cohort = await controller.log_current_cpu_witness(rollout_id=7)
+
+    assert [snapshot["replica_id"] for snapshot in cohort["snapshots"]] == ["cell-0", "cell-1"]
+    assert cohort["marker"]["cohort_id"] == "cohort-current"
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+@pytest.mark.parametrize(
+    "returned_replicas",
+    [[{"replica_id": "cell-0"}, None], [{"replica_id": "cell-0"}, {"replica_id": "cell-0"}]],
+    ids=["missing", "duplicate"],
+)
+async def test_log_current_cpu_witness_requires_exact_alive_replicas(
+    tmp_path: Path,
+    returned_replicas: list[dict[str, str] | None],
+) -> None:
+    """A missing or duplicate cell representative cannot produce a completed cohort."""
+    set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+    controller = object.__new__(TrainerController)
+    controller._role = "actor"
+    controller.args = SimpleNamespace(
+        sample_ownership_grace_period_seconds=300,
+        sample_ownership_check_timeout_seconds=90,
+    )
+    controller._cells_by_id = {
+        "cell-a": SimpleNamespace(
+            cell_index=0,
+            is_alive=True,
+            execute=AsyncMock(return_value=[returned_replicas[0]]),
+        ),
+        "cell-b": SimpleNamespace(
+            cell_index=1,
+            is_alive=True,
+            execute=AsyncMock(return_value=[returned_replicas[1]]),
+        ),
+    }
+    controller._cpu_witness_operation_lock = asyncio.Lock()
+
+    with pytest.raises(RuntimeError, match="do not match alive replicas"):
+        await controller.log_current_cpu_witness(rollout_id=7)
+
+    assert not [event for event in read_events(tmp_path) if isinstance(event, TrainerWitnessCohortEvent)]
+
+
+async def test_empty_cohort_fails_and_releases_the_train_lock(tmp_path: Path) -> None:
+    """An unavailable cohort fails this check without blocking later training."""
+    set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+    controller = object.__new__(TrainerController)
+    controller._role = "actor"
+    controller._cells_by_id = {}
+    controller._cpu_witness_operation_lock = asyncio.Lock()
+
+    with pytest.raises(AssertionError, match="without an alive trainer cell"):
+        await controller.log_current_cpu_witness(rollout_id=7)
+
+    assert not controller._cpu_witness_operation_lock.locked()
+    assert not (tmp_path / "sample_ownership_current.json").exists()
+
+
+async def test_changed_cohort_cannot_publish_a_completed_marker(tmp_path: Path) -> None:
+    """A cell lost during collection invalidates the entire current snapshot."""
+    set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+    controller = object.__new__(TrainerController)
+    controller._role = "actor"
+    controller._cpu_witness_operation_lock = asyncio.Lock()
+
+    async def collect(*args: object, **kwargs: object) -> list[str]:
+        cell.is_alive = False
+        return ["cell-0"]
+
+    cell = SimpleNamespace(cell_index=0, is_alive=True, execute=collect)
+    controller._cells_by_id = {"cell-a": cell}
+
+    with pytest.raises(AssertionError, match="cohort changed"):
+        await controller.log_current_cpu_witness(rollout_id=7)
+
+    assert not controller._cpu_witness_operation_lock.locked()
+    assert not (tmp_path / "sample_ownership_current.json").exists()
 
 
 def _make_mock_args(

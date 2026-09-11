@@ -22,6 +22,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.sample_ownership.publication import log_current_cpu_witness
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -59,7 +60,7 @@ from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
-from .initialize import RandomState, init, is_first_replica_megatron_main_rank
+from .initialize import RandomState, init, is_first_replica_megatron_main_rank, is_local_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import (
     LoadCheckpointOutput,
@@ -114,6 +115,7 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
+        self._cell_index = indep_dp_info.cell_index
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -756,6 +758,18 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
+
+    def log_current_cpu_witness(self, rollout_id: int, cohort_id: str) -> str | None:
+        assert self.role == "actor", "CPU witness snapshots are only supported for the actor"
+        assert not self.args.multi_lora, "CPU witness snapshots are not supported with multi-LoRA"
+        if not is_local_replica_megatron_main_rank():
+            return None
+        return log_current_cpu_witness(
+            self.model,
+            rollout_id=rollout_id,
+            cohort_id=cohort_id,
+            replica_id=f"cell-{self._cell_index}",
+        )
 
     @with_logs
     @timer
