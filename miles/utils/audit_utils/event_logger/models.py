@@ -145,6 +145,17 @@ class MetricEvent(EventBase):
     metrics: dict[str, Any]
 
 
+class IssuedSampleGroup(FrozenStrictBaseModel):
+    group_index: int
+    sample_indices: list[int]
+
+
+class DataSourceIssuedSamplesEvent(EventBase):
+    type: Literal["data_source_issued_samples"] = "data_source_issued_samples"
+    rollout_id: int | None = None
+    groups: list[IssuedSampleGroup]
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -155,7 +166,8 @@ Event = Annotated[
     | TrainAdvantageComputationEvent
     | EnvReportEvent
     | EngineEnvReportEvent
-    | MetricEvent,
+    | MetricEvent
+    | DataSourceIssuedSamplesEvent,
     Discriminator("type"),
 ]
 
