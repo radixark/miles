@@ -2707,6 +2707,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_ci_arguments(parser):
             parser.add_argument(
+                "--ci-inject-missing-prefetched-batch-bug",
+                action="store_true",
+                help="Discard the restored prefetched batch to test sample ownership failure detection.",
+            )
+            parser.add_argument(
                 "--ci-test",
                 action="store_true",
             )

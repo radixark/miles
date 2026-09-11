@@ -1,8 +1,17 @@
+import logging
 import os
+from datetime import timedelta
+from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
 
+from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.check import check
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.sample_ownership.store import SampleOwnershipEventStore
 from miles.utils.external_utils import command_utils
+
+logger = logging.getLogger(__name__)
 
 register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["ckpt", "fully-async"])
 
@@ -24,7 +33,7 @@ def _prepare() -> None:
     )
 
 
-def _execute(mode: str) -> None:
+def _execute(mode: str, *, missing_training_step: bool = False) -> None:
     U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     if mode == "save":
@@ -89,6 +98,9 @@ def _execute(mode: str) -> None:
     if mode == "load":
         ci_args += "--ci-check-model-hash "
 
+    if missing_training_step:
+        ci_args += "--ci-inject-missing-prefetched-batch-bug "
+
     misc_args = (
         # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
@@ -124,12 +136,37 @@ def _execute(mode: str) -> None:
     )
 
 
-def run() -> None:
+def run(*, missing_training_step: bool = False) -> None:
     _prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     _execute("save")
-    _execute("load")
+    if not missing_training_step:
+        _execute("load")
+        return
+    try:
+        _execute("load", missing_training_step=True)
+    except Exception:
+        logger.exception("Training failed; checking for the injected sample loss")
+        U = command_utils.default_config().create_backend()
+        U.exec_command_cpu(
+            "python -c 'from tests.e2e.ckpt.test_fully_async_ckpt import _assert_missing_sample; _assert_missing_sample()'"
+        )
+    else:
+        raise AssertionError("The sample ownership checker missed the injected batch loss")
+
+
+def _assert_missing_sample() -> None:
+    store = SampleOwnershipEventStore(
+        EventLogger(
+            log_dir=Path(f"/root/models/{MODEL_NAME}_miles/events"),
+            source=SimpleProcessIdentity(component="rollout_executor"),
+        )
+    )
+    snapshot = store.read_current()
+    assert snapshot is not None and snapshot.marker.mature_before is not None
+    issues = check(store.read_events(), grace_period=timedelta(), now=snapshot.marker.mature_before)
+    assert any(issue.description == "source sample had no training outcome" for issue in issues), issues
 
 
 if __name__ == "__main__":

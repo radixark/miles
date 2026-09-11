@@ -39,6 +39,9 @@ class _RolloutExecutorOutputSnapshotter:
         if (outputs := _CHECKPOINTER.load(args=self._args, rollout_id=rollout_id)) is None:
             return
         self._outputs = outputs
+        if self._args.ci_inject_missing_prefetched_batch_bug:
+            assert self._args.ci_test and self._outputs
+            self._outputs.clear()
         logger.info(f"Loaded {len(self._outputs)} untrained rollout batches")
 
 

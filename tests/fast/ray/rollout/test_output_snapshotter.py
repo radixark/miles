@@ -10,7 +10,7 @@ from miles.utils.types import Sample
 class TestRolloutExecutorOutputSnapshotter:
     def test_checkpoint_preserves_untrained_sample_outputs_and_isolates_mutations(self, tmp_path: Path) -> None:
         """All pending model-step outputs survive conversion mutations and repeated recovery."""
-        args = Namespace(save=tmp_path, load=tmp_path)
+        args = Namespace(save=tmp_path, load=tmp_path, ci_test=False, ci_inject_missing_prefetched_batch_bug=False)
         snapshotter = _RolloutExecutorOutputSnapshotter(args=args)
         samples = [Sample(index=7, tokens=[1, 2])]
         metadata = {"prompt_group_sizes": [1]}
