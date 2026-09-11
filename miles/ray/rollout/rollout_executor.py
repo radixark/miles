@@ -182,12 +182,29 @@ class RolloutExecutor:
             custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
+        terminal_drop_reason = (
+            "critic_only_warmup"
+            if self.args.enable_sample_ownership_checker
+            and self.args.use_critic
+            and rollout_id < self.args.num_critic_only_steps
+            else None
+        )
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
+            if terminal_drop_reason is not None:
+                SampleOwnershipRecorder.log_dropped_sample_indices(
+                    list(dict.fromkeys(data["lineage_source_sample_indices"])),
+                    reason=terminal_drop_reason,
+                    rollout_id=rollout_id,
+                )
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(
-                self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
+                self.args,
+                data,
+                self._train_parallel_configs_of_model_id[trainer_model_id],
+                terminal_drop_reason=terminal_drop_reason,
+                rollout_id=rollout_id,
             )
         return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
@@ -285,9 +302,11 @@ class RolloutExecutor:
                 )
             metrics = data.metrics
             data = data.samples
+            untrimmed_data = list(data)
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self._train_parallel_configs_of_model_id[trainer_model_id]
             )
+            SampleOwnershipRecorder.log_dropped_groups(untrimmed_data, data, reason="trim", rollout_id=rollout_id)
             assert_samples_weight_version_sane(self.args, samples=data)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data

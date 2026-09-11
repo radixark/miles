@@ -124,7 +124,9 @@ class TestPerPolicyKeying:
         executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id="b")
         seen: list[dict] = []
         monkeypatch.setattr(
-            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: seen.append(config)
+            rollout_executor_module,
+            "split_train_data_by_dp",
+            lambda args, data, config, *, terminal_drop_reason, rollout_id: seen.append(config),
         )
         _record_logged_model_ids(monkeypatch)
 
@@ -161,7 +163,9 @@ class TestPerPolicyKeying:
         postprocessed = _record_postprocess_configs(monkeypatch)
         split: list[dict[str, Any]] = []
         monkeypatch.setattr(
-            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: split.append(config)
+            rollout_executor_module,
+            "split_train_data_by_dp",
+            lambda args, data, config, *, terminal_drop_reason, rollout_id: split.append(config),
         )
         _record_logged_model_ids(monkeypatch)
 

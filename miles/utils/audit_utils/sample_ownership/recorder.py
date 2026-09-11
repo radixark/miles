@@ -1,6 +1,13 @@
+from collections.abc import Iterator
+from typing import Any
+
 from miles.rollout.data_source import DataSource
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, IssuedSampleGroup
+from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
+    ExplicitlyDroppedSamplesEvent,
+    IssuedSampleGroup,
+)
 from miles.utils.types import Sample
 
 
@@ -15,6 +22,53 @@ class SampleOwnershipRecorder:
             return groups
 
         data_source.get_samples = get_samples_and_record
+
+    @staticmethod
+    def log_dropped_groups(
+        before: list[Any],
+        after: list[Any],
+        *,
+        reason: str,
+        rollout_id: int | None = None,
+    ) -> None:
+        retained = {
+            SampleOwnershipRecorder._source_sample_index(sample)
+            for sample in SampleOwnershipRecorder._iter_samples(after)
+        }
+        removed = [
+            sample
+            for sample in SampleOwnershipRecorder._iter_samples(before)
+            if SampleOwnershipRecorder._source_sample_index(sample) not in retained
+        ]
+        SampleOwnershipRecorder.log_dropped_samples(removed, reason=reason, rollout_id=rollout_id)
+
+    @staticmethod
+    def log_dropped_samples(samples: list[Sample], *, reason: str, rollout_id: int | None = None) -> None:
+        if not samples or not is_event_logger_initialized():
+            return
+
+        SampleOwnershipRecorder.log_dropped_sample_indices(
+            [SampleOwnershipRecorder._source_sample_index(sample) for sample in samples],
+            reason=reason,
+            rollout_id=rollout_id,
+        )
+
+    @staticmethod
+    def log_dropped_sample_indices(
+        sample_indices: list[int],
+        *,
+        reason: str,
+        rollout_id: int | None = None,
+    ) -> None:
+        sample_indices = list(dict.fromkeys(sample_indices))
+        if not sample_indices or not is_event_logger_initialized():
+            return
+
+        get_event_logger().log(
+            ExplicitlyDroppedSamplesEvent,
+            dict(sample_indices=sample_indices, reason=reason, rollout_id=rollout_id),
+            print_log=False,
+        )
 
     @staticmethod
     def _log_issued_groups(groups: list[list[Sample]]) -> None:
@@ -35,6 +89,19 @@ class SampleOwnershipRecorder:
             dict(groups=issued_groups),
             print_log=False,
         )
+
+    @staticmethod
+    def _iter_samples(node: list[Any]) -> Iterator[Sample]:
+        for item in node:
+            if isinstance(item, Sample):
+                yield item
+            else:
+                yield from SampleOwnershipRecorder._iter_samples(item)
+
+    @staticmethod
+    def _source_sample_index(sample: Sample) -> int:
+        index = sample.lineage.source_sample_index if sample.lineage is not None else sample.index
+        return SampleOwnershipRecorder._require_identity(index, "source sample index")
 
     @staticmethod
     def _require_identity(value: int | None, name: str) -> int:

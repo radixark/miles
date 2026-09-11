@@ -7,7 +7,9 @@ import argparse
 import asyncio
 from argparse import Namespace
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -15,9 +17,19 @@ import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
+from miles.utils.audit_utils.event_logger.models import ExplicitlyDroppedSamplesEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
+
+
+@pytest.fixture
+def sample_flow_event_dir(tmp_path: Path) -> Iterator[Path]:
+    set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor")))
+    yield tmp_path
+    set_event_logger(None)
 
 
 class FakeGenerateState:
@@ -428,7 +440,7 @@ def make_buffer(max_groups=None, max_staleness=None):
         max_weight_staleness=max_staleness,
     )
     buffer = data_buffer.DefaultDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: unused.append(group))
     )
     return buffer, unused
 
@@ -442,7 +454,7 @@ async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
     """The accepted-only raw_reward is conditioned by the filter, so this mean must still see dropped groups."""
     args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
     buffer = data_buffer.DefaultDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group: None)
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
     )
 
     await put_group(buffer, make_group(1, reward=0))
@@ -452,6 +464,39 @@ async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
     assert metrics["rollout/raw_reward_unfiltered"] == 0.5
     assert metrics["rollout/dynamic_filter/drop_rejected"] == 1
     assert "rollout/raw_reward_unfiltered" not in buffer.get_metrics()
+
+
+async def test_dynamic_filter_records_the_prompt_as_explicitly_dropped(sample_flow_event_dir: Path) -> None:
+    """A rejected generated group resolves its original issued samples."""
+    args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
+    buffer = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
+    )
+
+    await put_group(buffer, make_group(1, reward=0))
+
+    [event] = read_events(sample_flow_event_dir)
+    assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+    assert event.sample_indices == [10, 11]
+    assert event.reason == "dynamic_filter"
+
+
+async def test_stale_group_reports_the_reason_to_the_unused_policy() -> None:
+    """The configured policy can distinguish stale output from aborted generation."""
+    calls: list[tuple[list[Sample], data_buffer.UnusedReason]] = []
+    args = make_args(rollout_batch_size=1, max_weight_staleness=0)
+    buffer = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(
+            args=args, unused_handler_fn=lambda group, reason: calls.append((group, reason))
+        )
+    )
+    stale = make_group(1, weight_versions=["1"])
+    fresh = make_group(2, weight_versions=["2"])
+    await put_group(buffer, stale)
+    await put_group(buffer, fresh)
+
+    assert (await buffer.get(current_version=2)).group == fresh
+    assert calls == [(stale, data_buffer.UnusedReason.STALE)]
 
 
 async def test_buffer_blocks_producer_when_full():
@@ -522,7 +567,7 @@ def make_multi_buffer(*model_ids: str, max_staleness=None, paths_per_model=None)
         custom_async_data_buffer_path_per_model=paths_per_model,
     )
     buffer = data_buffer.DefaultMultiDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: unused.append(group))
     )
     return buffer, unused
 
