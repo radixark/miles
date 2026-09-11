@@ -25,6 +25,7 @@
 : "${NODE_IPS:=}"               # comma-separated node IPs for no_proxy on a cluster
 : "${NET_IFNAME:=}"             # NCCL/GLOO socket interface on a cluster, e.g. bond0
 : "${MIN_FREE_GPUS:=0}"         # cluster mode: refuse to submit unless the cluster reports this many free GPUs
+: "${EXTERNAL_RAY_TEMP:=}"      # the cluster's ray temp dir on this (head) node; found from the raylet when empty
 : "${RUN_DIR:=$RUN_ROOT/$(date +%Y%m%d-%H%M%S)}"
 
 export MILES_E2E_FAMILY=${MILES_E2E_FAMILY:-miles-e2e-$(basename "$RUN_ROOT")}
@@ -71,6 +72,21 @@ kill_marked() {  # $1: grep pattern selecting the processes to stop by an enviro
     sleep 2
 }
 
+e2e_ray_temp() {  # cluster mode: where this node's raylet keeps the session (driver logs under session_latest/logs)
+    if [ -n "$EXTERNAL_RAY_TEMP" ]; then echo "$EXTERNAL_RAY_TEMP"; return; fi
+    pgrep -fa 'raylet' | grep -o -- '--temp_dir=[^ ]*' | head -1 | cut -d= -f2
+}
+
+e2e_sweep_cluster_nodes() {  # $1: environment-line pattern; runs e2e/sweep_node.sh on every other node through ray
+    local ip
+    [ -n "$EXTERNAL_RAY_GCS" ] && [ -n "$NODE_IPS" ] || return 0
+    for ip in ${NODE_IPS//,/ }; do
+        [ "$ip" = "$HEAD_IP" ] && continue   # this node is swept directly
+        timeout 240 ray job submit --address "$RAY_ADDRESS" --entrypoint-resources "{\"node:$ip\": 0.001}" \
+            -- bash "$REPO/e2e/sweep_node.sh" "$1" 2>&1 | grep "\[sweep" | sed 's/^/[e2e] /' || true
+    done
+}
+
 job_status() {  # the Ray Jobs REST API; the CLI's wording changes between releases
     curl -sf "$RAY_ADDRESS/api/jobs/$JOB_ID" 2>/dev/null \
         | "$PY" -c 'import json, sys; print(json.load(sys.stdin).get("status", ""))' 2>/dev/null || true
@@ -86,9 +102,7 @@ e2e_cleanup() {
     [ -n "$JOB_ID" ] && ray job stop --address "$RAY_ADDRESS" "$JOB_ID" >/dev/null 2>&1 || true
     kill_marked "^MILES_E2E_RUN=$MILES_E2E_RUN\$"
     rm -rf "$RAY_TEMP"
-    if [ -n "$EXTERNAL_RAY_GCS" ]; then
-        log "cluster run: the job is stopped and this node is swept; run e2e/sweep_node.sh MILES_E2E_RUN=$MILES_E2E_RUN on the other nodes"
-    fi
+    e2e_sweep_cluster_nodes "^MILES_E2E_RUN=$MILES_E2E_RUN\$"
     log "GPU memory after teardown (this node):"; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader -i "$GPUS" | sed 's/^/    /'
     log "logs: $RUN_DIR (serve.log, client.log, serve-command.txt)"
     if [ $rc -eq 0 ]; then log "E2E PASS"; else log "E2E FAIL (exit $rc)"; fi
@@ -107,6 +121,9 @@ e2e_preflight() {
         local gpu_line used_gpus total_gpus
         gpu_line=$(ray status --address "$EXTERNAL_RAY_GCS" 2>/dev/null | grep -E "^ *[0-9.]+/[0-9.]+ GPU" | head -1)
         [ -n "$gpu_line" ] || { log "cannot read GPU usage from the Ray cluster at $EXTERNAL_RAY_GCS"; exit 2; }
+        used_gpus=${gpu_line%%/*}; used_gpus=${used_gpus// /}; total_gpus=$(echo "$gpu_line" | sed 's#.*/\([0-9.]*\) GPU.*#\1#')
+        e2e_sweep_cluster_nodes "^MILES_E2E_RUN="
+        gpu_line=$(ray status --address "$EXTERNAL_RAY_GCS" 2>/dev/null | grep -E "^ *[0-9.]+/[0-9.]+ GPU" | head -1)
         used_gpus=${gpu_line%%/*}; used_gpus=${used_gpus// /}; total_gpus=$(echo "$gpu_line" | sed 's#.*/\([0-9.]*\) GPU.*#\1#')
         log "cluster $EXTERNAL_RAY_GCS: $used_gpus of $total_gpus GPUs in use"
         awk -v u="$used_gpus" -v t="$total_gpus" -v m="$MIN_FREE_GPUS" 'BEGIN { exit !(t - u >= m) }' \
@@ -165,7 +182,13 @@ JSON
     echo "python3 $REPO/serve_tinker.py $1 $2" > "$RUN_DIR/serve-command.txt"
     ray job submit --address "$RAY_ADDRESS" --submission-id "$JOB_ID" --runtime-env-json "$runtime_env" --no-wait \
         -- python3 "$REPO/serve_tinker.py" "${model_args_arr[@]}" $2 > "$RUN_DIR/ray-submit.log" 2>&1
-    ray job logs --address "$RAY_ADDRESS" -f "$JOB_ID" > "$RUN_DIR/serve.log" 2>&1 &
+    if [ -n "$EXTERNAL_RAY_GCS" ]; then
+        # `ray job logs -f` against a foreign dashboard streams nothing; the driver log is a file on the head node
+        local driver_log="$(e2e_ray_temp)/session_latest/logs/job-driver-$JOB_ID.log"
+        ( for _ in $(seq 1 90); do [ -f "$driver_log" ] && break; sleep 2; done; tail -n +1 -F "$driver_log" ) > "$RUN_DIR/serve.log" 2>&1 &
+    else
+        ray job logs --address "$RAY_ADDRESS" -f "$JOB_ID" > "$RUN_DIR/serve.log" 2>&1 &
+    fi
     log "gateway job $JOB_ID submitted; waiting for http://127.0.0.1:$TINKER_PORT/api/v1/healthz (timeout ${READY_TIMEOUT}s)"
 }
 
@@ -185,8 +208,11 @@ e2e_wait_ready() {
 }
 
 e2e_resolved_slots() {  # the slot count the gateway ended up with
+    local line
     if [ "$N_ADAPTERS" = "auto" ]; then
-        grep -m1 -o "multi-LoRA capacity: [0-9]* slots" "$RUN_DIR/serve.log" | grep -o "[0-9]*"
+        line=$(grep -m1 -o "multi-LoRA capacity: [0-9]* slots" "$RUN_DIR/serve.log")
+        [ -n "$line" ] || line=$(ray job logs --address "$RAY_ADDRESS" "$JOB_ID" 2>/dev/null | grep -m1 -o "multi-LoRA capacity: [0-9]* slots")
+        echo "$line" | grep -o "[0-9]*"
     else
         echo "$N_ADAPTERS"
     fi
