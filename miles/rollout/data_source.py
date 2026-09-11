@@ -2,6 +2,7 @@ import abc
 import copy
 import logging
 from pathlib import Path
+from typing import Any
 
 from miles.utils.data import Dataset
 from miles.utils.function_registry import load_function
@@ -13,8 +14,14 @@ logger = logging.getLogger(__name__)
 _CHECKPOINTER = SimpleCheckpointer(path_template="rollout/global_dataset_state_dict_{rollout_id}.pt")
 
 
-def compute_global_dataset_state_path(directory: str, *, rollout_id: int | None) -> str:
-    return str(_CHECKPOINTER.path(directory, rollout_id=rollout_id))
+def compute_global_dataset_state_path(directory: str | Path, *, rollout_id: int | None) -> Path:
+    return _CHECKPOINTER.path(directory, rollout_id=rollout_id)
+
+
+def compute_rollout_state_path(
+    directory: str | Path, *, name: str, rollout_id: int | None, suffix: str = ".pt"
+) -> Path:
+    return Path(directory) / "rollout" / f"{name}_{rollout_id}{suffix}"
 
 
 class DataSource(abc.ABC):
@@ -25,13 +32,13 @@ class DataSource(abc.ABC):
         """
 
     @abc.abstractmethod
-    def save(self, rollout_id):
+    def save(self, rollout_id: int) -> None:
         """
         Save the state of the data source
         """
 
     @abc.abstractmethod
-    def load(self, rollout_id=None):
+    def load(self, rollout_id: int | None = None) -> None:
         """
         Load the state of the data source
         """
@@ -115,34 +122,34 @@ class RolloutDataSource(DataSource):
             samples.append(group)
         return samples
 
-    def save(self, rollout_id):
-        if not self.args.rollout_global_dataset:
-            return
+    def save(self, rollout_id: int) -> None:
+        state_dict = self._state_dict()
+        _CHECKPOINTER.save(args=self.args, rollout_id=rollout_id, data=state_dict)
 
+    def load(self, rollout_id: int | None = None) -> None:
+        if (state_dict := _CHECKPOINTER.load(args=self.args, rollout_id=rollout_id)) is None:
+            return
+        self._load_state_dict(state_dict)
+
+        if self.args.rollout_global_dataset and self.args.rollout_shuffle:
+            self.dataset.shuffle(self.epoch_id)
+
+    def _state_dict(self) -> dict[str, Any]:
         state_dict = {
-            "sample_offset": self.sample_offset,
-            "epoch_id": self.epoch_id,
             "sample_group_index": self.sample_group_index,
             "sample_index": self.sample_index,
             "metadata": self.metadata,
         }
-        _CHECKPOINTER.save(args=self.args, rollout_id=rollout_id, data=state_dict)
+        if self.args.rollout_global_dataset:
+            state_dict.update(sample_offset=self.sample_offset, epoch_id=self.epoch_id)
+        return state_dict
 
-    def load(self, rollout_id=None):
-        if not self.args.rollout_global_dataset:
-            logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
-            return
-
-        if (state_dict := _CHECKPOINTER.load(args=self.args, rollout_id=rollout_id)) is None:
-            return
+    def _load_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
         self.sample_index = state_dict.get("sample_index", 0)
         self.metadata = state_dict.get("metadata", {})
-
-        if self.args.rollout_global_dataset and self.args.rollout_shuffle:
-            self.dataset.shuffle(self.epoch_id)
 
 
 class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):

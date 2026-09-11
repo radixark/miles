@@ -21,23 +21,18 @@ def _make_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**{**defaults, **overrides})
 
 
-def test_save_writes_nothing_without_a_global_dataset(tmp_path: Path) -> None:
-    """The built-in source guards itself, so the executor needs no outer guard to keep it silent."""
+def test_save_restores_sample_id_cursors_without_a_global_dataset(tmp_path: Path) -> None:
+    """Pending samples cannot collide with newly issued identities after resume."""
     source = RolloutDataSource(_make_args(save=str(tmp_path)))
+    source.sample_group_index = 7
+    source.sample_index = 21
 
     source.save(rollout_id=3)
+    restored = RolloutDataSource(_make_args(load=str(tmp_path)))
+    restored.load(rollout_id=3)
 
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_load_reads_nothing_without_a_global_dataset(tmp_path: Path) -> None:
-    """The load side has always been called unconditionally and relies on the same internal guard."""
-    source = RolloutDataSource(_make_args(load=str(tmp_path)))
-
-    source.load(rollout_id=3)
-
-    assert source.sample_offset == 0
-    assert source.epoch_id == 0
+    assert restored.sample_group_index == 7
+    assert restored.sample_index == 21
 
 
 def _bare_source(**overrides) -> RolloutDataSource:
@@ -65,16 +60,6 @@ def test_load_says_so_when_the_run_names_no_load_directory(tmp_path: Path, caplo
         source.load(rollout_id=3)
 
     assert "no --load" in caplog.text
-
-
-def test_load_says_so_when_the_run_keeps_no_global_dataset(tmp_path: Path, caplog) -> None:
-    """A custom rollout function keeps its own state, and the operator has to know this one restored none."""
-    source = _bare_source(rollout_global_dataset=False, load=str(tmp_path))
-
-    with caplog.at_level(logging.WARNING, logger="miles.rollout.data_source"):
-        source.load(rollout_id=3)
-
-    assert "rollout-global-dataset" in caplog.text
 
 
 def test_load_restores_the_state_it_finds(tmp_path: Path) -> None:
