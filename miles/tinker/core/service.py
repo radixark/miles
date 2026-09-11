@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 class ExecutorBackend:
     """Backend contract using datums and plain lists, without torch or trainer dependencies."""
 
+    def trainer_dead(self) -> bool:
+        """Whether the training workers are gone; the dispatch loop exits instead of containing."""
+        return False
+
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
     ) -> None:
@@ -433,6 +437,8 @@ class TinkerService:
                     unit = self.planner.next_to_run()
                     if unit is not None:
                         await self._run_unit_and_evict_on_failure(unit)
+                        if self.backend.trainer_dead():
+                            raise RuntimeError("the trainer workers died; exiting so clients get refused connections")
                         continue
                 await self._wake.wait()
                 self._wake.clear()
