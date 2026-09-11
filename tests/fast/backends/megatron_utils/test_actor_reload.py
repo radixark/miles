@@ -92,6 +92,7 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         record_memory_history=False,
         use_checkpoint_opt_param_scheduler=True,
         global_batch_size=1,
+        sample_ownership_grace_steps=2,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -450,3 +451,30 @@ class TestWhatAReloadRefuses:
 
         with pytest.raises(AssertionError, match="no checkpoint holds it"):
             actor.load_state()
+
+
+def test_reload_restarts_the_training_witness_grace(
+    actor_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restored actor cannot mature pending samples with its previous run's step window."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from miles.utils.audit_utils.sample_ownership.step_window import SampleOwnershipStepWindow
+
+    args = _args(tmp_path)
+    actor = _actor(actor_module, role="actor", args=args)
+    actor._sample_ownership_steps = SampleOwnershipStepWindow(2)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    actor._sample_ownership_steps.complete_step(started_at=now)
+    actor._sample_ownership_steps.complete_step(started_at=now)
+    actor._sample_ownership_last_rollout_id = 51
+    monkeypatch.setattr(actor_module, "read_checkpoint_tracker_iteration", lambda path: 50)
+    monkeypatch.setattr(actor, "_finalize_pending_async_save", lambda: None)
+    monkeypatch.setattr(
+        actor, "_load_state_core", lambda **kwargs: SimpleNamespace(loaded_rollout_id=50, start_rollout_id=51)
+    )
+
+    assert actor.load_state() == 51
+    assert actor._sample_ownership_last_rollout_id is None
+    assert actor._sample_ownership_steps.mature_before(now=now) is None

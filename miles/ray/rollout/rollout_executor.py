@@ -25,11 +25,12 @@ from miles.rollout.base_types import (
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
-from miles.utils.async_utils import maybe_await
+from miles.utils.async_utils import maybe_await, submit
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.sample_ownership.checker import SampleOwnershipChecker
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
@@ -75,6 +76,7 @@ class RolloutExecutor:
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
+        self._sample_ownership_checker = SampleOwnershipChecker(args=args)
 
     @init_once
     async def init(self) -> None:
@@ -157,8 +159,9 @@ class RolloutExecutor:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             try:
-                data, metadata, metrics = await self._get_rollout_data(
-                    rollout_id=rollout_id, trainer_model_id=trainer_model_id
+                data, metadata, metrics = await self._get_rollout_data_with_ownership_check(
+                    rollout_id=rollout_id,
+                    trainer_model_id=trainer_model_id,
                 )
             except EmptyBatchTimeoutError as e:
                 assert self.args.multi_lora, "only the multi-LoRA rollout waits for a non-empty batch"
@@ -318,6 +321,17 @@ class RolloutExecutor:
 
         return data, metadata, metrics
 
+    async def _get_rollout_data_with_ownership_check(
+        self,
+        *,
+        rollout_id: int,
+        trainer_model_id: str | None,
+    ) -> tuple[Any, Any, Any]:
+        await self._sample_ownership_checker.check(rollout_id=rollout_id)
+        return await asyncio.wrap_future(
+            submit(self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
+        )
+
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
@@ -337,6 +351,7 @@ class RolloutExecutor:
                 self.generate_rollout.load(rollout_id)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.load(rollout_id)
+        event_logger_checkpoint.restore(self.args)
 
     # -------------------------- misc APIs -----------------------------
 

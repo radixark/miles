@@ -211,6 +211,10 @@ def test_training_witness_publishes_only_normal_actor_representatives(
     actor.role = role
     actor.model = []
     actor._cell_index = 2
+    from miles.utils.audit_utils.sample_ownership.step_window import SampleOwnershipStepWindow
+
+    actor._sample_ownership_steps = SampleOwnershipStepWindow(2)
+    actor._sample_ownership_last_rollout_id = None
     calls = []
     monkeypatch.setattr(actor_module, "is_local_replica_megatron_main_rank", lambda: representative)
     monkeypatch.setattr(

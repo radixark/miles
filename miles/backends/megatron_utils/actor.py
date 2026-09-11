@@ -25,6 +25,7 @@ from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.audit_utils.sample_ownership.step_window import SampleOwnershipStepWindow
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -118,6 +119,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self._last_rollout_id: int | None = None
         self._cell_index = indep_dp_info.cell_index
+        self._sample_ownership_steps = SampleOwnershipStepWindow(args.sample_ownership_grace_steps)
+        self._sample_ownership_last_rollout_id: int | None = None
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -368,6 +371,8 @@ class MegatronTrainRayActor(TrainRayActor):
             overrider_for_loading=overrider_for_loading,
         )
         self._last_rollout_id = None
+        self._sample_ownership_steps = SampleOwnershipStepWindow(self.args.sample_ownership_grace_steps)
+        self._sample_ownership_last_rollout_id = None
 
         logger.info(f"load_state rolled this trainer back to checkpoint iteration {load_output.loaded_rollout_id}")
         return load_output.start_rollout_id
@@ -775,7 +780,10 @@ class MegatronTrainRayActor(TrainRayActor):
             or not is_local_replica_megatron_main_rank()
         ):
             return result
-        mature_before = None
+        if self._sample_ownership_last_rollout_id != rollout_id:
+            self._sample_ownership_steps.complete_step(started_at=started_at)
+            self._sample_ownership_last_rollout_id = rollout_id
+        mature_before = self._sample_ownership_steps.mature_before(now=datetime.now(timezone.utc))
         snapshot_id = SampleOwnershipRecorder.publish_cpu_witness(
             self.model,
             rollout_id=rollout_id,

@@ -182,6 +182,16 @@ this section apply only if your class reads them. The one decision that stays ou
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
 
+### Sample accounting
+
+Enable `--enable-sample-ownership-checker` to check for missing or repeated sample outcomes.
+`--ci-test` enables it automatically. `--sample-ownership-grace-steps` defaults to
+10 completed rollout training steps, or 2 in CI. Failures are logged as errors;
+CI raises them. `--sample-ownership-check-interval-seconds` controls the check cadence.
+
+The checker is disabled for FSDP, LoRA, multi-LoRA, multi-policy, train-only, and
+rollout-only runs.
+
 ## Evaluation
 
 Fully async rollout changes one thing about eval: generation is always in flight, so an

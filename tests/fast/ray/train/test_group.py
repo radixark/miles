@@ -47,6 +47,7 @@ def _make_mock_args(
         api_server_port=0,
         indep_dp=indep_dp,
         enable_witness=enable_witness,
+        sample_ownership_grace_steps=10,
         witness_buffer_size=100,
         trainer_heartbeat_checker_interval=10.0,
         trainer_heartbeat_checker_timeout=10.0,

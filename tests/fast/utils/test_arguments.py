@@ -1,7 +1,9 @@
 import argparse
 import logging
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -410,6 +412,21 @@ class TestSampleOwnershipCheckArguments:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
 
+    def test_supported_runs_get_a_run_specific_event_directory_without_enabling_gpu_witness(self) -> None:
+        """An enabled checker records evidence without requiring a debug or checkpoint directory."""
+        args = self._parse(["--enable-sample-ownership-checker", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.enable_sample_ownership_checker is True
+        assert args.enable_witness is False
+        assert args.save_debug_event_data == os.path.join(
+            tempfile.gettempdir(),
+            "miles-sample-accounting",
+            "0123456789abcdef",
+            "events",
+        )
+
     def test_the_checker_can_be_disabled_explicitly(self) -> None:
         """An explicit opt-out leaves witness collection and event storage untouched."""
         args = self._parse(["--no-enable-sample-ownership-checker"])
@@ -420,21 +437,34 @@ class TestSampleOwnershipCheckArguments:
         assert args.enable_witness is False
         assert args.save_debug_event_data is None
 
-    @pytest.mark.parametrize("ci_test,enabled", [(False, False), (True, True)])
-    def test_ci_enables_the_checker(self, ci_test: bool, enabled: bool) -> None:
+    @pytest.mark.parametrize("ci_test,enabled,grace_steps", [(False, False, 10), (True, True, 2)])
+    def test_ci_enables_the_checker_with_a_shorter_step_grace(
+        self, ci_test: bool, enabled: bool, grace_steps: int
+    ) -> None:
         """CI automatically enables checking while ordinary runs opt in."""
         args = self._checker_args(ci_test=ci_test, enable_sample_ownership_checker=False)
 
         _resolve_sample_ownership_check(args)
 
         assert args.enable_sample_ownership_checker is enabled
+        assert args.sample_ownership_grace_steps == grace_steps
+
+    def test_an_explicit_step_grace_is_preserved_in_ci(self) -> None:
+        """CI defaults do not overwrite an explicitly configured grace period."""
+        args = self._checker_args(ci_test=True, sample_ownership_grace_steps=7)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.sample_ownership_grace_steps == 7
 
     @staticmethod
     def _checker_args(**overrides) -> SimpleNamespace:
         values = dict(
             enable_sample_ownership_checker=True,
             custom_convert_samples_to_train_data_path=None,
+            sample_ownership_grace_steps=None,
             ci_test=False,
+            sample_ownership_check_interval_seconds=30.0,
             train_backend="megatron",
             lora_rank=0,
             lora_adapter_path=None,
@@ -483,6 +513,20 @@ class TestSampleOwnershipCheckArguments:
         _resolve_sample_ownership_check(args)
 
         assert args.enable_sample_ownership_checker is False
+
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [
+            ("--sample-ownership-grace-steps", "-1"),
+            ("--sample-ownership-check-interval-seconds", "0"),
+        ],
+    )
+    def test_invalid_timing_is_rejected(self, flag: str, value: str) -> None:
+        """Invalid timing cannot turn a required periodic check into a dormant task."""
+        args = self._checker_args(**{flag.removeprefix("--").replace("-", "_"): float(value)})
+
+        with pytest.raises(ValueError, match=flag):
+            _resolve_sample_ownership_check(args)
 
 
 class TestMaybeApplyDumperOverrides:
