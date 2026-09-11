@@ -68,6 +68,14 @@ except Exception as _e:  # best-effort; Qwen3-VL may be unavailable in some envs
     logger.warning("miles Qwen3-VL THD packed mRoPE patch not applied: %s", _e)
 
 
+try:
+    from miles_plugins.megatron_bridge.canonical_lora_gated_qkv import install_canonical_lora_gated_qkv_patch
+
+    install_canonical_lora_gated_qkv_patch()
+except Exception as _e:  # best-effort
+    logger.warning("miles bridge shim install_canonical_lora_gated_qkv_patch not applied: %s", _e)
+
+
 # Model-specific bridge subclasses. Each submodule self-installs on import.
 # Keep imports here so merely importing ``miles_plugins.megatron_bridge`` is
 # enough to pick up every miles bridge (mirrors ``miles_plugins.mbridge``).
