@@ -3,6 +3,7 @@ import random
 from builtins import ExceptionGroup
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from tests.fast.utils.soak.utils import AsyncStubFaultForm, typed_cell
 from tests.utils.soak.action import SoakActionError
@@ -19,6 +20,68 @@ from tests.utils.soak.state import (
     SoakObservation,
 )
 from tests.utils.soak.views import compute_num_successful_injections_of_form
+
+
+@pytest.mark.parametrize("stop_during_read", [False, True])
+async def test_transient_reads_and_action_failures_preserve_progress_and_stop_order(
+    monkeypatch: pytest.MonkeyPatch, stop_during_read: bool
+) -> None:
+    """Retry unavailable observations and refused actions, but never dispatch after a stop observed during reading."""
+    stop = asyncio.Event()
+    log = EventLog()
+    reads = 0
+    attempts = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal reads
+        reads += 1
+        if reads == 1 and not stop_during_read:
+            return httpx.Response(503)
+        if stop_during_read:
+            stop.set()
+        return httpx.Response(200, json={"items": [typed_cell(f"actor-{i}", "actor") for i in range(3)]})
+
+    async def execute(request: SoakActionRequest) -> dict:
+        stored = [
+            event.request
+            for event in log.events
+            if isinstance(event, SoakActionRequestedEvent) and event.request.request_id == request.request_id
+        ]
+        assert stored == [request]
+        assert not any(
+            isinstance(event, SoakActionResultEvent) and event.request_id == request.request_id for event in log.events
+        )
+        attempts.append(request.request_id)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("fault request refused")
+        stop.set()
+        return {"request_id": request.request_id}
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs)
+    )
+    forms = {"actor": [AsyncStubFaultForm(name="fault", execute=execute)]}
+    runner = SoakRunner(
+        observer=SoakObserver(base_url="http://control", cell_types={"actor"}),
+        scheduler=SoakActionScheduler(rng=random.Random(0), mean_intervals={"actor": 1e-12}, forms=forms),
+        forms=forms,
+        event_log=log,
+        poll_interval_seconds=0,
+    )
+    async with asyncio.timeout(5):
+        await runner.run(stop)
+    results = [event for event in log.events if isinstance(event, SoakActionResultEvent)]
+    applied = [event for event in log.events if isinstance(event, SoakActionAppliedEvent)]
+    if stop_during_read:
+        assert not attempts and not results and not applied
+    else:
+        assert len(attempts) == 2
+        assert [event.request_id for event in results] == attempts
+        assert [event.returned for event in results] == [False, True]
+        assert [event.request_id for event in applied] == [attempts[1]]
+        assert any(isinstance(event, SoakObservation) and event.cells is None for event in log.events)
+    assert isinstance(log.events[-1], SoakObservation)
 
 
 async def test_failed_action_retains_partial_evidence_without_becoming_applied() -> None:

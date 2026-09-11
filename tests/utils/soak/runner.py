@@ -18,7 +18,6 @@ from tests.utils.soak.state import (
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakAdmissionClosedEvent,
-    SoakDeploymentTarget,
     SoakObservation,
     target_type_of,
 )
@@ -90,6 +89,7 @@ class SoakRunner:
         async with asyncio.TaskGroup() as actions:
             while not stop_event.is_set():
                 await asyncio.sleep(self._poll_interval_seconds)
+                # Record every poll so the post-run witnesses see the same stream the injector saw.
                 await self._observe_and_record(timeout_seconds=self._timeouts.observation_seconds)
                 if stop_event.is_set():
                     return
@@ -169,17 +169,3 @@ class SoakRunner:
                         error="Cancelled before execution",
                     )
                 )
-
-
-def _has_pending_action(events: list[Event]) -> bool:
-    pending: dict[str, SoakActionRequest] = {}
-    for event in events:
-        if isinstance(event, SoakActionRequestedEvent):
-            pending[event.request.request_id] = event.request
-        elif isinstance(event, SoakActionResultEvent):
-            pending.pop(event.request_id, None)
-        elif isinstance(event, SoakActionAppliedEvent):
-            request = pending.get(event.request_id)
-            if request is not None and isinstance(request.target, SoakDeploymentTarget):
-                del pending[event.request_id]
-    return bool(pending)

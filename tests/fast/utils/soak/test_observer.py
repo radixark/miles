@@ -33,6 +33,6 @@ async def test_failed_and_empty_reads_have_different_evidence(monkeypatch: pytes
     scheduler = core.SoakActionScheduler(
         rng=random.Random(0),
         mean_intervals={"actor": 1.0},
-        forms={"actor": [StubFaultForm("fault", lambda cell, rng: None)]},
+        forms={"actor": [StubFaultForm("fault")]},
     )
     assert scheduler.choose(events=log.events, now=10.0) is None

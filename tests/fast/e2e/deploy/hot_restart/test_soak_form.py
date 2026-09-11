@@ -23,6 +23,52 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_typ
 from miles.utils.workers.types import ClusterBackend
 
 
+@pytest.mark.parametrize("outcome", ["early_success", "early_failure", "cancelled", "timeout"])
+async def test_unconfirmed_takeover_never_records_an_applied_effect(tmp_path: Path, outcome: str) -> None:
+    """An early exit or an interrupted wait cannot turn unchanged workloads into an applied takeover."""
+    config = ExecuteTrainConfig(run_id="demo", namespace="rl", cluster_backend=ClusterBackend.KUBERNETES)
+    release = compute_release_of_config(config)
+    target = SoakDeploymentTarget(
+        namespace=config.namespace,
+        release=release,
+        workload_stamps={name: "before" for name in compute_hot_restart_workloads(release)},
+        workload_uids={},
+        saved_iteration=2,
+        finished_rollout_id=3,
+    )
+    request = SoakActionRequest(target=target, form_name="hot_restart", harms_cell=False)
+    log = EventLog()
+    log.note_action_requested(request)
+    log.note_observation(SoakObservation(cells=[], deployments=[target]))
+    form = soak_form.SoakActionFormHotRestart(
+        launch_spec=Gsm8kLaunchSpec(config=config, train_args="", fully_async=False),
+        event_log=log,
+        log_dir=tmp_path,
+        max_allowed_rollout_id=234,
+        poll_interval_seconds=0,
+    )
+    launcher = asyncio.get_running_loop().create_future()
+    if outcome.startswith("early_"):
+        launcher.set_result(0 if outcome == "early_success" else 1)
+    waiting = asyncio.create_task(form._wait_for_take_over(request=request, launcher=launcher))
+    try:
+        if outcome == "cancelled":
+            await asyncio.sleep(0)
+            waiting.cancel()
+        error = (
+            AssertionError
+            if outcome.startswith("early_")
+            else asyncio.CancelledError if outcome == "cancelled" else TimeoutError
+        )
+        with pytest.raises(error):
+            await asyncio.wait_for(waiting, timeout=0.05)
+        assert not any(isinstance(event, SoakActionAppliedEvent) for event in log.events)
+    finally:
+        launcher.cancel()
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+
+
 @pytest.mark.parametrize("exit_code", [0, 1])
 def test_applied_take_over_is_visible_before_launcher_finishes_and_late_failure_is_not_lost(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exit_code: int

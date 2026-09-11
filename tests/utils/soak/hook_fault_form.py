@@ -158,9 +158,6 @@ class HookFaultForm(InjectFaultForm):
                         exc_info=True,
                     )
 
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        raise NotImplementedError("Hook injection requires an observed asynchronous request")
-
     async def _execute_victims(self, request: SoakActionRequest) -> dict:
         assert self._victim_form is not None
         assert request.hook_trigger is not None

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from tests.utils.soak.config import SoakPolicy, SoakTailPolicy, SoakTimeouts
-from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler, list_cells, run_fault_injection_loop
+from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler
 from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
 from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.observer import SoakObserver
@@ -34,8 +34,6 @@ class FaultInjectorHandle:
         seed: int,
         mean_interval_seconds_of_cell_type: dict[str, float],
         cell_fault_forms: CellFaultForms,
-        get_virtual_cells: Callable[[], list[dict]] | None = None,
-        injection_enabled: Callable[[], bool] | None = None,
         poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
         namespace: str | None = None,
         release: str | None = None,
@@ -53,9 +51,7 @@ class FaultInjectorHandle:
         if evidence_path is not None:
             self.event_log.persist_to(evidence_path)
         self.cell_fault_forms = cell_fault_forms
-        self._base_url = base_url
         self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
-        self._get_virtual_cells: Callable[[], list[dict]] | None = get_virtual_cells
         target_forms = {
             kind: [
                 form.victim_form if isinstance(form, HookFaultForm) and form.victim_form is not None else form
@@ -74,61 +70,43 @@ class FaultInjectorHandle:
             for form in cell_fault_forms[kind]
         ):
             fault_target_types.add("actor")
-        self._runner = (
-            SoakRunner(
-                observer=(
-                    observer
-                    if observer is not None
-                    else SoakObserver(
-                        base_url=base_url,
-                        cell_types=self._cell_types | fault_target_types,
-                        namespace=namespace,
-                        release=release,
-                        fault_target_cell_types=frozenset(fault_target_types),
-                        process_patterns_of_type={
-                            kind: {
-                                container: pattern
-                                for form in target_forms[kind]
-                                if isinstance(form, ExecSigkillFaultForm)
-                                for container, pattern in form.process_patterns.items()
-                            }
-                            for kind in self._cell_types
-                        },
-                    )
-                ),
-                scheduler=SoakActionScheduler(
-                    rng=random.Random(seed),
-                    mean_intervals=mean_interval_seconds_of_cell_type,
-                    forms=cell_fault_forms,
-                    injection_enabled=injection_enabled,
-                    policy=policy,
-                ),
-                forms={kind: cell_fault_forms[kind] for kind in self._cell_types},
-                event_log=self.event_log,
-                poll_interval_seconds=poll_interval_seconds,
-                training_events_dir=training_events_dir,
-                tail_policy=tail_policy,
-                timeouts=self.timeouts,
-            )
-            if get_virtual_cells is None
-            else None
+        self._runner = SoakRunner(
+            observer=(
+                observer
+                if observer is not None
+                else SoakObserver(
+                    base_url=base_url,
+                    cell_types=self._cell_types | fault_target_types,
+                    namespace=namespace,
+                    release=release,
+                    fault_target_cell_types=frozenset(fault_target_types),
+                    process_patterns_of_type={
+                        kind: {
+                            container: pattern
+                            for form in target_forms[kind]
+                            if isinstance(form, ExecSigkillFaultForm)
+                            for container, pattern in form.process_patterns.items()
+                        }
+                        for kind in self._cell_types
+                    },
+                )
+            ),
+            scheduler=SoakActionScheduler(
+                rng=random.Random(seed),
+                mean_intervals=mean_interval_seconds_of_cell_type,
+                forms=cell_fault_forms,
+                policy=policy,
+            ),
+            forms={kind: cell_fault_forms[kind] for kind in self._cell_types},
+            event_log=self.event_log,
+            poll_interval_seconds=poll_interval_seconds,
+            training_events_dir=training_events_dir,
+            tail_policy=tail_policy,
+            timeouts=self.timeouts,
         )
 
         def inject_until_stopped(stop_event: threading.Event) -> None:
-            if self._runner is not None:
-                asyncio.run(self._run_async(stop_event))
-                return
-            run_fault_injection_loop(
-                base_url=base_url,
-                seed=seed,
-                mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
-                stop_event=stop_event,
-                event_log=self.event_log,
-                cell_fault_forms=cell_fault_forms,
-                get_virtual_cells=get_virtual_cells,
-                injection_enabled=injection_enabled,
-                poll_interval_seconds=poll_interval_seconds,
-            )
+            asyncio.run(self._run_async(stop_event))
 
         self._worker = PollingWorker(name="ft-random-fault-injector", run=inject_until_stopped)
 
@@ -166,8 +144,6 @@ class FaultInjectorHandle:
             )
             try:
                 self._worker.join(timeout_seconds=0)
-                if self._runner is None:
-                    self._observe_final_snapshot()
             finally:
                 try:
                     if teardown is not None:
@@ -181,7 +157,6 @@ class FaultInjectorHandle:
             await asyncio.sleep(0.05)
 
     async def _run_async(self, stop_event: threading.Event) -> None:
-        assert self._runner is not None
         stopped = asyncio.Event()
         async with asyncio.TaskGroup() as tasks:
             forwarding = tasks.create_task(_forward_stop(source=stop_event, target=stopped))
@@ -190,14 +165,6 @@ class FaultInjectorHandle:
             finally:
                 forwarding.cancel()
 
-    def _observe_final_snapshot(self) -> None:
-        cells = list_cells(base_url=self._base_url, cell_types=self._cell_types)
-        if cells is None:
-            return
-        if self._get_virtual_cells is not None:
-            cells.extend(self._get_virtual_cells())
-        self.event_log.observe(cells)
-
 
 def spawn_fault_injector(
     *,
@@ -205,8 +172,6 @@ def spawn_fault_injector(
     seed: int,
     mean_interval_seconds_of_cell_type: dict[str, float],
     cell_fault_forms: CellFaultForms,
-    get_virtual_cells: Callable[[], list[dict]] | None = None,
-    injection_enabled: Callable[[], bool] | None = None,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
     config: ExecuteTrainConfig | None = None,
     event_log: EventLog | None = None,
@@ -230,8 +195,6 @@ def spawn_fault_injector(
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=cell_fault_forms,
-        get_virtual_cells=get_virtual_cells,
-        injection_enabled=injection_enabled,
         poll_interval_seconds=poll_interval_seconds,
         namespace=config.namespace if use_kubernetes else None,
         release=(

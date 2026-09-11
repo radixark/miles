@@ -30,7 +30,7 @@ def test_replacement_can_be_faulted_before_recovery_only_when_the_scenario_allow
     policy = SoakPolicy(
         cell_policies={"actor": SoakCellPolicy(expected_cells=2, allow_during_recovery=allow_during_recovery)}
     )
-    forms = {"actor": [StubFaultForm("kill", lambda cell, rng: None)]}
+    forms = {"actor": [StubFaultForm("kill")]}
     scheduler = SoakActionScheduler(rng=random.Random(0), mean_intervals={"actor": 1}, forms=forms, policy=policy)
     events = [
         SoakScheduleEvent(due_of_type={"actor": 0}, policy=policy),
@@ -86,7 +86,7 @@ def test_zero_survivor_policy_can_target_one_cell_but_unready_rollout_is_not_a_s
 
 def test_scheduler_allows_configured_overlap_and_reserves_each_pending_target() -> None:
     """Two concurrent actions target distinct incarnations while preserving the last healthy cell."""
-    forms = {"actor": [StubFaultForm("kill", lambda cell, rng: None)]}
+    forms = {"actor": [StubFaultForm("kill")]}
     policy = SoakPolicy(max_concurrent_actions=2)
     scheduler = SoakActionScheduler(rng=random.Random(0), mean_intervals={"actor": 1}, forms=forms, policy=policy)
     cells = [typed_cell(f"actor-{i}", "actor") for i in range(3)]

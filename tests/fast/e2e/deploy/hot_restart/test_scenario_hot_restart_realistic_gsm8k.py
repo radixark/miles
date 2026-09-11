@@ -110,7 +110,9 @@ class TestIntermediateCheckpoints:
                 cells=[], deployments=[after.model_copy(update={"saved_iteration": saved, "finished_rollout_id": 235})]
             )
         )
-        assert form.is_within_injection_window() is (saved == 234)
+        assert form.is_eligible(events=run.event_log.events, target=run.event_log.events[-1].deployments[0]) is (
+            saved == 234
+        )
 
     @pytest.mark.parametrize("second_saved", [None, 233, 234])
     def test_the_final_verdict_requires_two_applied_takeovers_separated_by_a_new_checkpoint(
@@ -149,7 +151,7 @@ class TestTheInjectionPlan:
         [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)["deployment"]
         run.event_log.note_observation(SoakObservation(cells=[], deployments=[_deployment(finished=233)]))
 
-        assert form.is_within_injection_window()
+        assert form.is_eligible(events=run.event_log.events, target=_deployment(finished=233))
 
     def test_deployment_becomes_ineligible_at_the_closing_window(self):
         """Completing rollout 234 leaves all of 235-249 free of new take-overs."""
@@ -157,7 +159,7 @@ class TestTheInjectionPlan:
         [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)["deployment"]
         run.event_log.note_observation(SoakObservation(cells=[], deployments=[_deployment(finished=234)]))
 
-        assert not form.is_within_injection_window()
+        assert not form.is_eligible(events=run.event_log.events, target=_deployment(finished=234))
 
     def test_one_real_deployment_is_sufficient_without_borrowing_ft_cells(self):
         """Hot restart targets the actual deployment and needs no imaginary spare cell."""

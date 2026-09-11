@@ -88,11 +88,9 @@ def run_realistic_gsm8k(
     mean_interval_seconds_of_cell_type: dict[str, float],
     create_forms: CreateCellFaultFormsFn,
     build_extra_train_args: Callable[[str], str],
-    get_virtual_cells: Callable[[], list[dict]] | None = None,
     enable_fault_tolerance: bool = True,
     create_observer: Callable[[Gsm8kRun], SoakObserver] | None = None,
     execute_session: Callable[[Gsm8kRun, FaultInjectorHandle], None] | None = None,
-    injection_enabled: Callable[[], bool] | None = None,
     policy: SoakPolicy | None = None,
 ) -> Gsm8kOutcome:
     config = create_soak_config(config)
@@ -156,12 +154,10 @@ def run_realistic_gsm8k(
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=create_forms(run),
-        get_virtual_cells=get_virtual_cells,
         event_log=run.event_log,
         evidence_path=run.evidence_dir / "events.jsonl",
         sources={"training_events": run.events_dir, "launch_config": storage_dir},
         observer=create_observer(run) if create_observer is not None else None,
-        injection_enabled=injection_enabled,
     )
 
     try:

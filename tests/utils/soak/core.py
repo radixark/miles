@@ -1,28 +1,20 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
-import logging
 import random
-import threading
 import time
-from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
-
-import requests
 from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.config import SoakCellPolicy, SoakPolicy
-from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms, ExecSigkillFaultForm
+from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
 from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.policy import eligible_cells, pending_actions
 from tests.utils.soak.sender_assignment import choose_sender_batch
 from tests.utils.soak.state import (
     Event,
-    EventLog,
     ObservationsEvent,
     SoakActionRequest,
     SoakActionRequestedEvent,
-    SoakActionResultEvent,
     SoakAdmissionClosedEvent,
     SoakDeploymentTarget,
     SoakObservation,
@@ -37,70 +29,11 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import TrainGroupStepEndEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
-logger = logging.getLogger(__name__)
-
 POLL_INTERVAL_SECONDS: float = 2.0
 
 
 def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: float) -> float:
     return time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
-
-
-def run_fault_injection_loop(
-    *,
-    base_url: str,
-    seed: int,
-    mean_interval_seconds_of_cell_type: dict[str, float],
-    stop_event: threading.Event,
-    event_log: EventLog,
-    cell_fault_forms: CellFaultForms,
-    get_virtual_cells: Callable[[], list[dict]] | None = None,
-    injection_enabled: Callable[[], bool] | None = None,
-    poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
-) -> None:
-    rng = random.Random(seed)
-    observer = _SynchronousObserver(
-        base_url=base_url, cell_types=set(mean_interval_seconds_of_cell_type), get_virtual_cells=get_virtual_cells
-    )
-    scheduler = SoakActionScheduler(
-        rng=rng,
-        mean_intervals=mean_interval_seconds_of_cell_type,
-        forms=cell_fault_forms,
-        injection_enabled=injection_enabled,
-    )
-    event_log.note_schedule(scheduler.initial_schedule())
-
-    while not stop_event.is_set():
-        if stop_event.wait(timeout=poll_interval_seconds):
-            break
-
-        cells = observer.observe()
-        if cells is None:
-            continue
-
-        # Record every poll so the post-run witnesses see the same stream the injector saw.
-        event_log.observe(cells)
-
-        if stop_event.is_set():
-            break
-
-        if (action := scheduler.choose(events=event_log.events, now=time.monotonic())) is not None:
-            _execute_action(action=action, forms=cell_fault_forms, rng=rng, event_log=event_log)
-
-
-@dataclass(frozen=True)
-class _SynchronousObserver:
-    base_url: str
-    cell_types: set[str]
-    get_virtual_cells: Callable[[], list[dict]] | None = None
-
-    def observe(self) -> list[dict] | None:
-        cells = list_cells(base_url=self.base_url, cell_types=self.cell_types)
-        if cells is None:
-            return None
-        if self.get_virtual_cells is not None:
-            cells.extend(self.get_virtual_cells())
-        return cells
 
 
 class SoakActionScheduler:
@@ -110,13 +43,11 @@ class SoakActionScheduler:
         rng: random.Random,
         mean_intervals: dict[str, float],
         forms: CellFaultForms,
-        injection_enabled: Callable[[], bool] | None = None,
         policy: SoakPolicy | None = None,
     ) -> None:
         self._rng = rng
         self._mean_intervals = mean_intervals
         self._forms = forms
-        self._injection_enabled = injection_enabled
         self.policy = policy if policy is not None else SoakPolicy()
         if set(self.policy.cell_policies) - set(mean_intervals):
             raise ValueError("Cell policies must name scheduled cell types")
@@ -221,7 +152,7 @@ class SoakActionScheduler:
             if len(targets) != policy.expected_cells or len(targets) < 2:
                 return None
         target = self._rng.choice(targets)
-        if self._injection_enabled is not None and not self._injection_enabled():
+        if not form.is_eligible(events=events, target=target):
             return None
         hook_trigger = None
         target_form = form
@@ -318,43 +249,9 @@ def _build_observed_request(
     )
 
 
-def _execute_action(
-    *, action: SoakActionRequest, forms: CellFaultForms, rng: random.Random, event_log: EventLog
-) -> None:
-    assert isinstance(action.target, dict), "The synchronous bridge only supports cell targets"
-    matching = [form for form in forms[cell_type_of(action.target)] if form.name == action.form_name]
-    assert len(matching) == 1, f"Expected one form named {action.form_name}, found {len(matching)}"
-    form = matching[0]
-    cell_name = action.target["metadata"]["name"]
-    request = action
-    if not event_log.note_action_requested(request):
-        return
-    try:
-        form.inject(action.target, rng)
-    except Exception as error:
-        event_log.note_action_result(
-            SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
-        )
-        logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
-        return
-
-    event_log.note_action_result(SoakActionResultEvent(request_id=request.request_id, returned=True))
-    logger.info("Injected fault %s into %s", form.name, cell_name)
-
-
 def _draw_form(
-    forms: list[BaseFaultForm], *, events: list[Event], cell_type: str, rng: random.Random
-) -> BaseFaultForm:
+    forms: list[SoakActionForm], *, events: list[Event], cell_type: str, rng: random.Random
+) -> SoakActionForm:
     worked = compute_successful_form_names(events, cell_type=cell_type)
     unproven = [form for form in forms if form.name not in worked]
     return rng.choice(unproven or forms)
-
-
-def list_cells(*, base_url: str, cell_types: set[str]) -> list[dict] | None:
-    try:
-        resp = requests.get(f"{base_url}/api/v1/cells", timeout=5)
-        resp.raise_for_status()
-        return [c for c in resp.json()["items"] if cell_type_of(c) in cell_types]
-    except Exception:
-        logger.info("Failed to list cells from api server", exc_info=True)
-        return None

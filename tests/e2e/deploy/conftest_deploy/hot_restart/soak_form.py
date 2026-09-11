@@ -1,5 +1,4 @@
 import asyncio
-import random
 from pathlib import Path
 
 from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
@@ -14,9 +13,9 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.guarded_launcher import HotRestartLaunchSpec
 from tests.utils.soak.action import SoakActionForm
-from tests.utils.soak.fault_forms import BaseFaultForm
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
 from tests.utils.soak.state import (
+    Event,
     EventLog,
     SoakActionAppliedEvent,
     SoakActionRequest,
@@ -29,7 +28,7 @@ from tests.utils.soak.state import (
 SESSION_TIMEOUT_SECONDS: float = 6 * 3600
 
 
-class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
+class SoakActionFormHotRestart(SoakActionForm):
     def __init__(
         self,
         *,
@@ -55,12 +54,9 @@ class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
     def harms_cell(self) -> bool:
         return False
 
-    def is_within_injection_window(self) -> bool:
-        events = self._event_log.events
-        observation = next((event for event in reversed(events) if isinstance(event, SoakObservation)), None)
-        if observation is None or len(observation.deployments) != 1:
+    def is_eligible(self, *, events: list[Event], target: dict | SoakDeploymentTarget) -> bool:
+        if not isinstance(target, SoakDeploymentTarget):
             return False
-        target = observation.deployments[0]
         progress = target.finished_rollout_id
         if progress is None or progress >= self._max_allowed_rollout_id or target.saved_iteration is None:
             return False
@@ -115,9 +111,6 @@ class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
             if not launcher.done():
                 launcher.cancel()
             await asyncio.gather(launcher, return_exceptions=True)
-
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        raise AssertionError("Hot restart must run through the async soak runner")
 
     async def _launch(self, *, request: SoakActionRequest, spec: Gsm8kLaunchSpec, log_path: Path) -> int:
         result = await launch(

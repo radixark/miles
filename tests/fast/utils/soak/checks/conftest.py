@@ -143,6 +143,7 @@ def batch_remote_hook_evidence(remote_hook_evidence: HookEvidence) -> HookEviden
     child = request.model_copy(
         update={
             "request_id": "second-victim",
+            "form_name": "inject_fault:sigkill",
             "target": typed_cell("rollout-2", "rollout"),
             "fault_target": FaultTarget(cell_id="rollout-2", sub_index=0, workers_hash="generation-0"),
         }

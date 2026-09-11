@@ -93,8 +93,6 @@ def run_ci(
         create_forms=create_forms,
         create_observer=_create_observer,
         execute_session=execute_hot_restart_session,
-        injection_enabled=lambda: hot_restart_form.value is not None
-        and hot_restart_form.value.is_within_injection_window(),
         build_extra_train_args=lambda dump_dir: _build_train_args(dump_dir, wandb_run_id=config.run_id),
         enable_fault_tolerance=False,
     )

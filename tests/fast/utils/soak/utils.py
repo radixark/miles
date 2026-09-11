@@ -1,9 +1,7 @@
-import contextlib
-import random
-from collections.abc import Awaitable, Callable, Iterator
-from unittest.mock import MagicMock, patch
+from collections.abc import Awaitable, Callable
+from unittest.mock import MagicMock
 
-from tests.utils.soak import core, fault_forms, state
+from tests.utils.soak import fault_forms, state
 from tests.utils.soak.action import SoakActionForm
 
 from miles.utils.external_utils import command_utils
@@ -16,15 +14,6 @@ def note_injected(log: state.EventLog, cell_name: str) -> None:
         form_name="sigkill",
         succeeded=True,
     )
-
-
-@contextlib.contextmanager
-def patched_requests() -> Iterator[MagicMock]:
-    # the loop lists cells through core and injects through fault_forms, so a mock on core alone
-    # leaves every injection reaching the real network and timing out against a host nobody serves
-    mock_requests = MagicMock()
-    with patch.object(core, "requests", mock_requests), patch.object(fault_forms, "requests", mock_requests):
-        yield mock_requests
 
 
 NAMESPACE = "miles-e2e"
@@ -123,20 +112,19 @@ def api_server_fault_forms() -> fault_forms.CellFaultForms:
     return fault_forms.create_cell_fault_forms(base_url="http://control", config=config_of(ClusterBackend.RAY))
 
 
-class StubFaultForm(fault_forms.BaseFaultForm):
-    def __init__(self, form_name: str, on_inject: Callable[[dict, random.Random], None]) -> None:
+class StubFaultForm(SoakActionForm):
+    def __init__(self, form_name: str) -> None:
         self._name = form_name
-        self._on_inject = on_inject
 
     @property
     def name(self) -> str:
         return self._name
 
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        self._on_inject(cell, rng)
+    async def execute(self, request: state.SoakActionRequest) -> dict | None:
+        raise AssertionError("This scheduler fixture must not execute actions")
 
 
-class AsyncStubFaultForm(fault_forms.BaseFaultForm, SoakActionForm):
+class AsyncStubFaultForm(SoakActionForm):
     def __init__(self, *, name: str, execute: Callable[[state.SoakActionRequest], Awaitable[dict | None]]) -> None:
         self._name = name
         self._execute = execute
@@ -148,11 +136,8 @@ class AsyncStubFaultForm(fault_forms.BaseFaultForm, SoakActionForm):
     async def execute(self, request: state.SoakActionRequest) -> dict | None:
         return await self._execute(request)
 
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        raise AssertionError("An async action must not use the synchronous bridge")
 
-
-def fixed_fault_forms(forms: list[fault_forms.BaseFaultForm]) -> fault_forms.CellFaultForms:
+def fixed_fault_forms(forms: list[SoakActionForm]) -> fault_forms.CellFaultForms:
     return {fault_forms.ACTOR_CELL_TYPE: forms, fault_forms.ROLLOUT_CELL_TYPE: forms}
 
 
