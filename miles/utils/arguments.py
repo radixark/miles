@@ -1717,6 +1717,33 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--opd-divergence",
+                type=str,
+                default="reverse_kl",
+                choices=["reverse_kl", "forward_kl"],
+                help=(
+                    "Which divergence the distillation signal minimises. 'reverse_kl' is the "
+                    "sampled-token estimator applied as an advantage penalty (the default, and "
+                    "miles' historical behaviour). 'forward_kl' minimises KL(teacher || student) "
+                    "over the teacher's top-k support as a direct loss term, with gradients "
+                    "flowing through the student's logits. forward_kl requires "
+                    "--opd-log-prob-top-k > 0 and, for now, tensor- and context-parallel size 1."
+                ),
+            )
+            parser.add_argument(
+                "--opd-kl-clip",
+                type=float,
+                default=None,
+                help=(
+                    "Clip each per-token divergence contribution at this value before it reaches "
+                    "the loss. Token-level divergence is heavy-tailed: a few stylistic tokens carry "
+                    "far more divergence than mathematically meaningful ones, so without a ceiling "
+                    "the update chases prose style. On the top-k path the clip applies per "
+                    "vocabulary entry before the support is summed; on the sampled-token path there "
+                    "is one entry per position, so it clips the per-token value. Unset disables it."
+                ),
+            )
+            parser.add_argument(
                 "--opd-teacher-urls",
                 type=str,
                 nargs="+",
@@ -3079,11 +3106,35 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
-        if args.opd_log_prob_top_k > 0 and args.opd_top_k_strategy != "only-teacher" and not use_legacy_rollout_v1():
+        if (
+            args.opd_log_prob_top_k > 0
+            and args.opd_divergence != "forward_kl"
+            and args.opd_top_k_strategy != "only-teacher"
+            and not use_legacy_rollout_v1()
+        ):
             raise ValueError(
                 "--opd-log-prob-top-k with a student-side strategy needs opd_student_top_logprobs, "
                 "which only the v1 rollout produces; set MILES_USE_LEGACY_ROLLOUT_V1=1"
             )
+        if args.opd_divergence == "forward_kl":
+            if args.opd_type != "sglang":
+                raise ValueError("--opd-divergence=forward_kl is only supported with --opd-type=sglang.")
+            if args.opd_log_prob_top_k <= 0:
+                raise ValueError(
+                    "--opd-divergence=forward_kl needs a teacher distribution to match; "
+                    "set --opd-log-prob-top-k > 0."
+                )
+            if args.tensor_model_parallel_size != 1 or args.context_parallel_size != 1:
+                raise ValueError(
+                    "--opd-divergence=forward_kl currently requires --tensor-model-parallel-size 1 "
+                    "and --context-parallel-size 1: the student's log-probs at the teacher's ids "
+                    "are gathered from unsharded logits, and the teacher support skips "
+                    "context-parallel slicing."
+                )
+
+        if args.opd_kl_clip is not None and args.opd_kl_clip <= 0:
+            raise ValueError("--opd-kl-clip must be positive; it is a ceiling on a divergence contribution.")
+
         if args.opd_teacher_urls:
             if args.opd_type != "sglang":
                 raise ValueError("--opd-teacher-urls is only supported with --opd-type=sglang.")

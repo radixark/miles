@@ -214,6 +214,11 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "step_adapter_names",
                 "step_adapter_batch_sizes",
                 "prompt_group_sizes",
+                # Teacher top-k support, not a metric: the ids are int64 so the generic
+                # tensor.mean() below cannot reduce them, and the log-probs carry -inf
+                # padding that would poison the average.
+                "teacher_top_ids",
+                "teacher_top_logprobs",
             ]:
                 continue
             if isinstance(val, (list, tuple)):

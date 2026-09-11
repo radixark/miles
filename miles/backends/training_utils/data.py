@@ -114,6 +114,20 @@ def get_rollout_data(
                     )
                 )
             ]
+    # Teacher top-k support for forward-KL OPD: flattened response_length * k, reshaped to
+    # [R, k] here. It deliberately skips slice_log_prob_with_cp, which assumes one value per
+    # response token, so context parallelism is rejected at argument-validation time.
+    if "teacher_top_ids" in rollout_data:
+        for key, dtype in (("teacher_top_ids", torch.int64), ("teacher_top_logprobs", torch.float32)):
+            rollout_data[key] = [
+                torch.as_tensor(value, device=torch.cuda.current_device(), dtype=dtype).view(response_length, -1)
+                if response_length > 0
+                else torch.zeros((0, 0), device=torch.cuda.current_device(), dtype=dtype)
+                for value, response_length in zip(
+                    rollout_data[key], rollout_data["response_lengths"], strict=False
+                )
+            ]
+
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:
