@@ -15,6 +15,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
+from miles.backends.megatron_utils.lora import slot_capacity
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.training_utils.checkpoint_io import NonGlobalFatalError, run_with_failure_collective
 from miles.dashboard import hooks as dashboard_hooks
@@ -200,6 +201,8 @@ class MegatronTrainRayActor(TrainRayActor):
             self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
                 args, role, checkpointing_context=checkpointing_context
             )
+        # multi-LoRA: one SlotOptimizer per loaded slot, created by load_slot and dropped by unload_slot
+        self.slot_optimizers = {}
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -496,6 +499,13 @@ class MegatronTrainRayActor(TrainRayActor):
         except NonGlobalFatalError as error:
             return {"error": str(error)}
         return None
+
+    @with_logs
+    def multi_lora_memory_probe(self, phase: str) -> dict:
+        assert self.args.multi_lora, "multi_lora_memory_probe is a multi-LoRA slot command"
+        return slot_capacity.memory_snapshot(
+            self.model, self.slot_optimizers.get(slot_capacity.PROBE_SLOT), phase, self.args
+        )
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:

@@ -1858,9 +1858,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--multi-lora-n-adapters",
-                type=int,
+                type=lambda value: -1 if value == "auto" else int(value),
                 default=0,
-                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
+                help=(
+                    "Concurrent adapter slots for multi-LoRA. 0 disables multi-LoRA; 'auto' (serve entry only) "
+                    "takes the smallest of the trainer's measured GPU memory, the rollout engines' memory with "
+                    "every slot sampling at once, and torch._grouped_mm's group limit on the expert adapters"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-rollout-seqs-per-slot",
+                type=int,
+                default=None,
+                help=(
+                    "For --multi-lora-n-adapters auto: sequences one slot samples at once. The count is bounded "
+                    "so every rollout engine GPU holds all slots' adapter buffers plus the KV cache those "
+                    "sequences need, i.e. every resident adapter can sample immediately "
+                    "(default: 8, one group of samples per prompt; 0 drops this bound)"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-rollout-tokens-per-seq",
+                type=int,
+                default=None,
+                help="Tokens per sequence for that engine-side bound (default: --rollout-max-context-len)",
             )
             return parser
 
