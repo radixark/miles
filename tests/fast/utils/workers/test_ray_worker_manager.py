@@ -281,6 +281,20 @@ class TestInitAllocatesPorts:
 
         assert manager.get_worker_addrs("router-0-0")["primary"].host == "10.1.2.3"
 
+    async def test_the_node_reported_external_address_reaches_the_worker_addr(self, fake_ray_cluster: FakeRayCluster):
+        """Each worker carries the external address its own node reported; a node that
+        reported none leaves the field unset and the placed address serves both views."""
+        fake_ray_cluster.use_node_ips("10.0.0.1", "10.0.0.2")
+        fake_ray_cluster.node_external_ips = {"10.0.0.1": "100.64.0.1"}
+        manager = await _launch([_make_spec("session-server", num_cells=2)])
+
+        with_external = manager.get_worker_addrs("session-server-0-0")["primary"]
+        without = manager.get_worker_addrs("session-server-1-0")["primary"]
+        assert with_external.external_host == "100.64.0.1"
+        assert with_external.external_netloc == f"100.64.0.1:{with_external.port}"
+        assert without.external_host is None
+        assert without.external_netloc == without.netloc
+
     async def test_ipv6_hosts_are_bracketed(self, fake_ray_cluster: FakeRayCluster):
         """An ipv6 node address is advertised in url-safe bracketed form."""
         fake_ray_cluster.use_node_ips("2001:db8::7")

@@ -47,7 +47,6 @@ def test_run_body_carries_instance_fields_and_policy_override(monkeypatch):
     captured = {}
     monkeypatch.setattr(naf, "post_json", _capture_post(captured))
     monkeypatch.setenv("NEMO_GYM_URL", "http://gym:12000")
-    monkeypatch.delenv("MILES_ROUTER_EXTERNAL_HOST", raising=False)
 
     run_async(
         naf.run(
@@ -83,16 +82,6 @@ def test_sampling_params_omitted_when_unset(monkeypatch):
     run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", request_kwargs={}, metadata={}))
 
     assert captured["payload"]["responses_create_params"] == {"input": []}
-
-
-def test_external_host_rewrites_session_url(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(naf, "post_json", _capture_post(captured))
-    monkeypatch.setenv("MILES_ROUTER_EXTERNAL_HOST", "100.64.0.7")
-
-    run_async(naf.run(base_url="http://pod-hostname:30000/sessions/s1", prompt="", metadata={}))
-
-    assert captured["payload"]["policy_base_url"] == "http://100.64.0.7:30000/sessions/s1/v1"
 
 
 # --- response mapping -----------------------------------------------------

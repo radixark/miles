@@ -108,9 +108,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
     # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.
     dump_details: str = os.environ.get("OPENENV_DUMP_DETAILS", "")
-    # Optional host rewrite for the policy URL (only needed if the in-process
-    # agent cannot reach the session server at its raw base_url host).
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # The address the in-process agent reaches the session server on, when its
+    # placed address does not route from there. Sets MILES_NODE_EXTERNAL_IP for
+    # every node at once, so on a multi-node job leave it empty and have the
+    # deployment set that variable per pod instead.
+    node_external_ip: str = os.environ.get("MILES_NODE_EXTERNAL_IP", "")
     # Leave empty so miles resolves the numeric LAN IP itself. sgl-router's Rust
     # binder rejects a hostname ("invalid socket address syntax"), and a numeric
     # base_url host keeps the in-process policy client off hostname DNS too.

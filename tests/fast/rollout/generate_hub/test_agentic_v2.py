@@ -15,6 +15,7 @@ class _Tracer:
     session_server_id = "127.0.0.1:12345"
     session_server_instance_id = None
     base_url = "http://127.0.0.1:12345/sessions/sid-1"
+    agent_base_url = base_url
 
     def __init__(self, reply=None, error=None):
         self.reply = reply

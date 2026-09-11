@@ -25,7 +25,6 @@ Env vars:
                      terminated and scored reward 0 (bounds long-trajectory
                      stragglers that would otherwise stall the whole rollout batch).
   AGENT_MODEL_NAME   model name sent to the policy (default: "model")
-  MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
 
 Server contract: the env server must run tbench2_env at or after the
 huggingface/OpenEnv#1025 merge (38b2a3135; install per the README) —
@@ -55,7 +54,8 @@ from collections.abc import Callable
 from typing import Any
 
 from openai import AsyncOpenAI
-from miles.rollout.agentic.session import resolve_session_url
+
+from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
@@ -414,7 +414,7 @@ async def run_for_training(
     request_kwargs = request_kwargs or {}
     metadata = metadata or {}
 
-    session_url = resolve_session_url(base_url)
+    session_url = openai_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
 
     policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")

@@ -20,7 +20,7 @@ def args():
         model_dir="/models",
         output_dir="/output",
         session_server_ip="0.0.0.0",
-        router_external_host="trainer.example",
+        node_external_ip="trainer.example",
         agent_server_url="http://agent.example:11000",
     )
 
@@ -68,15 +68,15 @@ def test_agent_runtime_environment_reuses_harbor_adapters(args):
         "AGENT_SERVER_URL": "http://agent.example:11000",
         "AGENT_MODEL_NAME": "model",
         "AGENT_TRIAL_TIMEOUT": "7200",
-        "MILES_ROUTER_EXTERNAL_HOST": "trainer.example",
+        "MILES_NODE_EXTERNAL_IP": "trainer.example",
     }
 
 
 def test_agent_runtime_environment_omits_optional_hosts(args):
-    args.router_external_host = ""
+    args.node_external_ip = ""
     args.miles_host_ip = ""
 
     env = run._extra_env_vars(args)
 
-    assert "MILES_ROUTER_EXTERNAL_HOST" not in env
+    assert "MILES_NODE_EXTERNAL_IP" not in env
     assert "MILES_HOST_IP" not in env

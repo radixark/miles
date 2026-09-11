@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from miles.rollout.agentic.session import resolve_session_url
+from miles.rollout.agentic.session import openai_session_url
 from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
@@ -80,8 +80,7 @@ async def run(
         os.getenv("SWE_AGENT_MODEL_NAME", "model"),
     )
 
-    session_url = resolve_session_url(base_url)
-    external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
+    session_url = openai_session_url(base_url)
 
     request: dict[str, Any] = {
         **metadata,
@@ -94,12 +93,10 @@ async def run(
     if max_seq_len is not None:
         request["max_seq_len"] = int(max_seq_len)
 
-    session_server_id = metadata.get("session_server_id")
-    if session_server_id is not None:
-        if external_host:
-            port = urlsplit(f"http://{session_server_id}").port
-            session_server_id = f"{external_host}:{port}"
-        request["session_server_id"] = session_server_id
+    if metadata.get("session_server_id") is not None:
+        # metadata's id names the owning instance on the cluster network. The agent
+        # server sees that instance the way base_url does, so name it the same way.
+        request["session_server_id"] = urlsplit(session_url).netloc
 
     session_server_instance_id = metadata.get("session_server_instance_id")
     if session_server_instance_id is not None:

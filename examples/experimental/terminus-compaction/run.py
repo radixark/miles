@@ -15,7 +15,7 @@ Example:
         --output-dir /path/to/output \
         --agent-server-url http://agent-server.example:11000 \
         --session-server-ip 0.0.0.0 \
-        --router-external-host trainer.example
+        --node-external-ip trainer.example
 """
 
 import os
@@ -58,7 +58,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_server_url: str = field(default_factory=lambda: os.environ.get("AGENT_SERVER_URL", "http://127.0.0.1:11000"))
     agent_model_name: str = field(default_factory=lambda: os.environ.get("AGENT_MODEL_NAME", "model"))
     agent_trial_timeout: int = 7200
-    router_external_host: str = field(default_factory=lambda: os.environ.get("MILES_ROUTER_EXTERNAL_HOST", ""))
+    # Sets MILES_NODE_EXTERNAL_IP for every node at once, so it addresses the right
+    # instance only while the session servers share a host. On a multi-node job leave
+    # it empty and have the deployment set that variable per pod, or leave it empty
+    # anyway when the placed addresses already route from the sandbox network.
+    node_external_ip: str = field(default_factory=lambda: os.environ.get("MILES_NODE_EXTERNAL_IP", ""))
     miles_host_ip: str = field(default_factory=lambda: os.environ.get("MILES_HOST_IP", ""))
     session_server_ip: str = field(default_factory=lambda: os.environ.get("MILES_SESSION_SERVER_IP", ""))
 
@@ -233,8 +237,8 @@ def _extra_env_vars(args: ScriptArgs) -> dict[str, str]:
         "AGENT_MODEL_NAME": args.agent_model_name,
         "AGENT_TRIAL_TIMEOUT": str(args.agent_trial_timeout),
     }
-    if args.router_external_host:
-        env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
+    if args.node_external_ip:
+        env["MILES_NODE_EXTERNAL_IP"] = args.node_external_ip
     if args.miles_host_ip:
         env["MILES_HOST_IP"] = args.miles_host_ip
     return env

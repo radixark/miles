@@ -147,8 +147,9 @@ skip):
 ```bash
 export NEMO_GYM_URL="http://<nemo-gym-host>:12000"
 # Only if the NeMo Gym host cannot resolve the trainer's hostname (e.g. it
-# reaches the trainer over a tailnet):
-export MILES_ROUTER_EXTERNAL_HOST="<trainer host/IP reachable from that host>"
+# reaches the trainer over a tailnet). This sets one address for every node; on
+# a multi-node job have the deployment set it per trainer pod instead:
+export MILES_NODE_EXTERNAL_IP="<trainer host/IP reachable from that host>"
 python examples/experimental/nemo-gym/run.py
 ```
 
