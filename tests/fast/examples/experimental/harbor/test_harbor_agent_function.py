@@ -121,12 +121,53 @@ def _verdict(reward=1.0, **agent_fields):
 
 
 def test_environment_type_is_passed_straight_through(tasks_dir, monkeypatch):
-    monkeypatch.setenv("HARBOR_ENV_TYPE", "daytona")
-    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"auto_snapshot": true}')
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "modal")
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"passthrough_probe": 1}')
     cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
-    assert cfg.environment.type.value == "daytona"
-    assert cfg.environment.kwargs == {"auto_snapshot": True}
+    assert cfg.environment.type.value == "modal"
+    assert cfg.environment.kwargs == {"passthrough_probe": 1}
     assert cfg.environment.delete is True
+
+
+def test_daytona_reclaim_timer_outlasts_the_trial_cap(tasks_dir, monkeypatch):
+    """Harbor's Daytona defaults never reclaim a sandbox a killed worker left
+    behind; ours must, without ever stopping a live trial."""
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "daytona")
+    monkeypatch.setenv("AGENT_TRIAL_TIMEOUT", "1200")  # 20 minutes
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+    assert cfg.environment.kwargs == {"auto_stop_interval_mins": 50, "auto_delete_interval_mins": 1440}
+
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"auto_stop_interval_mins": 45, "auto_snapshot": true}')
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+    assert cfg.environment.kwargs == {
+        "auto_stop_interval_mins": 45,  # the caller's value wins when it is safe
+        "auto_delete_interval_mins": 1440,
+        "auto_snapshot": True,
+    }
+
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"auto_stop_interval_mins": 20}')
+    with pytest.raises(ValueError, match="mid-trial"):
+        haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+
+
+def test_reclaim_timers_are_daytona_only(tasks_dir, monkeypatch):
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+    assert cfg.environment.kwargs == {}
+
+
+@pytest.mark.parametrize(
+    "var, field",
+    [("HARBOR_OVERRIDE_MEMORY_MB", "override_memory_mb"), ("HARBOR_OVERRIDE_STORAGE_MB", "override_storage_mb")],
+)
+def test_resource_overrides_reach_harbor_and_reject_nonpositive(tasks_dir, monkeypatch, var, field):
+    monkeypatch.setenv(var, "20480")
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+    assert getattr(cfg.environment, field) == 20480
+
+    monkeypatch.setenv(var, "0")
+    with pytest.raises(ValueError, match=var):
+        haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
 
 
 def test_unknown_environment_type_is_an_error_not_docker(tasks_dir, monkeypatch):
