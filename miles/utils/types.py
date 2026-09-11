@@ -87,6 +87,7 @@ class Sample:
 
     group_index: int | None = None
     index: int | None = None
+    lineage: SampleLineage | None = None
     # Rollout execution id; None falls back to ``index``. Compact / subagent
     # siblings must share it so the rollout is counted once.
     rollout_id: int | None = None
@@ -215,6 +216,7 @@ class Sample:
 
     def to_dict(self):
         value = self.__dict__.copy()
+        value["lineage"] = asdict(self.lineage) if self.lineage is not None else None
         value["status"] = self.status.value
         value["spec_info"] = self.spec_info.to_dict()
         value["prefix_cache_info"] = self.prefix_cache_info.to_dict()
@@ -224,6 +226,8 @@ class Sample:
     @staticmethod
     def from_dict(data: dict):
         data = dict(data)
+        if (identity := data.get("lineage")) is not None:
+            data["lineage"] = SampleLineage(**identity)
         data["status"] = Sample.Status(data["status"])
         data["spec_info"] = Sample.SpecInfo.from_dict(data.get("spec_info", {}))
         data["prefix_cache_info"] = Sample.PrefixCacheInfo.from_dict(data.get("prefix_cache_info", {}))

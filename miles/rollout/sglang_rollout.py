@@ -16,6 +16,7 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.compatibility import load_generate_function
+from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
@@ -284,6 +285,8 @@ async def generate_and_rm(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
+    input_sample_index = sample.index
+
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
         sample.loss_mask = [0] * sample.response_length
@@ -325,6 +328,8 @@ async def generate_and_rm(
                 sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
+            if not evaluation:
+                stamp_sample_lineage(sample, source_sample_index=input_sample_index)
 
     if sink is not None:
         sink.attempt_end(sample)

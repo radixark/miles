@@ -23,7 +23,7 @@ from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.processing_utils import load_processor, load_tokenizer
-from miles.utils.types import Sample
+from miles.utils.types import Sample, SampleLineage
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ async def generate_and_rm(
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
     args = state.args
+    input_sample_index = sample.index
 
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
@@ -103,6 +104,8 @@ async def generate_and_rm(
                 )
             )
             sample = output.samples
+            if not evaluation:
+                stamp_sample_lineage(sample, source_sample_index=input_sample_index)
             logger.debug(f"{log_prefix} generate_function returned")
     finally:
         if sink is not None:
@@ -235,3 +238,12 @@ class InferenceRolloutFn(BaseRolloutFn):
         state = input.generate_state or self.state
         results = await run_eval_datasets(state, self.eval_prompt_dataset_cache)
         return RolloutFnEvalOutput(data=results)
+
+
+def stamp_sample_lineage(output: Sample | list[Sample], *, source_sample_index: int) -> None:
+    samples = output if isinstance(output, list) else [output]
+    assert source_sample_index is not None, "Sample lineage requires a source sample index"
+    for output_index, sample in enumerate(samples):
+        sample.lineage = SampleLineage(
+            source_sample_index=source_sample_index, output_index=output_index, output_count=len(samples)
+        )
