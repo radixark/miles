@@ -45,7 +45,7 @@ SGLANG_MEM_FRACTION=${SGLANG_MEM_FRACTION:-0.92}            # every engine keeps
 SGLANG_MAX_RUNNING_REQUESTS=${SGLANG_MAX_RUNNING_REQUESTS:-512}
 SGLANG_CUDA_GRAPH_MAX_BS=${SGLANG_CUDA_GRAPH_MAX_BS:-512}   # decode batch captured in cuda graphs
 SGLANG_MOE_RUNNER=${SGLANG_MOE_RUNNER:-triton}              # the runner that applies expert LoRA
-SGLANG_MAX_LOADED_LORAS=${SGLANG_MAX_LOADED_LORAS:-128}     # adapter versions each engine keeps in host RAM (LRU); >= slots
+SGLANG_MAX_LOADED_LORAS=${SGLANG_MAX_LOADED_LORAS:-}        # adapter versions each engine keeps in host RAM; empty: slots + 16
 ENABLE_THINKING=${ENABLE_THINKING:-0}            # 1: Qwen3 thinking mode (long rollouts)
 TINKER_PORT=${TINKER_PORT:-9646}
 READY_TIMEOUT=${READY_TIMEOUT:-3600}
@@ -76,8 +76,10 @@ SERVE_ARGS="--hf-checkpoint $MODEL --megatron-to-hf-mode bridge \
  --rollout-num-gpus $ROLLOUT_GPUS --rollout-num-gpus-per-engine $GPUS_PER_ENGINE --sglang-ep-size $GPUS_PER_ENGINE \
  --sglang-lora-backend triton --sglang-mem-fraction-static $SGLANG_MEM_FRACTION --sglang-context-length $CONTEXT_LEN \
  --sglang-max-running-requests $SGLANG_MAX_RUNNING_REQUESTS --sglang-chunked-prefill-size $CONTEXT_LEN \
- --sglang-cuda-graph-max-bs-decode $SGLANG_CUDA_GRAPH_MAX_BS --sglang-moe-runner-backend $SGLANG_MOE_RUNNER \
- --sglang-max-loaded-loras $SGLANG_MAX_LOADED_LORAS"
+ --sglang-cuda-graph-max-bs-decode $SGLANG_CUDA_GRAPH_MAX_BS --sglang-moe-runner-backend $SGLANG_MOE_RUNNER"
+if [ -n "$SGLANG_MAX_LOADED_LORAS" ]; then
+    SERVE_ARGS="$SERVE_ARGS --sglang-max-loaded-loras $SGLANG_MAX_LOADED_LORAS"
+fi
 e2e_submit_gateway "$(e2e_model_args "$MODEL_TYPE")" "$SERVE_ARGS"
 e2e_wait_ready
 

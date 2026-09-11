@@ -10,8 +10,9 @@ import pytest
 import serve_tinker
 
 
+@pytest.mark.parametrize("loaded_loras", [None, 80], ids=["derived-cap", "given-cap"])
 @pytest.mark.parametrize("requested", [-1, 4], ids=["auto", "explicit"])
-async def test_engines_launch_with_the_resolved_slot_count(monkeypatch, requested):
+async def test_engines_launch_with_the_resolved_slot_count(monkeypatch, requested, loaded_loras):
     events = []
     args = Namespace(
         multi_lora=True,
@@ -30,6 +31,7 @@ async def test_engines_launch_with_the_resolved_slot_count(monkeypatch, requeste
         context_parallel_size=1,
         sglang_router_ip=None,
         sglang_router_port=None,
+        sglang_max_loaded_loras=loaded_loras,
     )
 
     class Trainer:
@@ -52,7 +54,7 @@ async def test_engines_launch_with_the_resolved_slot_count(monkeypatch, requeste
     async def init_engines():
         # the router address is known once the engines are up
         args.sglang_router_ip, args.sglang_router_port = "10.0.0.1", 30000
-        events.append(("engines", args.multi_lora_n_adapters))
+        events.append(("engines", args.multi_lora_n_adapters, args.sglang_max_loaded_loras))
 
     backends, configs = [], []
     monkeypatch.setattr(serve_tinker, "configure_logger", lambda *a, **kw: None)
@@ -83,7 +85,9 @@ async def test_engines_launch_with_the_resolved_slot_count(monkeypatch, requeste
     await serve_tinker.serve(args)
 
     resolved = 3 if requested == -1 else 4
-    assert events[-2:] == [("engines", resolved), ("trainer", resolved)]
+    # the engines launch with the resolved count and a cap on the adapter versions they keep in host RAM
+    cap = loaded_loras if loaded_loras is not None else resolved + 16
+    assert events[-2:] == [("engines", resolved, cap), ("trainer", resolved)]
     assert configs[0].n_slots == resolved
     assert backends[-1] == (resolved, "http://10.0.0.1:30000", 2)
     if requested == -1:

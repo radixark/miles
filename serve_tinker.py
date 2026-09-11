@@ -7,6 +7,7 @@ import uvicorn
 from miles.backends.megatron_utils.lora.slot_capacity import (
     AUTO_SLOT_CAPACITY,
     PROBE_SLOTS,
+    engine_loaded_adapter_cap,
     probe_slot_capacity,
     resolve_slot_capacity,
 )
@@ -53,6 +54,9 @@ async def serve(args):
         await probe_trainer.dispose()
         # fresh worker processes rebuild the pool at the resolved size; the engine specs read it from args
         await worker_manager.restart_with_specs.remote(compute_specs(args))
+    if getattr(args, "sglang_max_loaded_loras", None) is None:
+        # the engines hold every published version in host RAM otherwise; see engine_loaded_adapter_cap
+        args.sglang_max_loaded_loras = engine_loaded_adapter_cap(args.multi_lora_n_adapters)
     await inference_controller.init()
 
     trainer = _trainer_controller(args, inference_controller)

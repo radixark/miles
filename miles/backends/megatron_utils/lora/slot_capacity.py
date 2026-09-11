@@ -39,6 +39,12 @@ _PROBE_BATCH_ID = -1
 GROUPED_MM_MAX_GROUPS = 1023
 # sequences one slot samples at once, for the engine bound: one group of samples per prompt
 DEFAULT_ROLLOUT_SEQS_PER_SLOT = 8
+# Every SGLang TP-rank process keeps a host copy of each adapter version it has loaded and, without
+# --sglang-max-loaded-loras, never drops one: a rank-16 Qwen3-30B-A3B adapter costs ~1.6 GB per
+# version per process, and 8 processes holding 124 versions took a 1.9 TB node past Ray's 95%
+# memory threshold. Serving needs the latest version of every slot plus a few predecessors still
+# draining, so the cap is the slot count plus this head-room.
+ENGINE_LOADED_VERSIONS_HEADROOM = 16
 
 _PROBE_ADAM_PARAMS = {
     # lr 0: the step only materializes the Adam moments, the weights stay put
@@ -318,6 +324,12 @@ def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] 
         "tokens_per_seq": tokens,
         "engines": engines,
     }
+
+
+def engine_loaded_adapter_cap(n_slots: int) -> int:
+    """--sglang-max-loaded-loras when the user leaves it unset: every slot's current version resident,
+    a few superseded ones draining, nothing accumulating in host RAM across publishes."""
+    return n_slots + ENGINE_LOADED_VERSIONS_HEADROOM
 
 
 def resolve_slot_capacity(args: Namespace, probes: list[RankProbe]) -> int:
