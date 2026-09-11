@@ -1,4 +1,4 @@
-"""The planner packs compatible datums within its token budget and preserves arrival order."""
+"""The planner selects the oldest ready seed and packs compatible work within its budget."""
 
 from tests.fast.tinker.harness import ADAM, command, datum, fb_payload
 
