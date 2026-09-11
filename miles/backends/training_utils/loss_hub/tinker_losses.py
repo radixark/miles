@@ -1,6 +1,6 @@
 """Sum Tinker losses over datums without server-side normalization.
 
-Clients normalize through weights or advantages; the trainer accumulates their raw sums.
+Client loss inputs carry normalization; the trainer accumulates raw sums.
 The SDK represents custom-loss gradients as `weights = -dL/dlogprob` with `cross_entropy`.
 """
 
