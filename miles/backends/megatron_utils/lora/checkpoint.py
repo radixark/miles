@@ -14,7 +14,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.slots import adapter_shard_topology, megatron_shard_name
-from miles.backends.training_utils.checkpoint_io import run_checkpoint_phase, write_checkpoint_dir
+from miles.backends.training_utils.checkpoint_io import run_with_failure_collective, write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 
 
@@ -76,5 +76,5 @@ def load_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, lo
         # weights-only load keeps the fresh Adam state the slot init just created
 
     # every rank validates its shards before any rank touches the live slot
-    run_checkpoint_phase(read_shards)
-    run_checkpoint_phase(apply_shards)
+    run_with_failure_collective(read_shards)
+    run_with_failure_collective(apply_shards)

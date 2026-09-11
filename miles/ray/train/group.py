@@ -406,16 +406,16 @@ class TrainerController:
 
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> None:
-        await self._execute_slots(
+    ) -> list:
+        return await self._execute_slots(
             "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
         )
 
-    async def save_slot(self, slot: int, path: str) -> None:
-        await self._execute_slots("save_slot", slot=slot, path=path)
+    async def save_slot(self, slot: int, path: str) -> list:
+        return await self._execute_slots("save_slot", slot=slot, path=path)
 
-    async def unload_slot(self, slot: int) -> None:
-        await self._execute_slots("unload_slot", slot=slot)
+    async def unload_slot(self, slot: int) -> list:
+        return await self._execute_slots("unload_slot", slot=slot)
 
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
