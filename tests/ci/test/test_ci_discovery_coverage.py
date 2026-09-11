@@ -89,3 +89,26 @@ def test_the_example_suites_reach_the_cpu_plan(monkeypatch):
         assert entry.backend == HWBackend.CPU, entry.filename
         assert entry.suite == "stage-a-cpu", entry.filename
         assert entry.disabled is None, entry.filename
+
+
+def test_random_soak_entries_reach_the_h200_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Implemented Ray soaks must not disappear behind stale infrastructure exemptions."""
+    monkeypatch.chdir(REPO_ROOT)
+    plan = {entry.filename: entry for entry in collect_tests(discover_ci_files())}
+    names = [
+        "test_random_crash__kill_rollout__dp4.py",
+        "test_random_crash__kill_train_rollout__dp2_cp2.py",
+        "test_random_crash_fully_async__kill_train_rollout__dp2_cp2.py",
+        "test_realistic_gsm8k__kill_train_rollout.py",
+        "test_realistic_gsm8k_fully_async__kill_train_rollout.py",
+        "test_rollout_deterministic__kill_rollout__dp4.py",
+        "test_precise_p2p_mixed__kill_rollout__dp2_tp2.py",
+        "test_precise_all_gather_mixed__kill_train__dp2_tp2.py",
+    ]
+
+    for name in names:
+        entry = plan[f"tests/e2e/ft/{name}"]
+        assert entry.backend == HWBackend.CUDA
+        assert entry.suite == "stage-c-8-gpu-h200"
+        assert "ft-long" in entry.labels
+        assert entry.disabled is None

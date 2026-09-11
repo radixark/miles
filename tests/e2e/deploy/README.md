@@ -110,7 +110,7 @@ Injection: SoakActionFormHotRestart at random intervals through the shared async
         seed logged
 Eligibility: one observed deployment, identified by namespace, release, workload UIDs and stamps
 Terminal lifecycle: the observer reads progress from the run's checkpoints and events;
-        admission closes after rollout 234, leaving rollouts 235-249
+        the shared GSM8K tail closes admission after rollout 199, leaving rollouts 200-249
         free of new take-overs
 Landing signal: both replaced workloads (orchestrator, rollout-executor) carry a stamp other
         than the one they carried at the draw - rewritten, not added
@@ -121,7 +121,7 @@ Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's c
         interval 600s (--hot-restart-interval-seconds)
 
 1. Run the realistic gsm8k recipe while the plan injects hot restarts
-2. Assert: gsm8k reward improves as in scenario_realistic_gsm8k
+2. Assert: at least two post-fault tail evaluations meet the unchanged GSM8K threshold 0.55
 3. Assert: >= MIN_HOT_RESTARTS take-overs landed; no injection attempt failed; every relaunch
    process finished with success or a replacement exit explained by an applied successor;
    the final launcher succeeded (where the run's own metric verdict surfaces); each landed
@@ -143,5 +143,8 @@ Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's c
 Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
 ```
 
+- **Takeover floor**: at least two confirmed takeovers, with a newly advanced checkpoint before each subsequent takeover.
 - **Weight evidence**: explicitly enable inference checksums; check consistency and movement across archived active and discarded event generations. After admission closes and the last takeover applies, require at least two publications with exact update, epoch and engine-incarnation checksum coverage.
 - **Interrupted publication boundary**: a takeover can interrupt checksum collection after a weight publication. Full publication coverage is mandatory in the final uninterrupted tail; interrupted earlier publications remain a product-level coverage gap. Recorded earlier checksums still undergo consistency and movement checks.
+- **CI boundary**: the entry remains disabled until a Kubernetes lane supplies shared storage, worker images and release-management credentials. The H200 Ray lane cannot execute this deployment contract.
+- **Execution status**: the new scenario and its thresholds have not been run or calibrated in this implementation task.

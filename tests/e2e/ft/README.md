@@ -31,6 +31,10 @@
 
 ### Scenarios
 
+- **CI**: Ray random, deterministic-rollout, realistic GSM8K, fully-async and precise/mixed entries are enabled on `stage-c-8-gpu-h200` under `ft-long`. The workflow sets `MILES_TEST_DUMPS_ROOT=/data/miles_ci/dumps`; the scenario verifies the backing filesystem before writing dumps.
+- **Kubernetes**: the same random FT scenario accepts a Kubernetes backend through the launch configuration. Kubernetes execution requires shared storage, worker images and release-management credentials; the Ray CI lane does not provide those resources. Hot restart remains Kubernetes-only.
+- **Validation status**: registration is not execution evidence. This implementation has not run the scenarios, calibrated durations, or verified convergence on the CI machines.
+
 - **Random transfer coverage**: all real-rollout random soaks use P2P and reject colocation; fake-rollout modes retain trainer-only coverage and do not exercise weight transfer.
 - **Precise all-gather entry**: `test_precise_all_gather__kill_train__dp2_tp2.py` calls the shared random-crash runner with `precise_all_gather=True`.
 - **Precise topology**: real rollout engines, disaggregated TP2 trainers, p2p weight transfer, and 600-second training/update deadlines.
@@ -173,16 +177,16 @@ hf upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer \
 
 | Backend | Cell type | Forms, drawn from uniformly |
 | --- | --- | --- |
-| ray | actor | `inject_fault:sigkill`, `inject_fault:exit`, `inject_fault:segfault` |
-| ray | rollout | `inject_fault:sigkill` |
-| kubernetes | actor | those three kills, plus `delete_pod` |
-| kubernetes | rollout | `exec_sigkill`, `delete_pod` |
+| ray | actor | `inject_fault:sigkill`, `inject_fault:exit`, `inject_fault:segfault`, `inject_fault:sigstop`, `inject_fault:deadlock` |
+| ray | rollout | `inject_fault:sigkill`, `inject_fault:sigstop` |
+| kubernetes | actor | those five forms, plus `delete_pod` |
+| kubernetes | rollout | `exec_sigkill`, `exec_sigstop`, `delete_pod` |
 
-- **Each `FailureMode` is its own form**: pod deletion is a quarter of a kubernetes trainer injection, not half of it.
+- **Each `FailureMode` is its own form**: pod deletion has the same weight as each individual failure mode.
 - **The actor class decides what a kill means**, since an injection carries only a mode and a `sub_index`: `TrainRayActor` and `ServeActor` crash their own process, the only thing that costs torchft a member, while `CommandActor` SIGKILLs the isolated process group rooted at the engine subprocess. That includes the launch shell and every engine child it spawned, so a dead cell cannot leave an orphaned scheduler holding GPU memory while its replacement starts; the Ray actor observes the subprocess exit and reports the death as production sees it.
-- **Why an engine takes sigkill alone**: exiting and segfaulting are what a process does to itself from the inside, and no signal reproduces them from outside — SIGTERM is a clean shutdown, SIGSEGV is delivered rather than provoked. The other modes are refused, not approximated.
+- **Engine modes**: external SIGKILL and SIGSTOP have separate exit and stopped-process receipts. In-process exit, segfault and deadlock are not approximated with external signals.
 - **How a kubernetes engine takes a kill**: its pod runs sglang as the entrypoint (`CommandWorkerSpec`), so no actor and no rpc server exist to receive `inject_fault`. The kill is delivered from outside instead, as a `kubectl exec` SIGKILL of the sglang processes in the engine container, and deleting the pod is the second, coarser form — the engine *is* the pod.
-- **Deletion is the test layer's own `kubectl delete pod`**, timeout-bounded and selecting on release, pool and cell index. It models an outsider, and deliberately avoids the production heal path `KubernetesCellOperations.suspend`, whose bugs an injector sharing it would hide.
+- **Deletion**: the async Kubernetes client deletes the observed pod with UID and resource-version preconditions, then confirms that UID is absent. A pre-existing deletion or a failed read cannot prove an applied fault.
 
 ### `scenario_trainer_no_failure`
 
@@ -387,33 +391,21 @@ Targeting and assertions follow the mode's ft_components:
     that does not exist, so FTTestMode refuses to be constructed at all
 
 Architecture (external fault injection, not inside the training loop):
-  1. Start indep_dp training + api server (port 18080) + --mini-ft-controller-enable
-  2. A background daemon thread iterates every 2s:
-     a. GET /api/v1/cells, keeping only the targeted cell types
-     b. Append that whole snapshot to the injector's event log, its only state
-     c. Collect the cell kinds whose own schedule is due; stop here if none
-     d. A due kind is eligible when its current listing contains at least two cells;
-        health, Serving, weight updates and recovery do not postpone the attempt
-     e. Draw an eligible kind, a cell and one of its fault forms, preferring a form
-        the log shows has never worked; draw the next deadline, apply the fault and
-        record the attempt, including failures
-  3. inject_fault() runs on the actor's own ray concurrency group thread and kills the process,
-     or the test layer deletes the pod on kubernetes
-  4. The health checker notices by heartbeat timeout
-  5. The mini FT controller recovers it (suspend -> resume)
-  6. Verify: training completes, no hangs, prod assertions pass
+  1. Launch training with its own control endpoint and --mini-ft-controller-enable
+  2. SoakRunner observes and records typed events on an asyncio loop
+  3. SoakActionScheduler derives eligibility and deadlines from events and policy
+  4. Record the incarnation-bound request before starting its async action
+  5. Record effect evidence separately from command return; keep observing concurrently
+  6. Close admission, observe the recovery tail, collect tasks and archive evidence
+  7. Tear down the owned run; check archived events
 
 Per-kind schedules: exponential, mean that kind's --*-crash-interval-seconds
 
 Witnesses, counted per kind:
-  forms   -> every form the enabled components make available succeeded at least once, so a
-             soak that clears the injection floors on one form still has to draw the others
-  train   -> >= 2 accepted actor injections, >= 2 healed cells across the
-             CellReconfigureEvents, and every injected cell index paired with a healing of
-             that same index - no debt left when training ends
-  rollout -> >= 2 accepted rollout injections, and every injected cell observed Serving
-             at least once on a reading taken >= 120s after its last injection - late
-             enough that the ~95s stale-status window cannot have produced it
+  forms   -> every enabled form has a confirmed effect, not merely a successful RPC
+  train   -> >= 2 actor effects, matched incarnation replacement/reconfiguration and normal progress
+  rollout -> >= 2 rollout effects, matched new incarnation observed Serving
+  tail    -> every action resolved, every recovery complete, then normal training progress
 
 Faults are random, so beyond the witnesses neither an exact sequence nor the end-state
 membership is asserted.
@@ -424,8 +416,8 @@ membership is asserted.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
 - **A form that leaves its cell running**: `SoakActionForm.harms_cell` is false for it, so the draw is recorded without charging that cell a recovery; the per-kind exponential schedule paces the next injection.
 - **Why every enabled form has to land**: the floors count injections, not forms, so `inject_fault:sigkill` alone could clear them while `delete_pod` is never tried. This witness makes the draw's preference for an untried form binding.
-- **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
-- **Why the rollout witness is one-sided**: the trainer witness reads the run's own CellReconfigureEvents, which miss nothing; the rollout witness reads sampled polls, which miss windows by construction. It therefore never demands seeing the down half of a recovery - it demands a Serving reading fresh enough (>= 120s after the cell's last injection, past the ~95s staleness) to prove the survivor really serves. Undercounting an intermediate recovery cannot fail the run; claiming one that never happened cannot pass it.
+- **Recovery identity**: the same cell name or a long delay cannot prove replacement. Recovery uses the requested incarnation, a new incarnation, and the corresponding Serving or trainer reconfiguration evidence.
+- **Policy**: minimum survivors, actions in flight and faults during recovery are explicit scenario settings. Unknown action outcomes reserve the affected incarnation; an observation failure is not a disappearance.
 - **Stopping the injector**: `stop_and_join` asserts the thread actually stopped, since a thread still mid-injection could crash a cell nothing will heal, and would race the witness being read.
 - **Independent evidence**: random FT and rollout-deterministic runs write ordered typed events to `<dump_dir>-soak/<session_id>/events.jsonl`. Requests are flushed before dispatch. After task collection, training-event files and discarded generations are copied under `sources/`; checks use those paths. A terminal marker and per-file SHA-256 digests distinguish a complete collection from a truncated or changed archive.
 
@@ -447,8 +439,8 @@ Faults: scenario_random_crash's injection loop (shared tests/utils/soak/), with
         --ft-components train rollout asked for outright, so both trainer cells and engines crash
 
 Assertions:
-  1. --ci-metric-checker-key eval/gsm8k against a threshold that must stay identical to the
-     no-fault baseline's (0.55); passes if ANY eval reaches it
+  1. At least two distinct tail evaluations started after the final applied fault and
+     admission closure, each meeting the unchanged no-fault threshold (0.55)
   2. assert_healing, shared with scenario_random_crash, so both the trainer reconfigure
      assertions and the rollout recovery witness apply here
 
