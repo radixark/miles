@@ -18,11 +18,15 @@
 : "${MIN_FREE_GPUS:=16}"           # refuse to submit unless the cluster reports this many free GPUs
 : "${READY_TIMEOUT:=3600}"
 : "${KEEP_GATEWAY:=0}"             # 1: leave the gateway up after a passing run (debugging)
+: "${KEEP_CKPT:=0}"                # 1: keep the run's exported adapter versions (about 1.5 GB each on disk) after it ends
+: "${KEEP_VERSIONS:=2}"            # exported versions kept per client while it runs (0: all); a client only samples its latest
+: "${MIN_FREE_GB:=150}"            # refuse to start unless RUN_ROOT's volume has this much room (slots x KEEP_VERSIONS x 1.5 GB)
 : "${RUN_DIR:=$RUN_ROOT/$(date +%Y%m%d-%H%M%S)}"
 
 export MILES_E2E_RUN="miles-e2e-$(basename "$RUN_DIR")-$$"
 export RAY_ADDRESS=http://$RAY_DASH
 JOB_ID=""
+PRUNE_PID=""
 
 log() { echo "[e2e $(date +%H:%M:%S)] $*"; }
 
@@ -98,9 +102,12 @@ e2e_cleanup() {
         log "KEEP_GATEWAY=1: leaving the gateway up (job $JOB_ID, Tinker :$TINKER_PORT); the next run sweeps it"
         exit 0
     fi
+    [ -n "$PRUNE_PID" ] && kill "$PRUNE_PID" 2>/dev/null || true
     [ -n "$JOB_ID" ] && ray job stop --address "$RAY_ADDRESS" "$JOB_ID" >/dev/null 2>&1 || true
     kill_marked "^MILES_E2E_RUN=$MILES_E2E_RUN\$"
     e2e_sweep_other_nodes "^MILES_E2E_RUN=$MILES_E2E_RUN\$"
+    # every publish exported an adapter version to the shared volume; a few runs fill it
+    [ "$KEEP_CKPT" = "1" ] || rm -rf "$RUN_DIR/ckpt"
     log "GPU memory after teardown (this node):"; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | sed 's/^/    /'
     log "logs: $RUN_DIR (serve.log, client.log, serve-command.txt)"
     if [ $rc -eq 0 ]; then log "E2E PASS"; else log "E2E FAIL (exit $rc)"; fi
@@ -121,6 +128,9 @@ e2e_preflight() {
         || { log "cluster has fewer than $MIN_FREE_GPUS free GPUs; someone else is using it"; exit 2; }
     if port_busy "$TINKER_PORT"; then log "port $TINKER_PORT is busy"; exit 2; fi
     mkdir -p "$RUN_DIR/ckpt"
+    local free_gb
+    free_gb=$(df -BG --output=avail "$RUN_DIR" | tail -1 | tr -dc '0-9')
+    [ "${free_gb:-0}" -ge "$MIN_FREE_GB" ] || { log "only ${free_gb} GB free under $RUN_ROOT; the exported adapter versions need $MIN_FREE_GB GB (MIN_FREE_GB)"; exit 2; }
 }
 
 e2e_model_args() {  # $1: model type under scripts/models, e.g. qwen3-30B-A3B; prints the shell-quoted line
@@ -163,6 +173,20 @@ e2e_wait_ready() {
     grep -m1 "agree with predicted\|diverge from predicted" "$RUN_DIR/serve.log" | sed 's/^/[e2e] /' || true
     grep -m1 "multi-LoRA capacity" "$RUN_DIR/serve.log" | sed 's/^/[e2e] /' || log "(no capacity line: explicit slot count)"
     grep -m1 "capacity is bound by" "$RUN_DIR/serve.log" | sed 's/^/[e2e] WARNING /' || true
+}
+
+e2e_prune_versions() {  # keep each client's newest KEEP_VERSIONS exported versions; the rest are never sampled again
+    local dir
+    for dir in "$RUN_DIR"/ckpt/*/sampler_weights; do
+        [ -d "$dir" ] || continue
+        ls -1dt "$dir"/step-* 2>/dev/null | tail -n +$((KEEP_VERSIONS + 1)) | xargs -r rm -rf
+    done
+}
+
+e2e_start_pruning() {  # every publish exports ~1.5 GB to the shared volume; without this a few runs fill it
+    [ "$KEEP_VERSIONS" -gt 0 ] || return 0
+    ( while true; do sleep 60; e2e_prune_versions; done ) &
+    PRUNE_PID=$!
 }
 
 e2e_resolved_slots() {  # the slot count the gateway ended up with
