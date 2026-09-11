@@ -1,14 +1,20 @@
 import argparse
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
+import torch
+
+from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     DataSourceIssuedSamplesEvent,
     ExplicitlyDroppedSamplesEvent,
     IssuedSampleGroup,
+    OutputConsumption,
+    SampleLineagePayload,
+    TrainerModelCompanionInfoEvent,
 )
-from miles.utils.types import Sample
+from miles.utils.types import Sample, SampleLineage
 
 if TYPE_CHECKING:
     from miles.rollout.data_source import DataSource
@@ -34,6 +40,31 @@ class SampleOwnershipRecorder:
             return groups
 
         data_source.get_samples = get_samples_and_record
+
+    @classmethod
+    def publish_model_companion_info(
+        cls,
+        model: Sequence[torch.nn.Module],
+        *,
+        rollout_id: int,
+        attempt: int,
+        cell_index: int,
+    ) -> None:
+        get_event_logger().log(
+            TrainerModelCompanionInfoEvent,
+            dict(
+                cell_index=cell_index,
+                rollout_id=rollout_id,
+                attempt=attempt,
+                sample_counts=cls._snapshot_counts(
+                    ModelCompanionSampleConsumptionUtils.snapshot(model, is_skipped=False)
+                ),
+                skipped_nonfinite_sample_counts=cls._snapshot_counts(
+                    ModelCompanionSampleConsumptionUtils.snapshot(model, is_skipped=True)
+                ),
+            ),
+            print_log=False,
+        )
 
     @classmethod
     def flatten_samples(cls, data: list[Any]) -> list[Sample]:
@@ -111,3 +142,24 @@ class SampleOwnershipRecorder:
         if value is None:
             raise ValueError(f"DataSource returned a sample without a {name}")
         return value
+
+    @classmethod
+    def _snapshot_counts(cls, counts: dict[SampleLineage, int]) -> list[OutputConsumption]:
+        return [
+            OutputConsumption(
+                sample=SampleLineagePayload(
+                    source_sample_index=identity.source_sample_index,
+                    output_index=identity.output_index,
+                    output_count=identity.output_count,
+                ),
+                count=count,
+            )
+            for identity, count in sorted(
+                counts.items(),
+                key=lambda item: (
+                    item[0].source_sample_index,
+                    item[0].output_index,
+                    item[0].output_count,
+                ),
+            )
+        ]
