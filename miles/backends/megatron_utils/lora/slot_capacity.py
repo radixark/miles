@@ -256,7 +256,13 @@ async def _probe_step(backend, row: dict) -> None:
 def _probe_row(tokens: int) -> dict:
     """One datum that fills --max-tokens-per-gpu: a one-token prompt and a max-length target."""
     assert tokens >= 2, f"--max-tokens-per-gpu {tokens} leaves no room for a prompt and a target"
-    return {"tokens": [1] * tokens, "target_len": tokens - 1, "weights": [1.0] * (tokens - 1)}
+    # the same shape encoding.build_datum produces: tokens = prompt + targets[-1:], next-token targets
+    return {
+        "tokens": [1] * tokens,
+        "target_tokens": [1] * (tokens - 1),
+        "target_len": tokens - 1,
+        "weights": [1.0] * (tokens - 1),
+    }
 
 
 ENGINE_WEIGHT_BYTES = 2  # the engines hold bf16 weights and bf16 adapter buffers

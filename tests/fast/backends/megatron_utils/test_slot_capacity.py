@@ -227,7 +227,7 @@ async def test_the_probe_warms_up_then_measures_one_max_size_step():
         ((slot, row),) = call.args[1]
         assert slot == PROBE_SLOT
         assert len(row["tokens"]) == 8192  # exactly the budget one GPU admits per micro-batch
-        assert row["target_len"] == len(row["weights"]) == 8191
+        assert row["target_len"] == len(row["weights"]) == len(row["target_tokens"]) == 8191
 
 
 async def test_an_unsettled_probe_step_is_not_a_measurement():
