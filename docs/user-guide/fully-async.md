@@ -123,11 +123,17 @@ replaceable component with the following interface:
 
 | Method | Called by | Purpose |
 |---|---|---|
-| `put()` | The rollout worker, once per finished group | Store the group, or reject it |
+| `put(DataBufferInput)` | The rollout worker, once per finished group | Store the group or resolve it as unused; set `completed` only after the decision is durable in buffer state |
 | `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
 | `snapshot()` | Checkpoint save | Return all accepted, pending, and retry-relevant entries needed to resume without loss or duplicate admission |
 | `restore(state)` | Checkpoint load | Replace the buffer state with a previous snapshot |
+
+`DataBufferInput.prompt_group` is the source material used for retry and `group` is the
+finished output. A custom buffer must preserve `admission_passed` so a restored entry is
+not filtered twice, and must preserve `completed` so checkpointing can distinguish a
+blocked `put()` from a durable admission decision. `UnusedReason.ABORTED` and
+`UnusedReason.STALE` identify entries passed to the unused-sample handler.
 
 These methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.

@@ -96,6 +96,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._output: DataBuffer | None = None
         self._retry_buffer: deque[list[Sample]] = deque()
         self._in_flight: dict[asyncio.Task, list[Sample]] = {}
+        self._pending_outputs: deque[DataBufferInput] = deque()
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -156,19 +157,28 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             sample_done_callback=self._scheduler.sample_done_callback,
         )
         entry = DataBufferInput(prompt_group=prompt_group, group=result)
+        self._in_flight.pop(asyncio.current_task())
+        self._pending_outputs.append(entry)
         return entry
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
+        await self._flush_pending_outputs()
         while True:
             await self._producer_resumed.wait()
             while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
                 active.add(self._submit_one_group())
             done, active = await self._scheduler.wait_for_progress(active)
             for task in done:
-                entry = task.result()
-                self._in_flight.pop(task)
-                await self._output.put(entry)
+                task.result()
+            await self._flush_pending_outputs()
+
+    async def _flush_pending_outputs(self) -> None:
+        while self._pending_outputs:
+            entry = self._pending_outputs[0]
+            await self._output.put(entry)
+            assert entry.completed, "DataBuffer.put must mark the input completed before returning"
+            self._pending_outputs.popleft()
 
     # -------------------------- consumer --------------------------
 
@@ -263,6 +273,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             return
         self._retry_buffer.extend(state.retry_buffer)
         self._retry_buffer.extend(state.in_flight)
+        self._pending_outputs.extend(state.pending_outputs)
         self._ensure_output()
         self._output.restore(state.output)
 
@@ -283,6 +294,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return _FullyAsyncRolloutState(
             retry_buffer=list(self._retry_buffer),
             in_flight=[_copy_reset_for_retry(pending) for pending in self._in_flight.values()],
+            pending_outputs=[entry for entry in self._pending_outputs if not entry.completed],
             output=output,
         )
 
@@ -291,6 +303,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 class _FullyAsyncRolloutState:
     retry_buffer: list[list[Sample]]
     in_flight: list[list[Sample]]
+    pending_outputs: list[DataBufferInput]
     output: DataBufferState
 
 

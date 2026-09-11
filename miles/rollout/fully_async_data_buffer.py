@@ -86,6 +86,8 @@ class DataBufferConstructorInput:
 class DataBufferInput:
     prompt_group: list[Sample]  # resubmittable, for recycling
     group: Group  # finished samples
+    admission_passed: bool = False
+    completed: bool = False
 
 
 DataBufferState = dict[str | None, list[DataBufferInput]]
@@ -173,19 +175,24 @@ class DefaultDataBuffer(DataBuffer):
         if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
             self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
+            input.completed = True
             return
-        self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
-        filter_output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
-        if not filter_output.keep:
-            # Dropped, not recycled: no usable gradient signal.
-            self._metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
-            SampleOwnershipRecorder.log_dropped_samples(input.prompt_group, reason="dynamic_filter")
-            return
+        if not input.admission_passed:
+            self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
+            filter_output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
+            if not filter_output.keep:
+                # Dropped, not recycled: no usable gradient signal.
+                self._metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                SampleOwnershipRecorder.log_dropped_samples(input.prompt_group, reason="dynamic_filter")
+                input.completed = True
+                return
+            input.admission_passed = True
 
         async with self._cond:
             while len(self._buffer) >= self._capacity:
                 await self._cond.wait()
             self._buffer.append(input)
+            input.completed = True
             self._cond.notify_all()
 
     async def get(self, *, current_version: int | None = None, **_) -> DataBufferInput:
@@ -270,6 +277,7 @@ class DefaultMultiDataBuffer(DataBuffer):
         # TODO: a full inner blocks the one producer for every policy; give each policy its own dispatcher
         for trainer_model_id, entry in _split_by_trainer_model_id(input).items():
             await self._inner_of(trainer_model_id).put(entry)
+        input.completed = True
 
     async def get(self, *, trainer_model_id: str | None = None, **context) -> DataBufferInput:
         return await self._inner_of(trainer_model_id).get(trainer_model_id=trainer_model_id, **context)
