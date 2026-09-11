@@ -80,11 +80,11 @@ def test_the_worst_rank_bounds_the_capacity():
 
 
 def test_the_grouped_gemm_limit_bounds_expert_slots():
-    # memory would allow (200 + 2 - 10 - 2) / 2 = 95 slots; 16 local experts per slot cap it at 1024 / 16
+    # memory would allow (200 + 2 - 10 - 2) / 2 = 95 slots; 16 local experts per slot cap it at 1023 // 16
     roomy = RankProbe(
         free=200 * GIB, slot_bytes=2 * GIB, act_peak=10 * GIB, adapter_local_params=1, expert_groups_per_slot=16
     )
-    assert resolve_slot_capacity(_args(), [roomy]) == 64
+    assert resolve_slot_capacity(_args(), [roomy]) == 63
     # a tighter rank keeps memory the binding constraint
     tight = RankProbe(
         free=40 * GIB, slot_bytes=2 * GIB, act_peak=10 * GIB, adapter_local_params=1, expert_groups_per_slot=16
@@ -92,6 +92,56 @@ def test_the_grouped_gemm_limit_bounds_expert_slots():
     assert resolve_slot_capacity(_args(), [roomy, tight]) == 15
     # dense adapters (no expert groups) are memory-bound only
     assert resolve_slot_capacity(_args(), [_probe()]) == 45
+
+
+def _engine_args(**overrides) -> Namespace:
+    defaults = dict(
+        lora_rank=16,
+        train_memory_margin_bytes=GIB,
+        multi_lora_rollout_seqs_per_slot=16,
+        multi_lora_rollout_tokens_per_seq=8192,
+        rollout_num_gpus=8,
+        rollout_num_gpus_per_engine=2,
+        sglang_ep_size=2,
+        sglang_mem_fraction_static=0.9,
+        num_layers=48,
+        group_query_attention=True,
+        num_query_groups=4,
+        num_attention_heads=32,
+        kv_channels=128,
+        hidden_size=2048,
+        seq_length=8192,
+    )
+    return Namespace(**{**defaults, **overrides})
+
+
+def test_the_engine_bound_fits_adapter_buffers_and_kv_for_every_slot():
+    from miles.backends.megatron_utils.lora.slot_capacity import engine_slot_capacity
+
+    probe = RankProbe(
+        free=200 * GIB,
+        slot_bytes=GIB,
+        act_peak=GIB,
+        adapter_local_params=1,
+        gpu_total_bytes=140 * GIB,
+        base_dense_params=2_000_000_000,  # 2B dense, 28B expert params: a 30B MoE
+        base_expert_params=28_000_000_000,
+        adapter_dense_params=10_000_000,
+        adapter_expert_params_total=630_000_000,
+    )
+    n, detail = engine_slot_capacity(_engine_args(), probe)
+    # weights per engine GPU: 2 B * (2B / TP2 + 28B / EP2) = 30 GB; budget = 0.9 * 140 GiB - 30 GB
+    # adapter per GPU: 2 B * (10M / 2 + 630M / 2) = 640 MB; KV per token per GPU: 48 * 2 * 128 * 2 * 2 = 48 KiB
+    # KV per slot: 16 seqs * 8192 tokens * 48 KiB / 4 engines = 1.5 GiB
+    budget = 0.9 * 140 * GIB - 2 * (2e9 / 2 + 28e9 / 2)
+    per_slot = 2 * (10e6 / 2 + 630e6 / 2) + 16 * 8192 * 49152 / 4
+    assert n == int(budget // per_slot)
+    assert detail["engines"] == 4 and detail["seqs_per_slot"] == 16
+    # switched off by default
+    assert engine_slot_capacity(_engine_args(multi_lora_rollout_seqs_per_slot=0), probe) is None
+    # and it is the binding constraint when smaller than memory and the group limit
+    roomy = RankProbe(**{**probe.__dict__, "expert_groups_per_slot": 8})
+    assert resolve_slot_capacity(_engine_args(), [roomy]) == min(n, 1023 // 8)
 
 
 def test_no_room_for_one_slot_is_a_launch_error():
