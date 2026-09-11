@@ -15,13 +15,14 @@ from miles.tinker.runtime import (
 
 
 def _datum(tokens: list[int], **extra) -> dict:
-    return {"tokens": tokens, "target_len": len(tokens) - 1, **extra}
+    return {"tokens": tokens, "target_len": len(tokens) - 1, "target_tokens": tokens[1:], **extra}
 
 
 class TestBuildTrainData:
     def test_datums_become_rollout_batch_keys(self):
         train_data = _build_train_data([(3, _datum([1, 2, 3])), (5, _datum([4, 5]))])
         assert train_data["tokens"] == [[1, 2, 3], [4, 5]]
+        assert train_data["target_tokens"] == [[2, 3], [5]]
         assert train_data["response_lengths"] == [2, 1]
         assert train_data["total_lengths"] == [3, 2]
         assert train_data["loss_masks"] == [[1, 1], [1]]

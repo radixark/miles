@@ -38,7 +38,9 @@ def test_an_sdk_proto_request_decodes_to_internal_datums():
 
     assert (op, decoded["model_id"], decoded["seq_id"]) == ("forward_backward", "model-x", 7)
     assert decoded["loss_fn_config"] == {"beta": 0.5}
-    assert decoded["datums"] == [{"tokens": TOKENS, "target_len": 4, "weights": [1.0, 0.0, 1.0, 1.0]}]
+    assert decoded["datums"] == [
+        {"tokens": TOKENS, "target_len": 4, "target_tokens": TOKENS[1:], "weights": [1.0, 0.0, 1.0, 1.0]}
+    ]
 
 
 def test_both_wire_halves_produce_the_same_datums():
