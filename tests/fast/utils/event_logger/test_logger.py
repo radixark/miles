@@ -16,7 +16,12 @@ from miles.utils.audit_utils.event_logger.logger import (
     read_events,
     set_event_logger,
 )
-from miles.utils.audit_utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
+from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
+    IssuedSampleGroup,
+    MetricEvent,
+    WitnessAllocateIdEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
 
 _TEST_SOURCE = SimpleProcessIdentity(component="main")
@@ -226,6 +231,19 @@ class TestEventLoggerKeepsNonFiniteMetrics:
 
 
 class TestWithContext:
+    def test_issued_events_accept_their_real_call_context(self, tmp_path: Path) -> None:
+        """Issued events accept the rollout executor decorator context."""
+        logger = _make_logger(tmp_path)
+        with logger.with_context({"rollout_id": 5}):
+            logger.log(
+                DataSourceIssuedSamplesEvent,
+                {"groups": [IssuedSampleGroup(group_index=1, sample_indices=[10])]},
+                print_log=False,
+            )
+
+        [issued] = read_events(tmp_path)
+        assert issued.rollout_id == 5
+
     def test_injects_context_fields_into_logged_event(self, tmp_path: Path) -> None:
         """Fields from with_context are merged into events logged inside the scope."""
         logger = _make_logger(tmp_path)
