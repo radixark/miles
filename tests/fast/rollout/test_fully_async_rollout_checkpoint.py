@@ -1,16 +1,149 @@
 import asyncio
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
 from tests.fast.rollout.test_fully_async_rollout import FakeDataSource, make_args, make_fn, make_group
 
 import miles.rollout.fully_async_rollout as fully_async
+from miles.backends.training_utils.model_companion import ModelCompanion, ModelCompanionUtils, TrainingSampleIdentity
+from miles.ray.rollout import rollout_executor as rollout_executor_module
+from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.ray.train.group import TrainerController
 from miles.rollout.base_types import RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.fully_async_data_buffer import DataBufferConstructorInput, DataBufferInput, DefaultDataBuffer
+from miles.utils.arguments import _resolve_sample_ownership_check
+from miles.utils.audit_utils.event_logger.logger import EventLogger, set_event_logger
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.sample_ownership.flow import record_data_source_issues
+from miles.utils.audit_utils.sample_ownership.publication import make_current_cpu_witness_payload
+from miles.utils.audit_utils.sample_ownership.step_window import SampleOwnershipStepWindow
+from miles.utils.audit_utils.sample_ownership.store import SampleOwnershipEventStore
 from miles.utils.types import Sample
+
+
+class TestCheckpointSampleOwnership:
+    @pytest.mark.parametrize("lose_prefetched_batch", [False, True], ids=["healthy", "missing-training-step"])
+    async def test_ci_checker_detects_a_prefetched_batch_lost_after_restore(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, lose_prefetched_batch: bool
+    ) -> None:
+        """The periodic CI checker rejects a restored batch that the driver never sends to training."""
+        event_logger = EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="main"))
+        set_event_logger(event_logger)
+        args = _checkpoint_args(tmp_path)
+        source = FakeDataSource(scripted=[make_group(9)])
+        record_data_source_issues(source)
+        fn = make_fn(monkeypatch, args, source)
+        fn._ensure_output()
+        [group] = source.get_samples(1)
+        await fn._output.put(DataBufferInput(prompt_group=group, group=group))
+        taking = asyncio.create_task(fn._take_batch(num_groups=1, current_version=1, trainer_model_id=None))
+        await asyncio.sleep(0)
+        assert taking.done()
+        fn.save(6)
+        await taking
+
+        restored = make_fn(monkeypatch, args, source)
+        restored.load(6)
+        restored._ensure_output()
+        restored._output.restore(restored._pending_restore)
+        restored._pending_restore = None
+        restored._worker = asyncio.create_task(asyncio.Event().wait())
+        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor.args = SimpleNamespace(
+            ci_test=True,
+            sample_ownership_check=False,
+            sample_ownership_grace_steps=None,
+            sample_ownership_check_interval_seconds=0.001,
+            sample_ownership_check_timeout_seconds=5,
+            save_debug_event_data=str(event_logger.log_dir),
+            train_backend="megatron",
+            megatron_config=None,
+            lora_rank=0,
+            lora_adapter_path=None,
+            multi_lora=False,
+            debug_train_only=False,
+            debug_rollout_only=False,
+        )
+        _resolve_sample_ownership_check(executor.args)
+        assert executor.args.sample_ownership_check
+        trainer = _CheckpointTrainer(grace_steps=executor.args.sample_ownership_grace_steps)
+        executor.rollout_id = 10
+        executor._actor_controller = trainer
+        executor._sample_ownership_store = SampleOwnershipEventStore(event_logger)
+        executor._sample_ownership_task = None
+        try:
+            output = await restored._drain(RolloutFnTrainInput(rollout_id=7, weight_version=1))
+            assert [[sample.index for sample in batch] for batch in output.samples] == [[90, 91]]
+            if not lose_prefetched_batch:
+                await trainer.train(rollout_id=7, rollout_data_pack=output.samples)
+            for rollout_id in (8, 9):
+                await trainer.train(rollout_id=rollout_id, rollout_data_pack=source.get_samples(1))
+
+            monkeypatch.setattr(
+                rollout_executor_module,
+                "compute_trainer_configs",
+                lambda _args: [SimpleNamespace(role="actor", trainer_id="actor")],
+            )
+            monkeypatch.setattr(
+                rollout_executor_module, "create_trainer_controller_handle", lambda *_args, **_kwargs: trainer
+            )
+            monkeypatch.setattr(rollout_executor_module, "get_backend_capability", lambda _args: None)
+            executor._start_sample_ownership_checker()
+            assert executor._sample_ownership_task is not None
+            if lose_prefetched_batch:
+                with pytest.raises(ValueError, match="mature issued sample had no training outcome"):
+                    await asyncio.wait_for(asyncio.shield(executor._sample_ownership_task), timeout=5)
+            else:
+                await asyncio.wait_for(trainer.checked.wait(), timeout=5)
+                assert not executor._sample_ownership_task.done()
+        finally:
+            await executor._stop_sample_ownership_checker()
+            restored._worker.cancel()
+            await asyncio.gather(restored._worker, return_exceptions=True)
+            set_event_logger(None)
+
+
+class _CheckpointTrainer(TrainerController):
+    def __init__(self, *, grace_steps: int) -> None:
+        self._role = "actor"
+        self.args = SimpleNamespace(sample_ownership_check_timeout_seconds=5)
+        self._cpu_witness_operation_lock = asyncio.Lock()
+        self._sample_ownership_steps = SampleOwnershipStepWindow(grace_steps)
+        self._cells_by_id = {"cell-0": SimpleNamespace(cell_index=0, is_alive=True, execute=self._execute)}
+        self.model = [torch.nn.Module()]
+        self.model[0].add_module("model_companion", ModelCompanion())
+        self.checked = asyncio.Event()
+        self._snapshot_count = 0
+
+    async def _train(
+        self, rollout_id: int, rollout_data_pack: list[list[Sample]], external_data: Any = None
+    ) -> list[Any]:
+        ModelCompanionUtils.record(
+            self.model,
+            [
+                TrainingSampleIdentity(source_sample_index=sample.index, row_index=0, row_count=1)
+                for group in rollout_data_pack
+                for sample in group
+            ],
+        )
+        return []
+
+    async def _execute(
+        self, method: str, *, rollout_id: int, cohort_id: str, kill_on_failure: bool
+    ) -> list[dict[str, object]]:
+        assert method == "log_current_cpu_witness"
+        payload = make_current_cpu_witness_payload(
+            self.model, rollout_id=rollout_id, cohort_id=cohort_id, replica_id="cell-0"
+        )
+        self._snapshot_count += 1
+        if self._snapshot_count == 2:
+            self.checked.set()
+        return [payload]
 
 
 def _checkpoint_args(path: Path, **overrides: object) -> Namespace:
