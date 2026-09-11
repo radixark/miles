@@ -22,6 +22,7 @@ Importing this module is idempotent — safe to import multiple times.
 from __future__ import annotations
 
 import logging
+import os
 
 import torch
 
@@ -54,6 +55,15 @@ _NEMOTRONH_MOE_ROUTING_FIELDS: tuple[tuple[str, str, type], ...] = (
     ("n_group", "moe_router_num_groups", int),
     ("topk_group", "moe_router_group_topk", int),
 )
+
+
+def _keep_mtp_enabled() -> bool:
+    value = os.environ.get("MILES_NEMOTRONH_KEEP_MTP", "").strip().lower()
+    if value in {"", "0", "false", "no", "off"}:
+        return False
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    raise ValueError(f"Invalid boolean for MILES_NEMOTRONH_KEEP_MTP: {value!r}")
 
 
 def _build_bridge_subclass():
@@ -124,14 +134,10 @@ def _build_bridge_subclass():
                 provider.moe_latent_size = int(latent_size)
                 provider.moe_shared_expert_overlap = False
 
-            # MTP head: Super-120B's HF config has num_nextn_predict_layers=1, which
-            # the base CONFIG_MAPPING translates to provider.mtp_num_layers=1. Miles'
-            # generic training loop only feeds MTP labels when --enable-mtp-training is
-            # set, so building the head adds dead weights. Disable unless explicitly
-            # requested via the MILES_NEMOTRONH_KEEP_MTP env var.
-            import os
-
-            if not os.environ.get("MILES_NEMOTRONH_KEEP_MTP"):
+            # HybridModel can derive MTP labels from input_ids even when the
+            # policy loss supplies no labels. Constructing the head therefore
+            # adds an auxiliary objective; require an explicit opt-in.
+            if not _keep_mtp_enabled():
                 provider.mtp_num_layers = None
                 provider.mtp_hybrid_override_pattern = None
             return provider
