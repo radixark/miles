@@ -9,11 +9,13 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.async_utils import run
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
@@ -235,7 +237,7 @@ def with_session_server(
     # Mirror wait_session_server_ready (router_manager.py): the id is minted into the
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
     instance_id = f"{args.run_uuid}-0"
-    args.session_server_instance_ids = {f"127.0.0.1:{port}": instance_id}
+    args.session_server_instances = [SessionServerInstance(addr=f"127.0.0.1:{port}", instance_id=instance_id)]
     # Sample assembly runs inside the server, so the R3 decode shape args
     # must reach the server config (set them via args_kwargs BEFORE the
     # server starts; assigning to the driver args afterwards has no effect).
@@ -303,9 +305,8 @@ def generation_env(request, variant):
 
         with cm:
             if is_agentic:
-                # Point session server address to the SessionServer we just started,
-                # mirroring the driver-side contract set by wait_session_server_ready.
-                args.session_server_addrs = [f"127.0.0.1:{server_port}"]
+                # with_session_server already published the driver-side contract
+                # (the instance record, id included); only the mock knobs remain.
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
                 mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
             yield GenerateEnv(args=args, mock_server=mock_server)

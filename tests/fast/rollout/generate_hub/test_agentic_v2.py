@@ -6,6 +6,7 @@ import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.session.samples.codec import SamplesReply
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.types import Sample
 
 
@@ -29,7 +30,7 @@ class _Tracer:
 
 def _generate_input(**args_kwargs) -> GenerateFnInput:
     args = SimpleNamespace(
-        session_server_addrs=["127.0.0.1:12345"],
+        session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
         custom_agent_function_path="test.fake_agent",
         max_seq_len=None,
         partial_rollout=False,
@@ -127,8 +128,8 @@ _ADDRS_ATTR_ABSENT = object()
 class TestSessionServerAddrsValidation:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("addrs", [_ADDRS_ATTR_ABSENT, None, []], ids=["absent", "none", "empty"])
-    async def test_empty_session_server_addrs_is_rejected(self, monkeypatch, addrs):
-        """generate() raises the documented AssertionError when session_server_addrs is absent, null or empty, without creating a tracer."""
+    async def test_empty_session_server_instances_is_rejected(self, monkeypatch, addrs):
+        """generate() raises the documented AssertionError when session_server_instances is absent, null or empty, without creating a tracer."""
         created_for: list[object] = []
 
         async def fake_create(args):
@@ -140,11 +141,11 @@ class TestSessionServerAddrsValidation:
 
         generate_input = _generate_input()
         if addrs is _ADDRS_ATTR_ABSENT:
-            del generate_input.args.session_server_addrs
+            del generate_input.args.session_server_instances
         else:
-            generate_input.args.session_server_addrs = addrs
+            generate_input.args.session_server_instances = addrs
 
-        with pytest.raises(AssertionError, match="requires session_server_addrs"):
+        with pytest.raises(AssertionError, match="requires session_server_instances"):
             await agentic_tool_call.generate(generate_input)
 
         assert created_for == []

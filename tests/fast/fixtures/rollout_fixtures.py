@@ -16,6 +16,7 @@ import requests
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
+from miles.rollout.session.types import SessionServerInstance
 from miles.router.config import compute_miles_router_config
 from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
@@ -116,7 +117,7 @@ def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornT
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     try:
         server.start()
-        args.session_server_addrs = [f"127.0.0.1:{port}"]
+        args.session_server_instances = [SessionServerInstance(addr=f"127.0.0.1:{port}")]
         yield server
     finally:
         server.stop()

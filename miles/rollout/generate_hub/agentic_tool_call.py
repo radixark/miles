@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     assert not input.args.partial_rollout, "Partial rollout is not supported"
-    assert getattr(input.args, "session_server_addrs", None), (
-        "agentic_tool_call.generate requires session_server_addrs. "
+    assert getattr(input.args, "session_server_instances", None), (
+        "agentic_tool_call.generate requires session_server_instances. "
         "Pass --use-session-server to start the session server."
     )
     use_v2 = getattr(input.args, "use_session_server", None) == "v2"
