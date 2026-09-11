@@ -25,7 +25,7 @@ register_cuda_ci(
     disabled="pending first GPU validation of the cookbook acceptance path",
 )
 
-MODEL_NAME = "Qwen3-4B"
+MODEL_NAME = "Qwen3-4B-Instruct-2507"
 BASE_MODEL = f"Qwen/{MODEL_NAME}"
 COOKBOOK_PIN = "git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2c"
 GATEWAY_PORT = 10613
@@ -56,7 +56,7 @@ def execute():
     serve_cmd = (
         "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
         f"--hf-checkpoint /root/models/{MODEL_NAME} "
-        "--tp 1 --ep 1 --lora-rank 8 --lora-alpha 16 "
+        "--model-type qwen3-4B-Instruct-2507 --tp 1 --ep 1 --lora-rank 8 --lora-alpha 16 "
         f'--extra-args "--tinker-base-model {BASE_MODEL}"'
     )
     server = subprocess.Popen(["bash", "-c", serve_cmd])
