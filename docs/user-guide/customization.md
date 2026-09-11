@@ -105,7 +105,7 @@ class CustomDataSource(DataSource):
     def load(self, rollout_id=None) -> None: ...
 ```
 
-**Default:** `miles.rollout.data_source.RolloutDataSourceWithBuffer`.
+**Default:** `miles.rollout.data_source.RolloutDataSource`.
 
 ### `--eval-function-path`
 

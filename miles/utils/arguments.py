@@ -1244,7 +1244,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--data-source-path",
                 type=str,
-                default="miles.rollout.data_source.RolloutDataSourceWithBuffer",
+                default="miles.rollout.data_source.RolloutDataSource",
                 help="The data source class for rollout data.",
             )
             parser.add_argument(
@@ -3449,6 +3449,7 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     validate_lora_args(args)
+    _resolve_data_source_path(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -4112,3 +4113,9 @@ def hf_validate_args(args, hf_config):
 
     if len(errors) > 0:
         raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
+
+
+def _resolve_data_source_path(args: argparse.Namespace) -> None:
+    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+        args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
+        logger.info("Partial rollout uses the legacy buffered data source by default")
