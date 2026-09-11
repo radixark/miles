@@ -17,10 +17,15 @@ DRO_DEFAULTS = {"beta": 0.05}
 
 
 def _target_logprobs(args: Namespace, batch: RolloutBatch, logits: torch.Tensor) -> list[torch.Tensor]:
+    # Tinker targets are explicit labels: splice them over the response region of the gather sequence
+    label_tokens = [
+        torch.cat([tokens[: len(tokens) - len(targets)], _as_tensor_like(targets, tokens)])
+        for tokens, targets in zip(batch["unconcat_tokens"], batch["target_tokens"], strict=True)
+    ]
     outputs = get_log_probs_and_entropy(
         logits,
         args=args,
-        unconcat_tokens=batch["unconcat_tokens"],
+        unconcat_tokens=label_tokens,
         total_lengths=batch["total_lengths"],
         response_lengths=batch["response_lengths"],
         with_entropy=False,
