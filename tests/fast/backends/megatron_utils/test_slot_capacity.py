@@ -79,6 +79,21 @@ def test_the_worst_rank_bounds_the_capacity():
     assert resolve_slot_capacity(_args(), probes) == 19
 
 
+def test_the_grouped_gemm_limit_bounds_expert_slots():
+    # memory would allow (200 + 2 - 10 - 2) / 2 = 95 slots; 16 local experts per slot cap it at 1024 / 16
+    roomy = RankProbe(
+        free=200 * GIB, slot_bytes=2 * GIB, act_peak=10 * GIB, adapter_local_params=1, expert_groups_per_slot=16
+    )
+    assert resolve_slot_capacity(_args(), [roomy]) == 64
+    # a tighter rank keeps memory the binding constraint
+    tight = RankProbe(
+        free=40 * GIB, slot_bytes=2 * GIB, act_peak=10 * GIB, adapter_local_params=1, expert_groups_per_slot=16
+    )
+    assert resolve_slot_capacity(_args(), [roomy, tight]) == 15
+    # dense adapters (no expert groups) are memory-bound only
+    assert resolve_slot_capacity(_args(), [_probe()]) == 45
+
+
 def test_no_room_for_one_slot_is_a_launch_error():
     probes = [_probe(free=9 * GIB, slot=2 * GIB, act_peak=10 * GIB)]  # (9 + 2 - 10 - 2) / 2 < 1
     with pytest.raises(AssertionError, match="Lower --lora-rank"):
