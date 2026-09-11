@@ -2286,7 +2286,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action=argparse.BooleanOptionalAction,
                 default=None,
                 help="Verify exactly one outcome for every consumed sample and every mature issued sample; "
-                "CI enables this unless it is explicitly disabled.",
+                "CI enables this unless it is explicitly disabled. Every actor step appends one full "
+                "consumption snapshot per replica to the event log, whose size therefore grows with steps "
+                "times consumed samples, so this is meant for CI and debugging.",
             )
             parser.add_argument(
                 "--enable-witness",
