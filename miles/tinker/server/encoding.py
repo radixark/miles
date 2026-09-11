@@ -3,21 +3,46 @@
 Datums encode input x and explicit target labels t as x + [t[-1]],
 so each output scores logprob(t[i] | x[0..i])."""
 
+import pydantic
+
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
+from tinker import types as tinker_types
 
 # materialized at the boundary so core and the executor can require every key
-ADAM_PARAM_DEFAULTS = {
-    "learning_rate": 1e-4,
-    "beta1": 0.9,
-    "beta2": 0.95,
-    "eps": 1e-12,
-    "weight_decay": 0.0,
-    "grad_clip_norm": 0.0,
+ADAM_PARAM_DEFAULTS = tinker_types.AdamParams().model_dump()
+
+# JSON-wire request models; forward_backward travels as protobuf and its datums
+# are checked in build_datum instead
+REQUEST_TYPES = {
+    "optim_step": tinker_types.OptimStepRequest,
+    "save_state": tinker_types.SaveWeightsRequest,
+    "load_state": tinker_types.LoadWeightsRequest,
+    "save_weights_for_sampler": tinker_types.SaveWeightsForSamplerRequest,
 }
+
+
+def validate_against_sdk(request_type, payload: dict) -> None:
+    """The pinned SDK's request models are the wire contract; reject what they reject."""
+    try:
+        request_type.model_validate(payload)
+    except pydantic.ValidationError as error:
+        first = error.errors()[0]
+        location = ".".join(str(part) for part in first["loc"])
+        raise UserInputError(f"{location or 'request'}: {first['msg']}") from None
+
+
+def validate_create_model(payload: dict) -> None:
+    validate_against_sdk(tinker_types.CreateModelRequest, payload)
+
+
+def validate_create_sampling_session(payload: dict) -> None:
+    validate_against_sdk(tinker_types.CreateSamplingSessionRequest, payload)
 
 
 def decode_command(op: str, payload: dict) -> tuple[str, dict]:
     """One JSON command body -> (op, internal payload)."""
+    if (request_type := REQUEST_TYPES.get(op)) is not None:
+        validate_against_sdk(request_type, payload)
     decoded = {"model_id": payload["model_id"], "seq_id": payload["seq_id"]}
     if op == "forward_backward":
         fb_input = payload["forward_backward_input"]
@@ -32,7 +57,7 @@ def decode_command(op: str, payload: dict) -> tuple[str, dict]:
         }
         return ("forward_only" if payload.get("forward_only") else op), decoded
     if op == "optim_step":
-        return op, decoded | {"adam_params": materialize_adam_params(payload["adam_params"])}
+        return op, decoded | {"adam_params": {**ADAM_PARAM_DEFAULTS, **payload["adam_params"]}}
     if op == "save_state":
         _reject_unsupported_save_options(payload)
         return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
@@ -49,13 +74,6 @@ def _reject_unsupported_save_options(payload: dict) -> None:
         raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
     if payload.get("user_metadata") is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
-
-
-def materialize_adam_params(raw: dict) -> dict:
-    unknown = set(raw) - set(ADAM_PARAM_DEFAULTS)
-    if unknown:
-        raise UserInputError(f"unknown adam_params keys: {sorted(unknown)}")
-    return {**ADAM_PARAM_DEFAULTS, **raw}
 
 
 def model_input_tokens(model_input: dict) -> list[int]:
@@ -116,6 +134,7 @@ def _dense_from_csr(tensor_data: dict) -> list:
 
 
 def decode_sample_request(payload: dict) -> dict:
+    validate_against_sdk(tinker_types.SampleRequest, payload)
     return {
         "model_path": payload.get("model_path"),
         "base_model": payload.get("base_model"),
