@@ -21,6 +21,6 @@ Two execution modes; each example README is the complete guide for its mode:
 
 - Tasks on a **local Docker daemon** → the agent-server mode:
   [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker).
-- Tasks on a **cloud sandbox backend** (E2B, Daytona, Modal, ...) → the
+- Tasks on a **cloud [sandbox provider](/user-guide/sandbox-providers)** → the
   in-process mode, no server in between:
   [`examples/experimental/harbor`](https://github.com/radixark/miles/tree/main/examples/experimental/harbor).
