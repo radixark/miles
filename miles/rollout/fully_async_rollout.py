@@ -18,6 +18,7 @@ rollout engines, pausing producer submissions for the duration of the
 
 import asyncio
 import logging
+from collections import deque
 from dataclasses import replace
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
@@ -85,6 +86,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
         self._output: DataBuffer | None = None
+        self._retry_buffer: deque[list[Sample]] = deque()
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -138,7 +140,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return self.args.rollout_batch_size
 
     def _submit_one_group(self) -> tuple[asyncio.Task, list[Sample]]:
-        samples = self.data_source.get_samples(1)
+        samples = [self._retry_buffer.popleft()] if self._retry_buffer else self.data_source.get_samples(1)
         stamp_kv_cache_namespace(samples, namespace=self._curr_kv_cache_namespace)
         self._scheduler.on_submit(samples)
         [prompt_group] = samples
@@ -250,7 +252,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
     def _recycle(self, prompt_group: list[Sample]) -> None:
         for sample in prompt_group:
             sample.reset_for_retry()
-        self.data_source.add_samples([prompt_group])
+        self._retry_buffer.append(prompt_group)
 
 
 async def _end_worker(worker: asyncio.Task) -> None:
