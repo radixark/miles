@@ -82,6 +82,7 @@ if [ -n "$SGLANG_MAX_LOADED_LORAS" ]; then
 fi
 e2e_submit_gateway "$(e2e_model_args "$MODEL_TYPE")" "$SERVE_ARGS"
 e2e_wait_ready
+e2e_start_pruning
 
 SLOTS=$(e2e_resolved_slots)
 [ -n "$SLOTS" ] || { log "could not read the slot count from serve.log"; exit 1; }
