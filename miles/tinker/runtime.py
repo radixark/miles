@@ -4,13 +4,43 @@ import asyncio
 import uuid
 
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.service import ExecutorBackend
+from miles.tinker.core.backend import ExecutorBackend
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
 
 # internal datum key -> trainer batch key
 DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sampling_logprobs": "rollout_log_probs"}
+
+
+def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
+    """The trainer splits the batch evenly across data-parallel ranks; pad with
+    zero-loss-mask copies of the last datum so every rank gets the same share.
+    The mask removes padding from every loss term; its outputs are dropped by the caller."""
+    remainder = len(slot_datums) % dp_size
+    if remainder == 0:
+        return slot_datums
+    slot, datum = slot_datums[-1]
+    filler = dict(datum) | {"padding": True}
+    return slot_datums + [(slot, filler)] * (dp_size - remainder)
+
+
+def _build_train_data(slot_datums: list) -> dict:
+    datums = [datum for _, datum in slot_datums]
+    train_data = {
+        "tokens": [datum["tokens"] for datum in datums],
+        "target_tokens": [datum["target_tokens"] for datum in datums],
+        "loss_masks": [[0 if datum.get("padding") else 1] * datum["target_len"] for datum in datums],
+        "response_lengths": [datum["target_len"] for datum in datums],
+        "total_lengths": [len(datum["tokens"]) for datum in datums],
+        "sample_indices": list(range(len(datums))),
+        "adapter_slots": [slot for slot, _ in slot_datums],
+        "dynamic_global_batch_size": len(datums),
+    }
+    for datum_key, batch_key in DATUM_TO_BATCH_KEYS.items():
+        if datum_key in datums[0]:
+            train_data[batch_key] = [datum[datum_key] for datum in datums]
+    return train_data
 
 
 class MilesBackend(ExecutorBackend):
@@ -58,6 +88,14 @@ class MilesBackend(ExecutorBackend):
                     }
         return [by_index[index] for index in range(len(slot_datums))]
 
+    async def _run_batch(self, method: str, batch_id: int, train_data: dict) -> list:
+        store = object_store.get_instance()
+        data_ref = store.put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+        try:
+            return await getattr(self.trainer, method)(batch_id=batch_id, data_ref=data_ref)
+        finally:
+            store.remove(data_ref)
+
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
         return worker_results[0]
@@ -75,14 +113,6 @@ class MilesBackend(ExecutorBackend):
         self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
     ) -> None:
         await self.trainer.push_slot(slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path)
-
-    async def _run_batch(self, method: str, batch_id: int, train_data: dict) -> list:
-        store = object_store.get_instance()
-        data_ref = store.put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
-        try:
-            return await getattr(self.trainer, method)(batch_id=batch_id, data_ref=data_ref)
-        finally:
-            store.remove(data_ref)
 
     # -------- sampling --------
 
@@ -151,36 +181,6 @@ def _with_sample_seed(request: dict, index: int) -> dict:
         params["sampling_seed"] = seed + index
     request["sampling_params"] = params
     return request
-
-
-def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
-    """The trainer splits the batch evenly across data-parallel ranks; pad with
-    zero-loss-mask copies of the last datum so every rank gets the same share.
-    The mask removes padding from every loss term; its outputs are dropped by the caller."""
-    remainder = len(slot_datums) % dp_size
-    if remainder == 0:
-        return slot_datums
-    slot, datum = slot_datums[-1]
-    filler = dict(datum) | {"padding": True}
-    return slot_datums + [(slot, filler)] * (dp_size - remainder)
-
-
-def _build_train_data(slot_datums: list) -> dict:
-    datums = [datum for _, datum in slot_datums]
-    train_data = {
-        "tokens": [datum["tokens"] for datum in datums],
-        "target_tokens": [datum["target_tokens"] for datum in datums],
-        "loss_masks": [[0 if datum.get("padding") else 1] * datum["target_len"] for datum in datums],
-        "response_lengths": [datum["target_len"] for datum in datums],
-        "total_lengths": [len(datum["tokens"]) for datum in datums],
-        "sample_indices": list(range(len(datums))),
-        "adapter_slots": [slot for slot, _ in slot_datums],
-        "dynamic_global_batch_size": len(datums),
-    }
-    for datum_key, batch_key in DATUM_TO_BATCH_KEYS.items():
-        if datum_key in datums[0]:
-            train_data[batch_key] = [datum[datum_key] for datum in datums]
-    return train_data
 
 
 def _prompt_logprobs(response: dict) -> list[float]:
