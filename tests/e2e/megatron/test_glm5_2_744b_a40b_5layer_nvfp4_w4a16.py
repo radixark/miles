@@ -9,7 +9,7 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(
     est_time=3600,
     suite="stage-c-8-gpu-b200",
-    labels=["megatron", "model-scripts"],
+    labels=["megatron", "model-scripts", "weight-update"],
     hardware=["blackwell"],
 )
 
@@ -17,8 +17,8 @@ MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"
 MODEL_TYPE = "glm5.2-744B-A40B_5layer"
 NUM_GPUS = 8
-ACTOR_NUM_GPUS = NUM_GPUS
-ROLLOUT_NUM_GPUS = NUM_GPUS
+ACTOR_NUM_GPUS = 4
+ROLLOUT_NUM_GPUS = 4
 ROLLOUT_GPUS_PER_ENGINE = 2
 RUN_ID = U.create_run_id()
 
@@ -219,6 +219,7 @@ def execute():
         "--sglang-max-running-requests 512 "
         f"--sglang-chunked-prefill-size {2048 * ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-watchdog-timeout 3600 "
+        "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     )
 
     ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
@@ -244,7 +245,7 @@ def execute():
         "--allgather-cp "
         "--miles-dsa-topk-backend flashinfer "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
-        "--colocate "
+        "--update-weight-transfer-mode p2p "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
