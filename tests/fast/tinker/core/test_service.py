@@ -97,6 +97,23 @@ async def test_admission_failure_fails_the_future_not_the_stream(service):
     assert (await await_settled(service, "tenant", healthy)).state == DONE, "the stream must keep flowing"
 
 
+async def test_rejected_seq_waits_for_the_gap_and_cannot_be_retried(service):
+    model_id = await created_model(service)
+    rejected = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, []))
+    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 3))
+    stream = service.planner.stream(model_id)
+    assert not stream.queue, "rejecting seq 2 must not skip the missing seq 1"
+    assert service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()])) == rejected
+
+    first = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
+    assert (await await_settled(service, "tenant", first)).state == DONE
+    assert (await await_settled(service, "tenant", step)).state == DONE
+    assert (await await_settled(service, "tenant", rejected)).state == FAILED
+    calls = service.backend.named("forward_backward")
+    assert len(calls) == 1 and len(calls[0]["slot_datums"]) == 1
+    assert not stream.queue
+
+
 async def test_forward_backward_outputs_align_to_datums(service):
     model_id = await created_model(service)
     request_id = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum(2), datum(5)]))

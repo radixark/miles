@@ -37,24 +37,32 @@ class ModelStream:
         self.model_id = model_id
         self.tenant = tenant
         self.slot = slot
-        # seq_ids are 1-based; watermark = last seq_id accepted into the queue
+        # seq_ids are 1-based; rejected positions advance the watermark too
         self.watermark = 0
-        self.arrivals: dict[int, Command] = {}
+        self.arrivals: dict[int, Command | None] = {}  # None marks an admission rejection
         self.request_id_by_seq: dict[int, str] = {}
         self.queue: deque[PendingRequest] = deque()
 
     def submit(self, command: Command) -> None:
         """Accept one deduplicated command; feed the queue in seq order."""
         self.arrivals[command.seq_id] = command
-        while (next_command := self.arrivals.pop(self.watermark + 1, None)) is not None:
+        self._drain_arrivals()
+
+    def reject(self, seq_id: int) -> None:
+        self.arrivals[seq_id] = None
+        self._drain_arrivals()
+
+    def _drain_arrivals(self) -> None:
+        while self.watermark + 1 in self.arrivals:
             self.watermark += 1
+            next_command = self.arrivals.pop(self.watermark)
+            if next_command is None:
+                continue
             pending = PendingRequest(command=next_command)
             if pending.is_batch_op:
                 pending.datums = next_command.payload["datums"]
                 pending.remaining = len(pending.datums)
                 pending.outputs = [None] * len(pending.datums)
-                if not pending.datums:
-                    continue  # admission-rejected: the position is consumed, nothing runs
             self.queue.append(pending)
 
     def open_batch_run(self) -> list[PendingRequest]:
