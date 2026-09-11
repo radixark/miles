@@ -215,6 +215,7 @@ class TrainerController:
 
             self._log_step_end_event(
                 rollout_id=rollout_id,
+                attempt=attempt,
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
@@ -246,7 +247,7 @@ class TrainerController:
 
         return witness_info
 
-    def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list):
+    def _log_step_end_event(self, *, rollout_id: int, attempt: int, snapshot_alive_cells: list, results: list):
         if is_event_logger_initialized():
             cell_outcomes = {
                 cell.cell_index: (
@@ -256,7 +257,7 @@ class TrainerController:
             }
             get_event_logger().log(
                 TrainGroupStepEndEvent,
-                dict(rollout_id=rollout_id, cell_outcomes=cell_outcomes),
+                dict(rollout_id=rollout_id, attempt=attempt, role=self._role, cell_outcomes=cell_outcomes),
             )
 
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
