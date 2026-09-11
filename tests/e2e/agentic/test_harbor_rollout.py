@@ -1,29 +1,43 @@
-"""Harbor trials on real e2b sandboxes, through the full rollout path.
+"""Harbor trials on real cloud sandboxes, through the full rollout path.
 
-What the sandbox smoke (scripts/sandbox_smoke) cannot see, this covers: the
-launcher wiring delivering the Harbor environment to rollout workers, the
-session server + TITO recording a real model's turns under the strict gate,
-terminus-2 driving the sandbox from the trainer host, and the reward flowing
-back through generate.reward_func. Rollout only (``--debug-rollout-only``):
-everything Harbor-specific runs before the optimizer step, and skipping that
-step lets the recipe's own model, GLM-4.7-Flash, fit on 2 GPUs. Deliberately
-fixed to harbor x e2b x terminus-2 x TB2 fix-git -- one combination, the one
-we run.
+What the sandbox smoke (``test_sandbox_golden.py``, next to this file) cannot
+see, this covers: the launcher wiring delivering the Harbor environment to
+rollout workers, the session server + TITO recording a real model's turns
+under the strict gate, terminus-2 driving the sandbox from the trainer host,
+and the reward flowing back through generate.reward_func. Rollout only
+(``--debug-rollout-only``): everything Harbor-specific runs before the
+optimizer step, and skipping that step lets the recipe's own model,
+GLM-4.7-Flash, fit on 2 GPUs.
 
-Registered ``disabled`` because it needs what CI runners do not have yet: a
-network route to an E2B-compatible sandbox service and the platform key on
-the machine. Until then, run it manually on a GPU devbox that has both:
+``HARBOR_ENV_TYPE`` picks the sandbox backend, exactly as the recipe does.
+Nothing else here is backend-specific: the credential and SDK preflight is
+the launcher's own ``harbor_env_vars``, so adding a backend to
+``PROVIDER_CREDENTIALS`` is all it takes to run this against it. Which
+combinations have actually been run is recorded in
+``scripts/sandbox_smoke/README.md``.
+
+Registered ``disabled`` because CI runners carry no sandbox credential. Run
+it manually on a GPU devbox that has one:
 
     # on the devbox, from the repo root (2 GPUs)
     # uv, not pip: the branch carries a uv-workspace dependency pip cannot resolve
     uv pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
-    export E2B_API_URL=http://<your-e2b-service>
-    export E2B_SANDBOX_URL=$E2B_API_URL
+    export HARBOR_ENV_TYPE=e2b
+    export E2B_API_URL=http://<your-e2b-service> E2B_SANDBOX_URL=$E2B_API_URL
     # key at ~/.config/e2b/api_key
-    PYTHONPATH=. python tests/e2e/agentic/test_harbor_e2b_rollout.py
+    # what an interactive devbox shell sets and a plain ssh session does not:
+    # the Ray head's address (the launcher falls back to 127.0.0.1) and a file
+    # descriptor limit Ray's worker sockets fit in (1024 kills the raylet)
+    export MASTER_ADDR=$(hostname -i | awk '{print $1}')
+    ulimit -n $(ulimit -Hn)
+    PYTHONPATH=. python tests/e2e/agentic/test_harbor_rollout.py
+
+Swap the extra and the backend name for another provider (``harbor[modal]``
+with ``HARBOR_ENV_TYPE=modal``, ...); each provider's own credential and
+endpoint variables are documented in ``miles/rollout/agentic/credentials.py``.
 
 terminus-2 is a host-process agent: the sandboxes never call back into the
-trainer, so the only network requirement is this machine -> control plane.
+trainer, so the only network requirement is this machine -> the provider.
 """
 
 import json
@@ -37,13 +51,14 @@ from types import SimpleNamespace
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS
 
 register_cuda_ci(
     est_time=1200,
     suite="stage-c-2-gpu-h200",
     hardware=["hopper"],
     labels=["agentic"],
-    disabled="needs a network route to the sandbox service and its key on the runner; run manually on a GPU devbox that has both",
+    disabled="CI runners hold no sandbox credential; run it manually on a GPU devbox that has one",
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -62,28 +77,48 @@ PROMPT_DATA = "/root/datasets/harbor_tb2_smoke.jsonl"
 TRIALS_DIR = "/tmp/harbor_trials_e2e"
 
 
-def preflight():
-    """Fail fast with instructions instead of failing every trial later."""
+def harbor_worker_env() -> dict[str, str]:
+    """The rollout workers' Harbor environment, assembled by the launcher's own code.
+
+    Building it is also the credential and SDK preflight: the launcher raises
+    with the provider's provision hint when either is missing.
+    """
+    # bound each trial so the smoke stays a smoke: a looping agent would
+    # otherwise run to the engine's context limit. fix-git takes terminus
+    # well over 12 of its one-command turns, so the cap leaves room to solve.
+    os.environ.setdefault("AGENT_TRIAL_TIMEOUT", "1200")
+    os.environ.setdefault("HARBOR_AGENT_MAX_ITERATIONS", "30")
+    args = SimpleNamespace(
+        harbor_env_type=os.environ.get("HARBOR_ENV_TYPE", ""),
+        harbor_env_kwargs=os.environ.get("HARBOR_ENV_KWARGS", ""),
+        harbor_tasks_dir=TASKS_DIR,
+        harbor_trials_dir=TRIALS_DIR,
+        agent_model_name="model",
+        agent_timeout=600,
+        router_external_host="",  # terminus-2 runs on this host; no sandbox callback
+        # every registered provider's key-file argument, so a new backend needs no change here
+        **{spec["arg_attr"]: os.environ.get(spec["file_env_var"], "") for spec in PROVIDER_CREDENTIALS.values()},
+    )
+    return harbor_env_vars(args)
+
+
+def probe_e2b_endpoint() -> None:
+    """Fail before the model download when a configured endpoint is unreachable.
+
+    Only a self-hosted E2B endpoint gets one: its address comes from
+    configuration, so it can be wrong, and an unauthenticated request is
+    enough to prove it answers.
+    """
     api_url = os.environ.get("E2B_API_URL", "").strip()
-    if not api_url:
-        sys.exit("set E2B_API_URL (and E2B_SANDBOX_URL) to your E2B-compatible service; see the module docstring")
-    key_file = Path(os.environ.get("E2B_API_KEY_FILE", "~/.config/e2b/api_key")).expanduser()
-    # non-empty, mirroring the real check (credentials.sandbox_key_supply): an
-    # empty placeholder file must fail here, not deep inside training
-    file_has_key = key_file.is_file() and bool(key_file.read_text().strip())
-    if not os.environ.get("E2B_API_KEY", "").strip() and not file_has_key:
-        sys.exit(f"no e2b credential: set E2B_API_KEY or put a non-empty key at {key_file}")
+    if os.environ.get("HARBOR_ENV_TYPE", "").strip().lower() != "e2b" or not api_url:
+        return
     try:
-        request = urllib.request.Request(f"{api_url}/nodes", headers={"X-API-Key": "preflight"})
+        request = urllib.request.Request(f"{api_url}/nodes", headers={"X-API-Key": "probe"})
         urllib.request.urlopen(request, timeout=10).read()
     except urllib.error.HTTPError:
         pass  # a 401 still proves the control plane answers
     except OSError as e:
-        sys.exit(f"sandbox service unreachable at {api_url} ({e}); does this machine have a route to it?")
-    try:
-        import harbor  # noqa: F401
-    except ImportError:
-        sys.exit("harbor is not importable; see the module docstring for the install line")
+        sys.exit(f"E2B endpoint unreachable at {api_url} ({e}); does this machine have a route to it?")
 
 
 def prepare():
@@ -106,29 +141,7 @@ def prepare():
     Path(PROMPT_DATA).write_text(json.dumps(row) + "\n")
 
 
-def harbor_worker_env() -> dict[str, str]:
-    """The rollout workers' Harbor environment, assembled by the launcher's own code."""
-    # bound each trial so the smoke stays a smoke: a looping agent would
-    # otherwise run to the engine's context limit. fix-git takes terminus
-    # well over 12 of its one-command turns, so the cap leaves room to solve.
-    os.environ.setdefault("AGENT_TRIAL_TIMEOUT", "1200")
-    os.environ.setdefault("HARBOR_AGENT_MAX_ITERATIONS", "30")
-    args = SimpleNamespace(
-        harbor_env_type="e2b",
-        harbor_env_kwargs="",
-        harbor_tasks_dir=TASKS_DIR,
-        harbor_trials_dir=TRIALS_DIR,
-        agent_model_name="model",
-        agent_timeout=600,
-        router_external_host="",  # terminus-2 runs on this host; no sandbox callback
-        daytona_api_key_file="",
-        e2b_api_key_file=os.environ.get("E2B_API_KEY_FILE", ""),
-        modal_config_file="",
-    )
-    return harbor_env_vars(args)
-
-
-def execute():
+def execute(worker_env: dict[str, str]):
     ckpt_args = f"--hf-checkpoint {MODEL_DIR} "
     rollout_args = (
         f"--prompt-data {PROMPT_DATA} "
@@ -162,7 +175,7 @@ def execute():
 
     extra_env_vars = {
         "PYTHONPATH": ":".join([*agentic_pythonpath_dirs(), str(REPO)]),
-        **harbor_worker_env(),
+        **worker_env,
     }
     U.execute_train(
         train_args=train_args,
@@ -183,9 +196,10 @@ def check_trials():
 
 
 if __name__ == "__main__":
-    preflight()
+    worker_env = harbor_worker_env()
+    probe_e2b_endpoint()
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute()
+    execute(worker_env)
     check_trials()

@@ -103,7 +103,7 @@ CONNECTORS: dict[str, Callable[..., Any]] = {
 }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--connector", required=True, choices=sorted(CONNECTORS))
     parser.add_argument(
@@ -120,7 +120,7 @@ def main() -> int:
     )
     parser.add_argument("--task", default="", help="override the benchmark's preset smoke instance")
     parser.add_argument("--tasks-dir", type=Path, default=None, help="override the benchmark's task directory")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.agent != GOLDEN and not args.base_url:
         parser.error(
