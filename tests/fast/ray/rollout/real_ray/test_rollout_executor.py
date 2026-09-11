@@ -68,14 +68,16 @@ class TestProcessSetup:
 
         assert http_client_calls == ["init_http_client"]
 
-    async def test_skips_the_http_client_in_debug_train_only(self, ray_local_mode, patch_low_level, http_client_calls):
-        """No engines exist in this mode, so there is nothing to talk to."""
+    async def test_initializes_the_http_client_in_debug_train_only(
+        self, ray_local_mode, patch_low_level, http_client_calls
+    ):
+        """A snapshot-eval fleet may exist in this mode; init_http_client itself decides whether there is anything to talk to."""
         args = _make_test_args()
         args.debug_train_only = True
 
         _make_executor(args)
 
-        assert http_client_calls == []
+        assert http_client_calls == ["init_http_client"]
 
 
 @pytest.mark.asyncio

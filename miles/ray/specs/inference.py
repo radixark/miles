@@ -17,9 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
-    if args.debug_train_only:
-        return []
-
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     return [
         _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
@@ -129,9 +126,6 @@ def compute_engine_pool_id(model_idx: int, group_index: int) -> str:
 
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
-    if args.debug_train_only:
-        return []
-
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     return [

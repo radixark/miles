@@ -551,10 +551,15 @@ class TestYamlEvalModel:
 
 
 class TestRolloutOffset:
-    def test_debug_train_only_has_zero_rollout_placement_offset(self):
-        """In train-only debug runs nothing is placed before the rollout bundles."""
+    def test_debug_train_only_without_eval_fleet_has_zero_rollout_placement_offset(self):
         args = _make_args(debug_train_only=True, colocate=False, actor_num_nodes=2, actor_num_gpus_per_node=8)
         assert _compute_rollout_offset(args) == 0
+
+    def test_debug_train_only_places_the_eval_fleet_after_the_actor_bundles(self):
+        args = _make_args(
+            debug_train_only=True, colocate=False, actor_num_nodes=2, actor_num_gpus_per_node=8, eval_num_gpus=4
+        )
+        assert _compute_rollout_offset(args) == 16
 
     def test_debug_rollout_only_has_zero_rollout_placement_offset(self):
         """In rollout-only debug runs no megatron bundles are reserved ahead of the rollout ones."""
