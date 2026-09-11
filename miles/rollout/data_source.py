@@ -210,6 +210,9 @@ class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
     def get_buffer_length(self):
         return len(self.buffer)
 
+    def load(self, rollout_id: int | None = None) -> None:
+        raise NotImplementedError("LegacyRolloutDataSourceWithBuffer does not support checkpoint loading")
+
 
 def pop_first(args, rollout_id, buffer: list[list[Sample]], num_samples: int) -> list[list[Sample]]:
     num_to_pop = min(len(buffer), num_samples)

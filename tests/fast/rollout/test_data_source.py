@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.rollout.data_source import DataSource, RolloutDataSource
+from miles.rollout.data_source import DataSource, LegacyRolloutDataSourceWithBuffer, RolloutDataSource
 from miles.utils.types import Sample
 
 
@@ -87,3 +87,11 @@ class _ReadOnlyDataSource(DataSource):
 
     def load(self, rollout_id: int | None = None) -> None:
         pass
+
+
+@pytest.mark.parametrize("rollout_id", [None, 3])
+def test_legacy_source_rejects_checkpoint_loading(rollout_id: int | None) -> None:
+    """Legacy buffered sources explicitly refuse checkpoint loading."""
+    source = LegacyRolloutDataSourceWithBuffer.__new__(LegacyRolloutDataSourceWithBuffer)
+    with pytest.raises(NotImplementedError, match="does not support checkpoint loading"):
+        source.load(rollout_id=rollout_id)
