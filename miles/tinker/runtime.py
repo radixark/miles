@@ -19,13 +19,18 @@ class MilesBackend(ExecutorBackend):
         self.router_url = router_url
         self.dp_size = dp_size
 
+    def trainer_dead(self) -> bool:
+        return self.trainer.has_errored_cell()
+
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
     ) -> None:
-        await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
+        _raise_slot_errors(
+            await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
+        )
 
     async def unload_slot(self, slot: int) -> None:
-        await self.trainer.unload_slot(slot)
+        _raise_slot_errors(await self.trainer.unload_slot(slot))
 
     async def forward_backward(
         self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
@@ -61,10 +66,10 @@ class MilesBackend(ExecutorBackend):
         await self.trainer.zero_grads(slot=slot)
 
     async def save_slot(self, slot: int, path: str) -> None:
-        await self.trainer.save_slot(slot=slot, path=path)
+        _raise_slot_errors(await self.trainer.save_slot(slot=slot, path=path))
 
     async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
-        await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path)
+        _raise_slot_errors(await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path))
 
     async def push_slot(
         self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
@@ -129,6 +134,13 @@ class MilesBackend(ExecutorBackend):
                 # request-carried backfill source: the engine refills an evicted version itself
                 request["lora_backfill_paths"] = {lora_name: lora_path}
         return request
+
+
+def _raise_slot_errors(worker_results: list) -> None:
+    """A non-None result is an actor's {"error": ...} verdict; surface the failure to the caller."""
+    errors = [result["error"] for result in worker_results if result is not None]
+    if errors:
+        raise RuntimeError(errors[0])
 
 
 def _with_sample_seed(request: dict, index: int) -> dict:
