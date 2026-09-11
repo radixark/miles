@@ -96,6 +96,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._output: DataBuffer | None = None
         self._retry_buffer: deque[list[Sample]] = deque()
         self._in_flight: dict[asyncio.Task, list[Sample]] = {}
+        self._in_transit: DataBufferState = {}
         self._pending_outputs: deque[DataBufferInput] = deque()
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
@@ -184,7 +185,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     async def _next_group(self, *, current_version: int | None, trainer_model_id: str | None) -> DataBufferInput:
         queue_get = asyncio.create_task(
-            self._output.get(current_version=current_version, trainer_model_id=trainer_model_id)
+            self._take_group(current_version=current_version, trainer_model_id=trainer_model_id)
         )
         try:
             while True:
@@ -207,31 +208,30 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             if not queue_get.done():
                 queue_get.cancel()
 
+    async def _take_group(self, *, current_version: int | None, trainer_model_id: str | None) -> DataBufferInput:
+        batch = await self._output.get(current_version=current_version, trainer_model_id=trainer_model_id)
+        self._in_transit.setdefault(trainer_model_id, []).append(batch)
+        return batch
+
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
         assert args.rollout_global_dataset
 
-        target_data_size = args.rollout_batch_size
         data: list[Group] = []
-        do_print = True
-
-        while len(data) < target_data_size:
+        while len(data) < args.rollout_batch_size:
             entry = await self._next_group(
                 current_version=input.weight_version, trainer_model_id=input.trainer_model_id
             )
             assert len(entry.group) == args.n_samples_per_prompt
-
-            if do_print:
-                sample = first_sample(entry.group)
-                logger.info(
-                    "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
-                    sample_text_preview(sample),
-                    str(sample.label)[:100],
-                    reward_log_summary(sample.reward),
-                )
-                do_print = False
-
             data.append(entry.group)
+
+        sample = first_sample(data[0])
+        logger.info(
+            "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
+            sample_text_preview(sample),
+            str(sample.label)[:100],
+            reward_log_summary(sample.reward),
+        )
 
         sample = first_sample(data[-1])
         logger.info(
@@ -253,7 +253,9 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             rollout_id=input.rollout_id,
         )
 
-        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics(input.trainer_model_id))
+        metrics = self._output.get_metrics(input.trainer_model_id)
+        self._in_transit.pop(input.trainer_model_id, None)
+        return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
     def _recycle(self, prompt_group: list[Sample], reason: UnusedReason = UnusedReason.ABORTED) -> None:
         for sample in prompt_group:
@@ -287,7 +289,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._output = buffer_cls(DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused))
 
     def _collect_state(self) -> "_FullyAsyncRolloutState":
-        output: DataBufferState = {}
+        output: DataBufferState = {key: list(entries) for key, entries in self._in_transit.items()}
         if self._output is not None:
             for key, entries in self._output.snapshot().items():
                 output.setdefault(key, []).extend(entries)
