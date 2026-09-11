@@ -134,7 +134,7 @@ def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
 
-    updater.update_weights()
+    updater.update_weights(weight_version=1)
 
     assert events == [
         "engine0.pause_generation",
@@ -165,7 +165,7 @@ def test_fsdp_nonzero_rank_does_not_manage_engine_session(monkeypatch):
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
 
-    updater.update_weights()
+    updater.update_weights(weight_version=1)
 
     assert events == ["barrier", "barrier", "barrier"]
     assert engine.submissions == []
@@ -188,7 +188,7 @@ class TestUpdateWeight:
         monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
 
         with pytest.raises(RuntimeError, match=f"engine0 rejected {failing_phase}"):
-            updater.update_weights()
+            updater.update_weights(weight_version=1)
 
         reached_phases = _SESSION_PHASES[: _SESSION_PHASES.index(failing_phase) + 1]
         assert events[-2:] == [f"engine0.{failing_phase}", f"engine1.{failing_phase}"]
@@ -217,7 +217,7 @@ def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
 
-    updater.update_weights()
+    updater.update_weights(weight_version=1)
 
     synced = dict(updater.last_named_tensors)
     assert synced["fp32_weight"].dtype is torch.float32
@@ -243,9 +243,9 @@ class _RecordingWeightUpdater:
         self.connect_calls.append(list(rollout_engines))
         self.connect_topologies.append((engine_gpu_counts, engine_gpu_offsets))
 
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> None:
         self.update_weights_calls += 1
-        self.weight_version += 1
+        self.weight_version = weight_version
 
 
 class _VersionReportingEngine:
@@ -275,6 +275,7 @@ def _make_weight_update_actor(monkeypatch, *, ci_test: bool):
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, ci_test=ci_test)
     actor.weight_updater = _RecordingWeightUpdater()
+    actor.global_step = 1
 
     monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
@@ -290,6 +291,7 @@ def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch
     engines: list[object] = [object(), object()]
 
     first_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+    actor.global_step = 2
     second_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
 
     assert updater.connect_calls == [engines]
@@ -413,17 +415,17 @@ def test_fsdp_actor_reconnects_after_rollout_cell_hash_changes(monkeypatch):
     replacement_engines: list[object] = [object(), object()]
 
     actor.update_weights(
-        _make_updatable_engines(engines, has_new_engines=True, snapshot_cell_id_to_hashes={"cell-0": "hash-a"})
+        _make_updatable_engines(engines, has_new_engines=True, snapshot_cell_id_to_hashes={"cell-0": "hash-a"}),
     )
     actor.update_weights(
         _make_updatable_engines(
             replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
-        )
+        ),
     )
     actor.update_weights(
         _make_updatable_engines(
             replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
-        )
+        ),
     )
 
     assert updater.connect_calls == [engines, replacement_engines]

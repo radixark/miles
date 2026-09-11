@@ -913,6 +913,13 @@ class MegatronTrainRayActor(TrainRayActor):
             }
         return dict(self._named_actor_weights())
 
+    def _actor_weight_version(self) -> int:
+        if is_multi_lora_enabled(self.args):
+            return self.weight_updater.weight_version + 1
+        if not self._weight_sync_reads_tms_backup and (self.args.colocate or self._active_model_tag != "actor"):
+            return ModelCompanionUtils.version_from_parameters(self.weights_backuper.get("actor").items())
+        return ModelCompanionUtils.weight_version(self.model)
+
     @with_logs
     @timer
     def update_weights(self, info: UpdatableEngines) -> int | None:
@@ -962,7 +969,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            self.weight_updater.update_weights(weight_version=self._actor_weight_version())
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):

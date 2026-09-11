@@ -29,6 +29,8 @@ def _make_protocol(calls: list[tuple[str, dict]]) -> UpdateWeightFromDiskDelta:
     protocol.rollout_engines = [_RecordingApiClient(calls)]
     protocol._post_write_hook = None
     protocol._version_dir = "/shared/delta/v7"
+    protocol._snapshot_version = 6
+    protocol._local_checkpoint_dir = "/local/ckpt"
     return protocol
 
 
@@ -104,7 +106,7 @@ def test_baseline_capture_pulls_with_both_checkpoint_dirs(tmp_path):
 
     _capture_baseline(protocol, tmp_path)
 
-    assert [name for name, _kwargs in calls] == ["pull_weights", "get_weight_version"]
+    assert [name for name, _kwargs in calls] == ["pull_weights"]
     assert calls[0][1] == {
         "target_version": 0,
         "local_checkpoint_dir": "/local/ckpt",
@@ -112,16 +114,15 @@ def test_baseline_capture_pulls_with_both_checkpoint_dirs(tmp_path):
     }
 
 
-def test_baseline_capture_reloads_the_pulled_checkpoint_when_equality_is_checked(tmp_path):
-    """check_weight_update_equal makes the baseline reload the base checkpoint it just pulled."""
+def test_baseline_capture_does_not_publish_before_encoding_when_equality_is_checked(tmp_path):
+    """The first real sync restores checker tensors without an intermediate baseline publication."""
     calls: list[tuple[str, dict]] = []
     protocol = _make_protocol(calls)
     protocol.args.check_weight_update_equal = True
 
     _capture_baseline(protocol, tmp_path)
 
-    assert [name for name, _kwargs in calls] == ["pull_weights", "update_weights_from_disk"]
-    assert calls[1][1] == {"model_path": "/local/ckpt", "weight_version": "0"}
+    assert [name for name, _kwargs in calls] == ["pull_weights"]
 
 
 def test_non_source_rank_waits_for_baseline_engine_reload(tmp_path):

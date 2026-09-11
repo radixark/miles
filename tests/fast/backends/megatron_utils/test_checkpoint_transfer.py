@@ -131,6 +131,7 @@ class TestDeserializeFromTransport:
         skipped_sample = TrainingSampleIdentity(source_sample_index=8, row_index=0, row_count=1)
         donor.record([sample])
         donor.record([skipped_sample], is_skipped=True)
+        donor.weight_version.fill_(17)
         state_dict, _ = MCoreTensorAwareStateDict.from_state_dict(
             {"model": donor.sharded_state_dict(prefix="model_companion.")},
             algo="atomic",
@@ -148,8 +149,14 @@ class TestDeserializeFromTransport:
             algo="atomic",
             parallelization_group=single_rank_gloo,
         )
-        receiver.load_state_dict({"rows": receiver_state["model"]["model_companion.rows"]})
+        receiver.load_state_dict(
+            {
+                "rows": receiver_state["model"]["model_companion.rows"],
+                "weight_version": receiver_state["model"]["model_companion.weight_version"],
+            }
+        )
 
+        assert receiver.weight_version.item() == 17
         assert receiver.snapshot() == {sample: 1}
         assert receiver.snapshot(is_skipped=True) == {skipped_sample: 1}
 

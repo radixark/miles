@@ -25,6 +25,7 @@ class ModelCompanion(torch.nn.Module):
         self.rows = torch.nn.Parameter(
             torch.empty((0, _ROW_WIDTH), dtype=torch.int64, device="cpu"), requires_grad=False
         )
+        self.weight_version = torch.nn.Parameter(torch.zeros((), dtype=torch.int64, device="cpu"), requires_grad=False)
 
     def record(self, samples: Iterable[TrainingSampleIdentity], *, is_skipped: bool = False) -> None:
         counts = _RowCodec.read(self.rows)
@@ -69,7 +70,11 @@ class ModelCompanion(torch.nn.Module):
     ) -> None:
         for name, parameter in self.named_parameters():
             incoming = state_dict[f"{prefix}{name}"]
-            assert incoming.dtype == torch.int64 and incoming.ndim == 2 and incoming.shape[1] == _ROW_WIDTH
+            assert incoming.dtype == torch.int64
+            if name == "weight_version":
+                assert incoming.ndim == 0 and incoming.item() >= 0
+            else:
+                assert incoming.ndim == 2 and incoming.shape[1] == _ROW_WIDTH
             parameter.resize_(incoming.shape)
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
@@ -90,6 +95,28 @@ class ModelCompanionUtils:
                 replica_id=(parallel.tp.rank, parallel.cp.rank, parallel.intra_dp.rank),
             ),
         )
+
+    @staticmethod
+    def weight_version(model: Sequence[torch.nn.Module]) -> int:
+        companions = _model_companions(model)
+        assert companions, "Model is missing its companion"
+        return ModelCompanionUtils.version_from_parameters(
+            ("model_companion.weight_version", companion.weight_version) for companion in companions
+        )
+
+    @staticmethod
+    def version_from_parameters(parameters: Iterable[tuple[str, torch.Tensor]]) -> int:
+        versions = {int(parameter.item()) for name, parameter in parameters if name.endswith(".weight_version")}
+        assert len(versions) == 1, f"Model companion versions diverged: {versions}"
+        return versions.pop()
+
+    @staticmethod
+    def bump_weight_version(model: Sequence[torch.nn.Module]) -> None:
+        companions = _model_companions(model)
+        if companions:
+            ModelCompanionUtils.weight_version(model)
+        for companion in companions:
+            companion.weight_version.add_(1)
 
     @staticmethod
     def record(

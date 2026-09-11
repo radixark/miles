@@ -541,6 +541,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 grad_norm = grad_norm.full_tensor().item()
 
                 self.optimizer.step()
+                self.global_step += 1
                 self.lr_scheduler.step()
 
                 if self.args.ci_test:
@@ -628,7 +629,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
 
-        self.weight_updater.update_weights()
+        self.weight_updater.update_weights(weight_version=self.global_step)
 
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)

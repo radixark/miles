@@ -751,7 +751,6 @@ class RolloutExecutor:
         previous = self._weight_versions_of_model_id.get(trainer_model_id)
         if previous is not None and weight_version < previous:
             message = f"Engine weight version went backwards: {previous} -> {weight_version}"
-            assert self.args.indep_dp, message
             logger.warning(message)
         self._weight_versions_of_model_id[trainer_model_id] = weight_version
         self._rollouts_since_publish_of_model_id[trainer_model_id] = 0

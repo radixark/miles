@@ -650,9 +650,9 @@ class _RecordingWeightUpdater:
             )
         )
 
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> None:
         self.update_weights_calls += 1
-        self.weight_version += 1
+        self.weight_version = weight_version
 
 
 def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -668,6 +668,12 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
     )
     worker._asleep = False
     worker._heartbeat = Mock()
+    worker.args.colocate = False
+    worker._active_model_tag = "actor"
+    from miles.backends.training_utils.model_companion import ModelCompanion
+
+    worker.model = [ModelCompanion()]
+    worker.model[0].weight_version.fill_(3)
     worker.weight_updater = _RecordingWeightUpdater()
     monkeypatch.setattr(actor_module, "print_memory", Mock())
     monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
@@ -747,3 +753,24 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
 
     assert len(updater.connect_calls) == 2
+
+
+class TestActorPublicationSource:
+    def test_a_live_reference_model_does_not_supply_the_actor_publication_version(
+        self, actor_module: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The published version and parameters come from the same actor backup."""
+        import torch
+
+        worker = _weight_update_worker(actor_module, monkeypatch)
+        worker._active_model_tag = "ref"
+        actor_weight = torch.tensor([7.0])
+        worker.weights_backuper = Mock()
+        worker.weights_backuper.get.return_value = {
+            "weight": actor_weight,
+            "model_companion.weight_version": torch.tensor(9, dtype=torch.int64),
+        }
+
+        assert worker._actor_weight_version() == 9
+        assert worker._get_actor_weights() == {"weight": actor_weight}
+        assert worker.model[0].weight_version.item() == 3

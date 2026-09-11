@@ -653,6 +653,7 @@ def train_one_step(
 
             # Update learning rate.
             assert update_successful
+            ModelCompanionUtils.bump_weight_version(model)
             opt_param_scheduler.step(increment=num_rollouts)
 
         if not multi_lora:
