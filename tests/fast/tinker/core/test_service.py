@@ -773,6 +773,7 @@ async def test_a_retried_create_model_returns_the_first_allocation(service):
     """A network retry must not occupy a second slot."""
     payload = model_payload(service)
     first = service.create_model("tenant", payload)
+    await await_settled(service, "tenant", first[0])
     assert service.create_model("tenant", payload) == first
     assert len(service.backend.named("load_slot")) == 1
 
