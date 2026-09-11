@@ -180,7 +180,9 @@ if __name__ == "__main__":
     parser.add_argument("--samples-per-prompt", type=int, default=8)
     parser.add_argument("--sampling-rounds", type=int, default=3, help="waves of prompts to try per step")
     parser.add_argument("--max-prompt-tokens", type=int, default=2048)
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=8192, help="clamped to the context left after the prompt"
+    )
     parser.add_argument("--context-len", type=int, default=8192)
     parser.add_argument("--enable-thinking", action="store_true", help="Qwen3 thinking mode (long rollouts)")
     main(parser.parse_args())
