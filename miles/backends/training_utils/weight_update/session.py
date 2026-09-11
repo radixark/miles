@@ -43,14 +43,17 @@ class EngineWeightUpdateSession:
         try:
             self._rpcs_from_rank0(self._open)
         except Exception:
-            # __exit__ never runs when __enter__ raises: _open may have paused
-            # engines or staged a registration before failing partway
-            self._discard_open()
+            # __exit__ never runs when __enter__ raises, so undo the partial open here
+            if self._staged:
+                self._abort_staged_session()
+            else:
+                self._resume_after_failed_open()
             raise
         return self
 
     def commit(self, expected_lora_checksums: Mapping | None, weight_version: int | None) -> None:
-        self._rpcs_from_rank0(lambda: self._close(expected_lora_checksums, weight_version))
+        """Commit streamed weights on the engines."""
+        self._rpcs_from_rank0(lambda: self._commit_engine_weights(expected_lora_checksums, weight_version))
         self._committed = True
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -58,22 +61,23 @@ class EngineWeightUpdateSession:
             assert self._committed, "the session scope exited without commit()"
             return
         if self._staged:
-            self._discard_open()
+            self._abort_staged_session()
 
-    def _discard_open(self) -> None:
-        """Best-effort rollback of _open's engine state: abort a staged session
-        (also dropping any pending publication) or resume paused engines. Safe
-        only before any weight bytes moved — a failed open, not a failed stream."""
+    def _abort_staged_session(self) -> None:
+        self._cleanup_from_rank0(lambda: end_weight_update(self._protocol.rollout_engines, abort=True))
+
+    def _resume_after_failed_open(self) -> None:
+        # no bytes moved before open completed; a failed in-place stream must stay paused
+        self._cleanup_from_rank0(lambda: resume_engines(self._protocol.rollout_engines))
+
+    def _cleanup_from_rank0(self, cleanup: Callable[[], None]) -> None:
         if not (self._protocol.use_weight_update_session and dist.get_rank() == 0):
             return
         try:
-            if self._staged:
-                end_weight_update(self._protocol.rollout_engines, abort=True)
-            else:
-                resume_engines(self._protocol.rollout_engines)
+            cleanup()
         except Exception:
             # the cleanup usually shares the failure's root cause; it must not mask it
-            logger.exception("Failed to roll back the engines after a failed session open")
+            logger.exception("Failed to clean up the engine weight-update session")
 
     def _open(self) -> None:
         engines = self._protocol.rollout_engines
@@ -90,7 +94,7 @@ class EngineWeightUpdateSession:
             )
         begin_weight_update(engines, self._selector, sync_base=self._sync_base)
 
-    def _close(self, checksums: Mapping | None, weight_version: int | None) -> None:
+    def _commit_engine_weights(self, checksums: Mapping | None, weight_version: int | None) -> None:
         engines = self._protocol.rollout_engines
         end_weight_update(engines, expected_lora_checksums=checksums)
         if weight_version is not None:
