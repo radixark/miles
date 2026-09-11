@@ -107,8 +107,11 @@ def _run(updater: WeightUpdater, *, rank: int = 0) -> None:
     with (
         patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
         patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+        patch(f"{_SESSION_MODULE}.dist") as session_dist_mock,
+        patch(f"{_SESSION_MODULE}.get_gloo_group", return_value=MagicMock()),
     ):
         dist_mock.get_rank.return_value = rank
+        session_dist_mock.get_rank.return_value = rank
         updater.update_weights()
 
 
@@ -204,7 +207,7 @@ class TestWeightUpdateSessionFrame:
         with pytest.raises(RuntimeError, match="pause_generation failed"):
             _run(updater)
 
-        assert _phases(calls) == ["pause_generation"]
+        assert _phases(calls) == ["pause_generation", "continue_generation"], "the paused engine resumes"
         assert _engines_called(calls, "pause_generation") == [1]
 
     def test_a_failed_flush_opens_no_update_session(self):
@@ -215,7 +218,7 @@ class TestWeightUpdateSessionFrame:
         with pytest.raises(RuntimeError, match="flush_cache failed"):
             _run(updater)
 
-        assert _phases(calls) == ["pause_generation", "flush_cache"]
+        assert _phases(calls) == ["pause_generation", "flush_cache", "continue_generation"]
         assert _engines_called(calls, "flush_cache") == [1]
 
     def test_a_failed_begin_prevents_the_update_from_starting(self):
@@ -226,7 +229,7 @@ class TestWeightUpdateSessionFrame:
         with pytest.raises(RuntimeError, match="begin_weight_update failed"):
             _run(updater)
 
-        assert _phases(calls) == _PREPARE_PHASES
+        assert _phases(calls) == _PREPARE_PHASES + ["continue_generation"]
         assert _engines_called(calls, "begin_weight_update") == [0]
         updater.protocol.send_bucket.assert_not_called()
 

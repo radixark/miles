@@ -251,12 +251,25 @@ class SGLangApiClient:
                 return response.json()["weight_version"]
         response.raise_for_status()
 
-    async def register_lora_adapter(self, lora_name: str, config_dict: dict, pinned: bool = False):
+    async def register_lora_adapter(
+        self,
+        lora_name: str,
+        config_dict: dict,
+        pinned: bool = False,
+        lora_path: str | None = None,
+        defer_publish: bool = False,
+    ):
         """Create-or-refresh a LoRA adapter's identity and config (weights zeroed)."""
-        return await self._make_request(
-            "register_lora_adapter",
-            {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
-        )
+        payload = {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned}
+        if lora_path is not None:
+            payload["lora_path"] = lora_path
+        if defer_publish:
+            payload["defer_publish"] = True
+        return await self._make_request("register_lora_adapter", payload)
+
+    async def unload_lora_adapter(self, lora_name: str):
+        """Remove a served LoRA adapter by name."""
+        return await self._make_request("unload_lora_adapter", {"lora_name": lora_name})
 
     async def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""
@@ -384,10 +397,13 @@ class SGLangApiClient:
         adapter-only session (no quant unpack; base tensors rejected)."""
         return await self._make_request("begin_weight_update", {"selector": selector, "sync_base": sync_base})
 
-    async def end_weight_update(self, expected_lora_checksums=None):
+    async def end_weight_update(self, expected_lora_checksums=None, abort: bool = False):
         """Close the weight-update session: re-finalize base weights (sync_base
-        sessions) and apply the streamed LoRA stash."""
-        return await self._make_request("end_weight_update", {"expected_lora_checksums": expected_lora_checksums})
+        sessions) and apply the streamed LoRA stash. ``abort`` discards it."""
+        payload = {"expected_lora_checksums": expected_lora_checksums}
+        if abort:
+            payload["abort"] = True
+        return await self._make_request("end_weight_update", payload)
 
     async def update_weight_version(self, weight_version: str, abort_all_requests: bool = False):
         return await self._make_request(

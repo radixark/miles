@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
@@ -91,6 +91,9 @@ class TrainerController:
     @property
     def _cells(self) -> list[TrainerCell]:
         return sorted(self._cells_by_id.values(), key=lambda cell: cell.cell_index)
+
+    def has_errored_cell(self) -> bool:
+        return any(cell.is_errored for cell in self._cells)
 
     @property
     def cell_ids(self) -> list[str]:
@@ -388,8 +391,63 @@ class TrainerController:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("offload_grad_buffer")
 
-    async def reconcile_adapters(self) -> None:
-        await asyncio.gather(*[cell.execute("reconcile_adapters") for cell in self._cells])
+    # ------------------------ API :: multi-LoRA slot commands ------------------------
+
+    async def _execute_slots(self, fn_name: str, **kwargs) -> list:
+        results = await asyncio.gather(*[cell.execute(fn_name, **kwargs) for cell in self._cells])
+        # one trainer cell; its result is the per-actor list
+        return results[0]
+
+    async def forward_backward(self, batch_id: int, data_ref) -> list:
+        return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
+
+    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> list:
+        return await self._execute_slots("optim_step", adam_params_by_slot=adam_params_by_slot)
+
+    async def forward_only(self, batch_id: int, data_ref) -> list:
+        return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
+
+    async def zero_grads(self, slot: int) -> None:
+        await self._execute_slots("zero_grads", slot=slot)
+
+    async def load_slot(
+        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+    ) -> list:
+        return await self._execute_slots(
+            "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
+        )
+
+    async def save_slot(self, slot: int, path: str) -> list:
+        return await self._execute_slots("save_slot", slot=slot, path=path)
+
+    async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> list:
+        return await self._execute_slots("export_slot", slot=slot, rank=rank, alpha=alpha, path=path)
+
+    async def unload_slot(self, slot: int) -> list:
+        return await self._execute_slots("unload_slot", slot=slot)
+
+    @asynccontextmanager
+    async def _updatable_engines(self):
+        """Release the inference controller's update lock even when the slot command fails."""
+        info = await self._inference_controller.start_update_weights()
+        try:
+            yield info
+        finally:
+            await self._inference_controller.end_update_weights(
+                snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
+            )
+
+    async def push_slot(
+        self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
+    ) -> None:
+        async with self._updatable_engines() as info:
+            await self._execute_slots(
+                "push_slot", info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
+            )
+
+    async def unload_adapter(self, lora_name: str) -> None:
+        async with self._updatable_engines() as info:
+            await self._execute_slots("unload_adapter", info=info, lora_name=lora_name)
 
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])

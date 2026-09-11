@@ -201,7 +201,7 @@ def _get_megatron_local_param_infos(
     """
     pp_size = get_parallel_state().pp.size
 
-    from ..lora_utils import _is_adapter_param_name
+    from ..lora.utils import _is_adapter_param_name
 
     param_infos: dict[str, ParamInfo] = {}
     rank = dist.get_rank()

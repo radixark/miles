@@ -18,9 +18,9 @@ Rollout requests then select the live named adapter with `lora_path`.
 
 Multi-LoRA currently supports disaggregated rollout only and rejects
 `--colocate` at launch. Each SGLang engine keeps the base checkpoint resident;
-miles selectively exports and NCCL-broadcasts newly loaded or optimizer-stepped
-adapters into their corresponding SGLang slots. New or restarted engines receive
-every loaded adapter, while unchanged adapters are not resent.
+adapter weights reach the engines through explicit pushes: each push registers
+an immutable version under its own engine-side name, so in-flight sampling
+against an older version is never disturbed.
 
 Model support is therefore a three-way contract rather than a hard-coded
 allowlist:
@@ -68,7 +68,8 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Implementation | Model family | Architecture exercised | Evidence | Notes |
 |---|---|---|---|---|
 | Bridge | Qwen2.5 0.5B / 3B | Dense | [0.5B CUDA and ROCm E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora/test_lora_qwen2.5_0.5B.py), [3B disaggregated recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen2.5-3B-megatron-lora-disaggregated.sh) | The simplest starting point; `all-linear` works. |
-| Bridge | Qwen3 4B | Dense | [Single-LoRA recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen3-4B-megatron-lora.sh), [multi-LoRA recipe](https://github.com/radixark/miles/tree/main/examples/multi_lora) | Used by the current multi-adapter example. |
+| Bridge | Qwen3 4B | Dense | [Single-LoRA recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen3-4B-megatron-lora.sh) | Single-adapter recipe. |
+| Bridge | Qwen3-30B-A3B | MoE | [Multi-LoRA gateway example](https://github.com/radixark/miles/tree/main/examples/multi_lora) | Disaggregated Tinker training and versioned sampling. |
 | Bridge | GPT-OSS 20B | MoE | [Recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh), [MoE LoRA E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_gpt_oss_20b_moe_lora_ci.py) | Uses the SGLang `triton` LoRA backend. |
 | Bridge | Kimi K2.5 | Multimodal MoE + MLA | [16-node recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-kimi-k25-megatron-lora.sh) | Demonstrates shared-outer expert LoRA and an INT4 rollout / fake-QAT setup. |
 | Bridge | GLM-5 / 5.1 / 5.2 744B-A40B | MoE + MLA + DSA | [GLM-5.1 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_1_744b_a40b_lora.py), [GLM-5.2 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_2_744b_a40b_lora.py) | CI covers reduced 6-layer / 5-layer checkpoints; historical full-744B results are described below. |
@@ -289,121 +290,27 @@ stability evidence rather than a released benchmark.
 
 ## Multi-LoRA training
 
-### Current dataset-driven backend
+Multi-LoRA training is served through the Tinker protocol: `serve_tinker.py`
+turns a miles deployment into a training service where each client drives its
+own adapter slot with explicit forward_backward / optim_step operations (the
+server owns no datasets or schedules). The gateway lives in `miles/tinker/`,
+the slot mechanics in `miles/backends/megatron_utils/lora/`. The dataset-driven
+multi-LoRA v1 backend (fully-async driver, adapter controller, per-adapter data
+sources) has been removed.
 
-The implementation on `main` trains multiple adapters against one shared base
-model through the [fully async example](https://github.com/radixark/miles/tree/main/examples/multi_lora).
-Each registered adapter supplies its own dataset, reward, rollout batch shape,
-rank/alpha, and checkpoint directory, with most fields inheriting process-wide
-defaults. LR/WD hyperparameters come from the global CLI; each fixed slot has
-its own Adam state and independently clocked scheduler. The trainer coalesces
-ready prompt-group slices or partial adapter batches and selectively upserts
-only changed adapters into SGLang.
+Clients use the official `tinker` SDK with the gateway URL and a distinct API key
+per tenant. The key identifies ownership of models, futures, and checkpoints.
+Each adapter accumulates gradients until its client submits an optimizer step;
+saving weights for sampling publishes an immutable adapter version.
 
-Set the slot capacity with `--multi-lora-n-adapters N`. A bounded run registers
-repeatable `--multi-lora-adapter NAME PATH` entries at startup; service mode can
-start with empty slots and register adapters through the controller HTTP API.
-This path currently forces Megatron-Bridge LoRA and requires disaggregated NCCL
-broadcast, PP1, THD, Adam, and no train offload. Shared-outer expert adapters are
-unsupported, and MoE expert adapters cannot use FP8/FP4 experts.
+`save_state` saves adapter parameters and optimizer state, including FP32 masters.
+It waits for preceding commands but neither steps nor saves pending gradients;
+call it after `optim_step` to save the effect of the accumulated training work.
+Sampler saves persist an immutable snapshot before warming the engine cache.
+If cache warmup fails, sampling can refill that version from disk.
 
-Native multi-LoRA is not implied by the native single-adapter work: both current
-`main` and the Tinker-oriented branch below still build multi-LoRA through
-Megatron-Bridge. Native multi-LoRA is tracked separately in
-[issue #2141](https://github.com/radixark/miles/issues/2141).
+Futures, model leases, and sequence deduplication are in memory and are lost on
+gateway restart. Saved checkpoints retain their ownership and adapter metadata
+and can be used to create a new training or sampling client.
 
-### Future Tinker-compatible operation backend
-
-[PR #2273](https://github.com/radixark/miles/pull/2273) is the active
-Tinker-oriented backend proposal. It changes ownership of the training loop:
-instead of the server owning a dataset, reward function, and one-step schedule,
-clients submit explicit operations against a registered adapter. Its primary
-intended consumer is a Tinker-compatible training service rather than a generic
-server-owned dataset scheduler.
-
-```text
-Tinker-style client
-  | register + ordered operations
-  v
-controller / operation ledger
-  | bind one fixed LoRA slot
-  v
-Megatron-Bridge multi-LoRA trainer
-  | forward, backward, optimizer, checkpoint
-  | save_weights_for_sampler publish barrier
-  v
-SGLang router + registration-scoped adapter identity
-```
-
-The operation surface separates compute, optimization, and publication:
-
-| Operation | Contract |
-|---|---|
-| `forward` / `forward_backward` | Return per-datum log probabilities; backward calls accumulate client-scaled gradient sums. |
-| `optim_step` | Apply client-supplied Adam parameters and clipping to one slot, with an all-rank non-finite veto. |
-| `save_weights_for_sampler` | Publish the latest adapter and complete only after the new serving version is live. |
-| `save_state` / `load_state` | Save or restore immutable per-adapter weights and optimizer state behind shape, world-size, and ownership fences. |
-
-The design uses fixed residency rather than transparent LRU eviction. Operations
-are strictly serialized per registration, while idempotent retries, gap-buffered
-arrival, acknowledgements, and backpressure make execution retry-safe and
-order-safe. A registration-scoped serving identity prevents an old request from
-using a slot after that slot has been reassigned. Authenticated remote access is
-the responsibility of the future frontend, not the Ray operation API in #2273.
-
-The v1 scope in the PR is deliberately narrow: text-only synchronous training,
-one shared base model, shifted 1-D targets, `cross_entropy`, importance-sampling,
-and PPO losses, per-call Adam, and latest-only sampler weights. Multimodal,
-top-K/SDFT targets, CISPO/DRO, asynchronous or pinned-snapshot off-policy
-training, and cross-world-size restore are outside v1.
-
-<Warning>
-This backend is implemented in an open PR, not released on `main`; the PR
-reports H200 validation. PR #2273 provides the operation backend, but its v1
-training operations are still exposed through the controller's Ray API. The
-stacked [PR #2346](https://github.com/radixark/miles/pull/2346) adds a REST
-frontend compatible with the official `tinker==0.24.1` client; its GPU frontend
-E2E is still pending. If #2273 lands as proposed, it replaces the current
-dataset-driven driver.
-</Warning>
-
-## Compatibility and limitations
-
-- **Training backend:** Megatron only; FSDP has no LoRA training path.
-- **Implementation path on `main`:** Bridge is the general path; native/raw LoRA
-  is model-specific to Inkling. General native coverage is pending PR #1792.
-- **Remote transport:** NCCL broadcast only, with PP1. P2P/RDMA and disk-delta
-  reject LoRA.
-- **PPO:** shared actor/critic PPO with Bridge LoRA is untested; the critic never
-  gets adapters.
-- **Resume:** miles adapter shards are resumable with the matching parallel
-  topology. Direct HF PEFT import into the Bridge model is not yet implemented;
-  native Inkling has a custom importer.
-- **Memory optimizations:** `--rematerialize-param-from-master-weight` and
-  streamed optimizer state on NVMe reject LoRA. Ordinary actor disk offload is a
-  different feature and is used by the draft agentic recipe.
-- **Multi-LoRA:** the current and proposed Tinker operation paths both require
-  Bridge; native multi-LoRA remains roadmap work. Evaluation, colocate, PP,
-  train offload, shared-outer experts, and FP8/FP4 MoE expert adapters are not
-  supported by the current multi-adapter path.
-- **Agentic sessions:** the current session integration selects the fixed
-  `miles_lora` adapter, not a multi-LoRA slot; `--lora-train-only` is also not a
-  supported combination for this path.
-
-## Internals
-
-- `miles/backends/megatron_utils/bridge_lora_helpers.py` builds and wraps the
-  general Bridge LoRA model.
-- `miles/backends/megatron_utils/lora_utils.py` resolves module names, creates
-  standard/canonical adapters, and implements adapter checkpoint helpers.
-- `miles_plugins/models/inkling/lora.py` implements the native/raw LoRA path
-  available on current `main`.
-- `miles/backends/megatron_utils/update_weight/update_weight_from_tensor.py`
-  handles colocated adapter export and IPC loading.
-- `miles/backends/megatron_utils/update_weight/update_weight_from_distributed/`
-  gathers and broadcasts adapters to remote SGLang engines.
-- `miles/rollout/session/core.py` attaches the single adapter to agentic session
-  requests.
-- `miles/ray/multi_lora/`, `miles/rollout/multi_lora/`, and
-  `miles/backends/megatron_utils/multi_lora_*.py` implement the multi-adapter
-  controller, routing, scheduling, optimization, and checkpoint path.
+See the [gateway example](/examples/multi-lora) for the launcher and smoke client.

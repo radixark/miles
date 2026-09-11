@@ -30,6 +30,10 @@ class WeightUpdatePlacement:
     gather_tp: bool = True
     gather_ep: bool = True
 
+    @property
+    def is_full_gather(self) -> bool:
+        return self.gather_pp and self.gather_tp and self.gather_ep
+
 
 def resolve_placement(required: WeightUpdatePlacement, forced: WeightUpdatePlacement | None) -> WeightUpdatePlacement:
     """Join of the protocol's required placement and the iterator's forced one:
@@ -87,11 +91,14 @@ class HfWeightIteratorBase(ABC):
         whose tensors join the stream under ``{lora_name}:{hf_key}`` names.
         ``materialize=False`` joins every collective but yields nothing.
         """
+
+        def prefixed_units(lora_name, adapter):
+            for unit in self._iter_hf_adapter_units(adapter, materialize=materialize):
+                yield [(f"{lora_name}:{name}", tensor) for name, tensor in unit]
+
         hf_param_units = self._iter_hf_param_units(weights, materialize=materialize) if include_base else iter(())
         for lora_name, adapter in adapters:
-            hf_param_units = itertools.chain(
-                hf_param_units, self._iter_hf_adapter_units(lora_name, adapter, materialize=materialize)
-            )
+            hf_param_units = itertools.chain(hf_param_units, prefixed_units(lora_name, adapter))
         atomic_update_groups = self._hf_atomic_update_groups() if include_base and materialize else []
         hf_param_units = assemble_atomic_update_groups(hf_param_units, atomic_update_groups)
         yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
@@ -112,11 +119,18 @@ class HfWeightIteratorBase(ABC):
         """Backend hook: HF-namespace atomic groups for this model. Default none."""
         return []
 
+    def materialize_adapter(self, adapter, *, materialize: bool = True) -> dict[str, torch.Tensor]:
+        """One adapter as ``{hf_key: tensor}``, skipping the transport bucketing.
+        Collective: ``materialize=False`` joins the gathers, returns {}."""
+        return {
+            name: tensor
+            for unit in self._iter_hf_adapter_units(adapter, materialize=materialize)
+            for name, tensor in unit
+        }
+
     @abstractmethod
-    def _iter_hf_adapter_units(
-        self, lora_name: str, adapter, *, materialize: bool
-    ) -> Iterator[list[tuple[str, torch.Tensor]]]:
+    def _iter_hf_adapter_units(self, adapter, *, materialize: bool) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """Backend hook: this rank's slice of the adapter per ``self.placement``,
-        one unit per parameter, names ``{lora_name}:{hf_key}``, rank-trimmed.
-        Collectives must run lockstep on every rank; ``materialize=False`` joins
-        them but yields nothing."""
+        one unit per parameter, bare ``hf_key`` names, rank-trimmed. Collectives
+        must run lockstep on every rank; ``materialize=False`` joins them but
+        yields nothing."""
