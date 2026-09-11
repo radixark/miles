@@ -4,18 +4,18 @@ import logging
 import os
 from pathlib import Path
 
-import torch
-
 from miles.utils.data import Dataset
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.simple_checkpointer import SimpleCheckpointer
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
+_CHECKPOINTER = SimpleCheckpointer(path_template="rollout/global_dataset_state_dict_{rollout_id}.pt")
 
 
 def compute_global_dataset_state_path(directory: str, *, rollout_id: int | None) -> str:
-    return os.path.join(directory, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+    return _CHECKPOINTER.path(directory, rollout_id=rollout_id)
 
 
 class DataSource(abc.ABC):
@@ -128,8 +128,7 @@ class RolloutDataSource(DataSource):
             "metadata": self.metadata,
         }
         path = compute_global_dataset_state_path(self.args.save, rollout_id=rollout_id)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(state_dict, path)
+        _CHECKPOINTER.save(path=path, state_dict=state_dict)
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
@@ -147,7 +146,7 @@ class RolloutDataSource(DataSource):
 
         logger.info(f"load metadata from {path}")
         logger.info(f"load metadata: {self.metadata}")
-        state_dict = torch.load(path)
+        state_dict = _CHECKPOINTER.load(path=path)
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
