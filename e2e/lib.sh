@@ -87,6 +87,12 @@ e2e_sweep_cluster_nodes() {  # $1: environment-line pattern; runs e2e/sweep_node
     done
 }
 
+port_busy() {  # $1: port; true when something listens on it (no ss/netstat on these images)
+    "$PY" -c 'import socket, sys
+s = socket.socket(); s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)' "$1" 2>/dev/null
+}
+
 job_status() {  # the Ray Jobs REST API; the CLI's wording changes between releases
     curl -sf "$RAY_ADDRESS/api/jobs/$JOB_ID" 2>/dev/null \
         | "$PY" -c 'import json, sys; print(json.load(sys.stdin).get("status", ""))' 2>/dev/null || true
@@ -129,7 +135,7 @@ e2e_preflight() {
         awk -v u="$used_gpus" -v t="$total_gpus" -v m="$MIN_FREE_GPUS" 'BEGIN { exit !(t - u >= m) }' \
             || { log "cluster has fewer than $MIN_FREE_GPUS free GPUs; someone else is using it"; exit 2; }
         for port in "$TINKER_PORT"; do
-            if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; then log "port $port is busy"; exit 2; fi
+            if port_busy "$port"; then log "port $port is busy"; exit 2; fi
         done
     else
         for g in ${GPUS//,/ }; do
@@ -139,7 +145,7 @@ e2e_preflight() {
         NGPUS=$(echo "$GPUS" | tr ',' '\n' | wc -l)
         [ "$NGPUS" -ge $((TRAIN_GPUS + ROLLOUT_GPUS)) ] || { log "need $((TRAIN_GPUS + ROLLOUT_GPUS)) GPUs, GPUS=$GPUS has $NGPUS"; exit 2; }
         for port in "$TINKER_PORT" "$RAY_PORT" "$RAY_DASH_PORT"; do
-            if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; then log "port $port is busy"; exit 2; fi
+            if port_busy "$port"; then log "port $port is busy"; exit 2; fi
         done
     fi
     mkdir -p "$RUN_DIR/ckpt" "$RAY_TEMP"
