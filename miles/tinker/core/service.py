@@ -421,6 +421,7 @@ class TinkerService:
         }
 
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> dict:
+        """Save parameters and optimizer state; clients must step first to checkpoint pending gradients."""
         name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
         _validate_checkpoint_segment(name)
         checkpoint_dir = self._checkpoint_dir(record.model_id, "weights", name)
@@ -505,7 +506,7 @@ class TinkerService:
                 )
 
     def _stamp_checkpoint_meta(self, checkpoint_dir: str, record: ModelRecord) -> None:
-        """Persist checkpoint ownership and shape beyond the model lease and gateway process."""
+        """Mark completed tensor shards as a gateway checkpoint with persistent ownership and shape."""
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
         meta = {
             # the digest proves ownership without persisting the bearer credential itself
