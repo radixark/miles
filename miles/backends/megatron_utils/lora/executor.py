@@ -60,7 +60,6 @@ def optim_step(
     slot_optimizers: dict[int, SlotOptimizer],
     adam_params_by_slot: dict[int, dict],
 ) -> dict[int, dict]:
-    # batch size 1: grads step as accumulated; normalization is the client's loss weights
     stepped = {slot: slot_optimizers[slot] for slot in adam_params_by_slot}
     return step_slot_optimizers(stepped, adam_params_by_slot)
 
