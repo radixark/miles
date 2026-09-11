@@ -157,6 +157,7 @@ def _build_train_data(slot_datums: list) -> dict:
     datums = [datum for _, datum in slot_datums]
     train_data = {
         "tokens": [datum["tokens"] for datum in datums],
+        "target_tokens": [datum["target_tokens"] for datum in datums],
         "loss_masks": [[0 if datum.get("padding") else 1] * datum["target_len"] for datum in datums],
         "response_lengths": [datum["target_len"] for datum in datums],
         "total_lengths": [len(datum["tokens"]) for datum in datums],
