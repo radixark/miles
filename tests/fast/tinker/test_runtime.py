@@ -9,6 +9,7 @@ from miles.tinker.runtime import (
     _build_train_data,
     _pad_to_dp_multiple,
     _prompt_logprobs,
+    _raise_slot_errors,
     _to_sequence,
     _topk_prompt_logprobs,
 )
@@ -179,3 +180,8 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
     assert seen["dynamic_global_batch_size"] == 2, "a singleton batch must be padded to the DP size"
     assert seen["loss_masks"] == [[1], [0]], "the zero mask removes padding from every loss term"
     assert len(outputs) == 1, "padding outputs are dropped"
+
+
+def test_an_actor_error_verdict_becomes_an_exception():
+    with pytest.raises(RuntimeError, match="bad shard"):
+        _raise_slot_errors([None, {"error": "ValueError: bad shard"}])
