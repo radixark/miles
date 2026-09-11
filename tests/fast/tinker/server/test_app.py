@@ -99,7 +99,7 @@ async def test_the_training_conversation(client):
 
 async def test_bad_input_answers_400(client):
     body = _fb_body("model-missing", 1)
-    body["forward_backward_input"]["data"][0]["loss_fn_inputs"]["target_tokens"] = [9, 9, 9]
+    body["forward_backward_input"]["data"][0]["loss_fn_inputs"]["target_tokens"] = [9, 9]
     response = await client.post("/api/v1/forward_backward", json=body, headers=_headers())
     assert response.status_code == 400
 
