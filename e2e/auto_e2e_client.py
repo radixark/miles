@@ -104,8 +104,11 @@ async def run_tenant(index: int, args, rows_by_step) -> dict:
         return tokenizer.encode(text, add_special_tokens=False)
 
     started = time.time()
-    path, sampler = await publish(training, service, "step0")
-    log(tag, f"initial adapter version {path} ({time.time() - started:.1f}s)")
+    # a fresh LoRA (B = 0) is the base model, so the first rollout samples from it directly;
+    # publishing 64 untouched adapters up front would only serialize ~15 s per tenant
+    sampler = await service.create_sampling_client_async(base_model=args.base_model)
+    path = None
+    log(tag, f"training client ready ({time.time() - started:.1f}s)")
     steps = []
     for step in range(1, args.steps + 1):
         t_step = time.time()
@@ -141,7 +144,7 @@ async def run_tenant(index: int, args, rows_by_step) -> dict:
         await (await training.optim_step_async(types.AdamParams(learning_rate=args.lr)))
         t_optim = time.time()
         new_path, sampler = await publish(training, service, f"step{step}")
-        assert new_path != path, f"{tag} step {step}: publish returned the previous version {path}"
+        assert new_path and new_path != path, f"{tag} step {step}: publish returned the previous version {path}"
         path = new_path
         t_publish = time.time()
 
