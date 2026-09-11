@@ -19,11 +19,21 @@
 : "${READY_TIMEOUT:=2400}"
 : "${KEEP_GATEWAY:=0}"   # 1: leave the gateway up after a passing client (debugging)
 : "${RAY_TEMP:=/scratch/e2e-ray-$$}"   # short on purpose: ray's AF_UNIX socket paths must stay under 107 bytes
+: "${EXTERNAL_RAY_GCS:=}"       # host:port of an existing Ray GCS to submit to (multi-node); empty: start our own head
+: "${EXTERNAL_RAY_DASH:=}"      # host:port of that cluster's dashboard (jobs API)
+: "${HEAD_IP:=127.0.0.1}"       # MASTER_ADDR for torch.distributed; the head node's IP on a cluster
+: "${NODE_IPS:=}"               # comma-separated node IPs for no_proxy on a cluster
+: "${NET_IFNAME:=}"             # NCCL/GLOO socket interface on a cluster, e.g. bond0
+: "${MIN_FREE_GPUS:=0}"         # cluster mode: refuse to submit unless the cluster reports this many free GPUs
 : "${RUN_DIR:=$RUN_ROOT/$(date +%Y%m%d-%H%M%S)}"
 
 export MILES_E2E_FAMILY=${MILES_E2E_FAMILY:-miles-e2e-$(basename "$RUN_ROOT")}
 export MILES_E2E_RUN="$MILES_E2E_FAMILY-$(basename "$RUN_DIR")-$$"
-export RAY_ADDRESS=http://127.0.0.1:$RAY_DASH_PORT
+if [ -n "$EXTERNAL_RAY_GCS" ]; then
+    export RAY_ADDRESS=http://$EXTERNAL_RAY_DASH
+else
+    export RAY_ADDRESS=http://127.0.0.1:$RAY_DASH_PORT
+fi
 JOB_ID=""
 
 log() { echo "[e2e $(date +%H:%M:%S)] $*"; }
@@ -76,7 +86,10 @@ e2e_cleanup() {
     [ -n "$JOB_ID" ] && ray job stop --address "$RAY_ADDRESS" "$JOB_ID" >/dev/null 2>&1 || true
     kill_marked "^MILES_E2E_RUN=$MILES_E2E_RUN\$"
     rm -rf "$RAY_TEMP"
-    log "GPU memory after teardown:"; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader -i "$GPUS" | sed 's/^/    /'
+    if [ -n "$EXTERNAL_RAY_GCS" ]; then
+        log "cluster run: the job is stopped and this node is swept; run e2e/sweep_node.sh MILES_E2E_RUN=$MILES_E2E_RUN on the other nodes"
+    fi
+    log "GPU memory after teardown (this node):"; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader -i "$GPUS" | sed 's/^/    /'
     log "logs: $RUN_DIR (serve.log, client.log, serve-command.txt)"
     if [ $rc -eq 0 ]; then log "E2E PASS"; else log "E2E FAIL (exit $rc)"; fi
     exit $rc
@@ -88,20 +101,38 @@ e2e_preflight() {
     [ -f "$REPO/serve_tinker.py" ] || { log "$REPO is not a miles tree"; exit 2; }
     [ -d "$SGLANG_PYTHONPATH/sglang" ] || { log "SGLANG_PYTHONPATH $SGLANG_PYTHONPATH has no sglang package"; exit 2; }
     local g used port
-    for g in ${GPUS//,/ }; do
-        used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$g")
-        [ "$used" -lt 2048 ] || { log "GPU $g has ${used} MiB in use by someone else; refusing to share it"; exit 2; }
-    done
-    NGPUS=$(echo "$GPUS" | tr ',' '\n' | wc -l)
-    [ "$NGPUS" -ge $((TRAIN_GPUS + ROLLOUT_GPUS)) ] || { log "need $((TRAIN_GPUS + ROLLOUT_GPUS)) GPUs, GPUS=$GPUS has $NGPUS"; exit 2; }
     kill_marked "^MILES_E2E_RUN="  # leftovers of any earlier run of either script, whatever its family
-    for port in "$TINKER_PORT" "$RAY_PORT" "$RAY_DASH_PORT"; do
-        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; then log "port $port is busy"; exit 2; fi
-    done
+    if [ -n "$EXTERNAL_RAY_GCS" ]; then
+        # the cluster's own free-GPU count is the only thing we can check from this node
+        local gpu_line used_gpus total_gpus
+        gpu_line=$(ray status --address "$EXTERNAL_RAY_GCS" 2>/dev/null | grep -E "^ *[0-9.]+/[0-9.]+ GPU" | head -1)
+        [ -n "$gpu_line" ] || { log "cannot read GPU usage from the Ray cluster at $EXTERNAL_RAY_GCS"; exit 2; }
+        used_gpus=${gpu_line%%/*}; used_gpus=${used_gpus// /}; total_gpus=$(echo "$gpu_line" | sed 's#.*/\([0-9.]*\) GPU.*#\1#')
+        log "cluster $EXTERNAL_RAY_GCS: $used_gpus of $total_gpus GPUs in use"
+        awk -v u="$used_gpus" -v t="$total_gpus" -v m="$MIN_FREE_GPUS" 'BEGIN { exit !(t - u >= m) }' \
+            || { log "cluster has fewer than $MIN_FREE_GPUS free GPUs; someone else is using it"; exit 2; }
+        for port in "$TINKER_PORT"; do
+            if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; then log "port $port is busy"; exit 2; fi
+        done
+    else
+        for g in ${GPUS//,/ }; do
+            used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$g")
+            [ "$used" -lt 2048 ] || { log "GPU $g has ${used} MiB in use by someone else; refusing to share it"; exit 2; }
+        done
+        NGPUS=$(echo "$GPUS" | tr ',' '\n' | wc -l)
+        [ "$NGPUS" -ge $((TRAIN_GPUS + ROLLOUT_GPUS)) ] || { log "need $((TRAIN_GPUS + ROLLOUT_GPUS)) GPUs, GPUS=$GPUS has $NGPUS"; exit 2; }
+        for port in "$TINKER_PORT" "$RAY_PORT" "$RAY_DASH_PORT"; do
+            if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; then log "port $port is busy"; exit 2; fi
+        done
+    fi
     mkdir -p "$RUN_DIR/ckpt" "$RAY_TEMP"
 }
 
 e2e_start_ray() {
+    if [ -n "$EXTERNAL_RAY_GCS" ]; then
+        log "using the existing Ray cluster at $EXTERNAL_RAY_GCS (jobs API $RAY_ADDRESS); no local head"
+        return 0
+    fi
     export CUDA_VISIBLE_DEVICES=$GPUS PYTHONUNBUFFERED=1
     ray start --head --node-ip-address 127.0.0.1 --port "$RAY_PORT" --dashboard-port "$RAY_DASH_PORT" \
         --ray-client-server-port "$RAY_CLIENT_PORT" --dashboard-agent-listen-port "$RAY_AGENT_PORT" \
@@ -117,11 +148,17 @@ e2e_model_args() {  # $1: model type under scripts/models, e.g. qwen3-30B-A3B; p
 e2e_submit_gateway() {  # $1: model-args line (shell-quoted), $2: serve args
     local runtime_env model_args_arr
     eval "model_args_arr=($1)"
+    local cluster_env=""
+    if [ -n "$EXTERNAL_RAY_GCS" ]; then
+        # the driver and every worker must agree on the GCS, and NCCL/GLOO must pick the fabric interface
+        cluster_env=", \"RAY_ADDRESS\": \"$EXTERNAL_RAY_GCS\""
+        [ -n "$NET_IFNAME" ] && cluster_env="$cluster_env, \"NCCL_SOCKET_IFNAME\": \"$NET_IFNAME\", \"GLOO_SOCKET_IFNAME\": \"$NET_IFNAME\""
+    fi
     runtime_env=$(cat <<JSON
 {"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0",
- "no_proxy": "127.0.0.1,localhost", "MASTER_ADDR": "127.0.0.1", "RAY_DEDUP_LOGS": "0",
+ "no_proxy": "127.0.0.1,localhost${NODE_IPS:+,$NODE_IPS}", "MASTER_ADDR": "$HEAD_IP", "RAY_DEDUP_LOGS": "0",
  "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1", "MILES_E2E_FAMILY": "$MILES_E2E_FAMILY", "MILES_E2E_RUN": "$MILES_E2E_RUN",
- "PYTHONPATH": "$REPO:$MEGATRON_PATH:$SGLANG_PYTHONPATH"}}
+ "PYTHONPATH": "$REPO:$MEGATRON_PATH:$SGLANG_PYTHONPATH"$cluster_env}}
 JSON
 )
     JOB_ID=e2e-$(date +%s)
