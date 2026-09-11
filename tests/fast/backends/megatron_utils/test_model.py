@@ -1,9 +1,11 @@
 import logging
 from argparse import Namespace
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import torch
 
 
 class FakeModelChunk:
@@ -120,3 +122,45 @@ class TestTrainOneStepStructuredLog:
             )
 
         assert "train op=train_step rollout=7 step=3 attempt=2 outcome=NORMAL valid_step=true" in caplog.messages
+
+
+@pytest.mark.parametrize("tensor_norm", [False, True])
+def test_ft_discard_stays_invalid_with_finite_gradient_norm(
+    train_one_step_env: TrainOneStepEnv, monkeypatch: pytest.MonkeyPatch, tensor_norm: bool
+) -> None:
+    """A finite gradient norm cannot revive a failed collective and update weights."""
+    from miles.backends.megatron_utils import model as model_module
+
+    env = train_one_step_env
+    env.args.check_for_nan_in_loss_and_grad = False
+    env.args.calculate_per_token_loss = False
+    env.parallel_state.indep_dp.size = 2
+
+    def reject_optimizer_step() -> None:
+        raise AssertionError("A discarded step must not update weights")
+
+    optimizer = SimpleNamespace(
+        zero_grad=lambda: None,
+        prepare_grads=lambda: False,
+        get_grad_norm=lambda: torch.tensor(1.0) if tensor_norm else 1.0,
+        step=reject_optimizer_step,
+    )
+    monkeypatch.setattr(
+        model_module, "allreduce_grads_and_losses_across_replicas", lambda *args, **kwargs: (False, {})
+    )
+
+    _, _, outcome = model_module.train_one_step(
+        args=env.args,
+        rollout_id=7,
+        step_id=0,
+        data_iterator=env.data_iterator,
+        model=env.model,
+        optimizer=optimizer,
+        opt_param_scheduler=None,
+        num_microbatches=1,
+        num_rollouts=1,
+        witness_info=None,
+        attempt=2,
+    )
+
+    assert outcome is model_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
