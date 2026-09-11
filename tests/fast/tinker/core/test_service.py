@@ -4,7 +4,16 @@ import asyncio
 from contextlib import suppress
 
 import pytest
-from tests.fast.tinker.harness import ADAM, await_settled, created_model, datum, fb_payload, make_service, rl_datum
+from tests.fast.tinker.harness import (
+    ADAM,
+    await_settled,
+    created_model,
+    datum,
+    fb_payload,
+    make_service,
+    model_payload,
+    rl_datum,
+)
 
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
@@ -29,7 +38,7 @@ async def test_resubmitted_seq_id_reuses_the_future_and_runs_once(service):
 
 
 async def test_create_model_is_two_phase(service):
-    request_id, model_id = service.create_model("tenant", {"base_model": "base", "lora_config": {"rank": 8}})
+    request_id, model_id = service.create_model("tenant", model_payload(service, lora_config={"rank": 8}))
 
     future = await await_settled(service, "tenant", request_id)
     assert future.result == {"op": "create_model", "model_id": model_id}
@@ -40,7 +49,7 @@ async def test_create_model_is_two_phase(service):
 async def test_failed_slot_init_returns_the_slot(service):
     free_before = set(service.free_slots)
     service.backend.fail_next = RuntimeError("init blew up")
-    request_id, model_id = service.create_model("tenant", {"base_model": "base"})
+    request_id, model_id = service.create_model("tenant", model_payload(service))
 
     future = await await_settled(service, "tenant", request_id)
     assert (future.state, future.error_category) == (FAILED, "server")
@@ -52,12 +61,12 @@ async def test_no_free_slots_is_a_user_error(service):
     for _ in range(service.config.n_slots):
         await created_model(service)
     with pytest.raises(UserInputError, match="no free adapter slots"):
-        service.create_model("tenant", {"base_model": "base"})
+        service.create_model("tenant", model_payload(service))
 
 
 async def test_the_wrong_base_model_is_rejected(service):
     with pytest.raises(UserInputError, match="serves"):
-        service.create_model("tenant", {"base_model": "other"})
+        service.create_model("tenant", model_payload(service, base_model="other"))
 
 
 async def test_out_of_order_chunks_complete_and_the_barrier_waits(service):
@@ -230,7 +239,7 @@ async def test_failed_export_burns_the_version_number(service):
 
 async def test_lease_expiry_reclaims_the_tenant(service):
     session_id = service.create_session("tenant")
-    model_id = await created_model(service)
+    model_id = await created_model(service, session_id=session_id)
     slot = service.models[model_id].slot
     queued = service.submit("tenant", "optim_step", _optim_payload(model_id, 1))
     await await_settled(service, "tenant", queued)
@@ -247,7 +256,7 @@ async def test_lease_expiry_reclaims_the_tenant(service):
 
 async def test_a_fresh_heartbeat_keeps_the_model(service):
     session_id = service.create_session("tenant")
-    model_id = await created_model(service)
+    model_id = await created_model(service, session_id=session_id)
 
     service.heartbeat("tenant", session_id)
     await service._sweep_once()
@@ -318,7 +327,7 @@ async def test_save_state_refuses_to_overwrite_unless_asked(service):
 
 async def test_checkpoints_outlive_the_lease(service):
     session_id = service.create_session("tenant")
-    model_id = await created_model(service)
+    model_id = await created_model(service, session_id=session_id)
     save = service.submit(
         "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "kept", "overwrite": False}
     )
@@ -468,20 +477,17 @@ async def test_discarded_gradients_fail_the_next_optim_step(service):
 async def test_unsupported_lora_configs_are_rejected(service):
     for lora_config in ({"rank": 8, "seed": 7}, {"rank": 8, "train_unembed": True}, {"rank": 8, "train_mlp": False}):
         with pytest.raises(UserInputError):
-            service.create_model("tenant", {"base_model": service.config.base_model, "lora_config": lora_config})
+            service.create_model("tenant", model_payload(service, lora_config=lora_config))
     _, model_id = service.create_model(
         "tenant",
-        {
-            "base_model": service.config.base_model,
-            "lora_config": {"rank": 8, "train_attn": True, "train_mlp": True, "train_unembed": False},
-        },
+        model_payload(service, lora_config={"rank": 8, "train_attn": True, "train_mlp": True, "train_unembed": False}),
     )
     assert model_id in service.models
 
 
 async def test_sampler_paths_resolve_after_the_lease_died(service):
     session_id = service.create_session("tenant")
-    model_id = await created_model(service)
+    model_id = await created_model(service, session_id=session_id)
     save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     path = (await await_settled(service, "tenant", save)).result["path"]
 
@@ -590,7 +596,7 @@ async def test_a_backend_level_optim_failure_retires_every_model_in_the_barrier(
 
 async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
     session_id = service.create_session("tenant")
-    model_id = await created_model(service)
+    model_id = await created_model(service, session_id=session_id)
     slot = service.models[model_id].slot
     service.backend.fail_on["unload_slot"] = RuntimeError("engine gone")
 
@@ -688,7 +694,7 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
 
 async def test_a_recycled_slot_does_not_inherit_poison(service):
     session_id = service.create_session("tenant")
-    model_id = await created_model(service)
+    model_id = await created_model(service, session_id=session_id)
     slot = service.models[model_id].slot
     service.backend.fail_next = RuntimeError("cuda died")
     failed = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
@@ -740,3 +746,56 @@ async def test_a_dead_trainer_escapes_the_dispatch_loop(tmp_path, monkeypatch):
             run_task.cancel()
             with suppress(asyncio.CancelledError):
                 await run_task
+
+
+async def test_a_retried_create_model_returns_the_first_allocation(service):
+    """A network retry must not occupy a second slot."""
+    payload = model_payload(service)
+    first = service.create_model("tenant", payload)
+    assert service.create_model("tenant", payload) == first
+    assert len(service.backend.named("load_slot")) == 1
+
+
+async def test_an_unknown_session_is_rejected(service):
+    with pytest.raises(UserInputError, match="unknown session"):
+        service.create_model("tenant", model_payload(service, session_id="session-gone"))
+
+
+async def test_a_retried_sampling_session_returns_the_same_id(service):
+    payload = {"session_id": service.create_session("tenant"), "sampling_session_seq_id": 1}
+    assert service.create_sampling_session("tenant", payload) == service.create_sampling_session("tenant", payload)
+
+
+async def test_a_retried_sample_does_not_sample_again(service):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    sampling_session_id = service.create_sampling_session(
+        "tenant", {"session_id": service.create_session("tenant"), "sampling_session_seq_id": 1, "model_path": path}
+    )
+    payload = {
+        "sampling_session_id": sampling_session_id,
+        "seq_id": 1,
+        "num_samples": 1,
+        "prompt_tokens": [1],
+        "sampling_params": {"max_tokens": 2},
+    }
+    first = service.submit_sample("tenant", payload)
+    assert service.submit_sample("tenant", payload) == first, "the retry must reuse the request and sequence ids"
+    await await_settled(service, "tenant", first[0])
+    assert len(service.backend.named("sample")) == 1
+
+
+async def test_an_illegal_seq_id_is_rejected(service):
+    """seq_id 0 would park behind the stream watermark forever; every future would pend."""
+    model_id = await created_model(service)
+    with pytest.raises(UserInputError, match="seq_id"):
+        service.submit("tenant", "optim_step", {"model_id": model_id, "seq_id": 0, "adam_params": dict(ADAM)})
+
+
+async def test_an_expired_lease_sweeps_its_sessions(service):
+    session_id = service.create_session("tenant")
+    service.sessions[session_id]["last_heartbeat"] = -1e9
+    await service._sweep_once()
+    with pytest.raises(UserInputError, match="unknown session"):
+        service.create_model("tenant", model_payload(service, session_id=session_id))
