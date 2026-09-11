@@ -83,6 +83,7 @@ fi
 e2e_submit_gateway "$(e2e_model_args "$MODEL_TYPE")" "$SERVE_ARGS"
 e2e_wait_ready
 e2e_start_pruning
+e2e_start_gpu_samplers
 
 SLOTS=$(e2e_resolved_slots)
 [ -n "$SLOTS" ] || { log "could not read the slot count from serve.log"; exit 1; }
@@ -90,10 +91,16 @@ N_USERS=${N_USERS:-$SLOTS}
 log "gateway has $SLOTS slots; running $N_USERS clients x $STEPS steps of DAPO ($PROMPTS_PER_STEP prompts x $SAMPLES_PER_PROMPT samples, <= $CONTEXT_LEN tokens)"
 
 thinking_flag=""; [ "$ENABLE_THINKING" = "1" ] && thinking_flag="--enable-thinking"
-PYTHONPATH="$REPO" "$PY" "$REPO/e2e/run_clients.py" --n-clients "$N_USERS" -- \
+if PYTHONPATH="$REPO" "$PY" "$REPO/e2e/run_clients.py" --n-clients "$N_USERS" --summary-json "$RUN_DIR/client-summary.json" -- \
     --base-url "http://127.0.0.1:$TINKER_PORT" --base-model "$MODEL" --dataset "$DATASET" \
     --steps "$STEPS" --lora-rank "$LORA_RANK" --lr "$LR" \
     --prompts-per-step "$PROMPTS_PER_STEP" --samples-per-prompt "$SAMPLES_PER_PROMPT" \
     --max-prompt-tokens "$MAX_PROMPT_TOKENS" --max-new-tokens "$MAX_NEW_TOKENS" --context-len "$CONTEXT_LEN" \
-    $thinking_flag 2>&1 | tee "$RUN_DIR/client.log"
-exit "${PIPESTATUS[0]}"
+    $thinking_flag 2>&1 | tee "$RUN_DIR/client.log"; then
+    rc=0
+else
+    rc=$?
+fi
+e2e_stop_gpu_samplers
+e2e_report
+exit "$rc"

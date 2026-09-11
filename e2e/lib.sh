@@ -27,6 +27,9 @@ export MILES_E2E_RUN="miles-e2e-$(basename "$RUN_DIR")-$$"
 export RAY_ADDRESS=http://$RAY_DASH
 JOB_ID=""
 PRUNE_PID=""
+GPU_SAMPLER_PID=""
+GPU_JOBS=""
+READY_S=""
 
 log() { echo "[e2e $(date +%H:%M:%S)] $*"; }
 
@@ -103,6 +106,7 @@ e2e_cleanup() {
         exit 0
     fi
     [ -n "$PRUNE_PID" ] && kill "$PRUNE_PID" 2>/dev/null || true
+    e2e_stop_gpu_samplers
     [ -n "$JOB_ID" ] && ray job stop --address "$RAY_ADDRESS" "$JOB_ID" >/dev/null 2>&1 || true
     kill_marked "^MILES_E2E_RUN=$MILES_E2E_RUN\$"
     e2e_sweep_other_nodes "^MILES_E2E_RUN=$MILES_E2E_RUN\$"
@@ -169,7 +173,8 @@ e2e_wait_ready() {
         if [ $SECONDS -ge $deadline ]; then log "gateway not ready after ${READY_TIMEOUT}s"; tail -80 "$RUN_DIR/serve.log"; exit 1; fi
         sleep 10
     done
-    log "gateway ready after $SECONDS s"
+    READY_S=$SECONDS
+    log "gateway ready after $READY_S s"
     grep -m1 "agree with predicted\|diverge from predicted" "$RUN_DIR/serve.log" | sed 's/^/[e2e] /' || true
     grep -m1 "multi-LoRA capacity" "$RUN_DIR/serve.log" | sed 's/^/[e2e] /' || log "(no capacity line: explicit slot count)"
     grep -m1 "capacity is bound by" "$RUN_DIR/serve.log" | sed 's/^/[e2e] WARNING /' || true
@@ -189,6 +194,41 @@ e2e_start_pruning() {  # every publish exports ~1.5 GB to the shared volume; wit
     # the loop must outlive one failed ls: no errexit/pipefail in the subshell
     ( set +e +o pipefail; while true; do sleep 60; e2e_prune_versions; done ) &
     PRUNE_PID=$!
+}
+
+e2e_start_gpu_samplers() {  # nvidia-smi every 15 s on every node while the clients run; the report reads the CSVs
+    local ip job
+    bash "$REPO/e2e/gpu_sampler.sh" "$RUN_DIR/gpu-$HEAD_IP.csv" 7200 &
+    GPU_SAMPLER_PID=$!
+    for ip in ${NODE_IPS//,/ }; do
+        [ "$ip" = "$HEAD_IP" ] && continue
+        job="gpu-$(date +%s)-${ip//./-}"
+        ray job submit --address "$RAY_ADDRESS" --submission-id "$job" --no-wait \
+            --entrypoint-resources "{\"node:$ip\": 0.001}" \
+            --runtime-env-json "{\"env_vars\": {\"MILES_E2E_RUN\": \"$MILES_E2E_RUN\"}}" \
+            -- bash "$REPO/e2e/gpu_sampler.sh" "$RUN_DIR/gpu-$ip.csv" 7200 > /dev/null 2>&1 && GPU_JOBS="$GPU_JOBS $job" || true
+    done
+}
+
+e2e_stop_gpu_samplers() {
+    local job
+    [ -n "$GPU_SAMPLER_PID" ] && kill "$GPU_SAMPLER_PID" 2>/dev/null || true
+    for job in $GPU_JOBS; do ray job stop --address "$RAY_ADDRESS" "$job" > /dev/null 2>&1 || true; done
+    GPU_SAMPLER_PID=""; GPU_JOBS=""
+}
+
+e2e_report() {  # the box table for this run: setup, results, GPU peaks; also saved as report.txt
+    PYTHONPATH="$REPO" "$PY" "$REPO/e2e/report.py" --run-dir "$RUN_DIR" \
+        --knob TRAIN_NODES="$TRAIN_NODES" --knob TRAIN_GPUS="$TRAIN_GPUS" --knob TP="$TP" --knob EP="$EP" \
+        --knob ROLLOUT_GPUS="$ROLLOUT_GPUS" --knob GPUS_PER_ENGINE="$GPUS_PER_ENGINE" \
+        --knob GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)" \
+        --knob MODEL="$MODEL" --knob DATASET="$DATASET" --knob LORA_RANK="$LORA_RANK" --knob LR="$LR" --knob STEPS="$STEPS" \
+        --knob PROMPTS_PER_STEP="$PROMPTS_PER_STEP" --knob SAMPLES_PER_PROMPT="$SAMPLES_PER_PROMPT" \
+        --knob MAX_PROMPT_TOKENS="$MAX_PROMPT_TOKENS" --knob CONTEXT_LEN="$CONTEXT_LEN" --knob MAX_NEW_TOKENS="$MAX_NEW_TOKENS" \
+        --knob SGLANG_MEM_FRACTION="$SGLANG_MEM_FRACTION" --knob SGLANG_MAX_RUNNING_REQUESTS="$SGLANG_MAX_RUNNING_REQUESTS" \
+        --knob SGLANG_CUDA_GRAPH_MAX_BS="$SGLANG_CUDA_GRAPH_MAX_BS" --knob SGLANG_MOE_RUNNER="$SGLANG_MOE_RUNNER" \
+        --knob SGLANG_MAX_LOADED_LORAS="$SGLANG_MAX_LOADED_LORAS" --knob N_ADAPTERS="$N_ADAPTERS" --knob READY_S="$READY_S" \
+        || log "report failed"
 }
 
 e2e_resolved_slots() {  # the slot count the gateway ended up with

@@ -66,10 +66,11 @@ def main(args) -> None:
         t_rollout = time.time()
 
         lengths = [len(sequence.tokens) for _, sequences, _ in groups for sequence in sequences]
+        prompt_lengths = [len(prompt_tokens) for prompt_tokens, _, _ in groups]
         completion = tokenizer.decode(list(groups[0][1][0].tokens), skip_special_tokens=True)
         log(
             f"step={step} loss={fb.metrics['loss:sum']:.4f} acc={accuracy(groups):.0%} "
-            f"mean_len={statistics.fmean(lengths):.0f} "
+            f"mean_len={statistics.fmean(lengths):.0f} max_len={max(lengths)} prompt_len={statistics.fmean(prompt_lengths):.0f} "
             f"fwd_bwd={t_fb - t_start:.1f}s optim={t_optim - t_fb:.1f}s publish={t_publish - t_optim:.1f}s "
             f"rollout={t_rollout - t_publish:.1f}s published={saved.path} completion={completion[-120:]!r}"
         )
