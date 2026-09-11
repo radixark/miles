@@ -9,6 +9,15 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from miles_plugins.models.deepseek_v4.ops.kernel.tiling import (
+    BackwardTiling,
+    DeviceLimits,
+    build_with_largest_fitting_tiling,
+    current_target,
+    shared_memory_required,
+    sparse_mla_backward_tilings,
+)
+
 
 @tilelang.jit(out_idx=[-1])
 def preprocess(
@@ -95,11 +104,15 @@ def bwd(
     block_size=32,
     num_stages=0,
     threads=128,
+    split_store=2,
+    stage_dq_through_shared=True,
+    max_block_H=None,
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
 ):
     assert topk % block_size == 0, f"topk ({topk}) must be divisible by block_size ({block_size})"
+    assert block_size % split_store == 0, f"block_size ({block_size}) must be divisible by split_store ({split_store})"
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
 
@@ -116,19 +129,18 @@ def bwd(
     attn_sink_shape = [H]
 
     padded_H = max(tilelang.math.next_power_of_2(H), 16)
-    is_hip = getattr(torch.version, "hip", None)
-    if is_hip:
-        # Split large HIP head tiles to reduce LDS use.
-        max_block_H = 32 if padded_H >= 64 else 64
-    else:
-        max_block_H = 64
+    if max_block_H is None:
+        is_hip = getattr(torch.version, "hip", None)
+        if is_hip:
+            # Split large HIP head tiles to reduce LDS use.
+            max_block_H = 32 if padded_H >= 64 else 64
+        else:
+            max_block_H = 64
     block_H = min(max_block_H, padded_H)
     assert padded_H % block_H == 0
     NH = padded_H // block_H
     BS = block_size
     NS = tilelang.cdiv(topk, block_size)
-
-    split_store = 2
 
     @T.prim_func
     def sparse_mqa_bwd_kernel(
@@ -151,7 +163,8 @@ def bwd(
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
-            dQ_shared = T.alloc_shared([block_H, D], dtype)
+            if stage_dq_through_shared:
+                dQ_shared = T.alloc_shared([block_H, D], dtype)
 
             acc_p = T.alloc_fragment([block_H, BS], accum_dtype)
             acc_dp = T.alloc_fragment([block_H, BS], accum_dtype)
@@ -227,8 +240,11 @@ def bwd(
                         )
 
             # Store dQ
-            T.copy(acc_dq, dQ_shared)
-            T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
+            if stage_dq_through_shared:
+                T.copy(acc_dq, dQ_shared)
+                T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
+            else:
+                T.copy(acc_dq, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
 
             # dAttnSink[h] = -sum_{b,s}( Delta[b,s,h] * p_sink[b,s,h] )
             # where p_sink = exp(attn_sink[h]) / Z = exp2(attn_sink[h]*log2e - LSE)
@@ -241,6 +257,81 @@ def bwd(
                 )
 
     return sparse_mqa_bwd_kernel
+
+
+_fitted_tiling: dict[tuple, BackwardTiling] = {}
+
+
+def bwd_within_shared_mem(B, S, S_kv, H, D, topk, sm_scale=None, block_size=32, threads=128):
+    """Build the backward kernel with the largest tiling this target can host.
+
+    Memoized on what the answer depends on, which is not the tensor shape: every shared buffer is
+    sized from block_H, block_size and D, so B/S/S_kv cannot move the requirement. Keying on them
+    would re-run the search for every new sequence length, which THD training produces per
+    microbatch.
+    """
+
+    def build(tiling):
+        return bwd(
+            B,
+            S,
+            S_kv,
+            H,
+            D,
+            topk,
+            sm_scale,
+            block_size=tiling.block_size,
+            threads=tiling.threads,
+            split_store=tiling.split_store,
+            stage_dq_through_shared=tiling.stage_dq_through_shared,
+            max_block_H=tiling.max_block_H,
+        )
+
+    key = (H, D, topk, block_size, threads)
+    if key in _fitted_tiling:
+        return build(_fitted_tiling[key])
+
+    requested = BackwardTiling(block_size, threads, split_store=2, stage_dq_through_shared=True, max_block_H=None)
+    target = current_target()
+    limits = DeviceLimits.from_target(target)
+
+    def required_bytes(tiling):
+        prim_func = bwd.get_tir(
+            B,
+            S,
+            S_kv,
+            H,
+            D,
+            topk,
+            sm_scale,
+            block_size=tiling.block_size,
+            threads=tiling.threads,
+            split_store=tiling.split_store,
+            stage_dq_through_shared=tiling.stage_dq_through_shared,
+            max_block_H=tiling.max_block_H,
+        )
+        return shared_memory_required(prim_func, target)
+
+    kernel, tiling = build_with_largest_fitting_tiling(
+        requested=requested,
+        derived=(
+            candidate
+            for candidate in sparse_mla_backward_tilings(
+                padded_heads=max(tilelang.math.next_power_of_2(H), 16),
+                topk=topk,
+                block_size=block_size,
+                limits=limits,
+            )
+            if candidate != requested
+        ),
+        compile_tiling=build,
+        required_bytes=required_bytes,
+        budget=limits.shared_memory_per_block,
+        describe=lambda t: t.describe(),
+        what="sparse_mqa_bwd",
+    )
+    _fitted_tiling[key] = tiling
+    return kernel
 
 
 def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=None):
@@ -263,6 +354,12 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
     """
     assert q.is_contiguous() and kv.is_contiguous()
     assert topk_idxs.is_contiguous() and lse.is_contiguous()
+    # Normalised rather than asserted: autograd may legitimately hand back a broadcast view of do
+    # (out.sum().backward() gives a stride-0 tensor). tilelang's stride check runs inside an
+    # "Exception ignored in" context, so a mismatch only prints, and the kernel then reads the
+    # stride-0 pointer as dense -- killing the process on a GPU memory access fault.
+    o = o.contiguous()
+    do = do.contiguous()
     B, S, H, D = q.shape
     _, S_kv, _ = kv.shape
     topk = topk_idxs.shape[-1]
@@ -276,7 +373,7 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
         topk = padded_topk
 
     preprocess_kernel = preprocess(B, S, H, D)
-    bwd_kernel = bwd(B, S, S_kv, H, D, topk, sm_scale)
+    bwd_kernel = bwd_within_shared_mem(B, S, S_kv, H, D, topk, sm_scale)
     postprocess_kernel = postprocess(B, S_kv, D)
 
     delta = preprocess_kernel(o, do)
