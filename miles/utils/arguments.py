@@ -2281,6 +2281,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
             )
             parser.add_argument(
+                "--enable-sample-ownership-checker",
+                action="store_true",
+                help="Verify exactly one outcome for every consumed sample and every mature issued sample.",
+            )
+            parser.add_argument(
                 "--enable-witness",
                 action="store_true",
                 help="Enable forward/backward pass witness.",
@@ -3199,6 +3204,36 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
+    if not args.enable_sample_ownership_checker:
+        return
+
+    assert (
+        args.custom_convert_samples_to_train_data_path is None
+    ), "--enable-sample-ownership-checker is incompatible with --custom-convert-samples-to-train-data-path"
+
+    multi_policy = (
+        args.train_backend == "megatron"
+        and args.megatron_config is not None
+        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
+    )
+    unsupported = [
+        reason
+        for condition, reason in (
+            (args.train_backend != "megatron", "the FSDP backend has no model companion info"),
+            (is_lora_enabled(args), "LoRA training has no model companion info"),
+            (args.multi_lora, "multi-LoRA training can replay samples"),
+            (multi_policy, "multi-policy training has separate model companion lineages"),
+            (args.debug_train_only, "train-only mode has no issuing data source"),
+            (args.debug_rollout_only, "rollout-only mode has no trainer model companion"),
+            (args.num_critic_only_steps > 0, "critic-only warmup steps drop actor samples"),
+        )
+        if condition
+    ]
+    if unsupported:
+        raise ValueError(f"--enable-sample-ownership-checker is not supported here: {'; '.join(unsupported)}")
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -3874,6 +3909,8 @@ def miles_validate_args(args):
             )
 
     args.run_uuid = _resolve_run_uuid(args)
+
+    _resolve_sample_ownership_check(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
