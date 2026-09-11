@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import Enum
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter, iter_samples
@@ -23,6 +24,7 @@ from miles.rollout.filter_hub.common_filters import (
     group_staleness,
     group_weight_version_stats,
 )
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -33,6 +35,11 @@ logger = logging.getLogger(__name__)
 Group = list[Sample | list[Sample]]
 
 DATA_BUFFER_PATH_PER_MODEL_FLAG = "--custom-async-data-buffer-path-per-model"
+
+
+class UnusedReason(str, Enum):
+    ABORTED = "aborted"
+    STALE = "stale"
 
 
 def add_data_buffer_arguments(parser: ArgumentParser) -> None:
@@ -65,7 +72,9 @@ def first_sample(group: Group) -> Sample:
 
 class DataBufferConstructorInput:
     args: Namespace
-    unused_handler_fn: Callable[[list[Sample]], None]  # --async-unused-samples-handler, applied to unused groups
+    unused_handler_fn: Callable[
+        [list[Sample], UnusedReason], None
+    ]  # --async-unused-samples-handler, applied to unused groups
 
 
 @dataclass
@@ -166,18 +175,24 @@ class DefaultDataBuffer(DataBuffer):
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1
-            self._unused_handler_fn(input.prompt_group)
+            self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
             return False
 
         output = apply_missing_reward_filter(self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
+            SampleOwnershipRecorder.log_dropped_samples(
+                args=self._args, samples=input.prompt_group, reason="missing_reward"
+            )
             return False
 
         self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
         output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
+            SampleOwnershipRecorder.log_dropped_samples(
+                args=self._args, samples=input.prompt_group, reason="dynamic_filter"
+            )
             return False
         return True
 
@@ -197,7 +212,7 @@ class DefaultDataBuffer(DataBuffer):
                     if self._args.max_weight_staleness is not None and staleness > self._args.max_weight_staleness:
                         logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
                         self._metric_stale_groups += 1
-                        self._unused_handler_fn(entry.prompt_group)
+                        self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
                         continue
                     self._metric_consumed_staleness.append(staleness)
                 self._record_selected_version_stats(version_stats, current_version)
