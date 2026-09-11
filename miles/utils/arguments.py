@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from typing import Any
 
 import yaml
@@ -2410,6 +2411,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Periodically verify that every mature issued sample was trained exactly once or explicitly dropped.",
             )
             parser.add_argument(
+                "--sample-ownership-grace-steps",
+                type=int,
+                default=None,
+                help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI).",
+            )
+            parser.add_argument(
+                "--sample-ownership-check-interval-seconds",
+                type=float,
+                default=30.0,
+                help="Seconds between sample ownership checks.",
+            )
+            parser.add_argument(
                 "--enable-witness",
                 action="store_true",
                 help="Enable forward/backward pass witness.",
@@ -3325,6 +3338,8 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
 
 
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
+    if args.sample_ownership_grace_steps is None:
+        args.sample_ownership_grace_steps = 2 if args.ci_test else 10
     if args.ci_test:
         args.enable_sample_ownership_checker = True
     if not args.enable_sample_ownership_checker:
@@ -3355,6 +3370,19 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         args.enable_sample_ownership_checker = False
         logger.warning("Disabled sample ownership checking: %s", "; ".join(unsupported))
         return
+
+    if args.sample_ownership_grace_steps < 0:
+        raise ValueError("--sample-ownership-grace-steps must be non-negative")
+    if args.sample_ownership_check_interval_seconds <= 0:
+        raise ValueError("--sample-ownership-check-interval-seconds must be positive")
+
+    if args.save_debug_event_data is None:
+        args.save_debug_event_data = os.path.join(
+            tempfile.gettempdir(),
+            "miles-sample-accounting",
+            args.run_uuid,
+            EVENTS_DIRNAME,
+        )
 
 
 def miles_validate_args(args):

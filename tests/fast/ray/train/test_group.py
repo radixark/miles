@@ -17,6 +17,7 @@ from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainerWitnessCohortEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.sample_ownership.step_window import SampleOwnershipStepWindow
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.data import RolloutDataPack
 from miles.utils.object_store import _MooncakeStoreObjectRef
@@ -35,47 +36,47 @@ async def test_log_current_cpu_witness_collects_live_cell_snapshots(tmp_path: Pa
     controller = object.__new__(TrainerController)
     controller._role = "actor"
     controller.args = SimpleNamespace(
-        sample_ownership_grace_period_seconds=300,
-        sample_ownership_check_timeout_seconds=90,
+        sample_ownership_grace_steps=10,
     )
     controller._cells_by_id = {
         "cell-a": SimpleNamespace(
             cell_index=0,
             is_alive=True,
-            execute=AsyncMock(return_value=[{"replica_id": "cell-0"}, None]),
+            execute=AsyncMock(return_value=["cell-0", None]),
         ),
         "cell-b": SimpleNamespace(
             cell_index=1,
             is_alive=True,
-            execute=AsyncMock(return_value=[{"replica_id": "cell-1"}, None]),
+            execute=AsyncMock(return_value=["cell-1", None]),
         ),
     }
     controller._cpu_witness_operation_lock = asyncio.Lock()
 
     with patch.object(group_module.uuid, "uuid4", return_value=SimpleNamespace(hex="cohort-current")):
-        cohort = await controller.log_current_cpu_witness(rollout_id=7)
+        controller._sample_ownership_steps = SampleOwnershipStepWindow(10)
+        await controller.log_current_cpu_witness(rollout_id=7)
 
-    assert [snapshot["replica_id"] for snapshot in cohort["snapshots"]] == ["cell-0", "cell-1"]
-    assert cohort["marker"]["cohort_id"] == "cohort-current"
+    marker = TrainerWitnessCohortEvent.model_validate_json((tmp_path / "sample_ownership_current.json").read_text())
+    assert marker.replica_ids == ["cell-0", "cell-1"]
+    assert marker.cohort_id == "cohort-current"
     assert not list(tmp_path.glob("*.jsonl"))
 
 
 @pytest.mark.parametrize(
     "returned_replicas",
-    [[{"replica_id": "cell-0"}, None], [{"replica_id": "cell-0"}, {"replica_id": "cell-0"}]],
+    [["cell-0", None], ["cell-0", "cell-0"]],
     ids=["missing", "duplicate"],
 )
 async def test_log_current_cpu_witness_requires_exact_alive_replicas(
     tmp_path: Path,
-    returned_replicas: list[dict[str, str] | None],
+    returned_replicas: list[str | None],
 ) -> None:
     """A missing or duplicate cell representative cannot produce a completed cohort."""
     set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
     controller = object.__new__(TrainerController)
     controller._role = "actor"
     controller.args = SimpleNamespace(
-        sample_ownership_grace_period_seconds=300,
-        sample_ownership_check_timeout_seconds=90,
+        sample_ownership_grace_steps=10,
     )
     controller._cells_by_id = {
         "cell-a": SimpleNamespace(
@@ -151,6 +152,7 @@ def _make_mock_args(
         api_server_port=0,
         indep_dp=indep_dp,
         enable_witness=enable_witness,
+        sample_ownership_grace_steps=10,
         witness_buffer_size=100,
         trainer_heartbeat_checker_interval=10.0,
         trainer_heartbeat_checker_timeout=10.0,

@@ -1,7 +1,9 @@
 import argparse
 import logging
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,6 +22,7 @@ from miles.utils.arguments import (
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
     _resolve_run_uuid,
+    _resolve_sample_ownership_check,
     _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
@@ -392,6 +395,138 @@ class TestEventDirectoryDefaults:
         miles_validate_args(args)
 
         assert args.save_debug_event_data == "/debug/run/events"
+
+
+class TestSampleOwnershipCheckArguments:
+    @pytest.mark.parametrize("ci_test", [False, True])
+    def test_enabled_checker_rejects_custom_converter(self, ci_test: bool) -> None:
+        """Explicit and CI-enabled checking reject unsupported custom converters."""
+        args = self._checker_args(ci_test=ci_test, custom_convert_samples_to_train_data_path="custom.convert")
+
+        with pytest.raises(AssertionError, match="incompatible with --custom-convert-samples-to-train-data-path"):
+            _resolve_sample_ownership_check(args)
+
+    @staticmethod
+    def _parse(extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_supported_runs_get_a_run_specific_event_directory_without_enabling_gpu_witness(self) -> None:
+        """An enabled checker records evidence without requiring a debug or checkpoint directory."""
+        args = self._parse(["--enable-sample-ownership-checker", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.enable_sample_ownership_checker is True
+        assert args.enable_witness is False
+        assert args.save_debug_event_data == os.path.join(
+            tempfile.gettempdir(),
+            "miles-sample-accounting",
+            "0123456789abcdef",
+            "events",
+        )
+
+    def test_the_checker_can_be_disabled_explicitly(self) -> None:
+        """An explicit opt-out leaves witness collection and event storage untouched."""
+        args = self._parse(["--no-enable-sample-ownership-checker"])
+
+        miles_validate_args(args)
+
+        assert args.enable_sample_ownership_checker is False
+        assert args.enable_witness is False
+        assert args.save_debug_event_data is None
+
+    @pytest.mark.parametrize("ci_test,enabled,grace_steps", [(False, False, 10), (True, True, 2)])
+    def test_ci_enables_the_checker_with_a_shorter_step_grace(
+        self, ci_test: bool, enabled: bool, grace_steps: int
+    ) -> None:
+        """CI automatically enables checking while ordinary runs opt in."""
+        args = self._checker_args(ci_test=ci_test, enable_sample_ownership_checker=False)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is enabled
+        assert args.sample_ownership_grace_steps == grace_steps
+
+    def test_an_explicit_step_grace_is_preserved_in_ci(self) -> None:
+        """CI defaults do not overwrite an explicitly configured grace period."""
+        args = self._checker_args(ci_test=True, sample_ownership_grace_steps=7)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.sample_ownership_grace_steps == 7
+
+    @staticmethod
+    def _checker_args(**overrides) -> SimpleNamespace:
+        values = dict(
+            enable_sample_ownership_checker=True,
+            custom_convert_samples_to_train_data_path=None,
+            sample_ownership_grace_steps=None,
+            ci_test=False,
+            sample_ownership_check_interval_seconds=30.0,
+            train_backend="megatron",
+            lora_rank=0,
+            lora_adapter_path=None,
+            multi_lora=False,
+            megatron_config=None,
+            debug_train_only=False,
+            debug_rollout_only=False,
+            enable_witness=False,
+            save_debug_event_data=None,
+            run_uuid="0123456789abcdef",
+        )
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"lora_rank": 8},
+            {"multi_lora": True},
+            {"debug_train_only": True},
+            {"debug_rollout_only": True},
+        ],
+    )
+    def test_unsupported_modes_disable_the_checker(self, overrides: dict) -> None:
+        """Modes without one current single-policy CPU witness are gated without breaking their existing launch."""
+        args = self._checker_args(**overrides)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is False
+
+    def test_multi_policy_disables_the_checker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Several actor lineages cannot share the single-policy current-witness checker."""
+        monkeypatch.setattr(
+            "miles.utils.arguments.resolve_megatron_config",
+            lambda _args: SimpleNamespace(
+                trainers=[
+                    SimpleNamespace(role="actor"),
+                    SimpleNamespace(role="actor"),
+                ]
+            ),
+        )
+        args = self._checker_args(megatron_config="config")
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is False
+
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [
+            ("--sample-ownership-grace-steps", "-1"),
+            ("--sample-ownership-check-interval-seconds", "0"),
+        ],
+    )
+    def test_invalid_timing_is_rejected(self, flag: str, value: str) -> None:
+        """Invalid timing cannot turn a required periodic check into a dormant task."""
+        args = self._checker_args(**{flag.removeprefix("--").replace("-", "_"): float(value)})
+
+        with pytest.raises(ValueError, match=flag):
+            _resolve_sample_ownership_check(args)
 
 
 class TestMaybeApplyDumperOverrides:
@@ -1875,6 +2010,17 @@ class TestDataSourceSelection:
         miles_validate_args(args)
 
         assert args.data_source_path == expected
+
+    def test_partial_rollout_logs_the_default_buffered_source(self, caplog) -> None:
+        """Operators can see when partial rollout changes the default data source."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args([*REQUIRED_ARGS, "--num-rollout", "1", "--partial-rollout"])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert "legacy buffered data source" in caplog.text
 
 
 class TestMultiLoRAValidation:
