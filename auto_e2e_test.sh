@@ -42,6 +42,8 @@ SGLANG_MAX_RUNNING_REQUESTS=${SGLANG_MAX_RUNNING_REQUESTS:-128}
 SGLANG_CUDA_GRAPH_MAX_BS=${SGLANG_CUDA_GRAPH_MAX_BS:-16}   # decode batch captured in cuda graphs; raise to let many tenants decode together
 SGLANG_MOE_RUNNER=${SGLANG_MOE_RUNNER:-triton}             # the runner that applies expert LoRA
 ENGINE_BOUND=${ENGINE_BOUND:-0}     # 1: also bound `auto` by the engines' memory (adapter buffers + KV for every slot sampling at once)
+SGLANG_MAX_LOADED_LORAS=${SGLANG_MAX_LOADED_LORAS:-}   # cap on adapter versions each engine keeps in host RAM (LRU); every TP rank
+                                                        # process keeps a full copy of each, so unbounded growth OOM-kills the node
 ENABLE_THINKING=${ENABLE_THINKING:-0}           # 1: Qwen3 thinking mode (long rollouts)
 TINKER_PORT=${TINKER_PORT:-9646}
 READY_TIMEOUT=${READY_TIMEOUT:-3600}
@@ -72,6 +74,9 @@ SERVE_ARGS="--hf-checkpoint $MODEL --megatron-to-hf-mode bridge \
  --sglang-lora-backend triton --sglang-mem-fraction-static $SGLANG_MEM_FRACTION --sglang-context-length $CONTEXT_LEN \
  --sglang-max-running-requests $SGLANG_MAX_RUNNING_REQUESTS --sglang-chunked-prefill-size $CONTEXT_LEN \
  --sglang-cuda-graph-max-bs-decode $SGLANG_CUDA_GRAPH_MAX_BS --sglang-moe-runner-backend $SGLANG_MOE_RUNNER"
+if [ -n "$SGLANG_MAX_LOADED_LORAS" ]; then
+    SERVE_ARGS="$SERVE_ARGS --sglang-max-loaded-loras $SGLANG_MAX_LOADED_LORAS"
+fi
 if [ "$ENGINE_BOUND" = "1" ]; then
     SERVE_ARGS="$SERVE_ARGS --multi-lora-rollout-seqs-per-slot $((PROMPTS_PER_STEP * SAMPLES_PER_PROMPT)) \
  --multi-lora-rollout-tokens-per-seq $CONTEXT_LEN"
