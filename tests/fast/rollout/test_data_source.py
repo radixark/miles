@@ -51,17 +51,17 @@ def test_load_says_so_when_it_finds_no_state(tmp_path: Path, caplog) -> None:
     """A dataset silently starting over is a run replaying samples its trainers already trained on."""
     source = _bare_source(rollout_global_dataset=True, load=str(tmp_path))
 
-    with caplog.at_level(logging.WARNING, logger="miles.rollout.data_source"):
+    with caplog.at_level(logging.WARNING, logger="miles.utils.simple_checkpointer"):
         source.load(rollout_id=3)
 
-    assert "no dataset state under" in caplog.text
+    assert "No checkpoint found" in caplog.text
 
 
 def test_load_says_so_when_the_run_names_no_load_directory(tmp_path: Path, caplog) -> None:
     """A run told to write but not to read still has to say that its dataset starts from the beginning."""
     source = _bare_source(rollout_global_dataset=True, load=None)
 
-    with caplog.at_level(logging.WARNING, logger="miles.rollout.data_source"):
+    with caplog.at_level(logging.WARNING, logger="miles.utils.simple_checkpointer"):
         source.load(rollout_id=3)
 
     assert "no --load" in caplog.text
