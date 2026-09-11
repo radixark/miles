@@ -34,6 +34,9 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "lineage_source_sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "lineage_output_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "lineage_output_counts": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
@@ -72,6 +75,10 @@ def convert_samples_to_train_data(
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
 
+    sample_identity_columns = (
+        _get_training_sample_identity_columns(samples) if args.enable_sample_ownership_checker else {}
+    )
+
     train_data = {
         "tokens": [sample.tokens for sample in samples],
         "response_lengths": [sample.response_length for sample in samples],
@@ -81,6 +88,7 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
+        **sample_identity_columns,
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
@@ -178,6 +186,16 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def _get_training_sample_identity_columns(samples: list[Sample]) -> dict[str, list[int]]:
+    return {
+        "lineage_source_sample_indices": [
+            x.source_sample_index if (x := sample.lineage) is not None else sample.index for sample in samples
+        ],
+        "lineage_output_indices": [x.output_index if (x := sample.lineage) is not None else 0 for sample in samples],
+        "lineage_output_counts": [x.output_count if (x := sample.lineage) is not None else 1 for sample in samples],
+    }
 
 
 def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
@@ -384,6 +402,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "loss_masks",
             "round_number",
             "sample_indices",
+            "lineage_source_sample_indices",
+            "lineage_output_indices",
+            "lineage_output_counts",
             "rollout_ids",
             "rollout_mask_sums",
             "rollout_log_probs",

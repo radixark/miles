@@ -2404,6 +2404,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
             )
             parser.add_argument(
+                "--enable-sample-ownership-checker",
+                action=argparse.BooleanOptionalAction,
+                default=False,
+                help="Periodically verify exactly one outcome for every consumed sample and every mature issued sample.",
+            )
+            parser.add_argument(
                 "--enable-witness",
                 action="store_true",
                 help="Enable forward/backward pass witness.",
@@ -3318,6 +3324,39 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
+    if args.ci_test:
+        args.enable_sample_ownership_checker = True
+    if not args.enable_sample_ownership_checker:
+        return
+
+    assert (
+        args.custom_convert_samples_to_train_data_path is None
+    ), "--enable-sample-ownership-checker is incompatible with --custom-convert-samples-to-train-data-path"
+
+    multi_policy = (
+        args.train_backend == "megatron"
+        and args.megatron_config is not None
+        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
+    )
+    unsupported = [
+        reason
+        for condition, reason in (
+            (args.train_backend != "megatron", "the FSDP backend has no CPU witness"),
+            (is_lora_enabled(args), "LoRA training has no CPU witness"),
+            (args.multi_lora, "multi-LoRA training can replay samples"),
+            (multi_policy, "multi-policy training has separate witness lineages"),
+            (args.debug_train_only, "train-only mode has no issuing data source"),
+            (args.debug_rollout_only, "rollout-only mode has no trainer witness"),
+        )
+        if condition
+    ]
+    if unsupported:
+        args.enable_sample_ownership_checker = False
+        logger.warning("Disabled sample ownership checking: %s", "; ".join(unsupported))
+        return
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -3992,6 +4031,8 @@ def miles_validate_args(args):
             )
 
     args.run_uuid = _resolve_run_uuid(args)
+
+    _resolve_sample_ownership_check(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True

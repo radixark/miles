@@ -20,6 +20,7 @@ from miles.utils.arguments import (
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
     _resolve_run_uuid,
+    _resolve_sample_ownership_check,
     _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
@@ -392,6 +393,96 @@ class TestEventDirectoryDefaults:
         miles_validate_args(args)
 
         assert args.save_debug_event_data == "/debug/run/events"
+
+
+class TestSampleOwnershipCheckArguments:
+    @pytest.mark.parametrize("ci_test", [False, True])
+    def test_enabled_checker_rejects_custom_converter(self, ci_test: bool) -> None:
+        """Explicit and CI-enabled checking reject unsupported custom converters."""
+        args = self._checker_args(ci_test=ci_test, custom_convert_samples_to_train_data_path="custom.convert")
+
+        with pytest.raises(AssertionError, match="incompatible with --custom-convert-samples-to-train-data-path"):
+            _resolve_sample_ownership_check(args)
+
+    @staticmethod
+    def _parse(extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_the_checker_can_be_disabled_explicitly(self) -> None:
+        """An explicit opt-out leaves witness collection and event storage untouched."""
+        args = self._parse(["--no-enable-sample-ownership-checker"])
+
+        miles_validate_args(args)
+
+        assert args.enable_sample_ownership_checker is False
+        assert args.enable_witness is False
+        assert args.save_debug_event_data is None
+
+    @pytest.mark.parametrize("ci_test,enabled", [(False, False), (True, True)])
+    def test_ci_enables_the_checker(self, ci_test: bool, enabled: bool) -> None:
+        """CI automatically enables checking while ordinary runs opt in."""
+        args = self._checker_args(ci_test=ci_test, enable_sample_ownership_checker=False)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is enabled
+
+    @staticmethod
+    def _checker_args(**overrides) -> SimpleNamespace:
+        values = dict(
+            enable_sample_ownership_checker=True,
+            custom_convert_samples_to_train_data_path=None,
+            ci_test=False,
+            train_backend="megatron",
+            lora_rank=0,
+            lora_adapter_path=None,
+            multi_lora=False,
+            megatron_config=None,
+            debug_train_only=False,
+            debug_rollout_only=False,
+            enable_witness=False,
+            save_debug_event_data=None,
+            run_uuid="0123456789abcdef",
+        )
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"lora_rank": 8},
+            {"multi_lora": True},
+            {"debug_train_only": True},
+            {"debug_rollout_only": True},
+        ],
+    )
+    def test_unsupported_modes_disable_the_checker(self, overrides: dict) -> None:
+        """Modes without one current single-policy CPU witness are gated without breaking their existing launch."""
+        args = self._checker_args(**overrides)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is False
+
+    def test_multi_policy_disables_the_checker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Several actor lineages cannot share the single-policy current-witness checker."""
+        monkeypatch.setattr(
+            "miles.utils.arguments.resolve_megatron_config",
+            lambda _args: SimpleNamespace(
+                trainers=[
+                    SimpleNamespace(role="actor"),
+                    SimpleNamespace(role="actor"),
+                ]
+            ),
+        )
+        args = self._checker_args(megatron_config="config")
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is False
 
 
 class TestMaybeApplyDumperOverrides:

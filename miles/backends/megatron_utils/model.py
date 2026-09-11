@@ -29,6 +29,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils, SampleIdentityExtractor
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -36,6 +37,7 @@ from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.types import SampleLineage
 
 from ...utils.misc import filter_keys
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -455,6 +457,8 @@ def train_one_step(
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
     multi_lora = is_multi_lora_enabled(args)
+    if args.enable_sample_ownership_checker:
+        sample_consumption_start = data_iterator[0].offset
 
     if multi_lora:
         from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
@@ -576,6 +580,14 @@ def train_one_step(
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
     )
+    if args.enable_sample_ownership_checker:
+        local_consumed_identities = SampleIdentityExtractor.get_consumed_sample_identities(
+            start_offset=sample_consumption_start,
+            end_offset=data_iterator[0].offset,
+            data=data_iterator[0].rollout_data,
+            micro_batch_indices=data_iterator[0].micro_batch_indices,
+        )
+        consumed_identities: list[SampleLineage] = []
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
@@ -590,7 +602,20 @@ def train_one_step(
 
         metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced, num_rollouts=metric_num_rollouts
+            args,
+            model,
+            parallel_state,
+            losses_reduced=losses_reduced,
+            num_rollouts=metric_num_rollouts,
+            collect_training_metadata=(
+                (
+                    lambda: consumed_identities.extend(
+                        SampleIdentityExtractor.gather_sample_identities(local_consumed_identities)
+                    )
+                )
+                if args.enable_sample_ownership_checker
+                else None
+            ),
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
@@ -634,6 +659,14 @@ def train_one_step(
             # Update learning rate.
             assert update_successful
             opt_param_scheduler.step(increment=num_rollouts)
+
+    if args.enable_sample_ownership_checker:
+        if parallel_state.indep_dp.size == 1:
+            consumed_identities = SampleIdentityExtractor.gather_sample_identities(local_consumed_identities)
+        if outcome == TrainStepOutcome.NORMAL:
+            ModelCompanionSampleConsumptionUtils.record(
+                model=model, samples=consumed_identities, is_skipped=not valid_step
+            )
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
