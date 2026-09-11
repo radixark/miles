@@ -1,9 +1,10 @@
 """The service preserves request ordering, tenant isolation, and failure recovery."""
 
 import asyncio
+from contextlib import suppress
 
 import pytest
-from tests.fast.tinker.harness import ADAM, await_settled, created_model, datum, fb_payload, rl_datum
+from tests.fast.tinker.harness import ADAM, await_settled, created_model, datum, fb_payload, make_service, rl_datum
 
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
@@ -723,3 +724,19 @@ async def test_a_unit_escaping_its_handler_retires_the_model_and_keeps_serving(s
     fresh = await created_model(service)
     fb = service.submit("tenant", "forward_backward", fb_payload(fresh, 1, [datum()]))
     assert (await await_settled(service, "tenant", fb)).state == DONE, "the dispatch loop must survive"
+
+
+async def test_a_dead_trainer_escapes_the_dispatch_loop(tmp_path, monkeypatch):
+    gateway = make_service(tmp_path)
+    run_task = asyncio.create_task(gateway.run())
+    try:
+        model_id = await created_model(gateway)
+        monkeypatch.setattr(gateway.backend, "trainer_dead", lambda: True)
+        gateway.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
+        with pytest.raises(RuntimeError, match="trainer workers died"):
+            await asyncio.wait_for(run_task, timeout=2)
+    finally:
+        if not run_task.done():
+            run_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_task
