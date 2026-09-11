@@ -9,6 +9,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
+from miles.utils.compile_cache_utils import node_local_compile_cache_env
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
@@ -267,5 +268,7 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
         }.items()
     }
+    # Node-local JIT caches (#3158); the process env wins.
+    env_vars.update(node_local_compile_cache_env())
     env_vars.update(dumper_utils.get_sglang_env(args))
     return env_vars
