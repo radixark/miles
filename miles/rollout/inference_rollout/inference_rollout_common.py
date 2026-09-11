@@ -21,6 +21,7 @@ from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
+from miles.rollout.sample_identity import stamp_sample_lineage
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
@@ -63,6 +64,7 @@ async def generate_and_rm(
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
     args = state.args
+    input_sample_index = sample.index
 
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
@@ -103,6 +105,8 @@ async def generate_and_rm(
                 )
             )
             sample = output.samples
+            if not evaluation:
+                stamp_sample_lineage(sample, source_sample_index=input_sample_index)
             logger.debug(f"{log_prefix} generate_function returned")
     finally:
         if sink is not None:
