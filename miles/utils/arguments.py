@@ -1841,78 +1841,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
             )
-            parser.add_argument(
-                "--multi-lora-adapter",
-                nargs=2,
-                action="append",
-                type=str,
-                dest="multi_lora_adapters",
-                default=[],
-            )
-            parser.add_argument(
-                "--multi-lora-idle-poll-s",
-                type=float,
-                default=5.0,
-                help="When no adapter is RUNNING, the trainer polls for new registrations every this many seconds (default: 5.0)",
-            )
-            parser.add_argument(
-                "--multi-lora-http-server-path",
-                type=str,
-                default=None,
-                help=(
-                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
-                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-backend-path",
-                type=str,
-                default=None,
-                help=(
-                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
-                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-api-port",
-                type=int,
-                default=8068,
-                help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
-            )
-            parser.add_argument(
-                "--multi-lora-disable-service-mode",
-                action="store_false",
-                dest="multi_lora_service_mode",
-                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
-            )
-            parser.add_argument(
-                "--multi-lora-max-adapter-global-batch-size",
-                type=int,
-                default=None,
-                help=(
-                    "Registration-time upper bound on an adapter's samples per optimizer "
-                    "step (rollout_batch_size x n_samples_per_prompt). Defaults to 4x "
-                    "--global-batch-size."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-coalesce-wait-s",
-                type=float,
-                default=0.5,
-                help=(
-                    "Maximum time ready groups wait for the batch to fill toward "
-                    "--global-batch-size before training starts on what is ready (default: 0.5)."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-empty-wait-s",
-                type=float,
-                default=30.0,
-                help=(
-                    "How long a generate call waits for the first poppable group before "
-                    "failing with an empty-batch timeout (default: 30)."
-                ),
-            )
             return parser
 
         def add_router_arguments(parser):
@@ -2871,7 +2799,7 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         args.train_backend == "megatron"
     ), "--rematerialize-param-from-master-weight reads Megatron's distributed-optimizer main params"
-    from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+    from miles.backends.megatron_utils.lora.utils import is_lora_enabled
 
     assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
     assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"

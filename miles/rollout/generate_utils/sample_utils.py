@@ -172,7 +172,6 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
             train_metadata=_merge_equal_value("train_metadata"),
-            adapter=_merge_equal_value("adapter"),
             reward_spec=_merge_equal_value("reward_spec"),
             routing_key=_merge_equal_value("routing_key"),
             non_generation_time=_merge_equal_value("non_generation_time"),
