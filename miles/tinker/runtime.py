@@ -200,6 +200,9 @@ def _topk_prompt_logprobs(response: dict, k: int) -> dict:
 def _to_sequence(response: dict) -> dict:
     output_token_logprobs = response["meta_info"]["output_token_logprobs"]
     finish = response["meta_info"]["finish_reason"]["type"]
+    if finish == "abort":
+        # a truncated sequence must fail the request, not pass as a completed sample
+        raise RuntimeError("the engine aborted this sample; resubmit the request")
     return {
         "sequence_id": f"seq-{uuid.uuid4().hex}",
         "tokens": [entry[1] for entry in output_token_logprobs],
