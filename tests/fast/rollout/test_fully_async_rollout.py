@@ -661,11 +661,11 @@ class TestPerPolicyQueues:
         class _RecordingInner:
             async def get(self, **context):
                 seen.append(context)
-                return "entry"
+                return ["entry"]
 
         buffer._inners["solver"] = _RecordingInner()
 
-        assert await buffer.get(current_version=4, trainer_model_id="solver") == "entry"
+        assert await buffer.get(current_version=4, trainer_model_id="solver") == ["entry"]
         assert seen == [{"current_version": 4, "trainer_model_id": "solver"}]
 
 
@@ -901,7 +901,7 @@ class WedgedBuffer(data_buffer.DataBuffer):
     async def put(self, input: data_buffer.DataBufferInput) -> None:
         await self._never.wait()
 
-    async def get(self, **context) -> data_buffer.DataBufferInput:
+    async def get(self, *, num_groups: int, **context) -> list[data_buffer.DataBufferInput]:
         await self._never.wait()
         raise AssertionError("the wedged buffer never hands out a group")
 

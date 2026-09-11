@@ -261,6 +261,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._retry_buffer.extend(state["retry_buffer"])
         self._retry_buffer.extend(state["in_flight"])
         self._ensure_output()
+        self._output.restore(state["output"])
 
     def _ensure_output(self) -> None:
         if self._output is not None:
@@ -272,9 +273,14 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._output = buffer_cls(DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused))
 
     def _collect_state(self) -> dict[str, Any]:
+        output = {}
+        if self._output is not None:
+            for key, entries in self._output.snapshot().items():
+                output.setdefault(key, []).extend(entries)
         return {
             "retry_buffer": list(self._retry_buffer),
             "in_flight": [_copy_reset_for_retry(pending) for pending in self._in_flight.values()],
+            "output": output,
         }
 
 
