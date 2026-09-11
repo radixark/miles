@@ -17,8 +17,11 @@ rollout engines, pausing producer submissions for the duration of the
 """
 
 import asyncio
+import copy
 import logging
 from collections import deque
+from pathlib import Path
+from typing import Any
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import (
@@ -48,11 +51,17 @@ from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_data
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils.audit_utils.sample_ownership.flow import log_dropped_groups, log_dropped_samples
 from miles.utils.function_registry import load_function
+from miles.utils.simple_checkpointer import SimpleCheckpointer
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
+_CHECKPOINTER = SimpleCheckpointer(path_template="rollout/fully_async_state_{rollout_id}.pt")
 
 NO_PROGRESS_WARN_SECS = 30.0
+
+
+def compute_fully_async_state_path(directory: str | Path, *, rollout_id: int | None) -> Path:
+    return _CHECKPOINTER.path(directory, rollout_id=rollout_id)
 
 
 class FullyAsyncRolloutFn(BaseRolloutFn):
@@ -85,21 +94,19 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._producer_resumed.set()
         self._output: DataBuffer | None = None
         self._retry_buffer: deque[list[Sample]] = deque()
+        self._in_flight: dict[asyncio.Task, list[Sample]] = {}
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
             return await self._call_eval(input)
         if self._worker is None:
-            default_buffer_cls = (
-                DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
-            )
-            buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
-            self._output = buffer_cls(
-                DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
-            )
-            self._worker = asyncio.create_task(self._worker_loop())
-            logger.info("Started fully-async rollout worker")
+            self._start_worker()
         return await self._drain(input)
+
+    def _start_worker(self) -> None:
+        self._ensure_output()
+        self._worker = asyncio.create_task(self._worker_loop())
+        logger.info("Started fully-async rollout worker")
 
     async def dispose(self) -> None:
         if (worker := self._worker) is None:
@@ -129,10 +136,15 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return self.args.rollout_batch_size
 
     def _submit_one_group(self) -> asyncio.Task:
-        samples = [self._retry_buffer.popleft()] if self._retry_buffer else self.data_source.get_samples(1)
-        self._scheduler.on_submit(samples)
-        [prompt_group] = samples
-        return asyncio.create_task(self._generate_group(prompt_group))
+        if self._retry_buffer:
+            pending = self._retry_buffer.popleft()
+        else:
+            [prompt_group] = self.data_source.get_samples(1)
+            pending = prompt_group
+        self._scheduler.on_submit([pending])
+        task = asyncio.create_task(self._generate_group(pending))
+        self._in_flight[task] = pending
+        return task
 
     async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         result = await generate_and_rm_group(
@@ -142,7 +154,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             evaluation=False,
             sample_done_callback=self._scheduler.sample_done_callback,
         )
-        return DataBufferInput(prompt_group=prompt_group, group=result)
+        entry = DataBufferInput(prompt_group=prompt_group, group=result)
+        return entry
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
@@ -152,13 +165,15 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
                 active.add(self._submit_one_group())
             done, active = await self._scheduler.wait_for_progress(active)
             for task in done:
-                await self._output.put(task.result())
+                entry = task.result()
+                self._in_flight.pop(task)
+                await self._output.put(entry)
 
     # -------------------------- consumer --------------------------
 
     async def _next_group(self, *, current_version: int | None, trainer_model_id: str | None) -> DataBufferInput:
         queue_get = asyncio.create_task(
-            self._output.get(current_version=current_version, trainer_model_id=trainer_model_id)
+            self._take_group(current_version=current_version, trainer_model_id=trainer_model_id)
         )
         try:
             while True:
@@ -181,31 +196,29 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             if not queue_get.done():
                 queue_get.cancel()
 
+    async def _take_group(self, *, current_version: int | None, trainer_model_id: str | None) -> DataBufferInput:
+        batch = await self._output.get(current_version=current_version, trainer_model_id=trainer_model_id)
+        return batch
+
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
         assert args.rollout_global_dataset
 
-        target_data_size = args.rollout_batch_size
         data: list[Group] = []
-        do_print = True
-
-        while len(data) < target_data_size:
+        while len(data) < args.rollout_batch_size:
             entry = await self._next_group(
                 current_version=input.weight_version, trainer_model_id=input.trainer_model_id
             )
             assert len(entry.group) == args.n_samples_per_prompt
-
-            if do_print:
-                sample = first_sample(entry.group)
-                logger.info(
-                    "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
-                    sample_text_preview(sample),
-                    str(sample.label)[:100],
-                    reward_log_summary(sample.reward),
-                )
-                do_print = False
-
             data.append(entry.group)
+
+        sample = first_sample(data[0])
+        logger.info(
+            "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
+            sample_text_preview(sample),
+            str(sample.label)[:100],
+            reward_log_summary(sample.reward),
+        )
 
         sample = first_sample(data[-1])
         logger.info(
@@ -227,15 +240,49 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             rollout_id=input.rollout_id,
         )
 
-        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics(input.trainer_model_id))
+        metrics = self._output.get_metrics(input.trainer_model_id)
+        return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
-    def _recycle(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
+    def _recycle(self, prompt_group: list[Sample], reason: UnusedReason = UnusedReason.ABORTED) -> None:
         for sample in prompt_group:
             sample.reset_for_retry()
         self._retry_buffer.append(prompt_group)
 
     def _drop_unused(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
         log_dropped_samples(prompt_group, reason=reason.value)
+
+    def save(self, rollout_id: int) -> None:
+        _CHECKPOINTER.save(args=self.args, rollout_id=rollout_id, data=self._collect_state())
+
+    def load(self, rollout_id: int | None = None) -> None:
+        assert self._worker is None, "restore the fully async rollout state before producer startup"
+        if (state := _CHECKPOINTER.load(args=self.args, rollout_id=rollout_id)) is None:
+            return
+        self._retry_buffer.extend(state["retry_buffer"])
+        self._retry_buffer.extend(state["in_flight"])
+        self._ensure_output()
+
+    def _ensure_output(self) -> None:
+        if self._output is not None:
+            return
+        default_buffer_cls = (
+            DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
+        )
+        buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
+        self._output = buffer_cls(DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused))
+
+    def _collect_state(self) -> dict[str, Any]:
+        return {
+            "retry_buffer": list(self._retry_buffer),
+            "in_flight": [_copy_reset_for_retry(pending) for pending in self._in_flight.values()],
+        }
+
+
+def _copy_reset_for_retry(prompt_group: list[Sample]) -> list[Sample]:
+    copied = copy.deepcopy(prompt_group)
+    for sample in copied:
+        sample.reset_for_retry()
+    return copied
 
 
 async def _end_worker(worker: asyncio.Task) -> None:
