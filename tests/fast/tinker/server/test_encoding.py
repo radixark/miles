@@ -1,4 +1,4 @@
-"""JSON decoding validates next-token inputs and renders SDK result shapes."""
+"""JSON decoding validates datum inputs and renders SDK result shapes."""
 
 import pytest
 
@@ -34,7 +34,9 @@ class TestDecodeForwardBackward:
     def test_a_shifted_datum_becomes_one_datum(self):
         op, decoded = self._decode(_datum([1, 2, 3, 4], weights=[1.0, 1.0, 1.0]))
         assert op == "forward_backward"
-        assert decoded["datums"] == [{"tokens": [1, 2, 3, 4], "target_len": 3, "weights": [1.0, 1.0, 1.0]}]
+        assert decoded["datums"] == [
+            {"tokens": [1, 2, 3, 4], "target_len": 3, "target_tokens": [2, 3, 4], "weights": [1.0, 1.0, 1.0]}
+        ]
 
     def test_forward_only_selects_the_op(self):
         op, _ = self._decode(_datum([1, 2, 3]), forward_only=True)
@@ -46,11 +48,13 @@ class TestDecodeForwardBackward:
         with pytest.raises(UserInputError, match="length"):
             self._decode(datum)
 
-    def test_unshifted_targets_are_rejected(self):
+    def test_explicit_targets_pass_through(self):
+        """rl_loop pads the prompt region with dummy zero targets; labels need not be the shifted sequence."""
         datum = _datum([1, 2, 3])
-        datum["loss_fn_inputs"]["target_tokens"] = [9, 9]
-        with pytest.raises(UserInputError, match="shifted"):
-            self._decode(datum)
+        datum["loss_fn_inputs"]["target_tokens"] = [0, 9]
+        _, decoded = self._decode(datum)
+        assert decoded["datums"][0]["tokens"] == [1, 2, 9]
+        assert decoded["datums"][0]["target_tokens"] == [0, 9]
 
 
 def test_build_datum_maps_the_wire_input_names():
