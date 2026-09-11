@@ -13,6 +13,7 @@ from miles.backends.megatron_utils.lora.slot_capacity import (
     PROBE_SLOT,
     RankProbe,
     bytes_per_train_param,
+    engine_slot_capacity,
     expert_data_parallel_size,
     predicted_slot_bytes,
     probe_slot_capacity,
@@ -116,8 +117,6 @@ def _engine_args(**overrides) -> Namespace:
 
 
 def test_the_engine_bound_fits_adapter_buffers_and_kv_for_every_slot():
-    from miles.backends.megatron_utils.lora.slot_capacity import engine_slot_capacity
-
     probe = RankProbe(
         free=200 * GIB,
         slot_bytes=GIB,
@@ -137,11 +136,37 @@ def test_the_engine_bound_fits_adapter_buffers_and_kv_for_every_slot():
     per_slot = 2 * (10e6 / 2 + 630e6 / 2) + 16 * 8192 * 49152 / 4
     assert n == int(budget // per_slot)
     assert detail["engines"] == 4 and detail["seqs_per_slot"] == 16
-    # switched off by default
+    # on by default at one group of eight samples per slot; 0 switches it off
+    _, default_detail = engine_slot_capacity(_engine_args(multi_lora_rollout_seqs_per_slot=None), probe)
+    assert default_detail["seqs_per_slot"] == 8
     assert engine_slot_capacity(_engine_args(multi_lora_rollout_seqs_per_slot=0), probe) is None
     # and it is the binding constraint when smaller than memory and the group limit
     roomy = RankProbe(**{**probe.__dict__, "expert_groups_per_slot": 8})
     assert resolve_slot_capacity(_engine_args(), [roomy]) == min(n, 1023 // 8)
+
+
+def test_auto_is_the_smallest_of_the_three_bounds(caplog):
+    probe = RankProbe(
+        free=200 * GIB,
+        slot_bytes=GIB,
+        act_peak=GIB,
+        adapter_local_params=1,
+        expert_groups_per_slot=16,
+        gpu_total_bytes=140 * GIB,
+        base_dense_params=2_000_000_000,
+        base_expert_params=28_000_000_000,
+        adapter_dense_params=10_000_000,
+        adapter_expert_params_total=630_000_000,
+    )
+    n_engine, _ = engine_slot_capacity(_engine_args(), probe)
+    n_memory, n_groups = probe.capacity(GIB), 1023 // 16
+    with caplog.at_level("INFO"):
+        n = resolve_slot_capacity(_engine_args(), [probe])
+    assert n == min(n_memory, n_groups, n_engine) < n_memory
+    assert f"trainer memory={n_memory}" in caplog.text
+    assert f"torch._grouped_mm's 1023-group limit={n_groups}" in caplog.text
+    assert f"the rollout engines' memory with every slot sampling at once={n_engine}" in caplog.text
+    assert f"the trainer could hold {n_memory} slots but only {n} are usable" in caplog.text
 
 
 def test_no_room_for_one_slot_is_a_launch_error():
