@@ -66,6 +66,7 @@
         "group": "Agentic Environments",
         "pages": [
          "user-guide/environments",
+         "user-guide/sandbox-providers",
          "user-guide/harbor",
          "user-guide/openenv",
          "user-guide/nemo-gym",
@@ -279,6 +280,7 @@
      "developer/index",
      "developer/contributor-guide",
      "developer/architecture",
+     "developer/adding-a-sandbox-provider",
      "developer/versions",
      "developer/debug",
      {
