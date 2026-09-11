@@ -37,6 +37,7 @@ SAMPLES_PER_PROMPT=${SAMPLES_PER_PROMPT:-8}
 MAX_PROMPT_TOKENS=${MAX_PROMPT_TOKENS:-2048}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-6144}
 LR=${LR:-1e-5}
+SGLANG_MEM_FRACTION=${SGLANG_MEM_FRACTION:-0.85}     # raise for large slot counts: every engine keeps one LoRA buffer per slot
 ENABLE_THINKING=${ENABLE_THINKING:-0}           # 1: Qwen3 thinking mode (long rollouts)
 TINKER_PORT=${TINKER_PORT:-9646}
 READY_TIMEOUT=${READY_TIMEOUT:-3600}
@@ -64,7 +65,7 @@ SERVE_ARGS="--hf-checkpoint $MODEL --megatron-to-hf-mode bridge \
  --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 \
  --attention-backend flash --optimizer adam --lr $LR \
  --rollout-num-gpus $ROLLOUT_GPUS --rollout-num-gpus-per-engine $GPUS_PER_ENGINE --sglang-ep-size $GPUS_PER_ENGINE \
- --sglang-lora-backend triton --sglang-mem-fraction-static 0.85 --sglang-context-length $CONTEXT_LEN \
+ --sglang-lora-backend triton --sglang-mem-fraction-static $SGLANG_MEM_FRACTION --sglang-context-length $CONTEXT_LEN \
  --sglang-max-running-requests 128 --sglang-chunked-prefill-size $CONTEXT_LEN --sglang-cuda-graph-max-bs-decode 16 \
  --sglang-moe-runner-backend triton"
 e2e_submit_gateway "$(e2e_model_args "$MODEL_TYPE")" "$SERVE_ARGS"
