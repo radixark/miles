@@ -1,80 +1,65 @@
-"""Per-slot checkpoints: adapter weights plus the slot's optimizer state.
+"""Per-slot checkpoints in megatron's torch_dist format.
 
-Weight shards are (tp, pp, ep)-addressed and slot-agnostic (saved under
-expose_adapter_slot). Optimizer state is per global rank because LayerWise
-scatters whole params across ranks; resume requires the same world topology.
-"""
+Every tensor carries its global shard coordinates and a slot-agnostic key,
+so a checkpoint reloads under any tp/pp/ep/world-size layout and into any
+free slot."""
 
 from collections.abc import Sequence
 from pathlib import Path
 
-import torch
-import torch.distributed as dist
+from megatron.core import dist_checkpointing
+from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.distributed import DistributedDataParallel as DDP
+from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.megatron_utils.lora.slots import adapter_shard_topology, megatron_shard_name
 from miles.backends.training_utils.checkpoint_io import run_with_failure_collective, write_checkpoint_dir
-from miles.backends.training_utils.parallel import get_parallel_state
+
+_WEIGHTS_KEY = "adapter_weights"
+_OPTIM_KEY = "adapter_optimizer"
 
 
-def _rank() -> int:
-    return dist.get_rank() if dist.is_initialized() else 0
+def _slot_weights_sharded_state_dict(model: Sequence[DDP], slot: int) -> dict:
+    sharded: dict = {}
+    for chunk in unwrap_model(model):
+        sharded |= chunk.sharded_state_dict()
+    marker = f".adapters.{slot}."
+    slot_sharded = {key: value for key, value in sharded.items() if marker in key}
+    assert slot_sharded, f"slot {slot} exposed no adapter tensors"
+    return slot_sharded
 
 
-def _weight_shard_name() -> str:
-    parallel_state = get_parallel_state()
-    return megatron_shard_name(
-        parallel_state.tp.rank, parallel_state.pp.rank, parallel_state.ep.rank, parallel_state.ep.size
-    )
-
-
-def _optim_shard_name() -> str:
-    return f"optim_rank{_rank()}.pt"
+def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
+    """Rewrite storage keys so a checkpoint saved from slot i loads into slot j."""
+    marker, canonical = f".adapters.{slot}.", ".adapter."
+    for sharded in nested_values(tree):
+        if hasattr(sharded, "key"):
+            sharded.key = sharded.key.replace(marker, canonical)
+    return tree
 
 
 def save_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str) -> None:
-    from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
-
-    is_shard_writer, _ = adapter_shard_topology()
-
-    def write_shards(tmp_dir: Path):
-        if is_shard_writer:
-            with expose_adapter_slot(model, slot_optimizer.slot):
-                shard = {
-                    name: param.data.cpu()
-                    for model_chunk in model
-                    for name, param in model_chunk.named_parameters()
-                    if ".adapter." in name
-                }
-            assert shard, f"slot {slot_optimizer.slot} exposed no adapter tensors"
-            torch.save(shard, tmp_dir / _weight_shard_name())
-        torch.save(slot_optimizer.state(), tmp_dir / _optim_shard_name())
-
-    write_checkpoint_dir(path, write_shards)
+    weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
+    sharded = {_WEIGHTS_KEY: weights, _OPTIM_KEY: slot_optimizer.sharded_state(weights, is_loading=False)}
+    _canonicalize_slot_keys(sharded, slot_optimizer.slot)
+    write_checkpoint_dir(path, lambda tmp_dir: dist_checkpointing.save(sharded, str(tmp_dir)))
 
 
 def load_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
-    from megatron.bridge.peft.multi_lora_layers import load_adapter
-
-    checkpoint_dir = Path(path)
-    shards: dict = {}
-
-    def read_shards():
-        shards["weights"] = torch.load(checkpoint_dir / _weight_shard_name(), map_location="cpu", weights_only=True)
-        if load_optimizer:
-            optim_state = torch.load(checkpoint_dir / _optim_shard_name(), map_location="cpu", weights_only=True)
-            slot_optimizer.validate_state(optim_state)
-            shards["optim"] = optim_state
+    checkpoint_dir = str(Path(path))
+    weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
+    shells = {_WEIGHTS_KEY: weights}
+    if load_optimizer:
+        shells[_OPTIM_KEY] = slot_optimizer.sharded_state(weights, is_loading=True)
+    _canonicalize_slot_keys(shells, slot_optimizer.slot)
 
     def apply_shards():
-        loaded = load_adapter(model, slot_optimizer.slot, shards["weights"])
-        assert loaded > 0, f"loaded 0 adapter tensors from {checkpoint_dir / _weight_shard_name()}"
-        slot_optimizer.reload_masters()
+        # weight tensors load in place; the optimizer state comes back as a dict
+        loaded = dist_checkpointing.load(shells, checkpoint_dir)
         if load_optimizer:
-            slot_optimizer.load_state(shards["optim"])
-        # weights-only load keeps the fresh Adam state the slot init just created
+            slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
+        else:
+            # weights-only load keeps the fresh Adam state the slot init just created
+            slot_optimizer.reload_masters()
 
-    # every rank validates its shards before any rank touches the live slot
-    run_with_failure_collective(read_shards)
     run_with_failure_collective(apply_shards)
