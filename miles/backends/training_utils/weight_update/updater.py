@@ -176,9 +176,10 @@ class WeightUpdater:
 
     @torch.no_grad()
     def push_adapter(self, lora_name: str, adapter, lora_path: str | None = None) -> None:
-        """Publish one adapter under a fresh engine-side name without pausing:
-        the name has no readers until the session commits. ``lora_path`` lets
-        the engine refill the adapter from disk after eviction."""
+        """Warm a fresh engine cache entry; it becomes readable when the engine session commits.
+
+        `lora_path` lets the engine refill the same snapshot from disk after eviction.
+        """
         self._run_weight_update_session(
             [(lora_name, adapter)], sync_base=False, weight_version=None, staged=True, lora_path=lora_path
         )
