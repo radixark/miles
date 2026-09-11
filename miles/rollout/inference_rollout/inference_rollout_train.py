@@ -15,6 +15,7 @@ from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils import dumper_utils
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook
@@ -46,6 +47,11 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
     aborted_samples = []
     async for group in as_completed_async(pendings):
         if not args.partial_rollout:
+            SampleOwnershipRecorder.log_dropped_samples(
+                args=args,
+                samples=[sample for item in group for sample in (item if isinstance(item, list) else [item])],
+                reason="aborted",
+            )
             continue
 
         # for partial rollout, collect the partial samples into the data buffer
@@ -153,6 +159,7 @@ async def generate_rollout_async(
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="dynamic_filter")
                 continue
 
             # add the samples to the data
@@ -160,6 +167,8 @@ async def generate_rollout_async(
             if len(data) < target_data_size:
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
+            else:
+                SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="oversampling")
 
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
@@ -182,8 +191,12 @@ async def generate_rollout_async(
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
 
+    before_filter = SampleOwnershipRecorder.flatten_samples(data)
     if f := load_function(args.rollout_sample_filter_path):
         f(args, data)
+    SampleOwnershipRecorder.log_dropped_groups(
+        args=args, before=before_filter, after=data, reason="rollout_sample_filter"
+    )
     # There can be circumstances where users want to process all samples including filtered ones.
     if f := load_function(args.rollout_all_samples_process_path):
         f(args, all_samples, data_source)

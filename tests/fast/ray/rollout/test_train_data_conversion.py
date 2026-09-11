@@ -9,6 +9,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
+from miles.ray.rollout import train_data_conversion
 from miles.ray.rollout.train_data_conversion import (
     _post_process_rewards,
     can_schedule_on_rollout_side,
@@ -965,6 +966,9 @@ def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: l
         "truncated": [0] * n,
         "loss_masks": [[1] * length for length in lengths],
         "sample_indices": list(range(n)),
+        "lineage_source_sample_indices": list(range(n)),
+        "lineage_output_indices": [0] * n,
+        "lineage_output_counts": [1] * n,
         "rollout_ids": rollout_ids if rollout_ids is not None else list(range(n)),
     }
 
@@ -1008,6 +1012,36 @@ class TestCanScheduleOnRolloutSide:
 
 
 class TestSplitTrainDataByDpScheduled:
+    def test_disabled_checker_schedules_without_witness_identity_columns(self) -> None:
+        """Ordinary scheduling does not require model companion info metadata."""
+        args = make_args(
+            balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False, enable_sample_ownership_checker=False
+        )
+        data = _make_split_data(8)
+        del data["lineage_source_sample_indices"]
+        del data["lineage_output_indices"]
+        del data["lineage_output_counts"]
+
+        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+        assert sum(len(shard["tokens"]) for shard in shards) == 8
+
+    def test_schedule_trim_resolves_only_the_rows_it_leaves_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Rows the DP schedule cannot place receive one terminal drop outcome."""
+        args = make_args(
+            balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False, enable_sample_ownership_checker=True
+        )
+        calls: list[tuple[list[int], str]] = []
+        monkeypatch.setattr(
+            train_data_conversion.SampleOwnershipRecorder,
+            "log_dropped_source_sample_indices",
+            lambda *, args, source_sample_indices, reason: calls.append((list(source_sample_indices), reason)),
+        )
+
+        split_train_data_by_dp_scheduled_raw(args, _make_split_data(10), train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+        assert calls == [([8, 9], "dp_schedule_trim")]
+
     def test_static_shards_cover_all_samples(self):
         """Static path: every sample lands in exactly one shard row, the schedule
         tiles each shard's rows exactly, and shard rows match their partition."""
