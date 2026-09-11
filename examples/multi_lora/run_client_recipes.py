@@ -47,7 +47,7 @@ def run_rl(base_url: str, base_model: str, steps: int) -> None:
             lora_rank=8,
             save_every=0,
             ttl_seconds=None,
-            max_tokens=128,
+            max_tokens=512,
             max_steps=steps,
         )
     )
