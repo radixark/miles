@@ -13,9 +13,11 @@ from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from enum import Enum
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.utils.audit_utils.sample_ownership.flow import log_dropped_samples
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -26,6 +28,11 @@ logger = logging.getLogger(__name__)
 Group = list[Sample | list[Sample]]
 
 DATA_BUFFER_PATH_PER_MODEL_FLAG = "--custom-async-data-buffer-path-per-model"
+
+
+class UnusedReason(str, Enum):
+    ABORTED = "aborted"
+    STALE = "stale"
 
 
 def add_data_buffer_arguments(parser: ArgumentParser) -> None:
@@ -72,7 +79,7 @@ def group_oldest_weight_version(group: Group) -> int | None:
 
 class DataBufferConstructorInput:
     args: Namespace
-    unused_handler_fn: Callable[[list[Sample]], None]  # --async-unused-samples-handler, applied to unused groups
+    unused_handler_fn: Callable[[list[Sample], UnusedReason], None]
 
 
 @dataclass
@@ -156,13 +163,14 @@ class DefaultDataBuffer(DataBuffer):
         # filters at receiving sample: abort filter, dynamic filter
         if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
             self._metric_aborted_groups += 1
-            self._unused_handler_fn(input.prompt_group)
+            self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
             return
         self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
         filter_output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not filter_output.keep:
             # Dropped, not recycled: no usable gradient signal.
             self._metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+            log_dropped_samples(input.prompt_group, reason="dynamic_filter")
             return
 
         async with self._cond:
@@ -190,7 +198,7 @@ class DefaultDataBuffer(DataBuffer):
                     return entry
                 logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
                 self._metric_stale_groups += 1
-                self._unused_handler_fn(entry.prompt_group)
+                self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"

@@ -4,6 +4,7 @@ from typing import Any
 import torch
 
 from miles.utils import object_store
+from miles.utils.audit_utils.sample_ownership.flow import log_dropped_sample_indices
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
@@ -188,6 +189,16 @@ def convert_samples_to_train_data(
     return train_data
 
 
+def _get_training_sample_identity_columns(samples: list[Sample]) -> dict[str, list[int]]:
+    return {
+        "source_sample_indices": [
+            x.source_sample_index if (x := sample.lineage) is not None else sample.index for sample in samples
+        ],
+        "sample_output_indices": [x.output_index if (x := sample.lineage) is not None else 0 for sample in samples],
+        "sample_output_counts": [x.output_count if (x := sample.lineage) is not None else 1 for sample in samples],
+    }
+
+
 def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
     """Whole-rollout loss-mask total per sample: every sibling of one rollout carries
     the sum over all of that rollout's samples, so the loss reducer reconstructs one
@@ -300,16 +311,35 @@ def _post_process_rewards(
     return raw_rewards, raw_rewards
 
 
-def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
+def split_train_data_by_dp(
+    args,
+    data: dict[str, Any],
+    train_parallel_config: dict | None,
+    *,
+    terminal_drop_reason: str | None = None,
+    rollout_id: int | None = None,
+):
     """Split the train data across DP ranks and put the shards into the object store.
 
     When the training backend can consume a rollout-side schedule, the shards
     also carry the precomputed micro-batch layout; otherwise this falls back to
     the legacy split (the training side schedules locally)."""
     if can_schedule_on_rollout_side(args, data, train_parallel_config):
-        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
+        shards = split_train_data_by_dp_scheduled_raw(
+            args,
+            data,
+            train_parallel_config=train_parallel_config,
+            terminal_drop_reason=terminal_drop_reason,
+            rollout_id=rollout_id,
+        )
     else:
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
+        if args.enable_sample_ownership_checker and terminal_drop_reason is not None:
+            log_dropped_sample_indices(
+                list(dict.fromkeys(data["source_sample_indices"])),
+                reason=terminal_drop_reason,
+                rollout_id=rollout_id,
+            )
     store = object_store.get_instance()
     return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
 
@@ -329,7 +359,12 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
 
 
 def split_train_data_by_dp_scheduled_raw(
-    args, data: dict[str, Any], *, train_parallel_config: dict
+    args,
+    data: dict[str, Any],
+    *,
+    train_parallel_config: dict,
+    terminal_drop_reason: str | None = None,
+    rollout_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """DP split with the micro-batch schedule precomputed on the rollout side."""
     total_lengths = [len(t) for t in data["tokens"]]
@@ -343,6 +378,21 @@ def split_train_data_by_dp_scheduled_raw(
         global_batch_size=global_batch_size,
         rollout_indices=data["rollout_ids"],
     )
+    if args.enable_sample_ownership_checker:
+        retained_rows = {index for partition in partitions for index in partition}
+        retained_sources = {data["source_sample_indices"][index] for index in retained_rows}
+        dropped_sources = [
+            source_index
+            for index, source_index in enumerate(data["source_sample_indices"])
+            if index not in retained_rows and source_index not in retained_sources
+        ]
+        log_dropped_sample_indices(dropped_sources, reason="dp_schedule_trim", rollout_id=rollout_id)
+        if terminal_drop_reason is not None:
+            log_dropped_sample_indices(
+                sorted(retained_sources),
+                reason=terminal_drop_reason,
+                rollout_id=rollout_id,
+            )
     logger.info(
         f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
         f"num_rollouts={num_rollouts}, num_microbatches={num_microbatches}"
@@ -443,13 +493,3 @@ def process_rollout_data_shard(args, rollout_data):
     rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
 
     return rollout_data
-
-
-def _get_training_sample_identity_columns(samples: list[Sample]) -> dict[str, list[int]]:
-    return {
-        "source_sample_indices": [
-            x.source_sample_index if (x := sample.lineage) is not None else sample.index for sample in samples
-        ],
-        "sample_output_indices": [x.output_index if (x := sample.lineage) is not None else 0 for sample in samples],
-        "sample_output_counts": [x.output_count if (x := sample.lineage) is not None else 1 for sample in samples],
-    }

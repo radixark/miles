@@ -155,6 +155,13 @@ class DataSourceIssuedSamplesEvent(EventBase):
     groups: list[IssuedSampleGroup]
 
 
+class ExplicitlyDroppedSamplesEvent(EventBase):
+    type: Literal["explicitly_dropped_samples"] = "explicitly_dropped_samples"
+    sample_indices: list[int]
+    reason: str
+    rollout_id: int | None = None
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -166,7 +173,8 @@ Event = Annotated[
     | EnvReportEvent
     | EngineEnvReportEvent
     | MetricEvent
-    | DataSourceIssuedSamplesEvent,
+    | DataSourceIssuedSamplesEvent
+    | ExplicitlyDroppedSamplesEvent,
     Discriminator("type"),
 ]
 

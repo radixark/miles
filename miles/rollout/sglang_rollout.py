@@ -16,8 +16,10 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.compatibility import load_generate_function
+from miles.rollout.sample_identity import stamp_sample_lineage
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
+from miles.utils.audit_utils.sample_ownership.flow import log_dropped_groups
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.function_registry import load_function
@@ -284,6 +286,8 @@ async def generate_and_rm(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
+    input_sample_index = sample.index
+
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
         sample.loss_mask = [0] * sample.response_length
@@ -325,6 +329,8 @@ async def generate_and_rm(
                 sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
+            if not evaluation:
+                stamp_sample_lineage(sample, source_sample_index=input_sample_index)
 
     if sink is not None:
         sink.attempt_end(sample)
@@ -422,6 +428,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
 
         if not args.partial_rollout:
+            groups = [task.result() for task in done]
+            log_dropped_groups(groups, [], reason="abort", rollout_id=rollout_id)
             continue
 
         # for partial rollout, collect the partial samples into the data buffer
@@ -501,6 +509,12 @@ async def generate_rollout_async(
             dynamic_filter_output = call_dynamic_filter(dynamic_filter, args, group)
             if not dynamic_filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
+                log_dropped_groups(
+                    group,
+                    [],
+                    reason="dynamic_filter",
+                    rollout_id=rollout_id,
+                )
                 state.remaining_batch_size -= 1
                 continue
 
@@ -509,6 +523,8 @@ async def generate_rollout_async(
             if len(data) < target_data_size:
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
+            else:
+                log_dropped_groups(group, [], reason="oversampling", rollout_id=rollout_id)
 
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
@@ -532,7 +548,9 @@ async def generate_rollout_async(
     state.reset()
     if (x := args.rollout_sample_filter_path) is not None:
         filter_func = load_function(x)
+        before_filter = copy.deepcopy(data)
         filter_func(args, data)
+        log_dropped_groups(before_filter, data, reason="sample_filter", rollout_id=rollout_id)
 
     # There can be circumstances where users want to process all samples including filtered ones.
     if (x := args.rollout_all_samples_process_path) is not None:
