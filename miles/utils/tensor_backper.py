@@ -71,20 +71,36 @@ class _TensorBackuperNormal(TensorBackuper):
                 backup_dict[name] = torch.empty_like(
                     param, device=torch.device("cpu"), pin_memory=param.device.type == "cuda"
                 )
-            backup_dict[name].copy_(param.detach(), non_blocking=True)
+            _copy_and_maybe_resize(
+                target=backup_dict[name],
+                source=param.detach(),
+                non_blocking=True,
+                allow_resize=getattr(param, "miles_dynamic_shape", False),
+            )
         torch.cuda.synchronize()
 
     @torch.no_grad()
     def copy(self, *, src_tag: str, dst_tag: str):
+        model_tensors = dict(self._source_getter())
         for name in self._backups[dst_tag]:
-            self._backups[dst_tag][name].copy_(self._backups[src_tag][name])
+            _copy_and_maybe_resize(
+                target=self._backups[dst_tag][name],
+                source=self._backups[src_tag][name],
+                non_blocking=False,
+                allow_resize=getattr(model_tensors[name], "miles_dynamic_shape", False),
+            )
 
     @torch.no_grad()
     def restore(self, tag: str) -> None:
         backup_dict = self._backups[tag]
         for name, param in self._source_getter():
             assert name in backup_dict
-            param.copy_(backup_dict[name], non_blocking=True)
+            _copy_and_maybe_resize(
+                target=param,
+                source=backup_dict[name],
+                non_blocking=True,
+                allow_resize=getattr(param, "miles_dynamic_shape", False),
+            )
         torch.cuda.synchronize()
 
 
@@ -121,7 +137,12 @@ class _TensorBackuperMainCast(TensorBackuper):
                 self._extras_backup[name] = torch.empty_like(
                     tensor, device=torch.device("cpu"), pin_memory=tensor.device.type == "cuda"
                 )
-            self._extras_backup[name].copy_(tensor.detach(), non_blocking=True)
+            _copy_and_maybe_resize(
+                target=self._extras_backup[name],
+                source=tensor.detach(),
+                non_blocking=True,
+                allow_resize=getattr(tensor, "miles_dynamic_shape", False),
+            )
             self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
         torch.cuda.synchronize()
         self._backup_count += 1
@@ -138,7 +159,12 @@ class _TensorBackuperMainCast(TensorBackuper):
         for model_chunk in self._ctx.model_chunks:
             model_chunk.start_param_sync(force_sync=True)
         for name, tensor in self._ctx.extras_getter():
-            tensor.copy_(self._extras_backup[name], non_blocking=True)
+            _copy_and_maybe_resize(
+                target=tensor,
+                source=self._extras_backup[name],
+                non_blocking=True,
+                allow_resize=getattr(tensor, "miles_dynamic_shape", False),
+            )
         torch.cuda.synchronize()
         if self._expected_hashes is not None:
             self._verify_hashes()
@@ -183,3 +209,17 @@ def _hash_tensor_sha256(x: torch.Tensor) -> str:
     """Real (cryptographic) hash: a mismatch here has to mean a bug."""
     data = x.detach().cpu().contiguous()
     return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()
+
+
+def _copy_and_maybe_resize(
+    *, target: torch.Tensor, source: torch.Tensor, non_blocking: bool, allow_resize: bool
+) -> None:
+    _maybe_reisze_tensor(target=target, source=source, allow_resize=allow_resize)
+    target.copy_(source, non_blocking=non_blocking)
+
+
+def _maybe_reisze_tensor(*, target: torch.Tensor, source: torch.Tensor, allow_resize: bool) -> None:
+    if target.shape == source.shape:
+        return
+    assert allow_resize, f"Tensor does not allow dynamic shape from {target.shape} to {source.shape}"
+    target.resize_(source.shape)
