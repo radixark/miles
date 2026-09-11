@@ -14,7 +14,7 @@ one.
 | [AgentENV](https://github.com/kvcache-ai/AgentENV) | ✓ | | | [✓](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
 | [Daytona](https://www.daytona.io/) | [✓](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-harbor-daytona) | ✓ | ✓ | ✓ |
 | [E2B](https://e2b.dev/) | ✓ | | | ✓ |
-| [Modal](https://modal.com/) | | | | ✓ |
+| [Modal](https://modal.com/) | ✓ | | | ✓ |
 
 The rest of this page is how to set each provider up. Its SDK is installed per
 recipe; the recipe README has that line.
