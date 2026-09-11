@@ -1,10 +1,17 @@
 """Slot capacity: how many resident LoRA tenants fit.
 
-Measurement is the authority, sglang-style: after the base model loads, one
-probe slot runs a max-size forward/backward and an optimizer step through the
-real executor path, and the bytes that slot owns, the activation peak, and the
-memory still free give every rank's head-room. The closed-form prediction only
-cross-checks the measurement and explains the log line.
+``--multi-lora-n-adapters auto`` is the smallest of three bounds:
+
+1. the trainer's memory: measured, sglang-style. After the base model loads, one
+   probe slot runs a max-size forward/backward and an optimizer step through the
+   real executor path, and the bytes that slot owns, the activation peak, and the
+   memory still free give every rank's head-room (the worst rank rules). The
+   closed-form prediction only cross-checks the measurement.
+2. the rollout engines' memory: every engine GPU must hold every slot's adapter
+   buffer plus the KV cache one slot's concurrent sequences need, so every
+   resident adapter can sample at once.
+3. torch._grouped_mm's group limit: the expert adapters run one grouped-GEMM
+   group per (slot, local expert), and the kernel takes at most 1023 groups.
 
 The trainer sizes its slot pool at construction (the Bridge adapter modules and
 the per-slot LayerWise optimizers), so ``auto`` probes a one-slot trainer and
@@ -30,6 +37,8 @@ _PROBE_BATCH_ID = -1
 # (slot, local expert), so the pool cannot hold more than 1023 / local_experts slots however
 # much memory is free. The probe's single slot never trips it, so the bound is arithmetic.
 GROUPED_MM_MAX_GROUPS = 1023
+# sequences one slot samples at once, for the engine bound: one group of samples per prompt
+DEFAULT_ROLLOUT_SEQS_PER_SLOT = 8
 
 _PROBE_ADAM_PARAMS = {
     # lr 0: the step only materializes the Adam moments, the weights stay put
@@ -273,7 +282,9 @@ def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] 
     n * (adapter buffer + the KV cache one slot's concurrent sequences need) must fit in the
     engine's static memory after the base weights. None when switched off
     (--multi-lora-rollout-seqs-per-slot 0) or when the probe did not report the totals."""
-    seqs = getattr(args, "multi_lora_rollout_seqs_per_slot", 0) or 0
+    seqs = getattr(args, "multi_lora_rollout_seqs_per_slot", None)
+    if seqs is None:
+        seqs = DEFAULT_ROLLOUT_SEQS_PER_SLOT
     if seqs <= 0 or not probe.gpu_total_bytes or not probe.base_dense_params:
         return None
     engine_tp = args.rollout_num_gpus_per_engine
@@ -310,8 +321,8 @@ def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] 
 
 
 def resolve_slot_capacity(args: Namespace, probes: list[RankProbe]) -> int:
-    """min over the binding constraints, the worst rank ruling each; the log names which one
-    bound, and warns when it is not the trainer's memory."""
+    """min over the trainer's memory, the grouped-GEMM limit and the engines' memory, the worst
+    rank ruling each; the log names which one bound, and warns when it is not the trainer's memory."""
     margin = getattr(args, "train_memory_margin_bytes", 0) or 0
     worst = min(probes, key=lambda probe: probe.capacity(margin))
     n_memory = worst.capacity(margin)

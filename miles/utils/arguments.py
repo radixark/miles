@@ -1861,18 +1861,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=lambda value: -1 if value == "auto" else int(value),
                 default=0,
                 help=(
-                    "Concurrent adapter slots for multi-LoRA. 0 disables multi-LoRA; "
-                    "'auto' derives the count from the trainer's measured GPU memory (serve entry only)"
+                    "Concurrent adapter slots for multi-LoRA. 0 disables multi-LoRA; 'auto' (serve entry only) "
+                    "takes the smallest of the trainer's measured GPU memory, the rollout engines' memory with "
+                    "every slot sampling at once, and torch._grouped_mm's group limit on the expert adapters"
                 ),
             )
             parser.add_argument(
                 "--multi-lora-rollout-seqs-per-slot",
                 type=int,
-                default=0,
+                default=None,
                 help=(
-                    "For --multi-lora-n-adapters auto: sequences one slot samples at once. When > 0 the count "
-                    "is also bounded so every rollout engine GPU holds all slots' adapter buffers plus the KV "
-                    "cache those sequences need, i.e. every resident adapter can sample immediately (default: 0, off)"
+                    "For --multi-lora-n-adapters auto: sequences one slot samples at once. The count is bounded "
+                    "so every rollout engine GPU holds all slots' adapter buffers plus the KV cache those "
+                    "sequences need, i.e. every resident adapter can sample immediately "
+                    "(default: 8, one group of samples per prompt; 0 drops this bound)"
                 ),
             )
             parser.add_argument(
