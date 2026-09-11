@@ -276,6 +276,8 @@ class MegatronTrainRayActor(TrainRayActor):
             is_lora=is_lora,
             lora_sync_config=build_lora_sync_config(self.args) if is_lora else None,
         )
+        # Temporary hack until Yueming's multi-LoRA refactor.
+        self._multi_lora_weight_version = 0
 
         # Adapters currently loaded into Megatron slots on this rank.
         self.loaded_adapters: dict[str, object] = {}
@@ -927,6 +929,8 @@ class MegatronTrainRayActor(TrainRayActor):
         return dict(self._named_actor_weights(include_model_companion=include_model_companion))
 
     def _get_actor_weight_version(self) -> int:
+        if is_multi_lora_enabled(self.args):
+            return self._multi_lora_weight_version + 1
         return ModelCompanionWeightVersionUtils.from_params(
             self._get_actor_weights(include_model_companion=True).items()
         )
@@ -987,6 +991,7 @@ class MegatronTrainRayActor(TrainRayActor):
             if is_multi_lora_enabled(self.args):
                 from miles.backends.megatron_utils.multi_lora_utils import commit_weight_push
 
+                self._multi_lora_weight_version = weight_version
                 self._multi_lora_pending_push.clear()
                 commit_weight_push(version_update_names, self._is_first_replica_megatron_main_rank)
 

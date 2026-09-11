@@ -674,6 +674,7 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
     worker.model = [torch.nn.Module()]
     worker.model[0].add_module("model_companion", ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0)))
     worker.model[0].model_companion.weight_version.fill_(3)
+    worker._multi_lora_weight_version = 0
     worker.weight_updater = _RecordingWeightUpdater()
     monkeypatch.setattr(actor_module, "print_memory", Mock())
     monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
@@ -747,6 +748,25 @@ def test_reconnecting_engines_receive_every_loaded_multi_lora_adapter(
 
     assert adapters_on_reconnect == {"alpha": "alpha-weights", "beta": "beta-weights"}
     assert updater.multi_lora_adapters == {"beta": "beta-weights"}
+
+
+def test_multi_lora_publication_counter_advances_after_each_update(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each normal multi-LoRA update advances the actor-owned counter."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: True)
+    worker.loaded_adapters = {"alpha": "alpha-weights"}
+    worker._multi_lora_pending_push = set()
+    worker._is_first_replica_megatron_main_rank = False
+    worker._multi_lora_weight_version = 7
+    info = _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4)
+
+    result = worker.update_weights(info)
+
+    assert result == 8
+    assert worker._multi_lora_weight_version == 8
+    assert worker.update_weights(info) == 9
 
 
 def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
