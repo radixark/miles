@@ -56,7 +56,7 @@ from miles.utils.simple_checkpointer import SimpleCheckpointer
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
-_CHECKPOINTER = SimpleCheckpointer(path_template="rollout/fully_async_state_{rollout_id}.pt")
+_CHECKPOINTER = SimpleCheckpointer(path_template="rollout/fully_async_state_{rollout_id}.pt", require_exists=True)
 
 NO_PROGRESS_WARN_SECS = 30.0
 
@@ -114,7 +114,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
     async def dispose(self) -> None:
         if (worker := self._worker) is None:
             return
-        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(_end_worker(worker), worker.get_loop()))
+        await _end_worker(worker)
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         if input.generate_state is not None:

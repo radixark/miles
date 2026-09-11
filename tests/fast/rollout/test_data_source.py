@@ -2,6 +2,8 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from miles.rollout.data_source import DataSource, RolloutDataSource
 from miles.utils.types import Sample
 
@@ -42,14 +44,12 @@ def _bare_source(**overrides) -> RolloutDataSource:
     return source
 
 
-def test_load_says_so_when_it_finds_no_state(tmp_path: Path, caplog) -> None:
-    """A dataset silently starting over is a run replaying samples its trainers already trained on."""
+def test_configured_load_rejects_a_missing_data_source_checkpoint(tmp_path: Path) -> None:
+    """A configured resume refuses to reset dataset cursors when its checkpoint is missing."""
     source = _bare_source(rollout_global_dataset=True, load=str(tmp_path))
 
-    with caplog.at_level(logging.WARNING, logger="miles.utils.simple_checkpointer"):
+    with pytest.raises(FileNotFoundError, match="global_dataset_state_dict_3.pt"):
         source.load(rollout_id=3)
-
-    assert "No checkpoint found" in caplog.text
 
 
 def test_load_says_so_when_the_run_names_no_load_directory(tmp_path: Path, caplog) -> None:

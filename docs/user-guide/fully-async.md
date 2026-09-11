@@ -198,7 +198,9 @@ Enable `--enable-sample-ownership-checker` to check for missing or repeated samp
 CI raises them. `--sample-ownership-check-interval-seconds` controls the check cadence.
 
 The checker is disabled for FSDP, LoRA, multi-LoRA, multi-policy, train-only, and
-rollout-only runs.
+rollout-only runs. Checkpoint save includes the data source cursor, buffer state,
+in-flight handoff state, issued/drop history, and current trainer witness. Restore
+rejects missing or corrupt required checkpoint components.
 
 ## Evaluation
 

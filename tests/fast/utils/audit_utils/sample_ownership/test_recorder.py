@@ -81,3 +81,15 @@ class TestLogDroppedSamples:
         [event] = read_events(event_dir)
         assert isinstance(event, ExplicitlyDroppedSamplesEvent)
         assert event.sample_indices == [8]
+
+    def test_delivered_replay_does_not_repeat_terminal_drop_events(self, event_dir: Path) -> None:
+        """Replaying a delivered batch preserves the original trim decision exactly once."""
+        sample = Sample(index=8)
+        SampleOwnershipRecorder.log_dropped_samples([sample], reason="dp_schedule_trim", rollout_id=5)
+
+        with SampleOwnershipRecorder.suppress_drop_logging():
+            SampleOwnershipRecorder.log_dropped_samples([sample], reason="dp_schedule_trim", rollout_id=5)
+
+        events = read_events(event_dir)
+        assert len(events) == 1
+        assert isinstance(events[0], ExplicitlyDroppedSamplesEvent)

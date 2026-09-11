@@ -11,7 +11,9 @@ from miles.utils.simple_checkpointer import SimpleCheckpointer
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
-_CHECKPOINTER = SimpleCheckpointer(path_template="rollout/global_dataset_state_dict_{rollout_id}.pt")
+_CHECKPOINTER = SimpleCheckpointer(
+    path_template="rollout/global_dataset_state_dict_{rollout_id}.pt", require_exists=True
+)
 
 
 def compute_global_dataset_state_path(directory: str | Path, *, rollout_id: int | None) -> Path:

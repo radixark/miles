@@ -1,5 +1,7 @@
+import contextvars
 import uuid
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
@@ -17,8 +19,22 @@ from miles.utils.audit_utils.event_logger.models import (
 from miles.utils.audit_utils.sample_ownership.store import SampleOwnershipEventStore
 from miles.utils.types import Sample, SampleLineage
 
+_drop_logging_suppressed: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "drop_logging_suppressed",
+    default=False,
+)
+
 
 class SampleOwnershipRecorder:
+    @staticmethod
+    @contextmanager
+    def suppress_drop_logging() -> Iterator[None]:
+        token = _drop_logging_suppressed.set(True)
+        try:
+            yield
+        finally:
+            _drop_logging_suppressed.reset(token)
+
     @staticmethod
     def install_data_source_issue_recorder(data_source: DataSource) -> None:
         get_samples = data_source.get_samples
@@ -99,6 +115,9 @@ class SampleOwnershipRecorder:
         reason: str,
         rollout_id: int | None = None,
     ) -> None:
+        if _drop_logging_suppressed.get():
+            return
+
         sample_indices = list(dict.fromkeys(sample_indices))
         if not sample_indices or not is_event_logger_initialized():
             return

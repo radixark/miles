@@ -5,6 +5,7 @@ import shutil
 import time
 import uuid
 from argparse import Namespace
+from dataclasses import dataclass
 from pathlib import Path
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
@@ -13,45 +14,60 @@ from miles.backends.megatron_utils.megatron_config import compute_trainer_checkp
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class EventLoggerCheckpointer:
+    require_exists: bool = False
+
+    def snapshot(self, args: Namespace, iteration: int) -> None:
+        if args.save_debug_event_data is None or args.save is None:
+            return
+
+        src = Path(args.save_debug_event_data)
+        if not src.is_dir():
+            if self.require_exists:
+                raise FileNotFoundError(src)
+            return
+
+        dst = compute_event_snapshot_path(Path(args.save), iteration)
+        if dst.exists():
+            shutil.rmtree(dst)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            src, dst, ignore=shutil.ignore_patterns("sample_ownership_current", "sample_ownership_current.json")
+        )
+        logger.info("Snapshotted event dir %s -> %s", src, dst)
+
+    def restore(self, args: Namespace, *, iteration: int | None = None) -> None:
+        directory = args.requested_load if iteration is None else args.load
+        if args.save_debug_event_data is None or directory is None:
+            return
+
+        requested_load = Path(directory)
+        if iteration is None:
+            iteration = _read_checkpoint_iteration(args)
+        if iteration is None:
+            return
+
+        src = compute_event_snapshot_path(requested_load, iteration)
+        if not src.is_dir():
+            if self.require_exists:
+                raise FileNotFoundError(src)
+            return
+
+        dst = Path(args.save_debug_event_data)
+        if dst.exists():
+            trash = _move_aside(dst)
+            logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
+        shutil.copytree(src, dst)
+        logger.info("Restored event dir %s <- %s", dst, src)
+
+
 def snapshot(args: Namespace, iteration: int) -> None:
-    if args.save_debug_event_data is None or args.save is None:
-        return
-
-    src = Path(args.save_debug_event_data)
-    if not src.is_dir():
-        return
-
-    dst = _snapshot_dir(Path(args.save), iteration)
-    if dst.exists():
-        shutil.rmtree(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
-        src, dst, ignore=shutil.ignore_patterns("sample_ownership_current", "sample_ownership_current.json")
-    )
-    logger.info("Snapshotted event dir %s -> %s", src, dst)
+    EventLoggerCheckpointer().snapshot(args=args, iteration=iteration)
 
 
 def restore(args: Namespace) -> None:
-    if args.save_debug_event_data is None or args.requested_load is None:
-        return
-
-    requested_load = Path(args.requested_load)
-    iteration = _read_checkpoint_iteration(args)
-    if iteration is None:
-        return
-
-    src = _snapshot_dir(requested_load, iteration)
-    if not src.is_dir():
-        return
-
-    dst = Path(args.save_debug_event_data)
-    if dst.exists():
-        trash = _move_aside(dst)
-        logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
-    shutil.copytree(
-        src, dst, ignore=shutil.ignore_patterns("sample_ownership_current", "sample_ownership_current.json")
-    )
-    logger.info("Restored event dir %s <- %s", dst, src)
+    EventLoggerCheckpointer().restore(args=args)
 
 
 def discard(args: Namespace) -> None:
@@ -85,5 +101,5 @@ def _move_aside(dst: Path) -> Path:
     return trash
 
 
-def _snapshot_dir(checkpoint_root: Path, iteration: int) -> Path:
+def compute_event_snapshot_path(checkpoint_root: Path, iteration: int) -> Path:
     return checkpoint_root / f"iter_{iteration:07d}" / "debug_events"

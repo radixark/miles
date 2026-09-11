@@ -7,8 +7,10 @@ from typing import Any
 import pytest
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
+from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.rollout.base_types import RolloutFnTrainInput
+from miles.utils.audit_utils.sample_ownership.checker import SampleOwnershipChecker
 from miles.utils.timer import Timer
 from miles.utils.weight_version import (
     assert_weight_version_is_published,
@@ -32,6 +34,8 @@ def _quiet_rollout_pipeline(monkeypatch):
 def _make_executor() -> RolloutExecutor:
     executor = RolloutExecutor.__new__(RolloutExecutor)
     executor.args = Namespace(
+        enable_sample_ownership_checker=False,
+        save=None,
         delay_split_train_data_by_dp=False,
         indep_dp=False,
         load_debug_rollout_data=None,
@@ -42,6 +46,8 @@ def _make_executor() -> RolloutExecutor:
         lora_rank=0,
         update_weights_interval=1,
     )
+    executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
+    executor._sample_ownership_checker = SampleOwnershipChecker(args=executor.args)
     executor.data_source = Namespace()
     executor.custom_convert_samples_to_train_data_func = None
     executor.custom_reward_post_process_func = None
@@ -55,13 +61,12 @@ def _make_executor() -> RolloutExecutor:
 def _record_generate_inputs(executor: RolloutExecutor, monkeypatch) -> list[RolloutFnTrainInput]:
     received: list[RolloutFnTrainInput] = []
     executor.use_legacy_rollout_v1 = False
-    executor.generate_rollout = object()
 
-    def _call_rollout_function(rollout_function, rollout_input: RolloutFnTrainInput):
+    def generate_rollout(rollout_input: RolloutFnTrainInput):
         received.append(rollout_input)
         return SimpleNamespace(samples=[], metrics=None)
 
-    monkeypatch.setattr(rollout_executor_module, "call_rollout_function", _call_rollout_function)
+    executor.generate_rollout = generate_rollout
     monkeypatch.setattr(rollout_executor_module, "assert_samples_weight_version_sane", lambda *a, **kw: None)
     return received
 
