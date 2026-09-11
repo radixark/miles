@@ -23,6 +23,7 @@ from miles.utils.arguments import (
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
     _resolve_run_uuid,
+    _resolve_sample_ownership_check,
     _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
@@ -355,6 +356,90 @@ class TestEventDirectoryDefaults:
         miles_validate_args(args)
 
         assert args.save_debug_event_data == "/debug/run/events"
+
+
+class TestSampleOwnershipCheckArguments:
+    def test_enabled_checker_rejects_custom_converter(self) -> None:
+        """Enabled checking rejects an unsupported custom converter."""
+        args = self._checker_args(custom_convert_samples_to_train_data_path="custom.convert")
+
+        with pytest.raises(AssertionError, match="incompatible with --custom-convert-samples-to-train-data-path"):
+            _resolve_sample_ownership_check(args)
+
+    @staticmethod
+    def _parse(extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_the_checker_is_off_unless_it_is_requested(self) -> None:
+        """A run that does not ask for checking leaves witness collection and event storage untouched."""
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.enable_sample_ownership_checker is False
+        assert args.enable_witness is False
+        assert args.save_debug_event_data is None
+
+    def test_the_checker_can_be_enabled_explicitly(self) -> None:
+        """The command-line flag asks for checking."""
+        assert self._parse(["--enable-sample-ownership-checker"]).enable_sample_ownership_checker is True
+
+    @staticmethod
+    def _checker_args(**overrides) -> SimpleNamespace:
+        values = dict(
+            enable_sample_ownership_checker=True,
+            custom_convert_samples_to_train_data_path=None,
+            ci_test=False,
+            train_backend="megatron",
+            num_critic_only_steps=0,
+            lora_rank=0,
+            lora_adapter_path=None,
+            multi_lora=False,
+            megatron_config=None,
+            debug_train_only=False,
+            debug_rollout_only=False,
+            enable_witness=False,
+            save_debug_event_data=None,
+            run_uuid="0123456789abcdef",
+        )
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    @pytest.mark.parametrize(
+        "overrides,reason",
+        [
+            ({"train_backend": "fsdp"}, "the FSDP backend has no model companion info"),
+            ({"lora_rank": 8}, "LoRA training has no model companion info"),
+            ({"multi_lora": True}, "multi-LoRA training can replay samples"),
+            ({"debug_train_only": True}, "train-only mode has no issuing data source"),
+            ({"debug_rollout_only": True}, "rollout-only mode has no trainer model companion"),
+            ({"num_critic_only_steps": 1}, "critic-only warmup steps drop actor samples"),
+        ],
+    )
+    def test_unsupported_modes_are_rejected(self, overrides: dict, reason: str) -> None:
+        """Modes without one current single-policy model companion info refuse to launch with the checker on."""
+        args = self._checker_args(**overrides)
+
+        with pytest.raises(ValueError, match=reason):
+            _resolve_sample_ownership_check(args)
+
+    def test_multi_policy_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Several actor lineages cannot share the single-policy current-witness checker."""
+        monkeypatch.setattr(
+            "miles.utils.arguments.resolve_megatron_config",
+            lambda _args: SimpleNamespace(
+                trainers=[
+                    SimpleNamespace(role="actor"),
+                    SimpleNamespace(role="actor"),
+                ]
+            ),
+        )
+        args = self._checker_args(megatron_config="config")
+
+        with pytest.raises(ValueError, match="multi-policy training has separate model companion lineages"):
+            _resolve_sample_ownership_check(args)
 
 
 class TestMaybeApplyDumperOverrides:
