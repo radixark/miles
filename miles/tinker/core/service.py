@@ -178,24 +178,23 @@ class TinkerService:
 
         future = self.futures.create(model_id, tenant)
         stream.request_id_by_seq[seq_id] = future.request_id
+        self._arrival_counter += 1
         try:
             self._validate_batch_payload(op, payload)
         except UserInputError as error:
             self.futures.fail(future.request_id, str(error), "user")
-            # consume rejected sequence positions so the stream can advance
-            payload = {**payload, "datums": []}
-
-        self._arrival_counter += 1
-        stream.submit(
-            Command(
-                model_id=model_id,
-                seq_id=seq_id,
-                op=op,
-                payload=payload,
-                request_id=future.request_id,
-                arrival=self._arrival_counter,
+            stream.reject(seq_id)
+        else:
+            stream.submit(
+                Command(
+                    model_id=model_id,
+                    seq_id=seq_id,
+                    op=op,
+                    payload=payload,
+                    request_id=future.request_id,
+                    arrival=self._arrival_counter,
+                )
             )
-        )
         self._wake.set()
         return future.request_id
 
