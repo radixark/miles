@@ -2,7 +2,6 @@
 
 import asyncio
 
-from miles.tinker.core.backend import ExecutorBackend
 from miles.tinker.core.future import DONE, PENDING, Future
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
@@ -17,7 +16,7 @@ ADAM = {
 }
 
 
-class FakeBackend(ExecutorBackend):
+class FakeBackend:
     """Record calls with deterministic outputs and configurable failures."""
 
     def __init__(self) -> None:
@@ -37,6 +36,9 @@ class FakeBackend(ExecutorBackend):
 
     def named(self, name: str) -> list[dict]:
         return [kwargs for called, kwargs in self.calls if called == name]
+
+    def trainer_dead(self):
+        return False
 
     async def load_slot(self, slot, rank, alpha, ckpt_path=None, load_optimizer=True):
         self._record(

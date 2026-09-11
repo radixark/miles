@@ -4,7 +4,6 @@ import asyncio
 import uuid
 
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.backend import ExecutorBackend
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
@@ -42,7 +41,7 @@ def _build_train_data(slot_datums: list) -> dict:
     return train_data
 
 
-class MilesBackend(ExecutorBackend):
+class MilesBackend:
     def __init__(self, trainer, router_url: str, dp_size: int = 1) -> None:
         self.trainer = trainer
         self.router_url = router_url
