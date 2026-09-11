@@ -13,12 +13,13 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
+from miles.rollout.data_source import DataSource
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
 from miles.router.config import compute_miles_router_config
 from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, with_mock_server
@@ -151,10 +152,10 @@ def rollout_env(tmp_path, request) -> RolloutEnv:
 
             if _needs_session_server(config.extra_argv):
                 with _with_session_server(args, router_server.url):
-                    data_source = RolloutDataSourceWithBuffer(args)
+                    data_source = load_function(args.data_source_path)(args)
                     yield RolloutEnv(args=args, data_source=data_source, mock_server=mock_server)
             else:
-                data_source = RolloutDataSourceWithBuffer(args)
+                data_source = load_function(args.data_source_path)(args)
                 yield RolloutEnv(args=args, data_source=data_source, mock_server=mock_server)
 
     SingletonMeta.clear_all_instances()

@@ -63,7 +63,7 @@ unset.
 ### `--data-source-path`
 
 **Class** (not a function). Default:
-`miles.rollout.data_source.RolloutDataSourceWithBuffer`.
+`miles.rollout.data_source.RolloutDataSource`.
 
 ```python
 class CustomDataSource:

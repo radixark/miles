@@ -692,5 +692,6 @@ def generate_rollout(
         return output
 
     output, aborted_samples = run(generate_rollout_async(args, rollout_id, data_source.get_samples))
-    data_source.add_samples(aborted_samples)
+    if aborted_samples:
+        data_source.add_samples(aborted_samples)
     return output
