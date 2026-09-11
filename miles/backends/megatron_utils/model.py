@@ -445,6 +445,7 @@ def run_forward_backward_pass(
                 "opd_reverse_kl",
                 "rollout_mask_sums",
                 "loss_weights",
+                "target_tokens",
                 "sample_indices",
             ],
             args.data_pad_size_multiplier,
