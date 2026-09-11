@@ -402,6 +402,42 @@ async def test_merged_optim_settles_each_slot_on_its_own(service):
     assert (failed.state, failed.error_category) == (FAILED, "server") and "boom" in failed.error
 
 
+@pytest.mark.parametrize("poisoned_index", [0, 1], ids=["poison-first", "poison-last"])
+@pytest.mark.parametrize("failure", [None, "slot", "backend"], ids=["step-ok", "slot-error", "backend-error"])
+async def test_merged_optim_preserves_poison_and_independent_slot_outcomes(service, poisoned_index, failure):
+    models = [await created_model(service), await created_model(service)]
+    poisoned, healthy = models[poisoned_index], models[1 - poisoned_index]
+    healthy_slot = service.models[healthy].slot
+    service.backend.fail_on["forward_backward"] = UserInputError("bad batch")
+    failed_batch = service.submit("tenant", "forward_backward", fb_payload(poisoned, 1, [datum()]))
+    assert (await await_settled(service, "tenant", failed_batch)).state == FAILED
+    if failure == "slot":
+        service.backend.optim_outcomes[healthy_slot] = {"error": "step failed"}
+    elif failure == "backend":
+        service.backend.fail_on["optim_step"] = RuntimeError("step failed")
+
+    poisoned_step = service.submit("tenant", "optim_step", _optim_payload(poisoned, 2))
+    healthy_step = service.submit("tenant", "optim_step", _optim_payload(healthy, 1))
+    poisoned_retry = service.submit("tenant", "forward_backward", fb_payload(poisoned, 3, [datum()]))
+    healthy_next = service.submit("tenant", "forward_backward", fb_payload(healthy, 2, [datum()]))
+
+    discarded = await await_settled(service, "tenant", poisoned_step)
+    assert (discarded.state, discarded.error_category) == (FAILED, "user")
+    assert "discarded" in discarded.error
+    assert (await await_settled(service, "tenant", poisoned_retry)).state == DONE
+    stepped = await await_settled(service, "tenant", healthy_step)
+    next_batch = await await_settled(service, "tenant", healthy_next)
+    if failure is None:
+        assert stepped.result == {"op": "optim_step", "metrics": {"grad_norm": 0.5 + healthy_slot}}
+        assert next_batch.state == DONE
+    else:
+        assert stepped.state == next_batch.state == FAILED
+        assert "step failed" in stepped.error
+        assert healthy not in service.models
+    assert service.backend.named("optim_step") == [{"adam_params_by_slot": {healthy_slot: dict(ADAM)}}]
+    assert not service.planner.stream(poisoned).queue
+
+
 async def test_a_nonfinite_step_reports_the_skip(service):
     model_id = await created_model(service)
     slot = service.models[model_id].slot
