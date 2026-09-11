@@ -3575,6 +3575,13 @@ def miles_validate_args(args):
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
+        if not args.use_miles_router:
+            raise ValueError(
+                "--use-rollout-routing-replay requires --use-miles-router to be set. "
+                "Without the Miles router, the SGLang engine will not be launched with "
+                "enable_return_routed_experts=True and rollout_routed_experts data "
+                "will not be available."
+            )
 
     args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 
