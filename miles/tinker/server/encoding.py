@@ -1,6 +1,6 @@
 """Translate SDK JSON requests and results.
 
-Next-token datums encode input x and shifted targets t as x + [t[-1]],
+Datums encode input x and explicit target labels t as x + [t[-1]],
 so each output scores logprob(t[i] | x[0..i])."""
 
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
@@ -82,11 +82,7 @@ def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) ->
         raise UserInputError(
             f"datum {index}: target_tokens length {len(targets)} != model_input length {len(input_tokens)}"
         )
-    if targets[:-1] != input_tokens[1:]:
-        raise UserInputError(
-            f"datum {index}: target_tokens must be model_input shifted by one (next-token supervision)"
-        )
-    datum = {"tokens": input_tokens + targets[-1:], "target_len": len(targets)}
+    datum = {"tokens": input_tokens + targets[-1:], "target_len": len(targets), "target_tokens": targets}
     for wire_key, datum_key in LOSS_INPUT_KEYS.items():
         if wire_key in inputs:
             datum[datum_key] = [float(value) for value in inputs[wire_key]]
