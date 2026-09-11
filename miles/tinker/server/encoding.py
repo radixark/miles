@@ -120,6 +120,7 @@ def decode_sample_request(payload: dict) -> dict:
         "model_path": payload.get("model_path"),
         "base_model": payload.get("base_model"),
         "sampling_session_id": payload.get("sampling_session_id"),
+        "seq_id": payload.get("seq_id"),
         "num_samples": payload.get("num_samples", 1),
         "prompt_tokens": model_input_tokens(payload["prompt"]),
         "sampling_params": payload.get("sampling_params") or {},
