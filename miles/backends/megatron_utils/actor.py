@@ -501,7 +501,9 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     def multi_lora_memory_probe(self, phase: str) -> dict:
         assert self.args.multi_lora, "multi_lora_memory_probe is a multi-LoRA slot command"
-        return slot_capacity.memory_snapshot(self.model, self.optimizer, phase, self.args)
+        return slot_capacity.memory_snapshot(
+            self.model, self.slot_optimizers.get(slot_capacity.PROBE_SLOT), phase, self.args
+        )
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:

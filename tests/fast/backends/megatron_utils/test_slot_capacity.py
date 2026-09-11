@@ -182,9 +182,12 @@ def test_residency_counts_each_storage_once(monkeypatch):
         ),
     )
     monkeypatch.setattr(slot_capacity, "adapter_slot_parameters", lambda model, slot: [weight_a, weight_b])
-    monkeypatch.setattr(slot_capacity, "_slot_children", lambda optimizer, slot: [child])
+    slot_optimizer = SimpleNamespace(_inner=SimpleNamespace(chained_optimizers=[child]))
 
-    assert resident_slot_bytes(model=None, optimizer=None, slot=PROBE_SLOT) == 20 + 30 + 128 + 100 + 100 + 100
+    assert (
+        resident_slot_bytes(model=None, slot_optimizer=slot_optimizer, slot=PROBE_SLOT)
+        == 20 + 30 + 128 + 100 + 100 + 100
+    )
 
 
 def _backend(calls, step_outcome) -> SimpleNamespace:

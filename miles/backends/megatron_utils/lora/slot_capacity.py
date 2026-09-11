@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import torch
 
-from miles.backends.megatron_utils.lora.optimizer import _slot_children, adapter_slot_parameters
+from miles.backends.megatron_utils.lora.optimizer import adapter_slot_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +107,10 @@ def predicted_slot_bytes(args: Namespace, probe: RankProbe, dp_size: int) -> flo
     )
 
 
-def memory_snapshot(model, optimizer, phase: str, args: Namespace | None = None) -> dict:
+def memory_snapshot(model, slot_optimizer, phase: str, args: Namespace | None = None) -> dict:
     """Actor-side half of the probe; the orchestration lives in probe_slot_capacity.
-    ``reset`` arms the peak tracker before the measured step, ``measure`` reads it after."""
+    ``reset`` arms the peak tracker before the measured step, ``measure`` reads it after.
+    ``slot_optimizer`` is the probe slot's SlotOptimizer (its masters and moments are the slot's)."""
     torch.cuda.synchronize()
     if phase == "reset":
         torch.cuda.reset_peak_memory_stats()
@@ -121,7 +122,7 @@ def memory_snapshot(model, optimizer, phase: str, args: Namespace | None = None)
     local_params, expert_params = adapter_param_counts(model, PROBE_SLOT)
     return {
         "free": free,
-        "slot_bytes": resident_slot_bytes(model, optimizer, PROBE_SLOT),
+        "slot_bytes": resident_slot_bytes(model, slot_optimizer, PROBE_SLOT),
         "act_peak": max(act_peak, 0),
         "adapter_local_params": local_params,
         "adapter_expert_params": expert_params,
@@ -194,9 +195,9 @@ def adapter_param_counts(model, slot: int) -> tuple[int, int]:
     return local, expert
 
 
-def resident_slot_bytes(model, optimizer, slot: int) -> int:
+def resident_slot_bytes(model, slot_optimizer, slot: int) -> int:
     """CUDA bytes one resident slot owns: the adapter weights, their grad buffers, the
-    fp32 masters and the Adam moments. Views into one allocation count it once."""
+    fp32 masters and the Adam moments of its SlotOptimizer. Views into one allocation count it once."""
     storages: dict[tuple[int, int], int] = {}
 
     def record(tensor) -> None:
@@ -207,13 +208,18 @@ def resident_slot_bytes(model, optimizer, slot: int) -> int:
     for param in adapter_slot_parameters(model, slot):
         for tensor in (param, param.grad, getattr(param, "main_grad", None), getattr(param, "main_param", None)):
             record(tensor)
-    for child in _slot_children(optimizer, slot):
+    for child in slot_optimizer_children(slot_optimizer):
         for param in child.get_parameters():  # the fp32 masters the mixed-precision wrapper steps
             record(param)
         for state in child.optimizer.state.values():
             for value in state.values():
                 record(value)
     return sum(storages.values())
+
+
+def slot_optimizer_children(slot_optimizer) -> list:
+    """The LayerWise children of one slot's SlotOptimizer (each wraps a torch optimizer over fp32 masters)."""
+    return list(slot_optimizer._inner.chained_optimizers) if slot_optimizer is not None else []
 
 
 async def probe_slot_capacity(args: Namespace, backend, trainer, dp_size: int = 1) -> list[RankProbe]:
