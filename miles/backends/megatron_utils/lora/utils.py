@@ -28,6 +28,7 @@ _STANDARD_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1",
     "up_proj": "linear_fc1",
     "down_proj": "linear_fc2",
+    "lm_head": "output_layer",
     # GDN (Qwen3.5/Qwen3-Next): both slices live in the single fused megatron in_proj
     "in_proj_qkvz": "in_proj",
     "in_proj_ba": "in_proj",
@@ -66,6 +67,7 @@ _MEGATRON_TO_HF_MODULES = {
     "linear_proj": ["o_proj"],
     "linear_fc1": ["gate_proj", "up_proj"],
     "linear_fc2": ["down_proj"],
+    "output_layer": ["lm_head"],
     # CanonicalLoRA (split layers)
     "linear_q": ["q_proj"],
     "linear_k": ["k_proj"],
@@ -236,8 +238,8 @@ def convert_target_modules_to_megatron(
 ) -> list[str]:
     """Convert HuggingFace LoRA target module names to Megatron format.
 
-    HF:  q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
-    Megatron (LoRA):          linear_qkv, linear_proj, linear_fc1, linear_fc2
+    HF:  q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, lm_head
+    Megatron (LoRA):          linear_qkv, linear_proj, linear_fc1, linear_fc2, output_layer
     Megatron (CanonicalLoRA): linear_q, linear_k, linear_v, linear_proj,
                               linear_fc1_up, linear_fc1_gate, linear_fc2
 
@@ -284,7 +286,7 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
 
     Supports both standard LoRA and CanonicalLoRA module names.
 
-    Megatron standard:   linear_qkv, linear_proj, linear_fc1, linear_fc2
+    Megatron standard:   linear_qkv, linear_proj, linear_fc1, linear_fc2, output_layer
     Megatron canonical:  linear_q, linear_k, linear_v, linear_proj,
                          linear_fc1_up, linear_fc1_gate, linear_fc2
     HF:                  q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj

@@ -74,7 +74,7 @@ class TinkerService:
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
         session = self._session_for(tenant, payload["session_id"])
-        model_seq_id = _validate_seq_id(payload["model_seq_id"], "model_seq_id")
+        model_seq_id = _validate_seq_id(payload["model_seq_id"], "model_seq_id", minimum=0)
         if (previous := session["models_by_seq"].get(model_seq_id)) is not None:
             return previous
         base_model = payload["base_model"]
@@ -498,7 +498,7 @@ class TinkerService:
         base_model = payload.get("base_model")
         if base_model is not None and base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
-        seq_id = _validate_seq_id(payload["sampling_session_seq_id"], "sampling_session_seq_id")
+        seq_id = _validate_seq_id(payload["sampling_session_seq_id"], "sampling_session_seq_id", minimum=0)
         if (previous := session["sampling_sessions_by_seq"].get(seq_id)) is not None:
             return previous
         sampling_session_id = self._new_sampling_session(tenant, payload.get("model_path"))
@@ -525,7 +525,7 @@ class TinkerService:
             if sampling_session["tenant"] != tenant:
                 raise OwnershipError("sampling session does not belong to this tenant")
             model_path = model_path or sampling_session["model_path"]
-            seq_id = _validate_seq_id(payload["seq_id"], "seq_id")
+            seq_id = _validate_seq_id(payload["seq_id"], "seq_id", minimum=0)
             if (previous := sampling_session["samples_by_seq"].get(seq_id)) is not None:
                 return previous
         if payload.get("num_samples", 1) > self.config.max_samples_per_request:
@@ -659,9 +659,10 @@ class TinkerService:
         self.free_slots.add(record.slot)
 
 
-def _validate_seq_id(value, name: str) -> int:
-    if not isinstance(value, int) or value < 1:
-        raise UserInputError(f"{name} must be a positive integer, got {value!r}")
+def _validate_seq_id(value, name: str, minimum: int = 1) -> int:
+    # stream seq_ids are 1-based (the watermark starts at 0); idempotency keys are 0-based
+    if not isinstance(value, int) or value < minimum:
+        raise UserInputError(f"{name} must be an integer >= {minimum}, got {value!r}")
     return value
 
 
