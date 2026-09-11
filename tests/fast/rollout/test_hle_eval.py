@@ -432,3 +432,85 @@ def test_filler_message_is_sent_and_budget_checked_end_to_end(tmp_path: Path, mo
         assert result["predicted_answer"] == "4"
 
     asyncio.run(run_test())
+
+
+def test_resume_reruns_only_missing_trials_and_appends(tmp_path: Path) -> None:
+    async def run_test() -> None:
+        requests: list[dict] = []
+
+        async def chat_completions(request: web.Request) -> web.Response:
+            payload = await request.json()
+            requests.append(payload)
+            if payload["model"] == "checkpoint-model":
+                content = "work\nFinal answer: 4"
+            else:
+                content = json.dumps({"reasoning": "match", "correct": "yes"})
+            return web.json_response(
+                {
+                    "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+                    "usage": {"completion_tokens": 3},
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", chat_completions)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+
+        input_path = tmp_path / "hle.jsonl"
+        input_path.write_text(
+            json.dumps({"id": "p", "question": "What is 2 + 2?", "answer": "4", "answer_type": "exactMatch"}) + "\n"
+        )
+        output = tmp_path / "results.jsonl"
+        kept = {"id": "p", "trial_index": 0, "status_code": 200, "correct": 1.0, "completion_tokens": 5}
+        failed = {"id": "p", "trial_index": 1, "status_code": 0, "error": "timeout"}
+        output.write_text(json.dumps(kept) + "\n" + json.dumps(failed) + "\n")
+        generations = tmp_path / "generations.jsonl"
+        generations.write_text(json.dumps(kept) + "\n")
+
+        args = Args()
+        args.input = str(input_path)
+        args.base_url = f"http://127.0.0.1:{port}/v1"
+        args.model = "checkpoint-model"
+        args.output_jsonl = str(output)
+        args.summary_json = str(tmp_path / "summary.json")
+        args.generations_jsonl = str(generations)
+        args.n_trials = 3
+        args.incremental = True
+        args.resume = True
+        args.disable_thinking = True
+        args.judge_base_url = f"http://127.0.0.1:{port}/v1"
+        args.judge_model = "grader-model"
+        args.judge_max_retries = 1
+        try:
+            await main_async(args)
+        finally:
+            await runner.cleanup()
+
+        rows = [json.loads(line) for line in output.read_text().splitlines()]
+        assert sorted(row["trial_index"] for row in rows) == [
+            0,
+            1,
+            1,
+            2,
+        ]
+        checkpoint_requests = [request for request in requests if request["model"] == "checkpoint-model"]
+        assert len(checkpoint_requests) == 2  # trial 0 kept; failed trial 1 and never-run trial 2 regenerated
+        summary = json.loads((tmp_path / "summary.json").read_text())
+        assert summary["metrics"]["tasks_total"] == 3
+        assert summary["metrics"]["completed"] == 3
+        progress = json.loads((tmp_path / "summary.progress.json").read_text())
+        assert progress["planned_trials"] == progress["finished_trials"] == 3
+        assert len(generations.read_text().splitlines()) == 3
+
+    asyncio.run(run_test())
+
+
+def test_resume_requires_incremental() -> None:
+    args = Args()
+    args.resume = True
+    with raises(ValueError, match="requires --incremental"):
+        asyncio.run(main_async(args))

@@ -226,6 +226,13 @@ summary. It refuses to overwrite an existing output. Optional
 grading, so a grader outage does not discard them. This is not automatic resume;
 use fresh paths for a new run. The final summary retains the existing schema.
 
+An interrupted `--incremental` run can be continued with `--resume`: the driver
+keeps every successful row already in `--output_jsonl`, regenerates only the
+`(id, trial)` pairs that are missing or failed, and appends to the same output
+and `--generations_jsonl` files. Rows kept from the earlier run are counted in
+the progress file and the final summary. Sampling is independent per trial, so
+a resumed run is statistically the same as an uninterrupted one.
+
 Without `--judge_base_url`, the script retains its judge-free smoke behavior:
 multiple-choice rows can be scored from an explicit final answer, while
 free-form rows remain ungraded.

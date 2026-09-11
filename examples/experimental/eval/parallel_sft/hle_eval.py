@@ -258,6 +258,9 @@ class Args(Tap):
     max_context_length: int | None = None
     tokenizer_path: str | None = None
     incremental: bool = False
+    # Continue an interrupted --incremental run: keep the successful rows already
+    # in --output_jsonl, re-run only the missing or failed (id, trial) pairs, and append.
+    resume: bool = False
     generations_jsonl: str | None = None
     temperature: float = 0.0
     request_timeout_sec: int = 3600
@@ -327,6 +330,15 @@ def extract_choice(text: str) -> str | None:
         return None
     match = re.fullmatch(r"(?:\\boxed\s*\{\s*)?([A-Z])(?:\s*\})?[.)]?", answer, re.IGNORECASE)
     return match.group(1).upper() if match is not None else None
+
+
+def load_completed_results(path: Path) -> list[dict[str, Any]]:
+    """Return the successful trials already persisted by an interrupted incremental run."""
+    if not path.exists():
+        return []
+    with path.open() as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    return [row for row in rows if row.get("status_code") == 200]
 
 
 def load_rows(path: Path, *, multiple_choice_only: bool, max_tasks: int | None) -> list[dict[str, Any]]:
@@ -694,22 +706,28 @@ async def evaluate_and_judge_one(
     return result
 
 
-async def collect_results(work: list[Awaitable[dict[str, Any]]], args: Args) -> list[dict[str, Any]]:
+async def collect_results(
+    work: list[Awaitable[dict[str, Any]]],
+    args: Args,
+    existing: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Persist completed trials as they arrive, without repeatedly serializing traces."""
     if not args.incremental:
         return await asyncio.gather(*work)
+    existing = existing or []
     output_path = Path(args.output_jsonl)
     progress_path = Path(args.summary_json).with_suffix(".progress.json")
-    results = []
-    with output_path.open("x") as stream:
-        print(json.dumps({"event": "started", "trials": len(work)}), flush=True)
+    results = list(existing)
+    planned = len(existing) + len(work)
+    with output_path.open("a" if args.resume else "x") as stream:
+        print(json.dumps({"event": "started", "trials": len(work), "resumed_trials": len(existing)}), flush=True)
         for pending in asyncio.as_completed(work):
             result = await pending
             results.append(result)
             stream.write(json.dumps(result) + "\n")
             stream.flush()
             metrics = summarize(results)["metrics"]
-            progress = {"planned_trials": len(work), "finished_trials": len(results), "metrics": metrics}
+            progress = {"planned_trials": planned, "finished_trials": len(results), "metrics": metrics}
             temporary = progress_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(progress, indent=2))
             temporary.replace(progress_path)
@@ -796,12 +814,15 @@ async def main_async(args: Args) -> None:
         raise ValueError("Output token limits must be positive")
     if args.filler_target_prompt_tokens is not None and args.max_context_length is None:
         raise ValueError("--filler_target_prompt_tokens requires --max_context_length and --tokenizer_path")
-    if args.incremental and Path(args.output_jsonl).exists():
+    if args.resume and not args.incremental:
+        raise ValueError("--resume requires --incremental")
+    existing = load_completed_results(Path(args.output_jsonl)) if args.resume else []
+    if args.incremental and not args.resume and Path(args.output_jsonl).exists():
         raise FileExistsError(f"Refusing to overwrite {args.output_jsonl}; use a new output path")
     if args.generations_jsonl is not None:
         generation_path = Path(args.generations_jsonl)
         generation_path.parent.mkdir(parents=True, exist_ok=True)
-        generation_path.touch(exist_ok=False)
+        generation_path.touch(exist_ok=args.resume)
     Path(args.output_jsonl).parent.mkdir(parents=True, exist_ok=True)
     Path(args.summary_json).parent.mkdir(parents=True, exist_ok=True)
 
@@ -814,14 +835,24 @@ async def main_async(args: Args) -> None:
         raise ValueError("No HLE rows matched the requested filters")
     rows = prepare_context_budgets(args, rows)
 
-    work_items = [(row, trial_index) for row in rows for trial_index in range(args.n_trials)]
+    completed = {(row["id"], row["trial_index"]) for row in existing}
+    work_items = [
+        (row, trial_index)
+        for row in rows
+        for trial_index in range(args.n_trials)
+        if (row["id"], trial_index) not in completed
+    ]
+    if args.resume:
+        print(json.dumps({"event": "resume", "kept": len(existing), "remaining": len(work_items)}), flush=True)
     timeout = aiohttp.ClientTimeout(total=args.request_timeout_sec)
     connector = aiohttp.TCPConnector(limit=args.concurrency)
     semaphore = asyncio.Semaphore(args.concurrency)
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         if args.judge_base_url is None:
             results = await collect_results(
-                [evaluate_one(session, semaphore, args, row, trial_index) for row, trial_index in work_items], args
+                [evaluate_one(session, semaphore, args, row, trial_index) for row, trial_index in work_items],
+                args,
+                existing,
             )
         else:
             judge_timeout = aiohttp.ClientTimeout(total=args.judge_request_timeout_sec)
@@ -844,6 +875,7 @@ async def main_async(args: Args) -> None:
                         for row, trial_index in work_items
                     ],
                     args,
+                    existing,
                 )
 
     output_path = Path(args.output_jsonl)
