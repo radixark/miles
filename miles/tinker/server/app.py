@@ -9,7 +9,13 @@ from fastapi.responses import JSONResponse, Response
 from miles.tinker.core.future import FAILED, PENDING
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import OwnershipError, UserInputError
-from miles.tinker.server.encoding import decode_command, decode_sample_request, render_result
+from miles.tinker.server.encoding import (
+    decode_command,
+    decode_sample_request,
+    render_result,
+    validate_create_model,
+    validate_create_sampling_session,
+)
 from miles.tinker.server.proto_codec import (
     PROTO_CONTENT_TYPE,
     PROTO_ENCODERS,
@@ -87,6 +93,7 @@ def build_app(service: TinkerService) -> FastAPI:
     @app.post("/api/v1/create_model")
     async def create_model(request: Request):
         payload = await request.json()
+        validate_create_model(payload)
         request_id, model_id = service.create_model(_tenant(request), payload)
         return {"request_id": request_id, "model_id": model_id}
 
@@ -159,6 +166,7 @@ def build_app(service: TinkerService) -> FastAPI:
     @app.post("/api/v1/create_sampling_session")
     async def create_sampling_session(request: Request):
         payload = await request.json()
+        validate_create_sampling_session(payload)
         sampling_session_id = service.create_sampling_session(_tenant(request), payload)
         return {"type": "create_sampling_session", "sampling_session_id": sampling_session_id}
 
