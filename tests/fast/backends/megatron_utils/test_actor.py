@@ -182,3 +182,51 @@ class TestSendCheckpoint:
             train_actor.send_ckpt(dst_rank=1)
 
         assert not checkpoint_transfer_attempted
+
+
+@pytest.mark.parametrize(
+    "enabled,role,outcome,representative,published",
+    [
+        (True, "actor", "NORMAL", True, True),
+        (False, "actor", "NORMAL", True, False),
+        (True, "critic", "NORMAL", True, False),
+        (True, "actor", "DISCARDED_SHOULD_RETRY", True, False),
+        (True, "actor", "NORMAL", False, False),
+    ],
+)
+def test_training_witness_publishes_only_normal_actor_representatives(
+    actor_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: bool,
+    role: str,
+    outcome: str,
+    representative: bool,
+    published: bool,
+) -> None:
+    """Only a normal actor result on the local representative publishes a snapshot."""
+    from datetime import datetime, timezone
+
+    actor = object.__new__(actor_module.MegatronTrainRayActor)
+    actor.args = SimpleNamespace(enable_sample_ownership_checker=enabled)
+    actor.role = role
+    actor.model = []
+    actor._cell_index = 2
+    calls = []
+    monkeypatch.setattr(actor_module, "is_local_replica_megatron_main_rank", lambda: representative)
+    monkeypatch.setattr(
+        actor_module.SampleOwnershipRecorder,
+        "publish_cpu_witness",
+        lambda *args, **kwargs: calls.append(kwargs) or "published-token",
+    )
+    result = actor._publish_training_witness(
+        rollout_id=7,
+        attempt=3,
+        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        result=actor_module.TrainStepOutput(outcome=actor_module.TrainStepOutcome[outcome]),
+    )
+    assert bool(calls) is published
+    assert result.sample_ownership_snapshot_id == ("published-token" if published else None)
+    if published:
+        assert calls[0]["replica_id"] == "cell-2"
+        assert calls[0]["rollout_id"] == 7
+        assert calls[0]["attempt"] == 3

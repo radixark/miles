@@ -25,7 +25,9 @@ def snapshot(args: Namespace, iteration: int) -> None:
     if dst.exists():
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst)
+    shutil.copytree(
+        src, dst, ignore=shutil.ignore_patterns("sample_ownership_current", "sample_ownership_current.json")
+    )
     logger.info("Snapshotted event dir %s -> %s", src, dst)
 
 
@@ -46,7 +48,9 @@ def restore(args: Namespace) -> None:
     if dst.exists():
         trash = _move_aside(dst)
         logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
-    shutil.copytree(src, dst)
+    shutil.copytree(
+        src, dst, ignore=shutil.ignore_patterns("sample_ownership_current", "sample_ownership_current.json")
+    )
     logger.info("Restored event dir %s <- %s", dst, src)
 
 

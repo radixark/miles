@@ -37,6 +37,10 @@ class EventLogger:
     def source(self) -> ProcessIdentity:
         return self._source
 
+    @property
+    def log_dir(self) -> Path:
+        return self._log_dir
+
     @contextmanager
     def with_context(self, ctx: dict[str, Any]) -> Generator[None, None, None]:
         """Temporarily merge extra fields into every event logged within this scope.
@@ -53,7 +57,10 @@ class EventLogger:
             self._context_var.reset(token)
 
     def log(self, event_cls: type[EventBase], partial: dict[str, Any], *, print_log: bool = True) -> None:
-        event = event_cls(
+        self.log_event(self.make_event(event_cls, partial), print_log=print_log)
+
+    def make_event(self, event_cls: type[EventBase], partial: dict[str, Any]) -> EventBase:
+        return event_cls(
             **{
                 **partial,
                 "timestamp": datetime.now(timezone.utc),
@@ -61,6 +68,8 @@ class EventLogger:
                 **self._context_var.get({}),
             }
         )
+
+    def log_event(self, event: EventBase, *, print_log: bool = True) -> None:
         line = event.model_dump_json() + "\n"
         with self._lock:
             # Opened per write so the file can be replaced (e.g. restored from a
@@ -73,6 +82,16 @@ class EventLogger:
 
     def close(self) -> None:
         pass
+
+    def read_events_strict(self) -> list[Event]:
+        events: list[Event] = []
+        with self._lock:
+            for path in sorted(self._log_dir.glob("**/*.jsonl")):
+                with path.open(encoding="utf-8") as file:
+                    for raw_line in file:
+                        if raw_line.strip():
+                            events.append(_event_adapter.validate_json(raw_line))
+        return events
 
 
 _event_logger: EventLogger | None = None

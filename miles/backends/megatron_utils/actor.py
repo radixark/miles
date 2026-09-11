@@ -5,6 +5,8 @@ import os
 import random
 import shutil
 from contextlib import ExitStack, nullcontext
+from dataclasses import replace
+from datetime import datetime, timezone
 from functools import partial
 
 import torch
@@ -22,6 +24,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -59,7 +62,7 @@ from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
-from .initialize import RandomState, init, is_first_replica_megatron_main_rank
+from .initialize import RandomState, init, is_first_replica_megatron_main_rank, is_local_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import (
     LoadCheckpointOutput,
@@ -114,6 +117,7 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
+        self._cell_index = indep_dp_info.cell_index
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -529,6 +533,7 @@ class MegatronTrainRayActor(TrainRayActor):
     ) -> TrainStepOutput:
         self._heartbeat.bump()
         self._last_rollout_id = rollout_id
+        started_at = datetime.now(timezone.utc)
         if self.args.offload_train and self._asleep:
             self.wake_up()
 
@@ -554,6 +559,9 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
+            result = self._publish_training_witness(
+                rollout_id=rollout_id, attempt=attempt, started_at=started_at, result=result
+            )
             return result
 
     @with_logs
@@ -756,6 +764,26 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
+
+    def _publish_training_witness(
+        self, *, rollout_id: int, attempt: int, started_at: datetime, result: TrainStepOutput
+    ) -> TrainStepOutput:
+        if (
+            not self.args.enable_sample_ownership_checker
+            or self.role != "actor"
+            or result.outcome != TrainStepOutcome.NORMAL
+            or not is_local_replica_megatron_main_rank()
+        ):
+            return result
+        mature_before = None
+        snapshot_id = SampleOwnershipRecorder.publish_cpu_witness(
+            self.model,
+            rollout_id=rollout_id,
+            attempt=attempt,
+            replica_id=f"cell-{self._cell_index}",
+            mature_before=mature_before,
+        )
+        return replace(result, sample_ownership_snapshot_id=snapshot_id)
 
     @with_logs
     @timer

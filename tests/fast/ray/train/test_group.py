@@ -1168,6 +1168,7 @@ class TestLogStepEndEvent:
 
             group._log_step_end_event(
                 rollout_id=42,
+                attempt=3,
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
@@ -1176,6 +1177,8 @@ class TestLogStepEndEvent:
             args = mock_logger.log.call_args[0]
             partial = args[1]
             assert partial["rollout_id"] == 42
+            assert partial["attempt"] == 3
+            assert partial["role"] == "actor"
 
             cell_outcomes = partial["cell_outcomes"]
             assert cell_outcomes[0] == [TrainStepOutcome.NORMAL, TrainStepOutcome.NORMAL]

@@ -4,7 +4,6 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
-
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -49,6 +48,22 @@ class TestSnapshotRestoreRoundtrip:
 
         assert (events / "main.jsonl").read_text() == "committed\n"
         assert not (events / "straggler.jsonl").exists()
+
+    def test_current_witness_files_are_refreshed_after_restore(self, tmp_path: Path) -> None:
+        """Checkpoint history excludes current snapshots that train ranks may be replacing concurrently."""
+        events = tmp_path / "events"
+        events.mkdir()
+        (events / "main.jsonl").write_text("history\n")
+        (events / "sample_ownership_current.json").write_text("old marker")
+        (events / "sample_ownership_current").mkdir()
+        (events / "sample_ownership_current" / "cell-0.json").write_text("new snapshot")
+
+        event_logger_checkpoint.snapshot(_args(event_dir=events, save=tmp_path / "ckpt"), iteration=3)
+
+        saved = event_logger_checkpoint._snapshot_dir(tmp_path / "ckpt", 3)
+        assert (saved / "main.jsonl").read_text() == "history\n"
+        assert not (saved / "sample_ownership_current.json").exists()
+        assert not (saved / "sample_ownership_current").exists()
 
     def test_a_named_trainer_restores_from_the_tracker_in_its_own_namespace(self, tmp_path: Path) -> None:
         """Such a run writes every trainer's checkpoints, tracker included, under `<save>/trainers/<trainer_id>/`."""

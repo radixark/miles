@@ -1,14 +1,21 @@
-from collections.abc import Iterator
+import uuid
+from collections.abc import Iterator, Sequence
+from datetime import datetime
 from typing import Any
 
+import torch
+
+from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils
 from miles.rollout.data_source import DataSource
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     DataSourceIssuedSamplesEvent,
     ExplicitlyDroppedSamplesEvent,
     IssuedSampleGroup,
+    TrainerCpuWitnessEvent,
 )
-from miles.utils.types import Sample
+from miles.utils.audit_utils.sample_ownership.store import SampleOwnershipEventStore
+from miles.utils.types import Sample, SampleLineage
 
 
 class SampleOwnershipRecorder:
@@ -22,6 +29,38 @@ class SampleOwnershipRecorder:
             return groups
 
         data_source.get_samples = get_samples_and_record
+
+    @staticmethod
+    def publish_cpu_witness(
+        model: Sequence[torch.nn.Module],
+        *,
+        rollout_id: int,
+        attempt: int,
+        replica_id: str,
+        mature_before: datetime | None = None,
+    ) -> str:
+        snapshot_id = uuid.uuid4().hex
+        event_logger = get_event_logger()
+        event = event_logger.make_event(
+            TrainerCpuWitnessEvent,
+            {
+                "replica_id": replica_id,
+                "rollout_id": rollout_id,
+                "cohort_id": f"{rollout_id}:{attempt}",
+                "attempt": attempt,
+                "snapshot_id": snapshot_id,
+                "mature_before": mature_before,
+                "sample_counts": SampleOwnershipRecorder._snapshot_counts(
+                    ModelCompanionSampleConsumptionUtils.snapshot(model, is_skipped=False)
+                ),
+                "skipped_nonfinite_sample_counts": SampleOwnershipRecorder._snapshot_counts(
+                    ModelCompanionSampleConsumptionUtils.snapshot(model, is_skipped=True)
+                ),
+                "reason": "train_end",
+            },
+        )
+        SampleOwnershipEventStore.write_snapshot(directory=event_logger.log_dir, event=event)
+        return snapshot_id
 
     @staticmethod
     def log_dropped_groups(
@@ -108,3 +147,24 @@ class SampleOwnershipRecorder:
         if value is None:
             raise ValueError(f"DataSource returned a sample without a {name}")
         return value
+
+    @staticmethod
+    def _snapshot_counts(counts: dict[SampleLineage, int]) -> list[dict[str, object]]:
+        return [
+            {
+                "sample": {
+                    "source_sample_index": identity.source_sample_index,
+                    "output_index": identity.output_index,
+                    "output_count": identity.output_count,
+                },
+                "count": count,
+            }
+            for identity, count in sorted(
+                counts.items(),
+                key=lambda item: (
+                    item[0].source_sample_index,
+                    item[0].output_index,
+                    item[0].output_count,
+                ),
+            )
+        ]

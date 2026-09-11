@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator
+from pydantic import Discriminator, Field
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
@@ -97,6 +97,9 @@ class WitnessAllocateIdEvent(EventBase):
 class TrainGroupStepEndEvent(EventBase):
     type: Literal["train_group_step_end"] = "train_group_step_end"
     rollout_id: int
+    attempt: int = 0
+    role: Literal["actor", "critic"] = "actor"
+    sample_ownership_snapshot_ids: dict[int, list[str]] = Field(default_factory=dict)
     cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
 
 
@@ -163,6 +166,43 @@ class ExplicitlyDroppedSamplesEvent(EventBase):
     rollout_id: int | None = None
 
 
+class SampleLineagePayload(FrozenStrictBaseModel):
+    source_sample_index: int
+    output_index: int
+    output_count: int
+
+
+class TrainingSampleCount(FrozenStrictBaseModel):
+    sample: SampleLineagePayload
+    count: int
+
+
+class TrainerCpuWitnessEvent(EventBase):
+    type: Literal["trainer_cpu_witness"] = "trainer_cpu_witness"
+    attempt: int = 0
+    snapshot_id: str = ""
+    mature_before: datetime | None = None
+    replica_id: str
+    rollout_id: int
+    cohort_id: str
+    sample_counts: list[TrainingSampleCount]
+    skipped_nonfinite_sample_counts: list[TrainingSampleCount]
+    reason: Literal["train_end", "current", "save", "transfer", "load"]
+
+
+class TrainerWitnessCohortEvent(EventBase):
+    type: Literal["trainer_witness_cohort"] = "trainer_witness_cohort"
+    rollout_id: int
+    cohort_id: str
+    replica_ids: list[str]
+    mature_before: datetime | None = None
+
+
+class TrainerWitnessCohortSnapshot(FrozenStrictBaseModel):
+    snapshots: list[TrainerCpuWitnessEvent]
+    marker: TrainerWitnessCohortEvent
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -175,7 +215,9 @@ Event = Annotated[
     | EngineEnvReportEvent
     | MetricEvent
     | DataSourceIssuedSamplesEvent
-    | ExplicitlyDroppedSamplesEvent,
+    | ExplicitlyDroppedSamplesEvent
+    | TrainerCpuWitnessEvent
+    | TrainerWitnessCohortEvent,
     Discriminator("type"),
 ]
 

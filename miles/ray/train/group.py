@@ -212,10 +212,10 @@ class TrainerController:
 
             self._log_step_end_event(
                 rollout_id=rollout_id,
+                attempt=attempt,
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
-
             return worker_results
 
         worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
@@ -243,7 +243,7 @@ class TrainerController:
 
         return witness_info
 
-    def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list):
+    def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list, attempt: int = 0):
         if is_event_logger_initialized():
             cell_outcomes = {
                 cell.cell_index: (
@@ -253,7 +253,21 @@ class TrainerController:
             }
             get_event_logger().log(
                 TrainGroupStepEndEvent,
-                dict(rollout_id=rollout_id, cell_outcomes=cell_outcomes),
+                dict(
+                    rollout_id=rollout_id,
+                    attempt=attempt,
+                    role=self._role,
+                    cell_outcomes=cell_outcomes,
+                    sample_ownership_snapshot_ids={
+                        cell.cell_index: [
+                            result.sample_ownership_snapshot_id
+                            for result in cell_results
+                            if result.sample_ownership_snapshot_id is not None
+                        ]
+                        for cell, cell_results in zip(snapshot_alive_cells, results, strict=True)
+                        if not isinstance(cell_results, BaseException)
+                    },
+                ),
             )
 
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
