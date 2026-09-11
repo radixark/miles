@@ -1,15 +1,25 @@
 import asyncio
 from argparse import Namespace
+from collections import defaultdict
+from pathlib import Path
 
 import pytest
+import torch
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
-from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
+from miles.ray.rollout.rollout_executor import LastBatch, RolloutExecutor, compute_executor_state_path
+from miles.rollout.base_types import BaseRolloutFn, RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.rollout.data_source import RolloutDataSource, compute_global_dataset_state_path
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
+from miles.utils.audit_utils.sample_ownership.checker import SampleOwnershipChecker
+from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
+
+_REAL_EVENT_SNAPSHOT = event_logger_checkpoint.snapshot
 
 
 class FakeInferenceController:
@@ -136,3 +146,119 @@ class TestSetEvalFleetInfo:
         assert first.generate_state.args.rollout_num_gpus == info.num_gpus
         assert first.generate_state.args.rollout_num_gpus_per_engine == info.num_gpus_per_engine
         assert second.generate_state is None
+
+
+class _FakeDataSource(RolloutDataSource):
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self.loaded: list[int | None] = []
+
+    def save(self, rollout_id: int) -> None:
+        path = compute_global_dataset_state_path(self._path, rollout_id=rollout_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"sample_group_index": 1, "sample_index": 1}, path)
+
+    def load(self, rollout_id: int | None) -> None:
+        self.loaded.append(rollout_id)
+
+
+class _CustomDataSource:
+    def save(self, rollout_id: int) -> None:
+        pass
+
+    def load(self, rollout_id: int | None) -> None:
+        pass
+
+
+class _CountingRolloutFn:
+    def __init__(self, start_index: int = 0) -> None:
+        self.next_index = start_index
+        self.num_calls = 0
+
+    def __call__(self, args, rollout_id, data_source, evaluation) -> RolloutFnTrainOutput:
+        self.num_calls += 1
+        self.next_index += 1
+        sample = Sample(
+            index=self.next_index,
+            group_index=self.next_index,
+            prompt="p",
+            status=Sample.Status.COMPLETED,
+        )
+        return RolloutFnTrainOutput(samples=[[sample]])
+
+
+def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor.args = make_args(load=str(tmp_path), save=str(tmp_path))
+    executor._sample_ownership_checker = SampleOwnershipChecker(args=executor.args)
+    executor.use_legacy_rollout_v1 = True
+    executor.generate_rollout = rollout_fn
+    executor.eval_generate_rollout = rollout_fn
+    executor.data_source = _FakeDataSource(tmp_path)
+    executor._train_parallel_configs_of_model_id = {None: {}}
+    executor._weight_versions_of_model_id = {}
+    executor._last_batch = None
+    executor._replay = None
+    executor._get_save_lock = asyncio.Lock()
+    return executor
+
+
+@pytest.fixture(autouse=True)
+def _stub_rollout_postprocessing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rollout_executor_module, "postprocess_rollout_data", lambda args, data, **kwargs: (data, {}))
+    monkeypatch.setattr(rollout_executor_module, "assert_samples_weight_version_sane", lambda args, samples: None)
+    monkeypatch.setattr(rollout_executor_module.event_logger_checkpoint, "snapshot", lambda args, rollout_id: None)
+
+
+class TestLastBatchReplay:
+    @staticmethod
+    def _configure_async_executor(executor: RolloutExecutor, *, args: Namespace, rollout_fn: BaseRolloutFn) -> None:
+        executor.args = args
+        executor.use_legacy_rollout_v1 = False
+        executor.generate_rollout = rollout_fn
+        executor.eval_generate_rollout = rollout_fn
+        executor._rollouts_since_publish_of_model_id = defaultdict(int)
+        executor._sample_ownership_checker = SampleOwnershipChecker(args=args)
+        executor._metric_checker = None
+        executor.custom_convert_samples_to_train_data_func = None
+        executor.custom_reward_post_process_func = None
+        executor._train_parallel_configs_of_model_id = {None: {"dp_size": 1}}
+
+    @pytest.mark.parametrize("trained", [False, True])
+    async def test_only_untrained_batches_are_replayed_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trained: bool
+    ) -> None:
+        """Checkpoint replay preserves a pending batch and excludes already trained data."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor._last_batch = LastBatch(rollout_id=3, train_data={"sample_indices": [7]})
+        await executor.save(3 if trained else 2)
+        restored = _make_executor(tmp_path, _CountingRolloutFn())
+        await restored.load(3 if trained else 2)
+        if trained:
+            assert restored._replay is None
+            return
+        monkeypatch.setattr(restored, "_publish_train_data", lambda **kwargs: kwargs["data"])
+        assert await restored.get(rollout_id=3) == {"sample_indices": [7]}
+        assert restored._replay is None
+
+    async def test_checkpoint_waits_for_active_get(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A save during generation includes the completed prefetched batch."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def get(rollout_id: int, trainer_model_id: str | None) -> None:
+            entered.set()
+            await release.wait()
+            executor._last_batch = LastBatch(rollout_id=rollout_id, train_data={"sample_indices": [7]})
+
+        monkeypatch.setattr(executor, "_get", get)
+        fetching = asyncio.create_task(executor.get(rollout_id=3))
+        await entered.wait()
+        saving = asyncio.create_task(executor.save(2))
+        await asyncio.sleep(0)
+        assert not saving.done()
+        release.set()
+        await fetching
+        await saving
+        state = torch.load(compute_executor_state_path(tmp_path, rollout_id=2), weights_only=False)
+        assert state["last_batch"].train_data == {"sample_indices": [7]}

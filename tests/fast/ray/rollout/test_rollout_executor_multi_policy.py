@@ -9,6 +9,7 @@ import pytest
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.rollout.base_types import RolloutFnTrainInput
+from miles.utils.audit_utils.sample_ownership.checker import SampleOwnershipChecker
 from miles.utils.timer import Timer
 from miles.utils.weight_version import (
     assert_weight_version_is_published,
@@ -32,6 +33,7 @@ def _quiet_rollout_pipeline(monkeypatch):
 def _make_executor() -> RolloutExecutor:
     executor = RolloutExecutor.__new__(RolloutExecutor)
     executor.args = Namespace(
+        enable_sample_ownership_checker=False,
         delay_split_train_data_by_dp=False,
         indep_dp=False,
         load_debug_rollout_data=None,
@@ -42,6 +44,10 @@ def _make_executor() -> RolloutExecutor:
         lora_rank=0,
         update_weights_interval=1,
     )
+    executor._get_save_lock = asyncio.Lock()
+    executor._replay = None
+    executor._last_batch = None
+    executor._sample_ownership_checker = SampleOwnershipChecker(args=executor.args)
     executor.data_source = Namespace()
     executor.custom_convert_samples_to_train_data_func = None
     executor.custom_reward_post_process_func = None

@@ -1,9 +1,15 @@
 import asyncio
+import copy
 import logging
 import time
 from collections import defaultdict
 from collections.abc import Sequence
+from contextlib import nullcontext
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+import torch
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
@@ -23,17 +29,23 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
-from miles.utils.async_utils import maybe_await, run, submit
+from miles.utils.async_utils import maybe_await, submit
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.checker import SampleOwnershipChecker
-from miles.utils.audit_utils.sample_ownership.flow import insert_data_source_issue_recorder, log_dropped_groups
+from miles.utils.audit_utils.sample_ownership.flow import (
+    insert_data_source_issue_recorder,
+    log_dropped_groups,
+    log_dropped_sample_indices,
+)
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
+from miles.utils.file_utils import atomic_torch_save
 from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
@@ -51,6 +63,16 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 logger = logging.getLogger(__name__)
+
+
+def compute_executor_state_path(directory: str | Path, *, rollout_id: int | None) -> Path:
+    return Path(directory) / "rollout" / f"executor_state_{rollout_id}.pt"
+
+
+@dataclass(frozen=True)
+class LastBatch:
+    rollout_id: int
+    train_data: dict[str, Any]
 
 
 class RolloutExecutor:
@@ -77,6 +99,9 @@ class RolloutExecutor:
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
         self._sample_ownership_checker = SampleOwnershipChecker(args=args)
+        self._last_batch: LastBatch | None = None
+        self._replay: LastBatch | None = None
+        self._get_save_lock = asyncio.Lock()
 
     @init_once
     async def init(self) -> None:
@@ -149,6 +174,21 @@ class RolloutExecutor:
 
     @event_logger_context(lambda _self, rollout_id, trainer_model_id=None: dict(rollout_id=rollout_id))
     async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
+        async with self._get_save_lock if trainer_model_id is None else nullcontext():
+            self.rollout_id = rollout_id
+            await self._sample_ownership_checker.check(rollout_id=rollout_id)
+            if trainer_model_id is None and self._replay is not None:
+                assert self._replay.rollout_id == rollout_id
+                result = self._publish_train_data(
+                    rollout_id=rollout_id,
+                    trainer_model_id=trainer_model_id,
+                    data=copy.deepcopy(self._replay.train_data),
+                )
+                self._replay = None
+                return result
+            return await self._get(rollout_id=rollout_id, trainer_model_id=trainer_model_id)
+
+    async def _get(self, rollout_id: int, trainer_model_id: str | None) -> RolloutDataPack:
         start_time = time.time()
         self.rollout_id = rollout_id
         self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
@@ -159,9 +199,8 @@ class RolloutExecutor:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             try:
-                data, metadata, metrics = await self._get_rollout_data_with_ownership_check(
-                    rollout_id=rollout_id,
-                    trainer_model_id=trainer_model_id,
+                data, metadata, metrics = await asyncio.wrap_future(
+                    submit(self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
                 )
             except EmptyBatchTimeoutError as e:
                 assert self.args.multi_lora, "only the multi-LoRA rollout waits for a non-empty batch"
@@ -178,19 +217,64 @@ class RolloutExecutor:
         log_rollout_data(
             rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
         )
-        data = convert_samples_to_train_data(
+        data_pack = await asyncio.wrap_future(
+            submit(
+                self._prepare_train_data(
+                    rollout_id=rollout_id,
+                    trainer_model_id=trainer_model_id,
+                    data=data,
+                    metadata=metadata,
+                )
+            )
+        )
+        return data_pack
+
+    async def _prepare_train_data(
+        self,
+        *,
+        rollout_id: int,
+        trainer_model_id: str | None,
+        data: list[Group],
+        metadata: dict[str, Any],
+    ) -> RolloutDataPack:
+        train_data = convert_samples_to_train_data(
             self.args,
             data,
             metadata=metadata,
             custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
+        data_pack = self._publish_train_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id, data=train_data)
+        if trainer_model_id is None:
+            self._last_batch = LastBatch(rollout_id=rollout_id, train_data=copy.deepcopy(train_data))
+        return data_pack
+
+    def _publish_train_data(
+        self, *, rollout_id: int, trainer_model_id: str | None, data: dict[str, Any]
+    ) -> RolloutDataPack:
+        terminal_drop_reason = (
+            "critic_only_warmup"
+            if self.args.enable_sample_ownership_checker
+            and self.args.use_critic
+            and rollout_id < self.args.num_critic_only_steps
+            else None
+        )
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
+            if terminal_drop_reason is not None:
+                log_dropped_sample_indices(
+                    list(dict.fromkeys(data["source_sample_indices"])),
+                    reason=terminal_drop_reason,
+                    rollout_id=rollout_id,
+                )
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(
-                self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
+                self.args,
+                data,
+                self._train_parallel_configs_of_model_id[trainer_model_id],
+                terminal_drop_reason=terminal_drop_reason,
+                rollout_id=rollout_id,
             )
         return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
@@ -273,15 +357,12 @@ class RolloutExecutor:
             metrics = None
         else:
             if not self.use_legacy_rollout_v1:
-                data = await asyncio.to_thread(
-                    call_rollout_function,
-                    self.generate_rollout,
-                    RolloutFnTrainInput(
-                        rollout_id=rollout_id,
-                        weight_version=self._weight_versions_of_model_id.get(trainer_model_id),
-                        trainer_model_id=trainer_model_id,
-                    ),
+                input = RolloutFnTrainInput(
+                    rollout_id=rollout_id,
+                    weight_version=self._weight_versions_of_model_id.get(trainer_model_id),
+                    trainer_model_id=trainer_model_id,
                 )
+                data = await asyncio.to_thread(call_rollout_function, self.generate_rollout, input)
             else:
                 data = await asyncio.to_thread(
                     call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
@@ -301,43 +382,63 @@ class RolloutExecutor:
                     self.args, generated=generated_data, injected=data, rollout_id=rollout_id
                 )
                 metrics = None
-
         return data, metadata, metrics
-
-    async def _get_rollout_data_with_ownership_check(
-        self,
-        *,
-        rollout_id: int,
-        trainer_model_id: str | None,
-    ) -> tuple[Any, Any, Any]:
-        await self._sample_ownership_checker.check(rollout_id=rollout_id)
-        return await asyncio.wrap_future(
-            submit(self._get_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
-        )
 
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
-    def save(self, rollout_id: int) -> None:
-        run(self._save_sample_state(rollout_id))
-        event_logger_checkpoint.snapshot(self.args, rollout_id)
+    async def save(self, rollout_id: int) -> None:
+        async with self._get_save_lock:
+            await asyncio.wrap_future(submit(self._save_state(rollout_id)))
 
-    async def _save_sample_state(self, rollout_id: int) -> None:
+    async def _save_state(self, rollout_id: int) -> None:
         self.data_source.save(rollout_id)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.save(rollout_id)
+                await maybe_await(self.generate_rollout.save(rollout_id))
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.save(rollout_id)
+                await maybe_await(eval_fn.save(rollout_id))
+        self._save_last_batch(rollout_id)
+        event_logger_checkpoint.snapshot(self.args, rollout_id)
 
-    def load(self, rollout_id: int | None = None) -> None:
+    def _save_last_batch(self, rollout_id: int) -> None:
+        if (save_dir := self.args.save) is None:
+            return
+
+        pending = (
+            self._last_batch if self._last_batch is not None and self._last_batch.rollout_id > rollout_id else None
+        )
+        path = compute_executor_state_path(save_dir, rollout_id=rollout_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_torch_save(path=path, obj={"last_batch": pending})
+        logger.info(f"Saved {int(pending is not None)} untrained rollout batch to {path}")
+
+    async def load(self, rollout_id: int | None = None, *, require_complete: bool = False) -> None:
+        await asyncio.wrap_future(submit(self._load_state(rollout_id, require_complete=require_complete)))
+
+    async def _load_state(self, rollout_id: int | None, *, require_complete: bool) -> None:
+        self._load_last_batch(rollout_id)
         self.data_source.load(rollout_id)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.load(rollout_id)
+                await maybe_await(self.generate_rollout.load(rollout_id))
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.load(rollout_id)
+                await maybe_await(eval_fn.load(rollout_id))
         event_logger_checkpoint.restore(self.args)
+
+    def _load_last_batch(self, rollout_id: int | None) -> None:
+        if (load_dir := self.args.load) is None:
+            return
+
+        path = compute_executor_state_path(load_dir, rollout_id=rollout_id)
+        if not path.exists():
+            logger.warning(f"No executor state under {path}; a prefetched rollout batch may be lost")
+            return
+
+        state = torch.load(path, weights_only=False)
+        self._replay = state["last_batch"]
+        self._last_batch = copy.deepcopy(self._replay)
+        logger.info(f"Loaded {int(self._replay is not None)} untrained rollout batch from {path}")
 
     # -------------------------- misc APIs -----------------------------
 
