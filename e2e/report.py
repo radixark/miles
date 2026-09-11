@@ -201,8 +201,13 @@ def main() -> None:
         else {"n_clients": 0, "passed": 0, "elapsed_s": 0.0}
     )
     table = render(build_rows(knobs, facts, summary, gpu_rows(args.run_dir, facts, knobs)))
+    slots_note = (
+        f"slots: {facts['slots']}, bound by {facts['binding']} [{facts['bounds']}]."
+        if "slots" in facts
+        else f"slots: {knobs.get('N_ADAPTERS')} (explicit --multi-lora-n-adapters, no probe)."
+    )
     notes = (
-        f"slots: {facts.get('slots', '?')}, bound by {facts.get('binding', '?')} [{facts.get('bounds', '?')}]. "
+        f"{slots_note} "
         "time/step rows: what one LoRA observes in a single step, over every client-step, queueing included; "
         "shares divide each phase's mean by the step total's mean. GPU rows: peaks of nvidia-smi sampled every 15 s "
         "on every GPU of the node while the clients ran."
