@@ -538,6 +538,9 @@ class TinkerService:
 
     def create_sampling_session(self, tenant: str, payload: dict) -> str:
         session = self._session_for(tenant, payload["session_id"])
+        base_model = payload.get("base_model")
+        if base_model is not None and base_model != self.config.base_model:
+            raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
         seq_id = _validate_seq_id(payload["sampling_session_seq_id"], "sampling_session_seq_id")
         if (previous := session["sampling_sessions_by_seq"].get(seq_id)) is not None:
             return previous
