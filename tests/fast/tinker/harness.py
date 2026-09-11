@@ -125,9 +125,18 @@ def command(model_id: str, seq_id: int, op: str, payload: dict, arrival: int) ->
     )
 
 
-async def created_model(service: TinkerService, tenant: str = "tenant") -> str:
+def model_payload(service: TinkerService, tenant: str = "tenant", session_id: str | None = None, **overrides) -> dict:
+    return {
+        "base_model": service.config.base_model,
+        "session_id": session_id or service.create_session(tenant),
+        "model_seq_id": 1,
+        **overrides,
+    }
+
+
+async def created_model(service: TinkerService, tenant: str = "tenant", session_id: str | None = None) -> str:
     request_id, model_id = service.create_model(
-        tenant, {"base_model": service.config.base_model, "lora_config": {"rank": 8}}
+        tenant, model_payload(service, tenant, session_id, lora_config={"rank": 8})
     )
     future = await await_settled(service, tenant, request_id)
     assert future.state == DONE, future.error
