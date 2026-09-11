@@ -338,7 +338,7 @@ class TinkerService:
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
-            results = await self._dispatch_barrier_op(barrier)
+            outcomes = await self._dispatch_barrier_op(barrier)
         except (UserInputError, OwnershipError) as error:
             self._fail_barrier(barrier, str(error), "user")
             return
@@ -346,80 +346,81 @@ class TinkerService:
             logger.exception(f"{barrier.op} barrier failed")
             self._fail_barrier(barrier, f"{type(error).__name__}: {error}", "server")
             return
-        if results is None:
-            return
-        for (stream, pending), result in zip(barrier.entries, results, strict=True):
-            self.futures.resolve(pending.command.request_id, result)
-            stream.finish(pending)
+        for (stream, pending), outcome in zip(barrier.entries, outcomes, strict=True):
+            self._settle_barrier_entry(stream, pending, outcome)
+            if outcome.get("retire_model"):
+                await self._evict_model(stream.model_id, outcome["error"], outcome["error_category"])
+
+    def _settle_barrier_entry(self, stream, pending, outcome: dict) -> None:
+        if "error" in outcome:
+            self.futures.fail(pending.command.request_id, outcome["error"], outcome["error_category"])
+        else:
+            self.futures.resolve(pending.command.request_id, outcome)
+        stream.finish(pending)
 
     def _fail_barrier(self, barrier: BarrierUnit, error: str, category: str) -> None:
         for stream, pending in barrier.entries:
-            self.futures.fail(pending.command.request_id, error, category)
-            stream.finish(pending)
+            self._settle_barrier_entry(stream, pending, {"error": error, "error_category": category})
 
-    async def _dispatch_barrier_op(self, barrier: BarrierUnit) -> list[dict] | None:
+    async def _dispatch_barrier_op(self, barrier: BarrierUnit) -> list[dict]:
+        """Return one result or error per entry; only the caller settles futures and retires models."""
         if barrier.op == CommandOp.OPTIM_STEP:
-            await self._step_optimizers(barrier.entries)
-            return None  # settled per slot
+            return await self._step_optimizers(barrier.entries)
         ((stream, pending),) = barrier.entries  # every other barrier is single-entry
         record = self.models[stream.model_id]
         payload = pending.command.payload
         if barrier.op == CommandOp.SAVE_STATE:
-            return await self._save_state(record, pending, payload)
+            return [await self._save_state(record, pending, payload)]
         if barrier.op == CommandOp.LOAD_STATE:
-            return await self._load_state(record, payload)
+            return [await self._load_state(record, payload)]
         if barrier.op == CommandOp.SAVE_WEIGHTS_FOR_SAMPLER:
-            return await self._publish_sampler_version(record, payload)
+            return [await self._publish_sampler_version(record, payload)]
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
-    async def _step_optimizers(self, entries: list) -> None:
-        """Merged optim barriers settle per slot: one slot's failure must not
-        mask another slot's completed step."""
-        entries = [entry for entry in entries if not await self._fail_if_poisoned(*entry)]
-        if not entries:
-            return
-        try:
-            outcomes = await self.backend.optim_step(
-                {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
-            )
-        except Exception as error:  # noqa: BLE001  can fail after some slots already stepped
-            logger.exception("the optimizer step failed at the backend level")
-            for stream, pending in entries:
-                await self._retire_after_failed_step(stream, pending, f"{type(error).__name__}: {error}")
-            return
+    async def _step_optimizers(self, entries: list) -> list[dict]:
+        outcomes = {}
+        adam_params_by_slot = {}
         for stream, pending in entries:
-            outcome = outcomes[stream.slot]
-            if "error" in outcome:
-                await self._retire_after_failed_step(stream, pending, outcome["error"])
+            discarded = await self._discard_poisoned_gradients(stream.slot)
+            if discarded is not None:
+                outcomes[stream.slot] = discarded
             else:
-                metrics = {key: float(value) for key, value in outcome.items()}
-                self.futures.resolve(pending.command.request_id, {"op": "optim_step", "metrics": metrics})
-                stream.finish(pending)
+                adam_params_by_slot[stream.slot] = pending.command.payload["adam_params"]
+        if adam_params_by_slot:
+            try:
+                slot_outcomes = await self.backend.optim_step(adam_params_by_slot)
+            except Exception as error:  # noqa: BLE001  can fail after some slots already stepped
+                logger.exception("the optimizer step failed at the backend level")
+                slot_outcomes = {slot: {"error": f"{type(error).__name__}: {error}"} for slot in adam_params_by_slot}
+            for slot in adam_params_by_slot:
+                outcome = slot_outcomes[slot]
+                if "error" in outcome:
+                    # a half-applied or rank-divergent step makes only this slot unsafe to reuse
+                    outcomes[slot] = {
+                        "error": f"model unloaded after a failed optimizer step ({outcome['error']}); restore from a checkpoint",
+                        "error_category": "server",
+                        "retire_model": True,
+                    }
+                else:
+                    outcomes[slot] = {
+                        "op": "optim_step",
+                        "metrics": {key: float(value) for key, value in outcome.items()},
+                    }
+        return [outcomes[stream.slot] for stream, _ in entries]
 
-    async def _retire_after_failed_step(self, stream, pending, error: str) -> None:
-        """The slot may hold a half-applied or rank-divergent step; it must not keep serving."""
-        message = f"model unloaded after a failed optimizer step ({error}); restore from a checkpoint"
-        self.futures.fail(pending.command.request_id, message, "server")
-        stream.finish(pending)
-        await self._evict_model(stream.model_id, message, "server")
-
-    async def _fail_if_poisoned(self, stream, pending) -> bool:
-        """Fail the next optimizer step when a batch discarded its accumulated gradients."""
-        poison = self._poisoned_slots.pop(stream.slot, None)
+    async def _discard_poisoned_gradients(self, slot: int) -> dict | None:
+        poison = self._poisoned_slots.pop(slot, None)
         if poison is None:
-            return False
+            return None
         error, category = poison
-        # retried forward/backwards may have accumulated fresh gradients since the discard
-        await self.backend.zero_grads(stream.slot)
-        self.futures.fail(
-            pending.command.request_id,
-            f"the gradient accumulation was discarded after a failed batch ({error}); resubmit the forward/backward requests and optimizer step",
-            category,
-        )
-        stream.finish(pending)
-        return True
+        # retried forward/backwards still belong to the discarded accumulation window until this barrier
+        await self.backend.zero_grads(slot)
+        return {
+            "error": f"the gradient accumulation was discarded after a failed batch ({error}); resubmit the forward/backward requests and optimizer step",
+            "error_category": category,
+        }
 
-    async def _save_state(self, record: ModelRecord, pending, payload: dict) -> list[dict]:
+    async def _save_state(self, record: ModelRecord, pending, payload: dict) -> dict:
         name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
         _validate_checkpoint_segment(name)
         checkpoint_dir = self._checkpoint_dir(record.model_id, "weights", name)
@@ -427,9 +428,9 @@ class TinkerService:
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
         await self.backend.save_slot(record.slot, checkpoint_dir)
         self._stamp_checkpoint_meta(checkpoint_dir, record)
-        return [{"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}]
+        return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 
-    async def _load_state(self, record: ModelRecord, payload: dict) -> list[dict]:
+    async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         source_id, kind, name = _parse_tinker_path(payload["path"])
         meta = self._checkpoint_meta(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
         self._reject_checkpoint_mismatch(meta, record, payload["path"])
@@ -443,13 +444,15 @@ class TinkerService:
             )
         except Exception:
             # a load that failed partway may leave mixed weight/optimizer state
-            await self._evict_model(
-                record.model_id, "model unloaded after a failed load_state; create a new model", "server"
-            )
-            raise
-        return [{"op": "load_state"}]
+            logger.exception("load_state failed; retiring the model")
+            return {
+                "error": "model unloaded after a failed load_state; create a new model",
+                "error_category": "server",
+                "retire_model": True,
+            }
+        return {"op": "load_state"}
 
-    async def _publish_sampler_version(self, record: ModelRecord, payload: dict) -> list[dict]:
+    async def _publish_sampler_version(self, record: ModelRecord, payload: dict) -> dict:
         version = payload.get("sampler_path")
         if version is None:
             version = str(record.next_sampler_version)
@@ -477,7 +480,7 @@ class TinkerService:
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(record.tenant, result["path"])
-        return [result]
+        return result
 
     def _reject_checkpoint_mismatch(self, meta: dict, record: ModelRecord, shown_path: str) -> None:
         """The tensors only keep their meaning under the config that wrote them (alpha scales them,
