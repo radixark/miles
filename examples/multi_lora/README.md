@@ -12,7 +12,8 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
 - 4 training GPUs: TP2 for the dense layers, EP4 for the 128 routed experts.
 - 4 sampling GPUs: two SGLang engines of 2 GPUs each, serving adapter versions by name.
 - 4 adapter slots (`--multi-lora-n-adapters`), rank up to 32, covering attention
-  (`linear_qkv`, `linear_proj`) and the per-expert MoE projections (`linear_fc1`, `linear_fc2`).
+  (`linear_qkv`, `linear_proj`), the per-expert MoE projections (`linear_fc1`, `linear_fc2`),
+  and the output layer (`output_layer`) so the cookbook's default `train_unembed=True` is servable.
 
 ## Run
 

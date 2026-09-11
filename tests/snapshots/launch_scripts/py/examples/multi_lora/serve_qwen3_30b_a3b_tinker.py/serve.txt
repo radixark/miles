@@ -50,7 +50,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --lora-rank 32
   --lora-alpha 64
   --lora-dropout 0.0
-  --target-modules "linear_qkv,linear_proj,linear_fc1,linear_fc2"
+  --target-modules "linear_qkv,linear_proj,linear_fc1,linear_fc2,output_layer"
   --no-gradient-accumulation-fusion
   --multi-lora-n-adapters 4 
   --tinker-server-port 10613

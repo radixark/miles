@@ -14,6 +14,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = field(default_factory=U.create_run_id)
 
     hf_checkpoint: str | None = None
+    model_type: str = "qwen3-30B-A3B"
     model_dir: str = "/root/models"
     save_dir: str | None = None
     megatron_path: str = "/root/Megatron-LM"
@@ -28,7 +29,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 32
     lora_alpha: int = 64
     n_adapters: int = 4
-    target_modules: str = "linear_qkv,linear_proj,linear_fc1,linear_fc2"
+    target_modules: str = "linear_qkv,linear_proj,linear_fc1,linear_fc2,output_layer"
 
     tinker_port: int = 10613
     rollout_num_gpus_per_engine: int = 2
@@ -108,7 +109,7 @@ def serve(args: ScriptArgs):
         train_args=train_args,
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
-        megatron_model_type="qwen3-30B-A3B",
+        megatron_model_type=args.model_type,
         train_script="serve_tinker.py",
         megatron_path=args.megatron_path,
     )
