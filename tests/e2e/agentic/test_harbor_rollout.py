@@ -13,8 +13,8 @@ GLM-4.7-Flash, fit on 2 GPUs.
 Nothing else here is backend-specific: the credential and SDK preflight is
 the launcher's own ``harbor_env_vars``, so adding a backend to
 ``PROVIDER_CREDENTIALS`` is all it takes to run this against it. Which
-combinations have actually been run is recorded in
-``scripts/sandbox_smoke/README.md``.
+combinations have actually been run is the table in
+``docs/user-guide/sandbox-providers.md``.
 
 Registered ``disabled`` because CI runners carry no sandbox credential. Run
 it manually on a GPU devbox that has one:
