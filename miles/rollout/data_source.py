@@ -1,7 +1,6 @@
 import abc
 import copy
 import logging
-import os
 from pathlib import Path
 
 from miles.utils.data import Dataset
@@ -15,7 +14,7 @@ _CHECKPOINTER = SimpleCheckpointer(path_template="rollout/global_dataset_state_d
 
 
 def compute_global_dataset_state_path(directory: str, *, rollout_id: int | None) -> str:
-    return _CHECKPOINTER.path(directory, rollout_id=rollout_id)
+    return str(_CHECKPOINTER.path(directory, rollout_id=rollout_id))
 
 
 class DataSource(abc.ABC):
@@ -127,26 +126,15 @@ class RolloutDataSource(DataSource):
             "sample_index": self.sample_index,
             "metadata": self.metadata,
         }
-        path = compute_global_dataset_state_path(self.args.save, rollout_id=rollout_id)
-        _CHECKPOINTER.save(path=path, state_dict=state_dict)
+        _CHECKPOINTER.save(args=self.args, rollout_id=rollout_id, data=state_dict)
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
             logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
-        if self.args.load is None:
-            logger.warning("no --load: the dataset starts where a fresh run's would")
+        if (state_dict := _CHECKPOINTER.load(args=self.args, rollout_id=rollout_id)) is None:
             return
-
-        path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
-        if not os.path.exists(path):
-            logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
-            return
-
-        logger.info(f"load metadata from {path}")
-        logger.info(f"load metadata: {self.metadata}")
-        state_dict = _CHECKPOINTER.load(path=path)
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
