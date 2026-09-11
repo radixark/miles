@@ -10,7 +10,12 @@ from tests.fast.ray.rollout.conftest import make_args, make_sample
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
-from miles.ray.rollout.rollout_executor import LastBatch, RolloutExecutor, compute_executor_state_path
+from miles.ray.rollout.rollout_executor import (
+    LastBatch,
+    RolloutExecutor,
+    compute_checkpoint_complete_marker_path,
+    compute_executor_state_path,
+)
 from miles.rollout.base_types import (
     BaseRolloutFn,
     RolloutFnConstructorInput,
@@ -293,6 +298,7 @@ class TestLastBatchReplay:
             ([30], "trim"),
             ([20], "dp_schedule_trim"),
         ]
+        assert compute_checkpoint_complete_marker_path(tmp_path, rollout_id=0).is_file()
 
     @staticmethod
     def _configure_async_executor(executor: RolloutExecutor, *, args: Namespace, rollout_fn: BaseRolloutFn) -> None:
@@ -345,3 +351,110 @@ class TestLastBatchReplay:
         await saving
         state = torch.load(compute_executor_state_path(tmp_path, rollout_id=2), weights_only=False)
         assert state["last_batch"].train_data == {"sample_indices": [7]}
+
+
+class TestCheckpointCompleteMarker:
+    async def test_save_publishes_the_complete_marker_after_all_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The marker exists only after data source, rollout, executor, and event state finish saving."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=2)
+
+        def snapshot(args: Namespace, rollout_id: int) -> None:
+            assert not marker.exists()
+
+        monkeypatch.setattr(rollout_executor_module.event_logger_checkpoint, "snapshot", snapshot)
+
+        await executor.save(2)
+
+        assert compute_executor_state_path(tmp_path, rollout_id=2).is_file()
+        assert marker.is_file()
+
+    async def test_a_failed_overwrite_removes_the_previous_complete_marker(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An interrupted overwrite cannot leave an old marker claiming the new state is complete."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        await executor.save(2)
+        marker = compute_checkpoint_complete_marker_path(tmp_path, rollout_id=2)
+
+        async def fail_save(rollout_id: int) -> None:
+            assert not marker.exists()
+            raise RuntimeError("save interrupted")
+
+        monkeypatch.setattr(executor, "_save_state", fail_save)
+        with pytest.raises(RuntimeError, match="save interrupted"):
+            await executor.save(2)
+        assert not marker.exists()
+
+    async def test_partial_rollout_state_without_a_marker_is_refused(self, tmp_path: Path) -> None:
+        """Files from a mid-save crash cannot be mistaken for a restorable checkpoint."""
+        state_dir = tmp_path / "rollout"
+        state_dir.mkdir()
+        (state_dir / "executor_state_5.pt").write_text("partial")
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        with pytest.raises(AssertionError, match="no complete_5 marker"):
+            await executor.load(5)
+
+    async def test_a_restored_trainer_requires_complete_rollout_state(self, tmp_path: Path) -> None:
+        """A numbered trainer checkpoint cannot resume with absent rollout-side state."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        with pytest.raises(AssertionError, match="no complete_5 marker"):
+            await executor.load(5, require_complete=True)
+
+    async def test_a_marker_without_executor_state_is_refused(self, tmp_path: Path) -> None:
+        """A corrupt checkpoint cannot use its marker to hide a missing mandatory executor file."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        await executor.save(5)
+        compute_executor_state_path(tmp_path, rollout_id=5).unlink()
+
+        with pytest.raises(AssertionError, match="executor_state_5.pt"):
+            await executor.load(5)
+
+    async def test_a_marker_without_data_source_state_is_refused(self, tmp_path: Path) -> None:
+        """Sample identity cursors are mandatory even when the global dataset is disabled."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        await executor.save(5)
+        compute_global_dataset_state_path(tmp_path, rollout_id=5).unlink()
+
+        with pytest.raises(AssertionError, match="global_dataset_state_dict_5.pt"):
+            await executor.load(5)
+
+    async def test_custom_data_source_does_not_imply_the_builtin_state_file(self, tmp_path: Path) -> None:
+        """A custom source keeps its own checkpoint contract instead of writing the built-in cursor file."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.data_source = _CustomDataSource()
+
+        await executor.save(5)
+        await executor.load(5)
+
+        assert compute_checkpoint_complete_marker_path(tmp_path, rollout_id=5).is_file()
+
+    async def test_a_marker_without_fully_async_state_is_refused(self, tmp_path: Path) -> None:
+        """A fully async checkpoint cannot discard its queued and in-flight work."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        await executor.save(5)
+        executor.args.fully_async = True
+
+        with pytest.raises(AssertionError, match="fully_async_state_5.pt"):
+            await executor.load(5)
+
+    async def test_a_marker_without_event_snapshot_is_refused(self, tmp_path: Path) -> None:
+        """An accounting-enabled checkpoint cannot forget the issued and terminal events."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        await executor.save(5)
+        executor.args.save_debug_event_data = str(tmp_path / "events")
+
+        with pytest.raises(AssertionError, match="missing required state"):
+            await executor.load(5)
+
+    async def test_an_empty_optional_load_warns_and_continues(self, tmp_path: Path) -> None:
+        """A fresh run with no trainer checkpoint may start without rollout state."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        await executor.load(5)
+
+        assert executor.data_source.loaded == [5]

@@ -4,6 +4,7 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -60,7 +61,7 @@ class TestSnapshotRestoreRoundtrip:
 
         event_logger_checkpoint.snapshot(_args(event_dir=events, save=tmp_path / "ckpt"), iteration=3)
 
-        saved = event_logger_checkpoint._snapshot_dir(tmp_path / "ckpt", 3)
+        saved = event_logger_checkpoint.compute_event_snapshot_path(tmp_path / "ckpt", 3)
         assert (saved / "main.jsonl").read_text() == "history\n"
         assert not (saved / "sample_ownership_current.json").exists()
         assert not (saved / "sample_ownership_current").exists()

@@ -29,7 +29,9 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.data_source import RolloutDataSource, compute_global_dataset_state_path
 from miles.rollout.fully_async_data_buffer import Group
+from miles.rollout.fully_async_rollout import compute_fully_async_state_path
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.async_utils import maybe_await, submit
@@ -46,7 +48,7 @@ from miles.utils.audit_utils.sample_ownership.flow import (
 )
 from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
-from miles.utils.file_utils import atomic_torch_save
+from miles.utils.file_utils import atomic_torch_save, atomic_write_text
 from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
@@ -68,6 +70,10 @@ logger = logging.getLogger(__name__)
 
 def compute_executor_state_path(directory: str | Path, *, rollout_id: int | None) -> Path:
     return Path(directory) / "rollout" / f"executor_state_{rollout_id}.pt"
+
+
+def compute_checkpoint_complete_marker_path(directory: str | Path, *, rollout_id: int | None) -> Path:
+    return Path(directory) / "rollout" / f"complete_{rollout_id}"
 
 
 @dataclass(frozen=True)
@@ -391,7 +397,17 @@ class RolloutExecutor:
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
     async def save(self, rollout_id: int) -> None:
         async with self._get_save_lock:
-            await asyncio.wrap_future(submit(self._save_state(rollout_id)))
+            await asyncio.wrap_future(submit(self._save_checkpoint(rollout_id)))
+
+    async def _save_checkpoint(self, rollout_id: int) -> None:
+        if self.args.save is not None:
+            compute_checkpoint_complete_marker_path(self.args.save, rollout_id=rollout_id).unlink(missing_ok=True)
+        await self._save_state(rollout_id)
+        if self.args.save is not None:
+            self._assert_checkpoint_state(self.args.save, rollout_id)
+            marker = compute_checkpoint_complete_marker_path(self.args.save, rollout_id=rollout_id)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(marker, "")
 
     async def _save_state(self, rollout_id: int) -> None:
         self.data_source.save(rollout_id)
@@ -419,6 +435,7 @@ class RolloutExecutor:
         await asyncio.wrap_future(submit(self._load_state(rollout_id, require_complete=require_complete)))
 
     async def _load_state(self, rollout_id: int | None, *, require_complete: bool) -> None:
+        self._assert_checkpoint_complete(rollout_id, require_complete=require_complete)
         self._load_last_batch(rollout_id)
         self.data_source.load(rollout_id)
         if not self.use_legacy_rollout_v1:
@@ -441,6 +458,45 @@ class RolloutExecutor:
         self._replay = state["last_batch"]
         self._last_batch = copy.deepcopy(self._replay)
         logger.info(f"Loaded {int(self._replay is not None)} untrained rollout batch from {path}")
+
+    def _assert_checkpoint_complete(self, rollout_id: int | None, *, require_complete: bool) -> None:
+        if require_complete:
+            assert (
+                self.args.load is not None and rollout_id is not None and rollout_id >= 0
+            ), f"Cannot require complete rollout state under {self.args.load} for rollout {rollout_id}"
+        if (load_dir := self.args.load) is None or rollout_id is None or rollout_id < 0:
+            return
+
+        directory = Path(load_dir) / "rollout"
+        marker = compute_checkpoint_complete_marker_path(load_dir, rollout_id=rollout_id)
+        if marker.exists():
+            self._assert_checkpoint_state(load_dir, rollout_id)
+            return
+
+        found = sorted(path.name for path in directory.glob(f"*_{rollout_id}.pt")) if directory.is_dir() else []
+        assert not found, (
+            f"{directory} holds {found} for rollout {rollout_id} but no complete_{rollout_id} marker; "
+            "the checkpoint was interrupted and cannot be restored safely"
+        )
+        assert (
+            not require_complete
+        ), f"the trainer restored rollout {rollout_id}, but {directory} has no complete_{rollout_id} marker"
+        logger.warning(f"No rollout state under {directory} for rollout {rollout_id}; nothing to restore")
+
+    def _assert_checkpoint_state(self, directory: str | Path, rollout_id: int) -> None:
+        paths = [compute_executor_state_path(directory, rollout_id=rollout_id)]
+        if isinstance(self.data_source, RolloutDataSource):
+            paths.append(Path(compute_global_dataset_state_path(directory, rollout_id=rollout_id)))
+        if self.args.fully_async:
+            paths.append(compute_fully_async_state_path(directory, rollout_id=rollout_id))
+        if self.args.save_debug_event_data is not None:
+            paths.append(
+                event_logger_checkpoint.compute_event_snapshot_path(
+                    checkpoint_root=Path(directory), iteration=rollout_id
+                )
+            )
+        for path in paths:
+            assert path.exists(), f"Checkpoint {rollout_id} is missing required state at {path}"
 
     # -------------------------- misc APIs -----------------------------
 

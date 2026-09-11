@@ -21,7 +21,7 @@ def snapshot(args: Namespace, iteration: int) -> None:
     if not src.is_dir():
         return
 
-    dst = _snapshot_dir(Path(args.save), iteration)
+    dst = compute_event_snapshot_path(Path(args.save), iteration)
     if dst.exists():
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -40,7 +40,7 @@ def restore(args: Namespace) -> None:
     if iteration is None:
         return
 
-    src = _snapshot_dir(requested_load, iteration)
+    src = compute_event_snapshot_path(requested_load, iteration)
     if not src.is_dir():
         return
 
@@ -48,9 +48,7 @@ def restore(args: Namespace) -> None:
     if dst.exists():
         trash = _move_aside(dst)
         logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
-    shutil.copytree(
-        src, dst, ignore=shutil.ignore_patterns("sample_ownership_current", "sample_ownership_current.json")
-    )
+    shutil.copytree(src, dst)
     logger.info("Restored event dir %s <- %s", dst, src)
 
 
@@ -85,5 +83,5 @@ def _move_aside(dst: Path) -> Path:
     return trash
 
 
-def _snapshot_dir(checkpoint_root: Path, iteration: int) -> Path:
+def compute_event_snapshot_path(checkpoint_root: Path, iteration: int) -> Path:
     return checkpoint_root / f"iter_{iteration:07d}" / "debug_events"
