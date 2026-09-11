@@ -13,7 +13,6 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 
-from miles.tinker.core.backend import ExecutorBackend
 from miles.tinker.core.future import Future, FutureStore
 from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
 from miles.tinker.core.stream import ModelStream
@@ -32,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class TinkerService:
-    def __init__(self, backend: ExecutorBackend, config: GatewayConfig) -> None:
+    def __init__(self, backend, config: GatewayConfig) -> None:
         self.backend = backend
         self.config = config
         self.futures = FutureStore()
