@@ -226,6 +226,13 @@ summary. It refuses to overwrite an existing output. Optional
 grading, so a grader outage does not discard them. This is not automatic resume;
 use fresh paths for a new run. The final summary retains the existing schema.
 
+For inputs other than the HLE subset, `--passthrough_fields source,verifier,domain`
+copies the named input-row fields into every result row so saved traces stay
+self-describing, and `--answer_tag_fallback` additionally accepts a final answer
+wrapped in `<answer>...</answer>` tags (either inside the `Final answer:` line or
+as the last such block) for questions whose own instructions ask for that format.
+Both are off by default, so HLE grading is unchanged.
+
 An interrupted `--incremental` run can be continued with `--resume`: the driver
 keeps every successful row already in `--output_jsonl`, regenerates only the
 `(id, trial)` pairs that are missing or failed, and appends to the same output

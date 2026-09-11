@@ -514,3 +514,63 @@ def test_resume_requires_incremental() -> None:
     args.resume = True
     with raises(ValueError, match="requires --incremental"):
         asyncio.run(main_async(args))
+
+
+def test_answer_tag_fallback_accepts_tagged_answers_only_when_enabled() -> None:
+    tagged_line = 'reasoning\nFinal answer: <answer> {"header": ["a"]} </answer>'
+    assert extract_final_answer(tagged_line) == '<answer> {"header": ["a"]} </answer>'
+    assert extract_final_answer(tagged_line, answer_tag_fallback=True) == '{"header": ["a"]}'
+    tagged_block = "reasoning\n<answer>\n[[0, 1], [1, 0]]\n</answer>\nDone."
+    assert extract_final_answer(tagged_block) is None
+    assert extract_final_answer(tagged_block, answer_tag_fallback=True) == "[[0, 1], [1, 0]]"
+    assert extract_choice("work\n<answer>C</answer>", answer_tag_fallback=True) == "C"
+    assert extract_final_answer("no answer here", answer_tag_fallback=True) is None
+
+
+def test_passthrough_fields_are_copied_into_results(tmp_path: Path) -> None:
+    async def run_test() -> None:
+        async def chat_completions(request: web.Request) -> web.Response:
+            return web.json_response(
+                {
+                    "choices": [{"message": {"content": "work\nFinal answer: 4"}, "finish_reason": "stop"}],
+                    "usage": {"completion_tokens": 3},
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", chat_completions)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        input_path = tmp_path / "blend.jsonl"
+        input_path.write_text(
+            json.dumps(
+                {
+                    "id": "p",
+                    "question": "2 + 2?",
+                    "answer": "4",
+                    "answer_type": "exactMatch",
+                    "source": "deepmath",
+                    "verifier": "symbolic",
+                }
+            )
+            + "\n"
+        )
+        args = Args()
+        args.input = str(input_path)
+        args.base_url = f"http://127.0.0.1:{port}/v1"
+        args.model = "checkpoint-model"
+        args.output_jsonl = str(tmp_path / "results.jsonl")
+        args.summary_json = str(tmp_path / "summary.json")
+        args.passthrough_fields = "source, verifier,missing"
+        args.disable_thinking = True
+        try:
+            await main_async(args)
+        finally:
+            await runner.cleanup()
+        result = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
+        assert result["source"] == "deepmath" and result["verifier"] == "symbolic" and result["missing"] is None
+
+    asyncio.run(run_test())

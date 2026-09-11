@@ -266,6 +266,12 @@ class Args(Tap):
     request_timeout_sec: int = 3600
     disable_thinking: bool = False
     multiple_choice_only: bool = False
+    # Extra input-row fields to copy into every result row (comma-separated), so saved
+    # traces stay self-describing when the input is not the HLE subset.
+    passthrough_fields: str = ""
+    # Also accept a final answer wrapped in <answer>...</answer> tags, for inputs whose
+    # own instructions ask for that format instead of the 'Final answer:' line.
+    answer_tag_fallback: bool = False
 
     # Context-position experiments: pad every templated prompt to this many
     # tokens with nonsense words placed after the question, so the model must
@@ -309,23 +315,34 @@ class RequestStartRateLimiter:
             self._next_start = time.monotonic() + self._minimum_interval
 
 
-def extract_final_answer(text: str) -> str | None:
-    """Extract an answer only when the final non-empty line follows the contract."""
+def extract_final_answer(text: str, *, answer_tag_fallback: bool = False) -> str | None:
+    """Extract an answer only when the final non-empty line follows the contract.
+
+    With ``answer_tag_fallback`` an ``<answer>...</answer>`` block is also accepted,
+    either wrapped inside the final-answer line or as the last such block in the text.
+    """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return None
     match = re.fullmatch(r"(?:\*\*)?final\s+answer(?:\*\*)?\s*:\s*(.+)", lines[-1], re.IGNORECASE)
     if match is None:
-        return None
+        if not answer_tag_fallback:
+            return None
+        tagged = re.findall(r"<answer>\s*(.*?)\s*</answer>", text, re.IGNORECASE | re.DOTALL)
+        return tagged[-1].strip() or None if tagged else None
     answer = match.group(1).strip()
     if answer.startswith("**") and answer.endswith("**") and len(answer) > 4:
         answer = answer[2:-2].strip()
+    if answer_tag_fallback:
+        tagged = re.fullmatch(r"<answer>\s*(.*?)\s*</answer>", answer, re.IGNORECASE | re.DOTALL)
+        if tagged is not None:
+            answer = tagged.group(1).strip()
     return answer or None
 
 
-def extract_choice(text: str) -> str | None:
+def extract_choice(text: str, *, answer_tag_fallback: bool = False) -> str | None:
     """Extract a final A-Z multiple-choice answer without scanning reasoning."""
-    answer = extract_final_answer(text)
+    answer = extract_final_answer(text, answer_tag_fallback=answer_tag_fallback)
     if answer is None:
         return None
     match = re.fullmatch(r"(?:\\boxed\s*\{\s*)?([A-Z])(?:\s*\})?[.)]?", answer, re.IGNORECASE)
@@ -558,6 +575,8 @@ async def evaluate_one(
         "message_sha256": hashlib.sha256(message.encode()).hexdigest(),
         "max_context_length": args.max_context_length,
     }
+    for field in filter(None, (name.strip() for name in args.passthrough_fields.split(","))):
+        result[field] = row.get(field)
     try:
         async with semaphore:
             async with session.post(
@@ -604,7 +623,7 @@ async def evaluate_one(
             result["status_code"] = 0
             result["error"] = result["context_budget_error"]
             return result
-    predicted = extract_final_answer(content)
+    predicted = extract_final_answer(content, answer_tag_fallback=args.answer_tag_fallback)
     result["predicted_answer"] = predicted
     result["final_answer_format_valid"] = predicted is not None
     if predicted is None:
@@ -613,7 +632,7 @@ async def evaluate_one(
         return result
 
     if row.get("answer_type") == "multipleChoice":
-        predicted_choice = extract_choice(content)
+        predicted_choice = extract_choice(content, answer_tag_fallback=args.answer_tag_fallback)
         result["predicted_answer"] = predicted_choice
         result["direct_predicted_answer"] = predicted_choice
         result["direct_correct"] = float(predicted_choice == str(row["answer"]).strip().upper())
