@@ -1865,6 +1865,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "'auto' derives the count from the trainer's measured GPU memory (serve entry only)"
                 ),
             )
+            parser.add_argument(
+                "--multi-lora-rollout-seqs-per-slot",
+                type=int,
+                default=0,
+                help=(
+                    "For --multi-lora-n-adapters auto: sequences one slot samples at once. When > 0 the count "
+                    "is also bounded so every rollout engine GPU holds all slots' adapter buffers plus the KV "
+                    "cache those sequences need, i.e. every resident adapter can sample immediately (default: 0, off)"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-rollout-tokens-per-seq",
+                type=int,
+                default=None,
+                help="Tokens per sequence for that engine-side bound (default: --rollout-max-context-len)",
+            )
             return parser
 
         def add_router_arguments(parser):

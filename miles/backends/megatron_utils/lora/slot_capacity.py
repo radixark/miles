@@ -25,11 +25,11 @@ AUTO_SLOT_CAPACITY = -1  # --multi-lora-n-adapters auto
 PROBE_SLOTS = 1  # pool size of the probe trainer
 PROBE_SLOT = 0
 _PROBE_BATCH_ID = -1
-# torch._grouped_mm's CUDA kernel refuses more than 1024 groups ("Can't process more than 1024
-# groups"); the expert adapters run one group per (slot, local expert), so the pool cannot hold
-# more than 1024 / local_experts slots however much memory is free. The probe's single slot
-# never trips it, so the bound is applied by arithmetic.
-GROUPED_MM_MAX_GROUPS = 1024
+# torch._grouped_mm's CUDA kernel rejects 1024 groups and up (its message says "more than 1024",
+# but 1024 itself fails: measured on torch 2.13). The expert adapters run one group per
+# (slot, local expert), so the pool cannot hold more than 1023 / local_experts slots however
+# much memory is free. The probe's single slot never trips it, so the bound is arithmetic.
+GROUPED_MM_MAX_GROUPS = 1023
 
 _PROBE_ADAM_PARAMS = {
     # lr 0: the step only materializes the Adam moments, the weights stay put
@@ -49,9 +49,13 @@ class RankProbe:
     act_peak: int  # transient peak of one max-size forward/backward; shared across slots (single issue)
     adapter_local_params: int  # this rank's shard of one max-rank adapter
     adapter_expert_params: int = 0  # the part of that shard living on MoE experts (sharded EP-wise, not DP-wise)
-    expert_groups_per_slot: int = (
-        0  # grouped-GEMM groups one slot adds: this rank's local experts (0: no expert adapters)
-    )
+    expert_groups_per_slot: int = 0  # grouped-GEMM groups one slot adds: this rank's local experts (0: none)
+    # unsharded totals for the rollout engines' side of the estimate (0: not reported)
+    gpu_total_bytes: int = 0
+    base_dense_params: int = 0
+    base_expert_params: int = 0
+    adapter_dense_params: int = 0
+    adapter_expert_params_total: int = 0
 
     def capacity(self, margin_bytes: int) -> int:
         if self.slot_bytes <= 0:
@@ -103,7 +107,7 @@ def predicted_slot_bytes(args: Namespace, probe: RankProbe, dp_size: int) -> flo
     )
 
 
-def memory_snapshot(model, optimizer, phase: str) -> dict:
+def memory_snapshot(model, optimizer, phase: str, args: Namespace | None = None) -> dict:
     """Actor-side half of the probe; the orchestration lives in probe_slot_capacity.
     ``reset`` arms the peak tracker before the measured step, ``measure`` reads it after."""
     torch.cuda.synchronize()
@@ -113,7 +117,7 @@ def memory_snapshot(model, optimizer, phase: str) -> dict:
     assert phase == "measure", f"unknown memory_snapshot phase {phase!r}"
     act_peak = torch.cuda.max_memory_allocated() - torch.cuda.memory_allocated()
     torch.cuda.empty_cache()  # cached-but-unused blocks are head-room, not residency
-    free, _ = torch.cuda.mem_get_info()
+    free, total = torch.cuda.mem_get_info()
     local_params, expert_params = adapter_param_counts(model, PROBE_SLOT)
     return {
         "free": free,
@@ -122,7 +126,41 @@ def memory_snapshot(model, optimizer, phase: str) -> dict:
         "adapter_local_params": local_params,
         "adapter_expert_params": expert_params,
         "expert_groups_per_slot": expert_groups_per_slot(model),
+        "gpu_total_bytes": total,
+        **(unsharded_param_counts(args, model, PROBE_SLOT) if args is not None else {}),
     }
+
+
+def unsharded_param_counts(args: Namespace, model, slot: int) -> dict:
+    """Whole-model and whole-adapter param counts, dense and expert, undoing this rank's
+    TP/ETP/EP sharding from megatron's own sharding attributes: what a rollout engine re-shards
+    its own way."""
+    tp = getattr(args, "tensor_model_parallel_size", 1) or 1
+    ep = getattr(args, "expert_model_parallel_size", 1) or 1
+    etp = getattr(args, "expert_tensor_parallel_size", None) or tp
+    slot_ids = {id(param) for param in adapter_slot_parameters(model, slot)}
+    chunks = model if isinstance(model, (list, tuple)) else [model]
+    counts = {
+        "base_dense_params": 0,
+        "base_expert_params": 0,
+        "adapter_dense_params": 0,
+        "adapter_expert_params_total": 0,
+    }
+    for chunk in chunks:
+        for name, param in chunk.named_parameters():
+            is_adapter = ".adapters." in name
+            if is_adapter and id(param) not in slot_ids:
+                continue  # the pool's other slots: one adapter is what the engines hold per slot
+            expert = ".experts." in name
+            multiplier = (etp if expert else tp) if getattr(param, "tensor_model_parallel", False) else 1
+            if expert:
+                multiplier *= ep
+            if is_adapter:
+                key = "adapter_expert_params_total" if expert else "adapter_dense_params"
+            else:
+                key = "base_expert_params" if expert else "base_dense_params"
+            counts[key] += param.numel() * multiplier
+    return counts
 
 
 def expert_groups_per_slot(model) -> int:
@@ -215,8 +253,53 @@ def _probe_row(tokens: int) -> dict:
     return {"tokens": [1] * tokens, "target_len": tokens - 1, "weights": [1.0] * (tokens - 1)}
 
 
+ENGINE_WEIGHT_BYTES = 2  # the engines hold bf16 weights and bf16 adapter buffers
+
+
+def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] | None:
+    """How many slots every rollout engine GPU can hold with all of them sampling at once:
+    n * (adapter buffer + the KV cache one slot's concurrent sequences need) must fit in the
+    engine's static memory after the base weights. None when switched off
+    (--multi-lora-rollout-seqs-per-slot 0) or when the probe did not report the totals."""
+    seqs = getattr(args, "multi_lora_rollout_seqs_per_slot", 0) or 0
+    if seqs <= 0 or not probe.gpu_total_bytes or not probe.base_dense_params:
+        return None
+    engine_tp = args.rollout_num_gpus_per_engine
+    engine_ep = getattr(args, "sglang_ep_size", None) or 1
+    engines = max(1, args.rollout_num_gpus // engine_tp)
+    fraction = getattr(args, "sglang_mem_fraction_static", None) or 0.88
+    tokens = (
+        getattr(args, "multi_lora_rollout_tokens_per_seq", None)
+        or getattr(args, "rollout_max_context_len", None)
+        or getattr(args, "sglang_context_length", None)
+        or args.seq_length
+    )
+    kv_heads = args.num_query_groups if getattr(args, "group_query_attention", False) else args.num_attention_heads
+    kv_channels = getattr(args, "kv_channels", None) or args.hidden_size // args.num_attention_heads
+    kv_token = args.num_layers * -(-kv_heads // engine_tp) * kv_channels * 2 * ENGINE_WEIGHT_BYTES  # K and V
+
+    weights = ENGINE_WEIGHT_BYTES * (probe.base_dense_params / engine_tp + probe.base_expert_params / engine_ep)
+    budget = fraction * probe.gpu_total_bytes - weights
+    adapter = ENGINE_WEIGHT_BYTES * (
+        probe.adapter_dense_params / engine_tp + probe.adapter_expert_params_total / engine_ep
+    )
+    kv_per_slot = seqs * tokens * kv_token / engines  # one slot's sequences spread over the engines
+    per_slot = adapter + kv_per_slot
+    n = int(budget // per_slot) if per_slot > 0 else 0
+    return n, {
+        "engine_budget_mib": int(budget) >> 20,
+        "engine_weights_mib": int(weights) >> 20,
+        "adapter_mib": int(adapter) >> 20,
+        "kv_per_slot_mib": int(kv_per_slot) >> 20,
+        "seqs_per_slot": seqs,
+        "tokens_per_seq": tokens,
+        "engines": engines,
+    }
+
+
 def resolve_slot_capacity(args: Namespace, probes: list[RankProbe]) -> int:
-    """min over the binding constraints, the worst rank ruling each; the log names which one bound."""
+    """min over the binding constraints, the worst rank ruling each; the log names which one
+    bound, and warns when it is not the trainer's memory."""
     margin = getattr(args, "train_memory_margin_bytes", 0) or 0
     worst = min(probes, key=lambda probe: probe.capacity(margin))
     n_memory = worst.capacity(margin)
@@ -226,18 +309,27 @@ def resolve_slot_capacity(args: Namespace, probes: list[RankProbe]) -> int:
         f"{(worst.free + worst.slot_bytes - worst.act_peak - margin) >> 20} MiB. "
         "Lower --lora-rank or --max-tokens-per-gpu."
     )
+    bounds = {"trainer memory": n_memory}
     groups = max(probe.expert_groups_per_slot for probe in probes)
-    n_groups = GROUPED_MM_MAX_GROUPS // groups if groups else None
-    n = n_memory if n_groups is None else min(n_memory, n_groups)
-    binding = (
-        "the worst trainer rank's memory"
-        if n_groups is None or n_memory <= n_groups
-        else f"torch._grouped_mm's {GROUPED_MM_MAX_GROUPS}-group limit ({groups} local experts per slot)"
-    )
+    if groups:
+        bounds[f"torch._grouped_mm's {GROUPED_MM_MAX_GROUPS}-group limit ({groups} local experts per slot)"] = (
+            GROUPED_MM_MAX_GROUPS // groups
+        )
+    engine = engine_slot_capacity(args, probes[0])
+    if engine is not None:
+        n_engine, detail = engine
+        bounds[f"the rollout engines' memory with every slot sampling at once ({detail})"] = n_engine
+    binding, n = min(bounds.items(), key=lambda item: item[1])
+    assert n >= 1, f"no room for one slot: {bounds}"
+    summary = ", ".join(f"{name.split(' (')[0]}={count}" for name, count in bounds.items())
     logger.info(
-        f"multi-LoRA capacity: {n} slots, bound by {binding} "
-        f"(memory={n_memory}, groups={n_groups if n_groups is not None else 'n/a'}, "
-        f"slot={worst.slot_bytes >> 20}MiB, act_peak={worst.act_peak >> 20}MiB, "
+        f"multi-LoRA capacity: {n} slots, bound by {binding} [{summary}] "
+        f"(slot={worst.slot_bytes >> 20}MiB, act_peak={worst.act_peak >> 20}MiB, "
         f"free={worst.free >> 20}MiB, margin={margin >> 20}MiB)"
     )
+    if binding != "trainer memory":
+        logger.warning(
+            f"multi-LoRA capacity is bound by {binding.split(' (')[0]}: "
+            f"the trainer could hold {n_memory} slots but only {n} are usable"
+        )
     return n
