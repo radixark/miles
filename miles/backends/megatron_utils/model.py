@@ -603,9 +603,9 @@ def train_one_step(
         else:
             grad_norm = optimizer.get_grad_norm()
             if isinstance(grad_norm, torch.Tensor):
-                valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
+                valid_step &= not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
-                valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+                valid_step &= not (math.isnan(grad_norm) or math.isinf(grad_norm))
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
