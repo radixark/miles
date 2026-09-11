@@ -64,9 +64,7 @@ class Planner:
         barrier_seed = min(barriers, key=lambda e: e[1].command.arrival) if barriers else None
         if datum_seed is None and barrier_seed is None:
             return None
-        if barrier_seed is not None and (
-            datum_seed is None or barrier_seed[1].command.arrival < datum_seed.arrival
-        ):
+        if barrier_seed is not None and (datum_seed is None or barrier_seed[1].command.arrival < datum_seed.arrival):
             return self._merge_barriers(barrier_seed, barriers)
         return self._pack_batch(datum_seed, datums)
 
