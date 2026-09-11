@@ -87,6 +87,20 @@ def _only_slot_trainable(model_chunks, slot_params: list[torch.nn.Parameter]):
             param.requires_grad = True
 
 
+def _build_slot_base_optimizers(config, model, slot_params, *, use_gloo_process_groups: bool) -> list:
+    # create FP32 master wrappers only after LayerWise shards the base optimizers
+    config.bf16 = False
+    with _only_slot_trainable(model, slot_params):
+        chained = get_megatron_optimizer(config, list(model), use_gloo_process_groups=use_gloo_process_groups)
+    optimizers = [
+        child.optimizer
+        for child in chained.chained_optimizers
+        if getattr(child, "optimizer", None) is not None and child.get_parameters()
+    ]
+    config.bf16 = True
+    return optimizers
+
+
 class SlotOptimizer:
     """One tenant's optimizer over one adapter slot.
 
@@ -104,22 +118,15 @@ class SlotOptimizer:
             **{f.name: getattr(args, f.name) for f in fields(OptimizerConfig) if hasattr(args, f.name)}
         )
         config.timers = None
-        # bf16 off: the builder must yield unwrapped torch optimizers; LayerWise wraps post-sharding
-        config.bf16 = False
-        with _only_slot_trainable(model, slot_params):
-            chained = get_megatron_optimizer(config, list(model), use_gloo_process_groups=args.use_gloo_process_groups)
-        children = [
-            child
-            for child in chained.chained_optimizers
-            if getattr(child, "optimizer", None) is not None and child.get_parameters()
-        ]
-        assert children, f"adapter slot {slot} produced no optimizer children"
-        config.bf16 = True
+        base_optimizers = _build_slot_base_optimizers(
+            config, model, slot_params, use_gloo_process_groups=args.use_gloo_process_groups
+        )
+        assert base_optimizers, f"adapter slot {slot} produced no optimizer children"
         self._inner = LayerWiseDistributedOptimizer(
-            [child.optimizer for child in children],
+            base_optimizers,
             config,
             ProcessGroupCollection.use_mpu_process_groups(),
-            init_state_fn_list=[_adam_init_state_fn] * len(children),
+            init_state_fn_list=[_adam_init_state_fn] * len(base_optimizers),
         )
         # params are scattered whole across DP ranks; per-child norm/clip reductions must span the world
         for child in self._inner.chained_optimizers:
