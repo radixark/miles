@@ -10,8 +10,12 @@ import torch.distributed as dist
 from miles.utils.distributed_utils import get_gloo_group
 
 
-def run_checkpoint_phase(step: Callable[[], None]) -> None:
-    """Run one collective checkpoint step; any rank's failure raises on every rank."""
+class NonGlobalFatalError(RuntimeError):
+    """Every rank raised this together, so it is fatal at most to its slot, never to the trainer."""
+
+
+def run_with_failure_collective(step: Callable[[], None]) -> None:
+    """Run the step on every rank; any rank's failure raises NonGlobalFatalError on all of them."""
     error = None
     try:
         step()
@@ -19,13 +23,13 @@ def run_checkpoint_phase(step: Callable[[], None]) -> None:
         error = f"{type(exc).__name__}: {exc}"
     if not dist.is_initialized():
         if error is not None:
-            raise RuntimeError(error)
+            raise NonGlobalFatalError(error)
         return
     errors: list[str | None] = [None] * dist.get_world_size()
     dist.all_gather_object(errors, error, group=get_gloo_group())
     failed = [e for e in errors if e is not None]
     if failed:
-        raise RuntimeError(f"checkpoint phase failed on {len(failed)} rank(s): {failed[0]}")
+        raise NonGlobalFatalError(f"failed on {len(failed)} rank(s): {failed[0]}")
 
 
 def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None]) -> None:
@@ -59,9 +63,9 @@ def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None])
         else:
             os.replace(tmp_dir, final_dir)
 
-    run_checkpoint_phase(make_tmp_dir)
-    run_checkpoint_phase(lambda: write_shards(tmp_dir))
-    run_checkpoint_phase(publish_dir)
+    run_with_failure_collective(make_tmp_dir)
+    run_with_failure_collective(lambda: write_shards(tmp_dir))
+    run_with_failure_collective(publish_dir)
 
 
 def _rank() -> int:
