@@ -2,6 +2,7 @@ import json
 import os
 import platform
 import shlex
+import signal
 import sys
 from types import SimpleNamespace
 
@@ -128,6 +129,73 @@ class TestConvertCheckpoint:
         )
 
         assert "--master-addr" not in commands[0]
+
+
+class TestCleanupStaleProcesses:
+    def _run(self, monkeypatch, found_pids=()):
+        """Stub the scan to report *found_pids*, and record what gets signalled."""
+        monkeypatch.setattr(command_utils.time, "sleep", lambda _seconds: None)
+        scans, killed = [], []
+
+        def fake_pgrep(argv, **kwargs):
+            scans.append(argv)
+            return SimpleNamespace(stdout="".join(f"{pid}\n" for pid in found_pids), returncode=0)
+
+        monkeypatch.setattr(command_utils.subprocess, "run", fake_pgrep)
+        monkeypatch.setattr(command_utils.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+        return scans, killed
+
+    def test_searches_for_each_process_name_without_a_shell(self, monkeypatch):
+        """A shell would hand the search its own process to find: the shell's
+        command line is the whole pipeline, search text included, and `pgrep -f`
+        matches full command lines. Measured on linux, the shell form signals
+        that shell (subprocess returncode -15); exec'ing pgrep leaves nothing
+        to match, since pgrep excludes only itself."""
+        scans, _ = self._run(monkeypatch)
+        command_utils.cleanup_stale_processes()
+        assert scans == [
+            ["pgrep", "-f", "sglang"],
+            ["pgrep", "-f", "train.py"],
+            ["pgrep", "-f", "MegatronTrain"],
+        ]
+
+    def test_terminates_every_process_the_scan_reports(self, monkeypatch):
+        _, killed = self._run(monkeypatch, found_pids=(4321, 4322))
+        command_utils.cleanup_stale_processes(("sglang",))
+        assert killed == [(4321, signal.SIGTERM), (4322, signal.SIGTERM)]
+
+    def test_never_signals_this_process_or_its_parent(self, monkeypatch):
+        """A launcher runs as one of the scanned names, so it matches its own scan."""
+        _, killed = self._run(monkeypatch, found_pids=(os.getpid(), os.getppid(), 4321))
+        command_utils.cleanup_stale_processes(("train.py",))
+        assert killed == [(4321, signal.SIGTERM)]
+
+    def test_a_process_that_exits_before_the_signal_is_not_an_error(self, monkeypatch):
+        """pgrep reports a pid, it exits, the signal lands on nothing: a race that
+        must not abort a launch."""
+        _, killed = self._run(monkeypatch, found_pids=(4321,))
+
+        def already_gone(pid, sig):
+            raise ProcessLookupError(pid)
+
+        monkeypatch.setattr(command_utils.os, "kill", already_gone)
+        command_utils.cleanup_stale_processes(("sglang",))
+        assert killed == []
+
+    def test_a_caller_can_pass_its_own_process_names(self, monkeypatch):
+        """Lets a leg whose worker has a different name reuse this instead of
+        copying it -- the fully-async launcher also has to reap train_async.py."""
+        scans, _ = self._run(monkeypatch)
+        command_utils.cleanup_stale_processes(("sglang", "train_async.py"))
+        assert scans == [["pgrep", "-f", "sglang"], ["pgrep", "-f", "train_async.py"]]
+
+    def test_an_empty_process_name_is_refused(self, monkeypatch):
+        """`pgrep -f ''` matches every process on the host (measured: 5 of 6 on a
+        bare container), so an empty name would reap the machine, not the run."""
+        scans, killed = self._run(monkeypatch, found_pids=(4321,))
+        with pytest.raises(AssertionError, match="must not be empty"):
+            command_utils.cleanup_stale_processes(("",))
+        assert scans == [] and killed == []
 
 
 class TestRsyncSimple:

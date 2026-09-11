@@ -33,8 +33,6 @@ Usage (4 nodes x 8 H200, ray already running):
 """
 
 import os
-import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -137,26 +135,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     use_prometheus: bool = True
     prometheus_port: int = 9091
     prometheus_run_name: str = "glm52-lora-tb2-daytona"
-
-
-def cleanup():
-    """Kill old Ray jobs and stale processes to free GPU resources."""
-    my_pid = os.getpid()
-    ppid = os.getppid()
-    print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
-    targets = ["sglang", "train.py", "MegatronTrain"]
-    exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
-    for t in targets:
-        # Bracket-wrap the first char so the pgrep pattern doesn't match its
-        # own shell/subprocess command line (which literally contains the
-        # bracketed pattern and thus fails the regex).
-        pattern = f"[{t[0]}]{t[1:]}"
-        subprocess.run(
-            f"pgrep -f '{pattern}' | {exclude} | xargs -r kill 2>/dev/null || true",
-            shell=True,
-        )
-    time.sleep(5)
-    print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
 
 
 def _parallel_args(args: ScriptArgs) -> str:
@@ -430,7 +408,7 @@ def execute(args: ScriptArgs):
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
-    cleanup()
+    U.cleanup_stale_processes()
     execute(args)
 
 
