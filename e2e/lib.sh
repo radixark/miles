@@ -179,13 +179,15 @@ e2e_prune_versions() {  # keep each client's newest KEEP_VERSIONS exported versi
     local dir
     for dir in "$RUN_DIR"/ckpt/*/sampler_weights; do
         [ -d "$dir" ] || continue
-        ls -1dt "$dir"/step-* 2>/dev/null | tail -n +$((KEEP_VERSIONS + 1)) | xargs -r rm -rf
+        # a client that has not published yet has no step-* dir: that is not an error
+        ls -1dt "$dir"/step-* 2>/dev/null | tail -n +$((KEEP_VERSIONS + 1)) | xargs -r rm -rf || true
     done
 }
 
 e2e_start_pruning() {  # every publish exports ~1.5 GB to the shared volume; without this a few runs fill it
     [ "$KEEP_VERSIONS" -gt 0 ] || return 0
-    ( while true; do sleep 60; e2e_prune_versions; done ) &
+    # the loop must outlive one failed ls: no errexit/pipefail in the subshell
+    ( set +e +o pipefail; while true; do sleep 60; e2e_prune_versions; done ) &
     PRUNE_PID=$!
 }
 
