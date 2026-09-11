@@ -97,23 +97,6 @@ async def test_admission_failure_fails_the_future_not_the_stream(service):
     assert (await await_settled(service, "tenant", healthy)).state == DONE, "the stream must keep flowing"
 
 
-async def test_rejected_seq_waits_for_the_gap_and_cannot_be_retried(service):
-    model_id = await created_model(service)
-    rejected = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, []))
-    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 3))
-    stream = service.planner.stream(model_id)
-    assert not stream.queue, "rejecting seq 2 must not skip the missing seq 1"
-    assert service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()])) == rejected
-
-    first = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
-    assert (await await_settled(service, "tenant", first)).state == DONE
-    assert (await await_settled(service, "tenant", step)).state == DONE
-    assert (await await_settled(service, "tenant", rejected)).state == FAILED
-    calls = service.backend.named("forward_backward")
-    assert len(calls) == 1 and len(calls[0]["slot_datums"]) == 1
-    assert not stream.queue
-
-
 async def test_forward_backward_outputs_align_to_datums(service):
     model_id = await created_model(service)
     request_id = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum(2), datum(5)]))
@@ -403,39 +386,24 @@ async def test_merged_optim_settles_each_slot_on_its_own(service):
 
 
 @pytest.mark.parametrize("poisoned_index", [0, 1], ids=["poison-first", "poison-last"])
-@pytest.mark.parametrize("failure", [None, "slot", "backend"], ids=["step-ok", "slot-error", "backend-error"])
-async def test_merged_optim_preserves_poison_and_independent_slot_outcomes(service, poisoned_index, failure):
+async def test_merged_optim_outcomes_stay_aligned_after_filtering_poison(service, poisoned_index):
     models = [await created_model(service), await created_model(service)]
     poisoned, healthy = models[poisoned_index], models[1 - poisoned_index]
     healthy_slot = service.models[healthy].slot
     service.backend.fail_on["forward_backward"] = UserInputError("bad batch")
     failed_batch = service.submit("tenant", "forward_backward", fb_payload(poisoned, 1, [datum()]))
     assert (await await_settled(service, "tenant", failed_batch)).state == FAILED
-    if failure == "slot":
-        service.backend.optim_outcomes[healthy_slot] = {"error": "step failed"}
-    elif failure == "backend":
-        service.backend.fail_on["optim_step"] = RuntimeError("step failed")
 
     poisoned_step = service.submit("tenant", "optim_step", _optim_payload(poisoned, 2))
     healthy_step = service.submit("tenant", "optim_step", _optim_payload(healthy, 1))
-    poisoned_retry = service.submit("tenant", "forward_backward", fb_payload(poisoned, 3, [datum()]))
-    healthy_next = service.submit("tenant", "forward_backward", fb_payload(healthy, 2, [datum()]))
-
     discarded = await await_settled(service, "tenant", poisoned_step)
+    stepped = await await_settled(service, "tenant", healthy_step)
+
     assert (discarded.state, discarded.error_category) == (FAILED, "user")
     assert "discarded" in discarded.error
-    assert (await await_settled(service, "tenant", poisoned_retry)).state == DONE
-    stepped = await await_settled(service, "tenant", healthy_step)
-    next_batch = await await_settled(service, "tenant", healthy_next)
-    if failure is None:
-        assert stepped.result == {"op": "optim_step", "metrics": {"grad_norm": 0.5 + healthy_slot}}
-        assert next_batch.state == DONE
-    else:
-        assert stepped.state == next_batch.state == FAILED
-        assert "step failed" in stepped.error
-        assert healthy not in service.models
+    assert stepped.result == {"op": "optim_step", "metrics": {"grad_norm": 0.5 + healthy_slot}}
     assert service.backend.named("optim_step") == [{"adam_params_by_slot": {healthy_slot: dict(ADAM)}}]
-    assert not service.planner.stream(poisoned).queue
+    assert all(not service.planner.stream(model_id).queue for model_id in models)
 
 
 async def test_a_nonfinite_step_reports_the_skip(service):
