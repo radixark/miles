@@ -461,12 +461,15 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=None)
         actor_model.update_weights = AsyncMock(side_effect=RuntimeError("weight sync failed"))
-        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), abort_update_weights=AsyncMock(), end_update_weights=AsyncMock()
+        )
 
         with pytest.raises(RuntimeError, match="weight sync failed"):
             await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
 
-        inference_controller.end_update_weights.assert_awaited_once_with(snapshot_cell_id_to_hashes={})
+        inference_controller.abort_update_weights.assert_awaited_once_with()
+        inference_controller.end_update_weights.assert_not_awaited()
         rollout_executor.set_weight_version.assert_not_awaited()
 
 

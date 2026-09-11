@@ -238,6 +238,10 @@ class InferenceController:
         )
 
     @releases_lock
+    async def abort_update_weights(self) -> None:
+        pass
+
+    @releases_lock
     async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
         await asyncio.gather(
             *[

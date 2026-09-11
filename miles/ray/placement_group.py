@@ -306,7 +306,7 @@ async def update_weights(
     try:
         weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
     except BaseException:
-        await inference_controller.end_update_weights(snapshot_cell_id_to_hashes={})
+        await inference_controller.abort_update_weights()
         raise
     await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
