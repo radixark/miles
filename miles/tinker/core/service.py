@@ -421,7 +421,7 @@ class TinkerService:
         }
 
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> dict:
-        """Save parameters and optimizer state; clients must step first to checkpoint pending gradients."""
+        """Save parameters and optimizer state; call after optim_step to persist accumulated training work."""
         name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
         _validate_checkpoint_segment(name)
         checkpoint_dir = self._checkpoint_dir(record.model_id, "weights", name)
