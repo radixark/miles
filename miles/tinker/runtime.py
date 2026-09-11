@@ -14,9 +14,7 @@ DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "s
 
 
 def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
-    """The trainer splits the batch evenly across data-parallel ranks; pad with
-    zero-loss-mask copies of the last datum so every rank gets the same share.
-    The mask removes padding from every loss term; its outputs are dropped by the caller."""
+    """Equalize DP shares with zero-mask datums; their outputs are dropped after the loss pass."""
     remainder = len(slot_datums) % dp_size
     if remainder == 0:
         return slot_datums
@@ -26,6 +24,7 @@ def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
 
 
 def _build_train_data(slot_datums: list) -> dict:
+    """Miles response_lengths select label positions here, including prompt targets."""
     datums = [datum for _, datum in slot_datums]
     train_data = {
         "tokens": [datum["tokens"] for datum in datums],

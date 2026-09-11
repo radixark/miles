@@ -1,4 +1,8 @@
-"""Shared commands, datums, and configuration for the Tinker gateway."""
+"""Shared commands, datums, and configuration for the Tinker gateway.
+
+An internal datum has tokens = model_input + target_tokens[-1:] and explicit target_tokens.
+Its target_len counts every label position, including prompt positions; loss inputs align to it.
+"""
 
 from dataclasses import dataclass, field
 from enum import Enum

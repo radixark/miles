@@ -246,8 +246,7 @@ def _world_size() -> int:
 
 
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
-    survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
+    """Reset DDP bookkeeping while retaining each slot's gradient accumulation window."""
     for model_chunk in model_chunks:
         if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
             for param in model_chunk.params_with_grad:

@@ -33,6 +33,7 @@ class ExecutorBackend:
         raise NotImplementedError
 
     async def save_slot(self, slot: int, path: str) -> None:
+        """Save weights and optimizer state; pending gradients are neither stepped nor saved."""
         raise NotImplementedError
 
     async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
@@ -48,4 +49,3 @@ class ExecutorBackend:
         """-> {"sequences": [{"tokens", "logprobs", "stop_reason"}],
         "prompt_logprobs"?, "topk_prompt_logprobs"?}"""
         raise NotImplementedError
-

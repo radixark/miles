@@ -1,4 +1,8 @@
-"""Accumulate gradients across commands and step only the requested LoRA slots."""
+"""Accumulate gradients across commands and step only the requested LoRA slots.
+
+Backward loss passes accumulate; optim_step consumes each selected accumulation window;
+zero_grads discards it. Forward-only passes leave accumulated gradients intact.
+"""
 
 from argparse import Namespace
 from collections.abc import Sequence
