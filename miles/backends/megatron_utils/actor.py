@@ -16,7 +16,10 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
-from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.backends.training_utils.model_companion import (
+    ModelCompanionInstallationUtils,
+    ModelCompanionWeightVersionUtils,
+)
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -909,17 +912,24 @@ class MegatronTrainRayActor(TrainRayActor):
             include_model_companion=include_model_companion,
         )
 
-    def _get_actor_weights(self):
+    def _get_actor_weights(self, *, include_model_companion: bool = False) -> dict[str, torch.Tensor]:
         if self._weight_sync_reads_tms_backup:
-            return dict(self._named_actor_weights(translate_gpu_to_cpu=True))
+            return dict(
+                self._named_actor_weights(translate_gpu_to_cpu=True, include_model_companion=include_model_companion)
+            )
         # use cpu backup only when weight is not live on gpu
         if self.args.colocate or self._active_model_tag != "actor":
             return {
                 name: tensor
                 for name, tensor in self.weights_backuper.get("actor").items()
-                if not ModelCompanionInstallationUtils.is_companion_parameter(name)
+                if include_model_companion or not ModelCompanionInstallationUtils.is_companion_parameter(name)
             }
-        return dict(self._named_actor_weights())
+        return dict(self._named_actor_weights(include_model_companion=include_model_companion))
+
+    def _get_actor_weight_version(self) -> int:
+        return ModelCompanionWeightVersionUtils.from_params(
+            self._get_actor_weights(include_model_companion=True).items()
+        )
 
     @with_logs
     @timer
@@ -970,7 +980,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            weight_version = self._get_actor_weight_version()
+            self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):
@@ -982,10 +993,8 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
                 engine = random.choice(rollout_engines)
                 engine_version = async_utils.run(engine.get_weight_version())
-                if str(engine_version) != str(self.weight_updater.weight_version):
-                    raise RuntimeError(
-                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                    )
+                if str(engine_version) != str(weight_version):
+                    raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {weight_version}")
 
             if getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:
@@ -1003,7 +1012,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             destroy_process_groups()
 
-        return self.weight_updater.weight_version
+        return weight_version
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:

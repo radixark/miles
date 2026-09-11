@@ -5,6 +5,7 @@ from miles.backends.training_utils.model_companion import (
     ModelCompanion,
     ModelCompanionInstallationUtils,
     ModelCompanionSampleConsumptionUtils,
+    ModelCompanionWeightVersionUtils,
 )
 from miles.utils.types import SampleLineage
 
@@ -22,7 +23,7 @@ class TestModelCompanion:
         """Normal parameter enumeration includes the witness without optimizer gradients."""
         witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
 
-        assert set(dict(witness.named_parameters())) == {"sample_consumptions"}
+        assert set(dict(witness.named_parameters())) == {"sample_consumptions", "weight_version"}
         assert list(witness.buffers()) == []
         assert all(
             parameter.device.type == "cpu" and not parameter.requires_grad for parameter in witness.parameters()
@@ -151,3 +152,79 @@ class TestModelCompanion:
 
         with pytest.raises(AssertionError, match="chunks diverged"):
             ModelCompanionSampleConsumptionUtils.snapshot(chunks, is_skipped=False)
+
+
+class TestModelWeightVersion:
+    def test_successful_steps_advance_all_chunks_without_witness_rows(self) -> None:
+        """Version progress does not depend on whether samples are recorded."""
+        chunks = [
+            ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0)),
+            ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0)),
+        ]
+        assert ModelCompanionWeightVersionUtils.weight_version(chunks) == 0
+
+        ModelCompanionWeightVersionUtils.bump_weight_version(chunks)
+        ModelCompanionWeightVersionUtils.bump_weight_version(chunks)
+
+        assert ModelCompanionWeightVersionUtils.weight_version(chunks) == 2
+        assert all(chunk.snapshot_sample_consumptions(is_skipped=False) == {} for chunk in chunks)
+
+    def test_checkpoint_restores_version_and_witness_as_one_state(self) -> None:
+        """Loading older weights also rewinds their version and witness."""
+        source = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        ModelCompanionWeightVersionUtils.bump_weight_version([source])
+        source.record_sample_consumptions([_identity(7, 0, 1)])
+        target = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        target.weight_version.fill_(90)
+        target.record_sample_consumptions([_identity(8, 0, 1)])
+
+        target.load_state_dict(source.state_dict())
+
+        assert ModelCompanionWeightVersionUtils.weight_version([target]) == 1
+        assert target.snapshot_sample_consumptions(is_skipped=False) == {_identity(7, 0, 1): 1}
+
+    def test_version_is_a_cpu_tensor_preserved_by_model_transforms(self) -> None:
+        """Device and dtype transforms leave the model version intact on CPU."""
+        companion = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        original = companion.weight_version
+        ModelCompanionWeightVersionUtils.bump_weight_version([companion])
+        companion.to(device="meta", dtype=torch.float16)
+
+        assert companion.weight_version is original
+        assert original.device.type == "cpu"
+        assert original.dtype == torch.int64
+        assert original.item() == 1
+
+    def test_divergent_chunks_fail_before_any_version_changes(self) -> None:
+        """A version mismatch cannot be hidden by advancing every chunk."""
+        chunks = [
+            ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0)),
+            ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0)),
+        ]
+        chunks[1].weight_version.fill_(2)
+
+        with pytest.raises(AssertionError, match="versions diverged"):
+            ModelCompanionWeightVersionUtils.bump_weight_version(chunks)
+
+        assert [chunk.weight_version.item() for chunk in chunks] == [0, 2]
+
+    def test_tensor_backuper_restores_version_with_actor_weights(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Temporary model swaps restore the actor version and witness together."""
+        from miles.utils.tensor_backper import TensorBackuper
+
+        monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+        companion = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        companion.weight_version.fill_(7)
+        companion.record_sample_consumptions([_identity(3, 0, 1)])
+        backuper = TensorBackuper.create(
+            lambda: ((f"model_companion.{name}", parameter) for name, parameter in companion.named_parameters())
+        )
+        backuper.backup("actor")
+        companion.weight_version.fill_(2)
+        companion.record_sample_consumptions([_identity(5, 0, 1)])
+
+        assert ModelCompanionWeightVersionUtils.from_params(backuper.get("actor").items()) == 7
+        backuper.restore("actor")
+
+        assert companion.weight_version.item() == 7
+        assert companion.snapshot_sample_consumptions(is_skipped=False) == {_identity(3, 0, 1): 1}

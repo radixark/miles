@@ -238,6 +238,7 @@ class TestTrainOneStepModelCompanion:
             model_module.SampleLineage(source_sample_index=7, output_index=0, output_count=1): 1
         }
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=True) == {}
+        assert train_one_step_env.model[0].model_companion.weight_version.item() == 1
 
     def test_nonfinite_step_records_consumed_rows_as_skipped(
         self, train_one_step_env: TrainOneStepEnv, monkeypatch: pytest.MonkeyPatch
@@ -272,6 +273,7 @@ class TestTrainOneStepModelCompanion:
             attempt=2,
         )
 
+        assert train_one_step_env.model[0].model_companion.weight_version.item() == 0
         assert outcome is model_module.TrainStepOutcome.NORMAL
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=False) == {}
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=True) == {

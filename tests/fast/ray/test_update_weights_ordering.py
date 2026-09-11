@@ -233,7 +233,7 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
     module = "miles.backends.fsdp_utils.update_weight_utils"
     with patch(f"{module}.dist") as dist_mock, patch(f"{module}.get_gloo_group", return_value=MagicMock()):
         dist_mock.get_rank.return_value = 0
-        updater.update_weights()
+        updater.update_weights(weight_version=1)
 
     assert set(order[:2]) == {"pause-0", "pause-1"}
     assert set(order[2:4]) == {"flush-0", "flush-1"}

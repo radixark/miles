@@ -64,7 +64,6 @@ class WeightUpdater:
             quantization_config=quantization_config,
         )
         self.weights_getter = weights_getter
-        self.weight_version = 0
         self.is_lora = is_lora
         if is_lora:
             assert lora_sync_config is not None
@@ -95,12 +94,11 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> None:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
-        if not protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets):
+        if not protocol.begin_sync(weight_version, self._iter_base_buckets):
             return
-        self.weight_version += 1
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
@@ -136,10 +134,10 @@ class WeightUpdater:
             dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
-            protocol.finalize(self.weight_version)
+            protocol.finalize(weight_version)
             if protocol.use_weight_update_session and driver:
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                set_weight_version(protocol.rollout_engines, self.weight_version)
+                set_weight_version(protocol.rollout_engines, weight_version)
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
 

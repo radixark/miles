@@ -22,6 +22,7 @@ class ModelCompanion(torch.nn.Module):
             torch.empty((0, _ROW_WIDTH), dtype=torch.int64, device="cpu"), requires_grad=False
         )
         self.sample_consumptions.miles_dynamic_shape = True
+        self.weight_version = torch.nn.Parameter(torch.zeros((), dtype=torch.int64, device="cpu"), requires_grad=False)
 
     def record_sample_consumptions(self, samples: Iterable[SampleLineage], *, is_skipped: bool = False) -> None:
         counts = _RowCodec.read(self.sample_consumptions)
@@ -124,6 +125,30 @@ class ModelCompanionSampleConsumptionUtils:
         snapshots = [companion.snapshot_sample_consumptions(is_skipped=is_skipped) for companion in companions]
         assert all(snapshot == snapshots[0] for snapshot in snapshots[1:]), "CPU witness model chunks diverged"
         return snapshots[0]
+
+
+class ModelCompanionWeightVersionUtils:
+    @staticmethod
+    def weight_version(model: Sequence[torch.nn.Module]) -> int:
+        companions = _get_companions_of_model(model)
+        assert companions, "Model is missing its companion"
+        return ModelCompanionWeightVersionUtils.from_params(
+            parameter for companion in companions for parameter in companion.named_parameters()
+        )
+
+    @staticmethod
+    def from_params(parameters: Iterable[tuple[str, torch.Tensor]]) -> int:
+        versions = {int(parameter.item()) for name, parameter in parameters if name.split(".")[-1] == "weight_version"}
+        assert len(versions) == 1, f"Model companion versions diverged: {versions}"
+        return versions.pop()
+
+    @staticmethod
+    def bump_weight_version(model: Sequence[torch.nn.Module]) -> None:
+        companions = _get_companions_of_model(model)
+        if companions:
+            ModelCompanionWeightVersionUtils.weight_version(model)
+        for companion in companions:
+            companion.weight_version.add_(1)
 
 
 class SampleIdentityExtractor:

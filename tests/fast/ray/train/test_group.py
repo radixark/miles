@@ -1213,14 +1213,15 @@ class TestUpdateWeightsReturnsTheVersion:
     def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
         group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
+        group._trainer_id = "trainer-0"
         group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
         return group
 
     async def test_the_controller_answers_the_version_the_engines_now_serve(self):
         """The driver can only publish the version to the executor if the controller hands it back."""
-        group = self._make_group(per_worker_versions=[11, 11])
+        group = self._make_group(per_worker_versions=[1, 1])
 
-        assert await group.update_weights(info=MagicMock()) == 11
+        assert await group.update_weights(info=MagicMock()) == 1
 
     async def test_a_trainer_that_skipped_the_broadcast_answers_nothing(self):
         """--debug-skip-weight-update returns None from every worker, which must reach the driver as None."""
@@ -1230,12 +1231,33 @@ class TestUpdateWeightsReturnsTheVersion:
 
     async def test_it_broadcasts_the_window_the_orchestration_script_opened(self):
         """The engines it writes into are the ones the script snapshotted, not a set it fetched for itself."""
-        group = self._make_group(per_worker_versions=[11])
+        group = self._make_group(per_worker_versions=[1])
         info = MagicMock()
 
         await group.update_weights(info=info)
 
         group._execute_first_alive.assert_awaited_once_with("update_weights", info=info)
+
+
+class TestModelOwnedWeightVersions:
+    @pytest.mark.parametrize("versions", [[7, 7], [4, 9], [8, 2], [None, 5], [0, 0]])
+    async def test_controller_returns_model_versions_without_allocating_ordinals(self, versions: list) -> None:
+        """Republishing, skipped steps and checkpoint rewinds preserve model versions."""
+        controller = TrainerController.__new__(TrainerController)
+        controller._trainer_id = "trainer-0"
+        controller._execute_first_alive = AsyncMock(side_effect=[[version, version] for version in versions])
+        info = MagicMock()
+
+        assert [await controller.update_weights(info=info) for _ in versions] == versions
+        assert all(call.kwargs == {"info": info} for call in controller._execute_first_alive.await_args_list)
+
+    async def test_retry_reads_the_recovered_models_version(self) -> None:
+        """A failed trainer does not reserve a version for its replacement."""
+        controller = TrainerController.__new__(TrainerController)
+        controller._trainer_id = "trainer-0"
+        controller._execute_first_alive = AsyncMock(side_effect=[RuntimeError("cell died"), [12, 12]])
+
+        assert await controller.update_weights(info=MagicMock()) == 12
 
 
 class TestInitForwardsModelFlags:
@@ -1310,10 +1332,30 @@ class TestUpdateWeightsReachesTheWorker:
         info = SimpleNamespace(snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"})
         group = await _make_alive_controller(num_cells=1)
         for handle in get_raw_actor_handles(_cell(group, 0)):
-            ray.get(handle.set_update_weights_return_value.remote(11))
+            ray.get(handle.set_update_weights_return_value.remote(1))
 
-        assert await group.update_weights(info=info, rollout_id=3) == 11
+        assert await group.update_weights(info=info, rollout_id=3) == 1
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
             assert update_call[2]["info"].snapshot_cell_id_to_hashes == {"trainer-actor-0": "workers-hash-9"}
+            assert "weight_version" not in update_call[2]
+
+    async def test_reloading_the_trainer_state_does_not_rewind_the_published_version(self):
+        """A hot restart reloads the cells while the controller survives, and restarting at version 1 would republish an old ordinal."""
+        info = SimpleNamespace(snapshot_cell_id_to_hashes={})
+        group = await _make_alive_controller(num_cells=1)
+        handles = get_raw_actor_handles(_cell(group, 0))
+        for handle in handles:
+            ray.get(handle.set_update_weights_return_value.remote(1))
+        assert await group.update_weights(info=info) == 1
+
+        await group.load_state()
+        for handle in handles:
+            ray.get(handle.set_update_weights_return_value.remote(2))
+
+        assert await group.update_weights(info=info) == 2
+
+        for handle in handles:
+            calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
+            assert all("weight_version" not in c[2] for c in calls)

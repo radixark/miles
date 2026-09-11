@@ -29,7 +29,11 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
-from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils, SampleIdentityExtractor
+from miles.backends.training_utils.model_companion import (
+    ModelCompanionSampleConsumptionUtils,
+    ModelCompanionWeightVersionUtils,
+    SampleIdentityExtractor,
+)
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -658,6 +662,7 @@ def train_one_step(
 
             # Update learning rate.
             assert update_successful
+            ModelCompanionWeightVersionUtils.bump_weight_version(model)
             opt_param_scheduler.step(increment=num_rollouts)
 
     if args.enable_sample_ownership_checker:

@@ -71,7 +71,15 @@ def _make_engines(
     ]
 
 
-def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract") -> WeightUpdater:
+def _make_updater(
+    engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract", begin_sync_result: bool = True
+) -> WeightUpdater:
+    begin_sync_versions: list[int] = []
+
+    def begin_sync(weight_version: int, iter_buckets) -> bool:
+        begin_sync_versions.append(weight_version)
+        return begin_sync_result
+
     protocol = SimpleNamespace(
         use_weight_update_session=True,
         needs_base_resync_for_lora=False,
@@ -80,7 +88,8 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
         rollout_engines=engines,
         required_placement=MagicMock(),
         supports_lora=False,
-        begin_sync=lambda weight_version, iter_buckets: True,
+        begin_sync=begin_sync,
+        begin_sync_versions=begin_sync_versions,
         send_bucket=MagicMock(),
         after_base_weights=MagicMock(),
         finalize=MagicMock(),
@@ -102,13 +111,13 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
         )
 
 
-def _run(updater: WeightUpdater, *, rank: int = 0) -> None:
+def _run(updater: WeightUpdater, *, rank: int = 0, weight_version: int = 1) -> None:
     with (
         patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
         patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
     ):
         dist_mock.get_rank.return_value = rank
-        updater.update_weights()
+        return updater.update_weights(weight_version=weight_version)
 
 
 def _phases(calls: list[tuple[int, str, dict]]) -> list[str]:
@@ -258,4 +267,45 @@ class TestWeightUpdateSessionFrame:
 
         _run(updater, rank=1)
 
+        assert calls == []
+
+
+class TestExplicitWeightVersion:
+    """The updater publishes the ordinal it is handed instead of counting locally."""
+
+    def test_the_assigned_ordinal_reaches_the_protocol_and_the_engines(self):
+        """A cell healed mid-run starts from a zeroed cache, so counting locally would republish an old version."""
+        calls: list[tuple[int, str, dict]] = []
+        updater = _make_updater(_make_engines(calls))
+
+        result = _run(updater, weight_version=7)
+
+        assert result is None
+        assert "weight_version" not in vars(updater)
+        assert updater.protocol.begin_sync_versions == [7]
+        updater.protocol.finalize.assert_called_once_with(7)
+        assert _kwargs_of(calls, "update_weight_version") == [{"weight_version": "7"}] * _ENGINE_COUNT
+
+    def test_consecutive_updates_follow_the_assigned_ordinals(self):
+        """Two syncs in a row must carry exactly the two ordinals the controller reserved."""
+        calls: list[tuple[int, str, dict]] = []
+        updater = _make_updater(_make_engines(calls))
+
+        _run(updater, weight_version=4)
+        _run(updater, weight_version=5)
+
+        assert updater.protocol.begin_sync_versions == [4, 5]
+        assert (
+            _kwargs_of(calls, "update_weight_version")
+            == [{"weight_version": "4"}] * _ENGINE_COUNT + [{"weight_version": "5"}] * _ENGINE_COUNT
+        )
+
+    def test_skipped_sync_returns_none_without_contacting_engines(self):
+        """A skipped transfer cannot claim that its requested version reached the engines."""
+        calls: list[tuple[int, str, dict]] = []
+        updater = _make_updater(_make_engines(calls), begin_sync_result=False)
+
+        result = _run(updater, weight_version=1)
+
+        assert result is None
         assert calls == []
