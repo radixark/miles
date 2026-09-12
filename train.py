@@ -10,6 +10,7 @@ from miles.ray.placement_group import (
     maybe_start_api_server,
     update_weights,
 )
+from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.arguments import parse_args
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
-    _worker_manager = init_orchestration_script(args)
+    worker_manager = init_orchestration_script(args)
 
     if args.colocate_memory_peak_device == "gpu":
         assert (
@@ -162,6 +163,7 @@ async def train(args):
     await actor_model.dispose()
     if critic_model is not None:
         await critic_model.dispose()
+    await shutdown_worker_manager(worker_manager)
 
 
 if __name__ == "__main__":
