@@ -91,7 +91,10 @@ the driver's step schedule:
    `--pause-generation-mode` flag decides how in-flight requests survive that pause: the
    default `retract` returns them to the waiting queue and recomputes their KV cache,
    while `in_place` freezes them and resumes on the existing cache. Passing `abort`
-   would kill them outright, which is why fully async rejects it.
+   would kill them outright, which is why fully async rejects it. Prefer `retract`:
+   because `in_place` keeps paused requests' KV, the engine cannot flush its prefix
+   cache on updates, so prefixes cached under pre-update weights keep serving later
+   requests and silently mix old-policy KV into new-policy rollouts.
 
 Because generation spans those weight updates, the samples in one group can carry
 different weight versions. The gap between a group's oldest weight version and the

@@ -135,7 +135,7 @@ def _execute_train(args: ScriptArgs):
 
     rollout_args = (
         "--fully-async "
-        "--pause-generation-mode in_place "
+        "--pause-generation-mode retract "
         f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
         # Free a submission slot per finished sample, not per finished group:
         # with long-horizon agentic trials, waiting for each group's slowest

@@ -76,7 +76,7 @@ def execute(args: ScriptArgs):
         "--global-batch-size 256 "
         "--balance-data "
         # retract (default) can deadlock flush_cache in fully_async under load
-        "--pause-generation-mode in_place "
+        "--pause-generation-mode retract "
     )
 
     # Shared by both backends: snapshot staging on tmpfs + the eval datasets.

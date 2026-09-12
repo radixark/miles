@@ -19,7 +19,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 4
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
-    pause_generation_mode: Literal["in_place", "retract"] = "in_place"
+    pause_generation_mode: Literal["in_place", "retract"] = "retract"
     update_weight_transfer_mode: Literal["broadcast", "p2p"] = "broadcast"
     skip_prepare: bool = False
     extra_args: str = ""
