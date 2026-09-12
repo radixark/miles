@@ -56,6 +56,12 @@ def compute_advantages(
         # TODO: is the copy necessary?
         advantages = [r for r in returns]
 
+    elif args.advantage_estimator == "remax":
+        # Rollout reward processing already subtracted the per-prompt greedy reward.
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
+        advantages = get_grpo_returns(rewards, kl)
+        returns = advantages
+
     elif args.advantage_estimator == "ppo":
         terminal_rewards = rewards
         token_rewards = []
