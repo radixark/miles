@@ -131,7 +131,6 @@ async def create_training_models(args, inference_controller, rollout_executor):
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
         with_opd_teacher=args.use_opd and args.opd_type == "megatron",
         inference_controller=inference_controller,
-        rollout_executor=rollout_executor,
     )
     actor_start_rollout_ids = await actor_model.init()
 
@@ -141,7 +140,6 @@ async def create_training_models(args, inference_controller, rollout_executor):
             role="critic",
             with_ref=False,
             inference_controller=None,
-            rollout_executor=None,
         )
         critic_start_rollout_ids = await critic_model.init()
     else:
@@ -153,7 +151,7 @@ async def create_training_models(args, inference_controller, rollout_executor):
     if args.start_rollout_id is None:
         args.start_rollout_id = start_rollout_ids[0]
 
-    await actor_model.set_rollout_executor()
+    await rollout_executor.set_train_parallel_config.remote(await actor_model.get_train_parallel_config())
     await rollout_executor.load.remote(args.start_rollout_id - 1)
 
     return actor_model, critic_model

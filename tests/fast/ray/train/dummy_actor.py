@@ -21,6 +21,7 @@ class DummyTrainActor:
         self._train_return_value: Any = TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
         self._train_return_values_per_attempt: list[Any] = []
         self._update_weights_return_value: Any = None
+        self._train_parallel_config: dict = {}
         self._heartbeat = SimpleHeartbeat()
         self._heartbeat.bump()
         self._heartbeat_fail: bool = False
@@ -33,6 +34,9 @@ class DummyTrainActor:
 
     def set_train_return_values_per_attempt(self, values: list[Any]) -> None:
         self._train_return_values_per_attempt = list(values)
+
+    def set_train_parallel_config(self, config: dict) -> None:
+        self._train_parallel_config = config
 
     def _record(self, method: str, args: tuple, kwargs: dict) -> None:
         self._calls.append((method, args, kwargs))
@@ -63,8 +67,9 @@ class DummyTrainActor:
     def reconcile_adapters(self) -> None:
         self._record("reconcile_adapters", (), {})
 
-    def set_rollout_executor(self, *args: Any, **kwargs: Any) -> None:
-        self._record("set_rollout_executor", args, kwargs)
+    def get_train_parallel_config(self) -> dict:
+        self._record("get_train_parallel_config", (), {})
+        return self._train_parallel_config
 
     def wake_up(self) -> None:
         self._record("wake_up", (), {})
