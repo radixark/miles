@@ -329,6 +329,7 @@ def forward_only(
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
+            get_input_loss_masks=args.enable_mtp_training,
         )
         unconcat_tokens = batch["unconcat_tokens"]
         tokens = batch["tokens"]
@@ -347,7 +348,7 @@ def forward_only(
             attention_mask=None,
             labels=None,
             packed_seq_params=packed_seq_params,
-            loss_mask=batch["full_loss_masks"],
+            loss_mask=batch["input_loss_masks"] if args.enable_mtp_training else batch["full_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
             fp32_output=fp32_output,
@@ -512,6 +513,7 @@ def train_one_step(
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
+            get_input_loss_masks=args.enable_mtp_training,
         )
 
         if "adapter_token_counts" in batch:
@@ -543,7 +545,8 @@ def train_one_step(
                 "attention_mask": None,
                 "labels": None,
                 "packed_seq_params": get_packed_seq_params(batch, args),
-                "loss_mask": batch["full_loss_masks"],
+                # With labels=None, Megatron derives MTP labels and shifts this mask.
+                "loss_mask": batch["input_loss_masks"] if args.enable_mtp_training else batch["full_loss_masks"],
                 **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             }
 
