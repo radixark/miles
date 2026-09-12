@@ -167,6 +167,13 @@ class SlotOptimizer:
         """Refresh this slot's FP32 masters from its model parameters."""
         self._inner.reload_model_params()
 
+    def sharded_state(self, model_sharded_state_dict: dict, *, is_loading: bool) -> dict:
+        """torch_dist form: every state tensor carries its param's global coordinates."""
+        return self._inner.sharded_state_dict(model_sharded_state_dict, is_loading=is_loading)
+
+    def load_sharded_state(self, loaded: dict) -> None:
+        self._inner.load_state_dict(loaded)
+
     def zero_grads(self) -> None:
         """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
         buffer views and any lingering ``grad``/``main_param.grad`` references."""

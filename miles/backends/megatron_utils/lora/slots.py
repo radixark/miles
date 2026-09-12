@@ -6,15 +6,9 @@ import logging
 from argparse import Namespace
 
 import torch
-import torch.distributed as dist
 
-from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
-
-# Cached by adapter_shard_topology(); the topology is fixed for the run.
-_shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
 
 
 def create_multi_lora_instance(args: Namespace):
@@ -43,35 +37,6 @@ def create_multi_lora_instance(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
-
-
-def megatron_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, ep_size: int) -> str:
-    """Adapter shard name for one (tp, pp, ep) coordinate; EP ranks hold different local
-    experts. The ep suffix is omitted at ep_size == 1 so legacy checkpoints stay loadable."""
-    name = f"adapter_megatron_tp{tp_rank}_pp{pp_rank}"
-    if ep_size > 1:
-        name += f"_ep{ep_rank}"
-    return name + ".pt"
-
-
-def adapter_shard_topology() -> tuple[bool, tuple[tuple[int, int, int], ...]]:
-    """Return ``(this_rank_writes_its_shard, realized (tp, pp, ep) coords)`` via one cached gloo all-gather."""
-    global _shard_topology
-    if _shard_topology is not None:
-        return _shard_topology
-    parallel_state = get_parallel_state()
-    coords = (parallel_state.tp.rank, parallel_state.pp.rank, parallel_state.ep.rank)
-    if not dist.is_initialized():
-        _shard_topology = (True, (coords,))
-        return _shard_topology
-
-    current_rank = dist.get_rank()
-    group = get_gloo_group()
-    gathered: list[object] = [None] * dist.get_world_size(group=group)
-    dist.all_gather_object(gathered, (coords, current_rank), group=group)
-    is_writer = current_rank == min(rank for entry_coords, rank in gathered if entry_coords == coords)
-    _shard_topology = (is_writer, tuple(sorted({entry_coords for entry_coords, _ in gathered})))
-    return _shard_topology
 
 
 def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) -> torch.Tensor:

@@ -13,8 +13,10 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
+from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
+from miles.backends.training_utils.checkpoint_io import CheckpointIOError
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
@@ -457,14 +459,33 @@ class MegatronTrainRayActor(TrainRayActor):
             return lora_executor.run_loss_pass(self.args, batch_id, self.model, rollout_data, forward_only=True)
 
     @with_logs
-    def load_slot(self, slot: int, rank: int, alpha: float) -> None:
+    def load_slot(
+        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+    ) -> dict | None:
         assert self.args.multi_lora, "load_slot is a multi-LoRA slot command"
         self.slot_optimizers[slot] = lora_executor.load_slot(self.args, self.model, slot, rank, alpha)
+        if ckpt_path is not None:
+            try:
+                lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
+            except CheckpointIOError as error:
+                return {"error": str(error)}
+        return None
 
     @with_logs
-    def unload_slot(self, slot: int) -> None:
+    def save_slot(self, slot: int, path: str) -> dict | None:
+        assert self.args.multi_lora, "save_slot is a multi-LoRA slot command"
+        try:
+            lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path)
+        except CheckpointIOError as error:
+            return {"error": str(error)}
+        return None
+
+    @with_logs
+    def unload_slot(self, slot: int) -> dict | None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
-        lora_executor.unload_slot(self.model, self.slot_optimizers.pop(slot))
+        slot_optimizer = self.slot_optimizers.pop(slot)
+        lora_executor.unload_slot(self.model, slot_optimizer)
+        return None
 
     @with_logs
     @event_logger_context(
