@@ -86,4 +86,4 @@ class TestWhenTheLauncherStopsTheCell:
 
         await ray_comm_handle.wait_dead(timeout=CONFIRM_DEAD_TIMEOUT_SECONDS)
 
-        assert await ray_comm_handle._probe_is_dead() is True
+        assert await ray_comm_handle.probe_is_dead() is True
