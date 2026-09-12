@@ -2736,14 +2736,20 @@ def parse_args(add_custom_arguments=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         args.compress_ratios = None
+        args.rollout_indexer_topk_num_streams = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
             args.compress_ratios = getattr(hf_config, "compress_ratios", None)
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
-                args.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+                getter = getattr(hf_config, "get_text_config", None)
+                text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+                args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
+                linear_attn_config = getattr(text_config, "linear_attn_config", None)
+                kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
+                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
@@ -3177,12 +3183,19 @@ def miles_validate_args(args):
         if args.target_modules == "all-linear":
             # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
             # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
+            # Composite checkpoints (e.g. glm5_next) keep the text fields under text_config.
             modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
             hf_config = load_hf_config(args.hf_checkpoint)
-            if getattr(hf_config, "kv_lora_rank", None):
+            text_config = getattr(hf_config, "text_config", None) or hf_config
+            if getattr(text_config, "kv_lora_rank", None):
                 modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
-                if getattr(hf_config, "q_lora_rank", None):
+                if getattr(text_config, "q_lora_rank", None):
                     modules += ["q_a_proj", "q_b_proj"]
+            from miles.backends.megatron_utils.lora_utils import KDA_HF_MODULE_NAMES, hf_config_uses_kda
+
+            if hf_config_uses_kda(hf_config):
+                # KDA linear attention (GLM-5.3-Flash): beta / forget / output-norm gate projections
+                modules += sorted(KDA_HF_MODULE_NAMES)
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]
         else:
