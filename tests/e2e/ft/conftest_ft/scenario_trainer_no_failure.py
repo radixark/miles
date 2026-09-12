@@ -2,7 +2,7 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 
-from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
@@ -32,8 +32,8 @@ def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tr
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
     compare_metrics(
-        baseline_dir=f"{dump_dir}/baseline",
-        target_dir=f"{dump_dir}/target",
+        baseline_dir=f"{dump_dir}/{BASELINE_SIDE}",
+        target_dir=f"{dump_dir}/{TARGET_SIDE}",
         rtol=1e-2,
         atol=1e-8,
         key_prefixes=["train/"],
@@ -43,8 +43,8 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     # Match by parallel identity (pp_rank, tp_rank, cp_rank, ep_rank) instead of global
     # rank, since baseline and target have different world sizes and DP layouts.
     compare_dumps(
-        baseline_dir=f"{dump_dir}/baseline",
-        target_dir=f"{dump_dir}/target",
+        baseline_dir=f"{dump_dir}/{BASELINE_SIDE}",
+        target_dir=f"{dump_dir}/{TARGET_SIDE}",
         diff_thresholds=[(".*", "rel <= 0.0085")],
         allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
         allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,

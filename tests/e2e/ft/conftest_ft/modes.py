@@ -207,7 +207,12 @@ MODES: dict[str, FTTestMode] = {
 }
 
 
-def resolve_mode(mode: str) -> FTTestMode:
+def resolve_mode(mode: str | None) -> FTTestMode:
+    if mode is None:
+        raise typer.BadParameter(
+            f"this suite takes the topology it runs from --mode, and none was passed; pass one of "
+            f"{list(MODES.keys())}"
+        )
     if mode not in MODES:
         raise typer.BadParameter(f"Unknown mode {mode!r}, valid: {list(MODES.keys())}")
     return MODES[mode]
