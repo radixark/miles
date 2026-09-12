@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import pytest
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from tests.fast.ray.rollout.conftest import make_args, make_args_with_sglang_config, make_sglang_config_yaml
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.ray.specs.inference import INFERENCE_REGISTRATION_REPORTER_POOL_ID
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_helm_backend_capability
 from miles.utils.workers.worker_provider.kubernetes.helm.env import NAMESPACE_ENV_VAR, RELEASE_ENV_VAR
 from miles.utils.workers.worker_spec import BaseWorkerSpec, WorkerCtorContext
@@ -167,13 +172,6 @@ class TestDeployComponentFiltering:
         assert "inference-controller" in names
         assert "inference-router-0" in names
 
-    def test_an_inference_deployment_holds_the_engines_only(self, tmp_path):
-        """The controller and the routers drive the run, and a second copy of them would serve nobody."""
-        names = [spec.name for spec in compute_specs(self._args(tmp_path, deploy_component="inference"))]
-
-        assert names
-        assert all(name.startswith("inference-engine") for name in names)
-
     def test_every_worker_of_a_trainer_deployment_can_build_its_constructor_arguments(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -191,13 +189,49 @@ class TestDeployComponentFiltering:
         assert sorted(kwargs_by_name) == ["trainer-controller-actor", "trainer-controller-critic"]
         assert all("inference_controller" not in kwargs for kwargs in kwargs_by_name.values())
 
-    def test_the_three_subsets_partition_the_whole_run(self, tmp_path):
-        """A worker in no subset would never be deployed, and one in two would be deployed twice."""
-        whole = [spec.name for spec in compute_specs(self._args(tmp_path, deploy_component="all"))]
-        parts = [
-            spec.name
-            for component in ("primary", "trainer", "inference")
-            for spec in compute_specs(self._args(tmp_path, deploy_component=component))
-        ]
+    def test_a_subset_carries_exactly_the_workers_of_its_own_component(self, tmp_path):
+        """A worker two subsets carry is installed twice, and one no subset carries is never installed at all."""
+        whole = Counter(spec.deploy_component for spec in compute_specs(self._args(tmp_path, deploy_component="all")))
 
-        assert sorted(whole) == sorted(parts)
+        for component in (DeployComponent.PRIMARY, DeployComponent.TRAINER, DeployComponent.INFERENCE):
+            carried = [
+                spec
+                for spec in compute_specs(self._args(tmp_path, deploy_component=component.value))
+                if spec.name != INFERENCE_REGISTRATION_REPORTER_POOL_ID
+            ]
+
+            assert {spec.deploy_component for spec in carried} == {component}
+            assert len(carried) == whole[component]
+
+    def test_a_named_trainer_deployment_holds_the_one_trainer_its_arguments_describe(self, tmp_path):
+        """Its arguments give one model's configuration, so the instance names the release and selects nothing."""
+        args = self._args(
+            tmp_path,
+            deploy_component="trainer",
+            deploy_instance_id="a-actor",
+            use_critic=False,
+            megatron_config=encode_megatron_config("a"),
+        )
+
+        specs = compute_specs(args)
+
+        assert [spec.name for spec in specs] == ["trainer-controller-a-actor", "trainer-engine-a-actor"]
+
+    def test_an_inference_deployment_holds_the_engines_and_the_one_reporter(self, tmp_path):
+        """An engine release carries no controller and no router; it only announces the engines it launches."""
+        specs = compute_specs(
+            self._args(
+                tmp_path,
+                deploy_component="inference",
+                inference_controller_addr="controller:8000",
+            )
+        )
+
+        assert [spec.name for spec in specs] == ["inference-registration-reporter", "inference-engine-0-0"]
+
+    @pytest.mark.parametrize("component", ["all", "primary", "trainer"])
+    def test_only_an_inference_deployment_carries_a_reporter(self, tmp_path, component):
+        """A reporter beside the controller it reports into would register a deployment into itself."""
+        specs = compute_specs(self._args(tmp_path, deploy_component=component))
+
+        assert "inference-registration-reporter" not in [spec.name for spec in specs]
