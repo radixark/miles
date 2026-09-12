@@ -489,7 +489,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         try:
             self.weight_updater.export_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path)
-        except NonGlobalFatalError as error:
+        except CheckpointIOError as error:
             return {"error": str(error)}
         return None
 
