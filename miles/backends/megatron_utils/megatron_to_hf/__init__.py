@@ -29,8 +29,30 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
     return quantize_params(args, name, converted_named_tensors, quantization_config)
 
 
-# TODO optimize code details
+# Wrapper prefixes that megatron.bridge-built VL models produce. A converter that knows them (kimi_vl) maps
+# them; for every other model the raw converter raises a bare "Unknown parameter name" that hides the real
+# cause, so _convert_to_hf_core adds the fix to that error instead of guessing up front.
+_BRIDGE_ONLY_PREFIXES = ("vision_model.", "vision_projector.", "language_model.")
+
+
+def _bridge_mode_hint(error: ValueError) -> ValueError:
+    return ValueError(
+        f"{error}. Raw-mode conversion does not support the vision_model / vision_projector / language_model "
+        "wrappers that megatron.bridge VL models use; pass --megatron-to-hf-mode bridge (see examples/geo3k_vlm)."
+    )
+
+
 def _convert_to_hf_core(args, model_name, name, param):
+    try:
+        return _dispatch_to_model_converter(args, model_name, name, param)
+    except ValueError as error:
+        if any(prefix in name for prefix in _BRIDGE_ONLY_PREFIXES):
+            raise _bridge_mode_hint(error) from error
+        raise
+
+
+# TODO optimize code details
+def _dispatch_to_model_converter(args, model_name, name, param):
     model_name = model_name.lower()
     if (
         "glm4moelite" in model_name
