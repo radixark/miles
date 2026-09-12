@@ -3,7 +3,10 @@
 import asyncio
 import uuid
 
+import httpx
+
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
+from miles.ray.weight_update import update_weight_window
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
@@ -42,8 +45,9 @@ def _build_train_data(slot_datums: list) -> dict:
 
 
 class MilesBackend:
-    def __init__(self, trainer, router_url: str, dp_size: int = 1) -> None:
+    def __init__(self, trainer, router_url: str, dp_size: int = 1, *, inference_controller) -> None:
         self.trainer = trainer
+        self.inference_controller = inference_controller
         self.router_url = router_url
         self.dp_size = dp_size
 
@@ -52,31 +56,35 @@ class MilesBackend:
 
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> None:
-        _raise_slot_errors(
+    ) -> dict | None:
+        return _slot_failure(
             await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
         )
 
-    async def unload_slot(self, slot: int) -> None:
-        _raise_slot_errors(await self.trainer.unload_slot(slot))
+    async def unload_slot(self, slot: int) -> dict | None:
+        return _slot_failure(await self.trainer.unload_slot(slot))
 
     async def forward_backward(
         self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
-    ) -> list[dict]:
+    ) -> list[dict] | dict:
         return await self._run_loss_pass("forward_backward", batch_id, slot_datums, loss_fn, loss_fn_config)
 
-    async def forward_only(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict]:
+    async def forward_only(
+        self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
+    ) -> list[dict] | dict:
         return await self._run_loss_pass("forward_only", batch_id, slot_datums, loss_fn, loss_fn_config)
 
     async def _run_loss_pass(
         self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
-    ) -> list[dict]:
+    ) -> list[dict] | dict:
         train_data = _build_train_data(_pad_to_dp_multiple(slot_datums, self.dp_size))
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
         worker_results = await self._run_batch(method, batch_id, train_data)
         by_index: dict[int, dict] = {}
         for worker_result in worker_results:
+            if "error" in worker_result:
+                return worker_result
             for datum_output in worker_result["per_datum"]:
                 index = int(datum_output["sample_index"])
                 if index not in by_index:
@@ -98,31 +106,45 @@ class MilesBackend:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
         return worker_results[0]
 
-    async def zero_grads(self, slot: int) -> None:
-        await self.trainer.zero_grads(slot=slot)
+    async def save_slot(self, slot: int, path: str) -> dict | None:
+        return _slot_failure(await self.trainer.save_slot(slot=slot, path=path))
 
-    async def save_slot(self, slot: int, path: str) -> None:
-        _raise_slot_errors(await self.trainer.save_slot(slot=slot, path=path))
-
-    async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> None:
-        _raise_slot_errors(await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path))
+    async def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> dict | None:
+        return _slot_failure(await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path))
 
     async def push_slot(
         self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
-    ) -> None:
-        await self.trainer.push_slot(slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path)
+    ) -> dict | None:
+        async with update_weight_window(self.inference_controller) as info:
+            failure = _slot_failure(
+                await self.trainer.push_slot(
+                    info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
+                )
+            )
+            if failure is None:
+                await self.inference_controller.mark_weights_ready(
+                    snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
+                )
+            return failure
 
     # -------- sampling --------
 
     async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
         request = self._generate_request(payload, lora_name, lora_path)
-        responses = await asyncio.gather(
-            *[
-                post(f"{self.router_url}/generate", _with_sample_seed(request, index))
-                for index in range(payload["num_samples"])
-            ]
-        )
-        result = {"sequences": [_to_sequence(response) for response in responses]}
+        try:
+            responses = await asyncio.gather(
+                *[
+                    post(f"{self.router_url}/generate", _with_sample_seed(request, index))
+                    for index in range(payload["num_samples"])
+                ]
+            )
+        except httpx.HTTPError as error:
+            return {"error": str(error)}
+        sequences = [_to_sequence(response) for response in responses]
+        for sequence in sequences:
+            if "error" in sequence:
+                return sequence
+        result = {"sequences": sequences}
         if payload["prompt_logprobs"]:
             result["prompt_logprobs"] = _prompt_logprobs(responses[0])
         if payload["topk_prompt_logprobs"]:
@@ -164,11 +186,8 @@ class MilesBackend:
         return request
 
 
-def _raise_slot_errors(worker_results: list) -> None:
-    """A non-None result is an actor's {"error": ...} verdict; surface the failure to the caller."""
-    errors = [result["error"] for result in worker_results if result is not None]
-    if errors:
-        raise RuntimeError(errors[0])
+def _slot_failure(worker_results: list) -> dict | None:
+    return next((result for result in worker_results if result is not None), None)
 
 
 def _with_sample_seed(request: dict, index: int) -> dict:
@@ -202,7 +221,7 @@ def _to_sequence(response: dict) -> dict:
     finish = response["meta_info"]["finish_reason"]["type"]
     if finish == "abort":
         # a truncated sequence must fail the request, not pass as a completed sample
-        raise RuntimeError("the engine aborted this sample; resubmit the request")
+        return {"error": "the engine aborted this sample; resubmit the request"}
     return {
         "sequence_id": f"seq-{uuid.uuid4().hex}",
         "tokens": [entry[1] for entry in output_token_logprobs],
