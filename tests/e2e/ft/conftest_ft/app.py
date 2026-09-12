@@ -27,6 +27,9 @@ from miles.utils.external_utils import command_utils
 BASELINE_SIDE: str = "baseline"
 TARGET_SIDE: str = "target"
 
+_DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
+_DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
+
 BuildArgsFn = Callable[[FTTestMode, str, bool], str]
 TargetSideContextFn = Callable[
     [FTTestMode, str, command_utils.ExecuteTrainConfig], contextlib.AbstractContextManager[None]
@@ -51,12 +54,11 @@ def run_one_release(request: RunSideRequest) -> None:
     run_training(train_args=request.train_args, mode=request.mode, dump_dir=request.dump_dir, config=request.config)
 
 
-def resolve_dump_dir(test_name: str) -> str:
-    # TODO make it configurable, but on local disk instead of remote disk
-    output_dir = "/node_public"
-    dump_dir = str(Path(output_dir) / "dumps" / test_name)
+def resolve_dump_dir(test_name: str, *, run_id: str) -> str:
+    root = os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT
+    dump_dir = Path(root) / run_id / test_name
     os.makedirs(dump_dir, exist_ok=True)
-    return dump_dir
+    return str(dump_dir)
 
 
 def _dump_subdir(side: str, phase: str) -> str:
@@ -79,7 +81,7 @@ def run_pipeline(
     """Full pipeline (prepare + every phase's baseline/target + compare) for one mode."""
     effective_phases: list[str] = phases or [""]
     ft_mode: FTTestMode = resolve_mode_fn(mode)
-    dump_dir: str = resolve_dump_dir(test_name)
+    dump_dir: str = resolve_dump_dir(test_name, run_id=command_utils.default_config().run_id)
     print(f"Dump directory: {dump_dir}")
 
     prepare(ft_mode)
@@ -147,14 +149,14 @@ def create_comparison_app_and_run_ci(
         enable_dumper: bool = True,
     ) -> None:
         ft_mode = resolve_mode_fn(mode)
+        config = command_utils.default_config()
         if dump_dir is None:
-            dump_dir = resolve_dump_dir(test_name)
+            dump_dir = resolve_dump_dir(test_name, run_id=config.run_id)
         sub = _dump_subdir(side, phase)
         full_dump_dir = f"{dump_dir}/{sub}"
         args = build_fn(ft_mode, full_dump_dir, enable_dumper)
         prepare(ft_mode)
 
-        config = command_utils.default_config()
         context = (
             target_side_context(ft_mode, full_dump_dir, config)
             if side == TARGET_SIDE and target_side_context is not None
@@ -269,12 +271,13 @@ def create_non_comparison_app(
     ) -> None:
         """Full pipeline: prepare + execute + verify."""
         ft_mode = resolve_mode(mode)
-        dump_dir: str = resolve_dump_dir(test_name)
+        config = command_utils.default_config()
+        dump_dir: str = resolve_dump_dir(test_name, run_id=config.run_id)
         print(f"Dump directory: {dump_dir}")
 
         prepare(ft_mode)
         args = build_args(ft_mode, dump_dir)
-        run_training(train_args=args, mode=ft_mode)
+        run_training(train_args=args, mode=ft_mode, config=config)
 
         if verify_fn is not None:
             verify_fn(dump_dir, ft_mode)
