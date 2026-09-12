@@ -3,6 +3,9 @@ import subprocess
 import pytest
 from tests.fast import cluster_backends
 
+from miles.utils.external_utils import command_utils
+from miles.utils.workers.types import ClusterBackend
+
 
 class TestKubernetesAvailability:
     def test_names_the_missing_tool_rather_than_just_refusing(self, monkeypatch):
@@ -90,6 +93,59 @@ class TestKubernetesAvailability:
         assert "mine" in availability.reason
 
 
+class TestCreateBackendForRun:
+    def test_a_backend_the_lane_asked_for_and_cannot_reach_is_a_failure(self, monkeypatch):
+        """The ft e2e entries are bare python3 with no pytest to skip into, and exiting 0 would report green."""
+        monkeypatch.setattr(
+            cluster_backends,
+            "availability_of_run",
+            lambda *, config: cluster_backends.BackendAvailability(False, "no cluster today"),
+        )
+
+        with pytest.raises(AssertionError, match="no cluster today"):
+            cluster_backends.create_backend_for_run(_run_config(ClusterBackend.KUBERNETES))
+
+    def test_a_reachable_backend_lets_the_run_proceed(self, monkeypatch):
+        """The gate must be invisible on the path the run is meant to take."""
+        monkeypatch.setattr(
+            cluster_backends,
+            "availability_of_run",
+            lambda *, config: cluster_backends.BackendAvailability(True, "fine"),
+        )
+
+        cluster_backends.create_backend_for_run(_run_config(ClusterBackend.RAY))
+
+
+class TestAvailabilityOfRun:
+    def test_the_namespace_comes_from_the_run_config_not_the_fast_tests_variable(self, monkeypatch):
+        """Regression: the workbench sets MILES_SCRIPT_NAMESPACE only, so reading the other one skipped everything."""
+        monkeypatch.delenv(cluster_backends.NAMESPACE_ENV_VAR, raising=False)
+        calls = _fake_kubectl(monkeypatch, lambda argv: _completed(stdout="yes"))
+
+        availability = cluster_backends.availability_of_run(config=_run_config(ClusterBackend.KUBERNETES))
+
+        assert availability.available, availability.reason
+        assert all("miles-e2e" in argv for argv in calls if "can-i" in argv)
+
+    def test_a_run_without_a_namespace_names_the_variable_the_run_reads(self, monkeypatch):
+        """kubectl would otherwise act on whatever namespace the kubeconfig happens to point at."""
+        _fake_kubectl(monkeypatch, lambda argv: _completed(stdout="yes"))
+
+        reason = cluster_backends.availability_of_run(
+            config=_run_config(ClusterBackend.KUBERNETES, namespace="")
+        ).reason
+
+        assert cluster_backends.RUN_NAMESPACE_ENV_VAR in reason
+
+    def test_a_ray_run_is_probed_by_importing_ray(self, monkeypatch):
+        """A ray lane must not be gated on kubectl, helm or a cluster it never talks to."""
+        monkeypatch.setattr(
+            cluster_backends, "ray_availability", lambda: cluster_backends.BackendAvailability(True, "importable")
+        )
+
+        assert cluster_backends.availability_of_run(config=_run_config(ClusterBackend.RAY)).available
+
+
 class TestRequireBackend:
     def test_skips_with_the_reason_attached(self, monkeypatch):
         """A skip nobody can act on is as unhelpful as a silent pass."""
@@ -132,6 +188,10 @@ def _fake_kubectl(monkeypatch, respond) -> list[list[str]]:
     monkeypatch.setenv(cluster_backends.NAMESPACE_ENV_VAR, "mine")
     monkeypatch.setattr(cluster_backends, "run_process", fake_run_process)
     return calls
+
+
+def _run_config(backend: ClusterBackend, *, namespace: str = "miles-e2e") -> command_utils.ExecuteTrainConfig:
+    return command_utils.ExecuteTrainConfig(cluster_backend=backend, namespace=namespace)
 
 
 def _completed(returncode=0, stdout="", stderr=""):
