@@ -413,6 +413,9 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+_LAST_LORA_GRAD_NORMS: dict[str, float] = {}
+
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -614,6 +617,21 @@ def train_one_step(
         from miles.backends.megatron_utils.ci_utils import check_mtp_only_grad
 
         check_mtp_only_grad(model, step_id)
+
+    # Per-group LoRA gradient norms (reduced grads, before the step). Collective -> every rank.
+    global _LAST_LORA_GRAD_NORMS
+    _LAST_LORA_GRAD_NORMS = {}
+    if (
+        getattr(args, "lora_rank", 0)
+        and getattr(args, "log_lora_norms", True)
+        and not disable_optimizer
+        and not multi_lora
+    ):
+        from .lora_utils import lora_adapter_grad_norm_metrics
+
+        _LAST_LORA_GRAD_NORMS = lora_adapter_grad_norm_metrics(
+            model, distributed_optimizer=bool(getattr(args, "use_distributed_optimizer", False))
+        )
 
     # Dump backward tensors while gradients are still attached. The optimizer
     # step and subsequent zero_grad release them.
@@ -844,6 +862,7 @@ def train(
                 for param_group_id, param_group in enumerate(optimizer.param_groups):
                     extra_metrics[f"lr-pg_{param_group_id}"] = opt_param_scheduler.get_lr(param_group)
             extra_metrics.update(lora_norms)
+            extra_metrics.update(_LAST_LORA_GRAD_NORMS)
 
             log_dict = log_train_step(
                 args=args,

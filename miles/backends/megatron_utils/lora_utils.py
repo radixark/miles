@@ -203,6 +203,45 @@ def _lora_norm_group(name: str) -> str:
     return f"{group}/other"
 
 
+def _reduce_lora_group_sums(sums: dict[str, "torch.Tensor"]) -> dict[str, float]:
+    """All-reduce per-group sums of squares (non-expert over the model-parallel group, expert over the
+    expert tensor+model parallel group) and return the L2 norms. Collective: every rank must call it."""
+    import torch.distributed as dist
+    from megatron.core import parallel_state as mpu
+
+    device = torch.cuda.current_device()
+    keys = sorted(sums)
+    # every rank must reach the same collectives, even if its local buckets differ
+    all_keys = [None] * dist.get_world_size()
+    dist.all_gather_object(all_keys, keys)
+    merged = sorted(set(k for ks in all_keys for k in ks))
+    if not merged:
+        return {}
+    idx = {k: i for i, k in enumerate(merged)}
+    full = torch.zeros(len(merged), device=device)
+    full_e = torch.zeros(len(merged), device=device)
+    for k, v in sums.items():
+        (full_e if k.startswith("experts") else full)[idx[k]] = v.to(device)
+    dist.all_reduce(full, group=mpu.get_model_parallel_group())
+    dist.all_reduce(full_e, group=mpu.get_expert_tensor_and_model_parallel_group())
+    return dict(zip(merged, (full + full_e).sqrt().tolist()))
+
+
+def _lora_group_sums(model, tensor_of_param) -> dict[str, "torch.Tensor"]:
+    sums: dict[str, torch.Tensor] = {}
+    for model_chunk in model:
+        for name, param in model_chunk.named_parameters():
+            if not param.requires_grad or not _is_adapter_param_name(name):
+                continue
+            t = tensor_of_param(param)
+            if t is None:
+                continue
+            key = _lora_norm_group(name)
+            sq = t.detach().float().pow(2).sum()
+            sums[key] = sums[key] + sq if key in sums else sq
+    return sums
+
+
 def lora_adapter_norm_metrics(model) -> dict[str, float]:
     """L2 norm of the LoRA adapter weights per module group (``lora_norm/<group>/<A|B>``).
 
@@ -211,40 +250,35 @@ def lora_adapter_norm_metrics(model) -> dict[str, float]:
     (identical on every data-parallel replica). Collective: call it on **every** rank at the same
     point of the step, then log on one rank.
     """
-    import torch.distributed as dist
+    norms = _reduce_lora_group_sums(_lora_group_sums(model, lambda p: p))
+    return {f"lora_norm/{k}": float(v) for k, v in norms.items()}
+
+
+def lora_adapter_grad_norm_metrics(model, distributed_optimizer: bool = False) -> dict[str, float]:
+    """L2 norm of the *reduced* adapter gradients per module group (``lora_grad_norm/<group>/<A|B>``).
+
+    Call after ``finalize_model_grads`` (gradients reduced over data parallel, living in
+    ``param.main_grad``) and before ``optimizer.step()``. Same reduction / collective rules as
+    :func:`lora_adapter_norm_metrics`.
+
+    With the distributed optimizer the data-parallel reduction is a reduce-scatter, so a rank's
+    ``main_grad`` is complete only for parameters that have no data-parallel replicas: expert
+    parameters when the expert data-parallel size is 1 (EP x ETP spans the world), non-expert ones
+    when the data-parallel size is 1. Groups that are not exact are left out.
+    """
     from megatron.core import parallel_state as mpu
 
-    sums: dict[str, torch.Tensor] = {}
-    for model_chunk in model:
-        for name, param in model_chunk.named_parameters():
-            if not param.requires_grad or not _is_adapter_param_name(name):
-                continue
-            key = _lora_norm_group(name)
-            sq = param.detach().float().pow(2).sum()
-            sums[key] = sums[key] + sq if key in sums else sq
-    keys = sorted(sums)
-    if not keys:
-        return {}
-    device = torch.cuda.current_device()
-    expert_mask = torch.tensor([1.0 if k.startswith("experts") else 0.0 for k in keys], device=device)
-    vals = torch.stack([sums[k].to(device) for k in keys])
-    non_expert = vals * (1 - expert_mask)
-    expert = vals * expert_mask
-    # every rank must reach the same collectives, even if its local buckets differ
-    all_keys = [None] * dist.get_world_size()
-    dist.all_gather_object(all_keys, keys)
-    merged = sorted(set(k for ks in all_keys for k in ks))
-    full = torch.zeros(len(merged), device=device)
-    idx = {k: i for i, k in enumerate(merged)}
-    for i, k in enumerate(keys):
-        full[idx[k]] = non_expert[i]
-    dist.all_reduce(full, group=mpu.get_model_parallel_group())
-    full_e = torch.zeros(len(merged), device=device)
-    for i, k in enumerate(keys):
-        full_e[idx[k]] = expert[i]
-    dist.all_reduce(full_e, group=mpu.get_expert_tensor_and_model_parallel_group())
-    out = (full + full_e).sqrt().tolist()
-    return {f"lora_norm/{k}": float(v) for k, v in zip(merged, out)}
+    def grad_of(p):
+        g = getattr(p, "main_grad", None)
+        return g if g is not None else p.grad
+
+    sums = _lora_group_sums(model, grad_of)
+    if distributed_optimizer:
+        dp_ok = mpu.get_data_parallel_world_size() == 1
+        edp_ok = mpu.get_expert_data_parallel_world_size() == 1
+        sums = {k: v for k, v in sums.items() if (edp_ok if k.startswith("experts") else dp_ok)}
+    norms = _reduce_lora_group_sums(sums)
+    return {f"lora_grad_norm/{k}": float(v) for k, v in norms.items()}
 
 
 _param_grad_buffer_patched = False
