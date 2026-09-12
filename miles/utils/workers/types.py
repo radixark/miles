@@ -36,6 +36,12 @@ class DeployComponent(Enum):
         return self in (DeployComponent.TRAINER, DeployComponent.INFERENCE)
 
 
+class PlatformAccess(Enum):
+    NONE = "none"
+    READ = "read"
+    READ_DELETE = "read-delete"
+
+
 class HotRestartComponent(Enum):
     ORCHESTRATION = "orchestration"
     ROLLOUT_EXECUTOR = "rollout_executor"

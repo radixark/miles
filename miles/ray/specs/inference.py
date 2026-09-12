@@ -16,7 +16,7 @@ from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.reporter import RegistrationReporter
-from miles.utils.workers.types import DeployComponent
+from miles.utils.workers.types import DeployComponent, PlatformAccess
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
@@ -44,7 +44,7 @@ INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS = "miles.utils.workers.registration
 def spec_inference_controller(args) -> ServeWorkerSpec:
     return ServeWorkerSpec(
         name=INFERENCE_CONTROLLER_POOL_ID,
-        needs_platform_read_permission=True,
+        platform_access=PlatformAccess.READ,
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
@@ -71,6 +71,7 @@ def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
         ServeWorkerSpec(
             name=INFERENCE_REGISTRATION_REPORTER_POOL_ID,
             deploy_component=DeployComponent.INFERENCE,
+            platform_access=PlatformAccess.READ,
             port_infos=[],
             env_var=lambda _ctx: {},
             scheduling=SchedulingSpec(
