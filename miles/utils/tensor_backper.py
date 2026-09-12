@@ -1,4 +1,5 @@
 import hashlib
+import os
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -50,10 +51,35 @@ class TensorBackuper(ABC):
         raise NotImplementedError
 
 
+def _file_backed_like(param: torch.Tensor, path: str) -> torch.Tensor:
+    """A host tensor shaped like `param` whose storage is a shared mapping of `path`, so the
+    backup lives in the page cache and on disk instead of pinned RAM."""
+    nbytes = param.numel() * param.element_size()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.truncate(max(nbytes, 1))
+    flat = torch.from_file(path, shared=True, size=max(param.numel(), 1), dtype=param.dtype)
+    return flat[: param.numel()].view(param.shape)
+
+
+def _drop_from_page_cache(path: str) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    finally:
+        os.close(fd)
+
+
 class _TensorBackuperNormal(TensorBackuper):
     def __init__(self, source_getter):
         super().__init__(source_getter=source_getter)
         self._backups: dict[str, dict[str, torch.Tensor]] = defaultdict(dict)
+        self._disk_dir = os.environ.get("MILES_WEIGHT_BACKUP_DIR")
+        if self._disk_dir:
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            self._disk_dir = os.path.join(self._disk_dir, f"rank{rank:05d}")
+        self._paths: dict[str, dict[str, str]] = defaultdict(dict)
 
     @property
     def backup_tags(self):
@@ -66,6 +92,15 @@ class _TensorBackuperNormal(TensorBackuper):
     @torch.no_grad()
     def backup(self, tag: str) -> None:
         backup_dict = self._backups[tag]
+        if self._disk_dir:
+            for name, param in self._source_getter():
+                if name not in backup_dict:
+                    path = os.path.join(self._disk_dir, tag, f"{hashlib.md5(name.encode()).hexdigest()}.bin")
+                    backup_dict[name] = _file_backed_like(param, path)
+                    self._paths[tag][name] = path
+                backup_dict[name].copy_(param.detach())
+                _drop_from_page_cache(self._paths[tag][name])
+            return
         for name, param in self._source_getter():
             if name not in backup_dict:
                 backup_dict[name] = torch.empty_like(param, device=torch.device("cpu"), pin_memory=True)
