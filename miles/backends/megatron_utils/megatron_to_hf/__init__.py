@@ -2,6 +2,7 @@ from .deepseekv3 import convert_deepseekv3_to_hf
 from .deepseekv4 import convert_deepseekv4_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
+from .glm5_next import convert_glm5_next_to_hf
 from .inkling import convert_inkling_to_hf
 from .kimi_vl import convert_kimi_k25_to_hf, convert_kimivl_to_hf
 from .llama import convert_llama_to_hf
@@ -32,7 +33,9 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
 # TODO optimize code details
 def _convert_to_hf_core(args, model_name, name, param):
     model_name = model_name.lower()
-    if (
+    if "glm5_next" in model_name or "glm5next" in model_name:
+        converted_named_tensors = convert_glm5_next_to_hf(args, name, param)
+    elif (
         "glm4moelite" in model_name
         or "deepseekv3" in model_name
         or "glmmoedsa" in model_name
