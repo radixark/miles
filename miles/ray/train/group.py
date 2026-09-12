@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
@@ -160,8 +160,11 @@ class TrainerController:
     # ------------------------ API :: train ------------------------
 
     async def train(
-        self, rollout_id: int, rollout_data_pack: RolloutDataPack, external_data: list[Any] | None = None
-    ) -> list[Any]:
+        self,
+        rollout_id: int,
+        rollout_data_pack: RolloutDataPack,
+        external_data: list[TrainStepOutput] | None = None,
+    ) -> list[TrainStepOutput]:
         """Do one rollout training"""
 
         assert (
@@ -170,7 +173,7 @@ class TrainerController:
 
         event_analyzer.run_analysis_from_args(self.args)
 
-        async def _fn(attempt: int) -> list[Any]:
+        async def _fn(attempt: int) -> list[TrainStepOutput]:
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
                 attempt=attempt,
