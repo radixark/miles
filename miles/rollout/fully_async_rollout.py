@@ -37,6 +37,7 @@ from miles.rollout.fully_async_data_buffer import (
     DefaultDataBuffer,
     DefaultMultiDataBuffer,
     Group,
+    add_data_buffer_arguments,
     first_sample,
 )
 from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -59,6 +60,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
     data buffer's call (see ``fully_async_data_buffer.py``); this class assembles
     what it hands back into a batch.
     """
+
+    add_arguments = staticmethod(add_data_buffer_arguments)
 
     def __init__(self, input: RolloutFnConstructorInput):
         super().__init__(input)
