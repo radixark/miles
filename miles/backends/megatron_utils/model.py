@@ -302,21 +302,8 @@ def forward_only(
     def forward_step(
         data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False
     ) -> tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
-        """Forward step used by Megatron's pipeline engine.
+        """Return the model output and its batch-bound loss callback."""
 
-        Args:
-            data_iterator (DataIterator): Input data iterator.
-            model (GPTModel): The GPT model chunk to execute.
-
-        Returns:
-            tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
-            Output tensor(s) and a callable that computes and packages results
-            to be collected by the engine.
-        """
-
-        assert not return_schedule_plan, "forward_only step should never return schedule plan"
-
-        # Get the batch.
         batch = get_batch(
             data_iterator,
             [
@@ -415,13 +402,15 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
-def run_forward_backward_pass(args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts):
+def run_forward_backward_pass(
+    args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts, forward_only=False
+):
     """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
 
     @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
         torch.Tensor,
-        Callable[[torch.Tensor], tuple[torch.Tensor, int, dict[str, torch.Tensor | list[str]]]],
+        Callable[[torch.Tensor], tuple[torch.Tensor, int, dict]],
     ]:
         """Forward step used by Megatron's pipeline engine during training.
 
@@ -430,7 +419,7 @@ def run_forward_backward_pass(args, dumper_phase_util, data_iterator, model, num
             model (GPTModel): The GPT model chunk to execute.
 
         Returns:
-            tuple[torch.Tensor, Callable[[torch.Tensor], tuple[torch.Tensor, int, dict[str, torch.Tensor | list[str]]]]]:
+            tuple[torch.Tensor, Callable[[torch.Tensor], tuple[torch.Tensor, int, dict]]]:
             Output tensor(s) and the loss function, which returns
             (loss, num_elems, {"keys": list[str], "values": torch.Tensor}).
         """
@@ -455,6 +444,9 @@ def run_forward_backward_pass(args, dumper_phase_util, data_iterator, model, num
                 "witness_ids",
                 "opd_reverse_kl",
                 "rollout_mask_sums",
+                "loss_weights",
+                "target_tokens",
+                "sample_indices",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -521,7 +513,7 @@ def run_forward_backward_pass(args, dumper_phase_util, data_iterator, model, num
         seq_length=args.seq_length,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
-        forward_only=False,
+        forward_only=forward_only,
     )
 
 
