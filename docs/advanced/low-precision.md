@@ -202,8 +202,10 @@ python scripts/run_qwen3_30b_a3b.py execute \
 
 The launcher selects per-token activation scaling, disables the incompatible
 2D quantization, RHT, and stochastic-rounding paths, and loads the matching
-tensor-level precision configuration. Unmatched tensors stay in BF16, and
-rollout uses a BF16 KV cache.
+tensor-level precision configuration. NVFP4 applies only to the routed-expert
+FC1 and FC2 GEMMs; shared experts and all other unmatched tensors stay in BF16
+across checkpoint conversion, training, and live weight export. Rollout uses a
+BF16 KV cache.
 
 The training path uses:
 
@@ -298,9 +300,10 @@ conversion, Megatron training, SGLang rollout, and live weight export.
 | `--extra-high-precision-layers-megatron` | Exclude matching Megatron tensor names during training and live export. |
 | `--te-precision-config-file` | Select Transformer Engine recipes by Megatron tensor name. |
 
-Use equivalent Hugging Face and Megatron name matchers. Common exceptions
-include final transformer layers, shared experts, and MLA projections whose
-contraction axis does not match a one-dimensional scaling layout.
+Use equivalent Hugging Face and Megatron name matchers for exceptions beyond a
+recipe's default scope. NVFP4 excludes shared experts automatically. Common
+additional exceptions include final transformer layers and MLA projections
+whose contraction axis does not match a one-dimensional scaling layout.
 
 ## Hardware support
 

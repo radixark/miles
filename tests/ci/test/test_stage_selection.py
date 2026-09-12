@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,23 @@ from tests.ci.stage_selection import PR_GPU_STAGES, ChangedFile, read_changed_fi
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
+WORKFLOW = Path(__file__).resolve().parents[3] / ".github/workflows/pr-test.yml"
+
+
+def test_a_cpu_failure_cannot_skip_the_gpu_stages_a_nightly_asked_for():
+    """bypass_fastfail is defeated by any job on the path that inherits the default success().
+
+    A job without `if` is gated on its whole dependency closure, so on 2026-09-10 a
+    stage-a-cpu failure skipped resolve-ci-image and with it all seven GPU stages, even
+    though the nightly policy had set bypass_fastfail=true.
+    """
+    workflow = WORKFLOW.read_text()
+    blocks = dict(re.findall(r"\n  ([a-z][a-z0-9-]*):\n(.*?)(?=\n  [a-z][a-z0-9-]*:\n|\Z)", workflow, re.S))
+    for job in ("docker-build", "resolve-ci-image"):
+        block = blocks[job]
+        assert "if:" in block, f"{job} inherits success() over the closure, defeating bypass_fastfail"
+        assert "always()" in block, f"{job} must not be gated on an unrelated upstream failure"
+
 
 def _registration(
     filename: str,
@@ -20,14 +38,19 @@ def _registration(
     *,
     labels: list[str] | None = None,
     disabled: str | None = None,
+    hardware: list[str] | None = None,
 ) -> CIRegistry:
     backend = HWBackend.ROCM if suite == "stage-c-4-gpu-mi350" else HWBackend.CUDA
+    if hardware is None and backend is HWBackend.CUDA:
+        # Mirror the home-stage invariant the registry enforces.
+        hardware = ["blackwell"] if suite.endswith("-b200") else ["hopper"]
     return CIRegistry(
         backend=backend,
         filename=filename,
         est_time=1,
         suite=suite,
         labels=["precision"] if labels is None else labels,
+        hardware=hardware or [],
         disabled=disabled,
     )
 
@@ -126,6 +149,19 @@ def test_broad_scope_adds_every_runnable_stage():
     skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-all",)))
 
     assert skipped == PR_GPU_STAGES - {"stage-b-2-gpu-h200", "stage-c-8-gpu-h100"}
+
+
+@pytest.mark.parametrize("changed_path", ["docs/index.md", "tests/e2e/test_hopper.py"])
+def test_blackwell_only_scope_keeps_b200_for_non_blackwell_changes(changed_path):
+    registrations = [
+        _registration("tests/e2e/test_hopper.py", "stage-c-8-gpu-h200", hardware=["hopper"]),
+        _registration("tests/e2e/test_blackwell.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
+    ]
+    changed_files = (ChangedFile("M", (changed_path,)),)
+
+    skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-blackwell-only",)))
+
+    assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200"}
 
 
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():

@@ -23,6 +23,7 @@ register_cuda_ci(
     est_time=1000,
     suite="stage-c-4-gpu-h200",
     labels=["precision", "long"],
+    hardware=["hopper"],
 )
 
 _MODEL_NAME = "DeepSeek-V4-Flash-FP8-4layer"

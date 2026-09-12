@@ -89,6 +89,36 @@ def test_validated_reason_is_directly_beneath_its_existing_job_link():
     assert content.count("↳") == 3
 
 
+def shard(index):
+    return {
+        "id": index,
+        "name": f"stage-a-cpu ({index}) / run-cpu",
+        "html_url": f"https://example/jobs/{index}",
+        "conclusion": "failure",
+    }
+
+
+def test_one_defect_across_every_shard_collapses_to_a_single_row():
+    same = ANALYSIS(reason="Collection failed because the hardware list was rejected.", tags=("rollout",))
+    content = HANDLER.list_jobs_md([shard(i) for i in range(5)], reasons={i: [same] for i in range(5)})
+    assert content.count("↳") == 2, content
+    assert content.count("stage-a-cpu") == 5
+    assert content.count("\n- ") == 0
+
+
+def test_a_different_failure_keeps_its_own_row():
+    same = ANALYSIS(reason="Collection failed because the hardware list was rejected.")
+    other = ANALYSIS(reason="The deterministic test exited with code 1.")
+    content = HANDLER.list_jobs_md([shard(0), shard(1), shard(2)], reasons={0: [same], 1: [same], 2: [other]})
+    assert content.count("\n- ") == 1, content
+    assert "The deterministic test exited with code 1." in content
+
+
+def test_rows_stay_separate_when_no_analysis_is_available():
+    content = HANDLER.list_jobs_md([shard(0), shard(1), shard(2)], reasons=None)
+    assert content.count("\n- ") == 2, content
+
+
 def test_rerun_reasons_apply_only_to_current_failures():
     current = [job(20, "still"), job(30, "new")]
     previous = {"fixed": job(10, "fixed"), "still": job(19, "still")}

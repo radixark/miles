@@ -18,6 +18,7 @@ from miles.rollout.session.core import (
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
     commit_generation,
@@ -124,6 +125,10 @@ class SessionCoreV2(SessionCore):
             return _samples_response(
                 encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)
             )
+        # Hooks may inspect or mutate session metadata, so publish the
+        # authoritative server-owned value only at the wire boundary.
+        if self.config.sglang_speculative_algorithm is not None:
+            metadata[SESSION_ROLLOUT_METRICS_KEY] = build_session_rollout_metrics(session_id, session.tree.nodes)
         return _samples_response(encode_samples(samples, metadata, fields=COMPUTED_FIELDS_V2))
 
     async def chat_completions(

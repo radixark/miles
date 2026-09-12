@@ -15,6 +15,7 @@ register_cuda_ci(
     est_time=900,
     suite="stage-c-8-gpu-h100",
     labels=["megatron"],
+    hardware=["hopper", "blackwell"],
     disabled="Flaky; temporarily disabled to validate PR correctness",
 )
 
