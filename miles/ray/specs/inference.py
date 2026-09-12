@@ -216,12 +216,17 @@ def _compute_spec_inference_engine(
         name=compute_engine_pool_id(model_idx=model_idx, group_index=group_index),
         port_infos=[
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+            # SGLang expects the whole dist_init block to be free on *every* node of a multi-node engine
+            # (each node checks `dist_init_port` locally), but it is allocated on the master node only.
+            # Take it from a dedicated range so the other nodes' shared-range allocations (router,
+            # prometheus, sibling engines: 20000+) can never occupy it.
             PortInfo(
                 name="dist_init",
                 static_port=9000,
                 mode="master",
                 allow_dynamic=True,
                 num_consecutive=30 + args.sglang_dp_size,
+                dynamic_start=30000,
             ),
             PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
             *(

@@ -259,7 +259,10 @@ class _BaseActorManager(Generic[SpecT]):
                 continue
             if port_info.allow_dynamic:
                 port = await self.manager.port_allocator.alloc(
-                    self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
+                    self.actor_handle,
+                    node_ip=node_ip,
+                    consecutive=port_info.num_consecutive,
+                    start_port=port_info.dynamic_start,
                 )
             else:
                 port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)

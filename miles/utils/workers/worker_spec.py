@@ -20,6 +20,10 @@ class PortInfo(FrozenStrictBaseModel):
     allow_dynamic: bool = False
     num_consecutive: int = 1
     offset_by_cell: bool = False
+    # Start of the dynamic range for this port (default: the shared per-node range). Ports that every
+    # node of a multi-node engine must find free (e.g. SGLang's dist_init block) get their own range so
+    # the per-node allocations of *other* workers on those nodes (router, other engines) cannot land on them.
+    dynamic_start: int | None = None
 
     @model_validator(mode="after")
     def _reject_offsetting_a_dynamically_allocated_port(self) -> "PortInfo":

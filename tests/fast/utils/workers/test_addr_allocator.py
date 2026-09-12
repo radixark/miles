@@ -144,3 +144,16 @@ class TestPortAllocator:
         await asyncio.gather(cursors.alloc(engine, node_ip="10.0.0.1"), _tick())
 
         assert ticks == [0, 1, 2]
+
+    async def test_a_dedicated_range_has_its_own_cursor_per_node(self):
+        """`start_port` allocations live in their own range and never move the shared per-node cursor."""
+        cursors = PortAllocator()
+        engine = fake_engine(host="10.0.0.1", port_seed=0)
+        shared = await cursors.alloc(engine, node_ip="10.0.0.1")
+        block = await cursors.alloc(engine, node_ip="10.0.0.1", consecutive=62, start_port=30000)
+        again = await cursors.alloc(engine, node_ip="10.0.0.1", start_port=30000)
+        assert shared == 20000
+        assert block == 30000
+        assert again == 30062
+        assert cursors._next_port_of_ip == {"10.0.0.1": 20001}
+        assert cursors._next_port_of_ip_by_range == {("10.0.0.1", 30000): 30063}
