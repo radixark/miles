@@ -9,6 +9,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
+from miles.utils import object_store
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -311,6 +312,7 @@ class TrainerController:
         """
         self.args = args
         configure_logger(args, source=TrainerControllerProcessIdentity(role=self._role))
+        object_store.init_instance(args, contribute_segment=False)
 
         if self._expected_num_cells > 1:
             self._indep_dp_store, self._indep_dp_store_addr = create_tcp_store()
