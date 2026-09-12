@@ -40,8 +40,19 @@ def test_shared_ppo_counts_actor_bundles_once(colocate, expected):
     assert _get_placement_group_layout(_layout_args(colocate=colocate)) == expected
 
 
-def test_debug_train_only_counts_actor_bundles_once():
-    assert _get_placement_group_layout(_layout_args(debug_train_only=True)) == (2, 0)
+def test_debug_train_only_counts_actor_bundles_once_and_leaves_the_rollout_entry_empty():
+    """No engine is deployed, so every bundle belongs to the trainer and the rollout slice starts past the end."""
+    assert _get_placement_group_layout(_layout_args(debug_train_only=True)) == (2, 2)
+
+
+def test_debug_rollout_only_bundles_the_eval_engines_too():
+    """--eval-num-gpus buys engines this run launches, and leaving them out of the group strands them."""
+    assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, eval_num_gpus=3)) == (7, 0)
+
+
+def test_colocate_bundles_the_eval_engines_too():
+    """Colocated engines share the trainer's gpus, but the eval engines are extra ones nobody placed."""
+    assert _get_placement_group_layout(_layout_args(colocate=True, eval_num_gpus=3)) == (7, 0)
 
 
 def test_external_rollout_only_reserves_no_local_bundles():
@@ -72,8 +83,8 @@ class TestPlacementGroupLayout:
         assert num_gpus - rollout_offset == 4
 
     def test_the_policy_count_multiplies_the_debug_and_external_layouts_too(self):
-        """These branches compute their own totals, so each one has to multiply on its own."""
-        assert _get_placement_group_layout(_multi_policy_layout_args(3, debug_train_only=True)) == (6, 0)
+        """The flags that zero the rollout side must not also drop the policies out of the trainer side."""
+        assert _get_placement_group_layout(_multi_policy_layout_args(3, debug_train_only=True)) == (6, 6)
         assert _get_placement_group_layout(_multi_policy_layout_args(3, rollout_external=True)) == (6, 6)
 
     def test_only_the_actors_are_counted_as_policies(self):
