@@ -41,12 +41,47 @@ def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
 
 
 async def async_rm(args, sample: Sample, **kwargs):
+    # A per-sample reward_spec override still wins over the process-wide --reward-funcs composite.
+    if getattr(args, "reward_funcs", None) and sample.reward_spec is None:
+        return await _async_weighted_rm(args, sample, **kwargs)
+
     custom_rm_path, rm_type = _resolve_reward_config(args, sample)
 
     if custom_rm_path is not None:
         rm_function = load_function(custom_rm_path)
         return await rm_function(args, sample, **kwargs)
 
+    return await _async_builtin_rm(args, sample, rm_type)
+
+
+async def _async_weighted_rm(args, sample: Sample, **kwargs) -> float | dict[str, float]:
+    names = args.reward_funcs
+    weights = args.reward_weights if args.reward_weights is not None else [1.0] * len(names)
+    tasks = [
+        load_function(name)(args, sample, **kwargs) if "." in name else _async_builtin_rm(args, sample, name)
+        for name in names
+    ]
+    values = await asyncio.gather(*tasks)
+    components = {}
+    reward = 0.0
+    for name, weight, value in zip(names, weights, values, strict=True):
+        if isinstance(value, dict):
+            if not args.reward_key or args.reward_key not in value:
+                raise ValueError(
+                    f"Reward function {name!r} returned a dict; set --reward-key to one of {list(value)}."
+                )
+            value = value[args.reward_key]
+        components[name] = value
+        if value is not None:
+            reward += weight * value
+    if sample.metadata is None:
+        sample.metadata = {}
+    sample.metadata["reward_components"] = components
+    # Keep the reward shape --reward-key consumers expect (get_reward_value, eval metrics).
+    return {args.reward_key: reward} if args.reward_key else reward
+
+
+async def _async_builtin_rm(args, sample: Sample, rm_type: str):
     response = sample.response
     label = sample.label
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
