@@ -157,3 +157,34 @@ class TestRecoveryPairing:
         assert views.compute_num_injections(log.events, cell_type="rollout") == 1
         assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 0
         assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {"rollout-engine-0": 1}
+
+
+class TestOverlappingRecoveries:
+    def test_a_cell_crashed_again_mid_relaunch_is_repaid_by_one_final_serve(self) -> None:
+        """Regression: a dense soak crashes an engine before it re-serves, and pairing one-for-one went red."""
+        log = state.EventLog()
+        log.observe([staged("rollout-engine-0", SERVING)])
+        _note_injection(log)
+        log.observe([staged("rollout-engine-0", PENDING)])
+        log.observe([staged("rollout-engine-0", RUNNING_NOT_SERVING)])
+        _note_injection(log)
+        log.observe([staged("rollout-engine-0", PENDING)])
+        log.observe([staged("rollout-engine-0", SERVING)])
+
+        assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {}
+        assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 2
+
+    def test_a_serve_that_predates_the_last_crash_does_not_discharge_it(self) -> None:
+        """Otherwise the last crash of a soak is paid for by the recovery of the crash before it."""
+        log = state.EventLog()
+        log.observe([staged("rollout-engine-0", SERVING)])
+        _note_injection(log)
+        log.observe([staged("rollout-engine-0", PENDING)])
+        log.observe([staged("rollout-engine-0", SERVING)])
+        _note_injection(log)
+
+        assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {"rollout-engine-0": 1}
+
+
+def _note_injection(log: state.EventLog, *, cell_name: str = "rollout-engine-0") -> None:
+    log.note_injection_attempt(cell_name=cell_name, form_name="inject_fault:sigkill", succeeded=True)
