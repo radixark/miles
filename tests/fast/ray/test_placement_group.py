@@ -194,19 +194,15 @@ def _training_args(**overrides) -> Namespace:
 
 class TestCreateTrainingModels:
     async def test_only_the_actor_is_wired_to_the_rollout_path(self, fake_trainer_controllers):
-        """The critic never broadcasts weights, so handing it the engines would let it publish over the actor's."""
-        inference_controller = object()
+        """Only actor workers consume rollout batches from the executor."""
         rollout_executor = _FakeRolloutExecutorHandle()
 
         actor, critic = await create_training_models(
             _training_args(use_critic=True, use_opd=True, opd_type="megatron"),
-            inference_controller,
             rollout_executor,
         )
 
-        assert actor._inference_controller is inference_controller
         assert actor._rollout_executor is rollout_executor
-        assert critic._inference_controller is None
         assert critic._rollout_executor is None
         assert critic._with_opd_teacher is False
 
@@ -220,7 +216,6 @@ class TestCreateTrainingModels:
         """Only the in-process Megatron teacher lives in the trainer; the sglang teacher is served by the engines."""
         actor, _ = await create_training_models(
             _training_args(use_opd=use_opd, opd_type=opd_type),
-            object(),
             _FakeRolloutExecutorHandle(),
         )
 
@@ -231,7 +226,7 @@ class TestCreateTrainingModels:
         args = _training_args(rollout_global_dataset=False)
         rollout_executor = _FakeRolloutExecutorHandle()
 
-        await create_training_models(args, object(), rollout_executor)
+        await create_training_models(args, rollout_executor)
 
         assert fake_trainer_controllers.events == [("init", "actor"), ("set_rollout_executor", "actor")]
         assert args.start_rollout_id == _TRAINER_START_ROLLOUT_ID
