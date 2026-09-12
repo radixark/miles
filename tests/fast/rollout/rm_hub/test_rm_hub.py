@@ -1,7 +1,9 @@
+import time
 from unittest.mock import MagicMock
 
 import pytest
 
+from miles.rollout import rm_hub
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import run
 from miles.utils.types import Sample
@@ -13,6 +15,9 @@ def mock_args():
     args.custom_rm_path = None
     args.rm_type = None
     args.rm_url = None
+    args.rm_timeout = None
+    args.rm_timeout_workers = 8
+    args.reward_key = None
     return args
 
 
@@ -149,3 +154,51 @@ class TestBatchedAsyncRm:
         rewards = run(batched_async_rm(mock_args, samples))
         assert rewards[0] == 1
         assert rewards[1] == 1.0
+
+
+class TestRmTimeout:
+    def test_slow_custom_rm_gets_zero_and_a_warning(self, mock_args, tmp_path, monkeypatch, caplog):
+        (tmp_path / "slow_rm.py").write_text(
+            "import asyncio\n\nasync def rm(args, sample, **kwargs):\n    await asyncio.sleep(5)\n    return 1.0\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        mock_args.custom_rm_path = "slow_rm.rm"
+        mock_args.rm_timeout = 0.05
+        sample = Sample(index=7, prompt="p", response="r", label="l")
+
+        with caplog.at_level("WARNING"):
+            reward = run(async_rm(mock_args, sample))
+
+        assert reward == 0.0
+        assert "exceeded --rm-timeout" in caplog.text
+        assert "0.05s" in caplog.text
+        assert "index=7" in caplog.text
+
+    def test_rule_based_grader_runs_in_a_thread_under_the_timeout(self, mock_args, monkeypatch):
+        """Sync graders cannot be interrupted by asyncio; under a timeout they run in a worker thread."""
+
+        def slow_grade(response, label):
+            time.sleep(0.3)
+            return True
+
+        monkeypatch.setattr(rm_hub, "grade_answer_verl", slow_grade)
+        mock_args.rm_type = "math"
+        mock_args.rm_timeout = 0.05
+
+        assert run(async_rm(mock_args, Sample(prompt="p", response="42", label="42"))) == 0.0
+
+    def test_timed_out_dapo_preserves_reward_key(self, mock_args, monkeypatch):
+        def slow_grade(response, label):
+            time.sleep(0.3)
+            return {"score": 1.0, "acc": True, "pred": "42"}
+
+        monkeypatch.setattr(rm_hub, "compute_score_dapo", slow_grade)
+        mock_args.rm_type = "dapo"
+        mock_args.rm_timeout = 0.05
+        mock_args.reward_key = "score"
+        sample = Sample(prompt="p", response="42", label="42")
+
+        sample.reward = run(async_rm(mock_args, sample))
+
+        assert sample.reward == {"score": 0.0}
+        assert sample.get_reward_value(mock_args) == 0.0
