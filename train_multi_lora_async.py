@@ -6,9 +6,9 @@ from pathlib import Path
 
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
-from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
+from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.multi_lora import define_new_adapter_metrics
 from miles.utils.orchestration_utils import init_orchestration_script
@@ -16,23 +16,27 @@ from miles.utils.orchestration_utils import init_orchestration_script
 logger = logging.getLogger(__name__)
 
 
-async def main(args):
+async def main(args, *, disposer: Disposer):
     assert (
         not args.colocate
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
-    worker_manager = init_orchestration_script(args)
+    _worker_manager = init_orchestration_script(args, disposer=disposer)
+
     inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
+    disposer.add(inference_controller, rollout_executor)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
     controller = get_multi_lora_controller()
     await controller.init()
+    disposer.add(controller.stop)
     host = await controller.http_host()
     api_port = await controller.api_port()
     logger.info(f"Multi-LoRA control API listening on http://{host}:{api_port} (head node)")
 
     actor_model, _ = await create_training_models(args, rollout_executor)
+    disposer.add(actor_model)
 
     # CLI-registered adapters are loaded and pushed by the loop's first
     # reconcile + update_weights.
@@ -79,13 +83,7 @@ async def main(args):
 
         rollout_id += 1
 
-    await rollout_executor.dispose()
-    await inference_controller.dispose()
-    await actor_model.dispose()
-    await controller.stop()
-    await shutdown_worker_manager(worker_manager)
-
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(main(args))
+    asyncio.run(with_disposer(main, args))

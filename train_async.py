@@ -9,30 +9,30 @@ from miles.ray.placement_group import (
     update_weights,
 )
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
-from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
-from miles.utils.async_utils import eager_create_task
+from miles.utils.async_utils import Disposer, eager_create_task, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.orchestration_utils import init_orchestration_script
-from miles.utils.tracking_utils.tracking import finish_tracking
 
 logger = logging.getLogger(__name__)
 
 
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
-async def train(args):
+async def train(args, *, disposer: Disposer):
     assert not args.colocate, "Colocation is not supported for async training."
     validate_async_off_policy_correction(args)
-    worker_manager = init_orchestration_script(args)
+    _worker_manager = init_orchestration_script(args, disposer=disposer)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
     inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+    disposer.add(inference_controller, rollout_executor)
 
     # create the actor and critic models
     actor_model, critic_model = await create_training_models(args, rollout_executor)
+    disposer.add(critic_model, actor_model)
 
     maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
     maybe_start_mini_ft_controller(args)
@@ -49,6 +49,7 @@ async def train(args):
         )
 
     eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
+    disposer.add(eval_dispatcher.drain)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
@@ -122,18 +123,7 @@ async def train(args):
             )
             break
 
-    await eval_dispatcher.drain()
-    await rollout_executor.dispose()
-    await inference_controller.dispose()
-    await actor_model.dispose()
-    if critic_model is not None:
-        await critic_model.dispose()
-    await shutdown_worker_manager(worker_manager)
-
 
 if __name__ == "__main__":
     args = parse_args()
-    try:
-        asyncio.run(train(args))
-    finally:
-        finish_tracking()
+    asyncio.run(with_disposer(train, args))

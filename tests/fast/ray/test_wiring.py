@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,23 +54,42 @@ class TestShutdownWorkerManager:
         """The shared driver cleanup remains a no-op when Kubernetes owns worker lifecycles."""
         await wiring.shutdown_worker_manager(None)
 
+    async def test_a_failed_graceful_shutdown_still_kills_the_ray_manager(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A graceful shutdown failure propagates after Ray forcibly reclaims the same manager."""
+        error = RuntimeError("graceful shutdown failed")
+
+        async def fail_shutdown() -> None:
+            raise error
+
+        manager = SimpleNamespace(shutdown=SimpleNamespace(remote=fail_shutdown))
+        killed: list[object] = []
+        monkeypatch.setattr(wiring.ray, "kill", killed.append)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await wiring.shutdown_worker_manager(manager)
+
+        assert exc_info.value is error
+        assert killed == [manager]
+
     @pytest.mark.parametrize(
         "script",
-        sorted(path for path in REPO_ROOT.glob("train*.py") if "launch_worker_manager" in path.read_text()),
+        sorted(path for path in REPO_ROOT.glob("train*.py") if "init_orchestration_script" in path.read_text()),
         ids=lambda path: path.name,
     )
-    def test_every_finite_driver_shuts_down_the_manager_it_launched(self, script: Path) -> None:
-        """Every driver that owns a worker manager must release that same manager on its normal return path."""
-        calls = [
-            node
+    def test_every_finite_driver_hands_its_teardown_to_a_disposer(self, script: Path) -> None:
+        """A driver that releases on its last line instead leaks the manager and the run's tracking on a raise."""
+        calls = {
+            ast.unparse(node)
             for node in ast.walk(ast.parse(script.read_text(), filename=str(script)))
             if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "shutdown_worker_manager"
-        ]
+        }
+        entered = sorted(call for call in calls if call.startswith("asyncio.run("))
 
-        assert len(calls) == 1
-        assert ast.unparse(calls[0]) == "shutdown_worker_manager(_worker_manager)"
+        assert "init_orchestration_script(args, disposer=disposer)" in calls
+        assert len(entered) == 1
+        assert re.fullmatch(r"asyncio\.run\(with_disposer\(\w+, args\)\)", entered[0]) is not None
 
 
 class TestGetBackendCapability:

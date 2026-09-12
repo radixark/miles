@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,8 +17,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.ray import placement_group as placement_group_mod
 from miles.ray import wiring
 from miles.utils import object_store
-
-from miles.ray import placement_group as placement_group_mod
+from miles.utils.async_utils import with_disposer
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -79,7 +79,7 @@ def _install_driver_fakes(
     ) -> None:
         events.append(f"update_weights:{rollout_id}")
 
-    monkeypatch.setattr(train_async_driver, "init_orchestration_script", lambda _args: None)
+    monkeypatch.setattr(train_async_driver, "init_orchestration_script", lambda _args, *, disposer: None)
     monkeypatch.setattr(train_async_driver, "create_rollout_components", create_rollout_components)
     monkeypatch.setattr(train_async_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(train_async_driver, "maybe_start_mini_ft_controller", lambda _args: None)
@@ -104,7 +104,7 @@ class TestApiServer:
         args = _make_args(api_server_port=8123, ft_components=["rollout"])
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_async_driver.train(args)
+        await with_disposer(train_async_driver.train, args)
 
         (call,) = components.api_server_calls
         assert list(call["trainer_models"]) == ["actor"]
@@ -119,7 +119,7 @@ class TestApiServer:
         args = _make_args(api_server_port=None)
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_async_driver.train(args)
+        await with_disposer(train_async_driver.train, args)
 
         assert components.api_server_calls == []
 
@@ -136,7 +136,7 @@ class TestWeightEqualityCheck:
         )
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_async_driver.train(args)
+        await with_disposer(train_async_driver.train, args)
 
         assert components.inference_controller.check_weights_calls == [
             dict(
@@ -157,7 +157,7 @@ class TestPipelinedGeneration:
         held_generation = asyncio.Event()
         components.rollout_executor.generation_gates[1] = held_generation
 
-        driver = asyncio.create_task(train_async_driver.train(args))
+        driver = asyncio.create_task(with_disposer(train_async_driver.train, args))
         await asyncio.wait_for(components.actor_model.train_started[0].wait(), timeout=10)
 
         assert "generate_start:1" in events
@@ -182,17 +182,17 @@ class TestCriticValuesHandoff:
         components = _install_driver_fakes(monkeypatch, args, events)
         store = FakeObjectStore()
         monkeypatch.setattr(object_store, "_INSTANCE", store)
-        ref = store.put({"values": ["critic-values"]})
+        ref = store.put("critic-values")
         values = [TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=ref)]
         components.critic_model.train_outputs[0] = values
 
         def consume_critic_values(external_data: list[TrainStepOutput]) -> None:
             assert external_data is values
-            assert store.get(external_data[0].values).value == {"values": ["critic-values"]}
+            assert store.get(external_data[0].values).value == "critic-values"
 
         components.actor_model.consume_external_data = consume_critic_values
 
-        await train_async_driver.train(args)
+        await with_disposer(train_async_driver.train, args)
 
         assert store.consumed == [ref]
         assert not store.contains(ref)
@@ -207,7 +207,7 @@ class TestTerminalLifecycle:
         args = _make_args(use_critic=True, keep_old_actor=True, eval_interval=1, hf_checkpoint="/ckpt/hf")
         _install_driver_fakes(monkeypatch, args, events)
 
-        await train_async_driver.train(args)
+        await with_disposer(train_async_driver.train, args)
 
         assert "eval:0" in events
         assert sorted(event for event in events if event.endswith("_dispose")) == [
@@ -226,10 +226,14 @@ class TestTerminalLifecycle:
         manager = FakeWorkerManager(events)
         _install_driver_fakes(monkeypatch, args, events)
 
-        monkeypatch.setattr(train_async_driver, "init_orchestration_script", lambda _args: manager)
+        def init_orchestration_script(_args: SimpleNamespace, *, disposer: Any) -> FakeWorkerManager:
+            disposer.add(partial(wiring.shutdown_worker_manager, manager))
+            return manager
+
+        monkeypatch.setattr(train_async_driver, "init_orchestration_script", init_orchestration_script)
         monkeypatch.setattr(wiring.ray, "kill", manager.kill)
 
-        await train_async_driver.train(args)
+        await with_disposer(train_async_driver.train, args)
 
         assert manager.killed == [manager]
         assert events.index("eval:0") < events.index("manager_shutdown")
