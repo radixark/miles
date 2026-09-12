@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
+
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.multi_lora.controller import MultiLoRAController
 from miles.ray.specs.multi_lora import (
@@ -14,6 +18,8 @@ from miles.ray.specs.multi_lora import (
 from miles.utils.function_registry import load_function
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
 def _args(multi_lora: bool) -> SimpleNamespace:
@@ -80,6 +86,25 @@ class TestMultiLoraControllerSpec:
 
         assert issubclass(bootstrapped, MultiLoRAController)
         assert issubclass(bootstrapped, NodeProbeMixin)
+
+    def test_the_constructor_receives_args_and_one_router_provider_per_model(self) -> None:
+        """Each configured model must give the controller a provider scoped to its own router pool."""
+
+        class DistinctProviderCapability(FakeBackendCapability):
+            def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
+                self.requested_static_pool_ids.append(pool_id)
+                return cast(BaseWorkerProvider, object())
+
+        args = make_args(multi_lora=True, eval_num_gpus=1)
+        capability = DistinctProviderCapability()
+        context = WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+        kwargs = spec_multi_lora_controller(args).ctor_kwargs(context)
+
+        assert kwargs["args"] is args
+        assert len(kwargs["router_providers"]) == 2
+        assert kwargs["router_providers"][0] is not kwargs["router_providers"][1]
+        assert capability.requested_static_pool_ids == ["inference-router-0", "inference-router-1"]
 
     def test_the_worker_and_cell_names_are_stable(self):
         """Every process reaches the controller by this name, so it is part of the release's contract."""
