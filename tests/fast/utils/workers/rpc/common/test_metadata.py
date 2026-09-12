@@ -665,3 +665,47 @@ class TestRayInjectedTraceContext:
 
         with pytest.raises(TypeError, match="parameter '_ray_trace_ctx' must be type-annotated"):
             collect_rpc_method_specs(Worker)
+
+
+class TestAWorkersOwnParameterNamedLikeRaysInjection:
+    def test_an_unannotated_keyword_only_parameter_of_that_name_with_another_default_is_refused(self):
+        """Ray's injection defaults to None, so this one is the worker's own and takes the annotation check."""
+
+        class Worker:
+            def demo_declared(self, *, _ray_trace_ctx=0) -> int:
+                return _ray_trace_ctx
+
+        with pytest.raises(TypeError, match="parameter '_ray_trace_ctx' must be type-annotated"):
+            collect_rpc_method_specs(Worker)
+
+    def test_an_unannotated_required_keyword_only_parameter_of_that_name_is_refused(self):
+        """Skipping it joined no request model and left the method uncallable without ever saying so."""
+
+        class Worker:
+            def demo_declared(self, *, _ray_trace_ctx) -> int:
+                return _ray_trace_ctx
+
+        with pytest.raises(TypeError, match="parameter '_ray_trace_ctx' must be type-annotated"):
+            collect_rpc_method_specs(Worker)
+
+    def test_an_annotated_keyword_only_parameter_of_that_name_satisfies_the_annotation_check(self):
+        """The check the skip used to excuse is the only thing asked of a parameter the worker declares."""
+
+        class Worker:
+            def demo_declared(self, a: int, *, _ray_trace_ctx: int = 3) -> int:
+                return a + _ray_trace_ctx
+
+        assert collect_rpc_method_specs(Worker)["demo_declared"].positional_parameter_names == ("a",)
+
+    def test_the_shape_ray_actually_injects_is_still_skipped(self):
+        """Every part of the match has to keep admitting the shape ray rewrites actor methods with."""
+
+        class Worker:
+            @_inject_ray_trace_context
+            def demo_traced(self, a: int) -> int:
+                return a
+
+        specs = collect_rpc_method_specs(Worker)
+
+        assert specs["demo_traced"].positional_parameter_names == ("a",)
+        assert specs["demo_traced"].serializer.decode_query({"a": 1}) == {"a": 1}
