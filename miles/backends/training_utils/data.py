@@ -90,9 +90,19 @@ def get_rollout_data(
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
     # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
-    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
+    for key in (
+        "rollout_log_probs",
+        "teacher_log_probs",
+        "opd_reverse_kl",
+        "opd_candidate_ids",
+        "opd_candidate_old_log_probs",
+        "opd_candidate_teacher_log_probs",
+        "opd_loss_weights",
+    ):
         if key in rollout_data:
             dtype = _rollout_logprob_dtype(args) if key == "rollout_log_probs" else torch.float32
+            if key == "opd_candidate_ids":
+                dtype = torch.long
             rollout_data[key] = [
                 torch.as_tensor(
                     slice_log_prob_with_cp(

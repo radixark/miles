@@ -147,3 +147,30 @@ def test_multimodal_cp_reslices_precomputed_opd_reverse_kl(monkeypatch: pytest.M
 
     assert len(gathered_keys) == 1
     assert gathered_keys[0] is rollout_data["opd_reverse_kl"][0]
+
+
+@pytest.mark.parametrize(("cp_rank", "indices"), [(0, [6]), (1, [0, 1, 2, 3, 4, 5])])
+def test_candidate_matrices_keep_ids_scores_and_weights_aligned(monkeypatch, cp_rank, indices):
+    state = _parallel_state(cp_size=2, cp_rank=cp_rank)
+    ids = torch.arange(21, dtype=torch.long).reshape(7, 3)
+    scores = -ids.float() / 10
+    raw = dict(
+        tokens=[list(range(11))],
+        loss_masks=[[1] * 7],
+        total_lengths=[11],
+        response_lengths=[7],
+        opd_candidate_ids=[ids],
+        opd_candidate_old_log_probs=[scores],
+        opd_candidate_teacher_log_probs=[scores - 0.25],
+        opd_loss_weights=[torch.arange(7).float()],
+    )
+    monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: (raw, object()))
+    monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+    result, _ = data_utils.get_rollout_data(_args("thd"), object())
+    torch.testing.assert_close(result["opd_candidate_ids"][0], ids[indices])
+    torch.testing.assert_close(result["opd_candidate_old_log_probs"][0], scores[indices])
+    torch.testing.assert_close(result["opd_candidate_teacher_log_probs"][0], scores[indices] - 0.25)
+    torch.testing.assert_close(result["opd_loss_weights"][0], torch.tensor(indices).float())
+    assert result["opd_candidate_ids"][0].dtype == torch.long

@@ -4,6 +4,7 @@ from collections.abc import Iterator, Sequence
 import torch
 
 from miles.backends.training_utils.cp_utils import allgather_cp_redistribute, get_logits_and_tokens_offset_with_cp
+from miles.backends.training_utils.loss_hub.candidate_opd_ops import selected_log_softmax
 from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.sampling_mask import build_local_sampling_mask
@@ -193,6 +194,7 @@ def get_log_probs_and_entropy(
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
     rollout_sampling_mask: Sequence[RolloutSamplingMask] | None = None,
+    opd_candidate_ids: Sequence[torch.Tensor] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
@@ -213,6 +215,9 @@ def get_log_probs_and_entropy(
         non_loss_data: Unused; kept for API compatibility.
         rollout_sampling_mask: One ``RolloutSamplingMask`` per sample,
             covering every response token.
+        opd_candidate_ids: CP-local fixed rollout support to score once with the
+            old learner, before any optimizer step. Returned scores stay fixed
+            across all updates on this rollout.
 
     Returns:
         Dict with key "log_probs" mapping to a list of `[R]` tensors per
@@ -232,6 +237,12 @@ def get_log_probs_and_entropy(
     parallel_state = get_parallel_state()
     log_probs_list = []
     entropy_list = []
+    candidate_log_probs = []
+    if opd_candidate_ids is not None:
+        if args.allgather_cp or args.rollout_temperature != 1:
+            raise ValueError("Candidate old-score caching requires zigzag CP and temperature one")
+        if len(opd_candidate_ids) != len(response_lengths):
+            raise ValueError("Candidate support must contain one tensor per sample")
     response_chunks = _iter_response_chunks(
         logits,
         args=args,
@@ -264,6 +275,16 @@ def get_log_probs_and_entropy(
         )
 
         log_probs_list.append(log_prob.squeeze(-1))
+        if opd_candidate_ids is not None:
+            candidate_log_probs.append(
+                selected_log_softmax(
+                    logits_chunk,
+                    opd_candidate_ids[sample_index],
+                    group=parallel_state.tp.group,
+                    rank=parallel_state.tp.rank,
+                    size=parallel_state.tp.size,
+                ).detach()
+            )
         if with_entropy:
             entropy_list.append(entropy)
 
@@ -272,6 +293,8 @@ def get_log_probs_and_entropy(
     }
     if with_entropy:
         res["entropy"] = entropy_list
+    if opd_candidate_ids is not None:
+        res["opd_candidate_old_log_probs"] = candidate_log_probs
 
     # we need to turn the all gather kv into zigzag ring attn kv
     if args.allgather_cp:

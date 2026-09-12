@@ -62,7 +62,7 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
     assert captured["log_dict"]["log_probs"] == captured["log_dict"]["rollout_log_probs"]
 
 
-def test_sampling_mask_csr_payload_is_not_averaged_as_a_metric(monkeypatch):
+def test_structural_payloads_are_not_averaged_as_metrics(monkeypatch):
     captured = {}
     parallel_state = SimpleNamespace(
         tp=SimpleNamespace(rank=0),
@@ -83,6 +83,9 @@ def test_sampling_mask_csr_payload_is_not_averaged_as_a_metric(monkeypatch):
         "loss_masks": [torch.tensor([1], dtype=torch.int32)],
         "rollout_sampling_mask_ids": [[1, 7]],
         "rollout_sampling_mask_offsets": [[0, 2]],
+        "opd_candidate_ids": [torch.tensor([[1, 7]], dtype=torch.long)],
+        "opd_candidate_old_log_probs": [torch.tensor([[-1.0, -2.0]])],
+        "opd_candidate_teacher_log_probs": [torch.tensor([[-0.5, -2.5]])],
     }
 
     log_utils.log_rollout_data(
@@ -100,3 +103,7 @@ def test_sampling_mask_csr_payload_is_not_averaged_as_a_metric(monkeypatch):
 
     assert "rollout_sampling_mask_ids" not in captured["log_dict"]
     assert "rollout_sampling_mask_offsets" not in captured["log_dict"]
+
+    assert "opd_candidate_ids" not in captured["log_dict"]
+    assert "opd_candidate_old_log_probs" not in captured["log_dict"]
+    assert "opd_candidate_teacher_log_probs" not in captured["log_dict"]

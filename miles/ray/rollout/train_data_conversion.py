@@ -21,6 +21,10 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "rollout_sampling_mask_offsets": "int64",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
+    "opd_candidate_ids": "int64",
+    "opd_candidate_old_log_probs": "float32",
+    "opd_candidate_teacher_log_probs": "float32",
+    "opd_loss_weights": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
 }
@@ -171,6 +175,17 @@ def convert_samples_to_train_data(
 
     if samples[0].opd_reverse_kl is not None:
         train_data["opd_reverse_kl"] = [sample.opd_reverse_kl for sample in samples]
+
+    for key in (
+        "opd_candidate_ids",
+        "opd_candidate_old_log_probs",
+        "opd_candidate_teacher_log_probs",
+        "opd_loss_weights",
+    ):
+        if any(getattr(sample, key) is not None for sample in samples):
+            if any(getattr(sample, key) is None for sample in samples):
+                raise ValueError(f"{key} must be present on every training sample")
+            train_data[key] = [getattr(sample, key) for sample in samples]
 
     x = metadata.get("dynamic_global_batch_size")
     assert args.use_dynamic_global_batch_size == (x is not None)
@@ -394,6 +409,10 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            "opd_candidate_ids",
+            "opd_candidate_old_log_probs",
+            "opd_candidate_teacher_log_probs",
+            "opd_loss_weights",
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
