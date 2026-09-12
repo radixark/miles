@@ -88,8 +88,9 @@ class _RecordingRolloutExecutor:
         self.train_parallel_config = None
         self.loaded_rollout_id = None
 
-    async def set_train_parallel_config(self, config):
+    async def set_train_parallel_config(self, config, trainer_model_id=None):
         self.train_parallel_config = config
+        self.train_parallel_config_model_id = trainer_model_id
 
     async def load(self, rollout_id=None):
         self.loaded_rollout_id = rollout_id

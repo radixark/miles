@@ -184,9 +184,11 @@ async def create_training_models(
 
 
 # TODO: move (when reorganizing files)
-async def update_weights(actor_model, rollout_executor, *, rollout_id: int | None = None) -> None:
+async def update_weights(
+    actor_model, rollout_executor, *, rollout_id: int | None = None, trainer_model_id: str | None = None
+) -> None:
     if (weight_version := await actor_model.update_weights(rollout_id=rollout_id)) is not None:
-        await rollout_executor.set_weight_version(weight_version)
+        await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
 
 
 # TODO: move (when reorganizing files)

@@ -634,7 +634,7 @@ class TestWeightVersion:
         with pytest.raises(AssertionError, match="went backwards"):
             executor.set_weight_version(3)
 
-        assert executor.weight_version == 7
+        assert executor._weight_versions_of_model_id[None] == 7
 
     async def test_independent_dp_accepts_a_decreasing_weight_version_with_a_warning(
         self, ray_local_mode, patch_low_level, caplog
@@ -646,7 +646,7 @@ class TestWeightVersion:
         with caplog.at_level(logging.WARNING):
             executor.set_weight_version(3)
 
-        assert executor.weight_version == 3
+        assert executor._weight_versions_of_model_id[None] == 3
         assert any("went backwards" in record.getMessage() for record in caplog.records)
 
 
