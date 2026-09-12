@@ -61,9 +61,11 @@ class _FakeRemoteMethod:
     def __init__(self, coro_factories):
         self._coro_factories = list(coro_factories)
         self.call_count = 0
+        self.args_seen: list[tuple] = []
         self.kwargs_seen: list[dict] = []
 
-    def remote(self, **kwargs):
+    def remote(self, *args, **kwargs):
+        self.args_seen.append(args)
         self.kwargs_seen.append(kwargs)
         self.call_count += 1
         index = min(self.call_count - 1, len(self._coro_factories) - 1)
@@ -133,6 +135,16 @@ class TestRayWorkerHandleDispatch:
 
         assert result == 7
         assert inner.echo.kwargs_seen == [{"value": 7}]
+
+    async def test_forwards_positional_args_unchanged(self):
+        """Callers may pass positionally, exactly as they would on the in-process object."""
+        handle, inner = _make_handle(echo=_FakeRemoteMethod([_return_factory(7)]))
+
+        result = await handle.echo(7, flag=True)
+
+        assert result == 7
+        assert inner.echo.args_seen == [(7,)]
+        assert inner.echo.kwargs_seen == [{"flag": True}]
 
     async def test_actor_death_is_reported_as_unreachable(self):
         """RayActorError means the worker process is gone, not that the call was bad."""
