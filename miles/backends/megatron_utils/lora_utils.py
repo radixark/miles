@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,8 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
                 grad = param.grad
             if grad is not None:
                 grads.append(grad)
-        for dt in {g.dtype for g in grads}:
+        # set iteration order follows address-derived hashes and need not agree across ranks
+        for dt in sorted({g.dtype for g in grads}, key=str):
             gs = [g for g in grads if g.dtype == dt]
             if len(gs) == 1:
                 dist.all_reduce(gs[0], op=dist.ReduceOp.SUM, group=group)
@@ -436,7 +438,7 @@ def save_lora_checkpoint(
 
     save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
-        dist.barrier()
+        dist.barrier(group=get_gloo_group())
 
     adapter_state: dict[str, torch.Tensor] = {}
     for model_chunk in model:
@@ -506,7 +508,7 @@ def save_lora_checkpoint(
         logger.info(f"Saved optimizer/scheduler state to {save_path}")
 
     if dist.is_initialized():
-        dist.barrier()
+        dist.barrier(group=get_gloo_group())
 
     return str(save_path)
 
@@ -551,19 +553,33 @@ def load_lora_adapter(
     global_rank = dist.get_rank() if dist.is_initialized() else 0
     native_path = adapter_dir / f"adapter_megatron_rank{global_rank}.pt"
     if not native_path.exists():
+        if any(adapter_dir.glob("adapter_megatron_rank*.pt")):
+            raise FileNotFoundError(
+                f"{adapter_dir} holds per-rank adapter shards but none for global rank {global_rank}; "
+                "it was saved under a different parallel layout."
+            )
         legacy = adapter_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
         if legacy.exists():
             logger.warning(f"Using legacy tp/pp-named adapter shard {legacy}; only valid when EP<=TP")
             native_path = legacy
     if native_path.exists():
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
-        loaded = 0
-        for model_chunk in model:
-            for name, param in model_chunk.named_parameters():
-                if name in state_dict:
-                    param.data.copy_(state_dict[name].to(device=param.device))
-                    loaded += 1
-        logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
+        adapter_params = {
+            name: param
+            for model_chunk in model
+            for name, param in model_chunk.named_parameters()
+            if _is_adapter_param_name(name)
+        }
+        missing = adapter_params.keys() - state_dict.keys()
+        unexpected = state_dict.keys() - adapter_params.keys()
+        if missing or unexpected:
+            raise RuntimeError(
+                f"Adapter checkpoint {native_path} does not match the model's adapter parameters: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        for name, param in adapter_params.items():
+            param.data.copy_(state_dict[name].to(device=param.device))
+        logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
         return True, iteration

@@ -9,7 +9,12 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
-from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lora_rollout_enabled
+from miles.utils.lora import (
+    LORA_ADAPTER_NAME,
+    engine_loads_adapter_from_disk,
+    lora_base_cpu_backup_enabled,
+    lora_rollout_enabled,
+)
 from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
@@ -153,10 +158,10 @@ def _compute_server_args(
         else:
             kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
-        if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
+        if engine_loads_adapter_from_disk(args):
             kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
         elif args.lora_adapter_path is not None:
-            logger.info("dummy base load: skipping startup lora_paths; adapter comes via weight-sync")
+            logger.info("Skipping startup lora_paths: the trainer pushes the adapter in the first weight sync")
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 
