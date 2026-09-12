@@ -21,6 +21,7 @@ from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ft_utils.mini_ft_controller import _compute_cell_snapshot, _MiniFTController
+from miles.utils.workers.cell_operations.ray import RayCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
 
 _POOL_ID = "inference-engine-0"
@@ -175,7 +176,7 @@ class _Harness:
         self.worker_manager = _FakeWorkerManager(cell_ids=_CELL_IDS, reconcile=self.controller._reconcile)
         self.handler = _CellHandler(
             cell_type="rollout",
-            worker_manager=self.worker_manager,
+            operations=RayCellOperations(worker_manager_handle=self.worker_manager),
             controller=self.controller,
             pool_ids=[_POOL_ID],
         )
