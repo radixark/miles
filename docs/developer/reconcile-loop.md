@@ -15,6 +15,7 @@ All under `miles/utils/workers/reconcile/`.
 
 | Ours | Does | Go | Not 1:1 |
 | --- | --- | --- | --- |
+| `k8s_types.py` | The pod fields the loop reads, as pydantic models that validate straight off whatever the client yields | [core/v1 `Pod` types](https://github.com/kubernetes/api/blob/master/core/v1/types.go) | A partial view: only the fields miles reads, and every other one is ignored |
 | `k8s_api.py` | LIST/WATCH calls; the only module importing `kubernetes_asyncio`, lazily so the loop stays importable without a Kubernetes backend | [typed client `List` / `Watch`](https://github.com/kubernetes/client-go/blob/master/kubernetes/typed/core/v1/pod.go) | |
 | `k8s_reflector.py` | Cursor bookkeeping, relist on cursor rejection | [`cache.Reflector`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go) | |
 | `source_event.py` | Reflector-to-loop wire format: `UpsertEvent`, `DeleteEvent`, and a whole-world `ReplaceEvent` | [`watch.Event`](https://github.com/kubernetes/apimachinery/blob/master/pkg/watch/watch.go) + [`Store`'s write methods](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) | Go writes to a store by method call; we send the same operations as values |
@@ -28,6 +29,14 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 
 ## Decisions per module
 
+### `k8s_types.py`
+
+| Upstream | Solves | Decision | Reason |
+| --- | --- | --- | --- |
+| Generated core/v1 types | Name the fields of an object the apiserver owns | **Replaced** by hand-written pydantic models covering only the fields miles reads, with `extra="ignore"` | The store, the reflector and the pod views all hold `Pod`, so a typo is a validation error at the edge instead of an `AttributeError` deep in a view. Modelling the whole of `V1Pod` would only re-type what `kubernetes_asyncio` already ships |
+| Two wire spellings of the same field | One parser for both | **Kept** as `from_attributes=True` plus `AliasChoices("pod_ip", "podIP")` on every compound field | `kubernetes_asyncio` deserializes into a snake_case model unless it has none, and only then leaves the raw JSON, which is camelCase. One model reading both is what keeps the conversion in pydantic rather than in a hand-written field walker |
+| An unset field | Tell "absent" from "empty" | **Dropped**; `None` becomes `{}` / `[]` before validation | The client spells an absent `labels` block as `None` and an empty one as `{}`, and no consumer here distinguishes them |
+
 ### `k8s_reflector.py`
 
 | Upstream | Solves | Decision | Reason |
@@ -37,7 +46,8 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 | Bookmarks | Keep an idle cursor fresh | **Kept** | Free server-side, avoids relists |
 | `BackoffManager` around reconnects | Survive a watch that keeps dropping | **Kept**, ours only | Always sending `timeout_seconds` is load-bearing: `kubernetes_asyncio` reads its absence as `watch_forever` and then reconnects and retries a 410 behind our back. Sending it keeps every reopen in `watch()` |
 | `IsTooLargeResourceVersion` | A cursor from the future is never satisfied | **Kept** as the code 504, **dropped** as a reason string | A rolled-back backend would otherwise freeze the store forever, and a plain gateway timeout costs one LIST. Go finds `ResourceVersionTooLarge` in `Status.Details.Causes[].Type` ([`isTooLargeResourceVersionError`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go)), never in `Status.Reason`, so matching it as a reason string never fires |
-| Watch frame shape | Read a cursor out of whatever the client yields | **Kept**: an attribute, or a camelCase key when the frame is a dict | `kubernetes_asyncio` deserializes into a model unless it has none, and only then leaves the raw JSON, which is camelCase. A dict spelling `resource_version` is neither shape, so it is not accepted |
+| Watch frame shape | Read a cursor out of whatever the client yields | **Kept**: an attribute, or a camelCase key when the frame is a dict, both through the `WatchFrame` model | `kubernetes_asyncio` deserializes into a model unless it has none, and only then leaves the raw JSON, which is camelCase. A dict spelling `resource_version` is one of the accepted aliases, since one model reads both shapes |
+| Frame payload type | Only some frames carry a pod | **Kept**: `PodWatchEvent.pod` is validated for `ADDED` / `MODIFIED` / `DELETED` only, and a pod frame that does not validate raises | `BOOKMARK` carries a bare `resourceVersion` and `ERROR` carries a `Status`, so validating either as a pod would fail on every frame. A pod frame miles cannot read is the apiserver breaking the contract, not an object to skip: skipping it would leave the store silently short of a pod. The envelope the reflector needs — the cursor, and a `Status`'s `code` and `reason` — is read from every frame by `WatchFrame` instead |
 | `ApiException` shape | Tell a dead cursor from a transient failure | **Kept**: `status` against 410 / 504 only | `ApiException.__init__` sets `status` from `http_resp.status` or the int the watch layer passes, so it is always an int and never carries a separate `code` |
 | An `ERROR` frame reaching the consumer | A watch that reports failure in-band | **Kept**, though `kubernetes_asyncio` cannot produce it | `Watch.unmarshal_event` raises `ApiException` on `type == "error"` rather than yielding, so the live path is the exception one. Kept because losing a cursor-death signal freezes the store forever and the dependency is unpinned |
 | `ListAndWatch` → `Run` → LIST again | Refresh after every watch ends | **Dropped**; reopen WATCH from the cursor | A LIST per timeout dominates an idle reflector's cost, and the cursor is still valid |
