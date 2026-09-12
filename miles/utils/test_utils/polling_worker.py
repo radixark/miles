@@ -1,5 +1,8 @@
+import logging
 import threading
 from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 
 RunUntilStoppedFn = Callable[[threading.Event], None]
 TickFn = Callable[[], None]
@@ -8,7 +11,16 @@ TickFn = Callable[[], None]
 class PollingWorker:
     def __init__(self, *, name: str, run: RunUntilStoppedFn) -> None:
         self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=run, args=(self._stop_event,), daemon=True, name=name)
+        self._exception: BaseException | None = None
+
+        def run_and_record_failure() -> None:
+            try:
+                run(self._stop_event)
+            except BaseException as err:
+                logger.error("Polling worker %s died", name, exc_info=err)
+                self._exception = err
+
+        self._thread = threading.Thread(target=run_and_record_failure, daemon=True, name=name)
 
     @property
     def is_running(self) -> bool:
@@ -22,6 +34,8 @@ class PollingWorker:
 
     def join(self, *, timeout_seconds: float) -> None:
         self._thread.join(timeout=timeout_seconds)
+        if not self._thread.is_alive() and self._exception is not None:
+            raise self._exception
 
     def stop_and_join(self, *, timeout_seconds: float) -> None:
         self.stop()
