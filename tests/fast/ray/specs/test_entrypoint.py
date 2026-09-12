@@ -24,6 +24,7 @@ class TestComputeSpecs:
         specs = compute_specs(args)
 
         assert [spec.name for spec in specs] == [
+            "rollout-executor",
             "inference-controller",
             "inference-router-0",
             "session-server",
