@@ -126,7 +126,6 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
     with patch("miles.utils.workers.worker_provider.ray.RayWorkerProvider.create", _create):
         actor, critic = await placement_group_module.create_training_models(
             args,
-            inference_controller=object(),
             rollout_executor=SimpleNamespace(load=SimpleNamespace(remote=_noop_remote)),
         )
 
