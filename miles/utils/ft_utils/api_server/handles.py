@@ -13,7 +13,7 @@ from miles.utils.workers.worker_provider.base import CellInfo
 
 
 class _CellStatusSource(Protocol):
-    def get_cell_statuses(self) -> dict[str, CellStatus]: ...
+    async def get_cell_statuses(self) -> dict[str, CellStatus]: ...
 
 
 # TEMPORARY: this layer is not meant to know the inference controller, deliberately violated
@@ -65,7 +65,7 @@ class _CellHandler:
 
     async def list_cells(self) -> list[Cell]:
         cell_infos = await self._get_cell_infos()
-        statuses = self._controller.get_cell_statuses()
+        statuses = await self._controller.get_cell_statuses()
         return [
             self._compute_cell(cell_id, cell_infos=cell_infos, statuses=statuses) for cell_id in sorted(cell_infos)
         ]
@@ -74,7 +74,7 @@ class _CellHandler:
         return self._compute_cell(
             cell_id,
             cell_infos=await self._get_cell_infos(),
-            statuses=self._controller.get_cell_statuses(),
+            statuses=await self._controller.get_cell_statuses(),
         )
 
     def _compute_cell(self, cell_id: str, *, cell_infos: dict[str, CellInfo], statuses: dict[str, CellStatus]) -> Cell:
