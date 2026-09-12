@@ -794,6 +794,50 @@ def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu
     )
 
 
+@pytest.mark.parametrize("offload_train", [False, True])
+@pytest.mark.parametrize("connect_fails", [False, True])
+def test_connection_uses_safe_allocations_when_offloading(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, offload_train: bool, connect_fails: bool
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.args.offload_train = offload_train
+    worker._asleep = offload_train
+    inside_safe_region = False
+
+    @contextmanager
+    def safe_region() -> Iterator[None]:
+        nonlocal inside_safe_region
+        assert not inside_safe_region
+        inside_safe_region = True
+        try:
+            yield
+        finally:
+            inside_safe_region = False
+
+    def check_connection(*_args: Any, **_kwargs: Any) -> None:
+        assert inside_safe_region == offload_train
+        if connect_fails:
+            raise RuntimeError("connection failed")
+
+    saver = Mock()
+    saver.disable.side_effect = safe_region
+    monkeypatch.setattr(actor_module, "torch_memory_saver", saver)
+    monkeypatch.setattr(actor_module, "reload_process_groups", Mock())
+    monkeypatch.setattr(actor_module, "destroy_process_groups", Mock())
+    worker.weight_updater.connect_rollout_engines = check_connection
+    engines = _updatable_engines([], {"cell-0": "hash-a"}, gpu_count=8)
+
+    if connect_fails:
+        with pytest.raises(RuntimeError, match="connection failed"):
+            worker.update_weights(engines)
+    else:
+        worker.update_weights(engines)
+
+    assert not inside_safe_region
+    assert saver.disable.call_count == ((1 if connect_fails else 2) if offload_train else 0)
+    assert worker.weight_updater.update_weights_calls == int(not connect_fails)
+
+
 def test_update_weights_reconnects_once_per_rollout_snapshot(
     actor_module: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
