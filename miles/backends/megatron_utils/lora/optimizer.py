@@ -200,14 +200,10 @@ def step_slot_optimizers(
         slot_optimizers[slot].apply_adam_params(adam_params_by_slot[slot])
         slot_optimizers[slot].prepare_grads()
 
-    outcomes = {
-        slot: slot_optimizers[slot].clip_and_step(clip_grad) for slot in slots
-    }
+    outcomes = {slot: slot_optimizers[slot].clip_and_step(clip_grad) for slot in slots}
     for slot in slots:
         slot_optimizers[slot].zero_grads()
     for slot in slots:
         if "grad_norm" in outcomes[slot]:
             slot_optimizers[slot].allgather_params()
     return outcomes
-
-
