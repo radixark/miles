@@ -175,7 +175,7 @@ class TrainerController:
             external_data is None or len(self._cells) == 1
         ), "external_data is only supported for a single cell, i.e. without independent DP"
 
-        event_analyzer.run_analysis_from_args(self.args)
+        await asyncio.to_thread(event_analyzer.run_analysis_from_args, self.args)
 
         async def _fn(attempt: int) -> list[TrainStepOutput]:
             witness_info = self._allocate_witness_info(
