@@ -12,6 +12,7 @@ run:
   env:
     CUDA_DEVICE_MAX_CONNECTIONS: '1'
     PYTHONUNBUFFERED: '1'
+  stateFile: <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/state/orchestrator-260101-000000-000001.state
   id: 260101-000000-000
   inferenceEngines:
   - command:
@@ -27,8 +28,7 @@ run:
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-0-0
-    objectName: miles-run-2601-98cf6da492ec-inference-engine-0-0
-    poolId: inference-engine-0-0
+    objectName: miles-run-260101-000000-000-all-inference-engine-0-0
     ports:
     - name: primary
       port: 8000
@@ -39,13 +39,13 @@ run:
       limits:
         nvidia.com/gpu: 8
     size: 2
-  launchRecord: <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/launches/launch-260101-000000-000001.json
+    poolId: inference-engine-0-0
   objectNames:
     colocatePairing: miles-run-260101-000000-000-all-colocate-pairing
     mooncakeMaster: miles-run-260101-000000-000-all-mooncake-master
     orchestrator: miles-run-260101-000000-000-all-orchestrator
     uninstall: miles-run-260101-000000-000-all-uninstall
-    uninstallManifest: miles-run-260101-98cf6da492ec-uninstall-manifest
+    uninstallManifest: miles-run-260101-000000-000-all-uninstall-manifest
   orchestrator:
     command:
     - python
@@ -56,7 +56,6 @@ run:
     - kubernetes
     - --run-uuid
     - f52ecf8e9d7d4889
-  stateFile: <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/state/orchestrator-260101-000000-000001.state
   staticWorkers:
   - command:
     - python
@@ -67,12 +66,12 @@ run:
     - --port
     - '30000'
     name: inference-router-0
-    objectName: miles-run-260101-98cf6da492ec-inference-router-0
-    poolId: inference-router-0
+    objectName: miles-run-260101-000000-000-all-inference-router-0
     ports:
     - name: primary
       port: 30000
     replicas: 1
+    poolId: inference-router-0
   trainerEngines:
   - command:
     - <PYTHON>
@@ -98,8 +97,7 @@ run:
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: trainer-engine-actor
-    objectName: miles-run-2601-98cf6da492ec-trainer-engine-actor
-    poolId: trainer-engine-actor
+    objectName: miles-run-260101-000000-000-all-trainer-engine-actor
     ports:
     - name: master
       port: 9000
@@ -109,4 +107,5 @@ run:
     resources:
       limits:
         nvidia.com/gpu: 8
+    poolId: trainer-engine-actor
 

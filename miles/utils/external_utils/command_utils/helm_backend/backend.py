@@ -5,7 +5,7 @@ from miles.utils.external_utils.command_utils.base_backend import BaseCommandBac
 from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
 from miles.utils.external_utils.command_utils.helm_backend import command_job
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName, RunNames
 
 
 class KubernetesCommandBackend(BaseCommandBackend):
@@ -51,6 +51,10 @@ class KubernetesCommandBackend(BaseCommandBackend):
             f"{self.config.deploy_component.value} deployment for this host to name"
         )
         return RunNames.orchestrator_host(
-            release=RunNames.release(run_id=self.config.run_id, deploy_component=self.config.deploy_component),
+            release=ReleaseName(
+                run_id=self.config.run_id,
+                deploy_component=self.config.deploy_component,
+                deploy_instance_id=self.config.deploy_instance_id,
+            ).serialize(),
             namespace=self.config.namespace,
         )
