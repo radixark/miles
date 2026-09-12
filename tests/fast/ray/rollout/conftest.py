@@ -112,7 +112,9 @@ def make_args(**overrides: Any) -> Namespace:
         run_uuid="0123456789abcdef",
         # deployment
         deploy_component="all",
+        deploy_instance_id=None,
         trainer_controller_addrs=None,
+        inference_controller_addr=None,
         # external rollout
         rollout_external=False,
         rollout_external_engine_addrs=None,
