@@ -10,7 +10,9 @@ from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.multi_lora import create_multi_lora_controller_handle
 from miles.utils.adapter_config import AdapterRun
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
+from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import SingletonMeta, get_current_node_ip
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
@@ -62,6 +64,8 @@ def _load_subclass(path: str | None, base_cls):
 
 class MultiLoRAController:
     def __init__(self, *, args, router_providers: Sequence[BaseWorkerProvider], host: str = "0.0.0.0") -> None:
+        configure_logger(args, source=SimpleProcessIdentity(component="multi_lora_controller"))
+
         self.args = args
         self._router_providers = router_providers
         self.host = host

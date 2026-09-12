@@ -10,8 +10,10 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import _wrap_ipv6
+from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
@@ -49,16 +51,18 @@ class RayWorkerManager:
         self.port_allocator = PortAllocator()
 
     @staticmethod
-    def launch(specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
+    def launch(args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
-        ray.get(obj.init.remote(specs, pgs))
+        ray.get(obj.init.remote(args, specs, pgs))
         return obj
 
     @staticmethod
     def get_handle() -> ray.actor.ActorHandle:
         return ray.get_actor(_ACTOR_NAME)
 
-    async def init(self, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
+    async def init(self, args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
+        configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
+
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)

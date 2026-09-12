@@ -13,7 +13,7 @@ from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-from miles.utils.audit_utils.process_identity import InferenceControllerProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
     acquires_lock,
@@ -62,7 +62,7 @@ class InferenceController:
 
     @lock_exempt
     async def init(self) -> None:
-        configure_logger(self.args, source=InferenceControllerProcessIdentity())
+        configure_logger(self.args, source=SimpleProcessIdentity(component="inference_controller"))
 
         if self.args.debug_train_only:
             return
