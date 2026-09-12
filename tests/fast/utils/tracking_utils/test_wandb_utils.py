@@ -1,9 +1,40 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from tests.fast.utils.env_report.conftest import make_args
 
+from miles.utils.tracking_utils import wandb_utils
 from miles.utils.tracking_utils.wandb_utils import _compute_config_for_logging
+
+
+class TestPrimaryWandbInit:
+    def test_primary_wandb_init_resumes_a_preassigned_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A replacement primary resumes the explicitly assigned WandB run."""
+        init_calls: list[dict[str, object]] = []
+        args = make_args(
+            rank=0,
+            use_wandb=True,
+            wandb_dir=None,
+            wandb_group="group",
+            wandb_host=None,
+            wandb_key=None,
+            wandb_mode=None,
+            wandb_project="project",
+            wandb_random_suffix=False,
+            wandb_run_id="assigned-run",
+            wandb_team=None,
+        )
+        monkeypatch.setattr(wandb_utils.wandb, "init", lambda **kwargs: init_calls.append(kwargs))
+        monkeypatch.setattr(wandb_utils.wandb, "define_metric", lambda *args, **kwargs: None)
+        monkeypatch.setattr(wandb_utils.wandb, "run", SimpleNamespace(id="assigned-run"), raising=False)
+
+        wandb_utils.init_wandb_primary(args)
+
+        assert init_calls[0]["id"] == "assigned-run"
+        assert init_calls[0]["resume"] == "allow"
 
 
 class TestTheLoggedConfig:

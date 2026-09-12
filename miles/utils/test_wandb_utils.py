@@ -40,6 +40,20 @@ def test_primary_wandb_init_uses_extended_init_timeout(monkeypatch):
     assert args.wandb_run_id == "run-id"
 
 
+def test_primary_wandb_init_resumes_a_preassigned_run(monkeypatch):
+    """An explicitly assigned run ID lets a replacement primary resume the run."""
+    init_calls = []
+
+    monkeypatch.setattr(wandb_utils.wandb, "init", lambda **kwargs: init_calls.append(kwargs))
+    monkeypatch.setattr(wandb_utils.wandb, "define_metric", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wandb_utils.wandb, "run", SimpleNamespace(id="run-id"), raising=False)
+
+    wandb_utils.init_wandb_primary(_args(wandb_run_id="assigned-run"))
+
+    assert init_calls[0]["id"] == "assigned-run"
+    assert init_calls[0]["resume"] == "allow"
+
+
 def test_secondary_wandb_init_uses_extended_init_timeout(monkeypatch):
     init_calls = []
 
