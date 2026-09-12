@@ -54,9 +54,10 @@ def imported_modules_of_source(source: str, *, filename: str = "<source>") -> se
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             imported.add(node.module)
         elif isinstance(node, ast.Call) and _is_dynamic_import(node.func):
+            arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
             imported.update(
                 argument.value
-                for argument in node.args
+                for argument in arguments
                 if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
             )
     return imported
@@ -66,7 +67,10 @@ def imports_package(modules: Iterable[str], package: str) -> bool:
     return any(module == package or module.startswith(f"{package}.") for module in modules)
 
 
+_DYNAMIC_IMPORT_NAMES = ("import_module", "__import__")
+
+
 def _is_dynamic_import(func: ast.expr) -> bool:
     if isinstance(func, ast.Name):
-        return func.id == "__import__"
-    return isinstance(func, ast.Attribute) and func.attr in ("import_module", "__import__")
+        return func.id in _DYNAMIC_IMPORT_NAMES
+    return isinstance(func, ast.Attribute) and func.attr in _DYNAMIC_IMPORT_NAMES
