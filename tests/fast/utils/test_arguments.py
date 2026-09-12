@@ -1322,6 +1322,36 @@ class TestValidateSkipActorForwardOnly:
         )
 
 
+class TestRmTimeoutArguments:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    @pytest.mark.parametrize("timeout", ["-1", "0"])
+    def test_nonpositive_timeout_is_rejected(self, timeout):
+        args = self._parse(["--rm-timeout", timeout])
+
+        with pytest.raises(ValueError, match="--rm-timeout must be greater than 0"):
+            miles_validate_args(args)
+
+    @pytest.mark.parametrize("timeout", [-1, 0])
+    def test_custom_config_timeout_is_validated(self, tmp_path, timeout):
+        config = tmp_path / "override.yaml"
+        config.write_text(f"rm_timeout: {timeout}\n")
+        args = self._parse(["--rm-timeout", "1", "--custom-config-path", str(config)])
+
+        with pytest.raises(ValueError, match="--rm-timeout must be greater than 0"):
+            miles_validate_args(args)
+
+    @pytest.mark.parametrize("workers", ["-1", "0"])
+    def test_nonpositive_worker_count_is_rejected(self, workers):
+        args = self._parse(["--rm-timeout", "1", "--rm-timeout-workers", workers])
+
+        with pytest.raises(ValueError, match="--rm-timeout-workers must be greater than 0"):
+            miles_validate_args(args)
+
+
 class TestRunUuidResolution:
     def _parse(self, extra: list[str]):
         parser = argparse.ArgumentParser()
