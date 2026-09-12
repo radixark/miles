@@ -542,7 +542,7 @@ class DeepSeekV41Attention(MegatronModule):
                     rt.candidates = candidates
             topk_rel = rt.topk
             assert topk_rel is not None, f"layer {self.layer_id}: no index_source layer ran before it"
-            compress_idxs = torch.where(topk_rel < 0, -1, topk_rel + offset)
+            compress_idxs = torch.where(topk_rel < 0, -1, topk_rel + offset).int()
             topk_idxs = torch.cat([topk_idxs, compress_idxs], dim=-1)
             kv = torch.cat([kv, latent], dim=1)
 

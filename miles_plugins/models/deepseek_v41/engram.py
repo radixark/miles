@@ -1,12 +1,14 @@
 import json
+import logging
 import os
 import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.utils.checkpoint
+
+import torch.nn as nn
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.tensor_parallel.mappings import (
     gather_from_sequence_parallel_region,
@@ -14,6 +16,8 @@ from megatron.core.tensor_parallel.mappings import (
 )
 from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
+
+logger = logging.getLogger(__name__)
 
 _TOKEN_MAP_CACHE: dict[str, tuple[list[int], int]] = {}
 _LAYOUT_CACHE: dict[tuple, "EngramLayout"] = {}
@@ -83,7 +87,7 @@ def compute_hash_multipliers(layer_ids, max_ngram_size: int, vocab_size: int) ->
 
 
 def _mmap_rows(path: str, name: str, row_start: int, row_end: int, row_bytes: int) -> torch.Tensor:
-    """Rows [row_start, row_end) of a 2-D uint8 safetensors tensor as a read-only memory map."""
+    """Rows [row_start, row_end) of a 2-D uint8 safetensors tensor, memory-mapped read-only."""
     import struct
 
     import numpy as np
@@ -95,9 +99,8 @@ def _mmap_rows(path: str, name: str, row_start: int, row_end: int, row_bytes: in
     n = max(0, row_end - row_start)
     if n == 0:
         return torch.zeros(0, row_bytes, dtype=torch.uint8)
-    mm = np.memmap(
-        path, dtype=np.uint8, mode="r", offset=8 + header_len + begin + row_start * row_bytes, shape=(n, row_bytes)
-    )
+    offset = 8 + header_len + begin + row_start * row_bytes
+    mm = np.memmap(path, dtype=np.uint8, mode="r", offset=offset, shape=(n, row_bytes))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return torch.from_numpy(mm)
@@ -152,6 +155,11 @@ def build_engram_layout(config: TransformerConfig) -> EngramLayout | None:
 # [seqlen, hc_mult, dim] fp32 temporaries; checkpointing it in sequence chunks
 # bounds that to one chunk (elementwise per token, so the result is unchanged)
 ENGRAM_GATE_CHUNK = int(os.environ.get("MILES_DSV41_ENGRAM_GATE_CHUNK", "4096"))
+# "sharded": each tensor-parallel rank maps 1/TP of the rows and the lookup all-reduces;
+# "shared": each rank maps the whole table and no all-reduce runs (same numbers, one fewer collective)
+ENGRAM_HOST_TABLE = os.environ.get("MILES_DSV41_ENGRAM_HOST_TABLE", "sharded")
+ENGRAM_GATHER_THREADS = int(os.environ.get("MILES_DSV41_ENGRAM_GATHER_THREADS", "16"))
+assert ENGRAM_HOST_TABLE in ("sharded", "shared"), ENGRAM_HOST_TABLE
 
 
 def engram_gate(x, kv, q_weight, k_weight, eps, clamp_value, chunk: int | None = None):
@@ -210,11 +218,17 @@ class DeepSeekV41Engram(MegatronModule):
         tp_rank = tp_group.rank() if tp_group is not None else 0
         rows = layout.num_embeddings[self.layer_hash_index]
         self.rows = rows
-        self.rows_local = -(-rows // self.tp_size)
-        self.row_start = tp_rank * self.rows_local
+        # "shared": every rank maps the complete table (one page-cache copy per node, since the
+        # ranks map the same file) and gathers all rows itself, so the lookup needs no all-reduce
+        self.shared_table = ENGRAM_HOST_TABLE == "shared"
+        shard_count = 1 if self.shared_table else self.tp_size
+        shard_rank = 0 if self.shared_table else tp_rank
+        self.rows_local = -(-rows // shard_count)
+        self.row_start = shard_rank * self.rows_local
         self.rows_avail = max(0, min(self.row_start + self.rows_local, rows) - self.row_start)
         self.table = None
         self.table_scale = None
+        self._stage = None
         self._table_loaded = False
 
         n_hash_cols = (layout.max_ngram_size - 1) * layout.n_heads
@@ -290,18 +304,43 @@ class DeepSeekV41Engram(MegatronModule):
             hashes.append(rolling.unsqueeze(-1) % self.primes[i - 1])
         return torch.cat(hashes, dim=-1) + self.offsets
 
+    def _staging(self, n: int):
+        """Pinned buffers the host gather writes into, reused across forwards."""
+        if self._stage is None or self._stage[0].shape[0] < n:
+            self._stage = (
+                torch.empty(n, self.head_dim, dtype=torch.uint8).pin_memory(),
+                torch.empty(n, self.head_dim // 32, dtype=torch.uint8).pin_memory(),
+                torch.cuda.Event(),
+            )
+        rows, scales, done = self._stage
+        # the previous forward's copy out of these buffers must have landed before they are refilled
+        done.synchronize()
+        return rows[:n], scales[:n], done
+
     def lookup(self, ids: torch.Tensor) -> torch.Tensor:
         if not self._table_loaded:
             self._load_table()
         local = ids - self.row_start
         owned = (local >= 0) & (local < self.rows_avail)
         local = local.masked_fill(~owned, 0)
-        local_cpu = local.to("cpu")
-        rows = self.table[local_cpu].pin_memory().to(ids.device, non_blocking=True)
-        scales = self.table_scale[local_cpu].pin_memory().to(ids.device, non_blocking=True)
+        local_cpu = local.reshape(-1).to("cpu")
+        row_buf, scale_buf, done = self._staging(local_cpu.numel())
+        prev_threads = torch.get_num_threads()
+        # the gather is a page-cache random read over a ~100 GB table: one thread leaves the GPU idle for seconds
+        torch.set_num_threads(ENGRAM_GATHER_THREADS)
+        try:
+            torch.index_select(self.table, 0, local_cpu, out=row_buf)
+            torch.index_select(self.table_scale, 0, local_cpu, out=scale_buf)
+        finally:
+            torch.set_num_threads(prev_threads)
+        rows = row_buf.to(ids.device, non_blocking=True).view(*ids.shape, -1)
+        scales = scale_buf.to(ids.device, non_blocking=True).view(*ids.shape, -1)
+        done.record()
         rows = rows.view(torch.float8_e4m3fn).float().unflatten(-1, (-1, 32))
         scales = scales.view(torch.float8_e8m0fnu).float().unsqueeze(-1)
         values = (rows * scales).flatten(-2).to(torch.bfloat16)
+        if self.shared_table:
+            return values
         values = values.masked_fill(~owned.unsqueeze(-1), 0)
         if self.tp_size > 1:
             torch.distributed.all_reduce(values, group=self.tp_group)

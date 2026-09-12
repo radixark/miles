@@ -65,8 +65,8 @@ def indexer_select(
             torch.zeros(e - s, dtype=torch.int32, device=q.device),
             lens.to(torch.int32),
         )
-        visible = kv_arange < lens.unsqueeze(-1)
-        scores.masked_fill_(~visible, -torch.inf)
+        # scores is a fresh [bsz, chunk, n_kv] fp32 tensor (GBs at 64k), so mask it in place
+        scores.masked_fill_(kv_arange >= lens.unsqueeze(-1), -torch.inf)
         if is_candidate_source:
             cand = select_candidate_blocks(
                 scores, lens.unsqueeze(-1), candidate_topk_blocks, candidate_block_size
