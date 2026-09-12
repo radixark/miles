@@ -2,9 +2,10 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
+import pytest
 import torch
 
-from miles.utils.replay_base import BaseReplayManager
+from miles.utils.replay_base import BaseReplayManager, RoutingReplayManager
 
 
 class _FakeReplay:
@@ -31,6 +32,14 @@ def _make_replay_manager(top_indices):
     return manager
 
 
+def _make_routing_replay_manager(top_indices):
+    manager = RoutingReplayManager()
+    manager.enabled = True
+    manager.stage = "replay_forward"
+    manager.set_current(_FakeReplay(top_indices))
+    return manager
+
+
 def test_get_topk_fn_fills_all_invalid_rows_with_arange():
     # an all-(-1) row is a masked/pad token; fill it with arange to avoid reading
     # invalid (-1) positions downstream
@@ -51,3 +60,30 @@ def test_get_topk_fn_preserves_partial_padding():
     topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
     torch.testing.assert_close(topk_fn(scores, 3), replayed_top_indices)
+
+
+def test_routing_get_topk_fn_rejects_partial_padding():
+    # Megatron's MoE router has no per-slot padding mask after top-k selection.
+    # Filling these slots would create genuine routes, so routing replay must
+    # fail before returning indices to routing-map construction.
+    scores = torch.arange(5, dtype=torch.float32).unsqueeze(0)
+    manager = _make_routing_replay_manager(torch.tensor([[2, -1, -1]], dtype=torch.int32))
+
+    topk_fn = manager.get_topk_fn(_topk, return_probs=False)
+
+    with pytest.raises(RuntimeError, match="cannot preserve a per-slot padding mask"):
+        topk_fn(scores, 3)
+
+
+def test_routing_get_topk_fn_rejects_partial_padding_before_gathering_probs():
+    scores = torch.tensor([[0.1, 0.2, 0.3, 0.4, 0.5]])
+    replayed_top_indices = torch.tensor([[2, -1, -1]], dtype=torch.int32)
+    manager = _make_routing_replay_manager(replayed_top_indices)
+
+    topk_fn = manager.get_topk_fn(_topk, return_probs=True)
+
+    with pytest.raises(RuntimeError, match="continuing would create extra expert routes"):
+        topk_fn(scores, 3)
+
+    # The replay tensor can be reused by the backward pass and remains intact.
+    torch.testing.assert_close(replayed_top_indices, torch.tensor([[2, -1, -1]], dtype=torch.int32))

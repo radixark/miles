@@ -57,6 +57,13 @@ class BaseReplayManager:
     # True when replayed indices are token/KV positions (indexer): rebase the
     # per-sample 0-based rollout indices onto the packed training sequence.
     replay_indices_are_token_positions = False
+    # Unlike all-invalid rows (whole padding tokens), partially invalid routing
+    # rows have no lossless representation in Megatron's top-k API: the API does
+    # not propagate a per-slot validity mask into probability normalization or
+    # routing-map construction. Routing replay therefore rejects them rather
+    # than inventing expert assignments. Indexer replay retains its existing
+    # partial-padding semantics.
+    reject_partial_invalid_indices = False
 
     def __init__(self):
         self.replays: list[Replay] = []
@@ -99,6 +106,18 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
+            if self.reject_partial_invalid_indices:
+                invalid = top_indices == -1
+                partial_invalid_rows = invalid.any(dim=-1) & ~invalid.all(dim=-1)
+                if partial_invalid_rows.any():
+                    invalid_slots = (invalid & partial_invalid_rows.unsqueeze(-1)).sum().item()
+                    raise RuntimeError(
+                        "Routing replay contains partially padded top-k rows "
+                        f"({partial_invalid_rows.sum().item()} rows, {invalid_slots} invalid slots). "
+                        "Megatron's routing API cannot preserve a per-slot padding mask; "
+                        "continuing would create extra expert routes."
+                    )
+
             # fill padding tokens with arange to avoid invalid reading
             all_invalid = (top_indices == -1).all(dim=-1)
             if all_invalid.any():
@@ -107,6 +126,14 @@ class BaseReplayManager:
                     % scores.shape[1]
                 )
                 top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+
+            # Rollout payloads are serialized as int32, while routing callers
+            # feed the result to PyTorch gather/scatter operators that require
+            # int64. A native torch.topk call also returns int64. Keep the
+            # indexer-only, return-indices path unchanged because its kernels
+            # consume the serialized int32 representation directly.
+            if return_probs:
+                top_indices = top_indices.long()
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
@@ -223,6 +250,7 @@ class RoutingReplayManager(BaseReplayManager):
     if_sp_region = True
     enable_check_replay_result = False
     replay_check_max_mismatch_fraction = 1e-2
+    reject_partial_invalid_indices = True
 
 
 class IndexerReplayManager(BaseReplayManager):
