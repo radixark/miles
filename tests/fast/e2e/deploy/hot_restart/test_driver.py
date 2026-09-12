@@ -1,4 +1,6 @@
+import signal
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HotRestartDriver,
     ScheduledFreeze,
     compute_freeze_plan,
+    driving_hot_restarts,
     relaunch_with_hot_restart,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
@@ -16,9 +19,9 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import NAMESPACE, RELEASE
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
 from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, FTTestAction
 from miles.utils.workers.types import HotRestartComponent
-
 
 _CHECKPOINTED: ScheduledFreeze = ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1)
 _FROM_SCRATCH: ScheduledFreeze = ScheduledFreeze(frozen_rollout_id=1, saved_iteration=None)
@@ -26,6 +29,8 @@ _SCHEDULE: tuple[ScheduledFreeze, ...] = (
     ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1),
     ScheduledFreeze(frozen_rollout_id=4, saved_iteration=3),
 )
+_DRIVE_TIMEOUT_SECONDS: float = 30.0
+_DRIVE_POLL_SECONDS: float = 0.01
 
 
 class TestScheduledFreeze:
@@ -102,6 +107,24 @@ def _driver(tmp_path: Path, **overrides: Any) -> HotRestartDriver:
 def _join_relaunches(driver: HotRestartDriver) -> None:
     for thread in driver._relaunch_threads:
         thread.join(timeout=30.0)
+
+
+def _drive_until_take_overs_landed(driver: HotRestartDriver, *, take_overs: int) -> None:
+    stop_event = threading.Event()
+    thread = threading.Thread(target=driver._drive, args=(stop_event,), name="hot-restart-driver-under-test")
+    deadline = time.monotonic() + _DRIVE_TIMEOUT_SECONDS
+
+    thread.start()
+    while len(driver.records) < take_overs and thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(_DRIVE_POLL_SECONDS)
+
+    stop_event.set()
+    thread.join(timeout=_DRIVE_TIMEOUT_SECONDS)
+
+    assert not thread.is_alive(), (
+        f"the hot restart driver was still driving {_DRIVE_TIMEOUT_SECONDS}s after it was asked to stop, so the "
+        f"records about to be read would race it"
+    )
 
 
 def _install_frozen_at(monkeypatch, rollout_id: int | None) -> None:
@@ -308,7 +331,7 @@ class TestTheTakeOverLoop:
             ],
         )
 
-        driver._drive(threading.Event())
+        _drive_until_take_overs_landed(driver, take_overs=2)
         _join_relaunches(driver)
 
         assert driver.records == [
@@ -332,7 +355,7 @@ class TestTheTakeOverLoop:
             ],
         )
 
-        driver._drive(threading.Event())
+        _drive_until_take_overs_landed(driver, take_overs=1)
         _join_relaunches(driver)
 
         assert armed == [None]
@@ -363,7 +386,7 @@ class TestTheTakeOverLoop:
         monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
         monkeypatch.setattr(driver_module, "read_frozen_rollout_id", lambda _path: 2 if len(reads) > 1 else None)
 
-        driver._drive(threading.Event())
+        _drive_until_take_overs_landed(driver, take_overs=1)
         _join_relaunches(driver)
 
         assert len(driver.records) == 1
@@ -387,9 +410,84 @@ class TestHotRestartDriverVerdict:
         with pytest.raises(AssertionError, match="the hot restart driver failed"):
             driver.assert_all_restarts_happened()
 
+    def test_an_intermediate_launch_replaced_by_the_next_take_over_is_not_a_failure(self, tmp_path):
+        """SIGTERM is the expected local verdict of a launch whose orchestrator the schedule replaces."""
+        driver = _driver(tmp_path, relaunch=_raise_sigterm)
+        driver.records.extend(
+            [
+                HotRestartRecord(index=0, saved_iteration_at_trigger=1, frozen_rollout_id=2),
+                HotRestartRecord(index=1, saved_iteration_at_trigger=3, frozen_rollout_id=4),
+            ]
+        )
+
+        driver._relaunch(4)
+
+        driver.assert_all_restarts_happened()
+
+    def test_a_final_launch_killed_by_sigterm_is_still_a_failure(self, tmp_path):
+        """Nothing replaces the final orchestrator, so its SIGTERM remains the target run's real verdict."""
+        driver = _driver(tmp_path, relaunch=_raise_sigterm)
+
+        driver._relaunch(None)
+
+        with pytest.raises(AssertionError, match="the hot restart driver failed"):
+            driver.assert_all_restarts_happened()
+
 
 def _raise_boom(_frozen_rollout_id: int | None) -> None:
     raise RuntimeError("boom")
+
+
+def _raise_sigterm(_frozen_rollout_id: int | None) -> None:
+    raise RunExitedError(128 + signal.SIGTERM)
+
+
+class TestDrivingHotRestarts:
+    def test_sigterm_before_any_take_over_is_still_the_run_verdict(self, tmp_path, monkeypatch):
+        """No scheduled replacement explains SIGTERM before the driver has triggered its first take-over."""
+        driver = _driver(tmp_path)
+        monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
+
+        with pytest.raises(RunExitedError) as error:
+            with driving_hot_restarts(driver, dump_dir=str(tmp_path)):
+                raise RunExitedError(128 + signal.SIGTERM)
+
+        assert error.value.exit_code == 128 + signal.SIGTERM
+
+    def test_a_system_exit_that_is_not_a_run_verdict_is_never_a_replaced_launch(self, tmp_path, monkeypatch):
+        """Only a followed run's own exit code says a launch was replaced; any other SystemExit ends the side."""
+        driver = _driver(tmp_path)
+        monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
+        driver.records.append(HotRestartRecord(index=0, saved_iteration_at_trigger=1, frozen_rollout_id=2))
+
+        with pytest.raises(SystemExit) as error:
+            with driving_hot_restarts(driver, dump_dir=str(tmp_path)):
+                raise SystemExit(128 + signal.SIGTERM)
+
+        assert not isinstance(error.value, RunExitedError)
+
+    def test_the_previous_launch_exit_does_not_stop_the_remaining_take_overs(self, tmp_path, monkeypatch):
+        """A launch-level SIGTERM must not end a target side whose schedule still has a second take-over."""
+        armed: list[int | None] = []
+        driver = _driver(tmp_path, relaunch=armed.append)
+        _install_progress(
+            monkeypatch,
+            [
+                RunProgress(last_saved_iteration=1, last_finished_rollout_id=2),
+                RunProgress(last_saved_iteration=3, last_finished_rollout_id=4),
+            ],
+        )
+
+        with driving_hot_restarts(driver, dump_dir=str(tmp_path)):
+            deadline = time.monotonic() + _DRIVE_TIMEOUT_SECONDS
+            while not driver.records and time.monotonic() < deadline:
+                time.sleep(_DRIVE_POLL_SECONDS)
+            raise RunExitedError(128 + signal.SIGTERM)
+
+        _join_relaunches(driver)
+
+        assert armed == [4, None]
+        driver.assert_all_restarts_happened()
 
 
 class TestWatchingPastTheLastTakeOver:
@@ -458,6 +556,18 @@ class TestWhenTheCheckpointTrackerLagsTheFreeze:
         )
 
         assert record.saved_iteration_at_trigger == 1
+
+    def test_a_reread_that_answered_nothing_does_not_erase_what_the_freeze_reported(self, tmp_path, monkeypatch):
+        """A tracker nobody could read is no evidence, and reading it as none matches a scenario pinning none."""
+        driver = _driver(tmp_path)
+        monkeypatch.setattr(driver_module.HotRestartDriver, "_reread_saved_iteration", lambda _self: None)
+
+        with pytest.raises(AssertionError, match="save cadence"):
+            driver._compute_record(
+                index=0,
+                scheduled=_FROM_SCRATCH,
+                progress=RunProgress(last_saved_iteration=0, last_finished_rollout_id=1),
+            )
 
     def test_a_tracker_that_never_catches_up_still_fails(self, tmp_path, monkeypatch):
         """Re-reading is for a save in flight, not for a run saving at another pace altogether."""

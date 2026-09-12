@@ -5,7 +5,13 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from tests.e2e.ft.conftest_ft.app import TARGET_SIDE, RunSideFn, RunSideRequest, run_one_release
+from tests.e2e.ft.conftest_ft.app import (
+    TARGET_SIDE,
+    RunSideFn,
+    RunSideRequest,
+    remove_release_and_wait,
+    run_one_release,
+)
 from tests.e2e.ft.conftest_ft.execution import run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
@@ -119,20 +125,19 @@ def run_split_training(
                 _assert_release_installed(release=release, namespace=config.namespace)
     finally:
         for release in reversed(installed):
-            if release != driver_release:
-                _uninstall_whatever_can_be_uninstalled(release=release, namespace=config.namespace)
+            _remove_whatever_can_be_removed(release=release, namespace=config.namespace)
 
 
 # ============================= cleanup and checks =============================
 
 
-def _uninstall_whatever_can_be_uninstalled(*, release: str, namespace: str) -> None:
+def _remove_whatever_can_be_removed(*, release: str, namespace: str) -> None:
     try:
-        Helm.uninstall(release=release, namespace=namespace)
+        remove_release_and_wait(release=release, namespace=namespace)
     except Exception:
         logger.exception(
-            f"Uninstalling {release} in namespace {namespace} failed, so it may still hold the gpus of this run; "
-            f"the releases installed before it are uninstalled next"
+            f"Removing {release} from namespace {namespace} failed, so it may still hold the gpus of this run; "
+            f"the releases installed before it are removed next"
         )
 
 
