@@ -23,6 +23,7 @@ Runtime and infrastructure plumbing rather than training recipes — how miles m
 data and weights around.
 
 - **[fully_async](./infra_features/fully_async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
+- **[hot_restart](./infra_features/hot_restart)**: Replaces the orchestration script and rollout executor of a live run, keeping trainers and engines up.
 - **[low_precision](./infra_features/low_precision)**: Examples of FP8 training and inference, plus INT4 QAT, for improved throughput and stability.
 - **[p2p_weight_transfer](./infra_features/p2p_weight_transfer)**: Point-to-point weight transfer between training and rollout engines.
 - **[random_async](./infra_features/random_async)**: Dataset-free stress test of the async rollout ↔ trainer loop.
