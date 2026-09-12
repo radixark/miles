@@ -18,7 +18,13 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     SeedOption,
     TrainerCrashIntervalSecondsOption,
 )
-from tests.e2e.ft.conftest_ft.execution import get_api_server_args, get_fully_async_args, get_train_script
+from tests.e2e.ft.conftest_ft.execution import (
+    DATA_DIR,
+    MODEL_DIR,
+    get_api_server_args,
+    get_fully_async_args,
+    get_train_script,
+)
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
     FaultInjectorHandle,
@@ -170,17 +176,17 @@ def run_realistic_gsm8k(
 
 
 def prepare_gsm8k(U: BaseCommandBackend) -> None:
-    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
         num_gpus_per_node=TRAIN_GPUS,
-        hf_checkpoint=f"/root/models/{MODEL_NAME}",
-        dir_dst="/root/models",
+        hf_checkpoint=f"{MODEL_DIR}/{MODEL_NAME}",
+        dir_dst=MODEL_DIR,
         megatron_path=os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM"),
     )
-    U.hf_download_dataset("zhuzilin/gsm8k")
+    U.hf_download_dataset("zhuzilin/gsm8k", data_dir=DATA_DIR)
 
 
 def get_gsm8k_train_args(
@@ -192,10 +198,10 @@ def get_gsm8k_train_args(
     fully_async: bool,
     test_name: str,
 ) -> str:
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
-        "--prompt-data /root/datasets/gsm8k/train.parquet "
+        f"--prompt-data {DATA_DIR}/gsm8k/train.parquet "
         "--input-key messages "
         "--label-key label "
         "--apply-chat-template "
@@ -213,7 +219,7 @@ def get_gsm8k_train_args(
 
     eval_args = (
         "--eval-interval 20 "
-        "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
+        f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 1024 "
         "--eval-top-k 1 "
