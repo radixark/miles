@@ -149,6 +149,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "`--cluster-backend ray` and `rpc` under `--cluster-backend kubernetes`."
                 ),
             )
+            parser.add_argument(
+                "--trainer-controller-addrs",
+                type=str,
+                default=None,
+                nargs="+",
+                help=(
+                    "Address of every independently deployed trainer controller, one "
+                    "<trainer_id>=<host:port> entry per trainer the run drives. Required when this launch "
+                    "carries the orchestration script but not the trainer."
+                ),
+            )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
             parser.add_argument(
                 "--actor-num-gpus-per-node", type=int, default=8, help="Number of gpus per node for training actor"
