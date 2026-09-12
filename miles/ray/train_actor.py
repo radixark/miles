@@ -43,7 +43,6 @@ class TrainRayActor(NodeProbeMixin):
         args,
         world_size: int,
         rank: int,
-        indep_dp_store_addr: str,
         role: Literal["actor", "critic"],
         cell_index: int,
     ):
@@ -55,7 +54,6 @@ class TrainRayActor(NodeProbeMixin):
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
-        self._indep_dp_store_addr = indep_dp_store_addr
 
         os.environ["WORLD_SIZE"] = str(self._world_size)
         os.environ["RANK"] = str(self._rank)
