@@ -28,10 +28,10 @@ class _FakeChainedMember:
 
 
 class _RealChainedMember:
-    def __init__(self, optimizer: torch.optim.Optimizer) -> None:
+    def __init__(self, optimizer: torch.optim.Optimizer, *, init_state_fn=None) -> None:
         self.is_stub_optimizer = False
         self.optimizer = optimizer
-        self.init_state_fn = None
+        self.init_state_fn = init_state_fn
         self.config = None
 
     def zero_grad(self, set_to_none: bool = True) -> None:
@@ -157,6 +157,20 @@ class TestResettingARealAdam:
 
         _assert_same_optimizer_state(optimizer, fresh_optimizer)
 
+    def test_a_fused_adam_reallocates_the_moments_a_megatron_optimizer_expects_to_find(self, monkeypatch):
+        """Outside the torch path mcore keeps the moments allocated, and a step onto an absent state raises."""
+        param, optimizer = _adam_with_history(steps=3)
+
+        _reset(
+            monkeypatch,
+            _RealChainedMember(optimizer, init_state_fn=_zero_adam_state),
+            using_pytorch_optimizer=False,
+        )
+
+        state = optimizer.state[param]
+        assert set(state) == {"exp_avg", "exp_avg_sq"}
+        assert torch.count_nonzero(state["exp_avg"]) == 0 and torch.count_nonzero(state["exp_avg_sq"]) == 0
+
     def test_a_reset_drops_the_gradient_a_rolled_back_trainer_still_holds(self, monkeypatch):
         """That gradient was computed against the weights being thrown away, so applying it would corrupt the load."""
         param, optimizer = _adam_with_history(steps=1)
@@ -164,3 +178,47 @@ class TestResettingARealAdam:
         _reset(monkeypatch, _RealChainedMember(optimizer))
 
         assert param.grad is None
+
+
+class TestTheSelfCheckAResetRuns:
+    def test_it_passes_over_a_fused_optimizer_the_reset_just_reinitialized(self, monkeypatch):
+        """The fused path leaves zeroed moments rather than nothing, and both are what a fresh optimizer holds."""
+        _reset(monkeypatch, _FakeChainedMember(init_state_fn=_zero_adam_state), using_pytorch_optimizer=False)
+
+    def test_a_moment_left_behind_is_caught(self, monkeypatch):
+        """A reset that missed a moment would let the run continue on the very state it meant to discard."""
+        member = _FakeChainedMember(
+            init_state_fn=lambda inner, config: inner.state.update({inner.param: {"exp_avg": torch.ones(2)}})
+        )
+
+        with pytest.raises(AssertionError):
+            _reset(monkeypatch, member, using_pytorch_optimizer=False)
+
+    def test_a_step_counter_left_on_the_param_group_is_caught(self, monkeypatch):
+        """A fused adam keeps its step there, and a reset that leaves it resumes the schedule mid-run."""
+        member = _FakeChainedMember(init_state_fn=lambda inner, config: inner.param_groups[0].update(step=7))
+
+        with pytest.raises(AssertionError):
+            _reset(monkeypatch, member, using_pytorch_optimizer=False)
+
+    def test_a_gradient_left_behind_is_caught(self, monkeypatch):
+        """That gradient was computed against the weights being thrown away."""
+        member = _FakeChainedMember()
+        monkeypatch.setattr(member, "zero_grad", lambda set_to_none=True: None)
+
+        with pytest.raises(AssertionError):
+            _reset(monkeypatch, member)
+
+    def test_an_optimizer_that_reset_nothing_at_all_is_caught(self, monkeypatch):
+        """A chain of nothing but stubs would let every assertion above pass without ever seeing a parameter."""
+        with pytest.raises(AssertionError):
+            _reset(monkeypatch, _FakeChainedMember(is_stub_optimizer=True))
+
+    def test_a_state_holding_keys_no_adam_uses_is_caught(self, monkeypatch):
+        """The value checks say nothing about a key they never see, so the set of keys is checked as well."""
+        member = _FakeChainedMember(
+            init_state_fn=lambda inner, config: inner.state.update({inner.param: {"momentum": torch.zeros(2)}})
+        )
+
+        with pytest.raises(AssertionError):
+            _reset(monkeypatch, member, using_pytorch_optimizer=False)
