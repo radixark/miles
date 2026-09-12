@@ -30,6 +30,7 @@ from miles.backends.megatron_utils.checkpoint import load_checkpoint
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.arguments import add_model_impl_argument
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
 from miles.utils.debug_utils.run_megatron.worker.output import compute_and_save_output_info
 from miles.utils.debug_utils.run_megatron.worker.replay import (
@@ -39,7 +40,6 @@ from miles.utils.debug_utils.run_megatron.worker.replay import (
 )
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_k
-from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 
 
 def main() -> None:
@@ -110,7 +110,7 @@ def main() -> None:
 def _register_worker_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Worker arguments plus the plugin arguments the model scripts pass through."""
     WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
-    add_dsv4_arguments(parser)
+    add_model_impl_argument(parser)
     return parser
 
 
