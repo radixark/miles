@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles_plugins.models.deepseek_v4.ops.compressor import RMSNorm
+from miles_plugins.models.deepseek_v41.ops.norm import RMSNorm
 
 
 class DeepSeekV41Compressor(nn.Module):

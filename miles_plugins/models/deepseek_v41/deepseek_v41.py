@@ -26,14 +26,14 @@ from megatron.core.transformer.transformer_layer import HyperConnectionTransform
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 from miles.utils.hf_config import load_hf_config
-from miles_plugins.models.deepseek_v4.ops.cp_utils import (
+from miles_plugins.models.deepseek_v41.ops.cp_utils import (
     all_gather_cp,
     get_freqs_cis_for_cp,
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
-from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
-from miles_plugins.models.deepseek_v4.ops.rope import wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v41.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
+from miles_plugins.models.deepseek_v41.ops.rope_tables import wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v41.engram import DeepSeekV41Engram
 from miles_plugins.models.deepseek_v41.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v41.ops.indexer import DeepSeekV41Indexer

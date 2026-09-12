@@ -1,6 +1,6 @@
 import torch
 
-from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
+from miles_plugins.models.deepseek_v41.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v41.ops.rope import apply_rotary_emb
 
 _PAGE_SIZE = 64
