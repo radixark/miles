@@ -71,6 +71,7 @@ then push up until you OOM.
 | `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | `0.0` | Entropy bonus weight. |
 | `--observe-training-entropy` | off | Log training entropy even when `--entropy-coef` is `0.0`; detached from backward when the coefficient is zero. |
+| `--top-entropy-quantile` | `1.0` | Keep only this share of response tokens, the highest-entropy ones, in the policy loss ([Beyond the 80/20 Rule](https://arxiv.org/abs/2506.01939)); the paper uses `0.2`. Threshold per micro-batch on each rank. |
 | `--eps-clip` | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | `–` | Asymmetric high clip (DAPO-style). |
 | `--use-tis` | off | Truncated Importance Sampling for train/inference precision mismatch. |
@@ -240,6 +241,7 @@ Sections mirror the launch-script argument groups.
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 means monitor). |
 | `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | float | `0.0` | Entropy bonus weight. |
+| `--top-entropy-quantile` | float | `1.0` | Share of highest-entropy response tokens kept in the policy loss. |
 | `--observe-training-entropy` | flag | off | Log detached training entropy when entropy bonus weight is zero. |
 | `--eps-clip` | float | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | float | – | Asymmetric high clip. |
