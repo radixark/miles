@@ -3,6 +3,7 @@ run:
     inference_pools:
     - layout:
         gpu_offset: 0
+        num_gpus_per_inference_pod: 8
         num_gpus_per_node: 8
         num_inference_cells: 1
         num_pods_per_inference_cell: 2
@@ -11,6 +12,7 @@ run:
       pool_id: inference-engine-all-0-0
     - layout:
         gpu_offset: 16
+        num_gpus_per_inference_pod: 8
         num_gpus_per_node: 8
         num_inference_cells: 2
         num_pods_per_inference_cell: 1

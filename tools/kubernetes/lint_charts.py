@@ -65,10 +65,11 @@ VARIANTS: dict[str, list[list[str]]] = {
             "--set-json",
             'run.colocate={"namespace":"lint","release":"lint","trainer_pool_id":"lint-t",'
             '"inference_pools":[{"pool_id":"lint-e","layout":{"num_inference_cells":2,"num_trainer_cells":2,'
-            '"num_pods_per_inference_cell":1,"num_pods_per_trainer_cell":2,"num_gpus_per_node":8,"gpu_offset":0}},'
+            '"num_pods_per_inference_cell":1,"num_pods_per_trainer_cell":2,"num_gpus_per_node":8,'
+            '"num_gpus_per_inference_pod":8,"gpu_offset":0}},'
             '{"pool_id":"lint-f","layout":{"num_inference_cells":2,"num_trainer_cells":2,'
             '"num_pods_per_inference_cell":1,"num_pods_per_trainer_cell":2,"num_gpus_per_node":8,'
-            '"gpu_offset":16}}]}',
+            '"num_gpus_per_inference_pod":8,"gpu_offset":16}}]}',
             "--set-json",
             'run.inferenceEngines=[{"name":"e","objectName":"lint-e","replicas":2,"command":["python"]},'
             '{"name":"f","objectName":"lint-f","replicas":2,"command":["python"]}]',
