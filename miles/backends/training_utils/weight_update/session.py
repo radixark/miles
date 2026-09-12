@@ -1,14 +1,127 @@
-"""Engine-side RPCs for a weight-update session.
+"""Own the trainer side of the engine weight-update session."""
 
-The session frame is: pause -> begin -> (transfer) -> set version -> end ->
-resume. Callers gate driver-only calls (typically global rank 0) themselves.
-"""
-
+import logging
 from argparse import Namespace
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+
+import httpx
+import torch.distributed as dist
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils import async_utils
+from miles.utils.distributed_utils import get_gloo_group
+
+logger = logging.getLogger(__name__)
+
+
+class EngineResponseError(RuntimeError):
+    """An engine rejected an update; trainer ranks may not have agreed on the failure."""
+
+
+class EngineRPCError(RuntimeError):
+    """Every trainer rank agreed on an HTTP-phase failure outside tensor execution."""
+
+
+class EngineWeightUpdateSession:
+    """Broadcast engine RPC outcomes to every training rank.
+
+    Staged sessions skip pausing and abort on failure; successful scopes must call `commit`.
+    """
+
+    def __init__(
+        self,
+        protocol,
+        args: Namespace,
+        *,
+        staged: bool,
+        sync_base: bool,
+        selector: str,
+        registrations: Sequence[tuple[str, Mapping]] = (),
+        lora_path: str | None = None,
+    ) -> None:
+        self._protocol = protocol
+        self._args = args
+        self._staged = staged
+        self._sync_base = sync_base
+        self._selector = selector
+        self._registrations = registrations
+        self._lora_path = lora_path
+        self._committed = False
+
+    def __enter__(self) -> "EngineWeightUpdateSession":
+        try:
+            self._rpcs_from_rank0(self._open)
+        except Exception:
+            # __exit__ never runs when __enter__ raises, so undo the partial open here
+            if self._staged:
+                self._abort_staged_session()
+            else:
+                self._resume_after_failed_open()
+            raise
+        return self
+
+    def commit(self, expected_lora_checksums: Mapping | None, weight_version: int | None) -> None:
+        """Commit streamed weights on the engines."""
+        self._rpcs_from_rank0(lambda: self._commit_engine_weights(expected_lora_checksums, weight_version))
+        self._committed = True
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if exc_type is None:
+            assert self._committed, "the session scope exited without commit()"
+            return
+        if self._staged:
+            self._abort_staged_session()
+
+    def _abort_staged_session(self) -> None:
+        self._cleanup_from_rank0(lambda: end_weight_update(self._protocol.rollout_engines, abort=True))
+
+    def _resume_after_failed_open(self) -> None:
+        # no bytes moved before open completed; a failed in-place stream must stay paused
+        self._cleanup_from_rank0(lambda: resume_engines(self._protocol.rollout_engines))
+
+    def _cleanup_from_rank0(self, cleanup: Callable[[], None]) -> None:
+        if not (self._protocol.use_weight_update_session and dist.get_rank() == 0):
+            return
+        try:
+            cleanup()
+        except Exception:
+            # the cleanup usually shares the failure's root cause; it must not mask it
+            logger.exception("Failed to clean up the engine weight-update session")
+
+    def _open(self) -> None:
+        engines = self._protocol.rollout_engines
+        if not self._staged:
+            pause_engines(self._args, engines)
+        # eager registration: the engine validates the rank before any bytes move
+        for lora_name, lora_config in self._registrations:
+            register_lora_adapter(
+                engines,
+                lora_name=lora_name,
+                lora_config=lora_config,
+                lora_path=self._lora_path,
+                defer_publish=self._staged,
+            )
+        begin_weight_update(engines, self._selector, sync_base=self._sync_base)
+
+    def _commit_engine_weights(self, checksums: Mapping | None, weight_version: int | None) -> None:
+        engines = self._protocol.rollout_engines
+        end_weight_update(engines, expected_lora_checksums=checksums)
+        if weight_version is not None:
+            set_weight_version(engines, weight_version)
+        if not self._staged:
+            resume_engines(engines)
+
+    def _rpcs_from_rank0(self, rpcs: Callable[[], None]) -> None:
+        failure = [None]
+        if self._protocol.use_weight_update_session and dist.get_rank() == 0:
+            try:
+                rpcs()
+            except (httpx.HTTPError, TimeoutError, EngineResponseError) as exc:
+                logger.exception("engine weight-update RPCs failed")
+                failure[0] = f"{type(exc).__name__}: {exc}"
+        dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
+        if failure[0] is not None:
+            raise EngineRPCError(f"engine weight-update RPCs failed: {failure[0]}")
 
 
 def pause_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClient]) -> None:
@@ -41,33 +154,53 @@ def begin_weight_update(
 
 
 def end_weight_update(
-    rollout_engines: Sequence[SGLangApiClient], *, expected_lora_checksums: Mapping | None = None
+    rollout_engines: Sequence[SGLangApiClient],
+    *,
+    expected_lora_checksums: Mapping | None = None,
+    abort: bool = False,
 ) -> None:
-    """Close the session: re-finalize base weights (sync_base sessions) and apply
-    the streamed LoRA stash (optionally verified against a sha256 manifest)."""
+    """Close the session: finalize base weights and apply the streamed LoRA
+    stash after verifying ``expected_lora_checksums``; ``abort`` discards both."""
     results = async_utils.wait_futures(
         [
-            async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums))
+            async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums, abort=abort))
             for client in rollout_engines
         ]
     )
     for result in results:
         if isinstance(result, Mapping) and result.get("success") is False:
-            raise RuntimeError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
+            raise EngineResponseError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
 
 
 def register_lora_adapter(
-    rollout_engines: Sequence[SGLangApiClient], *, lora_name: str, lora_config: Mapping, pinned: bool = False
+    rollout_engines: Sequence[SGLangApiClient],
+    *,
+    lora_name: str,
+    lora_config: Mapping,
+    pinned: bool = False,
+    lora_path: str | None = None,
+    defer_publish: bool = False,
 ) -> None:
-    """Create-or-refresh an adapter's identity and config on every engine
-    (weights zeroed; the bytes follow in the update stream)."""
+    """Create-or-refresh an adapter's identity on every engine; the bytes follow
+    in the update stream. ``defer_publish`` keeps the name unservable until the
+    session commits; ``lora_path`` makes it evictable (refill from disk)."""
     futures = [
         async_utils.submit(
-            client.register_lora_adapter(lora_name=lora_name, config_dict=dict(lora_config), pinned=pinned)
+            client.register_lora_adapter(
+                lora_name=lora_name,
+                config_dict=dict(lora_config),
+                pinned=pinned,
+                lora_path=lora_path,
+                defer_publish=defer_publish,
+            )
         )
         for client in rollout_engines
     ]
-    check_weight_sync_results(async_utils.wait_futures(futures), is_lora=True)
+    results = async_utils.wait_futures(futures)
+    check_weight_sync_results(results, is_lora=True)
+    if defer_publish and any(not isinstance(result, Mapping) or not result.get("pending") for result in results):
+        # an engine that ignored defer_publish would serve the name while its weights stream
+        raise EngineResponseError("the rollout engines must support deferred LoRA publication")
 
 
 def set_weight_version(rollout_engines: Sequence[SGLangApiClient], weight_version: int) -> None:
@@ -93,7 +226,7 @@ def check_weight_sync_results(results: list, *, is_lora: bool) -> None:
             continue
 
         if success is False:
-            raise RuntimeError(
+            raise EngineResponseError(
                 f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
                 f"Check SGLang version compatibility."
             )

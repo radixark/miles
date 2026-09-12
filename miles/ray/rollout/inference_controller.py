@@ -178,17 +178,25 @@ class InferenceController:
         )
 
     @releases_lock
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
-        await asyncio.gather(
-            *[
-                cell.mark_weights_ready()
-                for srv in self.servers.values()
-                for cell_id, cell in srv.server_cells.items()
-                if cell_id in snapshot_cell_id_to_hashes
-                and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
-                and cell.is_pending_weights
-            ]
-        )
+    async def end_update_weights(self):
+        """Release the update window without publishing any weights."""
+
+    @lock_exempt
+    async def mark_weights_ready(self, snapshot_cell_id_to_hashes: dict[str, str]):
+        self.context_lock.reattach()
+        try:
+            await asyncio.gather(
+                *[
+                    cell.mark_weights_ready()
+                    for srv in self.servers.values()
+                    for cell_id, cell in srv.server_cells.items()
+                    if cell_id in snapshot_cell_id_to_hashes
+                    and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
+                    and cell.is_pending_weights
+                ]
+            )
+        finally:
+            self.context_lock.detach()
 
     @requires_lock
     async def _ensure_cells_ready(self) -> None:

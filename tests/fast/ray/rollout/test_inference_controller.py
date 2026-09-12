@@ -183,7 +183,8 @@ class TestHealthCheckerActiveness:
         controller = _make_controller({"default": _RecordingServer()})
 
         info = await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.mark_weights_ready(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights()
 
         assert not controller._health_checker_activeness.get().active
 
@@ -512,8 +513,33 @@ class TestUpdateWeightsLockWindow:
         info = await controller.start_update_weights()
         assert controller.context_lock.locked
 
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.mark_weights_ready(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        await controller.end_update_weights()
         assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fail_during", ["broadcast", "publication"])
+    async def test_a_failed_window_releases_the_real_controller_lock(self, fail_during):
+        from miles.ray.weight_update import update_weight_window
+
+        cell = _FakeUpdatableCell("hash")
+        controller = _make_controller(
+            {"actor": _RecordingServer({"engine": cell}, model_name="actor", update_weights=True)}
+        )
+        if fail_during == "publication":
+
+            async def reject_publication():
+                raise RuntimeError("update failed")
+
+            cell.mark_weights_ready = reject_publication
+        with pytest.raises(RuntimeError, match="update failed"):
+            async with update_weight_window(controller) as info:
+                if fail_during == "broadcast":
+                    raise RuntimeError("update failed")
+                await controller.mark_weights_ready(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        assert not controller.context_lock.locked
+        assert cell.marked_ready == 0
 
     @pytest.mark.asyncio
     async def test_reconcile_waits_while_the_update_weights_window_is_open(self):
@@ -526,7 +552,9 @@ class TestUpdateWeightsLockWindow:
             await asyncio.sleep(0)
         assert not reconcile_task.done()
 
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.mark_weights_ready(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        await controller.end_update_weights()
         await reconcile_task
 
     @pytest.mark.asyncio
@@ -665,7 +693,8 @@ class TestUpdatableEnginesPayload:
         controller = _make_controller({"actor": srv, "ref": _RecordingServer(model_name="ref")})
 
         updatable = await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes)
+        await controller.mark_weights_ready(snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights()
 
         assert updatable == UpdatableEngines(
             rollout_engines=["client-0", "client-1"],
@@ -675,7 +704,7 @@ class TestUpdatableEnginesPayload:
         )
 
     @pytest.mark.asyncio
-    async def test_end_update_weights_skips_a_cell_from_a_different_worker_generation(self):
+    async def test_mark_weights_ready_skips_a_cell_from_a_different_worker_generation(self):
         """A cell relaunched during the update runs new processes that never received these weights."""
         relaunched, untouched = _FakeUpdatableCell("hash-new"), _FakeUpdatableCell("hash-b")
         srv = _RecordingServer(
@@ -684,7 +713,8 @@ class TestUpdatableEnginesPayload:
         controller = _make_controller({"actor": srv})
 
         await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes={"engine-0": "hash-old", "engine-1": "hash-b"})
+        await controller.mark_weights_ready(snapshot_cell_id_to_hashes={"engine-0": "hash-old", "engine-1": "hash-b"})
+        await controller.end_update_weights()
 
         assert (relaunched.marked_ready, untouched.marked_ready) == (0, 1)
 
