@@ -3,6 +3,7 @@ import itertools
 from pathlib import Path
 
 from tests.e2e.ft.conftest_ft import scenario_random_crash, scenario_realistic_gsm8k
+from tests.e2e.ft.conftest_ft.fault_injection import state
 
 from miles.utils.external_utils import command_utils
 
@@ -31,9 +32,9 @@ class _RecordingBackend:
 class _StubInjector:
     def __init__(self) -> None:
         self.num_successful_injections = 0
-        self.recovery_witness = None
+        self.event_log = state.EventLog()
 
-    def stop_and_join(self, *, timeout_seconds: float) -> None:
+    def stop_and_join(self) -> None:
         pass
 
 
