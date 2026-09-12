@@ -7,8 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.backends.training_utils.weight_update.session import EngineRPCError, EngineResponseError, check_weight_sync_results
-
+from miles.backends.training_utils.weight_update.session import (
+    EngineResponseError,
+    EngineRPCError,
+    check_weight_sync_results,
+)
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
 
@@ -269,7 +272,7 @@ class TestWeightUpdateSessionFrame:
 
 def test_a_rejection_during_tensor_transfer_is_not_a_coordinated_rpc_failure():
     updater = _make_updater(_make_engines([]))
-    updater._hf_weight_iterator.iter_hf_weights.return_value = iter([[('weight', MagicMock())]])
+    updater._hf_weight_iterator.iter_hf_weights.return_value = iter([[("weight", MagicMock())]])
 
     def reject_bucket(_bucket):
         check_weight_sync_results([{"success": False, "error_message": "transfer rejected"}], is_lora=False)
