@@ -4,6 +4,7 @@ import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from copy import deepcopy
+from functools import partial
 from typing import Any
 
 from miles.rollout.base_types import (
@@ -20,6 +21,7 @@ from miles.rollout.base_types import (
 from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
+from miles.rollout.remax import generate_remax_baseline
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -146,6 +148,10 @@ async def generate_and_rm_group(
 
     if state.aborted:
         return group
+
+    if not evaluation and getattr(args, "advantage_estimator", None) == "remax":
+        if not await generate_remax_baseline(args, group, sampling_params, partial(generate_and_rm, state)):
+            return group
 
     if policy_uses_routing_key(args):
         for sample in group:

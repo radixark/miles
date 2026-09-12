@@ -65,7 +65,8 @@ then push up until you OOM.
 
 | Flag | Default | What |
 |---|---|---|
-| `--advantage-estimator` | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`. On-policy distillation is not an estimator — enable it with `--use-opd` on top of any of these. |
+| `--advantage-estimator` | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `remax`. On-policy distillation is not an estimator — enable it with `--use-opd` on top of any of these. |
+| `--advantage-estimator remax` | opt-in | One extra greedy (temperature 0) response per prompt supplies the baseline: advantage = reward − greedy reward, without normalization. The greedy response is excluded from training. |
 | `--use-kl-loss` | off | Compute KL against the reference model. |
 | `--kl-loss-coef` | `0.0` | Weight of KL in the loss (0 means monitor only). |
 | `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
@@ -74,6 +75,18 @@ then push up until you OOM.
 | `--eps-clip` | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | `–` | Asymmetric high clip (DAPO-style). |
 | `--use-tis` | off | Truncated Importance Sampling for train/inference precision mismatch. |
+
+ReMax supports the default class-based and legacy SGLang rollout paths.
+`--n-samples-per-prompt` counts only training responses and can be `1`;
+`--rollout-temperature` continues to control those responses. Reward-normalization
+and GRPO std flags do not affect ReMax. Leave `--normalize-advantages` off.
+Partial rollout, multi-LoRA, fully async rollout, group reward models,
+sample-level rollout submission, and custom reward-postprocessing or train-data
+conversion hooks are unsupported. Custom generation functions must honor the
+sampling parameters and return one sample for the greedy request. Custom rollout
+functions must attach `metadata["remax_baseline_reward"]` to each training sample.
+Dynamic sampling filters see only the training responses and their raw rewards;
+zero-variance filters can discard groups with nonzero ReMax advantages.
 
 ### Sampling
 
@@ -235,7 +248,7 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`. |
+| `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `remax` (reward minus a per-prompt greedy reward; no normalization). |
 | `--use-kl-loss` | flag | off | Compute KL vs. reference. |
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 means monitor). |
 | `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
