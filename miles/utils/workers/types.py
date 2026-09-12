@@ -37,6 +37,7 @@ class DeploymentIdentity(FrozenStrictBaseModel):
     run_uuid: str
     deploy_component: str
     deploy_instance_id: str | None = None
+    trainer_id: str | None = None
 
 
 _SUPPORTED_WORKER_COMM_BACKENDS = {
