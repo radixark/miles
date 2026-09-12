@@ -1,5 +1,3 @@
-"""Tests for test_utils.comparisons.inference_engine_checksums.compare_inference_engine_checksums."""
-
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +6,10 @@ import pytest
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
-from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
+from miles.utils.test_utils.comparisons.inference_engine_checksums import (
+    assert_engine_weights_moved,
+    compare_inference_engine_checksums,
+)
 
 
 def _write_inference_engine_events(
@@ -92,6 +93,26 @@ class TestCompareInferenceEngineChecksums:
         )
 
         compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+    def test_the_fresh_startup_sync_is_compared_like_any_other_rollout(self, tmp_path: Path) -> None:
+        """The startup push is stamped -1 rather than skipped, so two runs that boot from different weights fail."""
+        _write_inference_engine_events(
+            tmp_path / "baseline",
+            [
+                _partial(rollout_id=-1, engine_checksums=[{"rank0/w": "init_baseline"}]),
+                _partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}]),
+            ],
+        )
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=-1, engine_checksums=[{"rank0/w": "init_target"}]),
+                _partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}]),
+            ],
+        )
+
+        with pytest.raises(AssertionError):
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_baseline_engines_disagree_fails(self, tmp_path: Path) -> None:
         """If baseline's own engines disagree, the comparison fails (caught by the consistency rule)."""
@@ -186,3 +207,39 @@ class TestSeveralPolicies:
 
         with pytest.raises(AssertionError, match=r"baseline/b/rollout_1 vs target/b/rollout_1"):
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+
+class TestAssertEngineWeightsMoved:
+    def test_fewer_than_two_updates_do_not_prove_that_engine_weights_moved(self, tmp_path: Path) -> None:
+        """A lone weight update provides no pair from which movement can be established."""
+        _write_inference_engine_events(
+            tmp_path / "target", [_partial(rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}])]
+        )
+
+        with pytest.raises(AssertionError, match="there is no pair to compare"):
+            assert_engine_weights_moved(side="target", dump_dir=str(tmp_path / "target"))
+
+    def test_identical_updates_do_not_prove_that_engine_weights_moved(self, tmp_path: Path) -> None:
+        """Reordered checksum items remain the same weights and cannot establish movement."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=0, engine_checksums=[{"rank0/a": "aaa", "rank0/b": "bbb"}]),
+                _partial(rollout_id=1, engine_checksums=[{"rank0/b": "bbb", "rank0/a": "aaa"}]),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match="byte-identical engine weights"):
+            assert_engine_weights_moved(side="target", dump_dir=str(tmp_path / "target"))
+
+    def test_distinct_updates_prove_that_engine_weights_moved(self, tmp_path: Path) -> None:
+        """Two distinct checksum dictionaries establish that engine weights changed."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}]),
+                _partial(rollout_id=1, engine_checksums=[{"rank0/w": "bbb"}]),
+            ],
+        )
+
+        assert_engine_weights_moved(side="target", dump_dir=str(tmp_path / "target"))
