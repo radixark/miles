@@ -19,11 +19,15 @@ register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 @pytest.mark.parametrize("num_layers", [1, 2])
 @pytest.mark.parametrize("labels_provided", [False, True])
 @pytest.mark.parametrize("all_masked", [False, True])
+@pytest.mark.parametrize("per_token_loss", [False, True])
+@pytest.mark.parametrize("qkv_format", ["thd", "bshd"])
 def test_actual_mtp_loss_selects_intended_targets(
     monkeypatch: pytest.MonkeyPatch,
     num_layers: int,
     labels_provided: bool,
     all_masked: bool,
+    per_token_loss: bool,
+    qkv_format: str,
 ) -> None:
     group = GroupInfo(rank=0, size=1, group=None)
     state = ParallelState(
@@ -44,11 +48,13 @@ def test_actual_mtp_loss_selects_intended_targets(
         "loss_masks": masks,
         "total_lengths": [len(t) for t in token_ids],
         "response_lengths": [len(mask) for mask in masks],
+        "max_seq_lens": [24, 24],
     }
     batch = data_utils.get_batch(
         data_utils.DataIterator(rollout, micro_batch_size=2),
         list(rollout),
         pad_multiplier=8,
+        qkv_format=qkv_format,
         get_input_loss_masks=True,
     )
     targets = []
@@ -70,18 +76,28 @@ def test_actual_mtp_loss_selects_intended_targets(
         expected_targets.extend(
             token_id for token_id, selected in zip(ids[3:], mask.tolist(), strict=True) if selected
         )
-    labels = torch.tensor([[next_tokens[token_id] for token_id in batch["tokens"][0].tolist()]])
+    labels = torch.tensor([[next_tokens[token_id] for token_id in row] for row in batch["tokens"].tolist()])
     config = SimpleNamespace(
         mtp_num_layers=num_layers,
         mtp_detach_heads=False,
-        calculate_per_token_loss=True,
+        calculate_per_token_loss=per_token_loss,
         cross_entropy_loss_fusion=True,
         cross_entropy_fusion_impl="linear",
         mtp_loss_scaling_factor=0.2,
     )
     mask = batch["full_loss_masks"] if labels_provided else batch["input_loss_masks"]
     original_mask = mask.clone()
-    hidden = torch.zeros((num_layers + 1) * batch["tokens"].numel(), 1, 1, requires_grad=True)
+    batch_size, seq_len = batch["tokens"].shape
+    hidden = torch.zeros((num_layers + 1) * seq_len, batch_size, 1, requires_grad=True)
+    packed_params = None
+    if qkv_format == "thd":
+        packed_params = packed_seq.PackedSeqParams(
+            qkv_format="thd",
+            cu_seqlens_q=batch["cu_seqlens"],
+            cu_seqlens_kv=batch["cu_seqlens"],
+            max_seqlen_q=batch["max_seqlen"],
+            max_seqlen_kv=batch["max_seqlen"],
+        )
     output = mtp.process_mtp_loss(
         hidden_states=hidden,
         labels=labels if labels_provided else None,
@@ -94,13 +110,7 @@ def test_actual_mtp_loss_selects_intended_targets(
         config=config,
         cp_group=None,
         tp_group=None,
-        packed_seq_params=packed_seq.PackedSeqParams(
-            qkv_format="thd",
-            cu_seqlens_q=batch["cu_seqlens"],
-            cu_seqlens_kv=batch["cu_seqlens"],
-            max_seqlen_q=batch["max_seqlen"],
-            max_seqlen_kv=batch["max_seqlen"],
-        ),
+        packed_seq_params=packed_params,
         input_ids=batch["tokens"],
     )
     output.sum().backward()
