@@ -5,6 +5,10 @@ from dataclasses import InitVar, dataclass, field
 import torch
 
 
+def top_p_sampling_replay_enabled(args) -> bool:
+    return float(getattr(args, "rollout_top_p", 1.0)) < 1.0
+
+
 @dataclass(frozen=True, eq=False)
 class RolloutSamplingMask:
     """One sample's sampling mask: for each response position, the token ids

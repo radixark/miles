@@ -41,6 +41,8 @@ def _make_record(
     routed_experts: str | None = None,
     routed_experts_start_len: int | None = None,
     weight_versions: list[dict[str, str | int]] | None = None,
+    sampling_masks: list[list[int]] | None = None,
+    sampling_log_probs: list[float] | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
@@ -74,6 +76,10 @@ def _make_record(
         request["routed_experts_start_len"] = routed_experts_start_len
     if weight_versions is not None:
         meta_info["weight_versions"] = weight_versions
+    if sampling_masks is not None:
+        request["return_sampling_mask"] = True
+        meta_info["output_token_sampling_mask"] = sampling_masks
+        meta_info["output_token_sampling_logprobs"] = sampling_log_probs
     return SessionRecord(
         timestamp=0.0,
         method="POST",
@@ -179,6 +185,63 @@ class TestComputeSamplesFromRecords:
         samples = compute_samples_from_openai_records(_ARGS, [record], tok)
 
         assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[])]
+
+    def test_single_record_uses_native_sampling_support_and_log_probs(self):
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            output_log_probs=[-2.5, -2.6],
+            sampling_masks=[[10, 4, 7], [11, 3]],
+            sampling_log_probs=[-0.5, -0.6],
+        )
+
+        (sample,) = compute_samples_from_openai_records(_ARGS, [record], tok)
+
+        assert sample.rollout_log_probs == [-0.5, -0.6]
+        ids, offsets = sample.rollout_sampling_mask._as_tensors()
+        assert ids.tolist() == [10, 4, 7, 11, 3]
+        assert offsets.tolist() == [0, 3, 5]
+        sample.validate()
+
+    def test_abort_without_sampling_metadata_is_non_trainable(self):
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[], finish_reason="abort")
+        record.request["return_sampling_mask"] = True
+
+        (sample,) = compute_samples_from_openai_records(_ARGS, [record], tok)
+
+        assert sample.status == Sample.Status.ABORTED
+        assert sample.reward is None
+        assert len(sample.rollout_sampling_mask) == 0
+
+    def test_successful_turn_still_requires_sampling_metadata(self):
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10])
+        record.request["return_sampling_mask"] = True
+
+        with pytest.raises(ValueError, match="missing output_token_sampling_mask"):
+            compute_samples_from_openai_records(_ARGS, [record], tok)
+
+    def test_later_abort_preserves_terminal_status(self):
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(
+                prompt_token_ids=[1, 2],
+                output_token_ids=[10],
+                sampling_masks=[[10, 11]],
+                sampling_log_probs=[-0.2],
+            ),
+            _make_record(prompt_token_ids=[1, 2, 10, 20], output_token_ids=[], finish_reason="abort"),
+        ]
+        records[1].request["return_sampling_mask"] = True
+
+        samples = compute_samples_from_openai_records(_ARGS, records, tok)
+        merged = merge_samples(samples, tok)
+
+        assert merged.status == Sample.Status.ABORTED
+        assert merged.tokens == [1, 2, 10, 20]
+        assert len(merged.rollout_sampling_mask) == merged.response_length == 2
 
     def test_multiple_records_produce_multiple_samples(self):
         tok = _mock_tokenizer()

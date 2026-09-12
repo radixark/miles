@@ -32,6 +32,8 @@ def _make_args(**overrides) -> Namespace:
         critic_num_gpus_per_node=0,
         use_critic=False,
         critic_train_only=False,
+        rollout_top_p=1.0,
+        sglang_speculative_algorithm=None,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -212,6 +214,72 @@ class TestOverridesResolution:
         )
         overrides = cfg.models[0].server_groups[0].overrides
         assert overrides["mem_fraction_static"] == 0.5
+
+
+class TestSamplingReplayCompatibility:
+    def test_speculative_decoding_without_top_p_replay_is_unchanged(self):
+        cfg = resolve_sglang_config(_make_args(sglang_speculative_algorithm="EAGLE"))
+
+        assert len(cfg.models) == 1
+
+    def test_global_speculative_decoding_is_rejected_for_top_p_replay(self):
+        with pytest.raises(ValueError, match="does not support speculative decoding"):
+            resolve_sglang_config(_make_args(rollout_top_p=0.95, sglang_speculative_algorithm="EAGLE"))
+
+    def test_group_override_can_enable_speculative_decoding(self, tmp_path):
+        with pytest.raises(ValueError, match="DFLASH"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          speculative_algorithm: DFLASH\n",
+                rollout_top_p=0.95,
+            )
+
+    def test_group_override_can_disable_global_speculative_decoding(self, tmp_path):
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        overrides:\n"
+            "          speculative_algorithm: null\n",
+            rollout_top_p=0.95,
+            sglang_speculative_algorithm="EAGLE",
+        )
+
+        assert cfg.models[0].server_groups[0].overrides["speculative_algorithm"] is None
+
+    def test_placeholder_and_secondary_model_speculation_do_not_block_actor_replay(self, tmp_path):
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n"
+            "      - worker_type: placeholder\n"
+            "        num_gpus: 4\n"
+            "        overrides:\n"
+            "          speculative_algorithm: EAGLE\n"
+            "  - name: reward\n"
+            "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n"
+            "        overrides:\n"
+            "          speculative_algorithm: EAGLE\n",
+            rollout_num_gpus=12,
+            rollout_top_p=0.95,
+        )
+
+        assert len(cfg.models) == 2
 
 
 class TestYamlShapeValidation:
