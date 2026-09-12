@@ -83,7 +83,7 @@ class InferenceController:
 
         dashboard_hooks.register_router(self.args)
 
-        await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
+        await asyncio.gather(*[srv.wait_init_expected_num_cells() for srv in self.servers.values()])
 
     # -------------------------- registration -----------------------------
 
