@@ -69,7 +69,7 @@ sandboxes (128 in the reference config; each 2 vCPU / 4 GiB / 10 GiB). Keep
 the credential in a file outside git:
 
 ```bash
-printf 'export DAYTONA_API_KEY=dtn_...\n' > ~/.daytona_env && chmod 600 ~/.daytona_env
+mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key && chmod 600 ~/.config/daytona/api_key
 ```
 
 Images are built per task and cached by definition hash (first episode of a
@@ -93,7 +93,7 @@ that id selects the per-episode sandbox image.
 
 ```bash
 export MILES_ROOT=...  CONTAINER_IMAGE=...  CONTAINER_MOUNTS=...
-export DAYTONA_ENV_FILE=~/.daytona_env
+export DAYTONA_API_KEY_FILE=~/.config/daytona/api_key
 export OPENENV_TB2_TASKS_DIR=...
 export FABRIC_PREFIX=10.4.          # leading octets of the compute-fabric IP
 export WANDB_API_KEY=...            # optional

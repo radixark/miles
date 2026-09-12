@@ -61,7 +61,7 @@ export E2B_SANDBOX_URL=http://<server>:8000   # data plane (envd proxy)
 export OPENENV_E2B_URL_SCHEME=http
 # required, but any well-formed key passes: AgentENV does not check it, while
 # recent SDKs do validate the format client-side
-export E2B_API_KEY=e2b_0000000000000000000000000000000000000000
+mkdir -p ~/.config/e2b && echo e2b_0000000000000000000000000000000000000000 > ~/.config/e2b/api_key
 ```
 
 ## 3. Train

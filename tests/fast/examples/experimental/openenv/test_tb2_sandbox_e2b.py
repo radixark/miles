@@ -17,7 +17,6 @@ import pytest
 
 import tb2_sandbox_e2b as sandbox
 
-
 # --- template aliasing -------------------------------------------------------
 
 
@@ -239,12 +238,13 @@ def test_task_build_resources_floors(tmp_path: Path):
 # --- key supply --------------------------------------------------------------
 
 
-def test_resolve_api_key_env_value_wins(monkeypatch, tmp_path: Path):
+def test_resolve_api_key_rejects_a_set_env_var(monkeypatch, tmp_path: Path):
     key_file = tmp_path / "api_key"
     key_file.write_text("e2b_from_file\n")
     monkeypatch.setenv("E2B_API_KEY", "e2b_from_env")
     monkeypatch.setenv("E2B_API_KEY_FILE", str(key_file))
-    assert sandbox.resolve_api_key() == "e2b_from_env"
+    with pytest.raises(RuntimeError, match="E2B_API_KEY is set"):
+        sandbox.resolve_api_key()
 
 
 def test_resolve_api_key_falls_back_to_file(monkeypatch, tmp_path: Path):

@@ -55,7 +55,6 @@ from tb2_sandbox_recipe import (
 )
 from miles.rollout.agentic.credentials import resolve_provider_api_key
 
-
 # The user every build command and the env server run as. The TB2 task images
 # are built for a root agent (their solutions and tests apt-install freely), so
 # anything less would change the task environment, not just the build.
@@ -276,10 +275,10 @@ _DEFAULT_API_KEY_FILE = "~/.config/e2b/api_key"
 
 
 def resolve_api_key() -> str:
-    """The E2B API key: E2B_API_KEY, else the key file (see
-    recipe.resolve_provider_api_key for the file-indirection rationale). AgentENV does
-    not enforce keys today, but recent SDKs validate the format client-side —
-    provision a well-formed one (e2b_ + 40 hex chars)."""
+    """The E2B API key from the key file (see
+    credentials.resolve_provider_api_key). A set E2B_API_KEY is rejected.
+    AgentENV does not enforce keys today, but recent SDKs validate the format
+    client-side — provision a well-formed one (e2b_ + 40 hex chars)."""
     return resolve_provider_api_key("E2B_API_KEY", "E2B_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 

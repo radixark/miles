@@ -21,10 +21,10 @@ Env vars (the agent-loop ones in ``openenv_agent_function`` apply too):
                     are built once per task under a recipe-digest alias
                     (first episode of a task pays the build; repeats
                     warm-start), or pre-baked via the tb2_sandbox_e2b CLI.
-  E2B_API_KEY / E2B_API_KEY_FILE   key supply on the contract every backend
-                    shares (file default ~/.config/e2b/api_key; launchers
-                    forward the PATH, never the value). AgentENV accepts any
-                    non-empty key today.
+  E2B_API_KEY_FILE             key file on the contract every backend shares
+                    (default ~/.config/e2b/api_key; launchers forward the
+                    PATH, never the value). File-only: a set E2B_API_KEY is
+                    rejected. AgentENV accepts any non-empty key today.
   E2B_API_URL / E2B_SANDBOX_URL    endpoint overrides read by the SDK itself;
                     set both to target a self-hosted AgentENV.
   OPENENV_E2B_CREATE_CONCURRENCY   max in-flight sandbox creates (default 4).

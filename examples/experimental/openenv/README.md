@@ -64,13 +64,15 @@ from, and `OPENENV_SANDBOX_BACKEND`, the provider to build them on. Neither has
 a default — the provider decides whose quota a run spends and which credentials
 have to be present — so setting one without the other fails at launch.
 
-Every provider authenticates the same way: the credential in the environment
-(`DAYTONA_API_KEY`, `E2B_API_KEY`, or Modal's `MODAL_TOKEN_ID` +
-`MODAL_TOKEN_SECRET` pair), or else a file whose *path* the launcher forwards.
-It never forwards the value, which ray's `runtime_env` records in plaintext;
-the agent-function docstrings cover what that means on a multi-host cluster.
-A partially-supplied credential (one half of Modal's token pair) is treated as
-missing rather than usable.
+Every provider authenticates the same way: a key *file* whose *path* the
+launcher forwards (`~/.config/daytona/api_key`, `~/.config/e2b/api_key`, or
+Modal's `~/.modal.toml`). It never forwards the value, which ray's
+`runtime_env` records in plaintext; a set key env var (`DAYTONA_API_KEY`,
+`E2B_API_KEY`, `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`) is rejected, because
+env supply used to silently mask a missing file resolver. The
+agent-function docstrings cover what that means on a multi-host cluster.
+CI runners whose secrets are env-shaped write the file in a one-line step
+before launching.
 
 ### Daytona
 
@@ -82,7 +84,7 @@ there is nothing to pre-build ahead of a run.
 
 ```bash
 pip install daytona
-mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key   # or export DAYTONA_API_KEY
+mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2   # the checkout from step 1
 OPENENV_SANDBOX_BACKEND=daytona python run-openenv-tbench2.py
 ```
@@ -98,7 +100,7 @@ microVM platform whose native API *is* the E2B API — set `E2B_API_URL` and
 
 ```bash
 pip install -e '<miles>[e2b]'   # e2b>=2.12 (see the AgentENV recipe)
-export E2B_API_KEY=e2b_...     # or E2B_API_KEY_FILE (default ~/.config/e2b/api_key)
+mkdir -p ~/.config/e2b && echo e2b_... > ~/.config/e2b/api_key   # or E2B_API_KEY_FILE
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
 OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py
 ```
@@ -122,7 +124,7 @@ what later creates hit.
 
 ```bash
 pip install modal
-modal token new    # writes ~/.modal.toml; or export MODAL_TOKEN_ID + MODAL_TOKEN_SECRET
+modal token new    # writes ~/.modal.toml
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
 OPENENV_SANDBOX_BACKEND=modal python run-openenv-tbench2.py
 ```
@@ -215,10 +217,10 @@ provider's credentials, then the knobs — the ones shared by every backend
 | --- | --- | --- |
 | `OPENENV_TB2_TASKS_DIR` | off | Switches on per-episode sandbox mode and overrides `--openenv-env-url`. Point it at the terminal-bench-2 checkout from step 1 |
 | `OPENENV_SANDBOX_BACKEND` | — | Required whenever `OPENENV_TB2_TASKS_DIR` is set: `agentenv` (alias for `e2b`), `daytona`, `e2b`, or `modal`. Only the selected backend's settings below are read — the others are ignored silently |
-| `DAYTONA_API_KEY` / `DAYTONA_API_KEY_FILE` | — / `~/.config/daytona/api_key` | Daytona key supply: the env value wins, otherwise the key file is read |
-| `E2B_API_KEY` / `E2B_API_KEY_FILE` | — / `~/.config/e2b/api_key` | E2B key supply, on the same contract |
+| `DAYTONA_API_KEY_FILE` | `~/.config/daytona/api_key` | Daytona key file. File-only: a set `DAYTONA_API_KEY` is rejected |
+| `E2B_API_KEY_FILE` | `~/.config/e2b/api_key` | E2B key file, on the same contract |
 | `E2B_API_URL`, `E2B_SANDBOX_URL` | E2B Cloud | Endpoint overrides — point both at a self-hosted AgentENV gateway |
-| `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` / `MODAL_CONFIG_PATH` | — / `~/.modal.toml` | Modal credential supply. The token PAIR must be complete; otherwise the config file's *path* is forwarded, like the other providers' key files |
+| `MODAL_CONFIG_PATH` | `~/.modal.toml` | Modal config file. File-only: a set `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` is rejected |
 | `MODAL_PROFILE`, `MODAL_ENVIRONMENT` | profile default | Which Modal profile / workspace environment the sandboxes are created in |
 | `OPENENV_<BACKEND>_CREATE_CONCURRENCY` | `4` | Max in-flight creates. Size it to what the endpoint can host — one self-hosted AgentENV machine took 16; on Modal the ceiling above it is the plan's container concurrency |
 | `OPENENV_<BACKEND>_CREATE_MAX_RETRIES` | `8` | How many throttled creates to retry before giving up (the backoff curve itself is not tunable) |

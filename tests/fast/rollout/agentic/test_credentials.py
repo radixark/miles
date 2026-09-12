@@ -63,6 +63,14 @@ def test_a_forwarded_url_may_not_smuggle_a_credential():
 # --- launcher-side key supply -------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _clear_provider_key_env(monkeypatch):
+    """Ambient key env vars would fail file-only tests that never set them."""
+    for spec in PROVIDER_CREDENTIALS.values():
+        for var in spec["key_env_vars"]:
+            monkeypatch.delenv(var, raising=False)
+
+
 def _supply(env, spec_name, *, arg_path="", **overrides):
     spec = PROVIDER_CREDENTIALS[spec_name]
     kwargs = {
@@ -85,6 +93,14 @@ def test_readable_file_forwards_the_path_never_the_value(tmp_path):
     assert "dtn_secret_value" not in str(env)
 
 
+def test_set_key_env_is_rejected_even_when_the_file_is_readable(monkeypatch, tmp_path):
+    key_file = tmp_path / "api_key"
+    key_file.write_text("dtn_from_file\n")
+    monkeypatch.setenv("DAYTONA_API_KEY", "dtn_from_env")
+    with pytest.raises(ValueError, match="DAYTONA_API_KEY is set"):
+        _supply({}, "daytona", arg_path=str(key_file))
+
+
 def test_configured_path_that_does_not_resolve_is_an_error(tmp_path):
     with pytest.raises(ValueError, match="is missing or empty"):
         _supply({}, "e2b", arg_path=str(tmp_path / "absent"))
@@ -97,37 +113,31 @@ def test_empty_file_is_not_a_credential(tmp_path):
         _supply({}, "e2b", arg_path=str(key_file))
 
 
-def test_unreadable_path_counts_as_absent(monkeypatch, tmp_path):
-    """A path that raises on read (here: a directory) is 'no file', so the env
-    supply still satisfies — the launcher cannot probe worker nodes anyway."""
+def test_unreadable_path_does_not_fall_back_to_env(monkeypatch, tmp_path):
+    """A path that raises on read (here: a directory) is not a credential, and
+    a set key env var must not silently satisfy preflight."""
     monkeypatch.setenv("E2B_API_KEY", "e2b_from_env")
-    env: dict[str, str] = {}
-    _supply(env, "e2b", default_path=str(tmp_path))
-    assert env == {}
+    with pytest.raises(ValueError, match="E2B_API_KEY is set"):
+        _supply({}, "e2b", default_path=str(tmp_path))
 
 
-def test_worker_environment_supply_is_accepted_without_forwarding(monkeypatch, tmp_path):
-    """When the launcher itself has the credential in env, workers are assumed
-    to have it too (platform-injected / single-host inheritance) and nothing is
-    forwarded."""
+def test_worker_environment_supply_is_rejected(monkeypatch, tmp_path):
+    """Env supply used to skip forwarding; it now errors and names the file."""
     monkeypatch.setenv("DAYTONA_API_KEY", "dtn_from_env")
-    env: dict[str, str] = {}
-    _supply(env, "daytona", default_path=str(tmp_path / "absent"))
-    assert env == {}
+    with pytest.raises(ValueError, match="DAYTONA_API_KEY is set"):
+        _supply({}, "daytona", default_path=str(tmp_path / "absent"))
 
 
-def test_modal_token_pair_must_be_complete(monkeypatch, tmp_path):
-    """Half a token pair is a misconfiguration, not a usable credential: it
-    would authenticate nothing and fail every episode."""
+def test_modal_token_env_is_rejected(monkeypatch, tmp_path):
+    """Token env vars are the old supply path: a set value is rejected whether
+    the pair is complete or not, and the error names the config file."""
     monkeypatch.setenv("MODAL_TOKEN_ID", "ak-123")
-    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
-    with pytest.raises(ValueError, match="MODAL_TOKEN_ID \\+ MODAL_TOKEN_SECRET"):
+    with pytest.raises(ValueError, match="MODAL_TOKEN_ID is set"):
         _supply({}, "modal", default_path=str(tmp_path / "absent"))
 
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "as-456")
-    env: dict[str, str] = {}
-    _supply(env, "modal", default_path=str(tmp_path / "absent"))
-    assert env == {}  # the token halves are never forwarded
+    with pytest.raises(ValueError, match="file-only"):
+        _supply({}, "modal", default_path=str(tmp_path / "absent"))
 
 
 def test_modal_config_file_is_forwarded_by_path(tmp_path):
@@ -141,8 +151,7 @@ def test_modal_config_file_is_forwarded_by_path(tmp_path):
     assert "as-456" not in str(env)
 
 
-def test_missing_credential_names_what_to_provision(monkeypatch, tmp_path):
-    monkeypatch.delenv("E2B_API_KEY", raising=False)
+def test_missing_credential_names_what_to_provision(tmp_path):
     with pytest.raises(ValueError, match="mkdir -p ~/.config/e2b"):
         _supply({}, "e2b", default_path=str(tmp_path / "absent"))
 
@@ -193,15 +202,16 @@ def test_version_tuple_reads_leading_numbers():
 # --- worker-side key resolution -------------------------------------------------
 
 
-def test_resolve_env_value_wins_over_the_file(monkeypatch, tmp_path):
+def test_resolve_rejects_a_set_key_env_var(monkeypatch, tmp_path):
     key_file = tmp_path / "api_key"
     key_file.write_text("from_file\n")
     monkeypatch.setenv("PROV_API_KEY", "from_env")
     monkeypatch.setenv("PROV_API_KEY_FILE", str(key_file))
-    assert resolve_provider_api_key("PROV_API_KEY", "PROV_API_KEY_FILE", "~/nope") == "from_env"
+    with pytest.raises(RuntimeError, match="PROV_API_KEY is set"):
+        resolve_provider_api_key("PROV_API_KEY", "PROV_API_KEY_FILE", "~/nope")
 
 
-def test_resolve_falls_back_to_the_file_and_strips_whitespace(monkeypatch, tmp_path):
+def test_resolve_reads_the_file_and_strips_whitespace(monkeypatch, tmp_path):
     key_file = tmp_path / "api_key"
     key_file.write_text("  from_file \n")
     monkeypatch.delenv("PROV_API_KEY", raising=False)
@@ -218,10 +228,10 @@ def test_resolve_default_path_expands_the_home_dir(monkeypatch, tmp_path):
     assert resolve_provider_api_key("PROV_API_KEY", "PROV_API_KEY_FILE", "~/.config/api_key") == "from_default"
 
 
-def test_resolve_missing_key_names_both_supplies(monkeypatch, tmp_path):
+def test_resolve_missing_key_names_the_file(monkeypatch, tmp_path):
     monkeypatch.delenv("PROV_API_KEY", raising=False)
     monkeypatch.setenv("PROV_API_KEY_FILE", str(tmp_path / "absent"))
-    with pytest.raises(RuntimeError, match="PROV_API_KEY is unset"):
+    with pytest.raises(RuntimeError, match="missing or empty"):
         resolve_provider_api_key("PROV_API_KEY", "PROV_API_KEY_FILE", "~/nope")
 
 
