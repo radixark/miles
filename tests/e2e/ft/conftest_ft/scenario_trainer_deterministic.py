@@ -1,7 +1,6 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
-import json
 from pathlib import Path
 
 from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
@@ -9,6 +8,7 @@ from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.ray.specs.train import compute_trainer_pool_id
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
@@ -16,6 +16,7 @@ from miles.utils.test_utils.comparisons.dumps import (
 )
 from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
+from miles.utils.test_utils.ft_test_actions import compute_ft_test_actions_arg
 from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 from miles.utils.workers.naming import compute_cell_id
 
@@ -75,7 +76,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
 
     if is_target:
         actions = _build_actions(phase_start_rollout_id=phase_start_rollout_id, num_cells=mode.num_cells)
-        base += f"--ci-ft-test-actions '{json.dumps(actions)}' "
+        base += compute_ft_test_actions_arg(actions)
 
     return base
 
@@ -110,7 +111,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         target_dir = f"{dump_dir}/target/{phase}"
         for side, side_dir in (("baseline", baseline_dir), ("target", target_dir)):
             assert_reconfigure_events(
-                Path(f"{side_dir}/events"),
+                Path(f"{side_dir}/{EVENTS_DIRNAME}"),
                 expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
             )
 
