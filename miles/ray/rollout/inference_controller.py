@@ -13,6 +13,7 @@ from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_serve
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids
+from miles.utils.audit_utils.process_identity import InferenceControllerProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
     acquires_lock,
@@ -24,6 +25,7 @@ from miles.utils.context_lock import (
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import SimpleTicker
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
@@ -53,6 +55,8 @@ class InferenceController:
 
     @lock_exempt
     async def init(self) -> None:
+        configure_logger(self.args, source=InferenceControllerProcessIdentity())
+
         if self.args.debug_train_only:
             return
 
