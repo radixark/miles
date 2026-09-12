@@ -138,7 +138,6 @@ Rollouts draw from DAPO-Math-17k and score with the `deepscaler` reward:
 --rollout-temperature 1
 
 --global-batch-size 256
---filter-zero-reward-samples
 --use-dynamic-global-batch-size
 ```
 
