@@ -2,10 +2,13 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 
 import pytest
+from scripts.tools.verify_session_tito_tokenizer import _print_action_table, _with_session_verify_defaults
 from tests.e2e.sglang.test_session_server_multi_role import _common
 
+from miles.utils.arguments import parse_args_train_backend
 from miles.utils.test_utils import session_verify_runner
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
@@ -13,6 +16,13 @@ from miles.utils.test_utils.session_verify_runner import (
     namespace_to_train_args,
 )
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
+
+
+def test_session_verify_defaults_select_fsdp_during_backend_preparse(monkeypatch):
+    argv = _with_session_verify_defaults(["--rollout-batch-size", "1"])
+    monkeypatch.setattr(sys, "argv", ["verify_session_tito_tokenizer.py", *argv])
+
+    assert parse_args_train_backend() == "fsdp"
 
 
 def _build_args(**overrides) -> str:
@@ -55,6 +65,12 @@ def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
 
     assert "--train-backend fsdp" in train_args
     assert "--ci-test" in train_args
+
+
+def test_namespace_to_train_args_preserves_resolved_rollout_gpu_count():
+    train_args = _build_args(rollout_num_gpus=8, colocate=False)
+
+    assert "--rollout-num-gpus 8" in train_args
 
 
 def test_namespace_to_train_args_defaults_to_session_server_v2():
@@ -111,6 +127,20 @@ def test_namespace_to_train_args_emits_model_mamba_cache_config():
 
     assert "--sglang-kv-cache-dtype fp8_e4m3" in train_args
     assert "--sglang-mamba-full-memory-ratio 4.59" in train_args
+
+
+def test_namespace_to_train_args_emits_cuda_graph_max_batch_size():
+    train_args = _build_args(sglang_cuda_graph_max_bs_decode=8)
+
+    assert "--sglang-cuda-graph-max-bs-decode 8" in train_args
+
+
+def test_action_table_uses_requested_cycle_count(capsys):
+    _print_action_table(["assistant", "system", "tool", "user"], cycles=1)
+
+    output = capsys.readouterr().out
+    assert output.count(". tool_result") == 2
+    assert "9. " not in output
 
 
 def test_namespace_to_train_args_omits_prefill_cuda_graph_backend_by_default():

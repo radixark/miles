@@ -174,7 +174,8 @@ but treat it as best-effort until it passes the checks below.
 | Qwen3.8-27B | `qwen38small` |
 | Qwen3.8-Flash-Next | `qwen4exp` |
 | Qwen3-Thinking-2507 / Qwen3-Next | `qwennext` |
-| GLM-4.7 / 5 / 5.1 / 5.2 | `glm47` |
+| GLM-4.7 / 5 / 5.2 | `glm47` |
+| GLM-5.3 / GLM-5.3-Flash (text sessions) | `glm53` |
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |
 | Kimi K2.5 / K2.6 | `kimi25` / `kimi26` |
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |

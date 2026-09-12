@@ -607,7 +607,7 @@ def test_register_ci_gate_does_not_disturb_suite_parsing(tmp_path):
         """
         from tests.ci.ci_register import register_cuda_ci
         from tests.ci.metric_history import register_ci_gate
-        register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])
+        register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper"])
         register_ci_gate(metric_key="train/grad_norm",
                          steps="all", constraint={"rel_up": 0.2, "rel_down": 0.2})
         """,
