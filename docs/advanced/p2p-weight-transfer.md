@@ -13,6 +13,12 @@ To enable P2P weight transfer, add the following flag to your training command:
 --update-weight-transfer-mode p2p
 ```
 
+By default this uses the Mooncake RDMA backend. To use NIXL instead:
+
+```
+--update-weight-transfer-backend nixl
+```
+
 ## How It Works
 
 The default weight transfer mode in miles is `broadcast`: after training, updated weights are broadcast via NCCL to all rollout engine ranks. This works but does not fully utilize the available bandwidth, as redundant copies of the same weights are transferred to multiple ranks.
@@ -49,7 +55,7 @@ Both broadcast and P2P modes share the same bucketed weight-update pipeline in `
 |---|---|---|
 | **Transfer plan** | `p2p_transfer_utils.py` | Maps each training rank to its target rollout engine rank(s). Uses round-robin assignment with load balancing: the first `min(sources, targets)` ranks get 1:1 mapping, remaining targets are distributed evenly. This minimizes the number of RDMA sessions per source. |
 | **CPU model replica** | `p2p.py` | A full sglang model is instantiated on CPU (not GPU) to mirror the target engine's parallelism layout. This replica provides the correct `weight_loader` functions to re-shard all-gathered HF weights into the exact format expected by each target rank. Only the first engine's replica pins memory; subsequent engines reuse the mapping via `ParameterMapper`. |
-| **Shared pinned buffer** | `p2p.py` | A single CPU pinned memory buffer is registered with the mooncake TransferEngine for RDMA. This buffer is reused across all target engines (O(1) memory, not O(num\_engines)). The buffer is overwritten per-engine, per-bucket. |
+| **Shared pinned buffer** | `p2p.py` | A single CPU pinned memory buffer is registered with the RDMA backend (Mooncake or NIXL, per `--update-weight-transfer-backend`) for transfer. This buffer is reused across all target engines (O(1) memory, not O(num\_engines)). The buffer is overwritten per-engine, per-bucket. |
 | **Pipelined transfer** | `p2p.py` | RDMA writes to multiple target engines are pipelined: for non-last engines, the transfer manager waits for the previous write to complete before reusing the buffer; for the last engine, writes are fire-and-forget to a background thread pool, overlapping with the next bucket's load phase. |
 
 ## Supported Model Architectures
