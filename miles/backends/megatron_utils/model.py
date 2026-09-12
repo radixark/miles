@@ -42,6 +42,7 @@ from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.loss import loss_function
+from ..training_utils.loss_hub.entropy_control import update_adaptive_entropy
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
@@ -663,6 +664,7 @@ def train_one_step(
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
+            update_adaptive_entropy(args, loss_reduced)
             return loss_reduced, grad_norm, outcome
 
     return {}, grad_norm, outcome
