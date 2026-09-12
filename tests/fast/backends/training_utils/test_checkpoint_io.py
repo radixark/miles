@@ -1,13 +1,16 @@
-"""A failed step raises NonGlobalFatalError, the type the actor boundary converts to a result."""
+"""Only local filesystem failures become coordinated checkpoint errors."""
 
 import pytest
 
-from miles.backends.training_utils.checkpoint_io import NonGlobalFatalError, run_with_failure_collective
+from miles.backends.training_utils.checkpoint_io import CheckpointIOError, run_local_io_collective
 
 
-def test_a_failed_step_raises_the_non_global_fatal_type():
+@pytest.mark.parametrize("error, expected", [(OSError("disk full"), CheckpointIOError), (RuntimeError("collective failed"), RuntimeError)])
+def test_only_local_io_errors_are_converted(error, expected):
     def step():
-        raise ValueError("bad shard")
+        raise error
 
-    with pytest.raises(NonGlobalFatalError, match="ValueError: bad shard"):
-        run_with_failure_collective(step)
+    with pytest.raises(expected, match=str(error)) as caught:
+        run_local_io_collective(step)
+    if expected is RuntimeError:
+        assert caught.value is error

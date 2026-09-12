@@ -45,3 +45,20 @@ python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models
 # passing means the adapters stayed isolated end to end
 python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models/Qwen3-30B-A3B --mode multi --clients 4
 ```
+
+## Failure handling
+
+A terminal failure of `forward_backward`, `optim_step`, or `load_state` ends
+that model's training stream, including commands already queued behind it.
+This includes content validation failures with a valid model and sequence.
+Create a new model and restore a saved checkpoint to continue; completed
+futures and published checkpoints keep their results.
+
+Known request-local failures of `forward`, saving, or sampling leave the
+training stream available. Sampler cache warmup is best effort after the
+snapshot is published. Unknown trainer execution failures invalidate the
+shared trainer cell and stop the server.
+
+This gateway provides failure isolation, not automatic training recovery.
+Checkpoints persist; futures, deduplication, and unsaved accumulation do not
+survive a server restart.

@@ -8,6 +8,10 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.specs.train import compute_critic_args
 from miles.ray.train.group import TrainerController
+from miles.ray.weight_update import update_weight_window
+from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .rollout.inference_controller import InferenceController
 from .rollout.rollout_executor import RolloutExecutor
@@ -130,7 +134,6 @@ async def create_training_models(args, inference_controller, rollout_executor):
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
         with_opd_teacher=args.use_opd and args.opd_type == "megatron",
-        inference_controller=inference_controller,
         rollout_executor=rollout_executor,
     )
     actor_start_rollout_ids = await actor_model.init()
@@ -140,7 +143,6 @@ async def create_training_models(args, inference_controller, rollout_executor):
             args=compute_critic_args(args),
             role="critic",
             with_ref=False,
-            inference_controller=None,
             rollout_executor=None,
         )
         critic_start_rollout_ids = await critic_model.init()
@@ -159,9 +161,26 @@ async def create_training_models(args, inference_controller, rollout_executor):
     return actor_model, critic_model
 
 
-async def update_weights(actor_model, rollout_executor, *, rollout_id: int | None = None) -> None:
-    if (weight_version := await actor_model.update_weights(rollout_id=rollout_id)) is not None:
+async def update_weights(args, actor_model, rollout_executor, inference_controller, *, rollout_id: int | None = None) -> None:
+    async with update_weight_window(inference_controller) as info:
+        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+        await inference_controller.mark_weights_ready(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+    await _maybe_log_inference_engine_weight_checksums(args, inference_controller, rollout_id=rollout_id)
+    if weight_version is not None:
         await rollout_executor.set_weight_version.remote(weight_version)
+
+
+async def _maybe_log_inference_engine_weight_checksums(args, inference_controller, *, rollout_id: int | None) -> None:
+    if not is_event_logger_initialized():
+        return
+    if args.debug_train_only or args.debug_rollout_only:
+        return
+    check_weights_result = await inference_controller.check_weights("checksum")
+    engine_checksums = flatten_inference_engine_checksums(check_weights_result)
+    get_event_logger().log(
+        InferenceEngineWeightChecksumEvent,
+        dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+    )
 
 
 class RolloutComponents(NamedTuple):

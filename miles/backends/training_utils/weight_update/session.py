@@ -4,6 +4,7 @@ import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 
+import httpx
 import torch.distributed as dist
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -11,6 +12,10 @@ from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
+
+
+class EngineRPCError(RuntimeError):
+    """An engine HTTP call failed outside trainer tensor/collective execution."""
 
 
 class EngineWeightUpdateSession:
@@ -107,12 +112,12 @@ class EngineWeightUpdateSession:
         if self._protocol.use_weight_update_session and dist.get_rank() == 0:
             try:
                 rpcs()
-            except Exception as exc:
+            except (httpx.HTTPError, TimeoutError, EngineRPCError) as exc:
                 logger.exception("engine weight-update RPCs failed")
                 failure[0] = f"{type(exc).__name__}: {exc}"
         dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
         if failure[0] is not None:
-            raise RuntimeError(f"engine weight-update RPCs failed: {failure[0]}")
+            raise EngineRPCError(f"engine weight-update RPCs failed: {failure[0]}")
 
 
 def pause_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClient]) -> None:
@@ -160,7 +165,7 @@ def end_weight_update(
     )
     for result in results:
         if isinstance(result, Mapping) and result.get("success") is False:
-            raise RuntimeError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
+            raise EngineRPCError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
 
 
 def register_lora_adapter(
@@ -191,7 +196,7 @@ def register_lora_adapter(
     check_weight_sync_results(results, is_lora=True)
     if defer_publish and any(not isinstance(result, Mapping) or not result.get("pending") for result in results):
         # an engine that ignored defer_publish would serve the name while its weights stream
-        raise RuntimeError("the rollout engines must support deferred LoRA publication")
+        raise EngineRPCError("the rollout engines must support deferred LoRA publication")
 
 
 def set_weight_version(rollout_engines: Sequence[SGLangApiClient], weight_version: int) -> None:
@@ -217,7 +222,7 @@ def check_weight_sync_results(results: list, *, is_lora: bool) -> None:
             continue
 
         if success is False:
-            raise RuntimeError(
+            raise EngineRPCError(
                 f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
                 f"Check SGLang version compatibility."
             )

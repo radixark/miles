@@ -38,7 +38,6 @@ async def serve(args):
         role="actor",
         with_ref=False,
         with_opd_teacher=False,
-        inference_controller=inference_controller,
         rollout_executor=None,
     )
     await trainer.init()
@@ -62,7 +61,7 @@ async def serve(args):
     dp_size = actor_world_size // (
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
-    service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
+    service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size, inference_controller=inference_controller), config)
 
     server = uvicorn.Server(
         uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")

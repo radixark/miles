@@ -55,6 +55,13 @@ class Planner:
     def stream(self, model_id: str) -> ModelStream:
         return self._streams[model_id]
 
+    def ready_rejections(self) -> list[tuple[ModelStream, PendingRequest]]:
+        return [
+            (stream, stream.queue[0])
+            for stream in self._streams.values()
+            if stream.queue and stream.queue[0].command.validation_error is not None
+        ]
+
     def next_to_run(self) -> BatchUnit | BarrierUnit | None:
         """Arrival order selects the seed; compatible work may overtake intervening requests."""
         datums = self._ready_datums()

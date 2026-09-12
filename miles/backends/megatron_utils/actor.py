@@ -16,7 +16,9 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
-from miles.backends.training_utils.checkpoint_io import NonGlobalFatalError, run_with_failure_collective
+from miles.backends.training_utils.checkpoint_io import CheckpointIOError
+from miles.backends.training_utils.weight_update.session import EngineRPCError
+import httpx
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -453,11 +455,6 @@ class MegatronTrainRayActor(TrainRayActor):
         return lora_executor.optim_step(self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
-    def zero_grads(self, slot: int) -> None:
-        assert self.args.multi_lora, "zero_grads is a multi-LoRA slot command"
-        lora_executor.zero_grads(self.slot_optimizers[slot])
-
-    @with_logs
     def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
         """Same loss pass as forward_backward, without the backward: the Tinker
         forward() contract returns the requested loss per datum."""
@@ -477,7 +474,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if ckpt_path is not None:
             try:
                 lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
-            except NonGlobalFatalError as error:
+            except CheckpointIOError as error:
                 return {"error": str(error)}
         return None
 
@@ -486,7 +483,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.args.multi_lora, "save_slot is a multi-LoRA slot command"
         try:
             lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path)
-        except NonGlobalFatalError as error:
+        except CheckpointIOError as error:
             return {"error": str(error)}
         return None
 
@@ -497,7 +494,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         try:
             self.weight_updater.export_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path)
-        except NonGlobalFatalError as error:
+        except CheckpointIOError as error:
             return {"error": str(error)}
         return None
 
@@ -505,10 +502,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def unload_slot(self, slot: int) -> dict | None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
         slot_optimizer = self.slot_optimizers.pop(slot)
-        try:
-            run_with_failure_collective(lambda: lora_executor.unload_slot(self.model, slot_optimizer))
-        except NonGlobalFatalError as error:
-            return {"error": str(error)}
+        lora_executor.unload_slot(self.model, slot_optimizer)
         return None
 
     @with_logs
@@ -838,16 +832,20 @@ class MegatronTrainRayActor(TrainRayActor):
         rank: int,
         alpha: float,
         lora_path: str | None = None,
-    ) -> None:
+    ) -> dict | None:
         assert self.args.multi_lora, "push_slot is a multi-LoRA slot command"
         self._heartbeat.bump()
-        self._ensure_engines_connected(
-            info.rollout_engines, info.snapshot_cell_id_to_hashes, info.engine_gpu_counts, info.engine_gpu_offsets
-        )
-        self.weight_updater.push_adapter(lora_name, AdapterSpec(slot=slot, rank=rank, alpha=alpha), lora_path)
+        try:
+            self._ensure_engines_connected(
+                info.rollout_engines, info.snapshot_cell_id_to_hashes, info.engine_gpu_counts, info.engine_gpu_offsets
+            )
+            self.weight_updater.push_adapter(lora_name, AdapterSpec(slot=slot, rank=rank, alpha=alpha), lora_path)
+        except EngineRPCError as error:
+            return {"error": str(error)}
+        return None
 
     @with_logs
-    def unload_adapter(self, info: "UpdatableEngines", lora_name: str) -> None:
+    def unload_adapter(self, info: "UpdatableEngines", lora_name: str) -> dict | None:
         assert self.args.multi_lora, "unload_adapter is a multi-LoRA slot command"
         self._heartbeat.bump()
         # rank 0's RPC failure must fail every rank together, not strand a barrier
@@ -859,15 +857,16 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
                 # an engine can answer HTTP 200 with {"success": false, "error_message": ...}
                 check_weight_sync_results(results, is_lora=True)
-            except Exception as error:  # noqa: BLE001
+            except (httpx.HTTPError, EngineRPCError) as error:
                 failure[0] = f"{type(error).__name__}: {error}"
         dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
         if failure[0] is not None:
-            raise RuntimeError(f"unload_adapter({lora_name!r}) failed: {failure[0]}")
+            return {"error": f"unload_adapter({lora_name!r}) failed: {failure[0]}"}
+        return None
 
     @with_logs
     @timer
-    def update_weights(self, info: "UpdatableEngines") -> int | None:
+    def update_weights(self, info: "UpdatableEngines") -> int | dict | None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
@@ -895,36 +894,41 @@ class MegatronTrainRayActor(TrainRayActor):
                 destroy_process_groups()
             return None
 
-        with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
-            print_memory("before update_weights")
-            self.weight_updater.update_weights()
-            print_memory("after update_weights")
+        failure = None
+        try:
+            with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
+                print_memory("before update_weights")
+                self.weight_updater.update_weights()
+                print_memory("after update_weights")
 
-            if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
-                engine = random.choice(rollout_engines)
-                engine_version = async_utils.run(engine.get_weight_version())
-                if str(engine_version) != str(self.weight_updater.weight_version):
-                    raise RuntimeError(
-                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                    )
+                if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
+                    engine = random.choice(rollout_engines)
+                    engine_version = async_utils.run(engine.get_weight_version())
+                    if str(engine_version) != str(self.weight_updater.weight_version):
+                        raise RuntimeError(
+                            f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
+                        )
 
-            if getattr(self.args, "keep_old_actor", False):
-                if self.args.update_weights_interval == 1:
-                    logger.info("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
-                    # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
-                    # First copy rollout_actor to old_actor
-                    self.weights_backuper.copy(src_tag="rollout_actor", dst_tag="old_actor")
-                    # Then copy current actor to rollout_actor
-                    self.weights_backuper.backup("rollout_actor")
-                else:
-                    self.weights_backuper.backup("old_actor")
+                if getattr(self.args, "keep_old_actor", False):
+                    if self.args.update_weights_interval == 1:
+                        logger.info("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
+                        # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
+                        # First copy rollout_actor to old_actor
+                        self.weights_backuper.copy(src_tag="rollout_actor", dst_tag="old_actor")
+                        # Then copy current actor to rollout_actor
+                        self.weights_backuper.backup("rollout_actor")
+                    else:
+                        self.weights_backuper.backup("old_actor")
+
+        except EngineRPCError as error:
+            failure = {"error": str(error)}
 
         if self.args.rematerialize_param_from_master_weight:
             torch_memory_saver.pause(tag="param_buffer")
         if process_groups_are_temporary:
             destroy_process_groups()
 
-        return self.weight_updater.weight_version
+        return failure if failure is not None else self.weight_updater.weight_version
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:

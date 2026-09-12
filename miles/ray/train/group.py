@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
@@ -9,12 +9,10 @@ from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_poo
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
-from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
-    InferenceEngineWeightChecksumEvent,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
@@ -41,14 +39,12 @@ class TrainerController:
         self,
         args,
         *,
-        inference_controller: object | None,
         rollout_executor: object | None,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
         self.args = args
-        self._inference_controller = inference_controller
         self._rollout_executor = rollout_executor
         self._role = role
         self._with_ref = with_ref
@@ -334,36 +330,18 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, rollout_id: int | None = None) -> int | None:
-        """Broadcast weights to rollout engines and answer the version they now serve."""
+    async def update_weights(self, info, rollout_id: int | None = None) -> int | None:
+        """Broadcast weights from a healthy trainer to the given engine snapshot."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
-        # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Fetch the updatable engines once (like V1 RayActorGroup) so all
-        # ranks observe a consistent engine set.
-        info = await self._inference_controller.start_update_weights()
-        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        weight_versions = await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
-            max_attempts=_RETRY_MAX_ATTEMPTS,
-        )
-        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
-        await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
+        async def update_once(_attempt):
+            results = await self._execute_first_alive("update_weights", info=info)
+            for result in results:
+                if isinstance(result, dict) and "error" in result:
+                    raise RuntimeError(result["error"])
+            return results[0]
 
-        return weight_versions[0]
-
-    async def _maybe_log_inference_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
-        if not is_event_logger_initialized():
-            return
-        if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
-
-        check_weights_result = await self._inference_controller.check_weights("checksum")
-        engine_checksums = flatten_inference_engine_checksums(check_weights_result)
-        get_event_logger().log(
-            InferenceEngineWeightChecksumEvent,
-            dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
-        )
+        return await retry(update_once, max_attempts=_RETRY_MAX_ATTEMPTS)
 
     async def onload(self):
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
@@ -394,9 +372,9 @@ class TrainerController:
     # ------------------------ API :: multi-LoRA slot commands ------------------------
 
     async def _execute_slots(self, fn_name: str, **kwargs) -> list:
-        results = await asyncio.gather(*[cell.execute(fn_name, **kwargs) for cell in self._cells])
-        # one trainer cell; its result is the per-actor list
-        return results[0]
+        (cell,) = self._cells
+        assert cell.is_alive, "the Tinker trainer cell is unavailable"
+        return await cell.execute(fn_name, **kwargs)
 
     async def forward_backward(self, batch_id: int, data_ref) -> list:
         return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
@@ -406,9 +384,6 @@ class TrainerController:
 
     async def forward_only(self, batch_id: int, data_ref) -> list:
         return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
-
-    async def zero_grads(self, slot: int) -> None:
-        await self._execute_slots("zero_grads", slot=slot)
 
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
@@ -426,28 +401,15 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)
 
-    @asynccontextmanager
-    async def _updatable_engines(self):
-        """Release the inference controller's update lock even when the slot command fails."""
-        info = await self._inference_controller.start_update_weights()
-        try:
-            yield info
-        finally:
-            await self._inference_controller.end_update_weights(
-                snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
-            )
-
     async def push_slot(
-        self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
-    ) -> None:
-        async with self._updatable_engines() as info:
-            await self._execute_slots(
-                "push_slot", info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
-            )
+        self, info, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
+    ) -> list:
+        return await self._execute_slots(
+            "push_slot", info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
+        )
 
-    async def unload_adapter(self, lora_name: str) -> None:
-        async with self._updatable_engines() as info:
-            await self._execute_slots("unload_adapter", info=info, lora_name=lora_name)
+    async def unload_adapter(self, info, lora_name: str) -> list:
+        return await self._execute_slots("unload_adapter", info=info, lora_name=lora_name)
 
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])

@@ -37,9 +37,9 @@ class ModelStream:
         self.model_id = model_id
         self.tenant = tenant
         self.slot = slot
-        # seq_ids are 1-based; rejected positions advance the watermark too
+        # seq_ids are 1-based
         self.watermark = 0
-        self.arrivals: dict[int, Command | None] = {}  # None marks an admission rejection
+        self.arrivals: dict[int, Command] = {}
         self.request_id_by_seq: dict[int, str] = {}
         self.queue: deque[PendingRequest] = deque()
 
@@ -48,18 +48,12 @@ class ModelStream:
         self.arrivals[command.seq_id] = command
         self._drain_arrivals()
 
-    def reject(self, seq_id: int) -> None:
-        self.arrivals[seq_id] = None
-        self._drain_arrivals()
-
     def _drain_arrivals(self) -> None:
         while self.watermark + 1 in self.arrivals:
             self.watermark += 1
             next_command = self.arrivals.pop(self.watermark)
-            if next_command is None:
-                continue
             pending = PendingRequest(command=next_command)
-            if pending.is_batch_op:
+            if pending.is_batch_op and pending.command.validation_error is None:
                 pending.datums = next_command.payload["datums"]
                 pending.remaining = len(pending.datums)
                 pending.outputs = [None] * len(pending.datums)
@@ -69,14 +63,14 @@ class ModelStream:
         """The leading run of batch-op commands; their datums are all issuable."""
         run = []
         for pending in self.queue:
-            if not pending.is_batch_op:
+            if not pending.is_batch_op or pending.command.validation_error is not None:
                 break
             run.append(pending)
         return run
 
     def ready_barrier(self) -> PendingRequest | None:
         """The head barrier, executable once every batch op ahead of it completed."""
-        if self.queue and not self.queue[0].is_batch_op:
+        if self.queue and not self.queue[0].is_batch_op and self.queue[0].command.validation_error is None:
             return self.queue[0]
         return None
 

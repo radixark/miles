@@ -14,7 +14,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.backends.training_utils.checkpoint_io import run_local_io_collective, write_checkpoint_dir
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
@@ -201,7 +201,10 @@ class WeightUpdater:
                     adapter, materialize=should_save_adapter
                 ).items()
             }
-            if should_save_adapter:
-                save_adapter_to_disk(tmp_dir, self._adapter_config(adapter), tensors)
+            def write_adapter():
+                if should_save_adapter:
+                    save_adapter_to_disk(tmp_dir, self._adapter_config(adapter), tensors)
+
+            run_local_io_collective(write_adapter)
 
         write_checkpoint_dir(out_dir, write_shards)

@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.training_utils.weight_update.session import EngineRPCError
+
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
 
@@ -46,7 +48,7 @@ class _RecordingApiClient:
             if (gate := self._gates.get(name)) is not None and not await asyncio.to_thread(gate.wait, 5):
                 raise TimeoutError(f"{name} gate timed out")
             if name == self._failing_method:
-                raise RuntimeError(f"{name} failed")
+                raise EngineRPCError(f"{name} failed")
             self._calls.append((self._engine_index, name, kwargs))
             return {"success": True}
 

@@ -28,7 +28,7 @@ class _OrderRecordingInferenceController:
 
 
 def _assert_the_snapshot_is_handed_back_unchanged(controller: _OrderRecordingInferenceController) -> None:
-    end_kwargs: list[dict] = [kwargs for name, _args, kwargs in controller.calls if name == "end_update_weights"]
+    end_kwargs: list[dict] = [kwargs for name, _args, kwargs in controller.calls if name == "mark_weights_ready"]
 
     assert len(end_kwargs) == 1
     assert (
@@ -117,38 +117,45 @@ def _make_controller(order: list[str]):
 
     group = TrainerController.__new__(TrainerController)
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
-    group._inference_controller = _OrderRecordingInferenceController(order)
+    controller = _OrderRecordingInferenceController(order)
 
     async def _record_execute_first_alive(*args: object, **kwargs: object) -> list[int]:
         order.append("execute_first_alive")
         return [1]
 
     group._execute_first_alive = AsyncMock(side_effect=_record_execute_first_alive)
-    group._maybe_log_inference_engine_weight_checksums = AsyncMock()
-    return group
+    return group, controller
 
 
 @pytest.mark.asyncio
-async def test_the_trainer_brackets_the_broadcast_with_start_and_end_update_weights():
+async def test_the_driver_brackets_the_broadcast_and_confirms_success():
     """The fault-tolerant trainer runs the actual update RPC strictly inside the update window."""
     order: list[str] = []
-    group = _make_controller(order)
+    group, controller = _make_controller(order)
 
-    await group.update_weights()
+    from unittest.mock import patch
+    from miles.ray.placement_group import update_weights
 
-    assert order == ["start_update_weights", "execute_first_alive", "end_update_weights"]
+    with patch("miles.ray.placement_group._maybe_log_inference_engine_weight_checksums", new_callable=AsyncMock):
+        await update_weights(group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller)
+
+    assert order == ["start_update_weights", "execute_first_alive", "mark_weights_ready", "end_update_weights"]
     group._execute_first_alive.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_the_trainer_hands_end_update_weights_the_snapshot_start_returned():
-    """The snapshot start_update_weights returned is handed back to end_update_weights unchanged."""
+async def test_the_driver_marks_only_the_snapshot_start_returned():
+    """The published generation must match the snapshot given to the trainer."""
     order: list[str] = []
-    group = _make_controller(order)
+    group, controller = _make_controller(order)
 
-    await group.update_weights()
+    from unittest.mock import patch
+    from miles.ray.placement_group import update_weights
 
-    _assert_the_snapshot_is_handed_back_unchanged(group._inference_controller)
+    with patch("miles.ray.placement_group._maybe_log_inference_engine_weight_checksums", new_callable=AsyncMock):
+        await update_weights(group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller)
+
+    _assert_the_snapshot_is_handed_back_unchanged(controller)
 
 
 def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
@@ -198,3 +205,15 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
     assert set(order[6:8]) == {"end-0", "end-1"}
     assert set(order[8:]) == {"continue-0", "continue-1"}
     assert pause_modes == ["retract", "retract"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_update_releases_the_window_without_marking_ready():
+    from miles.ray.placement_group import update_weights
+
+    order = []
+    controller = _OrderRecordingInferenceController(order)
+    group = MagicMock(update_weights=AsyncMock(side_effect=RuntimeError("update failed")))
+    with pytest.raises(RuntimeError, match="update failed"):
+        await update_weights(group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller)
+    assert order == ["start_update_weights", "end_update_weights"]

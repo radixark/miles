@@ -1,5 +1,8 @@
 """Runtime translation preserves datum order, sampling parameters, and token logprobs."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 import torch
 
@@ -9,7 +12,7 @@ from miles.tinker.runtime import (
     _build_train_data,
     _pad_to_dp_multiple,
     _prompt_logprobs,
-    _raise_slot_errors,
+    _slot_failure,
     _to_sequence,
     _topk_prompt_logprobs,
 )
@@ -41,7 +44,7 @@ class TestBuildTrainData:
 
 
 async def test_forward_backward_merges_worker_replicas():
-    backend = MilesBackend(trainer=None, router_url="http://router")
+    backend = MilesBackend(trainer=None, router_url="http://router", inference_controller=None)
     per_datum = [
         {"sample_index": 1, "loss": 2.0, "logprobs": torch.tensor([-0.2])},
         {"sample_index": 0, "loss": 1.0, "logprobs": torch.tensor([-0.1])},
@@ -68,7 +71,7 @@ class TestGenerateRequest:
             "topk_prompt_logprobs": 0,
             **payload_extra,
         }
-        return MilesBackend(None, "http://router")._generate_request(payload, lora_name="m@1")
+        return MilesBackend(None, "http://router", inference_controller=None)._generate_request(payload, lora_name="m@1")
 
     def test_max_tokens_is_required(self):
         with pytest.raises(UserInputError, match="max_tokens"):
@@ -130,7 +133,7 @@ class TestEngineResponseParsing:
 
 
 async def test_forward_only_runs_the_requested_loss():
-    backend = MilesBackend(trainer=None, router_url="http://router")
+    backend = MilesBackend(trainer=None, router_url="http://router", inference_controller=None)
     captured = {}
 
     async def fake_run_batch(method, batch_id, train_data):
@@ -164,7 +167,7 @@ class TestPadToDpMultiple:
 
 
 async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
-    backend = MilesBackend(trainer=None, router_url="http://router", dp_size=2)
+    backend = MilesBackend(trainer=None, router_url="http://router", dp_size=2, inference_controller=None)
     seen = {}
 
     async def fake_run_batch(method, batch_id, train_data):
@@ -182,13 +185,34 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
     assert len(outputs) == 1, "padding outputs are dropped"
 
 
-def test_an_actor_error_verdict_becomes_an_exception():
-    with pytest.raises(RuntimeError, match="bad shard"):
-        _raise_slot_errors([None, {"error": "ValueError: bad shard"}])
+def test_an_actor_error_verdict_survives_runtime_translation():
+    failure = {"error": "bad shard"}
+    assert _slot_failure([None, failure]) is failure
 
 
 def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
     """A truncated sequence fed to RL as a completed sample corrupts training data silently."""
     response = {"meta_info": {"output_token_logprobs": [(-0.1, 11)], "finish_reason": {"type": "abort"}}}
-    with pytest.raises(RuntimeError, match="abort"):
-        _to_sequence(response)
+    assert "abort" in _to_sequence(response)["error"]
+
+
+@pytest.mark.parametrize("failure", [None, {"error": "engine rejected publication"}, RuntimeError("collective failed")])
+async def test_sampler_push_only_marks_ready_on_success(failure):
+    controller = SimpleNamespace(
+        start_update_weights=AsyncMock(return_value=SimpleNamespace(snapshot_cell_id_to_hashes={"engine": "hash"})),
+        end_update_weights=AsyncMock(),
+        mark_weights_ready=AsyncMock(),
+    )
+    trainer = SimpleNamespace(push_slot=AsyncMock(return_value=[failure]))
+    backend = MilesBackend(trainer, "http://router", inference_controller=controller)
+    if isinstance(failure, Exception):
+        trainer.push_slot.side_effect = failure
+        with pytest.raises(RuntimeError, match="collective failed"):
+            await backend.push_slot(0, "model@1", 8, 16)
+    else:
+        assert await backend.push_slot(0, "model@1", 8, 16) == failure
+    controller.end_update_weights.assert_awaited_once()
+    if failure is None:
+        controller.mark_weights_ready.assert_awaited_once_with(snapshot_cell_id_to_hashes={"engine": "hash"})
+    else:
+        controller.mark_weights_ready.assert_not_awaited()

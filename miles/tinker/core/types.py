@@ -20,6 +20,9 @@ class CommandOp(str, Enum):
         """Batch ops pack into BatchUnits; every other op is a barrier."""
         return self in (CommandOp.FORWARD_BACKWARD, CommandOp.FORWARD_ONLY)
 
+    def changes_training_state(self) -> bool:
+        return self in (CommandOp.FORWARD_BACKWARD, CommandOp.OPTIM_STEP, CommandOp.LOAD_STATE)
+
 
 # wire loss_fn_inputs key -> internal datum key
 LOSS_INPUT_KEYS = {"weights": "weights", "advantages": "advantages", "logprobs": "sampling_logprobs"}
@@ -69,6 +72,7 @@ class Command:
     payload: dict
     request_id: str
     arrival: int  # global submit order for selecting the planner's seed
+    validation_error: str | None = None
 
 
 @dataclass

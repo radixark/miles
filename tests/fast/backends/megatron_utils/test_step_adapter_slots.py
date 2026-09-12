@@ -1,6 +1,6 @@
-"""step_slot_optimizers settles each slot identically on every rank and always consumes its grads."""
+"""Slot steps preserve nonfinite skips and propagate unknown execution failures."""
 
-from types import SimpleNamespace
+import pytest
 
 from miles.backends.megatron_utils.lora import optimizer as optimizer_module
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, step_slot_optimizers
@@ -44,14 +44,14 @@ def _step(monkeypatch, slot_optimizers):
     return step_slot_optimizers(slot_optimizers, adam)
 
 
-def test_each_slot_settles_on_its_own(monkeypatch):
+def test_an_unknown_step_failure_escapes_before_success_is_reported(monkeypatch):
     healthy = _FakeSlotOptimizer(0)
     failing = _FakeSlotOptimizer(1, step_outcome={"error": "boom"})
-    outcomes = _step(monkeypatch, {0: healthy, 1: failing})
-    assert outcomes[0] == {"grad_norm": 1.5} and healthy.stepped
-    assert outcomes[1] == {"error": "RuntimeError: boom"}
-    assert healthy.zeroed and failing.zeroed, "grads are consumed whether or not the step landed"
-    assert healthy.param_gathers == 1 and failing.param_gathers == 0
+    with pytest.raises(RuntimeError, match="boom"):
+        _step(monkeypatch, {0: healthy, 1: failing})
+    assert healthy.stepped
+    assert healthy.param_gathers == 0
+
 
 
 def test_a_nonfinite_grad_norm_skips_the_step(monkeypatch):
@@ -62,27 +62,9 @@ def test_a_nonfinite_grad_norm_skips_the_step(monkeypatch):
     assert not skipped.stepped and skipped.zeroed and skipped.param_gathers == 0
 
 
-def test_a_preparation_failure_skips_the_slots_collectives_everywhere(monkeypatch):
-    """A rank that failed before the norm all-reduce must not strand its peers in it."""
+def test_an_unknown_preparation_failure_escapes(monkeypatch):
     broken = _FakeSlotOptimizer(0, prepare_error=RuntimeError("prep died"))
     healthy = _FakeSlotOptimizer(1)
-    outcomes = _step(monkeypatch, {0: broken, 1: healthy})
-    assert outcomes[0] == {"error": "RuntimeError: prep died"} and not broken.stepped
-    assert outcomes[1] == {"grad_norm": 1.5} and healthy.param_gathers == 1
-
-
-def test_a_rank_local_error_fails_the_slot_on_every_rank(monkeypatch):
-    """The healthy rank must not enter the parameter allgather alone."""
-    remote_outcomes = {0: {"error": "RuntimeError: died on rank 1"}}
-
-    def gather_outcomes(per_rank, local_outcomes, group):
-        per_rank[:] = [local_outcomes, remote_outcomes]
-
-    monkeypatch.setattr(
-        optimizer_module,
-        "dist",
-        SimpleNamespace(is_initialized=lambda: True, get_world_size=lambda: 2, all_gather_object=gather_outcomes),
-    )
-    monkeypatch.setattr(optimizer_module, "get_gloo_group", lambda: None)
-    merged = optimizer_module._merge_outcomes_across_ranks({0: {"grad_norm": 1.5}})
-    assert merged == remote_outcomes
+    with pytest.raises(RuntimeError, match="prep died"):
+        _step(monkeypatch, {0: broken, 1: healthy})
+    assert not broken.stepped and not healthy.stepped

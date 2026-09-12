@@ -73,7 +73,6 @@ async def _create_controller(*, num_cells: int) -> TrainerController:
         _make_args(num_cells=num_cells),
         role="actor",
         with_ref=False,
-        inference_controller=None,
         rollout_executor=None,
     )
     await controller.init()
