@@ -151,12 +151,7 @@ def build_engram_layout(config: TransformerConfig) -> EngramLayout | None:
     return _LAYOUT_CACHE[key]
 
 
-# the gate runs in fp32 on the full gathered sequence and autograd keeps several
-# [seqlen, hc_mult, dim] fp32 temporaries; checkpointing it in sequence chunks
-# bounds that to one chunk (elementwise per token, so the result is unchanged)
 ENGRAM_GATE_CHUNK = int(os.environ.get("MILES_DSV41_ENGRAM_GATE_CHUNK", "4096"))
-# "sharded": each tensor-parallel rank maps 1/TP of the rows and the lookup all-reduces;
-# "shared": each rank maps the whole table and no all-reduce runs (same numbers, one fewer collective)
 ENGRAM_HOST_TABLE = os.environ.get("MILES_DSV41_ENGRAM_HOST_TABLE", "sharded")
 ENGRAM_GATHER_THREADS = int(os.environ.get("MILES_DSV41_ENGRAM_GATHER_THREADS", "16"))
 assert ENGRAM_HOST_TABLE in ("sharded", "shared"), ENGRAM_HOST_TABLE
@@ -168,8 +163,6 @@ def engram_gate(x, kv, q_weight, k_weight, eps, clamp_value, chunk: int | None =
     if not chunk or seqlen <= chunk:
         return _engram_gate(x, kv, q_weight, k_weight, eps, clamp_value)
     if not torch.is_grad_enabled():
-        # log_probs runs the gate over the whole gathered sequence, where each fp32 temporary is
-        # 5.4 GB at 64k; the gate is elementwise per token, so chunking writes the same bytes
         out = torch.empty_like(x)
         for s in range(0, seqlen, chunk):
             out[s : s + chunk] = _engram_gate(
@@ -218,8 +211,6 @@ class DeepSeekV41Engram(MegatronModule):
         tp_rank = tp_group.rank() if tp_group is not None else 0
         rows = layout.num_embeddings[self.layer_hash_index]
         self.rows = rows
-        # "shared": every rank maps the complete table (one page-cache copy per node, since the
-        # ranks map the same file) and gathers all rows itself, so the lookup needs no all-reduce
         self.shared_table = ENGRAM_HOST_TABLE == "shared"
         shard_count = 1 if self.shared_table else self.tp_size
         shard_rank = 0 if self.shared_table else tp_rank
@@ -326,7 +317,7 @@ class DeepSeekV41Engram(MegatronModule):
         local_cpu = local.reshape(-1).to("cpu")
         row_buf, scale_buf, done = self._staging(local_cpu.numel())
         prev_threads = torch.get_num_threads()
-        # the gather is a page-cache random read over a ~100 GB table: one thread leaves the GPU idle for seconds
+        # ray gives an actor one intra-op thread, which leaves the GPU idle through this gather
         torch.set_num_threads(ENGRAM_GATHER_THREADS)
         try:
             torch.index_select(self.table, 0, local_cpu, out=row_buf)

@@ -1,5 +1,3 @@
-# DeepSeek-V4.1 sparse MLA. Forked from the V4 copy so the tiling can follow V4.1's shapes
-# (8 local heads of 512 dims, 640 selected keys) without moving V4's.
 import torch
 
 from miles_plugins.models.deepseek_v41.ops.kernel import tilelang_sparse_mla_bwd as sparse_mla_bwd

@@ -1,9 +1,3 @@
-"""Context-parallel helpers for DeepSeek-V4.1.
-
-Split from the V4 copy: V4.1 wants the sparse-attention index tensors in int32, which is what
-the attention kernel takes, and has no use for the V4 host-side reference checks.
-"""
-
 from functools import lru_cache
 
 import torch

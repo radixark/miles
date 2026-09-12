@@ -1,11 +1,4 @@
 # ruff: noqa
-# DeepSeek-V4.1 indexer scores. Forked from the V4 copy because V4.1 runs 32 heads of 128 dims:
-# the V4 tiling (4 queries over a 256-key block) then spreads the head reduction across lanes and
-# reaches only ~65 TFLOP/s, while 8 queries over a 128-key block keeps it in registers at ~146.
-# Key differences from GLM-5:
-#   - Operates on [seqlen, batch, heads, dim] (SBHD) layout, batch handled externally
-#   - Uses causal mask via cu_seqlens instead of variable-length packed sequences
-#   - Supports compressed KV (seq_len_kv = seq_len_q / compress_ratio)
 import tilelang
 import torch
 from tilelang import language as T

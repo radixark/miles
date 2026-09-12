@@ -29,16 +29,12 @@ def select_candidate_blocks(
     return keep.repeat_interleave(block_size, dim=-1)[..., :width]
 
 
-# the dense [seqlen, n_kv] fp32 score matrix is quadratic in the sequence; 128k-token
-# samples need it in query chunks (the selection is per query row, so chunking is exact)
 INDEXER_QUERY_CHUNK = int(os.environ.get("MILES_DSV41_INDEXER_QUERY_CHUNK", "8192"))
 
 try:
     import deep_select
 except ImportError:  # the torch path stays for images without it
     deep_select = None
-# DeepSelect is DeepSeek's own DSA top-k: it takes the per-query length, so it also replaces the
-# mask and the out-of-range fixup. Same selection as torch.topk (0 of 8192 rows differ), 5-16x faster.
 USE_DEEP_SELECT = deep_select is not None and os.environ.get("MILES_DSV41_DEEP_SELECT", "1") == "1"
 
 
@@ -63,8 +59,7 @@ def indexer_select(
     k_t = index_k.transpose(0, 1).contiguous()
     use_deep_select = USE_DEEP_SELECT and allow_deep_select
     if use_deep_select:
-        # DeepSelect wants each score row aligned; padding the keys is cheaper than padding the
-        # scores afterwards, and the extra columns sit past every query's length
+        # deep_select requires aligned score rows; the padded columns sit past every query's length
         align = deep_select.get_stride_requirement()[0] // 4
         pad_kv = -(-n_kv // align) * align - n_kv
         if pad_kv:
@@ -198,7 +193,6 @@ class DeepSeekV41Indexer(MegatronModule):
         weights = weights * (self.softmax_scale * self.index_n_heads**-0.5)
 
         base_topk_fn = get_dsa_topk_fn("torch")
-        # replaying the rollout's choices means going through the replay manager's own selection
         topk_fn = indexer_replay_manager.get_topk_fn(base_topk_fn, return_probs=False)
         idx, candidates = indexer_select(
             q,

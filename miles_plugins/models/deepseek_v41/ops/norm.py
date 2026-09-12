@@ -1,5 +1,3 @@
-"""RMSNorm for the V4.1 compressor and indexer, kept in fp32 to match the sglang side."""
-
 import torch
 import torch.nn as nn
 

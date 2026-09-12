@@ -1,10 +1,3 @@
-"""Fused mHC residual mixing (MILES_DSV41_HC_FUSED=1).
-
-The unfused form materializes five fp32 tensors of [s, b, n, d] per layer just to compute
-`h_post * x + einsum("sbij,sbid->sbjd", h_res, residual)`, and runs the mix on a SIMT fp32 gemm.
-Both kernels keep the fp32 accumulation and the i-order of the original einsum.
-"""
-
 import os
 
 import torch

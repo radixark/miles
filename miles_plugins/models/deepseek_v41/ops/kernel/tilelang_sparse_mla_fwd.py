@@ -1,13 +1,4 @@
 # ruff: noqa
-# DeepSeek-V4.1 sparse MLA forward, forked from the V4 copy (see tilelang_sparse_mla.py).
-# V4.1 runs 8 local heads of 512 dims, which pad to a single 16-row tile: 4 warps over a 64-key
-# block then keep the online-softmax rescaling inside each warp. 1.59 -> 0.88 ms at 8k x 640,
-# and both tilings sit 1.37e-4 from an fp64 reference, so this is not a precision trade.
-# Key differences from GLM-5:
-#   - attn_sink: learnable per-head scalar added to softmax denominator
-#   - Single-head KV: kv shape [B, S_kv, D] (no kv_group, no D/D_tail split)
-#   - Index shape: [B, S, topk] (no kv_group dim)
-#   - Output: [B, S, H, D] + LSE [B, S, H]
 import tilelang
 import torch
 from tilelang import language as T

@@ -1,10 +1,4 @@
 # ruff: noqa
-# DeepSeek-V4.1 sparse MLA backward, forked from the V4 copy (see tilelang_sparse_mla.py).
-# Key differences from GLM-5:
-#   - attn_sink: gradient computation for learnable per-head scalar
-#   - Single-head KV: kv shape [B, S_kv, D] (no kv_group, no D/D_tail split)
-#   - Index shape: [B, S, topk] (no kv_group dim)
-#   - Outputs: dQ [B, S, H, D], dKV [B, S_kv, D], dAttnSink [H]
 import tilelang
 import torch
 from tilelang import language as T
