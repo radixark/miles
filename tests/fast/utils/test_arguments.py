@@ -416,6 +416,12 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
         with pytest.raises(AssertionError, match="--dump-details is required"):
             miles_validate_args(args)
 
+    def test_ci_ep_local_requirement_from_config_still_requires_ci_test(self, tmp_path):
+        args = self._parse(tmp_path, [], "ci_require_ep_local_weight_update: true\n")
+
+        with pytest.raises(AssertionError, match="requires --ci-test"):
+            miles_validate_args(args)
+
     def test_a_dashboard_switched_off_by_the_config_file_drops_its_requirement(self, tmp_path):
         """A run whose file turns the dashboard off must not be rejected for telemetry it will never write."""
         args = self._parse(tmp_path, ["--use-miles-dashboard"], "use_miles_dashboard: false\n")

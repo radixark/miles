@@ -2535,6 +2535,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-require-ep-local-weight-update",
+                action="store_true",
+                help="Fail unless the selected weight iterator keeps routed experts EP-local.",
+            )
+            parser.add_argument(
                 "--ci-metric-checker-key",
                 type=str,
                 default=None,
@@ -2925,6 +2930,10 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    assert (
+        not getattr(args, "ci_require_ep_local_weight_update", False) or args.ci_test
+    ), "--ci-require-ep-local-weight-update requires --ci-test"
 
     validate_dashboard_args(args)
 
