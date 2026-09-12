@@ -46,8 +46,7 @@ class TinkerService:
         self._create_tasks: set = set()
         self._arrival_counter = 0
         self._batch_counter = 0
-        # discarded slot gradients must fail the next optimizer step
-        self._poisoned_slots: dict[int, tuple[str, str]] = {}
+        self._background_error: BaseException | None = None
         # why each evicted model died, so later requests get the reason instead of "unknown model"
         self._eviction_reasons: dict[str, str] = {}
 
@@ -108,7 +107,7 @@ class TinkerService:
         future = self.futures.create(model_id, tenant)
         task = asyncio.create_task(self._run_create_model(future.request_id, record))
         self._create_tasks.add(task)
-        task.add_done_callback(self._create_tasks.discard)
+        task.add_done_callback(self._observe_background_task)
         session["models_by_seq"][model_seq_id] = (future.request_id, model_id)
         return future.request_id, model_id
 
@@ -129,15 +128,20 @@ class TinkerService:
                     f"({field}={layout_trains}); the layout is fixed by --target-modules at server start"
                 )
 
+    def _observe_background_task(self, task: asyncio.Task) -> None:
+        self._create_tasks.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            if self._background_error is None:
+                self._background_error = error
+            self._wake.set()
+
     async def _run_create_model(self, request_id: str, record: ModelRecord) -> None:
-        try:
-            async with self._backend_lock:
-                await self.backend.load_slot(record.slot, record.lora_rank, record.lora_alpha)
-        except Exception as error:
-            async with self._backend_lock:
-                await self._evict_model(record.model_id, f"model initialization failed ({error})", "server")
-            self.futures.fail(request_id, str(error), "server")
-            return
+        async with self._backend_lock:
+            failure = await self.backend.load_slot(record.slot, record.lora_rank, record.lora_alpha)
+            if failure is not None:
+                self.futures.fail(request_id, failure["error"], "server")
+                await self._evict_model(record.model_id, failure["error"], "server")
+                return
         self.futures.resolve(request_id, {"op": "create_model", "model_id": record.model_id})
 
     def get_model(self, tenant: str, model_id: str) -> ModelRecord:
@@ -178,22 +182,23 @@ class TinkerService:
         future = self.futures.create(model_id, tenant)
         stream.request_id_by_seq[seq_id] = future.request_id
         self._arrival_counter += 1
-        try:
-            self._validate_batch_payload(op, payload)
-        except UserInputError as error:
-            self.futures.fail(future.request_id, str(error), "user")
-            stream.reject(seq_id)
-        else:
-            stream.submit(
-                Command(
-                    model_id=model_id,
-                    seq_id=seq_id,
-                    op=op,
-                    payload=payload,
-                    request_id=future.request_id,
-                    arrival=self._arrival_counter,
-                )
+        validation_error = payload.get("validation_error")
+        if validation_error is None:
+            try:
+                self._validate_batch_payload(op, payload)
+            except UserInputError as error:
+                validation_error = str(error)
+        stream.submit(
+            Command(
+                model_id=model_id,
+                seq_id=seq_id,
+                op=op,
+                payload={key: value for key, value in payload.items() if key != "validation_error"},
+                request_id=future.request_id,
+                arrival=self._arrival_counter,
+                validation_error=validation_error,
             )
+        )
         self._wake.set()
         return future.request_id
 
@@ -250,14 +255,27 @@ class TinkerService:
 
     async def run(self) -> None:
         sweep_task = asyncio.create_task(self.sweep_leases())
+        sweep_task.add_done_callback(self._observe_background_task)
         try:
             while True:
+                if self._background_error is not None:
+                    raise self._background_error
                 # unit selection shares the critical section with execution, so
                 # lease expiry cannot reclaim a stream between the two
                 async with self._backend_lock:
+                    rejections = self.planner.ready_rejections()
+                    if rejections:
+                        for stream, pending in rejections:
+                            await self._settle_request(
+                                stream, pending, {"error": pending.command.validation_error, "error_category": "user"}
+                            )
+                        continue
                     unit = self.planner.next_to_run()
                     if unit is not None:
-                        await self._run_unit_and_evict_on_failure(unit)
+                        if isinstance(unit, BatchUnit):
+                            await self._run_batch(unit)
+                        else:
+                            await self._run_barrier(unit)
                         if self.backend.trainer_dead():
                             raise RuntimeError("the trainer workers died; exiting so clients get refused connections")
                         continue
@@ -267,28 +285,6 @@ class TinkerService:
             sweep_task.cancel()
             with suppress(asyncio.CancelledError):
                 await sweep_task
-
-    async def _run_unit_and_evict_on_failure(self, unit) -> None:
-        try:
-            if isinstance(unit, BatchUnit):
-                await self._run_batch(unit)
-            else:
-                await self._run_barrier(unit)
-        except Exception as error:  # noqa: BLE001  the handler's own failure handling failed
-            logger.exception("dispatch failed past its handler; retiring the unit's models")
-            message = (
-                f"model unloaded after an unhandled failure "
-                f"({type(error).__name__}: {error}); restore from a checkpoint"
-            )
-            self._fail_unit(unit, message, "server")
-            for model_id in _unit_model_ids(unit):
-                await self._evict_model(model_id, message, "server")
-
-    def _fail_unit(self, unit, error: str, category: str) -> None:
-        if isinstance(unit, BatchUnit):
-            self._fail_batch_runs(unit, error, category)
-        else:
-            self._fail_barrier(unit, error, category)
 
     async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
@@ -301,11 +297,10 @@ class TinkerService:
         try:
             outputs = await forward(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
         except UserInputError as error:
-            await self._discard_batch_runs(batch, str(error), "user")
+            await self._fail_batch(batch, str(error), "user")
             return
-        except Exception as error:  # noqa: BLE001  infra failure: fail the affected batch runs, keep serving
-            logger.exception(f"{batch.op} batch {self._batch_counter} failed")
-            await self._discard_batch_runs(batch, f"{type(error).__name__}: {error}", "server")
+        if isinstance(outputs, dict) and "error" in outputs:
+            await self._fail_batch(batch, outputs["error"], "server")
             return
 
         assert len(outputs) == len(refs), f"unit returned {len(outputs)} outputs for {len(refs)} datums"
@@ -317,49 +312,33 @@ class TinkerService:
                 )
                 ref.stream.finish(request)
 
-    def _fail_batch_runs(self, batch: BatchUnit, error: str, category: str) -> None:
-        for stream in {ref.stream for ref in batch.datums}:
-            for pending in list(stream.open_batch_run()):
-                self.futures.fail(pending.command.request_id, error, category)
-                stream.finish(pending)
-
-    async def _discard_batch_runs(self, batch: BatchUnit, error: str, category: str) -> None:
-        """Fail each affected batch run and discard its gradients after a backward failure."""
-        self._fail_batch_runs(batch, error, category)
-        if batch.op == CommandOp.FORWARD_BACKWARD:
-            for stream in sorted({ref.stream for ref in batch.datums}, key=lambda s: s.slot):
-                self._poisoned_slots[stream.slot] = (error, category)
-                try:
-                    await self.backend.zero_grads(stream.slot)
-                except Exception:  # noqa: BLE001  the accumulation is unknown; poison is not enough
-                    logger.exception(f"zero_grads({stream.slot}) failed")
-                    await self._evict_model(stream.model_id, error, "server")
+    async def _fail_batch(self, batch: BatchUnit, error: str, category: str) -> None:
+        if batch.op.changes_training_state():
+            for model_id in sorted({ref.stream.model_id for ref in batch.datums}):
+                await self._evict_model(model_id, _failed_stream_message(error), category)
+            return
+        requests = {ref.request.command.request_id: (ref.stream, ref.request) for ref in batch.datums}
+        for stream, pending in requests.values():
+            await self._settle_request(stream, pending, {"error": error, "error_category": category})
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
             outcomes = await self._dispatch_barrier_op(barrier)
         except (UserInputError, OwnershipError) as error:
-            self._fail_barrier(barrier, str(error), "user")
-            return
-        except Exception as error:  # noqa: BLE001
-            logger.exception(f"{barrier.op} barrier failed")
-            self._fail_barrier(barrier, f"{type(error).__name__}: {error}", "server")
-            return
+            outcomes = [{"error": str(error), "error_category": "user"} for _ in barrier.entries]
         for (stream, pending), outcome in zip(barrier.entries, outcomes, strict=True):
-            self._settle_barrier_entry(stream, pending, outcome)
-            if outcome.get("retire_model"):
-                await self._evict_model(stream.model_id, outcome["error"], outcome["error_category"])
+            await self._settle_request(stream, pending, outcome)
 
-    def _settle_barrier_entry(self, stream, pending, outcome: dict) -> None:
+    async def _settle_request(self, stream, pending, outcome: dict) -> None:
         if "error" in outcome:
-            self.futures.fail(pending.command.request_id, outcome["error"], outcome["error_category"])
+            category = outcome.get("error_category", "server")
+            if pending.command.op.changes_training_state():
+                await self._evict_model(stream.model_id, _failed_stream_message(outcome["error"]), category)
+                return
+            self.futures.fail(pending.command.request_id, outcome["error"], category)
         else:
             self.futures.resolve(pending.command.request_id, outcome)
         stream.finish(pending)
-
-    def _fail_barrier(self, barrier: BarrierUnit, error: str, category: str) -> None:
-        for stream, pending in barrier.entries:
-            self._settle_barrier_entry(stream, pending, {"error": error, "error_category": category})
 
     async def _dispatch_barrier_op(self, barrier: BarrierUnit) -> list[dict]:
         """Return one result or error per entry; only the caller settles futures and retires models."""
@@ -377,47 +356,16 @@ class TinkerService:
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
     async def _step_optimizers(self, entries: list) -> list[dict]:
-        outcomes = {}
-        adam_params_by_slot = {}
-        for stream, pending in entries:
-            discarded = await self._discard_poisoned_gradients(stream.slot)
-            if discarded is not None:
-                outcomes[stream.slot] = discarded
+        adam_params_by_slot = {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
+        slot_outcomes = await self.backend.optim_step(adam_params_by_slot)
+        outcomes = []
+        for stream, _ in entries:
+            outcome = slot_outcomes[stream.slot]
+            if "error" in outcome:
+                outcomes.append(outcome)
             else:
-                adam_params_by_slot[stream.slot] = pending.command.payload["adam_params"]
-        if adam_params_by_slot:
-            try:
-                slot_outcomes = await self.backend.optim_step(adam_params_by_slot)
-            except Exception as error:  # noqa: BLE001  can fail after some slots already stepped
-                logger.exception("the optimizer step failed at the backend level")
-                slot_outcomes = {slot: {"error": f"{type(error).__name__}: {error}"} for slot in adam_params_by_slot}
-            for slot in adam_params_by_slot:
-                outcome = slot_outcomes[slot]
-                if "error" in outcome:
-                    # a half-applied or rank-divergent step makes only this slot unsafe to reuse
-                    outcomes[slot] = {
-                        "error": f"model unloaded after a failed optimizer step ({outcome['error']}); restore from a checkpoint",
-                        "error_category": "server",
-                        "retire_model": True,
-                    }
-                else:
-                    outcomes[slot] = {
-                        "op": "optim_step",
-                        "metrics": {key: float(value) for key, value in outcome.items()},
-                    }
-        return [outcomes[stream.slot] for stream, _ in entries]
-
-    async def _discard_poisoned_gradients(self, slot: int) -> dict | None:
-        poison = self._poisoned_slots.pop(slot, None)
-        if poison is None:
-            return None
-        error, category = poison
-        # retried forward/backwards still belong to the discarded accumulation window until this barrier
-        await self.backend.zero_grads(slot)
-        return {
-            "error": f"the gradient accumulation was discarded after a failed batch ({error}); resubmit the forward/backward requests and optimizer step",
-            "error_category": category,
-        }
+                outcomes.append({"op": "optim_step", "metrics": {key: float(value) for key, value in outcome.items()}})
+        return outcomes
 
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> dict:
         """Save parameters and optimizer state; call after optim_step to persist accumulated training work."""
@@ -426,34 +374,32 @@ class TinkerService:
         checkpoint_dir = self._checkpoint_dir(record.model_id, "weights", name)
         if not payload["overwrite"] and os.path.exists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
-        await self.backend.save_slot(record.slot, checkpoint_dir)
-        self._stamp_checkpoint_meta(checkpoint_dir, record)
+        if (failure := await self.backend.save_slot(record.slot, checkpoint_dir)) is not None:
+            return failure
+        if (failure := self._stamp_checkpoint_meta(checkpoint_dir, record)) is not None:
+            return failure
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         source_id, kind, name = _parse_tinker_path(payload["path"])
         meta = self._checkpoint_meta(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
         self._reject_checkpoint_mismatch(meta, record, payload["path"])
-        try:
-            await self.backend.load_slot(
-                record.slot,
-                record.lora_rank,
-                record.lora_alpha,
-                ckpt_path=self._checkpoint_dir(source_id, kind, name),
-                load_optimizer=payload["optimizer"],
-            )
-        except Exception:
-            # a load that failed partway may leave mixed weight/optimizer state
-            logger.exception("load_state failed; retiring the model")
-            return {
-                "error": "model unloaded after a failed load_state; create a new model",
-                "error_category": "server",
-                "retire_model": True,
-            }
+        failure = await self.backend.load_slot(
+            record.slot,
+            record.lora_rank,
+            record.lora_alpha,
+            ckpt_path=self._checkpoint_dir(source_id, kind, name),
+            load_optimizer=payload["optimizer"],
+        )
+        if failure is not None:
+            return failure
         return {"op": "load_state"}
 
     async def _save_weights_for_sampler(self, record: ModelRecord, payload: dict) -> dict:
-        version, path = await self._save_sampler_snapshot(record, payload.get("sampler_path"))
+        snapshot = await self._save_sampler_snapshot(record, payload.get("sampler_path"))
+        if isinstance(snapshot, dict):
+            return snapshot
+        version, path = snapshot
         await self._warm_sampler_cache(record, version, path)
         result = {
             "op": "save_weights_for_sampler",
@@ -464,7 +410,7 @@ class TinkerService:
             result["sampling_session_id"] = self._new_sampling_session(record.tenant, result["path"])
         return result
 
-    async def _save_sampler_snapshot(self, record: ModelRecord, version: str | None) -> tuple[str, str]:
+    async def _save_sampler_snapshot(self, record: ModelRecord, version: str | None) -> tuple[str, str] | dict:
         if version is None:
             version = str(record.next_sampler_version)
             record.next_sampler_version += 1
@@ -474,18 +420,21 @@ class TinkerService:
         if os.path.exists(os.path.join(path, "META.json")):
             # engines may already hold this name's bytes; saved versions are immutable
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
-        await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
-        self._stamp_checkpoint_meta(path, record)
+        if (
+            failure := await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
+        ) is not None:
+            return failure
+        if (failure := self._stamp_checkpoint_meta(path, record)) is not None:
+            return failure
         record.published_sampler_versions.add(version)
         return version, path
 
     async def _warm_sampler_cache(self, record: ModelRecord, version: str, path: str) -> None:
-        try:
-            await self.backend.push_slot(
-                record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha, lora_path=path
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("engine cache warmup failed; sampler snapshot %s will backfill from disk", version)
+        failure = await self.backend.push_slot(
+            record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha, lora_path=path
+        )
+        if failure is not None:
+            logger.warning("sampler snapshot %s will backfill from disk: %s", version, failure["error"])
 
     def _reject_checkpoint_mismatch(self, meta: dict, record: ModelRecord, shown_path: str) -> None:
         """The tensors only keep their meaning under the config that wrote them (alpha scales them,
@@ -504,9 +453,8 @@ class TinkerService:
                     f"checkpoint {shown_path!r} was saved with {key}={meta[key]!r}; this model expects {key}={value!r}"
                 )
 
-    def _stamp_checkpoint_meta(self, checkpoint_dir: str, record: ModelRecord) -> None:
+    def _stamp_checkpoint_meta(self, checkpoint_dir: str, record: ModelRecord) -> dict | None:
         """Mark completed tensor shards as a gateway checkpoint with persistent ownership and shape."""
-        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
         meta = {
             # the digest proves ownership without persisting the bearer credential itself
             "tenant_digest": _tenant_digest(record.tenant),
@@ -517,13 +465,22 @@ class TinkerService:
             "train_mlp": self.config.trains_mlp,
             "train_unembed": self.config.trains_unembed,
         }
-        (Path(checkpoint_dir) / "META.json").write_text(json.dumps(meta, indent=2))
+        try:
+            Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+            (Path(checkpoint_dir) / "META.json.tmp").write_text(json.dumps(meta, indent=2))
+            os.replace(Path(checkpoint_dir) / "META.json.tmp", Path(checkpoint_dir) / "META.json")
+        except OSError as error:
+            return {"error": str(error)}
+        return None
 
     def _checkpoint_meta(self, checkpoint_dir: str, tenant: str, shown_path: str) -> dict:
         meta_file = Path(checkpoint_dir) / "META.json"
         if not meta_file.exists():
             raise UserInputError(f"unknown checkpoint {shown_path!r}")
-        meta = json.loads(meta_file.read_text())
+        try:
+            meta = json.loads(meta_file.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise UserInputError(f"cannot read checkpoint {shown_path!r}: {error}") from error
         if meta["tenant_digest"] != _tenant_digest(tenant):
             raise OwnershipError(f"checkpoint {shown_path!r} does not belong to this tenant")
         return meta
@@ -582,6 +539,7 @@ class TinkerService:
         task = asyncio.create_task(self._run_sample(future.request_id, payload, lora_name, lora_path))
         self._sample_tasks[future.request_id] = (task, tenant)
         task.add_done_callback(lambda _t, rid=future.request_id: self._sample_tasks.pop(rid, None))
+        task.add_done_callback(self._observe_background_task)
         if sampling_session is not None:
             sampling_session["samples_by_seq"][seq_id] = (future.request_id, sequence_ids)
         return future.request_id, sequence_ids
@@ -595,11 +553,11 @@ class TinkerService:
             self.futures.fail(request_id, "cancelled", "user")
         except UserInputError as error:
             self.futures.fail(request_id, str(error), "user")
-        except Exception as error:  # noqa: BLE001
-            logger.exception("sample failed")
-            self.futures.fail(request_id, f"{type(error).__name__}: {error}", "server")
         else:
-            self.futures.resolve(request_id, {"op": "sample", **result})
+            if "error" in result:
+                self.futures.fail(request_id, result["error"], "server")
+            else:
+                self.futures.resolve(request_id, {"op": "sample", **result})
 
     def cancel(self, tenant: str, request_id: str) -> None:
         """Cancel an in-flight sampling future; training commands have no
@@ -687,17 +645,16 @@ class TinkerService:
         self._eviction_reasons[model_id] = error
         while len(self._eviction_reasons) > 4 * self.config.n_slots:
             self._eviction_reasons.pop(next(iter(self._eviction_reasons)))
-        # the poison belongs to the evicted model's gradient window, not the slot
-        self._poisoned_slots.pop(record.slot, None)
         stream = self.planner.stream(model_id)
         self.planner.remove_stream(model_id)
         for request_id in stream.request_id_by_seq.values():
             if self.futures.get(request_id, record.tenant) is not None:
                 self.futures.fail(request_id, error, category)
-        try:
-            await self.backend.unload_slot(record.slot)
-        except Exception:  # noqa: BLE001  a dirty slot must not kill the sweep or dispatch loop
-            logger.exception(f"failed to unload slot {record.slot}; keeping it out of the free pool")
+        if self.backend.trainer_dead():
+            return
+        failure = await self.backend.unload_slot(record.slot)
+        if failure is not None:
+            logger.error("slot %s remains unavailable after unload failed: %s", record.slot, failure["error"])
             return
         self.free_slots.add(record.slot)
 
@@ -712,9 +669,8 @@ def _tenant_digest(tenant: str) -> str:
     return hashlib.sha256(tenant.encode()).hexdigest()
 
 
-def _unit_model_ids(unit) -> list[str]:
-    streams = {ref.stream for ref in unit.datums} if isinstance(unit, BatchUnit) else {s for s, _ in unit.entries}
-    return sorted(stream.model_id for stream in streams)
+def _failed_stream_message(error: str) -> str:
+    return f"training stream failed ({error}); create a new model and restore from a checkpoint"
 
 
 def _parse_tinker_path(path: str) -> tuple[str, str, str]:

@@ -40,10 +40,22 @@ def validate_create_sampling_session(payload: dict) -> None:
 
 
 def decode_command(op: str, payload: dict) -> tuple[str, dict]:
-    """One JSON command body -> (op, internal payload)."""
+    """Decode content errors into ordered failures when the envelope is identifiable."""
+    try:
+        envelope = {"model_id": payload["model_id"], "seq_id": payload["seq_id"]}
+    except KeyError as error:
+        raise UserInputError(f"missing command envelope field {error.args[0]!r}") from None
+    try:
+        return _decode_command(op, payload, envelope)
+    except (UserInputError, KeyError, TypeError, ValueError, IndexError) as error:
+        if op == "forward_backward" and payload.get("forward_only"):
+            op = "forward_only"
+        return op, envelope | {"validation_error": str(error)}
+
+
+def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
     if (request_type := REQUEST_TYPES.get(op)) is not None:
         validate_against_sdk(request_type, payload)
-    decoded = {"model_id": payload["model_id"], "seq_id": payload["seq_id"]}
     if op == "forward_backward":
         fb_input = payload["forward_backward_input"]
         datums = [
@@ -126,7 +138,8 @@ def tensor_data_to_list(tensor_data) -> list:
 
 def _dense_from_csr(tensor_data: dict) -> list:
     (length,) = tensor_data["shape"]
-    assert len(tensor_data["sparse_crow_indices"]) == 2, "1-D CSR expected"
+    if len(tensor_data["sparse_crow_indices"]) != 2:
+        raise UserInputError("1-D CSR expected")
     dense = [0] * length
     for col, value in zip(tensor_data["sparse_col_indices"], tensor_data["data"], strict=True):
         dense[col] = value

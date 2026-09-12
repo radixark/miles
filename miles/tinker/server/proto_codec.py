@@ -31,7 +31,14 @@ def decode_forward_backward_request(body: bytes) -> tuple[str, dict]:
     """ForwardBackwardRequest proto -> (op, internal payload)."""
     message = public_pb.ForwardBackwardRequest()
     message.ParseFromString(body)
+    op = "forward_only" if message.forward_only else "forward_backward"
+    try:
+        return op, _decode_forward_backward(message)
+    except (UserInputError, KeyError, TypeError, ValueError, IndexError) as error:
+        return op, {"model_id": message.model_id, "seq_id": message.seq_id, "validation_error": str(error)}
 
+
+def _decode_forward_backward(message) -> dict:
     datums = []
     for index, datum in enumerate(message.data):
         tokens: list[int] = []
@@ -49,7 +56,7 @@ def decode_forward_backward_request(body: bytes) -> tuple[str, dict]:
         "loss_fn": message.loss_fn,
         "loss_fn_config": dict(message.loss_fn_config),
     }
-    return ("forward_only" if message.forward_only else "forward_backward"), decoded
+    return decoded
 
 
 def _decode_tensor(name: str, tensor) -> list:
