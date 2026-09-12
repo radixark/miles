@@ -18,6 +18,7 @@ import safetensors
 import safetensors.torch
 import torch
 import transformer_engine.pytorch as te
+from torch.utils._python_dispatch import TorchDispatchMode
 from tools.convert_hf_to_nvfp4 import convert_nvfp4
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
 from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nvfp4
@@ -39,6 +40,7 @@ from miles.utils.fused_nvfp4_qdq import (
 from miles.utils.nvfp4 import (
     NVFP4_GROUP_SIZE,
     nvfp4_global_decode_scale_te,
+    nvfp4_global_encode_scale_te,
     nvfp4_quantize_1d_pair,
     nvfp4_weight_e4m3_max,
 )
@@ -99,6 +101,51 @@ def _te_nvfp4_reference(
         eps=0.0,
     )
     return qweight, block_scale, nvfp4_global_decode_scale_te(global_amax, nvfp4_e4m3_max)
+
+
+class _NoHostScalarRead(TorchDispatchMode):
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        assert func != torch.ops.aten._local_scalar_dense.default, "Scale conversion read a device scalar"
+        assert func != torch.ops.aten.lift_fresh.default, "Scale conversion created a host scalar tensor"
+        return func(*args, **(kwargs or {}))
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("e4m3_max", [256, 448])
+@pytest.mark.parametrize("shape", [(), (1,), (8,), (2, 4)])
+def test_nvfp4_global_scale_exact_without_host_scalar_read(device, e4m3_max, shape):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is not available")
+    # Includes overflow clamping, underflow-to-zero repair and NaN propagation.
+    values = torch.tensor(
+        [
+            0.0,
+            1.0,
+            3.5,
+            torch.finfo(torch.float32).tiny,
+            torch.finfo(torch.float32).max,
+            float("inf"),
+            -float("inf"),
+            float("nan"),
+        ],
+        dtype=torch.float32,
+    )
+    # Frozen legacy batched arithmetic on CPU, independent of the device helper.
+    numerator = torch.tensor(float(e4m3_max), dtype=torch.float32) * torch.tensor(6.0, dtype=torch.float32)
+    expected = torch.div(numerator, values)
+    expected = torch.min(expected, torch.tensor(torch.finfo(torch.float32).max))
+    expected = torch.where(expected == 0.0, torch.ones_like(expected), expected)
+
+    case_size = torch.Size(shape).numel()
+    for cpu_amax, expected_encode in zip(values.split(case_size), expected.split(case_size), strict=True):
+        amax = cpu_amax.reshape(shape).to(device)
+        expected_encode = expected_encode.reshape(shape)
+        with _NoHostScalarRead():
+            encoded = nvfp4_global_encode_scale_te(amax, e4m3_max)
+            decoded = nvfp4_global_decode_scale_te(amax, e4m3_max)
+        assert encoded.device == amax.device and encoded.shape == amax.shape
+        torch.testing.assert_close(encoded.cpu(), expected_encode, rtol=0, atol=0, equal_nan=True)
+        torch.testing.assert_close(decoded.cpu(), torch.div(1.0, expected_encode), rtol=0, atol=0, equal_nan=True)
 
 
 def test_nvfp4_quantize_params_requires_complete_gated_pair():

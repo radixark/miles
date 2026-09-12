@@ -17,8 +17,8 @@ MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"
 MODEL_TYPE = "glm5.2-744B-A40B_5layer"
 NUM_GPUS = 8
-ACTOR_NUM_GPUS = NUM_GPUS
-ROLLOUT_NUM_GPUS = NUM_GPUS
+ACTOR_NUM_GPUS = 4
+ROLLOUT_NUM_GPUS = 4
 ROLLOUT_GPUS_PER_ENGINE = 2
 RUN_ID = U.create_run_id()
 
@@ -244,7 +244,6 @@ def execute():
         "--allgather-cp "
         "--miles-dsa-topk-backend flashinfer "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
-        "--colocate "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "

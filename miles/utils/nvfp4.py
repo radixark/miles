@@ -20,27 +20,16 @@ def nvfp4_global_encode_scale_te(
     global_amax: torch.Tensor,
     nvfp4_e4m3_max: int = int(FP8_E4M3_MAX),
 ) -> torch.Tensor:
-    fp4_max = torch.tensor(FP4_E2M1_MAX, device=global_amax.device, dtype=torch.float32)
-    fp8_max = torch.tensor(float(nvfp4_e4m3_max), device=global_amax.device, dtype=torch.float32)
-    global_encode_scale = torch.div(fp8_max * fp4_max, global_amax.to(torch.float32))
-    global_encode_scale = torch.min(
-        global_encode_scale,
-        torch.tensor(
-            torch.finfo(torch.float32).max,
-            device=global_encode_scale.device,
-            dtype=torch.float32,
-        ),
-    )
-    if global_encode_scale.numel() == 1:
-        if global_encode_scale == torch.tensor(0.0, device=global_amax.device, dtype=torch.float32):
-            global_encode_scale = torch.tensor(1.0, device=global_amax.device, dtype=torch.float32)
-    else:
-        global_encode_scale = torch.where(
-            global_encode_scale == 0.0,
-            torch.ones_like(global_encode_scale),
-            global_encode_scale,
-        )
-    return global_encode_scale
+    # Python scalar operands are passed to device kernels without allocating
+    # and copying scalar tensors. Both supported numerators (1536 and 2688)
+    # are exactly representable in FP32.
+    global_encode_scale = torch.div(
+        float(nvfp4_e4m3_max) * FP4_E2M1_MAX, global_amax.to(torch.float32)
+    ).clamp_max(torch.finfo(torch.float32).max)
+    # A Python conditional on a CUDA scalar synchronizes once per expert
+    # quantization during weight publication. Keep the TE zero-scale rule on
+    # device for scalar and batched amax alike.
+    return torch.where(global_encode_scale == 0.0, 1.0, global_encode_scale)
 
 
 def nvfp4_global_decode_scale_te(
