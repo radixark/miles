@@ -87,13 +87,17 @@ class InferenceController:
 
         dashboard_hooks.register_router(self.args)
 
-        await asyncio.gather(*[srv.wait_init_expected_num_cells() for srv in self.servers.values()])
+        await self.wait_expected_num_cells()
 
     # -------------------------- take over -----------------------------
 
     @lock_exempt
     async def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
+
+    @lock_exempt
+    async def wait_expected_num_cells(self, timeout: float = CELLS_READY_TIMEOUT_SECONDS) -> None:
+        await asyncio.gather(*[srv.wait_init_expected_num_cells(timeout=timeout) for srv in self.servers.values()])
 
     @with_lock
     async def abort_all(self) -> None:
@@ -103,6 +107,11 @@ class InferenceController:
 
     @lock_exempt
     async def registration_ingest(self, *, snapshot: RegistrationSnapshot) -> None:
+        assert self.servers, (
+            f"this inference controller is not ready: reporter {snapshot.reporter_id} announced its cells before "
+            f"the orchestration script built this controller's servers, so it does not know yet which models this "
+            f"run serves; the reporter announces them again, and they are taken in once the controller is up"
+        )
         assert isinstance(provider := self._engine_provider, RegistrationHub), (
             f"run {self.args.run_uuid} deploys its own engines and takes no registration "
             f"(reporter {snapshot.reporter_id})"
