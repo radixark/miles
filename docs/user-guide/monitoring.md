@@ -93,6 +93,12 @@ differ by backend:
 --tensorboard-dir /data/tb-run-42
 ```
 
+Add `--profile-low-precision` to write a JSON summary beside each PyTorch trace. The summary groups
+recognized CUDA kernels into `scale_amax`, `quantization`, `gemm`, `dequantization`, and
+`layout_memory`, and retains kernel names, parent operators, input shapes, and uncategorized totals.
+Durations are sums of unique CUDA activity durations; because kernels can overlap, category totals are not
+end-to-end wall time. The flag adds no work when the PyTorch profiler is disabled.
+
 Open the trace in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev/).
 
 ## Where the log files live
