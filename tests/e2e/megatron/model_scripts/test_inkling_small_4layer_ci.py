@@ -8,8 +8,6 @@ else:
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
-
 
 register_cuda_ci(
     est_time=1800,
@@ -54,6 +52,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(f"hf download {_MODEL_ORG}/{args.model_name} --local-dir {args.hf_checkpoint}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
