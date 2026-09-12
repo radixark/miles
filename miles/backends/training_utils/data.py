@@ -76,18 +76,21 @@ def get_rollout_data(
         ]
 
     if args.qkv_format == "bshd":
-        # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
-        max_seq_len = max(rollout_data["total_lengths"])
-
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
         max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
         if max_compress_ratio:
             local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
             pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
-        max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
-
-        rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
+        # Padding every sample to the rollout max multiplies short samples' token
+        # counts at long context, and pad tokens still dispatch through MoE, so
+        # each sample pads to its own length. Consumers assert that each bshd
+        # microbatch keeps a single padded length.
+        # TODO: compute a per-microbatch max at composition time to support
+        # mixed-length microbatches.
+        rollout_data["max_seq_lens"] = [
+            (length + pad_size - 1) // pad_size * pad_size for length in rollout_data["total_lengths"]
+        ]
 
     # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
     for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
@@ -176,6 +179,13 @@ def get_batch(
     cp_size = parallel_state.cp.size
 
     if qkv_format == "bshd":
+        # max_seq_lens is per-sample, and build-time CP slicing of the rollout
+        # log probs used each sample's own padded length, so mixing padded
+        # lengths inside one bshd microbatch would misalign silently.
+        assert len(set(batch["max_seq_lens"])) == 1, (
+            f"bshd microbatch mixes padded lengths {batch['max_seq_lens']}; "
+            "use 1 sample per microbatch or bucket samples by padded length"
+        )
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
 
