@@ -56,6 +56,7 @@ def make_args(**overrides: Any) -> Namespace:
         grpo_std_normalization=False,
         reward_key=None,
         log_reward_category=None,
+        log_sample_completions=0,
         log_passrate=False,
         pin_rollout_manager_to_head=False,
         # placement / colocation
