@@ -9,10 +9,42 @@ import pytest
 from tests.fast.utils.env_report.conftest import make_args, mock_pip_inspect
 
 from miles.utils.audit_utils.event_logger.logger import read_events
-from miles.utils.audit_utils.event_logger.models import EnvReportEvent
+from miles.utils.audit_utils.event_logger.models import EnvReportEvent, EnvReportGitRepoInfo
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.env_report.collector import collect_env_report, collect_env_report_snapshot
-from miles.utils.env_report.reporter import EnvReporter, _log_env_report, start_env_reporting
+from miles.utils.env_report.reporter import EnvReporter, _log_env_report, _summarise_repo, start_env_reporting
+
+
+class TestSummariseRepo:
+    def test_dirty_repo_summaries_are_distinguished_by_truncated_uncommitted_hash(self) -> None:
+        """Dirty trees at one commit must be distinguished by exactly twelve hash characters."""
+        first = _repo_info(commit="abc", dirty=True, uncommitted_hash="1" * 64)
+        second = _repo_info(commit="abc", dirty=True, uncommitted_hash="2" * 64)
+
+        assert _summarise_repo(first) == "abc-dirty-111111111111"
+        assert _summarise_repo(second) == "abc-dirty-222222222222"
+
+    def test_repo_summary_distinguishes_clean_state_from_dirty_state_with_unknown_hash(self) -> None:
+        """A clean commit stays verbatim while a dirty tree without a hash is explicitly unknown."""
+        clean = _repo_info(commit="abc", dirty=False, uncommitted_hash=None)
+        dirty = _repo_info(commit="abc", dirty=True, uncommitted_hash=None)
+
+        assert _summarise_repo(clean) == "abc"
+        assert _summarise_repo(dirty) == "abc-dirty-unknown"
+
+
+def _repo_info(*, commit: str, dirty: bool, uncommitted_hash: str | None) -> EnvReportGitRepoInfo:
+    return EnvReportGitRepoInfo(
+        package_name="miles",
+        location="/repo",
+        commit=commit,
+        dirty=dirty,
+        diff_stat="",
+        uncommitted_hash=uncommitted_hash,
+        untracked_paths=[],
+        untracked_paths_truncated=False,
+        untracked_unhashed_paths=[],
+    )
 
 
 class TestLogEnvReport:
