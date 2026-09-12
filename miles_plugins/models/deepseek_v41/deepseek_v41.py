@@ -35,6 +35,7 @@ from miles_plugins.models.deepseek_v41.ops.cp_utils import (
 from miles_plugins.models.deepseek_v41.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v41.ops.rope_tables import wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v41.engram import DeepSeekV41Engram
+from miles_plugins.models.deepseek_v41.ops import hc_mix
 from miles_plugins.models.deepseek_v41.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v41.ops.indexer import DeepSeekV41Indexer
 from miles_plugins.models.deepseek_v41.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
@@ -94,9 +95,11 @@ def apply_v41_config(config, hf_config):
 
 def v41_aggregate(x: torch.Tensor, pre: torch.Tensor | None, n: int) -> torch.Tensor:
     s, b, nc = x.shape
-    streams = x.view(s, b, n, nc // n).float()
     if pre is None:
-        return streams[:, :, 0].to(x.dtype)
+        return x.view(s, b, n, nc // n)[:, :, 0].to(x.dtype)
+    if hc_mix.FUSED:
+        return hc_mix.aggregate(x, pre, n)
+    streams = x.view(s, b, n, nc // n).float()
     return (pre.float().unsqueeze(-1) * streams).sum(dim=2).to(x.dtype)
 
 
@@ -283,6 +286,8 @@ class V41HyperConnection(HyperConnectionModule):
     ):
         x, bias = layer_output_with_bias
         assert bias is None
+        if hc_mix.FUSED:
+            return hc_mix.hc_mix(x, original_residual, h_res, h_post, self.n)
         s, b, _ = original_residual.shape
         residual = original_residual.view(s, b, self.n, self.hidden_size).float()
         mixed = torch.einsum("sbij,sbid->sbjd", h_res.float(), residual)
