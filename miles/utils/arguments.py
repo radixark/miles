@@ -822,6 +822,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--update-weight-use-flattened-buckets",
+                action="store_true",
+                help=(
+                    "Opt in to one packed-byte NCCL broadcast per weight bucket. "
+                    "Requires non-colocated broadcast transfer and SGLang's mixed-dtype flattened-bucket API. "
+                    "Adds a contiguous bucket allocation on the sender and receivers; "
+                    "atomic update units may exceed --update-weight-buffer-size."
+                ),
+            )
+            parser.add_argument(
                 "--update-weights-interval",
                 type=int,
                 default=1,

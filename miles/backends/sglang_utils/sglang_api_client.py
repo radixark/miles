@@ -350,6 +350,7 @@ class SGLangApiClient:
         flush_cache=False,
         weight_version: str | None = None,
         selector: str = "all",
+        load_format: str | None = None,
     ):
         payload = {
             "names": names,
@@ -361,6 +362,8 @@ class SGLangApiClient:
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
+        if load_format is not None:
+            payload["load_format"] = load_format
         return await self._make_request(
             "update_weights_from_distributed",
             payload,
