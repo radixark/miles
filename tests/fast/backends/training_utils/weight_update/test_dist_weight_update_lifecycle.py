@@ -7,6 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.training_utils.weight_update.session import (
+    EngineResponseError,
+    EngineRPCError,
+    check_weight_sync_results,
+)
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
 
@@ -46,7 +51,7 @@ class _RecordingApiClient:
             if (gate := self._gates.get(name)) is not None and not await asyncio.to_thread(gate.wait, 5):
                 raise TimeoutError(f"{name} gate timed out")
             if name == self._failing_method:
-                raise RuntimeError(f"{name} failed")
+                raise EngineResponseError(f"{name} failed")
             self._calls.append((self._engine_index, name, kwargs))
             return {"success": True}
 
@@ -204,7 +209,7 @@ class TestWeightUpdateSessionFrame:
         calls: list[tuple[int, str, dict]] = []
         updater = _make_updater(_make_engines(calls, failing_method="pause_generation"))
 
-        with pytest.raises(RuntimeError, match="pause_generation failed"):
+        with pytest.raises(EngineRPCError, match="pause_generation failed"):
             _run(updater)
 
         assert _phases(calls) == ["pause_generation", "continue_generation"], "the paused engine resumes"
@@ -215,7 +220,7 @@ class TestWeightUpdateSessionFrame:
         calls: list[tuple[int, str, dict]] = []
         updater = _make_updater(_make_engines(calls, failing_method="flush_cache"))
 
-        with pytest.raises(RuntimeError, match="flush_cache failed"):
+        with pytest.raises(EngineRPCError, match="flush_cache failed"):
             _run(updater)
 
         assert _phases(calls) == ["pause_generation", "flush_cache", "continue_generation"]
@@ -226,7 +231,7 @@ class TestWeightUpdateSessionFrame:
         calls: list[tuple[int, str, dict]] = []
         updater = _make_updater(_make_engines(calls, failing_method="begin_weight_update", failing_engine_index=1))
 
-        with pytest.raises(RuntimeError, match="begin_weight_update failed"):
+        with pytest.raises(EngineRPCError, match="begin_weight_update failed"):
             _run(updater)
 
         assert _phases(calls) == _PREPARE_PHASES + ["continue_generation"]
@@ -238,7 +243,7 @@ class TestWeightUpdateSessionFrame:
         calls: list[tuple[int, str, dict]] = []
         updater = _make_updater(_make_engines(calls, failing_method="end_weight_update"))
 
-        with pytest.raises(RuntimeError, match="end_weight_update failed"):
+        with pytest.raises(EngineRPCError, match="end_weight_update failed"):
             _run(updater)
 
         assert _phases(calls) == _PREPARE_PHASES + ["end_weight_update"]
@@ -249,7 +254,7 @@ class TestWeightUpdateSessionFrame:
         calls: list[tuple[int, str, dict]] = []
         updater = _make_updater(_make_engines(calls, failing_method="update_weight_version"))
 
-        with pytest.raises(RuntimeError, match="update_weight_version failed"):
+        with pytest.raises(EngineRPCError, match="update_weight_version failed"):
             _run(updater)
 
         assert _phases(calls) == _PREPARE_PHASES + ["end_weight_update", "update_weight_version"]
@@ -263,3 +268,17 @@ class TestWeightUpdateSessionFrame:
         _run(updater, rank=1)
 
         assert calls == []
+
+
+def test_a_rejection_during_tensor_transfer_is_not_a_coordinated_rpc_failure():
+    updater = _make_updater(_make_engines([]))
+    updater._hf_weight_iterator.iter_hf_weights.return_value = iter([[("weight", MagicMock())]])
+
+    def reject_bucket(_bucket):
+        check_weight_sync_results([{"success": False, "error_message": "transfer rejected"}], is_lora=False)
+
+    updater.protocol.send_bucket.side_effect = reject_bucket
+    with pytest.raises(EngineResponseError) as raised:
+        _run(updater)
+    assert not isinstance(raised.value, EngineRPCError)
+    updater.protocol.finalize.assert_not_called()
