@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -96,16 +97,32 @@ class Helm:
         _run(["helm", "dependency", "build", str(chart)], capture_output=False)
 
     @staticmethod
-    def list_releases(*, namespace: str, selector: str) -> list[str]:
-        listed = _run(
-            ["helm", "list", "--namespace", namespace, "--selector", selector, "--output", "json"],
-            capture_output=True,
-        )
+    def list_releases(*, namespace: str, selector: str | None = None, name_filter: str | None = None) -> list[str]:
+        command = ["helm", "list", "--namespace", namespace, "--output", "json"]
+        if selector is not None:
+            command += ["--selector", selector]
+        if name_filter is not None:
+            command += ["--filter", name_filter]
+        listed = _run(command, capture_output=True)
         return [release["name"] for release in json.loads(listed.stdout or "[]")]
 
     @staticmethod
     def uninstall(*, release: str, namespace: str) -> None:
         _run(["helm", "uninstall", release, "--namespace", namespace], capture_output=False)
+
+    @staticmethod
+    def uninstall_if_present(*, release: str, namespace: str) -> None:
+        result = Helm.run_raw("uninstall", release, "--namespace", namespace)
+        if result.returncode == 0:
+            return
+
+        reason = (result.stderr or result.stdout or "").strip()
+        if "not found" in reason.lower():
+            return
+        raise RuntimeError(
+            f"Could not uninstall Helm release {release!r} from namespace {namespace!r}: "
+            f"exit code {result.returncode}: {reason}"
+        )
 
     @staticmethod
     def upgrade_command(
@@ -232,6 +249,12 @@ class Kubectl:
     @staticmethod
     def release_selector(release: str) -> str:
         return f"{INSTANCE_LABEL}={release}"
+
+    @staticmethod
+    def releases_selector(releases: Sequence[str]) -> str:
+        if len(releases) == 1:
+            return Kubectl.release_selector(releases[0])
+        return f"{INSTANCE_LABEL} in ({','.join(releases)})"
 
     @staticmethod
     def job_selector(name: str) -> str:
