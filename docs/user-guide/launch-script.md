@@ -106,6 +106,15 @@ convention:
 | `--extra-args` | empty | Extra flags appended to the `train.py` command line |
 | `--extra-env-vars` | empty | Extra env vars added to the Ray runtime env |
 
+Every trainer and inference-engine actor also gets node-local JIT caches, `SGLANG_CACHE_DIR`,
+`TRITON_CACHE_DIR`, `TORCHINDUCTOR_CACHE_DIR` and `TVM_FFI_CACHE_DIR` under
+`/tmp/miles-compile-cache-<user>/`, unless the variable is set in the environment of the process that builds
+the job (or, for trainers, in `--train-env-vars`; inference engines have no per-actor override flag). Setting
+`SGLANG_CACHE_DIR` yourself moves the Triton and Inductor caches under it, as sglang does; the values
+`import sglang` presets under `~/.cache/sglang` do not count as yours. This applies whichever launcher
+started the job. The defaults under the home directory sit on NFS on most clusters, and many ranks
+cold-compiling the same kernels into one shared cache make the first training step look like a hang.
+
 ### execute() — assembling the train.py flags from grouped blocks
 
 The `execute()` function builds the `train.py` command line as one f-string block per
