@@ -4,11 +4,7 @@ from typing import Protocol
 
 import torch
 
-from miles.backends.training_utils.cp_utils import (
-    all_gather_with_cp,
-    get_local_response_loss_masks,
-    get_sum_of_sample_mean,
-)
+from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss_hub.math_utils import (
@@ -17,6 +13,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_gspo_kl,
     compute_opsm_mask,
     compute_policy_loss,
+    compute_sequence_kl,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.function_registry import load_function
@@ -68,8 +65,8 @@ def policy_loss_function(
     """Compute policy loss (PPO/GSPO) and metrics.
 
     Computes current log-probabilities and entropy from model logits, then
-    calculates PPO-style clipped policy gradient loss. For GSPO, gathers
-    full sequences via context-parallel all-gather before computing per-sample
+    calculates PPO-style clipped policy gradient loss. For GSPO, reduces
+    masked log-ratio sums across context-parallel ranks to compute per-sample
     KL. Optionally applies TIS (Truncated Importance Sampling) correction and
     adds KL loss term if configured.
 
@@ -137,45 +134,32 @@ def policy_loss_function(
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 
-    # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
-    need_full_log_probs = args.use_opsm or args.advantage_estimator == "gspo"
-
-    full_log_probs = None
-    full_old_log_probs = None
-    if need_full_log_probs:
-        full_log_probs = [
-            all_gather_with_cp(log_prob, total_length, response_length)
-            for log_prob, total_length, response_length in zip(
-                log_probs, total_lengths, response_lengths, strict=False
-            )
-        ]
-        if args.skip_actor_forward_only and not args.use_rollout_logprobs:
-            full_old_log_probs = [full_log_prob.detach() for full_log_prob in full_log_probs]
-        else:
-            full_old_log_probs = [
-                all_gather_with_cp(old_log_prob, total_length, response_length)
-                for old_log_prob, total_length, response_length in zip(
-                    old_log_probs, total_lengths, response_lengths, strict=False
-                )
-            ]
+    local_loss_mask_list = get_local_response_loss_masks(
+        total_lengths,
+        response_lengths,
+        batch["loss_masks"],
+        args.qkv_format,
+        max_seq_lens,
+    )
+    sequence_kl = None
+    if args.use_opsm or args.advantage_estimator == "gspo":
+        with torch.set_grad_enabled(torch.is_grad_enabled() and args.advantage_estimator == "gspo"):
+            sequence_kl = compute_sequence_kl(log_probs, old_log_probs, local_loss_mask_list, batch["loss_masks"])
 
     # Compute OPSM mask if enabled
     if args.use_opsm:
         opsm_mask, opsm_clipfrac = compute_opsm_mask(
             args=args,
-            full_log_probs=full_log_probs,
-            full_old_log_probs=full_old_log_probs,
             advantages=advantages_list,
             loss_masks=batch["loss_masks"],
+            sequence_kl=sequence_kl,
         )
 
     # Compute KL divergence (GSPO uses sequence-level KL, others use per-token KL)
     if args.advantage_estimator == "gspo":
         ppo_kl = compute_gspo_kl(
-            full_log_probs=full_log_probs,
-            full_old_log_probs=full_old_log_probs,
             local_log_probs=log_probs,
-            loss_masks=batch["loss_masks"],
+            sequence_kl=sequence_kl,
         )
         old_log_probs = torch.cat(old_log_probs, dim=0)
         log_probs = torch.cat(log_probs, dim=0)
@@ -184,13 +168,6 @@ def policy_loss_function(
         log_probs = torch.cat(log_probs, dim=0)
         ppo_kl = old_log_probs - log_probs
 
-    local_loss_mask_list = get_local_response_loss_masks(
-        total_lengths,
-        response_lengths,
-        batch["loss_masks"],
-        args.qkv_format,
-        max_seq_lens,
-    )
     local_loss_masks = torch.cat(local_loss_mask_list, dim=0).to(device=ppo_kl.device)
     active_tokens = local_loss_masks.bool()
     ppo_kl = torch.where(
