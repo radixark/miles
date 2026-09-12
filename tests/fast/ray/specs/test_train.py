@@ -483,7 +483,7 @@ class TestEnvironmentVariables:
         directories = [
             spec.env_var(_make_context(cell_index=1, worker_in_cell_index=i))["TMS_DISK_BACKUP_DIR"] for i in range(2)
         ]
-        assert directories == ["/tmp/offload/cell1_rank0", "/tmp/offload/cell1_rank1"]
+        assert directories == ["/tmp/offload/cell00001_rank00000", "/tmp/offload/cell00001_rank00001"]
 
     def test_a_library_without_the_disk_backend_is_rejected(self, monkeypatch):
         """Launching disk offload against a library that cannot write to disk would
@@ -618,8 +618,8 @@ class TestSpecTrainerController:
 
     def test_the_worker_and_cell_names_are_stable(self):
         """The driver looks the controller up by name, so these names are part of the release's contract."""
-        assert trainer_controller_worker_name("actor") == "trainer-controller-actor-0-0"
-        assert trainer_controller_cell_id("actor") == "trainer-controller-actor-0"
+        assert trainer_controller_worker_name("actor") == "trainer-controller-actor-00000-00000"
+        assert trainer_controller_cell_id("actor") == "trainer-controller-actor-00000"
 
     def test_it_renders_into_static_workers_with_its_rpc_port(self):
         """The release has to contain the controller pod, or the address book would point at nothing."""
@@ -962,7 +962,7 @@ class TestProviderSelection:
 
         provider = _compute_trainer_controller_provider(args, capability=capability, trainer_id="actor")
 
-        addrs = asyncio.run(provider.get_addrs("trainer-controller-actor-0-0"))
+        addrs = asyncio.run(provider.get_addrs("trainer-controller-actor-00000-00000"))
         assert addrs["rpc"].addr == "http://10.0.0.1:8000"
         assert capability.requested_static_pool_ids == []
 
