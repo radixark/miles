@@ -96,6 +96,13 @@ class TestLoadAndMerge:
         result = _load_and_merge(tmp_path)
         assert len(result) == 1
 
+    def test_conflicting_tp_duplicate_fails(self, tmp_path: Path) -> None:
+        _write_rank_file(tmp_path, rank=0, entries_by_batch=[[_entry(0, 100, -1.0)]])
+        _write_rank_file(tmp_path, rank=1, entries_by_batch=[[_entry(0, 100, -2.0)]])
+
+        with pytest.raises(ValueError, match="conflicting duplicate logprob entry"):
+            _load_and_merge(tmp_path)
+
     def test_empty_directory(self, tmp_path: Path) -> None:
         result = _load_and_merge(tmp_path)
         assert result == {}
@@ -155,6 +162,17 @@ class TestComputeComparison:
         assert result.max_abs_diff == 0.0
         assert result.num_positions == 2
 
+    @pytest.mark.parametrize("threshold", [float("nan"), float("inf"), float("-inf"), -1.0])
+    def test_invalid_threshold_fails(self, threshold: float) -> None:
+        entries = self._make_entries([(0, 100, -1.0)])
+
+        with pytest.raises(ValueError, match="must be finite and non-negative"):
+            _compute_comparison(
+                baseline_entries=entries,
+                target_entries=entries,
+                threshold=threshold,
+            )
+
     def test_within_threshold_passes(self) -> None:
         baseline = self._make_entries([(0, 100, -1.0)])
         target = self._make_entries([(0, 100, -1.0005)])
@@ -177,18 +195,60 @@ class TestComputeComparison:
         assert result.passed is False
         assert result.max_abs_diff == pytest.approx(0.1)
 
-    def test_no_common_keys_passes(self) -> None:
+    def test_no_common_keys_fails(self) -> None:
         baseline = self._make_entries([(0, 100, -1.0)])
-        target: dict[tuple[int, int], _PositionLogprob] = {
-            (1, 0): _PositionLogprob(global_position=0, token_id=200, logprob=-2.0)
-        }
+        target: dict[tuple[int, int], _PositionLogprob] = {(1, 0): _PositionLogprob(global_position=0, token_id=200, logprob=-2.0)}
         result = _compute_comparison(
             baseline_entries=baseline,
             target_entries=target,
             threshold=1e-3,
         )
-        assert result.passed is True
+        assert result.passed is False
         assert result.num_positions == 0
+        assert "no common positions" in " ".join(result.failure_reasons)
+
+    def test_partial_position_coverage_fails(self) -> None:
+        baseline = self._make_entries([(0, 100, -1.0), (1, 101, -2.0)])
+        target = self._make_entries([(0, 100, -1.0)])
+
+        result = _compute_comparison(
+            baseline_entries=baseline,
+            target_entries=target,
+            threshold=1e-3,
+        )
+
+        assert result.passed is False
+        assert result.num_positions == 1
+        assert "target is missing 1 baseline positions" in result.failure_reasons
+
+    def test_token_id_mismatch_fails(self) -> None:
+        baseline = self._make_entries([(0, 100, -1.0), (1, 101, -2.0)])
+        target = self._make_entries([(0, 999, -1.0), (1, 101, -2.0)])
+
+        result = _compute_comparison(
+            baseline_entries=baseline,
+            target_entries=target,
+            threshold=1e-3,
+        )
+
+        assert result.passed is False
+        assert result.num_positions == 1
+        assert "token IDs differ at 1 positions" in result.failure_reasons
+
+    @pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+    def test_nonfinite_logprob_fails(self, nonfinite: float) -> None:
+        baseline = self._make_entries([(0, 100, -1.0), (1, 101, -2.0)])
+        target = self._make_entries([(0, 100, nonfinite), (1, 101, -2.0)])
+
+        result = _compute_comparison(
+            baseline_entries=baseline,
+            target_entries=target,
+            threshold=1e-3,
+        )
+
+        assert result.passed is False
+        assert result.num_positions == 1
+        assert "non-finite logprobs found at 1 positions" in result.failure_reasons
 
     def test_statistics(self) -> None:
         baseline = self._make_entries(
@@ -215,6 +275,22 @@ class TestComputeComparison:
         assert result.max_abs_diff == pytest.approx(0.03)
         assert result.mean_abs_diff == pytest.approx(0.02)
         assert result.median_abs_diff == pytest.approx(0.02)
+        assert result.k3_kl > 0
+        assert result.first_position_mean_abs_diff == pytest.approx(0.01)
+        assert result.remaining_position_mean_abs_diff == pytest.approx(0.025)
+
+    def test_k3_kl_uses_low_variance_clamps(self) -> None:
+        baseline = self._make_entries([(0, 100, -100.0)])
+        target = self._make_entries([(0, 100, 100.0)])
+
+        result = _compute_comparison(
+            baseline_entries=baseline,
+            target_entries=target,
+            threshold=200.0,
+        )
+
+        assert result.passed is True
+        assert result.k3_kl == 10.0
 
     def test_worst_position_tracked(self) -> None:
         baseline = self._make_entries(
@@ -300,7 +376,17 @@ class TestCompareLogprobs:
             is False
         )
 
-    def test_empty_baseline_returns_true(self, tmp_path: Path) -> None:
+    def test_malformed_json_returns_false(self, tmp_path: Path) -> None:
+        baseline_dir = tmp_path / "baseline"
+        target_dir = tmp_path / "target"
+        baseline_dir.mkdir()
+        target_dir.mkdir()
+        _write_rank_file(baseline_dir, rank=0, entries_by_batch=[[_entry(0, 100, -1.0)]])
+        (target_dir / "rank_0.json").write_text("{")
+
+        assert compare_logprobs(baseline_dir=baseline_dir, target_dir=target_dir) is False
+
+    def test_empty_baseline_returns_false(self, tmp_path: Path) -> None:
         baseline_dir = tmp_path / "baseline"
         target_dir = tmp_path / "target"
         baseline_dir.mkdir()
@@ -318,10 +404,10 @@ class TestCompareLogprobs:
                 baseline_dir=baseline_dir,
                 target_dir=target_dir,
             )
-            is True
+            is False
         )
 
-    def test_empty_target_returns_true(self, tmp_path: Path) -> None:
+    def test_empty_target_returns_false(self, tmp_path: Path) -> None:
         baseline_dir = tmp_path / "baseline"
         target_dir = tmp_path / "target"
         baseline_dir.mkdir()
@@ -339,7 +425,7 @@ class TestCompareLogprobs:
                 baseline_dir=baseline_dir,
                 target_dir=target_dir,
             )
-            is True
+            is False
         )
 
     def test_custom_threshold(self, tmp_path: Path) -> None:
