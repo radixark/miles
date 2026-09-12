@@ -1,0 +1,9 @@
+sglang:
+- name: default
+  server_groups:
+  - worker_type: prefill
+    num_gpus: 16
+    num_gpus_per_engine: 16
+  - worker_type: decode
+    num_gpus: 16
+    num_gpus_per_engine: 8
