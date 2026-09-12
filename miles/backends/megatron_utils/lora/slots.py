@@ -74,46 +74,6 @@ def adapter_shard_topology() -> tuple[bool, tuple[tuple[int, int, int], ...]]:
     return _shard_topology
 
 
-def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
-    from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear, _iter_multi_lora_modules
-
-    target_main_params = set()
-    for module in _iter_multi_lora_modules(model):
-        if not isinstance(module, MultiLoRALinear):
-            continue
-        adapter = module.adapters[idx]
-        for param in adapter.parameters():
-            main = getattr(param, "main_param", None)
-            target_main_params.add(id(main if main is not None else param))
-
-    chained = getattr(optimizer, "chained_optimizers", [optimizer])
-    for chained_optimizer in chained:
-        inner = getattr(chained_optimizer, "optimizer", chained_optimizer)
-        if inner is None:
-            continue
-        # TE/apex FusedAdam tracks the Adam step per param GROUP, not per param;
-        # reset the retired slot's groups so the next tenant restarts bias correction.
-        for group in inner.param_groups:
-            if group.get("miles_multi_lora_slot") == idx and "step" in group:
-                if isinstance(group["step"], torch.Tensor):
-                    group["step"].zero_()
-                else:
-                    group["step"] = 0
-        for param, state in inner.state.items():
-            if id(param) not in target_main_params:
-                continue
-            if "exp_avg" in state:
-                state["exp_avg"].zero_()
-            if "exp_avg_sq" in state:
-                state["exp_avg_sq"].zero_()
-            # Bias correction restarts for the slot's next tenant.
-            if "step" in state:
-                if isinstance(state["step"], torch.Tensor):
-                    state["step"].zero_()
-                else:
-                    state["step"] = 0
-
-
 def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) -> torch.Tensor:
     """Trim a max-rank-padded LoRA tensor to ``adapter_rank`` on the rank axis, addressed
     from the end so packed grouped-expert exports are not sliced on the expert axis."""

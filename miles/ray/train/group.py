@@ -388,6 +388,28 @@ class TrainerController:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("offload_grad_buffer")
 
+    # ------------------------ API :: multi-LoRA slot commands ------------------------
+
+    async def _execute_slots(self, fn_name: str, **kwargs) -> list:
+        (cell,) = self._cells
+        assert cell.is_alive, "the Tinker trainer cell is unavailable"
+        return await cell.execute(fn_name, **kwargs)
+
+    async def forward_backward(self, batch_id: int, data_ref) -> list:
+        return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
+
+    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> list:
+        return await self._execute_slots("optim_step", adam_params_by_slot=adam_params_by_slot)
+
+    async def forward_only_logprobs(self, batch_id: int, data_ref) -> list:
+        return await self._execute_slots("forward_only_logprobs", batch_id=batch_id, rollout_data_ref=data_ref)
+
+    async def load_slot(self, slot: int, rank: int, alpha: float) -> None:
+        await self._execute_slots("load_slot", slot=slot, rank=rank, alpha=alpha)
+
+    async def unload_slot(self, slot: int) -> None:
+        await self._execute_slots("unload_slot", slot=slot)
+
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 

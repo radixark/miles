@@ -1,20 +1,43 @@
-"""Per-slot decoupled Adam optimizers for multi-LoRA, chained under Megatron's LayerWiseDistributedOptimizer;
-requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
+"""Per-tenant slot optimizers for multi-LoRA.
+
+Each live slot owns an independent LayerWiseDistributedOptimizer over exactly
+its adapter parameters, built at load and destroyed with the slot, so a fresh
+tenant never inherits optimizer state. Requires plain DDP all-reduce
+(use_distributed_optimizer OFF) so cross-batch gradient retention stays
+idempotent."""
 
 import logging
+import math
 from argparse import Namespace
-from collections.abc import Sequence
 from contextlib import contextmanager
+from dataclasses import fields
 
 import torch
 from megatron.core.optimizer import get_megatron_optimizer
 from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32, get_grad_norm_fp32
 from megatron.core.optimizer.layer_wise_optimizer import LayerWiseDistributedOptimizer
-from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer.optimizer_config import OptimizerConfig
 from megatron.core.process_groups_config import ProcessGroupCollection
 
+
 logger = logging.getLogger(__name__)
+
+
+def validate_multi_lora_optimizer_args(args: Namespace) -> None:
+    """Reject launch options the per-slot optimizers cannot honor."""
+    assert not args.use_distributed_optimizer, (
+        "multi-LoRA per-slot optimizers require use_distributed_optimizer=False: "
+        "gradient retention relies on all-reduce idempotency, and LayerWise "
+        "sharding replaces byte-level ZeRO"
+    )
+    assert args.bf16 and not args.fp16, "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
+    assert (
+        args.optimizer or ""
+    ).lower() == "adam", (
+        f"multi-LoRA per-slot optimizers only implement Adam semantics; got optimizer={args.optimizer!r}"
+    )
+    for flag in ("optimizer_cpu_offload", "stream_optimizer_state_to_disk", "rematerialize_param_from_master_weight"):
+        assert not getattr(args, flag, False), f"--{flag.replace('_', '-')} is not supported with multi-LoRA slots"
 
 
 def adapter_slot_parameters(model, slot: int) -> list[torch.nn.Parameter]:
@@ -62,80 +85,101 @@ def _only_slot_trainable(model_chunks, slot_params: list[torch.nn.Parameter]):
             param.requires_grad = True
 
 
-def build_multi_lora_optimizer(
-    args: Namespace,
-    config: OptimizerConfig,
-    model_chunks: Sequence,
-) -> MegatronOptimizer:
-    """Build one Float16-wrapped Adam per adapter slot under a LayerWiseDistributedOptimizer (ChainedOptimizer);
-    each child's param groups are tagged with ``miles_multi_lora_slot`` and narrowed to this rank's shard."""
-    assert not config.use_distributed_optimizer, (
-        "multi-LoRA per-slot optimizers require use_distributed_optimizer=False: "
-        "gradient retention relies on all-reduce idempotency, and LayerWise "
-        "sharding replaces byte-level ZeRO"
-    )
-    assert not config.fp16, "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
-    assert (config.optimizer or "").lower() == "adam", (
-        "multi-LoRA per-slot optimizers only implement Adam semantics (state init, "
-        f"slot retirement cleanup, step clocks); got optimizer={config.optimizer!r}"
-    )
-
-    pg_collection = ProcessGroupCollection.use_mpu_process_groups()
-
-    # bf16 off: builder must yield unwrapped torch optimizers; LayerWise wraps post-sharding
-    reset_bf16 = config.bf16
+def _build_slot_base_optimizers(config, model, slot_params, *, use_gloo_process_groups: bool) -> list:
+    # create FP32 master wrappers only after LayerWise shards the base optimizers
     config.bf16 = False
-
-    base_optimizers: list = []
-    init_fns: list = []
-    slot_child_indices: dict[int, list[int]] = {}
-    try:
-        for slot in range(args.multi_lora_n_adapters):
-            slot_params = adapter_slot_parameters(model_chunks, slot)
-            assert slot_params, f"adapter slot {slot} has no parameters; is this a multi-LoRA model?"
-            with _only_slot_trainable(model_chunks, slot_params):
-                chained = get_megatron_optimizer(
-                    config,
-                    list(model_chunks),
-                    use_gloo_process_groups=args.use_gloo_process_groups,
-                )
-            children = [
-                child
-                for child in chained.chained_optimizers
-                if getattr(child, "optimizer", None) is not None and child.get_parameters()
-            ]
-            assert children, f"adapter slot {slot} produced no optimizer children"
-            slot_child_indices[slot] = list(range(len(base_optimizers), len(base_optimizers) + len(children)))
-            for child in children:
-                for group in child.param_groups:
-                    group["miles_multi_lora_slot"] = slot
-                # LayerWise's Float16 wrap reuses these group dicts, so the slot tag survives
-                base_optimizers.append(child.optimizer)
-                init_fns.append(_adam_init_state_fn)
-    finally:
-        config.bf16 = reset_bf16
-
-    optimizer = LayerWiseDistributedOptimizer(base_optimizers, config, pg_collection, init_state_fn_list=init_fns)
-
-    # Params are scattered whole across DP ranks, so per-child norm/clip reductions must span the world.
-    for child in optimizer.chained_optimizers:
-        child.grad_stats_parallel_group = None
-
-    optimizer.miles_slot_child_indices = slot_child_indices
-    logger.info(
-        f"Built multi-LoRA LayerWise optimizer: {args.multi_lora_n_adapters} slots, "
-        f"{len(optimizer.chained_optimizers)} chained children"
-    )
-    return optimizer
+    with _only_slot_trainable(model, slot_params):
+        chained = get_megatron_optimizer(config, list(model), use_gloo_process_groups=use_gloo_process_groups)
+    optimizers = [
+        child.optimizer
+        for child in chained.chained_optimizers
+        if getattr(child, "optimizer", None) is not None and child.get_parameters()
+    ]
+    config.bf16 = True
+    return optimizers
 
 
-def _slot_children(optimizer, slot: int):
-    return [optimizer.chained_optimizers[i] for i in optimizer.miles_slot_child_indices[slot]]
+class SlotOptimizer:
+    """One tenant's optimizer over one adapter slot.
+
+    Wraps a per-slot LayerWiseDistributedOptimizer, so every method touches
+    only this slot's parameters and state: reloads cannot round other tenants'
+    FP32 masters, and the parameter all-gather moves only this slot."""
+
+    def __init__(self, args: Namespace, model, slot: int) -> None:
+        self.slot = slot
+        self._model = model
+        slot_params = adapter_slot_parameters(model, slot)
+        assert slot_params, f"adapter slot {slot} has no parameters; is this a multi-LoRA model?"
+
+        config = OptimizerConfig(
+            **{f.name: getattr(args, f.name) for f in fields(OptimizerConfig) if hasattr(args, f.name)}
+        )
+        config.timers = None
+        base_optimizers = _build_slot_base_optimizers(
+            config, model, slot_params, use_gloo_process_groups=args.use_gloo_process_groups
+        )
+        assert base_optimizers, f"adapter slot {slot} produced no optimizer children"
+        self._inner = LayerWiseDistributedOptimizer(
+            base_optimizers,
+            config,
+            ProcessGroupCollection.use_mpu_process_groups(),
+            init_state_fn_list=[_adam_init_state_fn] * len(base_optimizers),
+        )
+        # params are scattered whole across DP ranks; per-child norm/clip reductions must span the world
+        for child in self._inner.chained_optimizers:
+            child.grad_stats_parallel_group = None
+
+    def apply_adam_params(self, adam_params: dict) -> None:
+        for child in self._inner.chained_optimizers:
+            for group in child.param_groups:
+                group["lr"] = adam_params["learning_rate"]
+                group["betas"] = (adam_params["beta1"], adam_params["beta2"])
+                group["eps"] = adam_params["eps"]
+                group["weight_decay"] = adam_params["weight_decay"]
+
+    def prepare_grads(self) -> None:
+        for child in self._inner.chained_optimizers:
+            child.prepare_grads()
+
+    def clip_and_step(self, clip_grad: float) -> dict:
+        """-> {"grad_norm": x} stepped, {"skipped_nonfinite": 1.0} dropped.
+        Collective: the slot's grad norm is all-reduced over the world."""
+        grads_for_norm = []
+        slot_params = []
+        for child in self._inner.chained_optimizers:
+            grads_for_norm += child.get_grads_for_grad_norm()
+            slot_params += child.get_parameters()
+        slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
+        # BF16 has no grad scaler; the all-reduced norm detects inf/nan on every rank
+        if not math.isfinite(slot_norm):
+            return {"skipped_nonfinite": 1.0}
+        if clip_grad > 0.0 and slot_params:
+            clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
+        for child in self._inner.chained_optimizers:
+            child.step_with_ready_grads()
+        return {"grad_norm": float(slot_norm)}
+
+    def allgather_params(self) -> None:
+        self._inner.allgather_params()
+
+    def reload_masters(self) -> None:
+        """Refresh this slot's FP32 masters from its model parameters."""
+        self._inner.reload_model_params()
+
+    def zero_grads(self) -> None:
+        """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
+        buffer views and any lingering ``grad``/``main_param.grad`` references."""
+        for param in adapter_slot_parameters(self._model, self.slot):
+            if (main_grad := getattr(param, "main_grad", None)) is not None:
+                main_grad.zero_()
+            param.grad = None
+            if (main_param := getattr(param, "main_param", None)) is not None:
+                main_param.grad = None
 
 
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
-    survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
+    """Reset DDP bookkeeping while retaining each slot's gradient accumulation window."""
     for model_chunk in model_chunks:
         if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
             for param in model_chunk.params_with_grad:
@@ -144,53 +188,22 @@ def reset_grad_metadata_keep_grads(model_chunks) -> None:
             bucket_group.reset()
 
 
-def zero_adapter_slot_grads(model, slot: int) -> None:
-    """Zero one slot's gradients everywhere they live: the DDP ``main_grad`` buffer views
-    and any lingering ``grad``/``main_param.grad`` references."""
-    for param in adapter_slot_parameters(model, slot):
-        if (main_grad := getattr(param, "main_grad", None)) is not None:
-            main_grad.zero_()
-        param.grad = None
-        if (main_param := getattr(param, "main_param", None)) is not None:
-            main_param.grad = None
-
-
-def step_adapter_slots(
-    optimizer,
-    model,
-    step_batch_sizes: dict[int, int],
+def step_slot_optimizers(
+    slot_optimizers: dict[int, SlotOptimizer],
+    adam_params_by_slot: dict[int, dict],
+    *,
     clip_grad: float,
-) -> dict[int, float]:
-    """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients;
-    scales each slot's accumulated grad sum by 1/batch_size and returns the grad norm per stepped slot."""
-    grad_norms: dict[int, float] = {}
+) -> dict[int, dict]:
+    """Step slots in the same order on every rank; execution failures invalidate the cell."""
+    slots = sorted(adam_params_by_slot)
+    for slot in slots:
+        slot_optimizers[slot].apply_adam_params(adam_params_by_slot[slot])
+        slot_optimizers[slot].prepare_grads()
 
-    for slot, batch_size in step_batch_sizes.items():
-        children = _slot_children(optimizer, slot)
-        # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the adapter-batch mean.
-        for child in children:
-            child.prepare_grads()
-            for main_param in child.get_parameters():
-                if main_param.grad is not None:
-                    main_param.grad.mul_(1.0 / batch_size)
-
-        # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
-        grads_for_norm = []
-        slot_params = []
-        for child in children:
-            grads_for_norm += child.get_grads_for_grad_norm()
-            slot_params += child.get_parameters()
-        slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
-        if clip_grad > 0.0 and slot_params:
-            clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
-        grad_norms[slot] = float(slot_norm)
-
-        for child in children:
-            child.step_with_ready_grads()
-
-        zero_adapter_slot_grads(model, slot)
-
-    if step_batch_sizes:
-        optimizer.allgather_params()
-
-    return grad_norms
+    outcomes = {slot: slot_optimizers[slot].clip_and_step(clip_grad) for slot in slots}
+    for slot in slots:
+        slot_optimizers[slot].zero_grads()
+    for slot in slots:
+        if "grad_norm" in outcomes[slot]:
+            slot_optimizers[slot].allgather_params()
+    return outcomes
