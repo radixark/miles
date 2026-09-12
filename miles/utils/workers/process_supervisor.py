@@ -11,9 +11,9 @@ from types import FrameType
 from torch.distributed.elastic.multiprocessing import DefaultLogsSpecs, Std, start_processes
 from torch.distributed.elastic.multiprocessing.api import RunProcsResult, SignalException
 
-logger = logging.getLogger(__name__)
+from miles.utils.workers.env_vars import SUBPROCESS_INDEX_ENV_VAR
 
-SUBPROCESS_INDEX_ENV_VAR = "MILES_SUPERVISOR_SUBPROCESS_INDEX"
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TERMINATION_GRACE_PERIOD_SECONDS = 20.0
 _FORWARDED_SIGNALS = (signal.SIGTERM, signal.SIGINT)
