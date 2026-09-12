@@ -180,6 +180,73 @@ def _is_adapter_param_name(name: str) -> bool:
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
 
 
+def _lora_norm_group(name: str) -> str:
+    """Bucket a Megatron adapter parameter name into a coarse module group for logging."""
+    if ".mlp.experts." in name:
+        group = "experts"
+    elif ".mlp.shared_experts." in name:
+        group = "shared_mlp"
+    elif ".mlp." in name:
+        group = "dense_mlp"
+    elif "linear_q_down_proj" in name or "linear_kv_down_proj" in name:
+        group = "attn_down"  # MLA q_a_proj / kv_a_proj_with_mqa (replicated base linears)
+    elif "self_attention" in name or "linear_attn" in name:
+        group = "attn"
+    else:
+        group = "other"
+    if "linear_fc2" in name or "linear_proj" in name:
+        group += "_out"  # down_proj / o_proj
+    if "linear_in" in name or "lora_A" in name:
+        return f"{group}/A"
+    if "linear_out" in name or "lora_B" in name:
+        return f"{group}/B"
+    return f"{group}/other"
+
+
+def lora_adapter_norm_metrics(model) -> dict[str, float]:
+    """L2 norm of the LoRA adapter weights per module group (``lora_norm/<group>/<A|B>``).
+
+    Adapter shards are summed over the tensor(+pipeline)-model-parallel group, expert adapters over
+    the expert tensor+model parallel group, so the values are the norms of the full adapters
+    (identical on every data-parallel replica). Collective: call it on **every** rank at the same
+    point of the step, then log on one rank.
+    """
+    import torch.distributed as dist
+    from megatron.core import parallel_state as mpu
+
+    sums: dict[str, torch.Tensor] = {}
+    for model_chunk in model:
+        for name, param in model_chunk.named_parameters():
+            if not param.requires_grad or not _is_adapter_param_name(name):
+                continue
+            key = _lora_norm_group(name)
+            sq = param.detach().float().pow(2).sum()
+            sums[key] = sums[key] + sq if key in sums else sq
+    keys = sorted(sums)
+    if not keys:
+        return {}
+    device = torch.cuda.current_device()
+    expert_mask = torch.tensor([1.0 if k.startswith("experts") else 0.0 for k in keys], device=device)
+    vals = torch.stack([sums[k].to(device) for k in keys])
+    non_expert = vals * (1 - expert_mask)
+    expert = vals * expert_mask
+    # every rank must reach the same collectives, even if its local buckets differ
+    all_keys = [None] * dist.get_world_size()
+    dist.all_gather_object(all_keys, keys)
+    merged = sorted(set(k for ks in all_keys for k in ks))
+    full = torch.zeros(len(merged), device=device)
+    idx = {k: i for i, k in enumerate(merged)}
+    for i, k in enumerate(keys):
+        full[idx[k]] = non_expert[i]
+    dist.all_reduce(full, group=mpu.get_model_parallel_group())
+    full_e = torch.zeros(len(merged), device=device)
+    for i, k in enumerate(keys):
+        full_e[idx[k]] = expert[i]
+    dist.all_reduce(full_e, group=mpu.get_expert_tensor_and_model_parallel_group())
+    out = (full + full_e).sqrt().tolist()
+    return {f"lora_norm/{k}": float(v) for k, v in zip(merged, out)}
+
+
 _param_grad_buffer_patched = False
 
 

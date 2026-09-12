@@ -93,6 +93,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # performance
     num_gpus_per_node: int = 4
+    num_nodes: int = 1  # >1: TP 8 / EP = all GPUs / one engine spanning every node (needs `ray start` on each node)
 
     # LoRA
     lora_rank: int = 16
@@ -156,6 +157,16 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     """
     ngpu = args.num_gpus_per_node
     qkv_format = "thd" if args.dsa_attention_backend == "tilelang" else "bshd"
+    if args.num_nodes > 1:
+        # multi-node: TP inside the node, the 256 experts over every GPU (EP = world, ETP 1), DP =
+        # world / TP; alltoall dispatch for the cross-node expert traffic.
+        world = args.num_nodes * ngpu
+        tp = min(8, ngpu)
+        return (
+            f"--tensor-model-parallel-size {tp} --sequence-parallel --pipeline-model-parallel-size 1 "
+            f"--context-parallel-size 1 --expert-model-parallel-size {world} --expert-tensor-parallel-size 1 "
+            f"--moe-token-dispatcher-type alltoall --qkv-format {qkv_format} --micro-batch-size 1 "
+        )
     return (
         f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 "
         f"--context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 "
@@ -181,7 +192,7 @@ def _prepare_download(args: ScriptArgs):
 
 def _train(args: ScriptArgs):
     print(
-        f"[run] GLM-5.2 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
+        f"[run] GLM-5.2 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_nodes}x{args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
     )
     load_save_path = f"{args.save_dir}/{args.run_id}"
 
@@ -254,7 +265,10 @@ def _train(args: ScriptArgs):
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
         # fits engine=min(8, ngpu) on one node
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
-        _eng = min(8, args.num_gpus_per_node) if _fp8_full else args.rollout_num_gpus_per_engine
+        if args.num_nodes > 1:
+            _eng = args.num_nodes * args.num_gpus_per_node  # one bf16/fp8 engine across all nodes
+        else:
+            _eng = min(8, args.num_gpus_per_node) if _fp8_full else args.rollout_num_gpus_per_engine
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
         _cg = 256 if _fp8_full else 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
@@ -293,7 +307,7 @@ def _train(args: ScriptArgs):
 
     save_args = f"--save-interval 1 --save {load_save_path} "
 
-    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
+    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes {args.num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
 
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 

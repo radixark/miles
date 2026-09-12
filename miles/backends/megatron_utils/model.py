@@ -823,6 +823,13 @@ def train(
 
                     check_mtp_loss(mtp_losses)
 
+        # LoRA adapter norms per module group (collective -> every rank, before the rank-0 block)
+        lora_norms = {}
+        if getattr(args, "lora_rank", 0) and getattr(args, "log_lora_norms", True):
+            from .lora_utils import lora_adapter_norm_metrics
+
+            lora_norms = lora_adapter_norm_metrics(model)
+
         # per train step log.
         if (train_step_outcome == TrainStepOutcome.NORMAL) and is_first_replica_megatron_main_rank():
             accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
@@ -836,6 +843,7 @@ def train(
             if not disable_optimizer:
                 for param_group_id, param_group in enumerate(optimizer.param_groups):
                     extra_metrics[f"lr-pg_{param_group_id}"] = opt_param_scheduler.get_lr(param_group)
+            extra_metrics.update(lora_norms)
 
             log_dict = log_train_step(
                 args=args,

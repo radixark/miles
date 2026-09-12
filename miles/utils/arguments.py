@@ -1817,6 +1817,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--no-log-lora-norms",
+                dest="log_lora_norms",
+                action="store_false",
+                default=True,
+                help="Disable the per-step train/lora_norm/<group>/<A|B> metrics "
+                "(L2 norm of the LoRA adapter weights per module group).",
+            )
+            parser.add_argument(
                 "--lora-train-only",
                 action="store_true",
                 default=False,
