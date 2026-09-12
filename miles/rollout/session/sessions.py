@@ -6,6 +6,7 @@ Thin layer: converts each HTTP request to primitive inputs, calls
 
 import json
 import logging
+from typing import Any
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -41,7 +42,7 @@ from miles.rollout.session.anthropic_adapter import (
 from miles.rollout.session.anthropic_adapter import _validate_anthropic_features, anthropic_adapter_available
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import JSON_MEDIA_TYPE, SessionCore, _render_json
-from miles.rollout.session.errors import SessionError
+from miles.rollout.session.errors import SessionError, SessionNotFoundError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -86,7 +87,11 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
-        return JSONResponse(status_code=exc.status_code, content={"error": str(exc)})
+        content: dict[str, Any] = {"error": str(exc)}
+        if isinstance(exc, SessionNotFoundError) and core.instance_id is not None:
+            # Lets a client tell "this server never had it" from "a retry landed on another instance" (#956).
+            content["session_server_instance_id"] = core.instance_id
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(SessionMessageMatcherError)
     async def session_message_matcher_error_handler(request: Request, exc: SessionMessageMatcherError):
