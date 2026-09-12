@@ -31,6 +31,7 @@ from miles.rollout.session.errors import TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.function_registry import function_registry
@@ -64,18 +65,19 @@ class _UnusedBackend:
         raise AssertionError("collect_samples must not touch the proxy backend")
 
 
-def _build_core(use_addition_r3: bool = False) -> SessionCoreV2:
+def _build_core(config=None, use_addition_r3: bool = False) -> SessionCoreV2:
     # Mirrors setup_session_routes (sessions.py): tokenizer + registry + core.
+    config = _ARGS if config is None else config
     tokenizer = load_tokenizer(
-        _ARGS.hf_checkpoint, chat_template_path=_ARGS.chat_template_path, trust_remote_code=True
+        config.hf_checkpoint, chat_template_path=config.chat_template_path, trust_remote_code=True
     )
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
-        tokenizer_type=_ARGS.tito_model,
-        chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
+        tokenizer_type=config.tito_model,
+        chat_template_kwargs=config.apply_chat_template_kwargs,
     )
     registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.instance_id, use_addition_r3=use_addition_r3)
+    return SessionCoreV2(_UnusedBackend(), registry, config, config.instance_id, use_addition_r3=use_addition_r3)
 
 
 @pytest.fixture(scope="module")
@@ -86,6 +88,11 @@ def core():
 @pytest.fixture(scope="module")
 def addition_core():
     return _build_core(use_addition_r3=True)
+
+
+@pytest.fixture(scope="module")
+def spec_core():
+    return _build_core(_ARGS.model_copy(update={"sglang_speculative_algorithm": "EAGLE"}))
 
 
 # ── fixtures: a two-turn trajectory with R3 / cache stats / weight versions ──
@@ -217,6 +224,42 @@ async def test_assembled_samples_golden_merged(core):
     assert m.metadata["agent_only"] == 1
     assert m.metadata["accumulated_token_ids"] == _ACCUMULATED
     assert reply.session_metadata["agent"] == _AGENT_METADATA
+
+
+async def test_spec_info_crosses_samples_wire(spec_core):
+    output_token_ids = [10, 11, 12, 13, 14, 15, 16]
+    record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=output_token_ids)
+    record.response["choices"][0]["meta_info"].update(
+        {"spec_num_correct_drafts": 3, "spec_num_proposed_drafts": 5, "spec_verify_ct": 2}
+    )
+    sid = await _make_session(spec_core, [record], [1, 2, 3, *output_token_ids])
+
+    status, payload = await _collect_via_op(spec_core, sid)
+    assert status == 200
+    (sample,), _ = _new_pipeline(payload, _input_sample())
+
+    assert sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 3,
+        "spec_num_proposed_drafts": 5,
+        "spec_verify_ct": 2,
+        "completion_tokens": 7,
+    }
+
+
+async def test_session_rollout_metrics_are_absent_when_spec_is_disabled(core):
+    record = _single_turn_record(
+        [1, 2, 3],
+        [10, 11],
+        spec_info={"spec_num_correct_drafts": 3, "spec_num_proposed_drafts": 5, "spec_verify_ct": 2},
+    )
+    sid = await _make_session(core, [record], [1, 2, 3, 10, 11])
+
+    status, payload = await _collect_via_op(core, sid)
+    assert status == 200
+    (sample,), reply = _new_pipeline(payload, _input_sample())
+
+    assert sample.spec_info == Sample.SpecInfo()
+    assert SESSION_ROLLOUT_METRICS_KEY not in reply.session_metadata
 
 
 async def test_truncation_golden(core):
@@ -370,6 +413,7 @@ async def test_no_records_reply(core):
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     assert reply.samples == [] and reply.empty_reason == "no_records"
+    assert SESSION_ROLLOUT_METRICS_KEY not in reply.session_metadata
 
 
 async def test_all_truncated_reply(core):
@@ -403,8 +447,8 @@ async def test_broken_chain_returns_422_and_server_survives(core):
 # ── the tree data plane: branches, trims, exactly-once, rewards ──
 
 
-def _single_turn_record(prompt_ids, output_ids, weight_version="w1"):
-    return _make_record(
+def _single_turn_record(prompt_ids, output_ids, weight_version="w1", spec_info=None):
+    record = _make_record(
         prompt_token_ids=list(prompt_ids),
         output_token_ids=list(output_ids),
         output_log_probs=[-0.1] * len(output_ids),
@@ -413,6 +457,9 @@ def _single_turn_record(prompt_ids, output_ids, weight_version="w1"):
         weight_version=weight_version,
         routed_experts=_r3_b64(len(prompt_ids) + len(output_ids) - 1, seed=0),
     )
+    if spec_info is not None:
+        record.response["choices"][0]["meta_info"].update(spec_info)
+    return record
 
 
 def _fabricate_node(state, parent, record, token_ids, *, completion_span, response_id="", committed_at=None):
@@ -508,6 +555,128 @@ async def test_deep_abandoned_branch_survives_and_masks_shared_prefix(core, traj
     assert late_sample.loss_mask[-1] == 1  # its own completion still trains
     assert [sample.reward for sample in reply.samples] == [trajectory_reward, trajectory_reward]
     assert [sample.metadata["reward"] for sample in reply.samples] == [trajectory_reward, trajectory_reward]
+
+
+async def test_session_rollout_metrics_count_every_tree_node_once(spec_core):
+    sid, state = await _fresh_state(spec_core)
+    root = _fabricate_node(
+        state,
+        None,
+        _single_turn_record(
+            [1, 2, 3],
+            [10, 11],
+            spec_info={"spec_num_correct_drafts": 9, "spec_num_proposed_drafts": 10, "spec_verify_ct": 2},
+        ),
+        [1, 2, 3, 10, 11],
+        completion_span=(3, 5),
+    )
+    _fabricate_node(
+        state,
+        root,
+        _single_turn_record(
+            [1, 2, 3, 10, 11, 19],
+            [29],
+            spec_info={"spec_num_correct_drafts": 100, "spec_num_proposed_drafts": 100, "spec_verify_ct": 1},
+        ),
+        [1, 2, 3, 10, 11, 19, 29],
+        completion_span=(6, 7),
+    )
+    early_mid = _fabricate_node(
+        state,
+        root,
+        _single_turn_record([1, 2, 3, 10, 11, 20], [30]),
+        [1, 2, 3, 10, 11, 20, 30],
+        completion_span=(6, 7),
+    )
+    early_leaf = _fabricate_node(
+        state,
+        early_mid,
+        _single_turn_record(
+            [1, 2, 3, 10, 11, 20, 30, 40],
+            [50],
+            spec_info={"spec_num_correct_drafts": 0, "spec_num_proposed_drafts": 10, "spec_verify_ct": 1},
+        ),
+        [1, 2, 3, 10, 11, 20, 30, 40, 50],
+        completion_span=(8, 9),
+        response_id="early",
+    )
+    late_leaf = _fabricate_node(
+        state,
+        root,
+        _single_turn_record(
+            [1, 2, 3, 10, 11, 21],
+            [31],
+            spec_info={"spec_num_correct_drafts": 0, "spec_num_proposed_drafts": 10, "spec_verify_ct": 1},
+        ),
+        [1, 2, 3, 10, 11, 21, 31],
+        completion_span=(6, 7),
+        response_id="late",
+    )
+    state.active_leaf = late_leaf
+
+    status, payload = await _collect_via_op(spec_core, sid)
+    assert status == 200
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    early_sample, late_sample = reply.samples
+
+    assert early_sample.tokens == early_leaf.token_ids
+    assert late_sample.tokens == late_leaf.token_ids
+    assert early_sample.loss_mask[:2] == [1, 1]
+    assert late_sample.loss_mask[:2] == [0, 0]
+    assert early_sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 9,
+        "spec_num_proposed_drafts": 20,
+        "spec_verify_ct": 3,
+        "completion_tokens": 3,
+    }
+    assert late_sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 9,
+        "spec_num_proposed_drafts": 20,
+        "spec_verify_ct": 3,
+        "completion_tokens": 3,
+    }
+    assert reply.session_metadata[SESSION_ROLLOUT_METRICS_KEY] == {
+        "session_id": sid,
+        "metrics": {
+            "spec_info": {
+                "spec_num_correct_drafts": 109,
+                "spec_num_proposed_drafts": 130,
+                "spec_verify_ct": 5,
+                "completion_tokens": 5,
+            }
+        },
+    }
+
+
+async def test_session_rollout_metrics_include_node_excluded_by_max_seq_len(spec_core):
+    records = _two_turn_records()
+    records[0].response["choices"][0]["meta_info"].update(
+        {"spec_num_correct_drafts": 1, "spec_num_proposed_drafts": 2, "spec_verify_ct": 1}
+    )
+    records[1].response["choices"][0]["meta_info"].update(
+        {"spec_num_correct_drafts": 3, "spec_num_proposed_drafts": 5, "spec_verify_ct": 1}
+    )
+    sid = await _make_session(spec_core, records, _ACCUMULATED)
+
+    status, payload = await _collect_via_op(spec_core, sid, max_seq_len=5)
+    assert status == 200
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    (sample,) = reply.samples
+
+    assert sample.tokens == [1, 2, 3, 10, 11]
+    assert sample.status == Sample.Status.COMPLETED
+    assert sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "completion_tokens": 2,
+    }
+    assert reply.session_metadata[SESSION_ROLLOUT_METRICS_KEY]["metrics"]["spec_info"] == {
+        "spec_num_correct_drafts": 4,
+        "spec_num_proposed_drafts": 7,
+        "spec_verify_ct": 2,
+        "completion_tokens": 4,
+    }
 
 
 async def test_picker_warns_and_trims_longer_superseded_leaf(core, caplog):
@@ -648,6 +817,11 @@ def _reverse_picker(leaf_samples, session_metadata):
     return list(reversed(leaf_samples))
 
 
+def _replace_session_rollout_metrics(leaf_samples, session_metadata):
+    session_metadata[SESSION_ROLLOUT_METRICS_KEY] = {"agent": "plant"}
+    return leaf_samples
+
+
 def _duplicate_picker(leaf_samples, session_metadata):
     return [leaf_samples[0], leaf_samples[0]]
 
@@ -727,6 +901,23 @@ async def test_custom_picker_reorder_keeps_earliest_leaf_as_owner(core):
         retry, abandoned = reply.samples
         assert retry.loss_mask[:2] == [0, 0]
         assert abandoned.loss_mask[:2] == [1, 1]
+
+
+async def test_custom_postprocessor_cannot_replace_session_rollout_metrics():
+    with function_registry.temporary("test_hooks.replace_metrics", _replace_session_rollout_metrics):
+        hooked = _build_core_with_hooks(
+            sglang_speculative_algorithm="EAGLE",
+            session_sample_postprocessor_path="test_hooks.replace_metrics",
+        )
+        sid = await _retry_shaped_session(hooked)
+        response = await hooked.collect_samples(sid, max_seq_len=None)
+        assert response.status_code == 200
+        payload = bytes(response.body)
+        reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+        assert reply.session_metadata[SESSION_ROLLOUT_METRICS_KEY] == {
+            "session_id": sid,
+            "metrics": {"spec_info": Sample.SpecInfo().to_dict()},
+        }
 
 
 async def test_hook_exception_maps_to_422_with_identity(core):

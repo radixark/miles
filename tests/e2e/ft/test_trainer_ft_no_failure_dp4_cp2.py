@@ -10,6 +10,7 @@ register_cuda_ci(
     est_time=1100,
     suite="stage-c-8-gpu-h200",
     labels=["ft-short"],
+    hardware=["hopper", "blackwell"],
 )
 
 _MODE: str = "dp4_cp2"

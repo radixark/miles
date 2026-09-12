@@ -18,6 +18,7 @@ register_cuda_ci(
     est_time=1300,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
+    hardware=["hopper", "blackwell"],
     disabled="Megatron's dsa variant now builds AbsorbedMLASelfAttention, which reads "
     "linear_kv_up_proj.weight directly; the pinned Megatron-Bridge's LoRALinear has no such "
     "property. Upstream Bridge added an effective-weight property — re-enable after bumping it.",

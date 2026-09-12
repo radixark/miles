@@ -24,7 +24,9 @@
       "group": "add_label_access",
       "allowed_labels": [
         "bypass-fastfail",
+        "run-ci-agentic",
         "run-ci-amd",
+        "run-ci-blackwell-only",
         "run-ci-ckpt",
         "run-ci-eval",
         "run-ci-fsdp",
@@ -43,7 +45,9 @@
         "run-ci-replay",
         "run-ci-sglang",
         "run-ci-short",
-        "run-ci-weight-update"
+        "run-ci-weight-update",
+        "run-on-blackwell",
+        "run-on-hopper"
       ]
     },
     "clear_labels": {

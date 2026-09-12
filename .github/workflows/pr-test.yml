@@ -132,10 +132,12 @@ jobs:
     uses: ./.github/workflows/_build-pr-ci-image.yml
     secrets: inherit
 
-  # No if guard: a detector or build failure must stop the suites rather than
-  # run them against a stale image.
+  # Gate on this build alone. Without an `if` the default success() spans the whole
+  # dependency closure, so a stage-a-cpu failure skipped this and every GPU stage even
+  # on a nightly, whose policy sets bypass_fastfail precisely to keep them running.
   resolve-ci-image:
     needs: [docker-build]
+    if: always() && !cancelled() && needs.docker-build.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}

@@ -352,13 +352,33 @@ def analysis_md(analysis: Any, repo: str) -> list[str]:
     return lines
 
 
+def group_identical_failures(jobs: list, reasons: dict | None) -> list[tuple[tuple, list]]:
+    """One defect can fail every shard the same way, and repeating it per job buries the rest.
+
+    Jobs group only on an identical, non-empty analysis: without one there is nothing to
+    compare, so those rows stay separate as before.
+    """
+    groups: list[tuple[tuple, list]] = []
+    members_by_analyses: dict[tuple, list] = {}
+    for job in jobs:
+        analyses = tuple((reasons or {}).get(job.get("id")) or ())
+        if analyses and analyses in members_by_analyses:
+            members_by_analyses[analyses].append(job)
+            continue
+        members = [job]
+        groups.append((analyses, members))
+        if analyses:
+            members_by_analyses[analyses] = members
+    return groups
+
+
 def list_jobs_md(
     jobs: list, limit: int = MAX_LISTED_JOBS, reasons: dict | None = None, repo: str = DEFAULT_REPO
 ) -> str:
     lines = []
-    for job in jobs[:limit]:
-        lines.append(f"- [{job['name']}]({job['html_url']})")
-        for analysis in (reasons or {}).get(job.get("id")) or ():
+    for analyses, members in group_identical_failures(jobs[:limit], reasons):
+        lines.append("- " + ", ".join(f"[{job['name']}]({job['html_url']})" for job in members))
+        for analysis in analyses:
             lines.extend(analysis_md(analysis, repo))
     if len(jobs) > limit:
         lines.append(f"- ... and {len(jobs) - limit} more")

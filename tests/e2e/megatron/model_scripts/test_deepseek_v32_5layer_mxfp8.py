@@ -8,6 +8,7 @@ register_cuda_ci(
     est_time=3600,
     suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
+    hardware=["blackwell"],
     disabled="Temporarily disabled; superseded by test_deepseek_v32_5layer_ci on H100.",
 )
 

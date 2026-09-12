@@ -86,20 +86,21 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
     )
 
 
-def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
-        path_dst=f"{args.model_local_dir}/{args.model_name}_torch_dist",
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_local_dir}/{args.model_name}",
-    )
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
+    copies = [
+        U.rsync_cmd(
+            f"{args.model_dir}/{args.model_name}_torch_dist",
+            f"{args.model_local_dir}/{args.model_name}_torch_dist",
+        ),
+        U.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
+    ]
     if args.rollout_fp8:
-        U.rsync_simple(
-            path_src=f"{args.model_dir}/{args.model_name}-FP8",
-            path_dst=f"{args.model_local_dir}/{args.model_name}-FP8",
+        copies.append(
+            U.rsync_cmd(
+                f"{args.model_dir}/{args.model_name}-FP8", f"{args.model_local_dir}/{args.model_name}-FP8"
+            )
         )
+    return {"trainer": " && ".join(copies)}
 
 
 def _execute_train(args: ScriptArgs):
@@ -353,7 +354,6 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -382,15 +382,28 @@ tis_batch_normalize: true
             # "OMPI_MCA_oob_tcp_if_include": "${MLP_SOCKET_IFNAME}",
             # "OMPI_MCA_btl_tcp_if_include": "${MLP_SOCKET_IFNAME}",
         },
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
 @app.command()
 @U.dataclass_cli
-def train(args: ScriptArgs):
+def full_train(args: ScriptArgs) -> None:
     _prepare_download(args)
     _prepare_megatron_ckpt(args)
-    _prepare_cp(args)
+    _execute_train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare(args: ScriptArgs) -> None:
+    _prepare_download(args)
+    _prepare_megatron_ckpt(args)
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs) -> None:
     _execute_train(args)
 
 
