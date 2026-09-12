@@ -21,6 +21,9 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "rollout_sampling_mask_offsets": "int64",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
+    # Client-supplied per-token float channels; the binary loss_masks stay int32.
+    "loss_weights": "float32",
+    "advantages": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
 }
