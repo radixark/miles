@@ -36,6 +36,24 @@ class DeployComponent(Enum):
         return self in (DeployComponent.TRAINER, DeployComponent.INFERENCE)
 
 
+class HotRestartComponent(Enum):
+    ORCHESTRATION = "orchestration"
+    ROLLOUT_EXECUTOR = "rollout_executor"
+
+
+HOT_RESTART_SEPARATOR = ","
+
+
+def parse_hot_restart(value: str) -> list[HotRestartComponent]:
+    components = [
+        HotRestartComponent(stripped) for name in value.split(HOT_RESTART_SEPARATOR) if (stripped := name.strip())
+    ]
+    assert (
+        components or not value
+    ), f"--hot-restart {value!r} names no component; pass one of {[one.value for one in HotRestartComponent]}"
+    return components
+
+
 class DeploymentIdentity(FrozenStrictBaseModel):
     run_uuid: str
     deploy_component: str
