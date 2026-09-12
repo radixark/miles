@@ -1,5 +1,5 @@
 # ruff: noqa
-# Adapted from miles_plugins/models/glm5/ops/tilelang_sparse_mla_bwd.py for DeepSeek-V4.
+# DeepSeek-V4.1 sparse MLA backward, forked from the V4 copy (see tilelang_sparse_mla.py).
 # Key differences from GLM-5:
 #   - attn_sink: gradient computation for learnable per-head scalar
 #   - Single-head KV: kv shape [B, S_kv, D] (no kv_group, no D/D_tail split)
@@ -93,7 +93,7 @@ def bwd(
     topk,
     sm_scale=None,
     block_size=32,
-    num_stages=0,
+    num_stages=1,
     threads=128,
     indices_dtype=T.int32,
     dtype=T.bfloat16,
@@ -128,7 +128,7 @@ def bwd(
     BS = block_size
     NS = tilelang.cdiv(topk, block_size)
 
-    split_store = 2
+    split_store = 4  # 8 heads leave the accumulator small; more splits free registers
 
     @T.prim_func
     def sparse_mqa_bwd_kernel(

@@ -1,5 +1,7 @@
 # ruff: noqa
-# Adapted from miles_plugins/models/glm5/ops/tilelang_indexer_fwd.py for DeepSeek-V4.
+# DeepSeek-V4.1 indexer scores. Forked from the V4 copy because V4.1 runs 32 heads of 128 dims:
+# the V4 tiling (4 queries over a 256-key block) then spreads the head reduction across lanes and
+# reaches only ~65 TFLOP/s, while 8 queries over a 128-key block keeps it in registers at ~146.
 # Key differences from GLM-5:
 #   - Operates on [seqlen, batch, heads, dim] (SBHD) layout, batch handled externally
 #   - Uses causal mask via cu_seqlens instead of variable-length packed sequences
@@ -17,13 +19,11 @@ from tilelang import language as T
 def tl_indexer_fwd_impl(
     heads,
     index_dim,
-    block_N=256,
-    num_stages=3,
+    block_N=128,
+    num_stages=4,
     threads=512,
-    block_Q=None,
+    block_Q=8,
 ):
-    if block_Q is None:
-        block_Q = 128 // heads
     dtype = T.bfloat16
     accum_dtype = T.float32
     index_dtype = T.int32
