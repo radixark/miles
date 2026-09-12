@@ -4,9 +4,13 @@ description: Get an RL training job up and running in under an hour.
 ---
 **What you need**
 
-- A node with 8 GPUs (H100 / H200 / B-series).
+- A node with 8 GPUs (H100 / H200 / B-series, or MI350X / MI355X).
 - At least 500 GB of free disk.
 - Docker with GPU access.
+
+On MI350X / MI355X, start from [AMD ROCm](/getting-started/amd): the pre-flight checks and
+the container differ, Steps 2 to 4 are the same, with `scripts/amd/run_qwen3_4b.py` as the
+launcher.
 
 **Pre-flight checks**
 

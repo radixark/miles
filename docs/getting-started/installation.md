@@ -22,18 +22,22 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
     ```
 
   </Tab>
-  <Tab title="AMD MI300X / MI350X">
+  <Tab title="AMD">
 
     ```bash
-    docker pull rlsys/miles:MI350-355-latest    # or MI300-latest
+    docker pull rocm/sgl-dev:miles-rocm720-mi35x    # or miles-rocm10-mi35x
 
     docker run --rm \
-      --device /dev/dri --device /dev/kfd \
-      --group-add video --ipc=host --shm-size=32g \
-      --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
-      --privileged \
-      -it rlsys/miles:MI350-355-latest /bin/bash
+      --device /dev/kfd --device /dev/dri --group-add video --group-add render \
+      --cap-add SYS_PTRACE --security-opt seccomp=unconfined --privileged \
+      --shm-size 128G \
+      --ulimit memlock=-1 --ulimit stack=67108864 \
+      --network=host \
+      -it rocm/sgl-dev:miles-rocm720-mi35x /bin/bash
     ```
+
+    See [AMD ROCm](/getting-started/amd) for the image variants, the MI300X / MI325X image,
+    and the `scripts/amd/` launchers.
 
   </Tab>
 
@@ -42,8 +46,9 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
 The image ships with:
 
 - PyTorch (matching the container's CUDA / ROCm version)
-- Megatron-LM, SGLang, FlashAttention-3, DeepGEMM, Apex
-- Ray, uv, and Miles installed editable at `/root/miles`
+- Megatron-LM, SGLang, TransformerEngine, Apex, and Ray
+- NVIDIA: FlashAttention-3, DeepGEMM, and uv; ROCm: FlashAttention-2 and aiter
+- Miles installed editable at `/root/miles`
 
 See [Hardware requirements](#hardware-requirements) for per-GPU status.
 
@@ -82,7 +87,7 @@ Confirm Miles imports and the GPUs are visible:
 
 ```bash
 python -c "import miles; print('Miles import OK')"
-nvidia-smi
+nvidia-smi    # rocm-smi --showproductname on AMD
 ```
 
 If either command fails, see [Debugging](/developer/debug).
@@ -94,7 +99,8 @@ If either command fails, see [Debugging](/developer/debug).
 | NVIDIA GB300 / GB200 / B300 / B200 | Production |
 | NVIDIA H200 / H100 | Production (CI guarded) |
 | NVIDIA A100 | Supported — FP8 features disabled |
-| AMD MI300X, MI325, MI350X, MI355X | Supported via ROCm |
+| AMD MI350X / MI355X | Supported (CI guarded) |
+| AMD MI300X / MI325X | Supported — image not rebuilt daily |
 
 For multi-node training you also need a high-bandwidth interconnect — InfiniBand, RoCEv2,
 or Slingshot — and 200+ GB/s per node. Single-node jobs run fine over NVLink only.

@@ -46,7 +46,8 @@
        "index",
        "getting-started/index",
        "getting-started/installation",
-       "getting-started/quick-start"
+       "getting-started/quick-start",
+       "getting-started/amd"
       ]
      },
      {
@@ -389,7 +390,7 @@
   },
   {
    "source": "/platforms/amd",
-   "destination": "/getting-started/installation",
+   "destination": "/getting-started/amd",
    "permanent": true
   },
   {
