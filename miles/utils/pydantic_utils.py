@@ -11,3 +11,7 @@ class FrozenStrictBaseModel(BaseModel):
 
 class FrozenPartialBaseModel(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True, from_attributes=True, populate_by_name=True)
+
+
+class FrozenOpenBaseModel(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
