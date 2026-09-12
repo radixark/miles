@@ -3,6 +3,7 @@ from __future__ import annotations
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import pairing_config
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
+    AutoUninstallSection,
     MilesRunChartValues,
     ObjectNames,
     OrchestratorSection,
@@ -31,9 +32,9 @@ def build_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> MilesRunChart
 
 
 def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValues:
-    assert plan.orchestrator_command, (
-        "Nothing but the orchestrator command starts the training run, so a run rendered without one would "
-        "install every pod of the run and then sit there forever"
+    assert bool(plan.orchestrator_command) == bool(plan.state_file), (
+        "The orchestration script and the exit file it writes come together: a release carries both, or it carries "
+        "neither and is a deployment of workers that outlives any one run"
     )
     specs = _deployed_specs(specs)
     for spec in specs:
@@ -51,10 +52,11 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
 
     return RunValues(
         id=plan.run_id,
-        state_file=plan.state_file,
+        state_file=plan.state_file or None,
         launch_record=plan.launch_record,
         object_names=_object_names(plan.release),
         orchestrator=OrchestratorSection(command=plan.orchestrator_command),
+        auto_uninstall=None if plan.orchestrator_command else AutoUninstallSection(enabled=False),
         static_workers=entries[STATIC_WORKERS_SECTION],
         inference_engines=entries[INFERENCE_ENGINES_SECTION],
         trainer_engines=entries[TRAINER_ENGINES_SECTION],
