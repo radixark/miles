@@ -266,9 +266,9 @@ class TinkerService:
                     rejections = self.planner.ready_rejections()
                     if rejections:
                         for stream, pending in rejections:
-                            await self._settle_request(stream, pending, {
-                                "error": pending.command.validation_error, "error_category": "user"
-                            })
+                            await self._settle_request(
+                                stream, pending, {"error": pending.command.validation_error, "error_category": "user"}
+                            )
                         continue
                     unit = self.planner.next_to_run()
                     if unit is not None:
@@ -367,7 +367,6 @@ class TinkerService:
                 outcomes.append({"op": "optim_step", "metrics": {key: float(value) for key, value in outcome.items()}})
         return outcomes
 
-
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> dict:
         """Save parameters and optimizer state; call after optim_step to persist accumulated training work."""
         name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
@@ -386,8 +385,11 @@ class TinkerService:
         meta = self._checkpoint_meta(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
         self._reject_checkpoint_mismatch(meta, record, payload["path"])
         failure = await self.backend.load_slot(
-            record.slot, record.lora_rank, record.lora_alpha,
-            ckpt_path=self._checkpoint_dir(source_id, kind, name), load_optimizer=payload["optimizer"],
+            record.slot,
+            record.lora_rank,
+            record.lora_alpha,
+            ckpt_path=self._checkpoint_dir(source_id, kind, name),
+            load_optimizer=payload["optimizer"],
         )
         if failure is not None:
             return failure
@@ -418,7 +420,9 @@ class TinkerService:
         if os.path.exists(os.path.join(path, "META.json")):
             # engines may already hold this name's bytes; saved versions are immutable
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
-        if (failure := await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)) is not None:
+        if (
+            failure := await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
+        ) is not None:
             return failure
         if (failure := self._stamp_checkpoint_meta(path, record)) is not None:
             return failure

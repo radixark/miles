@@ -71,7 +71,9 @@ class TestGenerateRequest:
             "topk_prompt_logprobs": 0,
             **payload_extra,
         }
-        return MilesBackend(None, "http://router", inference_controller=None)._generate_request(payload, lora_name="m@1")
+        return MilesBackend(None, "http://router", inference_controller=None)._generate_request(
+            payload, lora_name="m@1"
+        )
 
     def test_max_tokens_is_required(self):
         with pytest.raises(UserInputError, match="max_tokens"):
@@ -196,7 +198,9 @@ def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
     assert "abort" in _to_sequence(response)["error"]
 
 
-@pytest.mark.parametrize("failure", [None, {"error": "engine rejected publication"}, RuntimeError("collective failed")])
+@pytest.mark.parametrize(
+    "failure", [None, {"error": "engine rejected publication"}, RuntimeError("collective failed")]
+)
 async def test_sampler_push_only_marks_ready_on_success(failure):
     controller = SimpleNamespace(
         start_update_weights=AsyncMock(return_value=SimpleNamespace(snapshot_cell_id_to_hashes={"engine": "hash"})),

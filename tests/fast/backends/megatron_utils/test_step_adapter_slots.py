@@ -53,7 +53,6 @@ def test_an_unknown_step_failure_escapes_before_success_is_reported(monkeypatch)
     assert healthy.param_gathers == 0
 
 
-
 def test_a_nonfinite_grad_norm_skips_the_step(monkeypatch):
     """BF16 has no grad scaler, so the all-reduced norm is the only inf/nan gate."""
     skipped = _FakeSlotOptimizer(0, step_outcome={"skipped_nonfinite": 1.0})

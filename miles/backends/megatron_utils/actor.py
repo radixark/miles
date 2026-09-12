@@ -7,6 +7,7 @@ from argparse import Namespace
 from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING
 
+import httpx
 import ray
 import torch
 import torch.distributed as dist
@@ -17,9 +18,7 @@ from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.training_utils.checkpoint_io import CheckpointIOError
-from miles.backends.training_utils.weight_update.session import EngineRPCError
-import httpx
-from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.backends.training_utils.weight_update.session import EngineRPCError, check_weight_sync_results
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor

@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from dataclasses import fields
 
 import torch
-import torch.distributed as dist
 from megatron.core.optimizer import get_megatron_optimizer
 from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32, get_grad_norm_fp32
 from megatron.core.optimizer.layer_wise_optimizer import LayerWiseDistributedOptimizer
@@ -207,8 +206,7 @@ def step_slot_optimizers(
         slot_optimizers[slot].prepare_grads()
 
     outcomes = {
-        slot: slot_optimizers[slot].clip_and_step(adam_params_by_slot[slot]["grad_clip_norm"])
-        for slot in slots
+        slot: slot_optimizers[slot].clip_and_step(adam_params_by_slot[slot]["grad_clip_norm"]) for slot in slots
     }
     for slot in slots:
         slot_optimizers[slot].zero_grads()

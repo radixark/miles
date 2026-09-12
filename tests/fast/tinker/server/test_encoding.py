@@ -1,8 +1,5 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
-import pytest
-
-from miles.tinker.core.types import UserInputError
 from miles.tinker.server.encoding import (
     ADAM_PARAM_DEFAULTS,
     build_datum,

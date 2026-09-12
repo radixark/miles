@@ -319,7 +319,9 @@ class TestUpdateWeights:
         args = SimpleNamespace(debug_train_only=True, debug_rollout_only=False)
         await update_weights(args, actor_model, rollout_executor, inference, rollout_id=3)
 
-        actor_model.update_weights.assert_awaited_once_with(info=inference.start_update_weights.return_value, rollout_id=3)
+        actor_model.update_weights.assert_awaited_once_with(
+            info=inference.start_update_weights.return_value, rollout_id=3
+        )
         rollout_executor.set_weight_version.remote.assert_awaited_once_with(7)
 
     async def test_a_trainer_that_skipped_the_broadcast_publishes_nothing(self):

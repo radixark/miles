@@ -161,7 +161,9 @@ async def create_training_models(args, inference_controller, rollout_executor):
     return actor_model, critic_model
 
 
-async def update_weights(args, actor_model, rollout_executor, inference_controller, *, rollout_id: int | None = None) -> None:
+async def update_weights(
+    args, actor_model, rollout_executor, inference_controller, *, rollout_id: int | None = None
+) -> None:
     async with update_weight_window(inference_controller) as info:
         weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
         await inference_controller.mark_weights_ready(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)

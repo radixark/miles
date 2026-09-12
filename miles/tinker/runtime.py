@@ -69,7 +69,9 @@ class MilesBackend:
     ) -> list[dict] | dict:
         return await self._run_loss_pass("forward_backward", batch_id, slot_datums, loss_fn, loss_fn_config)
 
-    async def forward_only(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict] | dict:
+    async def forward_only(
+        self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
+    ) -> list[dict] | dict:
         return await self._run_loss_pass("forward_only", batch_id, slot_datums, loss_fn, loss_fn_config)
 
     async def _run_loss_pass(
@@ -114,9 +116,11 @@ class MilesBackend:
         self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
     ) -> dict | None:
         async with update_weight_window(self.inference_controller) as info:
-            failure = _slot_failure(await self.trainer.push_slot(
-                info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
-            ))
+            failure = _slot_failure(
+                await self.trainer.push_slot(
+                    info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
+                )
+            )
             if failure is None:
                 await self.inference_controller.mark_weights_ready(
                     snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes

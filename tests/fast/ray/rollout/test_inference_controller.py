@@ -524,10 +524,14 @@ class TestUpdateWeightsLockWindow:
         from miles.ray.weight_update import update_weight_window
 
         cell = _FakeUpdatableCell("hash")
-        controller = _make_controller({"actor": _RecordingServer({"engine": cell}, model_name="actor", update_weights=True)})
+        controller = _make_controller(
+            {"actor": _RecordingServer({"engine": cell}, model_name="actor", update_weights=True)}
+        )
         if fail_during == "publication":
+
             async def reject_publication():
                 raise RuntimeError("update failed")
+
             cell.mark_weights_ready = reject_publication
         with pytest.raises(RuntimeError, match="update failed"):
             async with update_weight_window(controller) as info:

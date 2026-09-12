@@ -201,6 +201,7 @@ class WeightUpdater:
                     adapter, materialize=should_save_adapter
                 ).items()
             }
+
             def write_adapter():
                 if should_save_adapter:
                     save_adapter_to_disk(tmp_dir, self._adapter_config(adapter), tensors)

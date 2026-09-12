@@ -12,7 +12,6 @@ from tests.fast.tinker.harness import (
     fb_payload,
     make_service,
     model_payload,
-    rl_datum,
 )
 
 from miles.tinker.core.future import DONE, FAILED
@@ -386,9 +385,6 @@ async def test_merged_optim_settles_each_slot_on_its_own(service):
     assert (failed.state, failed.error_category) == (FAILED, "server") and "boom" in failed.error
 
 
-
-
-
 async def test_a_nonfinite_step_reports_the_skip(service):
     model_id = await created_model(service)
     slot = service.models[model_id].slot
@@ -444,7 +440,6 @@ async def test_malformed_loss_inputs_are_rejected_at_admission(service):
     assert not service.backend.named("forward_backward"), "rejected datums must never reach the trainer"
 
 
-
 async def test_a_failed_window_stops_already_queued_training(service):
     model_id = await created_model(service)
     healthy = await created_model(service)
@@ -465,7 +460,6 @@ async def test_a_failed_window_stops_already_queued_training(service):
         service.submit("tenant", "optim_step", _optim_payload(model_id, 6))
     step = service.submit("tenant", "optim_step", _optim_payload(healthy, 1))
     assert (await await_settled(service, "tenant", step)).state == DONE
-
 
 
 async def test_unsupported_lora_configs_are_rejected(service):
@@ -558,7 +552,6 @@ async def test_an_out_of_order_validation_failure_blocks_later_training(service)
     assert (await await_settled(service, "tenant", step)).state == FAILED
     assert len(service.backend.named("forward_backward")) == 1
     assert not service.backend.named("optim_step")
-
 
 
 async def test_a_backend_level_optim_failure_retires_every_model_in_the_barrier(service):
@@ -717,8 +710,10 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
             task.add_done_callback(gateway._observe_background_task)
         else:
             if source == "handler":
+
                 async def broken_handler(unit):
                     raise RuntimeError("fatal execution failure")
+
                 gateway._run_barrier = broken_handler
             else:
                 gateway.backend.fail_on["optim_step"] = RuntimeError("fatal execution failure")
@@ -730,7 +725,6 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
             run_task.cancel()
             with suppress(asyncio.CancelledError):
                 await run_task
-
 
 
 async def test_a_dead_trainer_escapes_the_dispatch_loop(tmp_path, monkeypatch):

@@ -137,7 +137,9 @@ async def test_the_driver_brackets_the_broadcast_and_confirms_success():
     from miles.ray.placement_group import update_weights
 
     with patch("miles.ray.placement_group._maybe_log_inference_engine_weight_checksums", new_callable=AsyncMock):
-        await update_weights(group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller)
+        await update_weights(
+            group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller
+        )
 
     assert order == ["start_update_weights", "execute_first_alive", "mark_weights_ready", "end_update_weights"]
     group._execute_first_alive.assert_awaited_once()
@@ -153,7 +155,9 @@ async def test_the_driver_marks_only_the_snapshot_start_returned():
     from miles.ray.placement_group import update_weights
 
     with patch("miles.ray.placement_group._maybe_log_inference_engine_weight_checksums", new_callable=AsyncMock):
-        await update_weights(group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller)
+        await update_weights(
+            group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller
+        )
 
     _assert_the_snapshot_is_handed_back_unchanged(controller)
 
@@ -215,5 +219,7 @@ async def test_a_failed_update_releases_the_window_without_marking_ready():
     controller = _OrderRecordingInferenceController(order)
     group = MagicMock(update_weights=AsyncMock(side_effect=RuntimeError("update failed")))
     with pytest.raises(RuntimeError, match="update failed"):
-        await update_weights(group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller)
+        await update_weights(
+            group.args, group, MagicMock(set_weight_version=MagicMock(remote=AsyncMock())), controller
+        )
     assert order == ["start_update_weights", "end_update_weights"]
