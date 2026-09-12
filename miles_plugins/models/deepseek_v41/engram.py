@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.tensor_parallel.mappings import (
     gather_from_sequence_parallel_region,
@@ -82,7 +83,7 @@ def compute_hash_multipliers(layer_ids, max_ngram_size: int, vocab_size: int) ->
 
 
 def _mmap_rows(path: str, name: str, row_start: int, row_end: int, row_bytes: int) -> torch.Tensor:
-    """Rows [row_start, row_end) of a 2-D uint8 safetensors tensor as a read-only memory map (page cache, not pinned)."""
+    """Rows [row_start, row_end) of a 2-D uint8 safetensors tensor as a read-only memory map."""
     import struct
 
     import numpy as np
@@ -147,7 +148,38 @@ def build_engram_layout(config: TransformerConfig) -> EngramLayout | None:
     return _LAYOUT_CACHE[key]
 
 
-def engram_gate(x, kv, q_weight, k_weight, eps, clamp_value):
+# the gate runs in fp32 on the full gathered sequence and autograd keeps several
+# [seqlen, hc_mult, dim] fp32 temporaries; checkpointing it in sequence chunks
+# bounds that to one chunk (elementwise per token, so the result is unchanged)
+ENGRAM_GATE_CHUNK = int(os.environ.get("MILES_DSV41_ENGRAM_GATE_CHUNK", "4096"))
+
+
+def engram_gate(x, kv, q_weight, k_weight, eps, clamp_value, chunk: int | None = None):
+    chunk = ENGRAM_GATE_CHUNK if chunk is None else chunk
+    seqlen = x.shape[0]
+    if not chunk or seqlen <= chunk:
+        return _engram_gate(x, kv, q_weight, k_weight, eps, clamp_value)
+    if not torch.is_grad_enabled():
+        # log_probs runs the gate over the whole gathered sequence, where each fp32 temporary is
+        # 5.4 GB at 64k; the gate is elementwise per token, so chunking writes the same bytes
+        out = torch.empty_like(x)
+        for s in range(0, seqlen, chunk):
+            out[s : s + chunk] = _engram_gate(
+                x[s : s + chunk], kv[s : s + chunk], q_weight, k_weight, eps, clamp_value
+            )
+        return out
+    # one fp32 view of each weight for all chunks, so their gradients accumulate in fp32
+    q32, k32 = q_weight.float(), k_weight.float()
+    outs = [
+        torch.utils.checkpoint.checkpoint(
+            _engram_gate, x[s : s + chunk], kv[s : s + chunk], q32, k32, eps, clamp_value, use_reentrant=False
+        )
+        for s in range(0, seqlen, chunk)
+    ]
+    return torch.cat(outs, dim=0)
+
+
+def _engram_gate(x, kv, q_weight, k_weight, eps, clamp_value):
     hc_mult, dim = x.shape[-2:]
     key, value = kv.split([hc_mult * dim, dim], dim=-1)
     key = key.float().unflatten(-1, (hc_mult, dim))

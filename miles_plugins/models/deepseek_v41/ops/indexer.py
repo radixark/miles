@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,6 +27,63 @@ def select_candidate_blocks(
     top = scores.topk(min(topk_blocks, num_blocks), dim=-1)
     keep = torch.zeros_like(scores, dtype=torch.bool).scatter_(-1, top.indices, top.values > -torch.inf)
     return keep.repeat_interleave(block_size, dim=-1)[..., :width]
+
+
+# the dense [seqlen, n_kv] fp32 score matrix is quadratic in the sequence; 128k-token
+# samples need it in query chunks (the selection is per query row, so chunking is exact)
+INDEXER_QUERY_CHUNK = int(os.environ.get("MILES_DSV41_INDEXER_QUERY_CHUNK", "8192"))
+
+def indexer_select(
+    q: torch.Tensor,
+    index_k: torch.Tensor,
+    weights: torch.Tensor,
+    compress_lens: torch.Tensor,
+    candidates: torch.Tensor | None,
+    *,
+    is_candidate_source: bool,
+    uses_candidates: bool,
+    candidate_topk_blocks: int,
+    candidate_block_size: int,
+    topk: int,
+    topk_fn,
+    query_chunk: int | None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    bsz, seqlen = q.shape[:2]
+    n_kv = index_k.size(1)
+    k_t = index_k.transpose(0, 1).contiguous()
+    kv_arange = torch.arange(n_kv, device=q.device)
+    chunk = seqlen if not query_chunk or query_chunk >= seqlen else query_chunk
+    idx_parts: list[torch.Tensor] = []
+    cand_parts: list[torch.Tensor] = []
+    for s in range(0, seqlen, chunk):
+        e = min(s + chunk, seqlen)
+        lens = compress_lens[s:e]
+        scores = batched_indexer_fwd(
+            q[:, s:e].transpose(0, 1).contiguous(),
+            k_t,
+            weights[:, s:e].transpose(0, 1).float().contiguous(),
+            torch.zeros(e - s, dtype=torch.int32, device=q.device),
+            lens.to(torch.int32),
+        )
+        visible = kv_arange < lens.unsqueeze(-1)
+        scores.masked_fill_(~visible, -torch.inf)
+        if is_candidate_source:
+            cand = select_candidate_blocks(
+                scores, lens.unsqueeze(-1), candidate_topk_blocks, candidate_block_size
+            )
+            cand_parts.append(cand)
+        elif uses_candidates:
+            assert candidates is not None
+            scores.masked_fill_(~candidates[:, s:e], -torch.inf)
+        if n_kv < topk:
+            scores = torch.nn.functional.pad(scores, (0, topk - n_kv), value=-torch.inf)
+        idx = topk_fn(scores.reshape(bsz * (e - s), scores.size(-1)), topk)
+        idx = idx.reshape(bsz, e - s, topk).sort(dim=-1).values.to(torch.int64)
+        idx_parts.append(torch.where(idx < lens.unsqueeze(-1), idx, -1))
+    idx = idx_parts[0] if len(idx_parts) == 1 else torch.cat(idx_parts, dim=1)
+    if is_candidate_source:
+        candidates = cand_parts[0] if len(cand_parts) == 1 else torch.cat(cand_parts, dim=1)
+    return idx, candidates
 
 
 class DeepSeekV41Indexer(MegatronModule):
@@ -98,7 +157,6 @@ class DeepSeekV41Indexer(MegatronModule):
         candidates: torch.Tensor | None,
     ):
         bsz, seqlen, _ = x.shape
-        n_kv = index_k.size(1)
         rd = self.rope_head_dim
         q, _ = self.linear_wq_b(qr)
         q = q.view(bsz, seqlen, self.index_n_heads, self.index_head_dim).clone()
@@ -107,31 +165,19 @@ class DeepSeekV41Indexer(MegatronModule):
         weights, _ = self.linear_weights_proj(x)
         weights = weights * (self.softmax_scale * self.index_n_heads**-0.5)
 
-        cu_ks = torch.zeros(seqlen, dtype=torch.int32, device=x.device)
-        cu_ke = compress_lens.to(torch.int32)
-        scores = batched_indexer_fwd(
-            q.transpose(0, 1).contiguous(),
-            index_k.transpose(0, 1).contiguous(),
-            weights.transpose(0, 1).float().contiguous(),
-            cu_ks,
-            cu_ke,
-        )
-        visible = torch.arange(n_kv, device=x.device) < compress_lens.unsqueeze(-1)
-        scores = scores.masked_fill(~visible, -torch.inf)
-
-        if self.is_candidate_source:
-            candidates = select_candidate_blocks(
-                scores, compress_lens.unsqueeze(-1), self.candidate_topk_blocks, self.candidate_block_size
-            )
-        elif self.uses_candidates:
-            assert candidates is not None
-            scores = scores.masked_fill(~candidates, -torch.inf)
-
-        topk = self.index_topk
-        if n_kv < topk:
-            scores = torch.nn.functional.pad(scores, (0, topk - n_kv), value=-torch.inf)
         topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn("torch"), return_probs=False)
-        idx = topk_fn(scores.reshape(bsz * seqlen, scores.size(-1)), topk)
-        idx = idx.reshape(bsz, seqlen, topk).sort(dim=-1).values.to(torch.int64)
-        idx = torch.where(idx < compress_lens.unsqueeze(-1), idx, -1)
+        idx, candidates = indexer_select(
+            q,
+            index_k,
+            weights,
+            compress_lens,
+            candidates,
+            is_candidate_source=self.is_candidate_source,
+            uses_candidates=self.uses_candidates,
+            candidate_topk_blocks=self.candidate_topk_blocks,
+            candidate_block_size=self.candidate_block_size,
+            topk=self.index_topk,
+            topk_fn=topk_fn,
+            query_chunk=INDEXER_QUERY_CHUNK,
+        )
         return idx, candidates
