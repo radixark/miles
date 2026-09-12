@@ -12,7 +12,6 @@ from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.utils.audit_utils.process_identity import InferenceControllerProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
@@ -30,7 +29,6 @@ from miles.utils.misc import SimpleTicker
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
 logger = logging.getLogger(__name__)
@@ -44,8 +42,16 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 @enforce_lock_discipline
 class InferenceController:
     @lock_exempt
-    def __init__(self, args) -> None:
+    def __init__(
+        self,
+        args,
+        *,
+        engine_provider: BaseWorkerProvider,
+        router_provider: BaseWorkerProvider,
+    ) -> None:
         self.args = args
+        self._engine_provider = engine_provider
+        self._router_provider = router_provider
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
         self.eval_fleet: EvalFleet | None = None
@@ -60,18 +66,15 @@ class InferenceController:
         if self.args.debug_train_only:
             return
 
-        router_addrs = await resolve_router_addrs(self.args)
+        router_addrs = await resolve_router_addrs(self.args, provider=self._router_provider)
         self.servers = await create_rollout_servers(
             self.args,
             context_lock=self.context_lock,
             global_health_checker_activeness=self._health_checker_activeness.get,
+            engine_provider=self._engine_provider,
             router_addrs=router_addrs,
         )
-        # TODO: may change to InferenceController.init(engine_provider, ...) later
-        provider: BaseWorkerProvider = RayWorkerProvider.create(
-            pool_ids=compute_engine_pool_ids(self.args)
-        )  # TODO inject instance
-        self._watcher_disposers.append(await provider.watch_cells(self._reconcile))
+        self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
         dashboard_hooks.register_router(self.args)
@@ -95,7 +98,7 @@ class InferenceController:
     @with_lock
     async def prepare_rollout(self, rollout_id: int) -> None:
         await self._health_monitoring_resume()
-        await dashboard_hooks.register_engines(self.servers)
+        await dashboard_hooks.register_engines(self.servers, provider=self._engine_provider)
 
     @with_lock
     async def prepare_eval(self) -> None:
