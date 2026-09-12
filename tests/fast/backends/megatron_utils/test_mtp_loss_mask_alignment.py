@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.training_utils import cp_utils
 from miles.backends.training_utils import data as data_utils
@@ -12,8 +11,6 @@ from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 
 mtp = pytest.importorskip("megatron.core.transformer.multi_token_prediction")
 packed_seq = pytest.importorskip("megatron.core.packed_seq_params")
-
-register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
 
 @pytest.mark.parametrize("num_layers", [1, 2])
