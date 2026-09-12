@@ -391,9 +391,9 @@ class TrainerController:
     # ------------------------ API :: multi-LoRA slot commands ------------------------
 
     async def _execute_slots(self, fn_name: str, **kwargs) -> list:
-        results = await asyncio.gather(*[cell.execute(fn_name, **kwargs) for cell in self._cells])
-        # one trainer cell; its result is the per-actor list
-        return results[0]
+        (cell,) = self._cells
+        assert cell.is_alive, "the Tinker trainer cell is unavailable"
+        return await cell.execute(fn_name, **kwargs)
 
     async def forward_backward(self, batch_id: int, data_ref) -> list:
         return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
