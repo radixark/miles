@@ -1817,6 +1817,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--lora-A-init-method",
+                type=str,
+                default="xavier",
+                choices=["xavier", "normal", "kaiming", "zero"],
+                help="Initialization of the LoRA A matrices (Megatron-Bridge ParallelLinearAdapter).",
+            )
+            parser.add_argument(
+                "--lora-B-init-method",
+                type=str,
+                default="zero",
+                choices=["zero", "normal", "kaiming", "xavier"],
+                help="Initialization of the LoRA B matrices. 'zero' (default) makes the adapter a no-op at "
+                "step 0; a random init gives a non-zero adapter from the start, e.g. to measure the "
+                "train/rollout logprob consistency of the LoRA path itself with --debug-disable-optimizer.",
+            )
+            parser.add_argument(
                 "--no-log-lora-norms",
                 dest="log_lora_norms",
                 action="store_false",
