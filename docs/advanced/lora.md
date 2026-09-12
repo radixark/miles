@@ -68,7 +68,8 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Implementation | Model family | Architecture exercised | Evidence | Notes |
 |---|---|---|---|---|
 | Bridge | Qwen2.5 0.5B / 3B | Dense | [0.5B CUDA and ROCm E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora/test_lora_qwen2.5_0.5B.py), [3B disaggregated recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen2.5-3B-megatron-lora-disaggregated.sh) | The simplest starting point; `all-linear` works. |
-| Bridge | Qwen3 4B | Dense | [Single-LoRA recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen3-4B-megatron-lora.sh), [multi-LoRA recipe](https://github.com/radixark/miles/tree/main/examples/multi_lora) | Used by the current multi-adapter example. |
+| Bridge | Qwen3 4B | Dense | [Single-LoRA recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen3-4B-megatron-lora.sh) | Single-adapter recipe. |
+| Bridge | Qwen3-30B-A3B | MoE | [Multi-LoRA gateway example](https://github.com/radixark/miles/tree/main/examples/multi_lora) | Disaggregated Tinker training and versioned sampling. |
 | Bridge | GPT-OSS 20B | MoE | [Recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh), [MoE LoRA E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_gpt_oss_20b_moe_lora_ci.py) | Uses the SGLang `triton` LoRA backend. |
 | Bridge | Kimi K2.5 | Multimodal MoE + MLA | [16-node recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-kimi-k25-megatron-lora.sh) | Demonstrates shared-outer expert LoRA and an INT4 rollout / fake-QAT setup. |
 | Bridge | GLM-5 / 5.1 / 5.2 744B-A40B | MoE + MLA + DSA | [GLM-5.1 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_1_744b_a40b_lora.py), [GLM-5.2 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_2_744b_a40b_lora.py) | CI covers reduced 6-layer / 5-layer checkpoints; historical full-744B results are described below. |
@@ -296,3 +297,20 @@ server owns no datasets or schedules). The gateway lives in `miles/tinker/`,
 the slot mechanics in `miles/backends/megatron_utils/lora/`. The dataset-driven
 multi-LoRA v1 backend (fully-async driver, adapter controller, per-adapter data
 sources) has been removed.
+
+Clients use the official `tinker` SDK with the gateway URL and a distinct API key
+per tenant. The key identifies ownership of models, futures, and checkpoints.
+Each adapter accumulates gradients until its client submits an optimizer step;
+saving weights for sampling publishes an immutable adapter version.
+
+`save_state` saves adapter parameters and optimizer state, including FP32 masters.
+It waits for preceding commands but neither steps nor saves pending gradients;
+call it after `optim_step` to save the effect of the accumulated training work.
+Sampler saves persist an immutable snapshot before warming the engine cache.
+If cache warmup fails, sampling can refill that version from disk.
+
+Futures, model leases, and sequence deduplication are in memory and are lost on
+gateway restart. Saved checkpoints retain their ownership and adapter metadata
+and can be used to create a new training or sampling client.
+
+See the [gateway example](/examples/multi-lora) for the launcher and smoke client.
