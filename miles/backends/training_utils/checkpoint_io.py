@@ -10,26 +10,26 @@ import torch.distributed as dist
 from miles.utils.distributed_utils import get_gloo_group
 
 
-class NonGlobalFatalError(RuntimeError):
-    """Every rank raised this together, so it is fatal at most to its slot, never to the trainer."""
+class CheckpointIOError(RuntimeError):
+    """A coordinated failure of a local filesystem operation."""
 
 
-def run_with_failure_collective(step: Callable[[], None]) -> None:
-    """Run the step on every rank; any rank's failure raises NonGlobalFatalError on all of them."""
+def run_local_io_collective(step: Callable[[], None]) -> None:
+    """Run local filesystem IO, then agree on its outcome; step must not contain collectives."""
     error = None
     try:
         step()
-    except Exception as exc:  # noqa: BLE001
+    except OSError as exc:
         error = f"{type(exc).__name__}: {exc}"
     if not dist.is_initialized():
         if error is not None:
-            raise NonGlobalFatalError(error)
+            raise CheckpointIOError(error)
         return
     errors: list[str | None] = [None] * dist.get_world_size()
     dist.all_gather_object(errors, error, group=get_gloo_group())
     failed = [e for e in errors if e is not None]
     if failed:
-        raise NonGlobalFatalError(f"failed on {len(failed)} rank(s): {failed[0]}")
+        raise CheckpointIOError(f"failed on {len(failed)} rank(s): {failed[0]}")
 
 
 def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None]) -> None:
@@ -63,9 +63,9 @@ def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None])
         else:
             os.replace(tmp_dir, final_dir)
 
-    run_with_failure_collective(make_tmp_dir)
-    run_with_failure_collective(lambda: write_shards(tmp_dir))
-    run_with_failure_collective(publish_dir)
+    run_local_io_collective(make_tmp_dir)
+    write_shards(tmp_dir)
+    run_local_io_collective(publish_dir)
 
 
 def _rank() -> int:

@@ -13,7 +13,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.checkpoint_io import run_with_failure_collective, write_checkpoint_dir
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -53,13 +53,9 @@ def load_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, lo
         shells[_OPTIM_KEY] = slot_optimizer.sharded_state(weights, is_loading=True)
     _canonicalize_slot_keys(shells, slot_optimizer.slot)
 
-    def apply_shards():
-        # weight tensors load in place; the optimizer state comes back as a dict
-        loaded = dist_checkpointing.load(shells, checkpoint_dir)
-        if load_optimizer:
-            slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
-        else:
-            # weights-only load keeps the fresh Adam state the slot init just created
-            slot_optimizer.reload_masters()
-
-    run_with_failure_collective(apply_shards)
+    loaded = dist_checkpointing.load(shells, checkpoint_dir)
+    if load_optimizer:
+        slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
+    else:
+        # weights-only load keeps the fresh Adam state the slot init just created
+        slot_optimizer.reload_masters()

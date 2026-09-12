@@ -16,7 +16,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
-from miles.backends.training_utils.checkpoint_io import NonGlobalFatalError, run_with_failure_collective
+from miles.backends.training_utils.checkpoint_io import CheckpointIOError
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
@@ -467,7 +467,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if ckpt_path is not None:
             try:
                 lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
-            except NonGlobalFatalError as error:
+            except CheckpointIOError as error:
                 return {"error": str(error)}
         return None
 
@@ -476,7 +476,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.args.multi_lora, "save_slot is a multi-LoRA slot command"
         try:
             lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path)
-        except NonGlobalFatalError as error:
+        except CheckpointIOError as error:
             return {"error": str(error)}
         return None
 
@@ -484,10 +484,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def unload_slot(self, slot: int) -> dict | None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
         slot_optimizer = self.slot_optimizers.pop(slot)
-        try:
-            run_with_failure_collective(lambda: lora_executor.unload_slot(self.model, slot_optimizer))
-        except NonGlobalFatalError as error:
-            return {"error": str(error)}
+        lora_executor.unload_slot(self.model, slot_optimizer)
         return None
 
     @with_logs
