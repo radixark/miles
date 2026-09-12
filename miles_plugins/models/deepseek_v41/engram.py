@@ -6,9 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-import torch.utils.checkpoint
-
 import torch.nn as nn
+import torch.utils.checkpoint
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.tensor_parallel.mappings import (
     gather_from_sequence_parallel_region,

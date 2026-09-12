@@ -26,21 +26,21 @@ from megatron.core.transformer.transformer_layer import HyperConnectionTransform
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 from miles.utils.hf_config import load_hf_config
+from miles_plugins.models.deepseek_v41.engram import DeepSeekV41Engram
+from miles_plugins.models.deepseek_v41.ops import hc_mix
+from miles_plugins.models.deepseek_v41.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v41.ops.cp_utils import (
     all_gather_cp,
     get_freqs_cis_for_cp,
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
-from miles_plugins.models.deepseek_v41.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
-from miles_plugins.models.deepseek_v41.ops.rope_tables import wrapped_precompute_freqs_cis
-from miles_plugins.models.deepseek_v41.engram import DeepSeekV41Engram
-from miles_plugins.models.deepseek_v41.ops import hc_mix
-from miles_plugins.models.deepseek_v41.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v41.ops.indexer import DeepSeekV41Indexer
+from miles_plugins.models.deepseek_v41.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v41.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
 from miles_plugins.models.deepseek_v41.ops.quant import fake_quant_compressed_kv
 from miles_plugins.models.deepseek_v41.ops.rope import apply_rotary_emb
+from miles_plugins.models.deepseek_v41.ops.rope_tables import wrapped_precompute_freqs_cis
 
 V41_CONFIG_FIELDS = (
     "kv_source_layer_ids",
