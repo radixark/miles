@@ -138,7 +138,8 @@ def tensor_data_to_list(tensor_data) -> list:
 
 def _dense_from_csr(tensor_data: dict) -> list:
     (length,) = tensor_data["shape"]
-    assert len(tensor_data["sparse_crow_indices"]) == 2, "1-D CSR expected"
+    if len(tensor_data["sparse_crow_indices"]) != 2:
+        raise UserInputError("1-D CSR expected")
     dense = [0] * length
     for col, value in zip(tensor_data["sparse_col_indices"], tensor_data["data"], strict=True):
         dense[col] = value

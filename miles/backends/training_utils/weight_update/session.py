@@ -14,8 +14,12 @@ from miles.utils.distributed_utils import get_gloo_group
 logger = logging.getLogger(__name__)
 
 
+class EngineResponseError(RuntimeError):
+    """An engine rejected an update; trainer ranks may not have agreed on the failure."""
+
+
 class EngineRPCError(RuntimeError):
-    """An engine HTTP call failed outside trainer tensor/collective execution."""
+    """Every trainer rank agreed on an HTTP-phase failure outside tensor execution."""
 
 
 class EngineWeightUpdateSession:
@@ -112,7 +116,7 @@ class EngineWeightUpdateSession:
         if self._protocol.use_weight_update_session and dist.get_rank() == 0:
             try:
                 rpcs()
-            except (httpx.HTTPError, TimeoutError, EngineRPCError) as exc:
+            except (httpx.HTTPError, TimeoutError, EngineResponseError) as exc:
                 logger.exception("engine weight-update RPCs failed")
                 failure[0] = f"{type(exc).__name__}: {exc}"
         dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
@@ -165,7 +169,7 @@ def end_weight_update(
     )
     for result in results:
         if isinstance(result, Mapping) and result.get("success") is False:
-            raise EngineRPCError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
+            raise EngineResponseError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
 
 
 def register_lora_adapter(
@@ -196,7 +200,7 @@ def register_lora_adapter(
     check_weight_sync_results(results, is_lora=True)
     if defer_publish and any(not isinstance(result, Mapping) or not result.get("pending") for result in results):
         # an engine that ignored defer_publish would serve the name while its weights stream
-        raise EngineRPCError("the rollout engines must support deferred LoRA publication")
+        raise EngineResponseError("the rollout engines must support deferred LoRA publication")
 
 
 def set_weight_version(rollout_engines: Sequence[SGLangApiClient], weight_version: int) -> None:
@@ -222,7 +226,7 @@ def check_weight_sync_results(results: list, *, is_lora: bool) -> None:
             continue
 
         if success is False:
-            raise EngineRPCError(
+            raise EngineResponseError(
                 f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
                 f"Check SGLang version compatibility."
             )
