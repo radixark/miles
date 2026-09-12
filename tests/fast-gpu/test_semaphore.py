@@ -15,7 +15,10 @@ register_cuda_ci(
 
 import pytest
 
+from tests.fast.fixtures.rollout_fixtures import rollout_env
 from tests.fast.rollout.inference_rollout.integration.utils import integration_env_config, load_and_call_train
+
+_ = rollout_env
 
 _DATA_ROWS = [{"input": f"What is 1+{i}?", "label": str(1 + i)} for i in range(10)]
 _BASE_ARGV = ["--rollout-batch-size", "4", "--n-samples-per-prompt", "2"]
