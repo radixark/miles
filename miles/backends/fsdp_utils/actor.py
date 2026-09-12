@@ -20,6 +20,7 @@ from miles.backends.training_utils.log_utils import (
     log_train_step,
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from miles.backends.training_utils.loss_hub.kl_control import update_adaptive_kl
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, train_dump_utils, train_metric_utils
@@ -553,6 +554,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     )
 
                 loss_dict = aggregate_train_losses(losses_reduced)
+                update_adaptive_kl(self.args, loss_dict)
 
                 extra_metrics = {}
                 for param_group_id, param_group in enumerate(self.optimizer.param_groups):

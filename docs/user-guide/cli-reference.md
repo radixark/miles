@@ -68,6 +68,10 @@ then push up until you OOM.
 | `--advantage-estimator` | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`. On-policy distillation is not an estimator — enable it with `--use-opd` on top of any of these. |
 | `--use-kl-loss` | off | Compute KL against the reference model. |
 | `--kl-loss-coef` | `0.0` | Weight of KL in the loss (0 means monitor only). |
+| `--kl-ctrl` | `fixed` | `fixed` or `adaptive` control of `--kl-loss-coef`. Adaptive updates after each optimizer step and requires `--use-kl-loss`. |
+| `--kl-target` | `0.1` | Target KL for the adaptive loss KL controller. |
+| `--kl-horizon` | `10000` | Adaptation horizon in optimizer steps for the adaptive loss KL controller. |
+| `--kl-ctrl-steps` | `1` | Optimizer steps represented by each adaptive loss KL controller update. |
 | `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | `0.0` | Entropy bonus weight. |
 | `--observe-training-entropy` | off | Log training entropy even when `--entropy-coef` is `0.0`; detached from backward when the coefficient is zero. |
@@ -238,6 +242,10 @@ Sections mirror the launch-script argument groups.
 | `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`. |
 | `--use-kl-loss` | flag | off | Compute KL vs. reference. |
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 means monitor). |
+| `--kl-ctrl` | enum | `fixed` | `fixed` or `adaptive` control of `--kl-loss-coef`. Adaptive updates after each optimizer step and requires `--use-kl-loss`. |
+| `--kl-target` | float | `0.1` | Target KL for the adaptive loss KL controller. |
+| `--kl-horizon` | float | `10000` | Adaptation horizon in optimizer steps for the adaptive loss KL controller. |
+| `--kl-ctrl-steps` | int | `1` | Optimizer steps represented by each adaptive loss KL controller update. |
 | `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | float | `0.0` | Entropy bonus weight. |
 | `--observe-training-entropy` | flag | off | Log detached training entropy when entropy bonus weight is zero. |
