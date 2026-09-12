@@ -14,7 +14,10 @@ import pytest
 import torch
 
 from miles.backends.training_utils.weight_update.protocols import broadcast
-from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.protocol import (
+    get_weight_transfer_protocol,
+    validate_flattened_broadcast_args,
+)
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
@@ -83,7 +86,7 @@ def test_broadcast_roundtrip_preserves_mixed_dtype_bytes_and_scalar_shape(monkey
             "shapes": [tensor.shape for _, tensor in weights],
             "selector": "target",
             "group_name": "test-group",
-            "load_format": "flattened_bucket" if packed else None,
+            **({"load_format": "flattened_bucket"} if packed else {}),
         }
     if packed:
         assert sent[0].dtype == torch.uint8
@@ -182,8 +185,42 @@ def test_backing_buffer_lives_through_collective_wait_and_bucket_clears_after_re
     assert client.update_weights_from_distributed.call_args.kwargs["load_format"] == "flattened_bucket"
 
 
-@pytest.mark.parametrize("colocate,mode", [(True, "broadcast"), (False, "p2p"), (False, "disk-delta")])
-def test_opt_in_rejects_protocols_that_would_ignore_it(colocate, mode):
-    args = Namespace(colocate=colocate, update_weight_transfer_mode=mode, update_weight_use_flattened_buckets=True)
-    with pytest.raises(ValueError, match="requires non-colocated broadcast transfer"):
-        get_weight_transfer_protocol(args)
+@pytest.mark.parametrize("validator", [validate_flattened_broadcast_args, get_weight_transfer_protocol])
+@pytest.mark.parametrize(
+    "backend,colocate,mode",
+    [
+        ("megatron", True, "broadcast"),
+        ("megatron", False, "p2p"),
+        ("megatron", False, "disk-delta"),
+        ("fsdp", False, "broadcast"),
+        ("fsdp", True, "broadcast"),
+    ],
+)
+def test_opt_in_rejects_backends_and_protocols_that_would_ignore_it(validator, backend, colocate, mode):
+    args = Namespace(
+        train_backend=backend,
+        colocate=colocate,
+        update_weight_transfer_mode=mode,
+        update_weight_use_flattened_buckets=True,
+    )
+    with pytest.raises(ValueError, match="requires Megatron non-colocated broadcast transfer"):
+        validator(args)
+
+
+@pytest.mark.parametrize("flag", [None, False])
+def test_existing_fsdp_arguments_are_unchanged_without_the_opt_in(flag):
+    args = Namespace(train_backend="fsdp", colocate=False, update_weight_transfer_mode="broadcast")
+    if flag is not None:
+        args.update_weight_use_flattened_buckets = flag
+    validate_flattened_broadcast_args(args)
+
+
+def test_megatron_non_colocated_broadcast_accepts_the_opt_in():
+    validate_flattened_broadcast_args(
+        Namespace(
+            train_backend="megatron",
+            colocate=False,
+            update_weight_transfer_mode="broadcast",
+            update_weight_use_flattened_buckets=True,
+        )
+    )

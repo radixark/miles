@@ -70,11 +70,15 @@ class WeightTransferProtocol(ABC):
         return metrics
 
 
-def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
+def validate_flattened_broadcast_args(args: Namespace) -> None:
     if getattr(args, "update_weight_use_flattened_buckets", False) and (
-        args.colocate or args.update_weight_transfer_mode != "broadcast"
+        args.train_backend != "megatron" or args.colocate or args.update_weight_transfer_mode != "broadcast"
     ):
-        raise ValueError("--update-weight-use-flattened-buckets requires non-colocated broadcast transfer")
+        raise ValueError("--update-weight-use-flattened-buckets requires Megatron non-colocated broadcast transfer")
+
+
+def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
+    validate_flattened_broadcast_args(args)
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 

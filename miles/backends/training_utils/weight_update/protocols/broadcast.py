@@ -77,7 +77,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.rollout_engines,
                 bucket,
                 selector=self._selector,
-                use_flattened_buckets=self.args.update_weight_use_flattened_buckets,
+                use_flattened_buckets=getattr(self.args, "update_weight_use_flattened_buckets", False),
             )
             async_utils.wait_futures(futures)
             bucket.clear()
@@ -158,10 +158,10 @@ def update_weights_from_distributed(
     # format validation failures cannot leave them waiting for a broadcast.
     if use_flattened_buckets:
         tensors = [_flatten_weight_bucket(converted_named_tensors)]
-        load_format = "flattened_bucket"
+        format_kwargs = {"load_format": "flattened_bucket"}
     else:
         tensors = [param.data.contiguous() for _, param in converted_named_tensors]
-        load_format = None
+        format_kwargs = {}
 
     futures = [
         async_utils.submit(
@@ -171,7 +171,7 @@ def update_weights_from_distributed(
                 shapes=[param.shape for _, param in converted_named_tensors],
                 selector=selector,
                 group_name=group_name,
-                load_format=load_format,
+                **format_kwargs,
             )
         )
         for client in rollout_engines
