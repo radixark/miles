@@ -16,7 +16,7 @@ from tests.fast.utils.workers.reconcile.utils import (
 
 from miles.utils.test_utils.clock import FakeClock
 
-from miles.utils.workers.reconcile.loop import ReconcileLoop
+from miles.utils.workers.reconcile.loop import DEFAULT_RESYNC_PERIOD, ReconcileLoop
 from miles.utils.workers.reconcile.retry_scheduler import POLL_INTERVAL
 from miles.utils.workers.reconcile.source_event import DeleteEvent, UpsertEvent
 
@@ -77,6 +77,34 @@ async def make_loop(
         assert start_task.done()
         await start_task
     return loop, source, recorder, clock
+
+
+class TestCadenceValidation:
+    @pytest.mark.parametrize(
+        "kwargs", [dict(resync_period=0.0), dict(resync_period=-1.0), dict(source_retry_delay=0.0)]
+    )
+    async def test_a_non_positive_cadence_is_rejected(self, kwargs):
+        """A zero delay would turn a retry or resync loop into a hot loop, so it never reaches construction."""
+        with pytest.raises(AssertionError):
+            ReconcileLoop(source=FakeSource(), reconcile=Recorder(), clock=FakeClock(), **kwargs)
+
+    async def test_the_default_period_is_on_and_far_from_any_test_horizon(self):
+        """Resync defaults on, so a caller that never thinks about it still gets the backstop."""
+        loop, _, recorder, clock = await make_loop(initial=[make_pod("pod-0")])
+        recorder.parent_keys.clear()
+
+        await clock.elapse(10_000.0)
+        await settle()
+        assert recorder.parent_keys == []
+
+        await clock.elapse(DEFAULT_RESYNC_PERIOD)
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
+        await loop.stop()
+
+    async def test_resync_period_none_is_accepted(self):
+        """None is how resync is disabled, and stays distinct from an invalid zero."""
+        ReconcileLoop(source=FakeSource(), reconcile=Recorder(), clock=FakeClock(), resync_period=None)
 
 
 class TestInitialSync:
@@ -634,6 +662,103 @@ class TestFailureBackoff:
         await loop.stop()
 
 
+class TestResync:
+    async def test_resync_reenqueues_all_known_keys(self):
+        """The resync tick re-reconciles every key currently in the store."""
+        pods = [make_pod("pod-0", cell="cell-a"), make_pod("pod-1", cell="cell-b")]
+        loop, _, recorder, clock = await make_loop(initial=pods, resync_period=30.0)
+        recorder.parent_keys.clear()
+
+        await clock.elapse(30.0)
+        await settle()
+        assert sorted(recorder.parent_keys) == ["cell-a", "cell-b"]
+
+        await clock.elapse(30.0)
+        await settle()
+        assert sorted(recorder.parent_keys) == ["cell-a", "cell-a", "cell-b", "cell-b"]
+        await loop.stop()
+
+    async def test_resync_waits_a_full_period_and_covers_parents_added_later(self):
+        """The first tick is a full period away, and it uses the current parent set."""
+        loop, source, recorder, clock = await make_loop(initial=[make_pod("pod-0")], resync_period=30.0)
+        recorder.parent_keys.clear()
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1", cell="cell-new")))
+        await settle()
+        recorder.parent_keys.clear()
+
+        await clock.elapse(29.9)
+        await settle()
+        assert recorder.parent_keys == []
+
+        await clock.elapse(0.1)
+        await settle()
+        assert sorted(recorder.parent_keys) == ["cell-a", "cell-new"]
+        await loop.stop()
+
+    async def test_no_resync_when_period_is_none(self):
+        """resync_period=None opts out of the backstop, leaving the loop purely event driven."""
+        loop, _, recorder, clock = await make_loop(initial=[make_pod("pod-0")], resync_period=None)
+        recorder.parent_keys.clear()
+        await clock.elapse(10_000.0)
+        await settle()
+        assert recorder.parent_keys == []
+        await loop.stop()
+
+    async def test_resync_drives_a_key_that_is_waiting_on_a_retry_timer(self):
+        """A key parked on a long backoff is still re-driven by the resync tick."""
+        loop, _, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")],
+            fail_parent_keys={"cell-a"},
+            resync_period=10.0,
+            failure_base_delay=1000.0,
+            failure_max_delay=1000.0,
+        )
+        assert recorder.counts() == {"cell-a": 1}
+
+        await clock.elapse(10.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+        await loop.stop()
+
+    async def test_a_resync_failure_reinstalls_the_backoff_and_a_success_clears_it(self):
+        """Retries driven by resync keep the latest-wins timer discipline."""
+        loop, _, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")],
+            fail_parent_keys={"cell-a"},
+            resync_period=10.0,
+            failure_base_delay=4.0,
+            failure_max_delay=4.0,
+        )
+        await clock.elapse(4.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+        assert loop._retry._infos["cell-a"].failures == 2
+
+        recorder.fail_parent_keys = set()
+        await clock.elapse(5.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 3}
+
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 4}
+        assert "cell-a" not in loop._retry._infos
+        await loop.stop()
+
+    async def test_resync_skips_deleted_keys(self):
+        """Keys whose objects are gone are not resynced."""
+        pod = make_pod("pod-0", cell="cell-a")
+        loop, source, recorder, clock = await make_loop(initial=[pod], resync_period=30.0)
+        source.emit(DeleteEvent(key="pod-0", last_obj=pod))
+        await settle()
+        recorder.parent_keys.clear()
+
+        await clock.elapse(30.0)
+        await settle()
+        assert recorder.parent_keys == []
+        await loop.stop()
+
+
 class TestLister:
     async def test_get_by_parent_returns_members_sorted_by_key(self):
         """get_by_parent is the Lister equivalent and is deterministic."""
@@ -685,6 +810,17 @@ class TestStop:
         with pytest.raises(AssertionError):
             await loop.start()
         await loop.stop()
+
+    async def test_stop_cancels_every_background_timer(self):
+        """No source, resync, or retry sleeper survives stop()."""
+        loop, _, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"}, resync_period=30.0, failure_base_delay=5.0
+        )
+        assert clock.pending_count > 0
+
+        await loop.stop()
+        assert clock.pending_count == 0
+        assert recorder.counts() == {"cell-a": 1}
 
     async def test_awaiting_stop_inside_reconcile_is_rejected(self):
         """stop() waits for the worker, so awaiting it from inside reconcile is a caller error, not a hang."""
