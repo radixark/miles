@@ -75,3 +75,8 @@ try:
     from . import nemotron_h  # noqa: F401
 except Exception as _e:  # pragma: no cover - defensive
     logger.warning("miles nemotron_h plugin failed to load: %s", _e)
+
+try:
+    from . import deepseek_v4  # noqa: F401
+except Exception as _e:  # pragma: no cover - defensive
+    logger.warning("miles deepseek_v4 plugin failed to load: %s", _e)
