@@ -110,3 +110,21 @@ def test_the_sdk_parses_our_sample_response():
     assert (list(sequence.tokens), sequence.stop_reason) == ([5, 6], "length")
     assert list(sequence.logprobs) == pytest.approx([-0.5, -0.6])
     assert list(parsed.prompt_logprobs) == pytest.approx([-1.0, -2.0])
+
+
+@pytest.mark.parametrize("forward_only", [False, True])
+@pytest.mark.parametrize("invalid", ["missing_targets", "bad_shape"])
+def test_content_errors_preserve_the_stream_envelope(forward_only, invalid):
+    from tinker.proto import tinker_public_pb2 as public_pb
+
+    request = public_pb.ForwardBackwardRequest()
+    request.ParseFromString(_sdk_request({"weights": [1.0] * 4}))
+    request.forward_only = forward_only
+    if invalid == "missing_targets":
+        del request.data[0].loss_fn_inputs["target_tokens"]
+    else:
+        request.data[0].loss_fn_inputs["weights"].shape.append(2)
+    op, decoded = decode_forward_backward_request(request.SerializeToString())
+    assert op == ("forward_only" if forward_only else "forward_backward")
+    assert decoded["model_id"] == "model-x" and decoded["seq_id"] == 7
+    assert decoded["validation_error"]

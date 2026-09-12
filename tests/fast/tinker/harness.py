@@ -21,67 +21,74 @@ class FakeBackend:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
-        self.fail_next: Exception | None = None
+        self.fail_next: Exception | dict | None = None
+        self.dead = False
         self.optim_outcomes: dict[int, dict] = {}
-        self.fail_on: dict[str, Exception] = {}
+        self.fail_on: dict[str, Exception | dict] = {}
 
-    def _record(self, name: str, **kwargs) -> None:
+    def _record(self, name: str, **kwargs) -> dict | None:
         self.calls.append((name, kwargs))
-        if self.fail_next is not None:
-            error, self.fail_next = self.fail_next, None
-            raise error
-        error = self.fail_on.pop(name, None)
-        if error is not None:
-            raise error
+        failure, self.fail_next = self.fail_next, None
+        if failure is None:
+            failure = self.fail_on.pop(name, None)
+        if isinstance(failure, Exception):
+            self.dead = True
+            raise failure
+        return failure
 
     def named(self, name: str) -> list[dict]:
         return [kwargs for called, kwargs in self.calls if called == name]
 
     def trainer_dead(self):
-        return False
+        return self.dead
 
     async def load_slot(self, slot, rank, alpha, ckpt_path=None, load_optimizer=True):
-        self._record(
+        return self._record(
             "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
         )
 
     async def unload_slot(self, slot):
-        self._record("unload_slot", slot=slot)
+        return self._record("unload_slot", slot=slot)
 
     async def forward_backward(self, batch_id, slot_datums, loss_fn, loss_fn_config):
-        self._record(
+        failure = self._record(
             "forward_backward",
             batch_id=batch_id,
             slot_datums=slot_datums,
             loss_fn=loss_fn,
             loss_fn_config=loss_fn_config,
         )
+        if failure is not None:
+            return failure
         return [{"loss": 1.0, "logprobs": [0.0] * datum["target_len"]} for _, datum in slot_datums]
 
     async def forward_only(self, batch_id, slot_datums, loss_fn, loss_fn_config):
-        self._record(
+        failure = self._record(
             "forward_only", batch_id=batch_id, slot_datums=slot_datums, loss_fn=loss_fn, loss_fn_config=loss_fn_config
         )
+        if failure is not None:
+            return failure
         return [{"loss": 0.0, "logprobs": [0.0] * datum["target_len"]} for _, datum in slot_datums]
 
     async def optim_step(self, adam_params_by_slot):
-        self._record("optim_step", adam_params_by_slot=adam_params_by_slot)
+        failure = self._record("optim_step", adam_params_by_slot=adam_params_by_slot)
+        if failure is not None:
+            return {slot: failure for slot in adam_params_by_slot}
         return {slot: self.optim_outcomes.get(slot, {"grad_norm": 0.5 + slot}) for slot in adam_params_by_slot}
 
-    async def zero_grads(self, slot):
-        self._record("zero_grads", slot=slot)
-
     async def save_slot(self, slot, path):
-        self._record("save_slot", slot=slot, path=path)
+        return self._record("save_slot", slot=slot, path=path)
 
     async def export_slot(self, slot, rank, alpha, path):
-        self._record("export_slot", slot=slot, rank=rank, alpha=alpha, path=path)
+        return self._record("export_slot", slot=slot, rank=rank, alpha=alpha, path=path)
 
     async def push_slot(self, slot, lora_name, rank, alpha, lora_path=None):
-        self._record("push_slot", slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path)
+        return self._record("push_slot", slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path)
 
     async def sample(self, payload, lora_name, lora_path=None):
-        self._record("sample", payload=payload, lora_name=lora_name, lora_path=lora_path)
+        failure = self._record("sample", payload=payload, lora_name=lora_name, lora_path=lora_path)
+        if failure is not None:
+            return failure
         return {
             "sequences": [
                 {"sequence_id": f"seq-{i}", "tokens": [1, 2], "logprobs": [0.0, 0.0], "stop_reason": "stop"}

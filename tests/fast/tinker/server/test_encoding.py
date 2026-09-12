@@ -1,8 +1,5 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
-import pytest
-
-from miles.tinker.core.types import UserInputError
 from miles.tinker.server.encoding import (
     ADAM_PARAM_DEFAULTS,
     build_datum,
@@ -44,8 +41,8 @@ class TestDecodeForwardBackward:
     def test_a_length_mismatch_is_rejected(self):
         datum = _datum([1, 2, 3])
         datum["loss_fn_inputs"]["target_tokens"] = [2]
-        with pytest.raises(UserInputError, match="length"):
-            self._decode(datum)
+        _, decoded = self._decode(datum)
+        assert "length" in decoded["validation_error"]
 
     def test_explicit_targets_pass_through(self):
         """rl_loop pads the prompt region with dummy zero targets; labels need not be the shifted sequence."""
@@ -72,13 +69,13 @@ class TestAdamParams:
 
     def test_unknown_keys_are_rejected(self):
         """The SDK's AdamParams model is the contract; a key it lacks must not be silently dropped."""
-        with pytest.raises(UserInputError, match="momentum"):
-            decode_command("optim_step", {"model_id": "m", "seq_id": 1, "adam_params": {"momentum": 0.9}})
+        _, decoded = decode_command("optim_step", {"model_id": "m", "seq_id": 1, "adam_params": {"momentum": 0.9}})
+        assert "momentum" in decoded["validation_error"]
 
 
 def test_an_off_model_key_is_rejected():
-    with pytest.raises(UserInputError, match="bogus"):
-        decode_command("save_state", {"model_id": "m", "seq_id": 1, "bogus": 1})
+    _, decoded = decode_command("save_state", {"model_id": "m", "seq_id": 1, "bogus": 1})
+    assert "bogus" in decoded["validation_error"]
 
 
 class TestTensorData:

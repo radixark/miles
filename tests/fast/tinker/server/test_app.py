@@ -127,7 +127,7 @@ async def test_an_unknown_future_answers_410(client):
 
 async def test_a_failed_future_reports_the_category(client):
     body = await _model_body(client)
-    client.service.backend.fail_next = RuntimeError("boom")
+    client.service.backend.fail_next = {"error": "boom"}
     created = (await client.post("/api/v1/create_model", json=body, headers=_headers())).json()
     body = await _poll(client, created["request_id"])
     assert (body["category"], "boom" in body["error"]) == ("server", True)

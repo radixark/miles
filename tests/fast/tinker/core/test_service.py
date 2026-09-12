@@ -1,4 +1,4 @@
-"""The service preserves request ordering, tenant isolation, and failure recovery."""
+"""The service preserves request ordering, tenant isolation, and failure isolation."""
 
 import asyncio
 from contextlib import suppress
@@ -12,7 +12,6 @@ from tests.fast.tinker.harness import (
     fb_payload,
     make_service,
     model_payload,
-    rl_datum,
 )
 
 from miles.tinker.core.future import DONE, FAILED
@@ -48,7 +47,7 @@ async def test_create_model_is_two_phase(service):
 
 async def test_failed_slot_init_returns_the_slot(service):
     free_before = set(service.free_slots)
-    service.backend.fail_next = RuntimeError("init blew up")
+    service.backend.fail_next = {"error": "init blew up"}
     request_id, model_id = service.create_model("tenant", model_payload(service))
 
     future = await await_settled(service, "tenant", request_id)
@@ -85,7 +84,7 @@ async def test_out_of_order_chunks_complete_and_the_barrier_waits(service):
     assert calls.index("optim_step") > max(i for i, name in enumerate(calls) if name == "forward_backward")
 
 
-async def test_admission_failure_fails_the_future_not_the_stream(service):
+async def test_admission_failure_terminates_the_training_stream(service):
     model_id = await created_model(service)
 
     oversized = service.submit(
@@ -93,8 +92,8 @@ async def test_admission_failure_fails_the_future_not_the_stream(service):
     )
     assert (await await_settled(service, "tenant", oversized)).state == FAILED
 
-    healthy = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
-    assert (await await_settled(service, "tenant", healthy)).state == DONE, "the stream must keep flowing"
+    with pytest.raises(UserInputError, match="create a new model"):
+        service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
 
 
 async def test_forward_backward_outputs_align_to_datums(service):
@@ -191,7 +190,7 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
 async def test_warm_push_failure_still_publishes_the_version(service):
     """A failed warm push must not invalidate an exported sampler version."""
     model_id = await created_model(service)
-    service.backend.fail_on["push_slot"] = RuntimeError("engine down")
+    service.backend.fail_on["push_slot"] = {"error": "engine down"}
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     future = await await_settled(service, "tenant", request_id)
     assert future.result["path"] == f"tinker://{model_id}/sampler_weights/1"
@@ -214,7 +213,7 @@ async def test_warm_push_failure_still_publishes_the_version(service):
 async def test_failed_export_burns_the_version_number(service):
     """A failed export must leave its version unpublished and never reuse its number."""
     model_id = await created_model(service)
-    service.backend.fail_on["export_slot"] = RuntimeError("disk full")
+    service.backend.fail_on["export_slot"] = {"error": "disk full"}
     failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     future = await await_settled(service, "tenant", failed)
     assert (future.state, future.error_category) == (FAILED, "server")
@@ -359,16 +358,17 @@ async def test_a_foreign_tenants_checkpoint_does_not_load(service):
     assert "belong" in future.error
 
 
-async def test_a_failed_batch_discards_the_whole_batch_run(service):
+async def test_a_failed_batch_terminates_the_stream(service):
     model_id = await created_model(service)
     first = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum(), datum()]))
     second = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
-    service.backend.fail_next = RuntimeError("cuda died")
+    service.backend.fail_next = {"error": "batch input rejected"}
     assert (await await_settled(service, "tenant", first)).state == FAILED
     assert (
         await await_settled(service, "tenant", second)
-    ).state == FAILED, "the batch run shares one gradient accumulation; a sibling's failure poisons it"
-    assert service.backend.named("zero_grads"), "the poisoned accumulation must be dropped"
+    ).state == FAILED, "the failed accumulation terminates the stream"
+    assert model_id not in service.models
+    assert service.backend.named("unload_slot")
 
 
 async def test_merged_optim_settles_each_slot_on_its_own(service):
@@ -383,27 +383,6 @@ async def test_merged_optim_settles_each_slot_on_its_own(service):
     failed = await await_settled(service, "tenant", bad)
     assert resolved.state == DONE and "grad_norm" in resolved.result["metrics"]
     assert (failed.state, failed.error_category) == (FAILED, "server") and "boom" in failed.error
-
-
-@pytest.mark.parametrize("poisoned_index", [0, 1], ids=["poison-first", "poison-last"])
-async def test_merged_optim_outcomes_stay_aligned_after_filtering_poison(service, poisoned_index):
-    models = [await created_model(service), await created_model(service)]
-    poisoned, healthy = models[poisoned_index], models[1 - poisoned_index]
-    healthy_slot = service.models[healthy].slot
-    service.backend.fail_on["forward_backward"] = UserInputError("bad batch")
-    failed_batch = service.submit("tenant", "forward_backward", fb_payload(poisoned, 1, [datum()]))
-    assert (await await_settled(service, "tenant", failed_batch)).state == FAILED
-
-    poisoned_step = service.submit("tenant", "optim_step", _optim_payload(poisoned, 2))
-    healthy_step = service.submit("tenant", "optim_step", _optim_payload(healthy, 1))
-    discarded = await await_settled(service, "tenant", poisoned_step)
-    stepped = await await_settled(service, "tenant", healthy_step)
-
-    assert (discarded.state, discarded.error_category) == (FAILED, "user")
-    assert "discarded" in discarded.error
-    assert stepped.result == {"op": "optim_step", "metrics": {"grad_norm": 0.5 + healthy_slot}}
-    assert service.backend.named("optim_step") == [{"adam_params_by_slot": {healthy_slot: dict(ADAM)}}]
-    assert all(not service.planner.stream(model_id).queue for model_id in models)
 
 
 async def test_a_nonfinite_step_reports_the_skip(service):
@@ -435,7 +414,6 @@ async def test_num_samples_is_capped(service):
 
 
 async def test_malformed_loss_inputs_are_rejected_at_admission(service):
-    model_id = await created_model(service)
     cases = {
         "unknown loss_fn": {"loss_fn": "made_up", "datums": [datum()]},
         "missing input": {"loss_fn": "importance_sampling", "datums": [datum()]},
@@ -449,7 +427,9 @@ async def test_malformed_loss_inputs_are_rejected_at_admission(service):
             "datums": [datum() | {"sampling_logprobs": [0.0] * 3, "advantages": [1.0] * 3}],
         },
     }
-    for seq_id, payload in enumerate(cases.values(), start=1):
+    for payload in cases.values():
+        model_id = await created_model(service)
+        seq_id = 1
         request_id = service.submit(
             "tenant",
             "forward_backward",
@@ -459,40 +439,27 @@ async def test_malformed_loss_inputs_are_rejected_at_admission(service):
         assert (future.state, future.error_category) == (FAILED, "user")
     assert not service.backend.named("forward_backward"), "rejected datums must never reach the trainer"
 
-    healthy = service.submit(
-        "tenant",
-        "forward_backward",
-        {
-            "model_id": model_id,
-            "seq_id": 5,
-            "loss_fn": "importance_sampling",
-            "loss_fn_config": {},
-            "datums": [rl_datum(3)],
-        },
-    )
-    assert (await await_settled(service, "tenant", healthy)).state == DONE
 
-
-async def test_discarded_gradients_fail_the_next_optim_step(service):
+async def test_a_failed_window_stops_already_queued_training(service):
     model_id = await created_model(service)
+    healthy = await created_model(service)
     early = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
-    assert (await await_settled(service, "tenant", early)).state == DONE, "the early batch resolves before the failure"
+    assert (await await_settled(service, "tenant", early)).state == DONE
 
-    service.backend.fail_next = RuntimeError("cuda died")
-    late = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
-    assert (await await_settled(service, "tenant", late)).state == FAILED
-
-    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 3))
-    future = await await_settled(service, "tenant", step)
-    assert (
-        future.state == FAILED and "discarded" in future.error
-    ), "the early batch's gradients were discarded after the failed batch; stepping would be a silent no-op"
+    service.backend.fail_next = {"error": "batch rejected"}
+    queued = [service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))]
+    queued.append(service.submit("tenant", "optim_step", _optim_payload(model_id, 3)))
+    queued.append(service.submit("tenant", "forward_backward", fb_payload(model_id, 4, [datum()])))
+    queued.append(service.submit("tenant", "optim_step", _optim_payload(model_id, 5)))
+    for request_id in queued:
+        assert (await await_settled(service, "tenant", request_id)).state == FAILED
+    assert service.retrieve_future("tenant", early).state == DONE
     assert not service.backend.named("optim_step")
-
-    retry = service.submit("tenant", "forward_backward", fb_payload(model_id, 4, [datum()]))
-    assert (await await_settled(service, "tenant", retry)).state == DONE
-    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 5))
-    assert (await await_settled(service, "tenant", step)).state == DONE, "a fresh accumulation steps normally"
+    assert len(service.backend.named("forward_backward")) == 2
+    with pytest.raises(UserInputError, match="create a new model"):
+        service.submit("tenant", "optim_step", _optim_payload(model_id, 6))
+    step = service.submit("tenant", "optim_step", _optim_payload(healthy, 1))
+    assert (await await_settled(service, "tenant", step)).state == DONE
 
 
 async def test_unsupported_lora_configs_are_rejected(service):
@@ -562,11 +529,11 @@ async def test_weights_info_reads_the_checkpoint_not_the_lease(service):
 async def test_a_failed_optim_step_retires_the_model(service):
     model_id = await created_model(service)
     slot = service.models[model_id].slot
-    service.backend.optim_outcomes[slot] = {"error": "allreduce died"}
+    service.backend.optim_outcomes[slot] = {"error": "slot update rejected"}
 
     step = service.submit("tenant", "optim_step", _optim_payload(model_id, 1))
     future = await await_settled(service, "tenant", step)
-    assert future.state == FAILED and "allreduce died" in future.error
+    assert future.state == FAILED and "slot update rejected" in future.error
     assert model_id not in service.models, "a half-applied step may have diverged the slot across ranks"
     assert slot in service.free_slots
     assert service.backend.named("unload_slot") == [{"slot": slot}]
@@ -575,33 +542,22 @@ async def test_a_failed_optim_step_retires_the_model(service):
         service.submit("tenant", "optim_step", _optim_payload(model_id, 2))
 
 
-async def test_poison_consumption_discards_retried_gradients(service):
+async def test_an_out_of_order_validation_failure_blocks_later_training(service):
     model_id = await created_model(service)
-    slot = service.models[model_id].slot
-    service.backend.fail_next = RuntimeError("cuda died")
-    failed = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
-    assert (await await_settled(service, "tenant", failed)).state == FAILED
-
-    retry = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
-    assert (await await_settled(service, "tenant", retry)).state == DONE
-
     step = service.submit("tenant", "optim_step", _optim_payload(model_id, 3))
+    rejected = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [], loss_fn="unknown"))
+    early = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
+    assert (await await_settled(service, "tenant", early)).state == DONE
+    assert (await await_settled(service, "tenant", rejected)).state == FAILED
     assert (await await_settled(service, "tenant", step)).state == FAILED
-    assert (
-        service.backend.named("zero_grads") == [{"slot": slot}] * 2
-    ), "the retried batch accumulated on top of the discard; its gradients must go too"
+    assert len(service.backend.named("forward_backward")) == 1
     assert not service.backend.named("optim_step")
-
-    resubmit = service.submit("tenant", "forward_backward", fb_payload(model_id, 4, [datum()]))
-    assert (await await_settled(service, "tenant", resubmit)).state == DONE
-    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 5))
-    assert (await await_settled(service, "tenant", step)).state == DONE
 
 
 async def test_a_backend_level_optim_failure_retires_every_model_in_the_barrier(service):
     model_a = await created_model(service)
     model_b = await created_model(service)
-    service.backend.fail_on["optim_step"] = RuntimeError("allgather died")
+    service.backend.fail_on["optim_step"] = {"error": "slot updates rejected"}
 
     first = service.submit("tenant", "optim_step", _optim_payload(model_a, 1))
     second = service.submit("tenant", "optim_step", _optim_payload(model_b, 1))
@@ -619,7 +575,7 @@ async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
     slot = service.models[model_id].slot
-    service.backend.fail_on["unload_slot"] = RuntimeError("engine gone")
+    service.backend.fail_on["unload_slot"] = {"error": "engine gone"}
 
     service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
     await service._sweep_once()
@@ -636,7 +592,7 @@ async def test_a_failed_load_state_retires_the_model(service):
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
 
-    service.backend.fail_on["load_slot"] = RuntimeError("shard corrupt")
+    service.backend.fail_on["load_slot"] = {"error": "shard corrupt"}
     loaded = service.submit(
         "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
     )
@@ -713,11 +669,11 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
 
 
-async def test_a_recycled_slot_does_not_inherit_poison(service):
+async def test_a_recycled_slot_belongs_to_a_fresh_stream(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
     slot = service.models[model_id].slot
-    service.backend.fail_next = RuntimeError("cuda died")
+    service.backend.fail_next = {"error": "batch input rejected"}
     failed = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
     assert (await await_settled(service, "tenant", failed)).state == FAILED
 
@@ -732,25 +688,43 @@ async def test_a_recycled_slot_does_not_inherit_poison(service):
     assert (await await_settled(service, "tenant", step_after_fb)).state == DONE
     step = service.submit("tenant", "optim_step", _optim_payload(fresh, 2))
     future = await await_settled(service, "tenant", step)
-    assert future.state == DONE, "the poison belonged to the evicted model, not the slot"
+    assert future.state == DONE, "a fresh model may use the successfully recycled slot"
 
 
-async def test_a_unit_escaping_its_handler_retires_the_model_and_keeps_serving(service, monkeypatch):
-    model_id = await created_model(service)
+@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep"])
+async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
+    from tests.fast.tinker.harness import make_service
 
-    async def broken_handler(unit):
-        raise RuntimeError("handler bug")
+    gateway = make_service(tmp_path)
+    run_task = asyncio.create_task(gateway.run())
+    try:
+        model_id = await created_model(gateway)
+        if source == "create":
+            gateway.backend.fail_on["load_slot"] = RuntimeError("fatal execution failure")
+            gateway.create_model("tenant", model_payload(gateway))
+        elif source == "sweep":
+            gateway.backend.fail_on["unload_slot"] = RuntimeError("fatal execution failure")
+            for session in gateway.sessions.values():
+                session["last_heartbeat"] -= gateway.config.lease_timeout_s + 1
+            task = asyncio.create_task(gateway._sweep_once())
+            task.add_done_callback(gateway._observe_background_task)
+        else:
+            if source == "handler":
 
-    monkeypatch.setattr(service, "_run_barrier", broken_handler)
-    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 1))
-    future = await await_settled(service, "tenant", step)
-    assert future.state == FAILED and "unhandled failure" in future.error
-    assert model_id not in service.models, "slots a broken handler touched are unknown state"
+                async def broken_handler(unit):
+                    raise RuntimeError("fatal execution failure")
 
-    monkeypatch.undo()
-    fresh = await created_model(service)
-    fb = service.submit("tenant", "forward_backward", fb_payload(fresh, 1, [datum()]))
-    assert (await await_settled(service, "tenant", fb)).state == DONE, "the dispatch loop must survive"
+                gateway._run_barrier = broken_handler
+            else:
+                gateway.backend.fail_on["optim_step"] = RuntimeError("fatal execution failure")
+            gateway.submit("tenant", "optim_step", _optim_payload(model_id, 1))
+        with pytest.raises(RuntimeError, match="fatal execution failure"):
+            await asyncio.wait_for(run_task, timeout=2)
+    finally:
+        if not run_task.done():
+            run_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_task
 
 
 async def test_a_dead_trainer_escapes_the_dispatch_loop(tmp_path, monkeypatch):
@@ -827,3 +801,14 @@ async def test_a_sampling_session_for_another_base_model_is_rejected(service):
     payload = {"session_id": service.create_session("tenant"), "sampling_session_seq_id": 1, "base_model": "other"}
     with pytest.raises(UserInputError, match="serves"):
         service.create_sampling_session("tenant", payload)
+
+
+async def test_a_read_only_batch_failure_preserves_queued_training(service):
+    model_id = await created_model(service)
+    service.backend.fail_on["forward_only"] = {"error": "request rejected"}
+    readonly = service.submit("tenant", "forward_only", fb_payload(model_id, 1, [datum()]))
+    backward = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
+    step = service.submit("tenant", "optim_step", _optim_payload(model_id, 3))
+    assert (await await_settled(service, "tenant", readonly)).state == FAILED
+    assert (await await_settled(service, "tenant", backward)).state == DONE
+    assert (await await_settled(service, "tenant", step)).state == DONE
