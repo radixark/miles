@@ -404,9 +404,6 @@ class TrainerController:
     async def forward_only(self, batch_id: int, data_ref) -> list:
         return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
 
-    async def zero_grads(self, slot: int) -> None:
-        await self._execute_slots("zero_grads", slot=slot)
-
     async def load_slot(self, slot: int, rank: int, alpha: float) -> None:
         await self._execute_slots("load_slot", slot=slot, rank=rank, alpha=alpha)
 

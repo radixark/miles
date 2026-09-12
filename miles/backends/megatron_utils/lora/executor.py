@@ -1,7 +1,7 @@
 """Accumulate gradients across commands and step only the requested LoRA slots.
 
-Backward loss passes accumulate; optim_step consumes each selected accumulation window;
-zero_grads discards it. Forward-only passes leave accumulated gradients intact.
+Backward loss passes accumulate; optim_step consumes each selected accumulation window.
+Forward-only passes leave accumulated gradients intact.
 """
 
 from argparse import Namespace
@@ -66,10 +66,6 @@ def optim_step(
 ) -> dict[int, dict]:
     stepped = {slot: slot_optimizers[slot] for slot in adam_params_by_slot}
     return step_slot_optimizers(stepped, adam_params_by_slot)
-
-
-def zero_grads(slot_optimizer: SlotOptimizer) -> None:
-    slot_optimizer.zero_grads()
 
 
 def load_slot(args: Namespace, model: Sequence[DDP], slot: int, rank: int, alpha: float) -> SlotOptimizer:

@@ -446,11 +446,6 @@ class MegatronTrainRayActor(TrainRayActor):
         return lora_executor.optim_step(self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
-    def zero_grads(self, slot: int) -> None:
-        assert self.args.multi_lora, "zero_grads is a multi-LoRA slot command"
-        lora_executor.zero_grads(self.slot_optimizers[slot])
-
-    @with_logs
     def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
         """Same loss pass as forward_backward, without the backward: the Tinker
         forward() contract returns the requested loss per datum."""
