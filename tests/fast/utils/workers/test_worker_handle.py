@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import ray
 
-from miles.utils.workers import ray_worker_handle as ray_worker_handle_module
+from miles.utils.workers import worker_handle as worker_handle_module
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
@@ -24,6 +24,18 @@ class TestBaseWorkerHandle:
     def test_ray_handle_implements_the_contract(self):
         """The ray wrapper is a worker handle, so callers can hold the base type."""
         assert issubclass(RayWorkerHandle, BaseWorkerHandle)
+
+    def test_a_handle_that_cannot_be_waited_out_says_so_rather_than_reporting_idle(self):
+        """Callers read this answer off the base type, and a silent pass would report a busy worker idle."""
+
+        class Minimal(BaseWorkerHandle):
+            async def wait_ready(self, *, timeout: float) -> None: ...
+
+            async def probe_is_dead(self) -> bool:
+                return True
+
+        with pytest.raises(NotImplementedError, match="running a call"):
+            asyncio.run(Minimal().wait_idle(timeout=1.0))
 
     def test_incomplete_implementation_rejected(self):
         """A handle that implements neither wait_ready nor the death probe cannot be instantiated."""
@@ -207,6 +219,16 @@ class TestRayWorkerHandleWaitReady:
 
 
 @pytest.mark.asyncio
+class TestRayWorkerHandleWaitIdle:
+    async def test_a_ray_actor_cannot_be_waited_out(self):
+        """A ray actor tracks no calls, so this backend has to fail loudly rather than report a worker idle."""
+        handle, _inner = _make_handle()
+
+        with pytest.raises(NotImplementedError, match="rpc communication backend"):
+            await handle.wait_idle(timeout=1.0)
+
+
+@pytest.mark.asyncio
 class TestRayWorkerHandleWaitDead:
     async def test_returns_immediately_when_actor_error_on_first_probe(self):
         """A dead actor whose first probe raises RayActorError is confirmed dead after one probe."""
@@ -226,7 +248,7 @@ class TestRayWorkerHandleWaitDead:
 
     async def test_a_temporarily_unavailable_actor_is_not_confirmed_dead(self, monkeypatch):
         """ActorUnavailableError means the actor may still be alive, so the probe is inconclusive and retried."""
-        monkeypatch.setattr(ray_worker_handle_module, "_WAIT_DEAD_PROBE_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(worker_handle_module, "_WAIT_DEAD_PROBE_INTERVAL_SECONDS", 0.01)
         handle, inner = _make_handle(
             __ray_ready__=_FakeRemoteMethod(
                 [_raise_factory(_ray_actor_unavailable_error()), _raise_factory(_ray_actor_error())]
@@ -244,13 +266,13 @@ class TestRayWorkerHandleWaitDead:
         async def _noop_sleep(seconds: float) -> None:
             slept.append(seconds)
 
-        monkeypatch.setattr(ray_worker_handle_module.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(worker_handle_module.asyncio, "sleep", _noop_sleep)
         monkeypatch.setattr(
-            ray_worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 1.0, 2.0, 200.0]))
+            worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 1.0, 2.0, 200.0]))
         )
         handle, inner = _make_handle(__ray_ready__=_FakeRemoteMethod([_raise_factory(_ray_actor_unavailable_error())]))
 
-        with caplog.at_level(logging.ERROR, logger=ray_worker_handle_module.__name__):
+        with caplog.at_level(logging.ERROR, logger=worker_handle_module.__name__):
             await handle.wait_dead(timeout=120.0)
 
         assert inner.__ray_ready__.call_count == 3
@@ -258,7 +280,7 @@ class TestRayWorkerHandleWaitDead:
 
     async def test_a_hung_probe_is_timed_out_and_retried(self, monkeypatch):
         """A probe that never answers is abandoned on the probe budget, and the next probe confirms death."""
-        monkeypatch.setattr(ray_worker_handle_module, "_WAIT_DEAD_PROBE_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(worker_handle_module, "_WAIT_DEAD_PROBE_INTERVAL_SECONDS", 0.01)
         handle, inner = _make_handle(
             __ray_ready__=_FakeRemoteMethod([_never_resolving_factory, _raise_factory(_ray_actor_error())])
         )
