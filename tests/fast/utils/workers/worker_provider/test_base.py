@@ -39,6 +39,14 @@ class _RecordingProvider(BaseWorkerProvider):
         return _Handle(info.name) if info.worker_class is not None else None
 
 
+class TestExpectedNumCells:
+    def test_the_default_provider_has_no_expected_cell_count(self) -> None:
+        """A provider without fleet sizing logic leaves the expected cell count unspecified."""
+        provider = _RecordingProvider()
+
+        assert provider.expected_num_cells(group_id="inference") is None
+
+
 class TestGetHandle:
     def test_the_cell_is_derived_from_the_worker_name(self):
         """A worker name carries its pool and cell, so the provider must not be asked for anything else."""
