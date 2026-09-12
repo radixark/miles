@@ -25,6 +25,9 @@ StopWatchFn = Callable[[], Awaitable[None]]
 
 
 class BaseWorkerProvider(abc.ABC):
+    async def init(self) -> None:
+        return None
+
     @abc.abstractmethod
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts: ...
 
@@ -33,6 +36,9 @@ class BaseWorkerProvider(abc.ABC):
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not observe cells")
+
+    def expected_num_cells(self, *, model_id: str) -> int | None:
+        return None
 
     def get_handle(self, worker_name: str) -> BaseWorkerHandle:
         pool_id, cell_index, _worker_in_cell_index = parse_worker_name(worker_name)
