@@ -175,6 +175,23 @@ class TestGeneratedStaticWorkerShape:
         assert entries[0]["poolId"] == "rollout-executor"
         assert objects_of_kind(_render(entries), "StatefulSet")
 
+    def test_runs_a_worker_that_reads_the_platform_under_an_account_that_may(self):
+        """A controller reconciling against pods cannot use the namespace default, which may read nothing."""
+        objects = _render(
+            [{"name": "router", "command": ["python"], "serviceAccountName": "myrun-miles-run-orchestrator"}]
+        )
+
+        assert (
+            pod_spec_of(objects, "StatefulSet", "myrun-miles-run-router")["serviceAccountName"]
+            == "myrun-miles-run-orchestrator"
+        )
+
+    def test_leaves_every_other_worker_on_the_namespace_default(self):
+        """A router asks the platform nothing, and an account it does not need is an account it can misuse."""
+        objects = _render([{"name": "router", "command": ["python"]}])
+
+        assert "serviceAccountName" not in pod_spec_of(objects, "StatefulSet", "myrun-miles-run-router")
+
     def test_labels_the_pod_with_the_pool_it_serves(self):
         """A provider that observes cells by pool_id label has to find that label on a static worker too."""
         objects = _render([{"name": "router", "poolId": "inference-router-0", "command": ["python"]}])

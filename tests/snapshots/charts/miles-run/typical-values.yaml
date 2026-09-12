@@ -247,6 +247,7 @@ run:
     - name: rpc
       port: 8000
     replicas: 1
+    serviceAccountName: myrun-miles-run-orchestrator
   - command:
     - <PYTHON>
     - -m
@@ -306,6 +307,7 @@ run:
     - name: rpc
       port: 8000
     replicas: 1
+    serviceAccountName: myrun-miles-run-orchestrator
   trainerEngines:
   - command:
     - bash
