@@ -14,6 +14,7 @@ from miles.backends.training_utils.cp_utils import (
     slice_loss_masks_for_local_cp,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.distributed_utils import distributed_masked_whiten
 
 _LOG_RATIO_EXP_CLAMP = 20.0
 
@@ -219,6 +220,68 @@ def compute_opsm_mask(
 
     opsm_mask = torch.cat(opsm_mask_list, dim=0)
     return opsm_mask, opsm_clipfrac
+
+
+def compute_delight_gate(
+    args: Namespace,
+    log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    active_tokens: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute the per-token Delightful Policy Gradient (DG) gate.
+
+    Follows Algorithm 1 of "Delightful Policy Gradient" (arXiv:2603.14608).
+    Each token is one action, so surprisal is the per-token quantity
+    `l_t = -log pi(a_t | h_t)`, delight is `chi_t = U_t * l_t`, and the gate is
+    `w_t = sigmoid(chi_t / eta)`.  DG replaces the standard term `g_t` with
+    `w_t * g_t`; the gate is therefore a *coefficient*, so it is detached and
+    contributes no gradient path of its own.
+
+    Under a group-relative advantage (GRPO) `U_t` is constant across a response,
+    so the gate varies within a response only through surprisal: on a
+    high-advantage response it amplifies the tokens the policy found unlikely
+    ("breakthroughs"), and on a low-advantage response it attenuates them
+    ("blunders") while leaving confident tokens near the neutral value.
+
+    Args:
+        args: Configuration providing `delight_temperature`,
+            `delight_max_surprisal`, `delight_unit_gain`, and `delight_whiten`.
+        log_probs: Current-policy per-token log-probs, concatenated `[T]`.
+        advantages: Per-token advantages, concatenated `[T]`.
+        active_tokens: Boolean mask of tokens that contribute to the loss `[T]`.
+
+    Returns:
+        Tuple of `(gate, metrics)` where `gate` is a detached `[T]` coefficient
+        and `metrics` holds detached per-token diagnostics for aggregation.
+    """
+    surprisal = (-log_probs.detach()).clamp(min=0.0, max=args.delight_max_surprisal)
+    delight = advantages.detach().float() * surprisal.float()
+
+    if args.delight_whiten:
+        # Appendix E.1: gate on standardised delight when the raw scale is
+        # uninformative.  Statistics are masked and reduced across the DP group
+        # so every micro-batch shares one normalisation.
+        delight = distributed_masked_whiten(
+            delight,
+            active_tokens.to(dtype=delight.dtype),
+            process_group=get_parallel_state().intra_dp.group,
+            shift_mean=False,
+        )
+
+    gate = torch.sigmoid(delight / args.delight_temperature)
+    if args.delight_unit_gain:
+        # 2 * sigmoid keeps the neutral (zero-delight) coefficient at 1.0 instead
+        # of 0.5, so the effective learning rate stays comparable to plain GRPO.
+        # A positive global rescale leaves the update *direction* untouched.
+        gate = 2.0 * gate
+    gate = torch.where(active_tokens, gate, gate.new_ones(()))
+
+    metrics = {
+        "delight_gate": gate.clone().detach(),
+        "delight": delight.clone().detach(),
+        "delight_surprisal": surprisal.clone().detach(),
+    }
+    return gate.detach().to(dtype=log_probs.dtype), metrics
 
 
 def compute_gspo_kl(

@@ -13,6 +13,7 @@ from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_funct
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss_hub.math_utils import (
     compute_approx_kl,
+    compute_delight_gate,
     compute_ess_ratio_contribution,
     compute_gspo_kl,
     compute_opsm_mask,
@@ -226,6 +227,18 @@ def policy_loss_function(
     if args.use_opsm:
         pg_loss = pg_loss * opsm_mask
 
+    # Delightful Policy Gradient (arXiv:2603.14608): rescale every per-token term
+    # by a sigmoid of delight (advantage x surprisal).  Applied to the already
+    # clipped `pg_loss` so it composes with GRPO/GSPO rather than replacing them.
+    if args.use_delight:
+        delight_gate, delight_metrics = compute_delight_gate(
+            args=args,
+            log_probs=log_probs,
+            advantages=advantages,
+            active_tokens=active_tokens,
+        )
+        pg_loss = pg_loss * delight_gate
+
     # Apply off-policy correction using importance sampling if enabled
     if args.get_mismatch_metrics or args.use_tis:
         # NOTE:
@@ -387,6 +400,10 @@ def policy_loss_function(
 
     if args.use_opsm:
         reported_loss["opsm_clipfrac"] = opsm_clipfrac
+
+    if args.use_delight:
+        for metric_key, metric_value in delight_metrics.items():
+            reported_loss[metric_key] = sum_of_sample_mean(metric_value).clone().detach()
 
     # Add OPD metrics if available
     if batch.get("opd_reverse_kl") is not None:
