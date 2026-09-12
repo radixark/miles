@@ -2,7 +2,6 @@
 
 import pytest
 
-from miles.backends.megatron_utils.lora import optimizer as optimizer_module
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, step_slot_optimizers
 
 
@@ -38,32 +37,31 @@ class _FakeSlotOptimizer(SlotOptimizer):
         self.param_gathers += 1
 
 
-def _step(monkeypatch, slot_optimizers):
-    monkeypatch.setattr(optimizer_module.dist, "is_initialized", lambda: False)
+def _step(slot_optimizers):
     adam = {slot: {"learning_rate": 1e-4, "grad_clip_norm": 1.0} for slot in slot_optimizers}
     return step_slot_optimizers(slot_optimizers, adam)
 
 
-def test_an_unknown_step_failure_escapes_before_success_is_reported(monkeypatch):
+def test_an_unknown_step_failure_escapes_before_success_is_reported():
     healthy = _FakeSlotOptimizer(0)
     failing = _FakeSlotOptimizer(1, step_outcome={"error": "boom"})
     with pytest.raises(RuntimeError, match="boom"):
-        _step(monkeypatch, {0: healthy, 1: failing})
+        _step({0: healthy, 1: failing})
     assert healthy.stepped
     assert healthy.param_gathers == 0
 
 
-def test_a_nonfinite_grad_norm_skips_the_step(monkeypatch):
+def test_a_nonfinite_grad_norm_skips_the_step():
     """BF16 has no grad scaler, so the all-reduced norm is the only inf/nan gate."""
     skipped = _FakeSlotOptimizer(0, step_outcome={"skipped_nonfinite": 1.0})
-    outcomes = _step(monkeypatch, {0: skipped})
+    outcomes = _step({0: skipped})
     assert outcomes[0] == {"skipped_nonfinite": 1.0}
     assert not skipped.stepped and skipped.zeroed and skipped.param_gathers == 0
 
 
-def test_an_unknown_preparation_failure_escapes(monkeypatch):
+def test_an_unknown_preparation_failure_escapes():
     broken = _FakeSlotOptimizer(0, prepare_error=RuntimeError("prep died"))
     healthy = _FakeSlotOptimizer(1)
     with pytest.raises(RuntimeError, match="prep died"):
-        _step(monkeypatch, {0: broken, 1: healthy})
+        _step({0: broken, 1: healthy})
     assert not broken.stepped and not healthy.stepped
