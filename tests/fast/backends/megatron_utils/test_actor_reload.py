@@ -1,4 +1,5 @@
 import importlib
+import logging
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -11,6 +12,14 @@ import pytest
 from miles.utils.init_once import InitOnce
 
 _ACTOR_MODULE_NAME = "miles.backends.megatron_utils.actor"
+
+
+class _FakeRandomState:
+    def __init__(self) -> None:
+        self.restores = 0
+
+    def restore(self) -> None:
+        self.restores += 1
 
 
 @pytest.fixture(scope="module")
@@ -60,6 +69,8 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         no_load_optim=False,
         no_load_rng=False,
         finetune=False,
+        megatron_to_hf_mode="core",
+        ref_update_interval=None,
         lora_rank=0,
         lora_adapter_path=None,
         multi_lora=False,
@@ -68,8 +79,10 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         non_persistent_ckpt_type=None,
         fp16=False,
         use_precision_aware_optimizer=False,
+        optimizer="adam",
         optimizer_cpu_offload=False,
         offload_optimizer_states=False,
+        chunked_optimizer_state_offload=False,
         debug_rollout_only=False,
         async_save=False,
         offload_train=False,
@@ -77,6 +90,8 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         keep_old_actor=False,
         use_pytorch_profiler=False,
         record_memory_history=False,
+        use_checkpoint_opt_param_scheduler=True,
+        global_batch_size=1,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -107,6 +122,7 @@ def _actor(actor_module, *, role: str, args: Namespace):
     actor.optimizer = None
     actor.opt_param_scheduler = None
     actor._last_rollout_id = None
+    actor._post_init_random_state = _FakeRandomState()
     return actor
 
 
@@ -124,6 +140,42 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
     monkeypatch.setattr(model_module, "check_model_hashes", lambda *a, **k: None)
     monkeypatch.setattr(actor_module, "clear_memory", lambda *a, **k: None)
     return seen
+
+
+class _Scheduler:
+    def __init__(self, *, num_steps: int) -> None:
+        self.num_steps = num_steps
+
+    def step(self, *, increment: int) -> None:
+        self.num_steps += increment
+
+
+class TestLoadStateScheduler:
+    @pytest.mark.parametrize("saved_checkpoint", [True, False])
+    def test_a_reload_leaves_the_live_scheduler_at_the_start(
+        self,
+        actor_module: ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        saved_checkpoint: bool,
+    ) -> None:
+        """A reload must leave no scheduler progress from the trainer's previous run."""
+        if saved_checkpoint:
+            _write_checkpoint(tmp_path / "pretrain", iteration=50)
+            args = _args(tmp_path)
+            iteration = 50
+        else:
+            args = _cold_started_args(tmp_path)
+            iteration = 0
+            _stub_reset(actor_module, monkeypatch)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=iteration)
+        actor = _actor(actor_module, role="actor", args=args)
+        scheduler = _Scheduler(num_steps=37)
+        actor.opt_param_scheduler = scheduler
+
+        actor.load_state()
+
+        assert scheduler.num_steps == 0
 
 
 class TestTheCheckpointAReloadRollsBackTo:
@@ -211,6 +263,146 @@ class TestTheCheckpointAReloadRollsBackTo:
 
         with pytest.raises(AssertionError):
             _actor(actor_module, role="actor", args=args).load_state()
+
+
+def _reference_weights(tmp_path: Path) -> str:
+    directory = tmp_path / "reference"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "config.json").write_text("{}")
+    return str(directory)
+
+
+def _cold_started_args(tmp_path: Path, **overrides) -> Namespace:
+    defaults = dict(
+        load=_reference_weights(tmp_path),
+        requested_load=str(tmp_path / "run"),
+        finetune=True,
+        no_load_optim=True,
+        no_load_rng=True,
+    )
+    defaults.update(overrides)
+    return _args(tmp_path, **defaults)
+
+
+def _stub_reset(actor_module, monkeypatch) -> None:
+    monkeypatch.setattr(actor_module, "reset_optimizer_state", lambda *a, **k: None)
+
+
+class TestAReloadThatFindsNothingItSaved:
+    def test_it_puts_the_trainer_back_where_the_run_began(self, actor_module, tmp_path, monkeypatch, caplog):
+        """A run that has not saved yet still has a state to go back to: the one it was started from."""
+        args = _cold_started_args(tmp_path)
+        seen = _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+        actor = _actor(actor_module, role="actor", args=args)
+        _stub_reset(actor_module, monkeypatch)
+
+        with caplog.at_level(logging.INFO):
+            assert actor.load_state() == 0
+
+        assert seen["args_during_load"]["load"] == _reference_weights(tmp_path)
+        assert "found no checkpoint" in caplog.text
+
+    def test_it_loads_under_the_arguments_the_run_was_started_with(self, actor_module, tmp_path, monkeypatch):
+        """Anything else would answer a different question than the one the trainer's own init answered."""
+        args = _cold_started_args(tmp_path, ckpt_step=3, ref_ckpt_step=3)
+        seen = _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+        actor = _actor(actor_module, role="actor", args=args)
+        _stub_reset(actor_module, monkeypatch)
+
+        actor.load_state()
+
+        during = seen["args_during_load"]
+        assert (during["finetune"], during["no_load_optim"], during["no_load_rng"], during["ckpt_step"]) == (
+            True,
+            True,
+            True,
+            3,
+        )
+
+    def test_it_restores_the_random_stream_and_resets_the_optimizer(self, actor_module, tmp_path, monkeypatch):
+        """A checkpoint load overwrites neither, so a live trainer would keep both from the rollouts it discards."""
+        args = _cold_started_args(tmp_path)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+        actor = _actor(actor_module, role="actor", args=args)
+        actor.optimizer = "the live optimizer"
+        reset: list[str] = []
+        monkeypatch.setattr(
+            actor_module,
+            "reset_optimizer_state",
+            lambda optimizer, *, stream_optimizer_state_to_disk, chunked_optimizer_state_offload: reset.append(
+                optimizer
+            ),
+        )
+
+        actor.load_state()
+
+        assert actor._post_init_random_state.restores == 1 and reset == ["the live optimizer"]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            dict(finetune=False),
+            dict(no_load_optim=False),
+            dict(no_load_rng=False),
+            dict(ckpt_step=7),
+        ],
+    )
+    def test_a_run_that_did_not_cold_start_is_refused(self, actor_module, tmp_path, monkeypatch, overrides):
+        """Only a cold-started run is supported here; resetting state a load would also restore is undesigned."""
+        args = _cold_started_args(tmp_path, **overrides)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+        _stub_reset(actor_module, monkeypatch)
+
+        with pytest.raises(AssertionError):
+            _actor(actor_module, role="actor", args=args).load_state()
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            dict(fp16=True),
+            dict(use_precision_aware_optimizer=True),
+            dict(optimizer_cpu_offload=True),
+            dict(offload_optimizer_states=True),
+        ],
+    )
+    def test_a_trainer_whose_state_cannot_be_reset_is_refused(self, actor_module, tmp_path, overrides):
+        """These keep state a reset would have to rebuild, and a half-reset trainer is worse than a refused one."""
+        actor = _actor(actor_module, role="actor", args=_cold_started_args(tmp_path, **overrides))
+
+        with pytest.raises(AssertionError):
+            actor.load_state()
+
+    def test_a_reload_that_did_save_is_not_pushed_back_to_the_beginning(self, actor_module, tmp_path, monkeypatch):
+        """The reset path is for a run with nothing of its own, and running it over a real resume would undo it."""
+        _write_checkpoint(tmp_path / "pretrain", iteration=50)
+        args = _args(tmp_path, fp16=True)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=50)
+
+        assert _actor(actor_module, role="actor", args=args).load_state() == 51
+
+    def test_a_bridge_run_without_a_checkpoint_is_refused(self, actor_module, tmp_path, monkeypatch):
+        """Bridge initialization cannot recreate the cold-start state before the run's first save."""
+        args = _cold_started_args(tmp_path, megatron_to_hf_mode="bridge")
+        _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+
+        with pytest.raises(AssertionError, match="bridge mode unsupported"):
+            _actor(actor_module, role="actor", args=args).load_state()
+
+    def test_an_async_save_still_in_flight_is_finalized_before_the_choice_is_made(
+        self, actor_module, tmp_path, monkeypatch
+    ):
+        """The checkpoint a pending save is about to write is the one the reload has to come back to."""
+        args = _args(tmp_path, async_save=True, requested_load=str(tmp_path / "run"))
+        seen = _watch_load(actor_module, monkeypatch, args=args, iteration=50)
+        actor = _actor(actor_module, role="actor", args=args)
+        monkeypatch.setattr(
+            type(actor),
+            "_finalize_pending_async_save",
+            lambda self: _write_checkpoint(tmp_path / "run", iteration=50),
+        )
+
+        assert actor.load_state() == 51
+        assert seen["args_during_load"]["load"] == str(tmp_path / "run")
 
 
 class TestWhatAReloadRefuses:
