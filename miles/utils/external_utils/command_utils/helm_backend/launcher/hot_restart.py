@@ -58,6 +58,10 @@ def plan_hot_restart(
     )
 
 
+def compute_orchestrator_object_key(release: str) -> ManifestObjectKey:
+    return _stateful_set_key(release, naming.ORCHESTRATOR_COMPONENT)
+
+
 def _stateful_set_key(release: str, component: str) -> ManifestObjectKey:
     return ManifestObjectKey(kind=STATEFUL_SET_KIND, name=naming.component_name(release, component))
 
