@@ -17,6 +17,7 @@ from miles.backends.megatron_utils.megatron_config import (
 )
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.backends.training_utils.weight_update.protocol import validate_flattened_broadcast_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -952,7 +953,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 help=(
                     "Opt in to one packed-byte NCCL broadcast per weight bucket. "
-                    "Requires non-colocated broadcast transfer and SGLang's mixed-dtype flattened-bucket API. "
+                    "Requires Megatron non-colocated broadcast transfer and SGLang's mixed-dtype flattened-bucket API. "
                     "Adds a contiguous bucket allocation on the sender and receivers; "
                     "atomic update units may exceed --update-weight-buffer-size."
                 ),
@@ -3201,6 +3202,7 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    validate_flattened_broadcast_args(args)
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
