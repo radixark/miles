@@ -251,6 +251,39 @@ class TestInit:
         assert cell_env["activated"] == ["http://10.0.0.1:13000"]
 
 
+class TestTickReportsTheEngineEnv:
+    async def test_a_cell_that_serves_nothing_yet_is_not_asked_for_its_env(self, cell_env, monkeypatch):
+        """An engine that has not answered a probe cannot answer /server_info either."""
+        cell_env["health"]["ready"] = False
+        cell = _make_cell()
+        asked: list[str] = []
+        monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
+
+        await cell.init()
+        await cell.tick()
+
+        assert asked == []
+
+    async def test_a_serving_cell_is_asked_for_its_env_on_every_tick(self, cell_env, monkeypatch):
+        """The reporter decides how often to actually read; the tick just keeps offering it the chance."""
+        cell = _make_cell()
+        asked: list[str] = []
+        monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
+
+        await cell.init()
+        await cell.tick()
+        await cell.tick()
+
+        assert asked == [cell.meta.cell_id, cell.meta.cell_id]
+
+
+def _record_into(asked: list[str]):
+    async def _report_if_due(*, cell_id: str, server_url: str, api_client) -> None:
+        asked.append(cell_id)
+
+    return _report_if_due
+
+
 class TestTick:
     async def test_an_uninitialized_cell_is_not_probed(self, cell_env):
         """It has no address yet, so probing it would be dialing nothing."""

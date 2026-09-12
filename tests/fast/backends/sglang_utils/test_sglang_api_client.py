@@ -523,6 +523,18 @@ class TestInformationGetters:
         assert await client.get_server_info() == {"version": "0.4.0"}
         assert rec.calls[0][2] == {"timeout": 5.0}
 
+    async def test_server_info_uses_the_clients_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A protected server must receive the client's API key as a bearer token."""
+        rec = _Recorder()
+        rec.install(monkeypatch)
+        client = SGLangApiClient(server_url=SERVER_URL, api_key="secret")
+
+        await client.get_server_info()
+
+        verb, url, kwargs = rec.calls[0]
+        assert (verb, url) == ("get", f"{SERVER_URL}/server_info")
+        assert kwargs["headers"]["Authorization"] == "Bearer secret"
+
 
 _DIRECT_HTTP_METHODS = [
     ("get_remote_instance_transfer_engine_info", lambda c: c.get_remote_instance_transfer_engine_info(rank=0)),
