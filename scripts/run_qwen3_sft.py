@@ -20,6 +20,7 @@ Args:
   --join-ray-workers: For the multi-node recipe, ssh every host of /root/mpi_rack_hostfile
     into the ray cluster (default: on). Turn off when the cluster is already joined.
   --model-dir / --data-dir: Checkpoint / dataset directories.
+  --no-enable-mtp: Disable both MTP layers and the auxiliary loss for Qwen3.6 SFT.
 
 =====================
 
@@ -79,6 +80,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_interval: int = 1000
     checkpointed_output_projection: bool = False
     log_probs_chunk_size: int = 256
+    enable_mtp: bool = True
 
     @property
     def recipe(self) -> _Recipe:
@@ -134,7 +136,13 @@ def execute(args: ScriptArgs):
         )
     if args.model_name == "Qwen3.6-35B-A3B":
         sft_args += "--loss-mask-type qwen3 "
-        perf_args += "--enable-mtp-training --mtp-loss-scaling-factor 0.2 --moe-token-dispatcher-type flex "
+        perf_args += "--moe-token-dispatcher-type flex "
+        if args.enable_mtp:
+            perf_args += "--enable-mtp-training --mtp-loss-scaling-factor 0.2 "
+        else:
+            # Override the model definition's default of one MTP layer. Disabling
+            # only the logging/training flag would leave Megatron's MTP path active.
+            perf_args += "--mtp-num-layers 0 "
 
     optimizer_args = (
         "--optimizer adam "

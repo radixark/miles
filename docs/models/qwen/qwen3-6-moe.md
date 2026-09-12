@@ -193,6 +193,12 @@ mismatches, empty loss targets, and sequences beyond 262,144 tokens. It writes n
 diagnostics without conversation text. For corpora with a top-level `tools` field,
 also pass `--tool-key tools` to training so the data loader forwards those definitions.
 
+For a pure SFT run without the auxiliary MTP objective, pass `--no-enable-mtp` to
+`scripts/run_qwen3_sft.py --model-name Qwen3.6-35B-A3B`. This omits
+`--enable-mtp-training` and overrides the model definition with `--mtp-num-layers 0`,
+so no MTP block is constructed. Setting only the MTP loss weight to zero is not
+equivalent. The main assistant-token mask and optimizer settings are unchanged.
+
 ## 7. Pairs Well With
 
 - [Speculative Decoding](/advanced/speculative-decoding)

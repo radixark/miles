@@ -47,3 +47,24 @@ def test_qwen36_two_epoch_long_context_sft(monkeypatch, tmp_path) -> None:
     ):
         assert fragment in command
     assert "--grad-reduce-in-bf16" not in command
+    assert "--enable-mtp-training" in command
+    assert "--mtp-loss-scaling-factor 0.2" in command
+
+
+def test_qwen36_sft_without_mtp(monkeypatch, tmp_path) -> None:
+    freeze_environment(monkeypatch)
+    recording = install_command_recorder(monkeypatch)
+    module = import_launch_script(REPO_ROOT / "scripts/run_qwen3_sft.py")
+    call_entrypoint(
+        module,
+        "execute",
+        {"model_name": "Qwen3.6-35B-A3B", "enable_mtp": False},
+        sandbox=tmp_path,
+    )
+    command = recording.commands[-1]
+    assert "--enable-mtp-training" not in command
+    assert "--mtp-loss-scaling-factor" not in command
+    assert command.index("--mtp-num-layers 1") < command.index("--mtp-num-layers 0")
+    assert "--moe-token-dispatcher-type flex" in command
+    assert "--loss-mask-type qwen3" in command
+    assert "--accumulate-allreduce-grads-in-fp32" in command
