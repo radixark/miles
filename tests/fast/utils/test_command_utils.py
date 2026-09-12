@@ -187,6 +187,65 @@ class TestFp8CastBf16:
 
 
 class TestStartMooncakeMaster:
+    @pytest.fixture
+    def unready_master(self, monkeypatch):
+        monkeypatch.setattr(ray_command, "_is_tcp_server_ready", lambda host, port: False)
+        monkeypatch.setattr(ray_command, "run_shell_command", lambda *args, **kwargs: None)
+        monkeypatch.setattr(ray_command, "wait_for_server_ready", lambda *args, **kwargs: None)
+
+    def test_a_remote_master_the_caller_configured_is_left_alone(self, commands, unready_master):
+        """The endpoint is the caller's to run, and probing localhost would replace an unrelated process."""
+        _backend().execute_train(
+            train_args=(
+                "--object-store-backend mooncake "
+                '--mooncake-store-init-kwargs \'{"master_server_address": "mooncake-host:60051"}\''
+            ),
+            num_gpus_per_node=1,
+            megatron_model_type="qwen3-4B",
+        )
+
+        assert not any("mooncake_master --rpc_port" in command for command in commands)
+
+    def test_a_local_master_is_started_on_the_port_the_caller_named(self, commands, unready_master):
+        """Starting the default port instead would leave the run pointing at a master nobody runs."""
+        _backend().execute_train(
+            train_args=(
+                "--object-store-backend mooncake "
+                '--mooncake-store-init-kwargs=\'{"master_server_address": "127.0.0.1:60051"}\''
+            ),
+            num_gpus_per_node=1,
+            megatron_model_type="qwen3-4B",
+        )
+
+        assert any("mooncake_master --rpc_port 60051" in command for command in commands)
+
+    def test_an_address_whose_port_is_not_a_number_fails_the_launch(self, commands, unready_master):
+        """A typo in the caller's address names no endpoint at all, so the launch must fail before it starts."""
+        with pytest.raises(AssertionError, match="must be host:port"):
+            _backend().execute_train(
+                train_args=(
+                    "--object-store-backend mooncake "
+                    '--mooncake-store-init-kwargs \'{"master_server_address": "mooncake-host:notaport"}\''
+                ),
+                num_gpus_per_node=1,
+                megatron_model_type="qwen3-4B",
+            )
+
+        assert commands == []
+
+    def test_a_local_master_named_by_an_ipv6_literal_is_started(self, commands, unready_master):
+        """`[::1]:port` is the only way to write a loopback IPv6 endpoint, and it names this host too."""
+        _backend().execute_train(
+            train_args=(
+                "--object-store-backend mooncake "
+                '--mooncake-store-init-kwargs=\'{"master_server_address": "[::1]:60051"}\''
+            ),
+            num_gpus_per_node=1,
+            megatron_model_type="qwen3-4B",
+        )
+
+        assert any("mooncake_master --rpc_port 60051" in command for command in commands)
+
     def test_reuses_a_ready_server(self, monkeypatch):
         """An already listening master must not be restarted out from under its clients."""
         commands = []
@@ -244,7 +303,7 @@ class TestStartMooncakeMaster:
         ray_command.start_mooncake_master(rpc_port=50151, metrics_port=50152, timeout=12, log_path=log_path)
 
         assert len(commands) == 1
-        assert "pkill -x mooncake_master" in commands[0]
+        assert "pkill -f '^mooncake_master --rpc_port 50151 '" in commands[0]
         assert "mooncake_master --rpc_port 50151 --metrics_port 50152" in commands[0]
         assert f"> {shlex.quote(str(log_path))} 2>&1 &" in commands[0]
         assert waits == [(("127.0.0.1", 50151), {"timeout": 12})]
@@ -273,7 +332,7 @@ class TestStartMooncakeMaster:
             ray_command.start_mooncake_master(log_path=log_path)
 
         assert len(commands) == 2
-        assert all("pkill -x mooncake_master" in command for command in commands)
+        assert all("pkill -f '^mooncake_master --rpc_port 50051 '" in command for command in commands)
 
 
 class TestPrepareCmd:
@@ -312,6 +371,18 @@ class TestPrepareCmd:
                 num_gpus_per_node=1,
                 megatron_model_type="qwen3-4B",
                 prepare_cmd={"rollout": "cp a b"},
+            )
+
+
+class TestExtraManifests:
+    def test_a_ray_launch_refuses_the_manifests_it_could_only_ignore(self, commands):
+        """Nothing installs them without a helm release, and a silently missing engine looks like a hang."""
+        with pytest.raises(AssertionError, match="extra_manifests"):
+            _backend().execute_train(
+                train_args="",
+                num_gpus_per_node=1,
+                megatron_model_type="qwen3-4B",
+                extra_manifests=["apiVersion: v1\nkind: Service\n"],
             )
 
 
@@ -573,6 +644,7 @@ class TestBuildTrainEnvVars:
             megatron_path="/root/Megatron-LM",
             before_ray_job_submit=None,
             prepare_cmd={},
+            extra_manifests=[],
         )
         return ExecuteTrainRequest(**{**defaults, **overrides})
 
