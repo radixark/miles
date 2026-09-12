@@ -8,15 +8,15 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = "zai-org"
     model_name: str = "GLM-4.5"
     megatron_model_type: str = "glm4.5-355B-A32B"
@@ -39,11 +39,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
 
     def __post_init__(self):
-        self.hardware = U.resolve_hardware(self)
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(
         f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
@@ -61,6 +62,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _convert_hf_to_fp8(args: ScriptArgs):
+    U = args.create_backend()
     path_output = f"{args.model_dir}/{args.model_name}-FP8/"
     if Path(path_output).exists():
         return
@@ -75,6 +77,7 @@ def _convert_hf_to_fp8(args: ScriptArgs):
 
 
 def _prepare_megatron_ckpt(args: ScriptArgs):
+    U = args.create_backend()
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -88,15 +91,15 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
 
 def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
     copies = [
-        U.rsync_cmd(
+        command_utils.rsync_cmd(
             f"{args.model_dir}/{args.model_name}_torch_dist",
             f"{args.model_local_dir}/{args.model_name}_torch_dist",
         ),
-        U.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
+        command_utils.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
     ]
     if args.rollout_fp8:
         copies.append(
-            U.rsync_cmd(
+            command_utils.rsync_cmd(
                 f"{args.model_dir}/{args.model_name}-FP8", f"{args.model_local_dir}/{args.model_name}-FP8"
             )
         )
@@ -104,6 +107,7 @@ def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
 
 
 def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     assert args.hardware != "H100", "H100 is not yet supported in this script"
 
     hf_checkpoint = (
@@ -244,7 +248,7 @@ def _execute_train(args: ScriptArgs):
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
     )
     sglang_extra_env_vars = {}
-    if U.GENERATION_HARDWARE[args.hardware] == "Blackwell":
+    if command_utils.GENERATION_HARDWARE[args.hardware] == "Blackwell":
         sglang_args += "--sglang-attention-backend trtllm_mha "
     if args.rollout_fp8:
         sglang_decode_max_bs = 256
@@ -335,7 +339,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
+            f"--custom-config-path {command_utils.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
@@ -344,7 +348,7 @@ tis_batch_normalize: true
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -387,7 +391,7 @@ tis_batch_normalize: true
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs) -> None:
     _prepare_download(args)
     _prepare_megatron_ckpt(args)
@@ -395,14 +399,14 @@ def full_train(args: ScriptArgs) -> None:
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs) -> None:
     _prepare_download(args)
     _prepare_megatron_ckpt(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs) -> None:
     _execute_train(args)
 
