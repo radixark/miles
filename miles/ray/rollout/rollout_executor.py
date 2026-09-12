@@ -12,6 +12,7 @@ from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
+    mask_truncated_completions,
     split_train_data_by_dp,
 )
 from miles.rollout.base_types import (
@@ -123,6 +124,7 @@ class RolloutExecutor:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
             data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+        mask_truncated_completions(self.args, data)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = convert_samples_to_train_data(

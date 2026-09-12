@@ -13,6 +13,7 @@ from miles.ray.rollout.train_data_conversion import (
     _post_process_rewards,
     can_schedule_on_rollout_side,
     convert_samples_to_train_data,
+    mask_truncated_completions,
     split_train_data_by_dp,
     split_train_data_by_dp_raw,
     split_train_data_by_dp_scheduled_raw,
@@ -960,3 +961,48 @@ class TestSplitTrainDataByDpScheduled:
         assert shards[0]["num_microbatches"] == [2, 2]
         assert shards[0]["dynamic_global_batch_size"] == 8
         assert shards[0]["num_rollouts"] == [8, 8]
+
+
+# ----------------------------- mask_truncated_completions -----------------------------
+
+
+class TestMaskTruncatedCompletions:
+    def test_marks_truncated_samples_in_groups_and_flat_lists(self):
+        args = make_args(mask_truncated_completions=True)
+        truncated = make_sample(response_length=4, status=Sample.Status.TRUNCATED)
+        completed = make_sample(response_length=4, status=Sample.Status.COMPLETED)
+        flat_truncated = make_sample(response_length=4, status=Sample.Status.TRUNCATED)
+
+        mask_truncated_completions(args, [[truncated, completed]])
+        mask_truncated_completions(args, [flat_truncated])
+
+        assert truncated.remove_sample is True
+        assert completed.remove_sample is False
+        assert flat_truncated.remove_sample is True
+
+    def test_off_by_default_leaves_samples_alone(self):
+        args = make_args()
+        truncated = make_sample(response_length=4, status=Sample.Status.TRUNCATED)
+
+        mask_truncated_completions(args, [truncated])
+
+        assert truncated.remove_sample is False
+
+    def test_masked_sample_keeps_reward_and_loses_loss(self):
+        args = make_args(rewards_normalization=False, mask_truncated_completions=True)
+        truncated = make_sample(response_length=4, status=Sample.Status.TRUNCATED)
+        completed = make_sample(response_length=4, status=Sample.Status.COMPLETED)
+        samples = [truncated, completed]
+
+        mask_truncated_completions(args, samples)
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["loss_masks"] == [[0, 0, 0, 0], [1, 1, 1, 1]]
+        assert out["truncated"] == [1, 0]
+        assert len(out["rewards"]) == 2

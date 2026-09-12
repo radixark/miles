@@ -2443,6 +2443,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--mask-truncated-completions",
+                action="store_true",
+                default=False,
+                help=(
+                    "Exclude truncated responses (cut off by --rollout-max-response-len or "
+                    "--rollout-max-context-len) from the loss, the same way `sample.remove_sample = True` "
+                    "does in --rollout-sample-filter-path; see that flag for the advantage-normalization note."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-all-samples-process-path",
                 type=str,
                 default=None,
