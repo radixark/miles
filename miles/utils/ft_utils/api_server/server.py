@@ -29,7 +29,7 @@ _THREAD_READY_POLL_INTERVAL_SECONDS = 0.05
 def start_api_server(
     *,
     args,
-    actor_model: BaseWorkerHandle,
+    trainer_models: dict[str, BaseWorkerHandle],
     inference_controller: BaseWorkerHandle,
     host: str = "127.0.0.1",
     port: int,
@@ -43,8 +43,8 @@ def start_api_server(
             _CellHandler(
                 cell_type="actor",
                 operations=cell_operations,
-                controller=actor_model,
-                pool_ids=[compute_trainer_pool_id("actor")],
+                controllers=list(trainer_models.values()),
+                pool_ids=[compute_trainer_pool_id(trainer_id) for trainer_id in trainer_models],
             )
         )
 
@@ -53,7 +53,7 @@ def start_api_server(
             _CellHandler(
                 cell_type="rollout",
                 operations=cell_operations,
-                controller=inference_controller,
+                controllers=[inference_controller],
                 pool_ids=compute_engine_pool_ids(args),
             )
         )
