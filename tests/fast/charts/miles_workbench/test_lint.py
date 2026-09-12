@@ -12,8 +12,12 @@ class TestChartLint:
     @pytest.mark.parametrize(
         "overrides",
         [
-            ["--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=shared"],
-            ["--set", "infra.sharedStorage.type=none"],
+            [
+                "--set-json",
+                'infra.volumes=[{"name":"cluster-storage","persistentVolumeClaim":{"claimName":"shared"},'
+                '"mounts":[{"mountPath":"/cluster-storage"}]}]',
+            ],
+            ["--set-json", "infra.volumes=[]"],
             ["--set", "rbac.leaderWorkerSets=false"],
             ["--set", "rbac.create=false", "--set", "serviceAccount.name=preexisting"],
         ],

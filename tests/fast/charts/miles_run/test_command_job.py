@@ -12,6 +12,7 @@ ENABLE_COMMAND_JOB = (
     "--set-json",
     'commandJob.command=["bash","-c","convert"]',
 )
+CODE_PYTHONPATH = "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
 
 
 @requires_helm
@@ -178,6 +179,13 @@ class TestCommandJob:
         assert {"name": "HTTP_PROXY", "value": "http://proxy:7890"} in (
             job["spec"]["template"]["spec"]["containers"][0]["env"]
         )
+
+    def test_uses_the_same_checkout_precedence_as_run_pods(self):
+        """A command job must import mounted code added after the image's editable metadata was built."""
+        job = single_object_of_kind(render_run(*ENABLE_COMMAND_JOB), "Job")
+        env = {entry["name"]: entry["value"] for entry in job["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+        assert env["PYTHONPATH"] == CODE_PYTHONPATH
 
     def test_refuses_to_be_enabled_without_a_name_or_a_command(self):
         """Both are schema-valid at their defaults, and would render a Job that cannot run."""

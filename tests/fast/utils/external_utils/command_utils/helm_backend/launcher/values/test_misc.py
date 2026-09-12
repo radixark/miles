@@ -66,45 +66,65 @@ class TestSharedRootOf:
         """The chart's own values.yaml is the single source of these defaults; Python must not carry a copy."""
         assert _resolved(tmp_path, {}) == "/cluster-storage/miles_data"
 
-    def test_hangs_the_runs_off_the_configured_sub_path(self, tmp_path):
-        """Runs live beside the other miles data on the cluster filesystem, not at its root."""
-        values = {"infra": {"sharedStorage": {"mountPath": "/mnt/x"}, "paths": {"runsSubPath": "teamdata"}}}
+    def test_is_the_container_path_the_values_file_names_and_nothing_derived(self, tmp_path):
+        """The runs directory is one path on one mount; deriving it from a volume is what tied it to one disk."""
+        values = {"infra": {"paths": {"runsRoot": "/mnt/x/teamdata"}}}
 
         assert _resolved(tmp_path, values) == "/mnt/x/teamdata"
 
-    def test_an_empty_sub_path_puts_the_runs_at_the_mount_root(self, tmp_path):
-        """A cluster that dedicates the whole volume to miles must not be forced into a subdirectory."""
-        values = {"infra": {"sharedStorage": {"mountPath": "/mnt/x"}, "paths": {"runsSubPath": ""}}}
+    def test_a_trailing_slash_does_not_change_the_directory(self, tmp_path):
+        """The launcher joins the run id onto this, and a doubled separator would name a different file."""
+        values = {"infra": {"paths": {"runsRoot": "/mnt/x/"}}}
 
         assert _resolved(tmp_path, values) == "/mnt/x"
 
-    def test_a_nulled_section_drops_the_chart_default_as_helm_does(self, tmp_path):
+    def test_a_nulled_section_leaves_the_launcher_with_nothing_to_resolve(self, tmp_path):
         """helm deletes a key a values file nulls, so a launcher that re-defaulted it would pick another path."""
-        values = {"infra": {"sharedStorage": {"mountPath": "/mnt/x"}, "paths": None}}
+        values = {"infra": {"paths": None}}
 
-        assert _resolved(tmp_path, values) == "/mnt/x"
+        with pytest.raises(AssertionError, match="runsRoot"):
+            _resolved(tmp_path, values)
 
     def test_the_last_file_that_names_a_value_wins(self, tmp_path):
         """helm applies --values files in order, and the launcher must resolve the same run directory it renders."""
-        first = {"infra": {"sharedStorage": {"mountPath": "/mnt/a"}}}
-        second = {"infra": {"paths": {"runsSubPath": "b"}}}
+        first = {"infra": {"paths": {"runsRoot": "/mnt/a"}}}
+        second = {"infra": {"paths": {"runsRoot": "/mnt/b"}}}
 
-        assert _resolved(tmp_path, first, second) == "/mnt/a/b"
+        assert _resolved(tmp_path, first, second) == "/mnt/b"
 
     def test_a_file_that_sets_one_key_keeps_the_rest_of_the_section(self, tmp_path):
-        """A shallow merge would drop the chart's storage type and leave the run with no volume at all."""
-        values = {"infra": {"sharedStorage": {"mountPath": "/mnt/x"}}}
+        """A shallow merge would drop the chart's volumes and leave the run with nothing mounted at all."""
+        values = {"infra": {"paths": {"runsRoot": "/mnt/x"}}}
         loaded = InfraInfo.load(RUN_CHART_DIR, [_written(tmp_path, values)])
 
-        assert (loaded.shared_storage.type, loaded.shared_storage.mount_path) == ("hostPath", "/mnt/x")
+        assert [volume.name for volume in loaded.volumes] == ["cluster-storage"]
 
 
 class TestLoadInfraValues:
     def test_rejects_a_section_the_charts_do_not_define(self, tmp_path):
         """helm would reject the same file at install time, and failing here says so before anything runs."""
-        values = {"infra": {"sharedStorag": {"mountPath": "/mnt/x"}}}
+        values = {"infra": {"volumez": [{"name": "v"}]}}
 
-        with pytest.raises(ValueError, match="sharedStorag"):
+        with pytest.raises(ValueError, match="volumez"):
+            InfraInfo.load(RUN_CHART_DIR, [_written(tmp_path, values)])
+
+    def test_rejects_a_volume_that_names_two_sources(self, tmp_path):
+        """The launcher reads the same file helm does, so it must refuse the shapes helm's schema refuses."""
+        volume = {
+            "name": "v",
+            "hostPath": {"path": "/s"},
+            "persistentVolumeClaim": {"claimName": "c"},
+            "mounts": [{"mountPath": "/mnt"}],
+        }
+
+        with pytest.raises(ValueError, match="exactly one"):
+            InfraInfo.load(RUN_CHART_DIR, [_written(tmp_path, {"infra": {"volumes": [volume]}})])
+
+    def test_rejects_a_volume_that_names_no_source_at_all(self, tmp_path):
+        """A sourceless volume is a mount kubernetes cannot satisfy, so its pods only ever stay pending."""
+        values = {"infra": {"volumes": [{"name": "v", "mounts": [{"mountPath": "/mnt"}]}]}}
+
+        with pytest.raises(ValueError, match="exactly one"):
             InfraInfo.load(RUN_CHART_DIR, [_written(tmp_path, values)])
 
     def test_reads_the_defaults_the_chart_ships(self, tmp_path):
@@ -112,7 +132,7 @@ class TestLoadInfraValues:
         loaded = InfraInfo.load(RUN_CHART_DIR, [])
 
         assert loaded.image.repository == "radixark/miles"
-        assert loaded.shared_storage.mount_path == "/cluster-storage"
+        assert [mount.mount_path for volume in loaded.volumes for mount in volume.mounts] == ["/cluster-storage"]
 
 
 def _written(tmp_path, values: dict) -> str:

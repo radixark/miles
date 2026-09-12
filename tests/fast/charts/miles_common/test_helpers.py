@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.fast.charts.utils import NAMESPACE, SHARED_INFRA_SCHEMA_PATH
+from tests.fast.charts.utils import NAMESPACE, SHARED_INFRA_SCHEMA_PATH, host_path_volume, volumes_args
 
 CHARTS_DIR = SHARED_INFRA_SCHEMA_PATH.parent
 LIBRARY_CHART = CHARTS_DIR / "miles-common"
@@ -33,13 +33,11 @@ spec:
       {{- with include "miles-common.env" . }}
       {{- . | nindent 6 }}
       {{- end }}
-      {{- $mounts := compact (list (include "miles-common.sharedStorageVolumeMount" . | trim) \
-(include "miles-common.codeVolumeMounts" . | trim)) | join "\\n" }}
-      {{- with $mounts }}
+      {{- with include "miles-common.volumeMounts" . | trim }}
       volumeMounts:
         {{- . | nindent 8 }}
       {{- end }}
-  {{- with include "miles-common.sharedStorageVolume" . }}
+  {{- with include "miles-common.volumes" . | trim }}
   volumes:
     {{- . | nindent 4 }}
   {{- end }}
@@ -49,9 +47,15 @@ DEFAULT_VALUES = {
     "component": "worker",
     "infra": {
         "image": {"repository": "registry.local/miles", "tag": "v1"},
-        "sharedStorage": {"type": "hostPath", "hostPath": "/cluster-storage", "mountPath": "/cluster-storage"},
-        "paths": {"runsSubPath": "miles_data", "repos": {"miles": "", "megatron": "", "sglang": ""}},
-        "nodeLocalStorage": {"hostPath": "", "mountPath": "/scratch"},
+        "volumes": [
+            {
+                "name": "cluster-storage",
+                "hostPath": {"path": "/cluster-storage", "type": "Directory"},
+                "mounts": [{"mountPath": "/cluster-storage"}],
+            }
+        ],
+        "paths": {"runsRoot": "/cluster-storage/miles_data"},
+        "devShm": {"mountPath": "/dev/shm", "hostPath": {"path": "/dev/shm", "type": "Directory"}},
         "scheduling": {"nodeSelector": {}, "tolerations": [], "affinity": {}},
         "env": {},
     },
@@ -73,11 +77,21 @@ def consumer(tmp_path_factory) -> Path:
 
 
 def render(consumer: Path, release: str = RELEASE_NAME, *args: str) -> dict[str, Any]:
-    result = subprocess.run(
-        ["helm", "template", release, str(consumer), "-n", NAMESPACE, *args], capture_output=True, text=True
-    )
+    result = _template(consumer, release, *args)
     assert result.returncode == 0, result.stderr
     return next(document for document in yaml.safe_load_all(result.stdout) if document)
+
+
+def render_error(consumer: Path, release: str = RELEASE_NAME, *args: str) -> str:
+    result = _template(consumer, release, *args)
+    assert result.returncode != 0, result.stdout
+    return result.stderr
+
+
+def _template(consumer: Path, release: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["helm", "template", release, str(consumer), "-n", NAMESPACE, *args], capture_output=True, text=True
+    )
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm is required to render the helpers")
@@ -152,63 +166,118 @@ class TestInfra:
         values.write_text(yaml.safe_dump({"infra": {"env": {"on": "1", "HTTP_PROXY": "http://p:1"}}}))
         container = render(consumer, RELEASE_NAME, "-f", str(values))["spec"]["containers"][0]
 
-        assert container["env"] == [{"name": "HTTP_PROXY", "value": "http://p:1"}, {"name": "on", "value": "1"}]
+        assert container["env"] == [
+            {"name": "HTTP_PROXY", "value": "http://p:1"},
+            {"name": "PYTHONPATH", "value": "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"},
+            {"name": "on", "value": "1"},
+        ]
 
-    def test_host_path_storage_renders_a_matched_volume_and_mount(self, consumer):
+    def test_a_host_path_volume_renders_a_matched_volume_and_mount(self, consumer):
         """A mount naming a volume that is not there is a pod that never starts."""
-        spec = render(consumer, RELEASE_NAME, "--set", "infra.sharedStorage.hostPath=/gpfs")["spec"]
+        spec = render(consumer, RELEASE_NAME, *volumes_args(host_path_volume(path="/gpfs")))["spec"]
 
-        assert spec["volumes"] == [{"name": "shared-storage", "hostPath": {"path": "/gpfs", "type": "Directory"}}]
-        assert spec["containers"][0]["volumeMounts"] == [{"name": "shared-storage", "mountPath": "/cluster-storage"}]
+        assert spec["volumes"] == [{"name": "cluster-storage", "hostPath": {"path": "/gpfs", "type": "Directory"}}]
+        assert spec["containers"][0]["volumeMounts"] == [{"name": "cluster-storage", "mountPath": "/cluster-storage"}]
 
-    def test_pvc_storage_binds_the_named_claim(self, consumer):
+    def test_a_host_path_volume_defaults_to_a_directory_that_has_to_exist(self, consumer):
+        """DirectoryOrCreate on a mistyped path silently makes an empty directory instead of failing the pod."""
+        spec = render(
+            consumer,
+            RELEASE_NAME,
+            "--set-json",
+            'infra.volumes=[{"name":"v","hostPath":{"path":"/gpfs"},"mounts":[{"mountPath":"/mnt"}]}]',
+        )["spec"]
+
+        assert spec["volumes"] == [{"name": "v", "hostPath": {"path": "/gpfs", "type": "Directory"}}]
+
+    def test_a_host_path_volume_can_ask_for_the_directory_to_be_created(self, consumer):
+        """A node-local scratch directory is per node and per namespace, so nobody creates it up front."""
+        spec = render(
+            consumer,
+            RELEASE_NAME,
+            "--set-json",
+            'infra.volumes=[{"name":"v","hostPath":{"path":"/data/x","type":"DirectoryOrCreate"},'
+            '"mounts":[{"mountPath":"/scratch"}]}]',
+        )["spec"]
+
+        assert spec["volumes"] == [{"name": "v", "hostPath": {"path": "/data/x", "type": "DirectoryOrCreate"}}]
+
+    def test_a_pvc_volume_binds_the_named_claim(self, consumer):
         """Clusters without host mounts point the same mount at a pre-existing claim."""
         spec = render(
             consumer,
             RELEASE_NAME,
-            "--set",
-            "infra.sharedStorage.type=pvc",
-            "--set",
-            "infra.sharedStorage.pvcClaimName=c1",
+            "--set-json",
+            'infra.volumes=[{"name":"cluster-storage","persistentVolumeClaim":{"claimName":"c1"},'
+            '"mounts":[{"mountPath":"/cluster-storage"}]}]',
         )["spec"]
 
-        assert spec["volumes"] == [{"name": "shared-storage", "persistentVolumeClaim": {"claimName": "c1"}}]
+        assert spec["volumes"] == [{"name": "cluster-storage", "persistentVolumeClaim": {"claimName": "c1"}}]
 
-    def test_storage_type_none_renders_neither_volume_nor_mount(self, consumer):
-        """Disabling storage must not leave a mount referencing a volume that no longer exists."""
-        spec = render(consumer, RELEASE_NAME, "--set", "infra.sharedStorage.type=none")["spec"]
+    def test_an_empty_dir_volume_needs_no_source_configuration_of_its_own(self, consumer):
+        """An ephemeral scratch volume is the one source whose whole configuration may be the empty object."""
+        spec = render(
+            consumer,
+            RELEASE_NAME,
+            "--set-json",
+            'infra.volumes=[{"name":"v","emptyDir":{"medium":"Memory","sizeLimit":"8Gi"},'
+            '"mounts":[{"mountPath":"/scratch"}]}]',
+        )["spec"]
+
+        assert spec["volumes"] == [{"name": "v", "emptyDir": {"medium": "Memory", "sizeLimit": "8Gi"}}]
+
+    def test_an_empty_volume_list_renders_neither_volume_nor_mount(self, consumer):
+        """Declaring no storage must not leave a mount referencing a volume that was never rendered."""
+        spec = render(consumer, RELEASE_NAME, "--set-json", "infra.volumes=[]")["spec"]
 
         assert "volumes" not in spec
         assert "volumeMounts" not in spec["containers"][0]
 
-    def test_a_configured_repo_is_mounted_over_its_in_image_path_and_put_on_the_python_path(self, consumer):
-        """Code on shared storage only takes effect if both the mount and the import path point at it."""
-        spec = render(consumer, RELEASE_NAME, "--set", "infra.paths.repos.sglang=myuser/sglang")["spec"]
-
-        assert spec["containers"][0]["volumeMounts"][-1] == {
-            "name": "shared-storage",
-            "mountPath": "/sgl-workspace/sglang",
-            "subPath": "myuser/sglang",
-        }
-        assert {"name": "PYTHONPATH", "value": "/sgl-workspace/sglang"} in spec["containers"][0]["env"]
-
-    def test_repos_are_ignored_without_shared_storage_to_mount_them_from(self, consumer):
-        """A subPath mount of a volume that does not exist would keep the pod from ever starting."""
+    def test_a_read_only_mount_reaches_the_container_as_read_only(self, consumer):
+        """A shared model cache is everyone's, and a run that can write it can corrupt every other run."""
         spec = render(
             consumer,
             RELEASE_NAME,
-            "--set",
-            "infra.sharedStorage.type=none",
-            "--set",
-            "infra.paths.repos.miles=myuser/miles",
+            *volumes_args(host_path_volume(mounts=[{"mountPath": "/models", "readOnly": True}])),
         )["spec"]
 
-        assert "volumeMounts" not in spec["containers"][0]
-        assert "env" not in spec["containers"][0]
+        assert spec["containers"][0]["volumeMounts"] == [
+            {"name": "cluster-storage", "mountPath": "/models", "readOnly": True}
+        ]
+
+    def test_a_mount_that_is_not_read_only_says_nothing_about_it(self, consumer):
+        """readOnly: false is the kubernetes default, and spelling it out only makes every diff noisier."""
+        spec = render(consumer, RELEASE_NAME, *volumes_args(host_path_volume()))["spec"]
+
+        assert spec["containers"][0]["volumeMounts"] == [{"name": "cluster-storage", "mountPath": "/cluster-storage"}]
+
+    def test_a_mount_that_names_a_subpath_reaches_the_container_with_it(self, consumer):
+        """Mounting a checkout over the image's own path is the whole point of subPath, so it must survive."""
+        spec = render(
+            consumer,
+            RELEASE_NAME,
+            *volumes_args(
+                host_path_volume(mounts=[{"mountPath": "/sgl-workspace/sglang", "subPath": "myuser/sglang"}])
+            ),
+        )["spec"]
+
+        assert spec["containers"][0]["volumeMounts"][-1] == {
+            "name": "cluster-storage",
+            "mountPath": "/sgl-workspace/sglang",
+            "subPath": "myuser/sglang",
+        }
+
+    def test_a_release_that_names_no_cluster_environment_renders_no_env_block(self, consumer):
+        """An empty env: list is not the same shape as no env at all, and pods differ on which they accept."""
+        spec = render(consumer, RELEASE_NAME, *volumes_args(host_path_volume()))["spec"]
+
+        assert spec["containers"][0]["env"] == [
+            {"name": "PYTHONPATH", "value": "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"}
+        ]
 
     def test_a_section_the_user_blanked_out_does_not_crash_the_render(self, consumer):
         """A values file with a bare `scheduling:` header deletes the chart default; helm keeps the null."""
-        for section in ("scheduling", "image", "sharedStorage", "env", "paths"):
+        for section in ("scheduling", "image", "volumes", "env", "paths"):
             pod = render(consumer, RELEASE_NAME, "--set", f"infra.{section}=null")
 
             assert pod["kind"] == "Pod"
@@ -223,11 +292,9 @@ class TestContract:
 
         assert rendered == shared
 
-    def test_the_library_chart_owns_every_section_but_the_node_local_scratch_disk(self):
-        """Only miles-run has pods worth a node-local disk, so that one helper stays with the run chart."""
+    def test_the_library_chart_owns_every_section_but_the_shared_memory_one(self):
+        """Only miles-run has pods that run a collective, so that one helper stays with the run chart."""
         library = (LIBRARY_CHART / "templates" / "_infra.tpl").read_text()
         shared = set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]["infra"]["properties"])
 
-        assert {section for section in shared if f".Values.infra.{section}" in library} == shared - {
-            "nodeLocalStorage"
-        }
+        assert {section for section in shared if f".Values.infra.{section}" in library} == shared - {"devShm"}

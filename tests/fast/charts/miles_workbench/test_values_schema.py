@@ -2,13 +2,23 @@ import pytest
 import yaml
 from tests.fast.charts.utils import (
     container,
+    host_path_volume,
     pod_spec,
     render,
     render_error,
     requires_helm,
     schema_error_mentions,
     single_object_of_kind,
+    volumes_args,
 )
+
+
+def _pvc_volume(claim_name: str) -> dict:
+    return {
+        "name": "cluster-storage",
+        "persistentVolumeClaim": {"claimName": claim_name},
+        "mounts": [{"mountPath": "/cluster-storage"}],
+    }
 
 
 def _volume_of_kind(objects: list, key: str) -> dict:
@@ -32,25 +42,23 @@ class TestValuesSchema:
         """Both names are DNS subdomains, which the API server caps at 253 characters."""
         long_name = "a" * 254
 
-        assert "pvcClaimName" in render_error(
-            "--set", "infra.sharedStorage.type=pvc", "--set", f"infra.sharedStorage.pvcClaimName={long_name}"
-        )
+        assert "claimName" in render_error(*volumes_args(_pvc_volume(long_name)))
         assert schema_error_mentions(
             render_error("--set", f"serviceAccount.name={long_name}"), path=("serviceAccount", "name")
         )
 
     def test_a_relative_host_path_is_rejected(self):
         """A relative hostPath renders and installs, then leaves the pod stuck on a failed mount."""
-        assert "hostPath" in render_error("--set", "infra.sharedStorage.hostPath=relative/dir")
+        assert "hostPath" in render_error(*volumes_args(host_path_volume(path="relative/dir")))
 
     @pytest.mark.parametrize("path", ["/../cluster-storage", "/cluster-storage/.."])
     def test_a_host_path_containing_a_backstep_is_rejected(self, path):
         """Kubernetes rejects any ".." segment in a volume path, so catch it at install time."""
-        assert "hostPath" in render_error("--set", f"infra.sharedStorage.hostPath={path}")
+        assert "hostPath" in render_error(*volumes_args(host_path_volume(path=path)))
 
     def test_a_host_path_that_merely_contains_dots_is_accepted(self):
         """Only a whole ".." segment is a backstep; dots inside a name are ordinary characters."""
-        objects = render("--set", "infra.sharedStorage.hostPath=/a..b/c")
+        objects = render(*volumes_args(host_path_volume(path="/a..b/c")))
 
         assert _volume_of_kind(objects, "hostPath")["hostPath"]["path"] == "/a..b/c"
 
@@ -66,20 +74,11 @@ class TestValuesSchema:
 
     def test_a_malformed_claim_name_is_rejected(self):
         """A claim name is a Kubernetes object name; "a..b" passes a loose pattern but no real API server."""
-        assert "pvcClaimName" in render_error(
-            "--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=a..b"
-        )
+        assert "claimName" in render_error(*volumes_args(_pvc_volume("a..b")))
 
     def test_yaml_boolean_lookalike_names_stay_strings(self):
         """Names like "on" are valid Kubernetes names but YAML booleans, so they must be rendered quoted."""
-        objects = render(
-            "--set",
-            "infra.sharedStorage.type=pvc",
-            "--set",
-            "infra.sharedStorage.pvcClaimName=on",
-            "--set",
-            "serviceAccount.name=no",
-        )
+        objects = render(*volumes_args(_pvc_volume("on")), "--set", "serviceAccount.name=no")
         assert _volume_of_kind(objects, "persistentVolumeClaim")["persistentVolumeClaim"]["claimName"] == "on"
         assert pod_spec(objects)["serviceAccountName"] == "no"
 
@@ -108,38 +107,70 @@ class TestValuesSchema:
             render_error("--set", "serviceAccount.name=Bad_Name"), path=("serviceAccount", "name")
         )
 
-    def test_pvc_storage_requires_a_claim_name(self):
-        """A pvc mount with no claim renders a pod that can never schedule; catch it at install time."""
-        assert "pvcClaimName" in render_error("--set", "infra.sharedStorage.type=pvc")
-
-    def test_host_path_storage_requires_a_path(self):
-        """A hostPath mount with an empty path is equally unschedulable."""
-        assert "hostPath" in render_error("--set", "infra.sharedStorage.hostPath=")
-
-    def test_an_unknown_storage_type_is_rejected(self):
-        """Only the storage shapes the templates implement are accepted."""
-        assert schema_error_mentions(
-            render_error("--set", "infra.sharedStorage.type=nfs"), path=("infra", "sharedStorage", "type")
+    def test_a_pvc_volume_requires_a_claim_name(self):
+        """A pvc volume with no claim renders a pod that can never schedule; catch it at install time."""
+        assert "claimName" in render_error(
+            "--set-json", 'infra.volumes=[{"name":"v","persistentVolumeClaim":{},"mounts":[{"mountPath":"/mnt"}]}]'
         )
 
-    def test_an_absolute_repo_subpath_is_rejected(self):
-        """A repo path is a subPath of the shared volume, and kubelet refuses an absolute one."""
-        assert schema_error_mentions(
-            render_error("--set", "infra.paths.repos.miles=/abs/path"), path=("infra", "paths", "repos", "miles")
+    def test_a_host_path_volume_requires_a_path(self):
+        """A hostPath volume with no path is equally unschedulable."""
+        assert "hostPath" in render_error(
+            "--set-json", 'infra.volumes=[{"name":"v","hostPath":{},"mounts":[{"mountPath":"/mnt"}]}]'
         )
 
-    def test_a_runs_subpath_containing_a_backstep_is_rejected(self):
+    def test_a_volume_that_names_two_sources_is_rejected(self):
+        """The free volume list has no storage type enum left, so this is all that stands between the two."""
+        error = render_error(
+            "--set-json",
+            'infra.volumes=[{"name":"v","hostPath":{"path":"/s"},"persistentVolumeClaim":{"claimName":"c"},'
+            '"mounts":[{"mountPath":"/mnt"}]}]',
+        )
+
+        assert schema_error_mentions(error, path=("infra", "volumes", "0"))
+
+    def test_a_volume_that_names_no_source_is_rejected(self):
+        """A volume with no source is a mount kubernetes cannot satisfy, so its pods only ever stay pending."""
+        error = render_error("--set-json", 'infra.volumes=[{"name":"v","mounts":[{"mountPath":"/mnt"}]}]')
+
+        assert schema_error_mentions(error, path=("infra", "volumes", "0"))
+
+    def test_a_source_kind_no_template_implements_is_rejected(self):
+        """Only the sources the templates render are accepted; another kind would silently mount nothing."""
+        error = render_error(
+            "--set-json", 'infra.volumes=[{"name":"v","nfs":{"server":"s"},"mounts":[{"mountPath":"/mnt"}]}]'
+        )
+
+        assert "nfs" in error
+
+    def test_an_absolute_mount_subpath_is_rejected(self):
+        """A subPath is relative to the volume root by construction, and kubelet refuses an absolute one."""
+        error = render_error(
+            "--set-json",
+            'infra.volumes=[{"name":"v","hostPath":{"path":"/s"},"mounts":[{"mountPath":"/mnt","subPath":"/abs"}]}]',
+        )
+
+        assert "subPath" in error
+
+    def test_a_runs_root_containing_a_backstep_is_rejected(self):
         """A ".." segment would let a run write outside the directory the cluster set aside for miles."""
         assert schema_error_mentions(
-            render_error("--set", "infra.paths.runsSubPath=a/../b"), path=("infra", "paths", "runsSubPath")
+            render_error("--set", "infra.paths.runsRoot=/cluster-storage/a/../b"), path=("infra", "paths", "runsRoot")
         )
 
-    def test_a_relative_node_local_mount_path_is_rejected(self):
-        """A container mountPath must be absolute, and a relative one only fails at apply time."""
+    def test_a_relative_runs_root_is_rejected(self):
+        """The launcher hands this path to the pods as it is, so a relative one resolves per working directory."""
         assert schema_error_mentions(
-            render_error("--set", "infra.nodeLocalStorage.mountPath=scratch"),
-            path=("infra", "nodeLocalStorage", "mountPath"),
+            render_error("--set", "infra.paths.runsRoot=miles_data"), path=("infra", "paths", "runsRoot")
         )
+
+    def test_a_relative_mount_path_is_rejected(self):
+        """A container mountPath must be absolute, and a relative one only fails at apply time."""
+        error = render_error(
+            "--set-json", 'infra.volumes=[{"name":"v","hostPath":{"path":"/s"},"mounts":[{"mountPath":"scratch"}]}]'
+        )
+
+        assert "mountPath" in error
 
     def test_non_string_environment_values_are_rejected(self, tmp_path):
         """Kubernetes env values must be strings; a bare number would only fail later, at apply time."""
