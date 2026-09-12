@@ -10,11 +10,12 @@ Every group-level decision lives here — what to keep, what to hand to
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from argparse import Namespace
-from collections.abc import Callable
+from argparse import ArgumentParser, Namespace
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
+from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter, iter_samples
 from miles.rollout.filter_hub.common_filters import apply_aborted_filter, apply_missing_reward_filter, group_staleness
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
@@ -25,12 +26,37 @@ logger = logging.getLogger(__name__)
 # returns multiple samples per trajectory (e.g. multi-agent).
 Group = list[Sample | list[Sample]]
 
+DATA_BUFFER_PATH_PER_MODEL_FLAG = "--custom-async-data-buffer-path-per-model"
+
+
+def add_data_buffer_arguments(parser: ArgumentParser) -> None:
+    parser.add_argument(
+        DATA_BUFFER_PATH_PER_MODEL_FLAG,
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="MODEL_ID=PATH",
+        help=(
+            "Per policy form of --custom-async-data-buffer-path, e.g. "
+            "--custom-async-data-buffer-path-per-model solver=pkg.SolverBuffer. A run training several "
+            "policies composes one buffer per policy (see DefaultMultiDataBuffer); each model id named "
+            "here gets that class instead of the built-in one, and every model id left out keeps it. "
+            "The model ids are the --megatron-config ones."
+        ),
+    )
+
+
+# =================================== shared ===================================
+
 
 def first_sample(group: Group) -> Sample:
     return group[0][0] if isinstance(group[0], list) else group[0]
 
 
 @dataclass(frozen=True)
+# ================================== contract ==================================
+
+
 class DataBufferConstructorInput:
     args: Namespace
     unused_handler_fn: Callable[[list[Sample]], None]  # --async-unused-samples-handler, applied to unused groups
@@ -59,12 +85,16 @@ class DataBuffer(ABC):
     async def get(self, **context) -> DataBufferInput:
         """Return one group to train on, waiting until one is available.
 
-        ``context`` is the extra information for sample processing at get() time.
+        ``context`` is the extra information for sample processing at get() time,
+        including the ``trainer_model_id`` whose groups are asked for.
         """
 
     @abstractmethod
-    def get_metrics(self) -> dict[str, float]:
-        """Report fully-qualified metrics since the previous call (window counters reset here)."""
+    def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+        """Report the metrics of one policy since its previous call (its window counters reset here)."""
+
+
+# ============================= one policy buffer ==============================
 
 
 class DefaultDataBuffer(DataBuffer):
@@ -132,6 +162,7 @@ class DefaultDataBuffer(DataBuffer):
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
             return False
 
+        self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
         output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
@@ -158,7 +189,7 @@ class DefaultDataBuffer(DataBuffer):
                         continue
                 return entry
 
-    def get_metrics(self) -> dict[str, float]:
+    def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"
         metrics = {
             f"{prefix}queue_size": len(self._buffer),
@@ -180,3 +211,83 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_consumed_staleness = []
         self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics
+
+
+# ============================ multi policy buffer =============================
+
+
+class DefaultMultiDataBuffer(DataBuffer):
+    """One plain ``DefaultDataBuffer`` per policy model, composed.
+
+    Each policy consumes at its own pace, so each gets its own capacity, staleness accounting and
+    metrics, and the single-policy buffer stays untouched.
+    """
+
+    def __init__(self, input: DataBufferConstructorInput):
+        paths = _parse_data_buffer_paths(input.args.custom_async_data_buffer_path_per_model)
+        model_ids = resolve_megatron_config(input.args).model_ids
+        assert not (unknown := sorted(set(paths) - set(model_ids))), (
+            f"{DATA_BUFFER_PATH_PER_MODEL_FLAG} names {unknown}, which train no policy of this run "
+            f"({sorted(model_ids)})"
+        )
+        self._inners: dict[str, DataBuffer] = {
+            model_id: (load_function(paths.get(model_id)) or DefaultDataBuffer)(input) for model_id in model_ids
+        }
+
+    async def put(self, input: DataBufferInput) -> None:
+        # TODO: a full inner blocks the one producer for every policy; give each policy its own dispatcher
+        for trainer_model_id, entry in _split_by_trainer_model_id(input).items():
+            await self._inner_of(trainer_model_id).put(entry)
+
+    async def get(self, trainer_model_id: str | None = None, **context) -> DataBufferInput:
+        return await self._inner_of(trainer_model_id).get(trainer_model_id=trainer_model_id, **context)
+
+    def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+        return self._inner_of(trainer_model_id).get_metrics(trainer_model_id=trainer_model_id)
+
+    def _inner_of(self, trainer_model_id: str | None) -> DataBuffer:
+        assert trainer_model_id in self._inners, (
+            f"trainer_model_id {trainer_model_id!r} trains no policy of this run ({sorted(self._inners)}), so "
+            f"its groups would queue up in a buffer nobody drains"
+        )
+        return self._inners[trainer_model_id]
+
+
+# TODO: a policy absent from a trajectory shortens its group below n_samples_per_prompt, which the drain refuses
+def _parse_data_buffer_paths(values: Iterable[str] | None) -> dict[str, str]:
+    ans: dict[str, str] = {}
+    for value in values or []:
+        model_id, separator, path = value.partition("=")
+        model_id, path = model_id.strip(), path.strip()
+        if not separator or not model_id or not path:
+            raise ValueError(f"Invalid {DATA_BUFFER_PATH_PER_MODEL_FLAG} entry {value!r}; expected MODEL_ID=PATH.")
+        if model_id in ans:
+            raise ValueError(f"Duplicate model id {model_id!r} in {DATA_BUFFER_PATH_PER_MODEL_FLAG}.")
+        ans[model_id] = path
+    return ans
+
+
+def _split_by_trainer_model_id(input: DataBufferInput) -> dict[str, DataBufferInput]:
+    trainer_model_ids = list(dict.fromkeys(sample.trainer_model_id for sample in iter_samples(input.group)))
+    assert None not in trainer_model_ids, (
+        f"a multi policy run routes every group by the policy it belongs to, so the generate function must stamp "
+        f"every sample with its trainer_model_id, but this group carries {trainer_model_ids}"
+    )
+    return {
+        trainer_model_id: DataBufferInput(
+            prompt_group=input.prompt_group, group=_filter_group(input.group, trainer_model_id=trainer_model_id)
+        )
+        for trainer_model_id in trainer_model_ids
+    }
+
+
+def _filter_group(group: Group, *, trainer_model_id: str) -> Group:
+    ans: Group = []
+    for item in group:
+        if isinstance(item, list):
+            if kept := [sample for sample in item if sample.trainer_model_id == trainer_model_id]:
+                ans.append(kept)
+        else:
+            if item.trainer_model_id == trainer_model_id:
+                ans.append(item)
+    return ans

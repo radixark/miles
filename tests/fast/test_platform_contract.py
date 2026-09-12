@@ -1,0 +1,208 @@
+import ast
+from pathlib import Path
+
+import pytest
+from tests.fast.source_scan import (
+    FRAMEWORK_ROOT,
+    REPO_ROOT,
+    framework_modules,
+    imported_modules,
+    parse_module,
+    python_modules,
+)
+
+REPLACEABLE_PACKAGE = "miles.utils.external_utils"
+
+_TOOLING_DIRS = (
+    FRAMEWORK_ROOT / "utils" / "external_utils",
+    FRAMEWORK_ROOT / "utils" / "debug_utils",
+    FRAMEWORK_ROOT / "utils" / "test_utils",
+)
+
+TRAIN_ONLY_SUBCOMMAND = "train"
+
+ORCHESTRATION_SCRIPTS = ("train.py", "train_async.py", "train_multi_lora_async.py")
+
+BACKEND_CAPABILITY_FN = "launch_worker_manager"
+ORCHESTRATION_INIT_FN = "init_orchestration_script"
+BACKEND_NEUTRAL_WIRING_NAMES = {"shutdown_worker_manager"}
+
+UPPER_LAYER_MODULES = (
+    "kubernetes",
+    "kubernetes_asyncio",
+    "miles.ray.specs.bootstrap",
+    "miles.ray.specs.entrypoint",
+    "miles.ray.wiring",
+)
+
+UPPER_LAYER_NAMES = (
+    "ClusterBackend",
+    "KubernetesWorkerProvider",
+    "KubernetesBackendCapability",
+    "compute_helm_backend_capability",
+    "RayBackendCapability",
+    "RayWorkerManager",
+    "compute_ctor_kwargs",
+    "compute_specs",
+    "launch_worker_manager",
+    "get_backend_capability",
+    "create_worker_backend_capability",
+)
+
+UPPER_LAYER_EXEMPTIONS = {
+    "miles/ray/wiring.py": "the glue layer holding the driver process's single fork between the backends",
+    "miles/utils/orchestration_utils.py": (
+        "the shared driver composition root that launches the selected worker manager"
+    ),
+    "miles/utils/workers/worker_provider": "the infrastructure that owns every provider implementation",
+    "miles/utils/workers/backend_capability": "the package that owns every capability implementation",
+    "miles/utils/workers/cell_operations": "the package that owns every cell-operations implementation",
+    "miles/ray/placement_group.py": "the driver composition the orchestration scripts delegate their wiring to",
+    "miles/utils/ft_utils/mini_ft_controller.py": "kubernetes is the only backend that resumes a cell without being asked",
+    "miles/utils/workers/serving/serve_inner.py": "the composition root of a served worker process",
+    "miles/utils/workers/ray_worker_manager.py": "the composition root of a worker process an actor wraps",
+    "miles/utils/workers/deployment_entrypoint.py": "the composition root of a deployment that carries no orchestration script",
+    "miles/utils/workers/backend_capability/factory.py": "the fork itself: it is the switch every composition root asks",
+    "miles/ray/multi_lora/controller.py": "multi-LoRA is a ray actor and the charts render no form of it",
+    "miles/utils/workers/reconcile/k8s_api.py": "the kubernetes client the observing provider is written against",
+    "miles/utils/arguments.py": "declares the --cluster-backend flag the composition roots read",
+    "miles/utils/tracking_utils/base.py": "the prometheus collector is a ray actor and has no kubernetes form",
+}
+
+
+def _framework_modules() -> list[Path]:
+    return framework_modules(exclude_dirs=_TOOLING_DIRS)
+
+
+def _layered_modules() -> list[Path]:
+    candidates = [*_framework_modules(), *(REPO_ROOT / name for name in ORCHESTRATION_SCRIPTS)]
+    return [path for path in candidates if not _is_exempt(path)]
+
+
+def _is_exempt(path: Path) -> bool:
+    relative = path.relative_to(REPO_ROOT).as_posix()
+    return any(relative == exempt or relative.startswith(f"{exempt}/") for exempt in UPPER_LAYER_EXEMPTIONS)
+
+
+def _exempted_files(exemption: str) -> list[Path]:
+    target = REPO_ROOT / exemption
+    if not target.is_dir():
+        return [target]
+    return python_modules(roots=[target])
+
+
+def _upper_layer_imports(path: Path) -> list[str]:
+    tree = parse_module(path)
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.extend(alias.name for alias in node.names if _is_upper_layer_module(alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "miles.ray.wiring":
+                found.extend(alias.name for alias in node.names if alias.name not in BACKEND_NEUTRAL_WIRING_NAMES)
+            else:
+                if node.module is not None and node.level == 0 and _is_upper_layer_module(node.module):
+                    found.append(node.module)
+                found.extend(alias.name for alias in node.names if alias.name in UPPER_LAYER_NAMES)
+    return found
+
+
+def _is_upper_layer_module(module: str) -> bool:
+    return any(module == name or module.startswith(f"{name}.") for name in UPPER_LAYER_MODULES)
+
+
+def _calls_of(path: Path, name: str) -> list[ast.Call]:
+    tree = parse_module(path)
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
+    ]
+
+
+class TestLayering:
+    def test_only_the_listed_files_learn_which_backend_the_workers_come_from(self):
+        """Every other module is handed the abstractions it needs, so knowing the backend would be a second answer."""
+        offenders = [
+            f"{path.relative_to(REPO_ROOT)} imports {name}"
+            for path in _layered_modules()
+            for name in _upper_layer_imports(path)
+        ]
+
+        assert offenders == [], offenders
+
+    def test_the_check_sees_the_upper_layer_knowledge_the_glue_layer_holds(self):
+        """A check that finds nothing anywhere would pass on a codebase that reaches upwards from everywhere."""
+        assert _upper_layer_imports(FRAMEWORK_ROOT / "ray" / "wiring.py") != []
+
+    @pytest.mark.parametrize("exemption", sorted(UPPER_LAYER_EXEMPTIONS))
+    def test_an_exemption_still_names_a_file_of_this_repo(self, exemption: str):
+        """An exemption nobody removes outlives the file it was written for and quietly widens the rule."""
+        assert (REPO_ROOT / exemption).exists()
+
+    @pytest.mark.parametrize("exemption", sorted(UPPER_LAYER_EXEMPTIONS))
+    def test_an_exemption_still_covers_a_file_that_reaches_upwards(self, exemption: str):
+        """Once the code it was written for stops reaching upwards, the exemption only shelters the next arrival."""
+        reaching = [path for path in _exempted_files(exemption) if _upper_layer_imports(path)]
+
+        assert reaching != [], f"{exemption} no longer reaches upwards: {UPPER_LAYER_EXEMPTIONS[exemption]}"
+
+    @pytest.mark.parametrize("script", ORCHESTRATION_SCRIPTS)
+    def test_an_orchestration_script_initializes_the_shared_driver_exactly_once(self, script: str):
+        """Every driver enters the shared composition root once, or it starts no manager or starts two."""
+        assert len(_calls_of(REPO_ROOT / script, ORCHESTRATION_INIT_FN)) == 1
+
+    def test_the_shared_driver_forks_the_backend_exactly_once(self):
+        """The whole run hangs off one factory, and a second one would observe the same workers twice."""
+        path = FRAMEWORK_ROOT / "utils" / "orchestration_utils.py"
+
+        assert len(_calls_of(path, BACKEND_CAPABILITY_FN)) == 1
+
+
+class TestImportDirection:
+    def test_the_framework_never_imports_the_replaceable_deployment_code(self):
+        """A platform replacing the charts must be able to drop this half; an import would make it load anyway."""
+        offenders = [
+            f"{path.relative_to(REPO_ROOT)} imports {module}"
+            for path in _framework_modules()
+            for module in imported_modules(path)
+            if module == REPLACEABLE_PACKAGE or module.startswith(f"{REPLACEABLE_PACKAGE}.")
+        ]
+
+        assert offenders == [], offenders
+
+    def test_the_replaceable_code_may_import_the_framework(self):
+        """The dependency has to point one way, and this is the way it points."""
+        launcher = (
+            FRAMEWORK_ROOT
+            / "utils"
+            / "external_utils"
+            / "command_utils"
+            / "helm_backend"
+            / "launcher"
+            / "entrypoint.py"
+        )
+
+        assert any(module.startswith("miles.utils.workers") for module in imported_modules(launcher))
+
+
+class TestLaunchScriptContract:
+    @pytest.mark.parametrize("script", sorted((REPO_ROOT / "scripts").glob("run_*.py")), ids=lambda path: path.name)
+    def test_a_train_subcommand_only_trains(self, script):
+        """The Kubernetes backend runs this subcommand in a pod, where preparation has already happened."""
+        tree = parse_module(script)
+        train = next(
+            (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == TRAIN_ONLY_SUBCOMMAND),
+            None,
+        )
+        if train is None:
+            pytest.skip(f"{script.name} has no {TRAIN_ONLY_SUBCOMMAND} subcommand, so it stays Ray only")
+
+        called = {
+            node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            for node in ast.walk(train)
+            if isinstance(node, ast.Call)
+        }
+        prepared = {name for name in called if "prepare" in name or "download" in name or "convert" in name}
+
+        assert prepared == set(), f"{script.name} prepares data inside {TRAIN_ONLY_SUBCOMMAND}: {prepared}"

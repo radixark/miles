@@ -8,10 +8,12 @@ from typing import Any
 from unittest.mock import Mock, call
 
 import pytest
+import ray
 import torch
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.utils import object_store
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 from miles.utils.tensor_backper import MainCastContext, TensorBackuper
@@ -82,7 +84,7 @@ def _worker(actor_module, role, *, asleep=True):
 def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "critic")
     critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
-    worker.train_critic = Mock(return_value=critic_output)
+    worker._train_critic = Mock(return_value=critic_output)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
@@ -98,7 +100,7 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
     result = worker.train(3, object())
 
     worker.wake_up.assert_called_once_with()
-    worker.train_critic.assert_called_once()
+    worker._train_critic.assert_called_once()
     worker.sleep.assert_not_called()
     assert result is critic_output
     assert result.outcome is TrainStepOutcome.NORMAL
@@ -108,7 +110,7 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
 
 def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor")
-    worker.train_actor = Mock(return_value=None)
+    worker._train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
@@ -117,15 +119,15 @@ def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module
     result = worker.train(4, object(), external_data=values)
 
     worker.wake_up.assert_called_once_with()
-    worker.train_actor.assert_called_once()
-    assert worker.train_actor.call_args.kwargs["external_data"] is values
+    worker._train_actor.assert_called_once()
+    assert worker._train_actor.call_args.kwargs["external_data"] is values
     worker.sleep.assert_not_called()
     assert result is None
 
 
 def test_train_keeps_model_resident(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor", asleep=False)
-    worker.train_actor = Mock(return_value=None)
+    worker._train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
@@ -137,6 +139,7 @@ def test_train_keeps_model_resident(actor_module, monkeypatch):
 
 
 def test_compute_log_prob_keeps_logits_in_model_precision(actor_module, monkeypatch):
+    """Policy log-prob forwards preserve the model's logits precision."""
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace()
     worker.model = [object()]
@@ -144,7 +147,7 @@ def test_compute_log_prob_keeps_logits_in_model_precision(actor_module, monkeypa
     monkeypatch.setattr(actor_module, "forward_only", forward_only)
     monkeypatch.setattr(actor_module, "timer", lambda _name: nullcontext())
 
-    result = worker.compute_log_prob([], [], rollout_id=3)
+    result = worker._compute_log_prob([], [], rollout_id=3)
 
     assert result == {"log_probs": []}
     assert forward_only.call_args.kwargs["fp32_output"] is False
@@ -193,6 +196,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
         debug_skip_weight_update=True,
         debug_train_only=False,
         offload_train=True,
+        colocate=False,
         rematerialize_param_from_master_weight=False,
     )
     worker._asleep = asleep
@@ -208,8 +212,11 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     )
     reload_groups = Mock()
     destroy_groups = Mock()
+    saver = Mock()
+    saver.disable.return_value = nullcontext()
     monkeypatch.setattr(actor_module, "reload_process_groups", reload_groups)
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
+    monkeypatch.setattr(actor_module, "torch_memory_saver", saver)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
 
     worker.update_weights(info)
@@ -319,7 +326,7 @@ def _actor_reuse_worker(actor_module, **args_overrides):
     worker._active_model_tag = "actor"
     worker._switch_model = Mock()
     worker._set_replay_stage = Mock()
-    worker.compute_log_prob = Mock(return_value={"log_probs": [object()]})
+    worker._compute_log_prob = Mock(return_value={"log_probs": [object()]})
     worker.rollout_data_postprocess = None
     worker.prof = Mock()
     worker._ft_test_action_executor = None
@@ -377,9 +384,9 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
         "total_lengths": [1] * sum(num_microbatches),
     }
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert worker.compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
+    assert worker._compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
     actor_module.compute_advantages_and_returns.assert_called_once_with(worker.args, rollout_data)
     train_call = actor_module.train.call_args
     assert train_call.args[6] is rollout_data["num_rollouts"]
@@ -393,15 +400,15 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
 def test_skip_actor_forward_only_preserves_reference_teacher_and_training_forwards(actor_module, monkeypatch):
     worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
     worker.weights_backuper.backup_tags = {"ref", "teacher"}
-    worker.compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
+    worker._compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
         f"{store_prefix}log_probs": [object()]
     }
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
     rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert [call.kwargs["store_prefix"] for call in worker.compute_log_prob.call_args_list] == ["ref_", "teacher_"]
+    assert [call.kwargs["store_prefix"] for call in worker._compute_log_prob.call_args_list] == ["ref_", "teacher_"]
     actor_module.train.assert_called_once()
 
 
@@ -465,9 +472,9 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
         data_key: [expected_top_indices],
     }
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     fill_replay_data.assert_called_once()
     replay.pop_backward.assert_called_once()
     assert queued_top_indices == []
@@ -479,9 +486,9 @@ def test_skip_actor_forward_only_rejects_multiple_optimizer_steps(actor_module, 
     rollout_data = {"num_rollouts": [1, 1], "total_lengths": [1, 1]}
 
     with pytest.raises(AssertionError, match="requires 1 optimizer step"):
-        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+        worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
 
@@ -493,23 +500,29 @@ def test_skip_actor_forward_only_rejects_existing_actor_log_probs(actor_module, 
     rollout_data["log_probs"] = [object()]
 
     with pytest.raises(AssertionError, match="without actor log probs"):
-        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+        worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
 
 
+_OBJECT_REF_ID_BYTES = 28
+
+
 class _FakeRay:
+    """A store ref is typed as holding a real ObjectRef, so the stand-in hands out real ones."""
+
     def __init__(self) -> None:
-        self._objects: list[Any] = []
+        self._objects: dict[bytes, Any] = {}
 
-    def put(self, value: Any) -> int:
-        self._objects.append(value)
-        return len(self._objects) - 1
+    def put(self, value: Any) -> ray.ObjectRef:
+        key = len(self._objects).to_bytes(_OBJECT_REF_ID_BYTES, "little")
+        self._objects[key] = value
+        return ray.ObjectRef(key)
 
-    def get(self, ref: int) -> Any:
-        return self._objects[ref]
+    def get(self, ref: ray.ObjectRef) -> Any:
+        return self._objects[ref.binary()]
 
 
 @contextmanager
@@ -518,7 +531,8 @@ def _noop_timer(_name: str) -> Iterator[None]:
 
 
 def _patch_shared_train_helpers(actor_module: Any, monkeypatch: pytest.MonkeyPatch, fake_ray: _FakeRay) -> None:
-    monkeypatch.setattr(actor_module, "ray", fake_ray)
+    monkeypatch.setattr(object_store, "ray", fake_ray)
+    monkeypatch.setattr(object_store, "_INSTANCE", object_store.RayObjectStore(frees_objects=False))
     monkeypatch.setattr(actor_module, "all_replay_managers", [])
     monkeypatch.setattr(actor_module, "get_data_iterator", lambda *_args, **_kwargs: (object(), [1]))
     monkeypatch.setattr(actor_module, "compute_advantages_and_returns", lambda *_args, **_kwargs: None)
@@ -570,7 +584,7 @@ def _actor_worker(actor_module: Any) -> Any:
 
 
 def test_critic_output_roundtrips_into_actor_external_data(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Real train_critic ships values that real train_actor reads back through TrainStepOutput.values."""
+    """Real _train_critic ships values that real _train_actor reads back through TrainStepOutput.values."""
     fake_ray = _FakeRay()
     _patch_shared_train_helpers(actor_module, monkeypatch, fake_ray)
     monkeypatch.setattr(actor_module, "forward_only", lambda *_args, **_kwargs: {})
@@ -583,14 +597,14 @@ def test_critic_output_roundtrips_into_actor_external_data(actor_module: Any, mo
     monkeypatch.setattr(actor_module.torch.cuda, "current_device", lambda: torch.device("cpu"))
     critic_values = [torch.tensor([1.0, 2.0]), torch.tensor([3.0])]
 
-    critic_output = _critic_worker(actor_module).train_critic(rollout_id=7, rollout_data={"values": critic_values})
+    critic_output = _critic_worker(actor_module)._train_critic(rollout_id=7, rollout_data={"values": critic_values})
 
     assert isinstance(critic_output, TrainStepOutput)
     assert critic_output.outcome is TrainStepOutcome.NORMAL
     assert critic_output.values is not None
 
     actor_rollout_data: dict[str, Any] = {"tokens": []}
-    actor_output = _actor_worker(actor_module).train_actor(
+    actor_output = _actor_worker(actor_module)._train_actor(
         8, actor_rollout_data, critic_output, witness_info=None, attempt=0
     )
 
@@ -605,8 +619,8 @@ def test_debug_rollout_only_train_answers_with_a_normal_train_step_output(
     """A debug-rollout-only step skips training yet still answers the driver with a NORMAL output."""
     worker = _worker(actor_module, "actor", asleep=False)
     worker.args.debug_rollout_only = True
-    worker.train_actor = Mock()
-    worker.train_critic = Mock()
+    worker._train_actor = Mock()
+    worker._train_critic = Mock()
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
@@ -616,8 +630,8 @@ def test_debug_rollout_only_train_answers_with_a_normal_train_step_output(
     result = worker.train(9, object())
 
     assert result == TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
-    worker.train_actor.assert_not_called()
-    worker.train_critic.assert_not_called()
+    worker._train_actor.assert_not_called()
+    worker._train_critic.assert_not_called()
 
 
 @pytest.mark.parametrize("is_pp_last_stage,rollout_data_values", [(False, [torch.tensor([1.0])]), (True, None)])
@@ -630,7 +644,7 @@ def test_critic_without_shippable_values_returns_an_output_carrying_none(
     monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace(is_pp_last_stage=is_pp_last_stage))
     rollout_data: dict[str, Any] = {} if rollout_data_values is None else {"values": rollout_data_values}
 
-    output = _critic_worker(actor_module).train_critic(rollout_id=7, rollout_data=rollout_data)
+    output = _critic_worker(actor_module)._train_critic(rollout_id=7, rollout_data=rollout_data)
 
     assert output == TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=None)
 
@@ -644,7 +658,7 @@ def test_actor_last_stage_rejects_a_critic_output_without_values(
     empty_critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=None)
 
     with pytest.raises(AssertionError, match="must have shipped 'values'"):
-        _actor_worker(actor_module).train_actor(8, {"tokens": []}, empty_critic_output, witness_info=None, attempt=0)
+        _actor_worker(actor_module)._train_actor(8, {"tokens": []}, empty_critic_output, witness_info=None, attempt=0)
 
 
 class _RecordingWeightUpdater:
@@ -842,7 +856,6 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     """Rebuilding the independent-DP groups invalidates the trainer side, so the next update reconnects."""
     worker = _weight_update_worker(actor_module, monkeypatch)
     updater = worker.weight_updater
-    worker._indep_dp_store_addr = "10.0.0.1:1234"
     monkeypatch.setattr(actor_module, "reconfigure_indep_dp_group", Mock())
     monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace())
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 0)
@@ -851,7 +864,7 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     snapshot = {"cell-0": "hash-a"}
 
     worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
-    worker.reconfigure_indep_dp(object())
+    worker.reconfigure_indep_dp(object(), "10.0.0.1:1234")
     worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
 
     assert len(updater.connect_calls) == 2

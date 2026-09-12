@@ -1,0 +1,322 @@
+from __future__ import annotations
+
+import base64
+import datetime
+import json
+import logging
+import os
+import platform
+import random
+import shlex
+import socket
+import subprocess
+from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
+
+from miles.utils.external_utils.model_args_utils import load_model_args
+from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
+from miles.utils.object_store_config import (
+    MOONCAKE_MASTER_ADDRESS_KEY,
+    MOONCAKE_MASTER_PORT,
+    compute_mooncake_init_kwargs_vanilla,
+)
+from miles.utils.workers.argv_utils import parse_declared_args
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
+
+if TYPE_CHECKING:
+    from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
+
+logger = logging.getLogger(__name__)
+
+repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[4]
+
+
+def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | None) -> str:
+    entries = [str(repo_base_dir), megatron_path]
+    for pythonpath in (*additional_pythonpaths, os.environ.get("PYTHONPATH")):
+        if pythonpath:
+            entries.extend(pythonpath.split(os.pathsep))
+    return os.pathsep.join(dict.fromkeys(entries))
+
+
+def chart_dir(*, repo_base_dir: str | Path) -> Path:
+    return Path(repo_base_dir) / "charts" / CHART_NAME
+
+
+def rsync_cmd(path_src: str, path_dst: str) -> str:
+    return f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}"
+
+
+def train_env_vars(
+    request: ExecuteTrainRequest, backend_env_vars: dict[str, str], *, config: ExecuteTrainConfig
+) -> dict[str, str]:
+    return {
+        # exported for the submitting client too, but only the runtime env reaches the ray workers
+        "PYTHONUNBUFFERED": "1",
+        # If setting this in FSDP, the computation communication overlapping may have issues
+        **(
+            {}
+            if request.train_backend_fsdp
+            else {
+                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+            }
+        ),
+        **backend_env_vars,
+        **(
+            {
+                "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
+                "CUDA_COREDUMP_SHOW_PROGRESS": "1",
+                "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
+                "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
+            }
+            if config.cuda_core_dump
+            else {}
+        ),
+        **request.extra_env_vars,
+        **_parse_extra_env_vars(config.extra_env_vars),
+    }
+
+
+def _parse_extra_env_vars(text: str):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {kv[0]: kv[1] for item in text.split(" ") if item.strip() != "" if (kv := item.split("=")) or True}
+
+
+def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, run_id: str | None = None):
+    from miles.utils.logging_utils import configure_logger_raw
+
+    configure_logger_raw("launcher")
+    if not os.environ.get("WANDB_API_KEY"):
+        logger.info("Skip wandb configuration since WANDB_API_KEY is not found")
+        return ""
+
+    test_file = Path(test_file)
+    test_name = test_file.stem
+    if len(test_name) < 6:
+        test_name = f"{test_file.parent.name}_{test_name}"
+
+    wandb_run_name = run_id or create_run_id()
+    if (x := os.environ.get("GITHUB_COMMIT_NAME")) is not None:
+        wandb_run_name += f"_{x}"
+    if (x := run_name_prefix) is not None:
+        wandb_run_name = f"{x}_{wandb_run_name}"
+
+    # Use the actual key value from environment to avoid shell expansion issues
+    wandb_key = os.environ.get("WANDB_API_KEY")
+    return (
+        "--use-wandb "
+        f"--wandb-project miles-{test_name} "
+        f"--wandb-group {wandb_run_name} "
+        f"--wandb-key '{wandb_key}' "
+        "--disable-wandb-random-suffix "
+    )
+
+
+def create_run_id() -> str:
+    return datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+
+
+_warned_bool_env_var_keys = set()
+
+_TRUTHY = frozenset({"1", "true", "t", "yes", "y", "on"})
+_FALSY = frozenset({"0", "false", "f", "no", "n", "off"})
+
+
+# copied from SGLang
+def get_bool_env_var(name: str, default: str = "false") -> bool:
+    value = os.getenv(name, default).lower()
+
+    if value not in _TRUTHY and value not in _FALSY:
+        if value not in _warned_bool_env_var_keys:
+            logger.warning(f"get_bool_env_var({name}) see non-understandable value={value} and treat as false")
+        _warned_bool_env_var_keys.add(value)
+
+    return value in _TRUTHY
+
+
+def get_env_enable_infinite_run():
+    return get_bool_env_var("MILES_TEST_ENABLE_INFINITE_RUN", "false")
+
+
+class _ArgvDeclaration(NamedTuple):
+    index: int
+    value: str
+
+
+class ArgvManipulator:
+    @staticmethod
+    def get(argv: list[str], flag: str) -> list[str]:
+        return [declaration.value for declaration in _argv_declarations(argv, flag)]
+
+    @staticmethod
+    def get_effective(argv: list[str], flag: str) -> str | None:
+        return values[-1] if (values := ArgvManipulator.get(argv, flag)) else None
+
+    @staticmethod
+    def is_defined(argv: list[str], flag: str) -> bool:
+        return any(token == flag or token.startswith(f"{flag}=") for token in argv)
+
+    @staticmethod
+    def set(argv: list[str], flag: str, value: str) -> list[str]:
+        declarations = _argv_declarations(argv, flag)
+        if not declarations:
+            return [*argv, flag, value]
+
+        last_index = declarations[-1].index
+        rewritten = list(argv)
+        if rewritten[last_index] == flag:
+            rewritten[last_index + 1] = value
+        else:
+            rewritten[last_index] = f"{flag}={value}"
+        return rewritten
+
+
+def _argv_declarations(argv: list[str], flag: str) -> list[_ArgvDeclaration]:
+    declarations: list[_ArgvDeclaration] = []
+    for index, token in enumerate(argv):
+        if token == flag:
+            assert index + 1 < len(argv), f"{flag} is the last argument, so it names no value"
+            declarations.append(_ArgvDeclaration(index=index, value=argv[index + 1]))
+        elif token.startswith(f"{flag}="):
+            declarations.append(_ArgvDeclaration(index=index, value=token.split("=", maxsplit=1)[1]))
+    return declarations
+
+
+MOONCAKE_MASTER_METRICS_PORT = 0
+MOONCAKE_MASTER_LOG_PATH = Path("/tmp/mooncake_master.log")
+
+
+OBJECT_STORE_BACKEND_FLAG = "--object-store-backend"
+MOONCAKE_BACKEND_NAME = "mooncake"
+MOONCAKE_INIT_KWARGS_FLAG = "--mooncake-store-init-kwargs"
+
+
+def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
+    from miles.utils.workers.worker_provider.static import parse_host_and_port
+
+    declared = ArgvManipulator.get_effective(train_argv, MOONCAKE_INIT_KWARGS_FLAG)
+    if declared is None:
+        return MOONCAKE_MASTER_PORT
+
+    address = json.loads(declared).get(MOONCAKE_MASTER_ADDRESS_KEY)
+    if address is None:
+        return None
+
+    endpoint = parse_host_and_port(address)
+    return endpoint.port if endpoint.host in ("127.0.0.1", "0.0.0.0", "localhost", "[::1]") else None
+
+
+def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1") -> str:
+    init_kwargs = compute_mooncake_init_kwargs_vanilla(host=master_host, master_port=master_port)
+    return (
+        f"{OBJECT_STORE_BACKEND_FLAG} {MOONCAKE_BACKEND_NAME} "
+        f"{MOONCAKE_INIT_KWARGS_FLAG} {shlex.quote(json.dumps(init_kwargs))} "
+    )
+
+
+def _is_tcp_server_ready(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def encode_pseudo_file(text: str) -> str:
+    return PSEUDO_FILE_PREFIX + base64.b64encode(text.encode()).decode()
+
+
+def compute_model_args_overrides(model_type: str) -> dict[str, object]:
+    from miles.backends.megatron_utils.megatron_config import get_megatron_arg_parser
+
+    return parse_declared_args(load_model_args(model_type), parser=get_megatron_arg_parser())
+
+
+NUM_GPUS_OF_HARDWARE = {
+    "H100": 8,
+    "H200": 8,
+    "B200": 8,
+    "B300": 8,
+    "GB200": 4,
+    "GB300": 4,
+    "MI350X": 8,
+    "MI355X": 8,
+}
+
+GENERATION_HARDWARE = {
+    "H100": "Hopper",
+    "H200": "Hopper",
+    "B200": "Blackwell",
+    "B300": "Blackwell",
+    "GB200": "Blackwell",
+    "GB300": "Blackwell",
+}
+
+
+def detect_hardware() -> str:
+    """Which NUM_GPUS_OF_HARDWARE entry this node is. Call it where the answer is used: prepare steps run GPU-free."""
+    import torch
+
+    assert torch.cuda.is_available(), "no visible GPU to detect the hardware from, pass --hardware explicitly"
+    name = torch.cuda.get_device_name()
+    if torch.version.hip is not None:
+        detected = next((hardware for hardware in ("MI350X", "MI355X") if hardware in name), None)
+    else:
+        grace = platform.machine() == "aarch64"
+        match torch.cuda.get_device_capability():
+            case (9, 0):
+                detected = "H200" if torch.cuda.get_device_properties(0).total_memory > 100 * 1024**3 else "H100"
+            case (10, 0):
+                detected = "GB200" if grace else "B200"
+            case (10, 3):
+                detected = "GB300" if grace else "B300"
+            case _:
+                detected = None
+    assert detected is not None, f"cannot tell which hardware {name!r} is, pass --hardware explicitly"
+    return detected
+
+
+_PLACEHOLDERS = ("{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}")
+
+
+def run_shell_command(cmd: str, capture_output: bool = False) -> str | None:
+    logger.info(f"EXEC: {cmd}")
+
+    try:
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            shell=False,
+            check=True,
+            capture_output=capture_output,
+            **(dict(text=True) if capture_output else {}),
+        )
+    except subprocess.CalledProcessError as e:
+        if capture_output:
+            logger.error(f"{e.stdout=} {e.stderr=}")
+        raise
+
+    if capture_output:
+        logger.info(f"Captured stdout={result.stdout} stderr={result.stderr}")
+        return result.stdout
+    return None
+
+
+def run_process(
+    argv: list[str], *, capture_output: bool, check: bool, input: str | None = None, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    logger.info(f"EXEC: {shlex.join(argv)}")
+    return subprocess.run(argv, check=check, capture_output=capture_output, text=True, input=input, timeout=timeout)
+
+
+def substitute_placeholders(cmd: str, *, node_rank: str, nnodes: str, master_addr: str, node_ip: str) -> str:
+    values = {
+        "{{node_rank}}": node_rank,
+        "{{nnodes}}": nnodes,
+        "{{master_addr}}": master_addr,
+        "{{node_ip}}": node_ip,
+    }
+    for placeholder in _PLACEHOLDERS:
+        cmd = cmd.replace(placeholder, values[placeholder])
+    return cmd

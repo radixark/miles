@@ -180,7 +180,7 @@ def test_qwen3_ref_model_uses_fp32_master_storage(monkeypatch):
     actor.hf_config = config
     actor.precision_policy = resolve_precision_policy(config, args)
     actor._get_init_weight_context_manager = lambda: nullcontext
-    actor.get_model_cls = lambda: SimpleNamespace(
+    actor._get_model_cls = lambda: SimpleNamespace(
         from_pretrained=lambda *args, **kwargs: modeling_qwen3.Qwen3ForCausalLM(config).to(torch.bfloat16)
     )
     actor._fsdp2_load_full_state_dict = lambda model, full_state, device_mesh, cpu_offload: model

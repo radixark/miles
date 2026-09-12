@@ -5,7 +5,7 @@ import pytest
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.test_utils.reconfigure_assertions import (
     MIN_SOAK_INJECTIONS,
     ReconfigureInfo,
@@ -39,7 +39,7 @@ _HEALING_EXPECTED = ReconfigureInfo(
 
 
 def _write_events(log_dir: Path, partials: list[dict[str, Any]]) -> None:
-    event_logger = EventLogger(log_dir=log_dir, source=MainProcessIdentity())
+    event_logger = EventLogger(log_dir=log_dir, source=SimpleProcessIdentity(component="main"))
     for partial in partials:
         event_logger.log(CellReconfigureEvent, partial, print_log=False)
     event_logger.close()
@@ -48,7 +48,7 @@ def _write_events(log_dir: Path, partials: list[dict[str, Any]]) -> None:
 class TestLoadReconfigureEvents:
     def test_filters_other_event_types_and_preserves_order(self, tmp_path: Path) -> None:
         """Only CellReconfigureEvents are returned, in file (emission) order."""
-        event_logger = EventLogger(log_dir=tmp_path, source=MainProcessIdentity())
+        event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main"))
         event_logger.log(CellReconfigureEvent, _SHRINK_PARTIAL, print_log=False)
         event_logger.log(TrainGroupStepEndEvent, dict(rollout_id=2, cell_outcomes={}), print_log=False)
         event_logger.log(CellReconfigureEvent, _HEALING_PARTIAL, print_log=False)
@@ -128,8 +128,14 @@ class TestAssertSoakReconfigureEvents:
             assert_soak_reconfigure_events(tmp_path, num_successful_injections=1)
 
     def test_fails_when_too_few_healings(self, tmp_path: Path) -> None:
-        """Enough injections but fewer than the required healing events fail the witness."""
+        """Enough injections but fewer than the required healed cells fail the witness."""
         _write_events(tmp_path, [_SHRINK_PARTIAL, _HEALING_PARTIAL])
 
         with pytest.raises(AssertionError, match="Healing witness failed"):
             assert_soak_reconfigure_events(tmp_path, num_successful_injections=3)
+
+    def test_one_event_that_readmits_two_cells_counts_as_two_healings(self, tmp_path: Path) -> None:
+        """A single reconfigure can heal several cells at once, and counting events would under-count them."""
+        _write_events(tmp_path, [dict(_HEALING_PARTIAL, healed_cell_indices=[0, 1], alive_cell_indices_after=[0, 1])])
+
+        assert_soak_reconfigure_events(tmp_path, num_successful_injections=2)

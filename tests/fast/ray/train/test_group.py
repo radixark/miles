@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,20 +8,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
-from tests.fast.ray.train.conftest import get_raw_actor_handles
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment_identity, make_provider
 
+import miles.ray.train.group as group_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.ray.train.group import TrainerController
+from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
+from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
+from miles.utils.data import RolloutDataPack
+from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
+from miles.utils.workers.naming import compute_cell_id
 
 pytestmark = pytest.mark.asyncio
 
-_DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
+_DUMMY_DATA_PACK = RolloutDataPack(sample_indices=[0], data_ref=_MooncakeStoreObjectRef(payload="data"))
 
 
 def _make_mock_args(
@@ -29,11 +36,15 @@ def _make_mock_args(
     gpus_per_cell: int = 1,
     num_cells: int = 3,
     ci_ft_test_actions: str | None = None,
+    ci_ft_test_actions_path: str | None = None,
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
     # recursion limit because its __getattr__ creates new sub-mocks indefinitely.
     return SimpleNamespace(
+        deploy_component="all",
+        trainer_controller_addrs=None,
+        api_server_port=0,
         indep_dp=indep_dp,
         enable_witness=enable_witness,
         witness_buffer_size=100,
@@ -42,6 +53,7 @@ def _make_mock_args(
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
         ci_ft_test_actions=ci_ft_test_actions,
+        ci_ft_test_actions_path=ci_ft_test_actions_path,
         debug_train_only=False,
         debug_rollout_only=False,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
@@ -51,6 +63,9 @@ def _make_mock_args(
         context_parallel_size=gpus_per_cell,
         actor_num_nodes=1,
         actor_num_gpus_per_node=num_cells * gpus_per_cell,
+        object_store_backend="ray",
+        worker_comm_backend="ray",
+        trainer_model_id=None,
     )
 
 
@@ -58,8 +73,6 @@ def _make_controller(
     *,
     num_cells: int = 3,
     actor_count_per_cell: int = 1,
-    inference_controller: object | None = None,
-    rollout_executor: object | None = None,
     with_ref: bool = False,
     with_opd_teacher: bool = False,
     ci_ft_test_actions: str | None = None,
@@ -68,21 +81,31 @@ def _make_controller(
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
     group = TrainerController(
-        args=_make_mock_args(
-            indep_dp=True,
-            gpus_per_cell=actor_count_per_cell,
-            num_cells=num_cells,
-            ci_ft_test_actions=ci_ft_test_actions,
-        ),
+        deployment_identity=make_deployment_identity(),
+        trainer_id="actor",
         role="actor",
         with_ref=with_ref,
         with_opd_teacher=with_opd_teacher,
-        inference_controller=inference_controller,
-        rollout_executor=rollout_executor,
+        cell_provider=make_provider(),
+        cell_operations=AsyncMock(),
     )
+    group.args = _make_mock_args(
+        indep_dp=True,
+        gpus_per_cell=actor_count_per_cell,
+        num_cells=num_cells,
+        ci_ft_test_actions=ci_ft_test_actions,
+        ci_ft_test_actions_path=None,
+    )
+    group._health_checker_config = compute_trainer_health_checker_config(
+        group.args, expected_num_cells=group._expected_num_cells
+    )
+    if group._expected_num_cells > 1:
+        group._indep_dp_store, group._indep_dp_store_addr = group_module.create_tcp_store()
     for cell_index in range(num_cells):
         cell = group._create_cell(
-            f"{group._pool_id}-{cell_index}", cell_index=cell_index, workers_hash="pseudo-hash-1"
+            compute_cell_id(pool_id=group._pool_id, cell_index=cell_index),
+            cell_index=cell_index,
+            workers_hash="pseudo-hash-1",
         )
         group._cells_by_id[cell.cell_id] = cell
     return group
@@ -90,23 +113,25 @@ def _make_controller(
 
 async def _stop_cell(group: TrainerController, cell_index: int) -> None:
     """Suspension stops the cell in the manager; reconcile then drops it from the bookkeeping."""
-    cell_id = f"{group._pool_id}-{cell_index}"
+    cell_id = compute_cell_id(pool_id=group._pool_id, cell_index=cell_index)
     train_conftest.fake_worker_manager._stop_cells([cell_id])
     await group._reconcile(cell_id, None)
 
 
 def _cell(group: TrainerController, cell_index: int) -> object:
-    return group._cells_by_id[f"{group._pool_id}-{cell_index}"]
+    return group._cells_by_id[compute_cell_id(pool_id=group._pool_id, cell_index=cell_index)]
 
 
 def _start_cell(group: TrainerController, cell_index: int) -> None:
     """The manager relaunches the cell, so reconcile hands the controller a fresh object."""
-    cell_id = f"{group._pool_id}-{cell_index}"
+    cell_id = compute_cell_id(pool_id=group._pool_id, cell_index=cell_index)
     group._cells_by_id[cell_id] = group._create_cell(cell_id, cell_index=cell_index, workers_hash="pseudo-hash-2")
 
 
 def _was_stopped(group: TrainerController, cell_index: int) -> bool:
-    return [f"{group._pool_id}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
+    return [
+        compute_cell_id(pool_id=group._pool_id, cell_index=cell_index)
+    ] in train_conftest.fake_worker_manager.stopped_cell_ids
 
 
 def _was_killed(group: TrainerController, cell_index: int) -> bool:
@@ -121,7 +146,7 @@ def _was_killed(group: TrainerController, cell_index: int) -> bool:
 
 async def _init_controller(group: TrainerController) -> None:
     """Call init and wait for all cells to become alive."""
-    await group.init()
+    await group.init(group.args)
 
 
 async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerController:
@@ -131,7 +156,35 @@ async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerCont
     return group
 
 
+class TestIndepDPStore:
+    def test_a_multi_cell_pool_gets_one_quorum_store_from_its_controller(self):
+        """The store must be minted once, where every cell can be told the same address."""
+        group = _make_controller(num_cells=3)
+
+        assert group._indep_dp_store_addr == train_conftest.FAKE_STORE_ADDR
+
+    def test_a_single_cell_pool_needs_no_quorum_store(self):
+        """One cell never renegotiates a quorum, so binding a port for it would be pure waste."""
+        group = _make_controller(num_cells=1)
+
+        assert group._indep_dp_store_addr is None
+
+
 class TestInit:
+    def test_the_controller_watches_the_pool_of_its_trainer_id(self):
+        """A policy's controller owns the pool named after its trainer id, which the role no longer determines."""
+        group = TrainerController(
+            deployment_identity=make_deployment_identity(),
+            trainer_id="alpha-actor",
+            role="actor",
+            with_ref=False,
+            with_opd_teacher=False,
+            cell_provider=make_provider(),
+            cell_operations=AsyncMock(),
+        )
+
+        assert group._pool_id == "trainer-engine-alpha-actor"
+
     def test_creates_correct_number_of_cells(self):
         group = _make_controller(num_cells=3)
 
@@ -159,6 +212,14 @@ class TestInit:
 
         assert len(group._cells) == 1
 
+    async def test_init_gives_the_controller_process_an_object_store(self):
+        """The controller frees a failed attempt's outputs itself, which needs a store in its own process."""
+        group = _make_controller(num_cells=1)
+
+        await _init_controller(group)
+
+        assert object_store.get_instance() is not None
+
     async def test_init_marks_all_cells_alive(self):
         group = _make_controller(num_cells=3)
 
@@ -172,6 +233,27 @@ class TestInit:
         assert _cell(group, 0).indep_dp_info.alive_rank == 0
         assert _cell(group, 1).indep_dp_info.alive_rank == 1
         assert _cell(group, 2).indep_dp_info.alive_rank == 2
+
+
+class TestInitRunsExactlyOnce:
+    async def test_a_controller_that_never_ran_init_reports_itself_uninitialized(self):
+        """A restarted script asks the controller it found running whether to initialize it or to resume it."""
+        group = _make_controller(num_cells=1)
+
+        assert await group.is_initialized() is False
+
+    async def test_a_controller_that_ran_init_reports_itself_initialized(self):
+        """The take-over path resumes exactly the controllers that answer this way."""
+        group = await _make_alive_controller(num_cells=1)
+
+        assert await group.is_initialized() is True
+
+    async def test_a_second_init_is_refused(self):
+        """Initializing trainers a previous script already built would throw away the state they hold."""
+        group = await _make_alive_controller(num_cells=1)
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            await _init_controller(group)
 
 
 class TestStopStartCell:
@@ -216,6 +298,30 @@ class TestExecuteFirstAlive:
         for handle in get_raw_actor_handles(_cell(group, 1)):
             calls = ray.get(handle.get_calls.remote())
             assert any(c[0] == "update_weights" for c in calls)
+
+
+class TestGetTrainParallelConfig:
+    @staticmethod
+    def _set_configs(cell, configs: list[dict]) -> None:
+        handles = get_raw_actor_handles(cell)
+        ray.get(
+            [handle.set_train_parallel_config.remote(config) for handle, config in zip(handles, configs, strict=True)]
+        )
+
+    async def test_returns_config_of_rank_zero_of_the_first_alive_cell(self):
+        """The driver reads the config the cell's own rank 0 computed at init."""
+        group = await _make_alive_controller(num_cells=2, actor_count_per_cell=2)
+        self._set_configs(group._cells[0], [{"dp_size": 4}, {"dp_size": 99}])
+
+        assert await group.get_train_parallel_config() == {"dp_size": 4}
+
+    async def test_skips_stopped_cells(self):
+        """A stopped cell 0 must not be asked; the next alive cell answers instead."""
+        group = await _make_alive_controller(num_cells=2)
+        self._set_configs(_cell(group, 1), [{"dp_size": 2}])
+        await _stop_cell(group, 0)
+
+        assert await group.get_train_parallel_config() == {"dp_size": 2}
 
 
 class TestComputeIndepDPInfo:
@@ -351,22 +457,6 @@ class TestRefreshCellsHealing:
             dst_ranks = sorted(c[2]["dst_rank"] for c in send_calls)
             assert dst_ranks == [1, 2]
 
-    async def test_healed_cell_receives_set_rollout_executor(self):
-        """A healed cell is handed the executor handle again after init."""
-        group = await _make_alive_controller(num_cells=2, rollout_executor="executor-handle")
-        await _stop_cell(group, 1)
-        _start_cell(group, 1)
-
-        await group._refresh_cells(rollout_id=0)
-
-        assert _cell(group, 1).is_alive
-        for handle in get_raw_actor_handles(_cell(group, 1)):
-            calls = ray.get(handle.get_calls.remote())
-            set_calls = [c for c in calls if c[0] == "set_rollout_executor"]
-            assert set_calls, "healed cell never received set_rollout_executor"
-            for call in set_calls:
-                assert call[2] == {"rollout_executor": "executor-handle"}
-
     async def test_pending_cell_with_stopped_cell(self):
         """Pending + stopped: only alive and pending participate, stopped excluded."""
         group = await _make_alive_controller(num_cells=3)
@@ -390,7 +480,7 @@ class TestRefreshCellsHealing:
 class TestRefreshCellsReconfigureEvent:
     @pytest.fixture
     def _event_log_dir(self, tmp_path: Path):
-        set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
         try:
             yield tmp_path
         finally:
@@ -513,6 +603,43 @@ class TestConsecutiveStopStartCycles:
 
 
 class TestTrain:
+    async def test_event_analysis_does_not_block_cell_status_requests(self):
+        """A growing event log must not make the trainer controller stop answering status requests."""
+        group = _make_controller(num_cells=1)
+        group._witness_allocator = None
+        group._refresh_cells = AsyncMock()
+        group._gather_all_alive_and_catch = AsyncMock(return_value=([], []))
+        group._check_train_one_attempt = MagicMock()
+        group._log_step_end_event = MagicMock()
+        group._test_action_executor = AsyncMock()
+
+        started_at = time.monotonic()
+        with patch.object(
+            group_module.event_analyzer,
+            "run_analysis_from_args",
+            side_effect=lambda _args: time.sleep(0.2),
+        ):
+            train_task = asyncio.create_task(group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK))
+            await asyncio.sleep(0)
+
+            statuses = await group.get_cell_statuses()
+
+            assert time.monotonic() - started_at < 0.1
+            assert set(statuses) == {"trainer-engine-actor-00000"}
+            assert await train_task == []
+
+    async def test_event_analysis_failure_still_fails_training(self):
+        """Moving event analysis off the event loop must preserve its failure contract."""
+        group = _make_controller(num_cells=1)
+
+        with patch.object(
+            group_module.event_analyzer,
+            "run_analysis_from_args",
+            side_effect=ValueError("event analysis failed"),
+        ):
+            with pytest.raises(ValueError, match="event analysis failed"):
+                await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
+
     async def test_train_refreshes_and_dispatches(self):
         group = await _make_alive_controller(num_cells=2)
 
@@ -864,6 +991,22 @@ class TestCheckTrainOneAttempt:
         with pytest.raises(NonRetryableError, match="All cells failed"):
             _make_controller(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)
 
+    @pytest.mark.parametrize(
+        "results",
+        [
+            [_ERR],  # single cell errored
+            [_ERR, _ERR2],  # multiple cells all errored
+        ],
+    )
+    def test_raises_a_fatal_error_when_every_cell_is_already_errored(self, results):
+        """With every cell errored there is nothing left to heal, so an all-errored attempt is non-retryable."""
+        group = _make_controller(num_cells=1)
+        for cell in group._cells:
+            cell._mark_as_errored()
+
+        with pytest.raises(NonRetryableError, match="All cells failed"):
+            group._check_train_one_attempt(_alive_cells_for(results), results)
+
     def test_compute_attempt_outcomes_buckets_cells_by_index(self):
         """_compute_attempt_outcomes buckets each alive cell into errored / discarded / normal by index."""
         results = [_ERR, [DISCARDED], [NORMAL, NORMAL]]
@@ -926,6 +1069,32 @@ class TestTrainRetry:
 
         for i in range(2):
             assert _count_train_calls(group, i) == 4
+
+    async def test_a_failed_attempt_releases_values_returned_by_its_successful_workers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retry must release values already returned by successful workers in the failed attempt."""
+
+        class RecordingStore:
+            def __init__(self) -> None:
+                self.removed: list[Box] = []
+
+            def remove(self, ref: Box) -> None:
+                self.removed.append(ref)
+
+        group = await _make_alive_controller(num_cells=2)
+        values_ref = Box("failed-attempt-values")
+        successful_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=values_ref)
+        first_cell_handle = get_raw_actor_handles(_cell(group, 0))[0]
+        second_cell_handle = get_raw_actor_handles(_cell(group, 1))[0]
+        ray.get(first_cell_handle.set_train_return_values_per_attempt.remote([successful_output, NORMAL]))
+        ray.get(second_cell_handle.set_train_return_values_per_attempt.remote([DISCARDED, NORMAL]))
+        store = RecordingStore()
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+
+        await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        assert [ref.inner for ref in store.removed] == [values_ref.inner]
 
     async def test_cell_errored_does_not_retry_when_others_normal(self):
         """One cell errors during train but others return NORMAL → no retry.
@@ -1014,98 +1183,12 @@ class TestLogStepEndEvent:
             assert cell_outcomes[2] == [TrainStepOutcome.NORMAL]
 
 
-def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
-    """Build a flat per-engine check_weights('checksum') response."""
-    return [
-        {
-            "success": True,
-            "message": "ok",
-            "ranks": [{"checksums": cs, "parallelism_info": [{"role": "target", "rank": 0}]}],
-        }
-        for cs in engine_checksums
-    ]
-
-
-class TestMaybeLogInferenceEngineWeightChecksums:
-    async def test_no_event_logger_does_not_call_check_weights(self):
-        """Without an initialized event logger, no check_weights request is issued."""
-        inference_ctl = MagicMock()
-        inference_ctl.check_weights = MagicMock()
-        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
-
-        with patch("miles.ray.train.group.is_event_logger_initialized", return_value=False):
-            await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
-
-        inference_ctl.check_weights.assert_not_called()
-
-    async def test_none_rollout_id_logs_event(self):
-        """The initial out-of-loop sync (rollout_id=None) still logs an event with rollout_id=None."""
-        inference_ctl = MagicMock()
-        inference_ctl.check_weights = AsyncMock(return_value=_checksum_response([{"w": "e0"}]))
-        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
-
-        with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(
-            "miles.ray.train.group.get_event_logger"
-        ) as mock_get_logger:
-            mock_logger = MagicMock()
-            mock_get_logger.return_value = mock_logger
-
-            await group._maybe_log_inference_engine_weight_checksums(rollout_id=None)
-
-        mock_logger.log.assert_called_once()
-        logged = mock_logger.log.call_args.args[1]
-        assert logged == dict(rollout_id=None, engine_checksums=[{"rank0/w": "e0"}])
-
-    async def test_debug_train_only_skips_collection(self):
-        """Without real rollout engines (debug_train_only), no check_weights request is issued."""
-        inference_ctl = MagicMock()
-        inference_ctl.check_weights = MagicMock()
-        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
-        group.args.debug_train_only = True
-
-        with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
-            await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
-
-        inference_ctl.check_weights.assert_not_called()
-
-    async def test_debug_rollout_only_skips_collection(self):
-        """Without real train engines pushing weights (debug_rollout_only), no check_weights request is issued."""
-        inference_ctl = MagicMock()
-        inference_ctl.check_weights = MagicMock()
-        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
-        group.args.debug_rollout_only = True
-
-        with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
-            await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
-
-        inference_ctl.check_weights.assert_not_called()
-
-    async def test_enabled_logs_one_event_per_rollout(self):
-        """With event logger on and real engines, one event holds every engine's checksums."""
-        inference_ctl = MagicMock()
-        inference_ctl.check_weights = AsyncMock(return_value=_checksum_response([{"w": "e0"}, {"w": "e1"}]))
-        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
-
-        with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(
-            "miles.ray.train.group.get_event_logger"
-        ) as mock_get_logger:
-            mock_logger = MagicMock()
-            mock_get_logger.return_value = mock_logger
-
-            await group._maybe_log_inference_engine_weight_checksums(rollout_id=3)
-
-        inference_ctl.check_weights.assert_awaited_once_with("checksum")
-        mock_logger.log.assert_called_once()
-        logged = mock_logger.log.call_args.args[1]
-        assert logged == dict(rollout_id=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}])
-
-
 class TestCellStatusesUnderConcurrentReconcile:
-    def test_a_cell_removed_while_the_statuses_are_read_does_not_abort_the_read(self):
+    async def test_a_cell_removed_while_the_statuses_are_read_does_not_abort_the_read(self):
         """The api server reads this from its own thread while reconcile adds and drops cells,
         and iterating the live dict raises RuntimeError instead of answering the request."""
         controller = _make_controller(num_cells=3)
-        victim = f"{controller._pool_id}-1"
+        victim = compute_cell_id(pool_id=controller._pool_id, cell_index=1)
         real_cell = _cell(controller, 0)
 
         class _EvictingCell:
@@ -1113,35 +1196,42 @@ class TestCellStatusesUnderConcurrentReconcile:
                 controller._cells_by_id.pop(victim, None)
                 return real_cell.cell_status()
 
-        controller._cells_by_id[f"{controller._pool_id}-0"] = _EvictingCell()
+        controller._cells_by_id[compute_cell_id(pool_id=controller._pool_id, cell_index=0)] = _EvictingCell()
 
-        statuses = controller.get_cell_statuses()
+        statuses = await controller.get_cell_statuses()
 
         # The snapshot is taken before the first cell_status() call, so the evicted cell is still
         # answered for. What matters is that the read completes instead of raising.
-        assert set(statuses) == {f"{controller._pool_id}-{i}" for i in range(3)}
+        assert set(statuses) == {compute_cell_id(pool_id=controller._pool_id, cell_index=i) for i in range(3)}
 
 
 class TestUpdateWeightsReturnsTheVersion:
     def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
-        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False)
-        group._inference_controller = AsyncMock()
+        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
         group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
-        group._maybe_log_inference_engine_weight_checksums = AsyncMock()
         return group
 
     async def test_the_controller_answers_the_version_the_engines_now_serve(self):
         """The driver can only publish the version to the executor if the controller hands it back."""
         group = self._make_group(per_worker_versions=[11, 11])
 
-        assert await group.update_weights() == 11
+        assert await group.update_weights(info=MagicMock()) == 11
 
     async def test_a_trainer_that_skipped_the_broadcast_answers_nothing(self):
         """--debug-skip-weight-update returns None from every worker, which must reach the driver as None."""
         group = self._make_group(per_worker_versions=[None])
 
-        assert await group.update_weights() is None
+        assert await group.update_weights(info=MagicMock()) is None
+
+    async def test_it_broadcasts_the_window_the_orchestration_script_opened(self):
+        """The engines it writes into are the ones the script snapshotted, not a set it fetched for itself."""
+        group = self._make_group(per_worker_versions=[11])
+        info = MagicMock()
+
+        await group.update_weights(info=info)
+
+        group._execute_first_alive.assert_awaited_once_with("update_weights", info=info)
 
 
 class TestInitForwardsModelFlags:
@@ -1162,21 +1252,25 @@ class TestInitForwardsModelFlags:
 class TestTrainRunsFTTestActions:
     async def test_train_applies_the_action_armed_for_that_rollout_before_returning(self):
         """The FT scenario's stop must have landed by the time the driver starts the next rollout."""
-        actions = json.dumps([{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-actor-2"}])
+        actions = json.dumps(
+            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+        )
         group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
 
         await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
 
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == [["trainer-actor-2"]]
+        group._cell_operations.suspend.assert_awaited_once_with(cell_id="trainer-engine-actor-00002")
 
     async def test_train_leaves_the_pool_alone_on_a_rollout_no_action_names(self):
         """An action that fires on every rollout would tear the pool down for the whole run."""
-        actions = json.dumps([{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-actor-2"}])
+        actions = json.dumps(
+            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+        )
         group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
 
         await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
 
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == []
+        group._cell_operations.suspend.assert_not_awaited()
 
 
 class TestSaveModel:
@@ -1206,54 +1300,16 @@ class TestExportHf:
             assert [c[2] for c in export_calls] == [{"rollout_id": 4, "path": "/ckpt/hf-4"}]
 
 
-class _RecordingInferenceController:
-    def __init__(self, info: SimpleNamespace) -> None:
-        self._info = info
-        self.ended_with: list[dict[str, str]] = []
-
-    async def start_update_weights(self) -> SimpleNamespace:
-        return self._info
-
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
-        self.ended_with.append(snapshot_cell_id_to_hashes)
-
-
 class TestUpdateWeightsReachesTheWorker:
     async def test_the_engine_snapshot_reaches_the_worker_and_its_version_comes_back(self):
         """A worker that never sees the snapshot broadcasts to engines that were not part of the update window."""
         info = SimpleNamespace(snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"})
-        inference_controller = _RecordingInferenceController(info)
-        group = await _make_alive_controller(num_cells=1, inference_controller=inference_controller)
+        group = await _make_alive_controller(num_cells=1)
         for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_update_weights_return_value.remote(11))
 
-        assert await group.update_weights(rollout_id=3) == 11
+        assert await group.update_weights(info=info, rollout_id=3) == 11
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
             assert update_call[2]["info"].snapshot_cell_id_to_hashes == {"trainer-actor-0": "workers-hash-9"}
-        assert inference_controller.ended_with == [{"trainer-actor-0": "workers-hash-9"}]
-
-
-class TestSetRolloutExecutorFanOut:
-    async def test_every_worker_of_every_observed_cell_receives_the_executor(self):
-        """A worker without the handle cannot ship its samples, and the run stalls on that rank alone."""
-        group = await _make_alive_controller(num_cells=3, actor_count_per_cell=2, rollout_executor="executor-handle")
-
-        await group.set_rollout_executor()
-
-        for cell in group._cells:
-            for handle in get_raw_actor_handles(cell):
-                set_calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "set_rollout_executor"]
-                assert [c[2] for c in set_calls] == [{"rollout_executor": "executor-handle"}]
-
-    async def test_a_cell_that_refuses_the_executor_is_reported(self):
-        """Swallowing this would start the run with a rank that silently drops every sample it produces."""
-        group = await _make_alive_controller(num_cells=2, rollout_executor="executor-handle")
-        for handle in get_raw_actor_handles(_cell(group, 1)):
-            ray.get(handle.set_fail_methods.remote(["set_rollout_executor"]))
-
-        with pytest.raises(RuntimeError, match="Injected failure"):
-            await group.set_rollout_executor()
-
-        assert _cell(group, 1).is_errored

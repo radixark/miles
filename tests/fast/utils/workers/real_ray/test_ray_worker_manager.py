@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import time
 
 import pytest
@@ -14,7 +15,9 @@ from tests.fast.utils.workers.real_ray.conftest import (
 )
 
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from miles.utils.http_utils import wait_tcp_ready
+from miles.ray.wiring import shutdown_worker_manager
+from miles.utils.http_utils import wait_tcp_ready_async
+from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -38,13 +41,21 @@ class TestLaunchOnRealRay:
             cell_index, worker_in_cell_index = (int(part) for part in name.split("-"))
             assert record["context"]["cell_index"] == cell_index
             assert record["context"]["worker_in_cell_index"] == worker_in_cell_index
-            advertised = ray.get(handle.get_worker_addrs.remote(f"engine-{name}"))["primary"]
+            advertised = ray.get(
+                handle.get_worker_addrs.remote(
+                    compute_worker_name(
+                        pool_id="engine",
+                        cell_index=cell_index,
+                        worker_in_cell_index=worker_in_cell_index,
+                    )
+                )
+            )["primary"]
             assert record["context"]["self_addrs"]["primary"] == {
                 "host": advertised.host,
                 "port": advertised.port,
             }
 
-    def test_the_advertised_address_is_one_the_worker_can_serve_on(self, manager_factory, worker_probe_factory):
+    async def test_the_advertised_address_is_one_the_worker_can_serve_on(self, manager_factory, worker_probe_factory):
         """A worker can bind the port allocated for it, and that endpoint is what the manager advertises."""
         probe = worker_probe_factory(bind_primary=True)
         handle = manager_factory(
@@ -52,11 +63,16 @@ class TestLaunchOnRealRay:
         )
 
         probe.wait_for_records(3)
-        addrs = [ray.get(handle.get_worker_addrs.remote(f"engine-0-{index}"))["primary"] for index in range(3)]
+        addrs = [
+            ray.get(handle.get_worker_addrs.remote(compute_worker_name(pool_id="engine", worker_in_cell_index=index)))[
+                "primary"
+            ]
+            for index in range(3)
+        ]
 
         assert len({(addr.host, addr.port) for addr in addrs}) == 3
         for addr in addrs:
-            wait_tcp_ready(addr.host, addr.port, timeout=30)
+            await wait_tcp_ready_async(addr.host, addr.port, timeout=30)
 
     def test_the_worker_process_gets_the_env_vars_declared_by_its_spec(self, manager_factory, worker_probe_factory):
         """Env vars from the spec are visible inside the launched process."""
@@ -91,7 +107,28 @@ class TestLaunchOnRealRay:
         records = probe.wait_for_records(1)
 
         assert records["0-0"]["context"]["self_addrs"]["primary"]["port"] == 21987
-        assert ray.get(handle.get_worker_addrs.remote("router-0-0"))["primary"].port == 21987
+        assert ray.get(handle.get_worker_addrs.remote("router-00000-00000"))["primary"].port == 21987
+
+    def test_a_static_port_a_stale_process_still_holds_is_refused(self, manager_factory, worker_probe_factory):
+        """Readiness is a bare connect probe, which a stale listener satisfies, so a run that
+        launched anyway would silently drive the router an earlier run left behind."""
+        probe = worker_probe_factory()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as squatter:
+            squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            squatter.bind(("", 0))
+            squatter.listen(1)
+            taken = squatter.getsockname()[1]
+
+            with pytest.raises(Exception, match=f"Port {taken} .* is already in use"):
+                manager_factory(
+                    [
+                        make_command_spec(
+                            "router",
+                            launch_command=probe.launch_command,
+                            port_infos=[PortInfo(name="primary", static_port=taken, allow_dynamic=False)],
+                        )
+                    ]
+                )
 
     def test_a_spec_without_cells_launches_no_worker(self, manager_factory, worker_probe_factory):
         """A disabled spec is accepted and simply contributes no workers."""
@@ -107,7 +144,7 @@ class TestLaunchOnRealRay:
         enabled_probe.wait_for_records(1)
 
         assert disabled_probe.read_records() == {}
-        assert ray.get(handle.get_worker_addrs.remote("router-0-0"))["primary"].port > 0
+        assert ray.get(handle.get_worker_addrs.remote("router-00000-00000"))["primary"].port > 0
 
 
 class TestNamedManagerActor:
@@ -119,11 +156,12 @@ class TestNamedManagerActor:
         manager_factory([make_command_spec("router", launch_command=probe.launch_command)])
         records = probe.wait_for_records(1)
 
-        addr = (await RayWorkerProvider.create().get_addrs(worker_name="router-0-0"))["primary"]
+        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        addr = (await provider.get_addrs(worker_name="router-00000-00000"))["primary"]
 
         assert isinstance(addr, HostAndPort)
         assert records["0-0"]["context"]["self_addrs"]["primary"] == {"host": addr.host, "port": addr.port}
-        wait_tcp_ready(addr.host, addr.port, timeout=30)
+        await wait_tcp_ready_async(addr.host, addr.port, timeout=30)
 
     def test_an_unknown_worker_name_is_not_answered_with_another_workers_address(
         self, manager_factory, worker_probe_factory
@@ -134,7 +172,20 @@ class TestNamedManagerActor:
         probe.wait_for_records(1)
 
         with pytest.raises(ray.exceptions.RayTaskError):
-            ray.get(RayWorkerManager.get_handle().get_worker_addrs.remote("router-9-9"))
+            ray.get(RayWorkerManager.get_handle().get_worker_addrs.remote("router-00009-00009"))
+
+
+class TestRunShutdownOnRealRay:
+    async def test_shutdown_terminates_every_owned_worker_process(self, manager_factory, worker_probe_factory):
+        """Normal driver completion must reclaim the exact subprocesses its manager launched."""
+        probe = worker_probe_factory()
+        handle = manager_factory([make_command_spec("engine", num_cells=2, launch_command=probe.launch_command)])
+        records = probe.wait_for_records(2)
+
+        await shutdown_worker_manager(handle)
+
+        probe.wait_until_gone([record["pid"] for record in records.values()])
+        wait_until_named_manager_is_gone()
 
 
 class TestScaleOnRealRay:
@@ -321,6 +372,35 @@ class TestStopCellOnRealRay:
         probe.wait_until_gone(stopped_pids)
         assert all(is_process_running(pid) for pid in surviving_pids)
 
+    def test_a_restarted_cell_gets_new_actors_running_the_command_again(
+        self, cell_stoppable_manager_factory, worker_probe_factory
+    ):
+        """Healing is only ever exercised against the fake cluster, and a fake handle cannot show
+        that the dead slot is refilled by a genuinely new actor rather than the corpse of the old one."""
+        probe = worker_probe_factory()
+        manager_handle = cell_stoppable_manager_factory(
+            [make_command_spec("engine", num_cells=2, num_workers_per_cell=1, launch_command=probe.launch_command)]
+        )
+        probe.wait_for_records(2)
+        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        (before,) = provider.get_worker_infos(cell_ids=["engine-00001"])
+        stopped_pid = probe.read_records()["1-0"]["pid"]
+        survivor_pid = probe.read_records()["0-0"]["pid"]
+
+        ray.get(manager_handle.stop_cell.remote("engine", 1))
+        probe.wait_until_gone([stopped_pid])
+        ray.get(manager_handle.start_cells.remote(["engine-00001"]))
+
+        (after,) = provider.get_worker_infos(cell_ids=["engine-00001"])
+        assert after[0].name == before[0].name
+        assert after[0].generation > before[0].generation
+        deadline = time.monotonic() + 60
+        while (restarted_pid := probe.read_records()["1-0"]["pid"]) == stopped_pid:
+            assert time.monotonic() < deadline, "the restarted worker never recorded a new process"
+            time.sleep(0.2)
+        assert is_process_running(restarted_pid)
+        assert is_process_running(survivor_pid)
+
 
 class TestWorkerInfosOnRealRay:
     async def test_a_driver_can_describe_and_reach_the_workers_of_one_cell(
@@ -333,15 +413,17 @@ class TestWorkerInfosOnRealRay:
         )
         records = probe.wait_for_records(4)
 
-        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine-1"))
+        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        (infos,) = provider.get_worker_infos(cell_ids=["engine-00001"])
+        handles = provider.get_handles_of_worker_infos(infos)
 
-        assert [info.name for info in infos] == ["engine-1-0", "engine-1-1"]
+        assert [info.name for info in infos] == ["engine-00001-00000", "engine-00001-00001"]
         assert [info.generation for info in infos] == [1, 1]
         assert [info.gpu_ids for info in infos] == [[], []]
         for worker_in_cell_index, info in enumerate(infos):
             recorded = records[f"1-{worker_in_cell_index}"]["context"]["self_addrs"]["primary"]
             assert {"host": info.self_addrs["primary"].host, "port": info.self_addrs["primary"].port} == recorded
-            node_ip = await info.handle._get_node_ip()
+            node_ip = await handles[info.name]._get_node_ip()
             assert info.self_addrs["primary"].host.strip("[]") == node_ip
 
 
@@ -351,22 +433,24 @@ class TestWorkerDeathOnRealRay:
         probe = worker_probe_factory()
         manager_factory([make_command_spec("engine", num_workers_per_cell=2, launch_command=probe.launch_command)])
         probe.wait_for_records(2)
-        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine-0"))
+        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        (infos,) = provider.get_worker_infos(cell_ids=["engine-00000"])
+        handles = [provider.get_handle(info.name) for info in infos]
 
         # The babysit thread may reach os._exit before this reply is sent, so losing the reply is
         # the death under test arriving early rather than a failure; the loop below still has to
         # observe it, so nothing is taken on faith here.
         try:
-            await infos[0].handle.kill_subprocess()
+            await handles[0].kill_subprocess()
         except WorkerUnreachableError:
             pass
 
         deadline = time.monotonic() + 60
         while True:
             try:
-                await asyncio.wait_for(infos[0].handle._get_node_ip(), timeout=5)
+                await asyncio.wait_for(handles[0]._get_node_ip(), timeout=5)
             except (WorkerUnreachableError, asyncio.TimeoutError):
                 break
             assert time.monotonic() < deadline, "the actor of a dead command is still alive"
             await asyncio.sleep(0.5)
-        assert await asyncio.wait_for(infos[1].handle._get_node_ip(), timeout=30)
+        assert await asyncio.wait_for(handles[1]._get_node_ip(), timeout=30)

@@ -30,7 +30,8 @@ def logged(monkeypatch):
 
 
 def make_args(**overrides):
-    return SimpleNamespace(wandb_always_use_train_step=False, mfu_peak_tflops=None, **overrides)
+    defaults = dict(wandb_always_use_train_step=False, mfu_peak_tflops=None, trainer_model_id=None)
+    return SimpleNamespace(**{**defaults, **overrides})
 
 
 def run(timer, args, *, times: dict[str, float], peak: float | None):
@@ -90,3 +91,24 @@ def test_non_primary_rank_logs_nothing(timer, logged):
     timer.timers = {"actor_train": 2.0}
     log_perf_data_raw(rollout_id=0, args=make_args(), is_primary_rank=False, compute_total_fwd_flops=lambda **_: 1.0)
     assert logged == []
+
+
+class TestLogPerfData:
+    def test_the_perf_curves_follow_the_policy_step_axis(self, timer, monkeypatch):
+        """Every perf point of a policy must land on that policy's own step axis, not on a shared one."""
+        calls: list[tuple[dict, str]] = []
+        monkeypatch.setattr(
+            train_metric_utils.tracking, "log", lambda _args, payload, step_key: calls.append((payload, step_key))
+        )
+        timer.timers = {"actor_train": 2.0}
+
+        log_perf_data_raw(
+            rollout_id=3,
+            args=make_args(trainer_model_id="alpha"),
+            is_primary_rank=True,
+            compute_total_fwd_flops=None,
+        )
+
+        [(payload, step_key)] = calls
+        assert step_key == "alpha/rollout/step"
+        assert payload == {"alpha/perf/actor_train_time": 2.0, "alpha/rollout/step": 3}

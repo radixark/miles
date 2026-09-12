@@ -81,6 +81,20 @@ class TestBaseGpuId:
         assert server_args["base_gpu_id"] == 7
 
 
+class TestDeviceResolution:
+    def test_generic_device_arg_takes_precedence_over_the_cuda_default(self):
+        """An explicit generic device remains authoritative over the controller-safe default."""
+        server_args = compute(make_args(sglang_device="cpu"))
+
+        assert server_args["device"] == "cpu"
+
+    def test_group_device_override_takes_precedence_over_the_cuda_default(self):
+        """A per-group device override remains authoritative over the controller-safe default."""
+        server_args = compute(make_args(), sglang_overrides={"device": "xpu"})
+
+        assert server_args["device"] == "xpu"
+
+
 class TestSglangOverridePrecedence:
     """An override must win over every args-derived default, including the conditional ones."""
 

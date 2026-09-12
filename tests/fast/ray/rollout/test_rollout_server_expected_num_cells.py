@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout import rollout_server as rollout_server_module
-from miles.ray.rollout.rollout_server import create_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
+from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_engine_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.health_checker import ActiveAndEpoch
-from miles.utils.workers.worker_spec import HostAndPort
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 _CONFIG_SINGLE_GROUP: list[dict] = [
     dict(
@@ -101,20 +101,34 @@ def _expected_num_cells_from_specs(args: Namespace) -> dict[int, int]:
     return counts
 
 
-@pytest.fixture(autouse=True)
-def stub_router(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _wait_router_ready(model_idx: int) -> HostAndPort:
-        return HostAndPort(host="127.0.0.1", port=20000 + model_idx)
+class _StubProvider(BaseWorkerProvider):
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"no cell is created in this module ({worker_name=})")
 
-    monkeypatch.setattr(rollout_server_module, "wait_router_ready", _wait_router_ready)
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list:
+        raise AssertionError(f"no cell is created in this module ({cell_ids=})")
 
 
-async def _create_servers(args) -> dict:
-    """create_rollout_servers takes the controller's lock and activeness getter in production."""
+class _CountingProvider(_StubProvider):
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def expected_num_cells(self, *, group_id: str) -> int:
+        return self._count
+
+
+def _make_router_addrs(models: list[dict]) -> dict[str, HostAndPort]:
+    return {
+        model["name"]: HostAndPort(host="127.0.0.1", port=20000 + model_idx) for model_idx, model in enumerate(models)
+    }
+
+
+async def _create_servers(args: Namespace, models: list[dict]) -> dict[str, RolloutServer]:
     return await create_rollout_servers(
         args,
-        context_lock=ContextLock("test"),
-        global_health_checker_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
+        context_lock=ContextLock("InferenceController"),
+        engine_provider=_StubProvider(),
+        router_addrs=_make_router_addrs(models),
     )
 
 
@@ -137,10 +151,10 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         args = _make_args_with_config(models=models, tmp_path=tmp_path)
         expected_per_model_idx = _expected_num_cells_from_specs(args)
 
-        servers = await _create_servers(args)
+        servers = await _create_servers(args, models)
 
         actual_per_model_idx = {
-            model_idx: servers[model["name"]].expected_num_cells for model_idx, model in enumerate(models)
+            model_idx: servers[model["name"]].init_expected_num_cells for model_idx, model in enumerate(models)
         }
         assert actual_per_model_idx == expected_per_model_idx
 
@@ -148,24 +162,77 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         """Placeholder groups only reserve GPU slots, so counting them would make the barrier unreachable."""
         args = _make_args_with_config(models=_CONFIG_WITH_PLACEHOLDER, tmp_path=tmp_path)
 
-        servers = await _create_servers(args)
+        servers = await _create_servers(args, _CONFIG_WITH_PLACEHOLDER)
 
-        assert servers["actor"].expected_num_cells == 2
+        assert servers["actor"].init_expected_num_cells == 2
 
     async def test_every_model_gets_its_own_barrier_target(self, tmp_path: Path) -> None:
         """Sharing one pool size across models would block the small model behind the big one."""
         args = _make_args_with_config(models=_CONFIG_MULTI_MODEL, tmp_path=tmp_path)
 
-        servers = await _create_servers(args)
+        servers = await _create_servers(args, _CONFIG_MULTI_MODEL)
 
-        assert servers["actor"].expected_num_cells == 4
-        assert servers["ref"].expected_num_cells == 1
+        assert servers["actor"].init_expected_num_cells == 4
+        assert servers["ref"].init_expected_num_cells == 1
+
+    async def test_every_model_talks_to_its_own_router(self, tmp_path: Path) -> None:
+        """A server paired with another model's router would advertise its cells to the wrong fleet."""
+        args = _make_args_with_config(models=_CONFIG_MULTI_MODEL, tmp_path=tmp_path)
+
+        servers = await _create_servers(args, _CONFIG_MULTI_MODEL)
+
+        actual = {
+            name: HostAndPort(host=server.router_ip, port=server.router_port) for name, server in servers.items()
+        }
+        assert actual == _make_router_addrs(_CONFIG_MULTI_MODEL)
+
+
+class TestExpectedNumCellsAsksTheProvider:
+    async def test_a_provider_with_an_opinion_overrides_the_config_derivation(self) -> None:
+        """External providers know their fleet, so their count must beat the gpu-count formula."""
+        args = make_args(rollout_external=True, rollout_external_engine_addrs=["host1:8000", "host2:8000"])
+
+        servers = await create_rollout_servers(
+            args,
+            context_lock=ContextLock("InferenceController"),
+            engine_provider=_CountingProvider(2),
+            router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
+        )
+
+        assert servers["default"].init_expected_num_cells == 2
+
+    async def test_a_provider_that_starts_with_no_cells_is_not_treated_as_having_no_opinion(self) -> None:
+        """An elastic provider legitimately announces zero cells at startup; folding that into the
+        config formula would park the run on a barrier waiting for cells nobody will create."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, rollout_external=True)
+
+        servers = await create_rollout_servers(
+            args,
+            context_lock=ContextLock("InferenceController"),
+            engine_provider=_CountingProvider(0),
+            router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
+        )
+
+        assert servers["default"].init_expected_num_cells == 0
+
+    async def test_a_provider_without_an_opinion_falls_back_to_the_config_derivation(self) -> None:
+        """Backend providers announce cells they are told to launch, so the config stays the source."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4)
+
+        servers = await create_rollout_servers(
+            args,
+            context_lock=ContextLock("InferenceController"),
+            engine_provider=_StubProvider(),
+            router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
+        )
+
+        assert servers["default"].init_expected_num_cells == 2
 
 
 class TestEngineSpecNamingUsedByTheCrossCheck:
     def test_pool_names_carry_the_model_index_the_cross_check_parses(self) -> None:
         """The cross-check maps specs back to models by name, so that encoding must stay stable."""
-        assert compute_engine_pool_id(model_idx=3, group_index=7) == "inference-engine-3-7"
+        assert compute_engine_pool_id(make_args(), model_idx=3, group_index=7) == "inference-engine-all-3-7"
 
 
 class TestRouterFlagsAtStartup:
@@ -175,7 +242,7 @@ class TestRouterFlagsAtStartup:
         args = _make_args_with_config(models=_CONFIG_SINGLE_GROUP, tmp_path=tmp_path)
         args.sglang_router_port = 31000
 
-        assert await _create_servers(args)
+        assert await _create_servers(args, _CONFIG_SINGLE_GROUP)
 
     async def test_an_external_router_ip_is_still_rejected(self, tmp_path: Path) -> None:
         """Attaching to a router miles did not start is not supported yet, and silently starting
@@ -184,4 +251,57 @@ class TestRouterFlagsAtStartup:
         args.sglang_router_ip = "10.0.0.9"
 
         with pytest.raises(AssertionError, match="external router mode was removed"):
-            await _create_servers(args)
+            await resolve_router_addrs(args, router_providers=[_StubProvider()])
+
+
+class TestInitExpectedNumCellsOfARegisteringRun:
+    async def test_a_run_whose_engines_register_waits_for_one_cell_unless_told_otherwise(self) -> None:
+        """A split run reaches its first rollout on one engine, so the simplest split needs no flag."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, deploy_component="primary")
+
+        servers = await _servers_of(args, provider=_StubProvider())
+
+        assert servers["default"].init_expected_num_cells == 1
+
+    async def test_a_run_whose_engines_register_waits_for_the_number_it_was_told(self) -> None:
+        """Its own config sizes engines it does not deploy, so only the flag names what to wait for."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, deploy_component="primary")
+        args.init_expected_num_cells = 3
+
+        servers = await _servers_of(args, provider=_StubProvider())
+
+        assert servers["default"].init_expected_num_cells == 3
+
+    async def test_a_run_deploying_its_own_engines_derives_the_barrier_from_its_config(self) -> None:
+        """It launches every cell it waits for, and the flag is refused where the arguments are validated."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4)
+
+        servers = await _servers_of(args, provider=_StubProvider())
+
+        assert servers["default"].init_expected_num_cells == 2
+
+    async def test_the_flag_beats_a_provider_that_answers_for_its_own_fleet(self) -> None:
+        """Nothing here can tell a stale provider answer from a live one, so an explicit number wins."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, deploy_component="primary")
+        args.init_expected_num_cells = 3
+
+        servers = await _servers_of(args, provider=_CountingProvider(7))
+
+        assert servers["default"].init_expected_num_cells == 3
+
+    async def test_a_provider_that_answers_beats_the_registration_fallback(self) -> None:
+        """An external provider knows its own fleet, and the fallback is a guess of one cell."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, deploy_component="primary")
+
+        servers = await _servers_of(args, provider=_CountingProvider(7))
+
+        assert servers["default"].init_expected_num_cells == 7
+
+
+async def _servers_of(args: Namespace, *, provider: BaseWorkerProvider) -> dict[str, RolloutServer]:
+    return await create_rollout_servers(
+        args,
+        context_lock=ContextLock("InferenceController"),
+        engine_provider=provider,
+        router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
+    )

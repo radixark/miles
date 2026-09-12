@@ -3,13 +3,13 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_name: str = "Qwen3.5-35B-A3B"
     megatron_model_type: str = "qwen3.5-35B-A3B"
     num_gpus_per_node: int | None = None
@@ -30,11 +30,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     sglang_max_running_requests: int | None = None
 
     def __post_init__(self):
-        self.hardware = U.resolve_hardware(self)
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -51,6 +52,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
@@ -177,7 +179,7 @@ def execute(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -188,7 +190,6 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
@@ -198,7 +199,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     prepare(args)
     execute(args)

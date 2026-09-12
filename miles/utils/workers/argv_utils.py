@@ -1,9 +1,11 @@
 import argparse
+import contextlib
 import dataclasses
 import json
+import shlex
 import sys
-from collections.abc import Callable, Mapping, Sequence
-from typing import TypeVar
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from typing import Any, NamedTuple, TypeVar
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -26,6 +28,9 @@ def python_argv_prefix() -> list[str]:
         if token in _INTERPRETER_FLAGS_TAKING_A_VALUE:
             prefix.append(next(tokens))
     return prefix
+
+
+# ==================== config argv ====================
 
 
 def config_to_argv(config: FrozenStrictBaseModel) -> list[str]:
@@ -60,9 +65,11 @@ def render_cli_argv(
     actions_by_dest = _actions_by_dest(make_parser())
     field_to_dest = field_to_dest or {}
 
+    def action_of(field_name: str) -> argparse.Action:
+        return _resolve_action(actions_by_dest, field_name=field_name, field_to_dest=field_to_dest or {})
+
     def render(field_name: str, value: object) -> list[str]:
-        action = _resolve_action(actions_by_dest, field_name=field_name, field_to_dest=field_to_dest)
-        return _render_action_argv(action, value)
+        return _render_action_argv(action_of(field_name), value)
 
     argv = [
         token
@@ -79,16 +86,24 @@ def render_cli_argv(
     for name, value in input_values.items():
         if name in always_render_fields or value is None:
             continue
-
-        action = _resolve_action(actions_by_dest, field_name=name, field_to_dest=field_to_dest)
+        action = action_of(name)
+        if not _is_renderable(action, value):
+            continue
         if value == action.default:
             continue
-        argv.extend(_render_action_argv(action, value))
+        argv.extend(render(name, value))
 
-    parsed = from_parsed(make_parser().parse_args(argv))
+    parsed = from_parsed(_parse_without_exiting(make_parser(), argv))
     mismatch = _describe_mismatch(parsed, expected_obj, uncompared_fields=uncompared_fields)
     assert not mismatch, f"cli argv roundtrip mismatch on {mismatch}"
     return argv
+
+
+def _parse_without_exiting(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    try:
+        return parser.parse_args(argv)
+    except SystemExit as exiting:
+        raise AssertionError(f"the argument parser rejects the rendered {shlex.join(argv)}") from exiting
 
 
 def _describe_mismatch(parsed: _ArgsT, wanted: _ArgsT, *, uncompared_fields: frozenset[str]) -> str:
@@ -121,6 +136,14 @@ def _resolve_action(
         f"{field_name!r} cannot be rendered: the parser registers no option for dest {dest!r}. "
         f"Add an entry to field_to_dest, or pass the value through the native passthrough path."
     )
+
+
+def _is_renderable(action: argparse.Action, value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(action, argparse.BooleanOptionalAction):
+        return True
+    return action.nargs != 0 or value == action.const
 
 
 def _render_action_argv(action: argparse.Action, value: object) -> list[str]:
@@ -175,3 +198,162 @@ def _boolean_option_string(action: argparse.Action, *, value: bool) -> str:
         return positive[0]
     assert negative, f"{action.dest!r} cannot be rendered: no negative option string"
     return negative[0]
+
+
+# ==================== parser reflection ====================
+
+
+def parse_declared_args(text: str, *, parser: argparse.ArgumentParser) -> dict[str, object]:
+    tokens = shlex.split(text)
+    with with_relax_parser_required_args(parser):
+        namespace, unknown = parser.parse_known_args(tokens)
+    assert not unknown, f"the argument parser does not declare {unknown} of {text!r}"
+
+    action_by_option_string = parser._option_string_actions
+    dests = []
+    for token in tokens:
+        if not token.startswith("--"):
+            continue
+        assert token in action_by_option_string, f"the argument parser does not declare {token!r}"
+        dests.append(action_by_option_string[token].dest)
+    return {dest: getattr(namespace, dest) for dest in dests}
+
+
+def declared_arg_dests(parser: argparse.ArgumentParser) -> frozenset[str]:
+    return frozenset(action.dest for action in parser._actions)
+
+
+def coerce_dict_to_args(
+    values: Mapping[str, Any], *, parser: argparse.ArgumentParser, allowed_names: frozenset[str], context: str
+) -> dict[str, Any]:
+    dest_of_option_name = _compute_dest_of_option_names(parser)
+    arg_specs = _compute_arg_specs(parser)
+    allowed_dests = frozenset(dest_of_option_name.get(name, name) for name in allowed_names)
+
+    dest_of_name = {name: dest_of_option_name.get(name, name) for name in values}
+    aliased = {dest: names for dest, names in _invert_dict(dest_of_name).items() if len(names) > 1}
+    assert not aliased, f"{context} names one argument twice: {aliased}; only the last of each group survives"
+
+    return {
+        (dest := dest_of_name[name]): _coerce_value(
+            value, dest=dest, spec=arg_specs.get(dest), allowed_dests=allowed_dests, context=context
+        )
+        for name, value in values.items()
+    }
+
+
+def _invert_dict(mapping: dict[str, str]) -> dict[str, list[str]]:
+    inverted: dict[str, list[str]] = {}
+    for key, value in mapping.items():
+        inverted.setdefault(value, []).append(key)
+    return inverted
+
+
+def _coerce_value(
+    value: Any, *, dest: str, spec: "_ArgSpec | None", allowed_dests: frozenset[str], context: str
+) -> Any:
+    assert dest in allowed_dests, (
+        f"{context} sets {dest!r}, which it may not override; only these are allowed: {sorted(allowed_dests)}. "
+        f"Everything else is read from the base command line, so setting it here would be silently ignored"
+    )
+    assert value is not None, f"{context} sets {dest!r} with no value"
+    assert spec is not None, (
+        f"{dest!r} is allowed, but the argument parser declares no such argument, so the value {value!r} "
+        f"of {context} cannot be typed"
+    )
+
+    if spec.type is bool:
+        assert isinstance(value, bool), f"{context} sets {dest!r} to {value!r}, which is not a boolean"
+        return value
+
+    if isinstance(value, list):
+        assert _takes_several_values(
+            spec
+        ), f"{context} sets {dest!r} to the list {value!r}, but the command line takes a single value there"
+        return [_coerce_one_value(item, dest=dest, spec=spec, context=context) for item in value]
+
+    return _coerce_one_value(value, dest=dest, spec=spec, context=context)
+
+
+def _takes_several_values(spec: "_ArgSpec") -> bool:
+    return spec.nargs in ("*", "+") or (isinstance(spec.nargs, int) and spec.nargs > 1)
+
+
+def _coerce_one_value(value: Any, *, dest: str, spec: "_ArgSpec", context: str) -> Any:
+    assert not isinstance(value, bool) and isinstance(
+        value, (int, float, str)
+    ), f"{context} sets {dest!r} to {value!r}, which is not a {spec.type.__name__}"
+    coerced = _coerce_scalar(value, dest=dest, spec=spec, context=context)
+    assert (
+        spec.choices is None or coerced in spec.choices
+    ), f"{context} sets {dest!r} to {value!r}, but the command line only accepts {list(spec.choices)}"
+    return coerced
+
+
+def _coerce_scalar(value: int | float | str, *, dest: str, spec: "_ArgSpec", context: str) -> Any:
+    try:
+        return spec.type(str(value))
+    except ValueError as exception:
+        raise AssertionError(
+            f"{context} sets {dest!r} to {value!r}, which the command line would reject: {exception}"
+        ) from exception
+
+
+class _ArgSpec(NamedTuple):
+    dest: str
+    type: type
+    choices: tuple[Any, ...] | None
+    nargs: int | str | None
+
+
+def _compute_arg_specs(parser: argparse.ArgumentParser) -> dict[str, _ArgSpec]:
+    return {action.dest: _compute_arg_spec(action) for action in parser._actions}
+
+
+def _compute_dest_of_option_names(parser: argparse.ArgumentParser) -> dict[str, str]:
+    return {
+        option.removeprefix("--").replace("-", "_"): action.dest
+        for action in parser._actions
+        for option in action.option_strings
+        if option.startswith("--")
+    }
+
+
+def _compute_arg_spec(action: argparse.Action) -> _ArgSpec:
+    choices = None if action.choices is None else tuple(action.choices)
+    return _ArgSpec(dest=action.dest, type=_compute_arg_type(action), choices=choices, nargs=action.nargs)
+
+
+@contextlib.contextmanager
+def with_suppressed_parser_help(parser: argparse.ArgumentParser) -> Iterator[None]:
+    suppressed = {
+        option: action
+        for option, action in parser._option_string_actions.items()
+        if isinstance(action, argparse._HelpAction)
+    }
+    for option in suppressed:
+        del parser._option_string_actions[option]
+    try:
+        yield
+    finally:
+        parser._option_string_actions.update(suppressed)
+
+
+@contextlib.contextmanager
+def with_relax_parser_required_args(parser: argparse.ArgumentParser) -> Iterator[None]:
+    required = [action for action in parser._actions if action.required]
+    for action in required:
+        action.required = False
+    try:
+        yield
+    finally:
+        for action in required:
+            action.required = True
+
+
+def _compute_arg_type(action: argparse.Action) -> type:
+    if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse.BooleanOptionalAction)):
+        return bool
+    if action.type is None:
+        return str
+    return action.type

@@ -136,12 +136,11 @@ def rollout_env(tmp_path, request) -> RolloutEnv:
     data_path = str(tmp_path / "data.jsonl")
     _write_jsonl(data_path, data_rows)
 
-    router_port = find_available_port(20000)
-    args = _build_args(data_path=data_path, router_port=router_port, extra_argv=config.extra_argv)
-
     SingletonMeta.clear_all_instances()
 
-    with with_mock_server(model_name=args.hf_checkpoint, latency=config.latency) as mock_server:
+    with with_mock_server(latency=config.latency) as mock_server:
+        router_port = find_available_port(20000)
+        args = _build_args(data_path=data_path, router_port=router_port, extra_argv=config.extra_argv)
         with _with_miles_router(args) as router_server:
             r = requests.post(
                 f"{router_server.url}/add_worker",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
@@ -12,11 +11,11 @@ from starlette.responses import JSONResponse
 
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
-from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
 
@@ -30,36 +29,36 @@ _THREAD_READY_POLL_INTERVAL_SECONDS = 0.05
 def start_api_server(
     *,
     args,
-    actor_model: TrainerController,
-    inference_controller: object,
+    trainer_models: dict[str, BaseWorkerHandle],
+    inference_controller: BaseWorkerHandle | None,
     host: str = "127.0.0.1",
     port: int,
     ft_components: list[str],
+    cell_operations: BaseCellOperations,
 ) -> None:
-    controller_loop = asyncio.get_running_loop()
     handlers: list[_CellHandler] = []
 
     if "train" in ft_components:
         handlers.append(
             _CellHandler(
                 cell_type="actor",
-                worker_manager=RayWorkerManager.get_handle(),
-                controller=actor_model,
-                pool_ids=[compute_trainer_pool_id("actor")],
+                operations=cell_operations,
+                controllers=list(trainer_models.values()),
+                pool_ids=[compute_trainer_pool_id(trainer_id) for trainer_id in trainer_models],
             )
         )
 
     if "rollout" in ft_components:
+        assert inference_controller is not None, (
+            "rollout cells are suspended and resumed through the inference controller, so a deployment that runs "
+            "none of its own cannot answer for them"
+        )
         handlers.append(
             _CellHandler(
                 cell_type="rollout",
-                worker_manager=RayWorkerManager.get_handle(),
-                controller=inference_controller,
+                operations=cell_operations,
+                controllers=[inference_controller],
                 pool_ids=compute_engine_pool_ids(args),
-                # TEMPORARY: routed through the controller so a suspend takes the lock the weight update holds,
-                # reverted with the weight-update fault tolerance work
-                cell_operations=inference_controller,
-                cell_operations_loop=controller_loop,
             )
         )
 

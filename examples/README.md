@@ -10,6 +10,7 @@ End-to-end training workflows — the place to start.
   - **[multi_turn](./geo3k_vlm/multi_turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
 - **[multi_lora](./multi_lora)**: Fully-async multi-adapter LoRA training with a slot-keyed adapter page table.
+- **[multi_policy](./multi_policy)**: Two policies in one run — a solver answering gsm8k, and a verifier scored on ruling correctly about the solver's answers.
 - **[on_policy_distillation](./on_policy_distillation)**: Teacher–student distillation on the student's own rollouts, run inside the on-policy training loop.
   - **[qwen3_5_35b_selfdistill](./on_policy_distillation/qwen3_5_35b_selfdistill)**: Two-phase self-distillation of Qwen3.5-35B-A3B on one 8xH200 node, with an in-process Megatron teacher.
 - **[ppo](./ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
@@ -22,9 +23,11 @@ Runtime and infrastructure plumbing rather than training recipes — how miles m
 data and weights around.
 
 - **[fully_async](./infra_features/fully_async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
+- **[hot_restart](./infra_features/hot_restart)**: Replaces the orchestration script and rollout executor of a live run, keeping trainers and engines up.
 - **[low_precision](./infra_features/low_precision)**: Examples of FP8 training and inference, plus INT4 QAT, for improved throughput and stability.
 - **[p2p_weight_transfer](./infra_features/p2p_weight_transfer)**: Point-to-point weight transfer between training and rollout engines.
 - **[random_async](./infra_features/random_async)**: Dataset-free stress test of the async rollout ↔ trainer loop.
+- **[split_deployment](./infra_features/split_deployment)**: Installs one run as several helm releases — trainer, engines and orchestration script apart.
 - **[train_infer_mismatch_helper](./infra_features/train_infer_mismatch_helper)**: Algorithmic methods for rollout correction (e.g., TIS, MIS).
 - **[true_on_policy](./infra_features/true_on_policy)**: Ensures strictly equal log probabilities between inference (SGLang) and training engines.
 

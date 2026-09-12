@@ -12,7 +12,7 @@ time. Once you know which side is wrong, it becomes an ordinary debugging sessio
 |---|---|
 | `--debug-rollout-only` | Run generation only. The training backend (Megatron or FSDP) is never initialized. |
 | `--debug-train-only` | Run training only. No SGLang engines are started. |
-| `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. |
+| `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. The template must contain `{rollout_id}`, which also carries the eval and policy prefixes. |
 | `--load-debug-rollout-data <path>` | Train from those recordings instead of generating. Implies `--debug-train-only`, since it does not start engines. |
 
 The two `--debug-*-only` flags are mutually exclusive and argument validation rejects
@@ -102,10 +102,10 @@ SHA256 over each layer's parameter bytes, including name, shape and dtype, and w
 JSON per rank under `iter_<iteration>/model_hash_tp*_pp*_dp*_cp*.json`. Layer granularity
 is deliberate: a mismatch names the layer instead of just saying the model differs.
 
-**Fault injection.** `--ci-ft-test-actions` takes a JSON array of actions such as
-`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_id": "trainer-actor-0"}`, with
-`stop_cell_at_end`, `start_cell_at_end` and `crash_before_allreduce` available and `cell_id`
-naming the target cell. It is how the fault-tolerance suite kills things on purpose. See
+**Fault injection.** `--ci-ft-test-actions` takes a JSON array of actions, such as
+`[{"at_rollout": 3, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00000"}]`. The
+actions are `stop_cell_at_end`, `start_cell_at_end`, `crash_before_allreduce` and
+`sleep_forever_at_end`. It is how the fault-tolerance suite kills things on purpose. See
 [Fault Tolerance](/advanced/fault-tolerance).
 
 ## Aligning precision

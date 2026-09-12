@@ -82,13 +82,16 @@ def save_dashboard_columns(samples: list[Sample], path: Path) -> None:
     tmp.replace(path)
 
 
-def save_debug_trajectory_data(args, samples: list[Sample], rollout_id, evaluation: bool):
+def save_debug_trajectory_data(
+    args, samples: list[Sample], rollout_id, evaluation: bool, trainer_model_id: str | None = None
+):
     if (path_template := args.save_debug_trajectory_data) is None:
         return
     rows = trajectory_rows(samples)
     if not rows:
         return  # no conversations: no file (the dashboard keys off its presence)
-    path = Path(path_template.format(rollout_id=("eval_" if evaluation else "") + str(rollout_id)))
+    stem = _compute_dump_stem(rollout_id, evaluation=evaluation, trainer_model_id=trainer_model_id)
+    path = _format_dump_path(path_template, stem=stem)
     logger.info(f"Save trajectory dump to {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -110,21 +113,39 @@ def load_debug_rollout_data(args, rollout_id: int) -> tuple[list[Sample], dict]:
     return data, metadata
 
 
-def save_debug_rollout_data(args, data, rollout_id, evaluation: bool, metadata: dict | None = None) -> None:
+def save_debug_rollout_data(
+    args, data, rollout_id, evaluation: bool, metadata: dict | None = None, trainer_model_id: str | None = None
+) -> None:
     # TODO to be refactored (originally Buffer._set_data)
     if (path_template := args.save_debug_rollout_data) is not None:
-        path = Path(path_template.format(rollout_id=("eval_" if evaluation else "") + str(rollout_id)))
+        stem = _compute_dump_stem(rollout_id, evaluation=evaluation, trainer_model_id=trainer_model_id)
+        path = _format_dump_path(path_template, stem=stem)
         logger.info(f"Save debug rollout data to {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
 
         samples = [sample for info in data.values() for sample in info["samples"]] if evaluation else list(data)
-        save_debug_trajectory_data(args, samples, rollout_id, evaluation)
-        stem = ("eval_" if evaluation else "") + str(rollout_id)
+        save_debug_trajectory_data(args, samples, rollout_id, evaluation, trainer_model_id=trainer_model_id)
         save_dashboard_columns(samples, path.parent.parent / "dashboard_columns" / f"rollout_{stem}.parquet")
 
         # TODO may improve the format
         dump_data = dict(samples=[sample.to_dict() for sample in samples])
         torch.save(dict(rollout_id=rollout_id, metadata=metadata or {}, **dump_data), path)
+
+
+def _format_dump_path(path_template: str, *, stem: str) -> Path:
+    assert (
+        "{rollout_id}" in path_template
+    ), f"Debug dump path template {path_template!r} must contain the {{rollout_id}} placeholder"
+    return Path(path_template.format(rollout_id=stem))
+
+
+def _compute_dump_stem(rollout_id, *, evaluation: bool, trainer_model_id: str | None) -> str:
+    ans = str(rollout_id)
+    if (x := trainer_model_id) is not None:
+        ans = f"{x}_{ans}"
+    if evaluation:
+        ans = f"eval_{ans}"
+    return ans
 
 
 class RolloutDataInjectionUtil:

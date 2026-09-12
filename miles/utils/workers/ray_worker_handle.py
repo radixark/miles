@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import ray
 
-from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
+from miles.utils.workers.worker_handle import (
+    _WAIT_DEAD_PROBE_INTERVAL_SECONDS,
+    BaseWorkerHandle,
+    WorkerUnreachableError,
+)
 
 logger = logging.getLogger(__name__)
-
-_WAIT_DEAD_PROBE_INTERVAL_SECONDS = 1.0
 
 
 class RayWorkerHandle(BaseWorkerHandle):
@@ -23,15 +24,17 @@ class RayWorkerHandle(BaseWorkerHandle):
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
 
-        async def call(**kwargs: Any) -> Any:
+        async def call(*args: Any, **kwargs: Any) -> Any:
             try:
-                return await getattr(self._actor_handle, name).remote(**kwargs)
+                return await getattr(self._actor_handle, name).remote(*args, **kwargs)
             except ray.exceptions.RayActorError as e:
                 raise WorkerUnreachableError(f"Worker died or is unreachable when calling {name!r}: {e!r}") from e
 
         return call
 
-    async def wait_ready(self, *, timeout: float) -> None:
+    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
+        del allow_server_uuid_change
+
         try:
             await asyncio.wait_for(self._actor_handle.__ray_ready__.remote(), timeout=timeout)
         except ray.exceptions.RayActorError as e:
@@ -39,22 +42,21 @@ class RayWorkerHandle(BaseWorkerHandle):
         except (TimeoutError, asyncio.TimeoutError) as e:
             raise WorkerUnreachableError(f"Worker not ready within {timeout}s") from e
 
-    async def wait_dead(self, *, timeout: float) -> None:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                await asyncio.wait_for(
-                    self._actor_handle.__ray_ready__.remote(), timeout=_WAIT_DEAD_PROBE_INTERVAL_SECONDS
-                )
-            except ray.exceptions.ActorUnavailableError as e:
-                logger.info("Worker death probe was inconclusive; the actor is temporarily unavailable: %r", e)
-            except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
-                return
-            except (TimeoutError, asyncio.TimeoutError):
-                pass
+    async def wait_idle(self, *, timeout: float) -> None:
+        raise NotImplementedError(
+            "a ray actor does not track the calls it is running, so nobody can wait for it to go idle; only the "
+            "rpc communication backend answers this"
+        )
 
-            if time.monotonic() >= deadline:
-                logger.error("Timed out after %.0fs waiting for worker death; proceeding anyway", timeout)
-                return
-
-            await asyncio.sleep(_WAIT_DEAD_PROBE_INTERVAL_SECONDS)
+    async def probe_is_dead(self) -> bool:
+        try:
+            await asyncio.wait_for(
+                self._actor_handle.__ray_ready__.remote(), timeout=_WAIT_DEAD_PROBE_INTERVAL_SECONDS
+            )
+        except ray.exceptions.ActorUnavailableError as e:
+            logger.info("Worker death probe was inconclusive; the actor is temporarily unavailable: %r", e)
+        except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
+            return True
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        return False

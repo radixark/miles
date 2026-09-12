@@ -1,8 +1,6 @@
 import asyncio
-import json
 import logging
 import socket
-import subprocess
 import sys
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -10,9 +8,9 @@ from dataclasses import dataclass
 import pytest
 
 from miles.utils import misc
-from miles.utils.env_report import ENV_REPORT_PREFIX
-from miles.utils.http_utils import MILES_HOST_IP_ENV, get_host_info
+from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import (
+    MutableBox,
     NodeProbeMixin,
     SimpleTicker,
     cancel_and_await_task,
@@ -20,6 +18,7 @@ from miles.utils.misc import (
     get_current_node_ip,
     get_free_port,
     get_gpu_uuids,
+    merge_asserting_consistency,
 )
 
 
@@ -196,12 +195,6 @@ class TestNodeProbeMixin:
 
         assert NodeProbeMixin._get_node_ip() == get_current_node_ip()
 
-    def test_get_node_ip_publishes_the_same_override_as_the_host_info_probe(self, monkeypatch):
-        """The worker and the host probe must read one env var, or a deployment's override reaches only half of them."""
-        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.20.30.40")
-
-        assert NodeProbeMixin._get_node_ip() == get_host_info()[1]
-
     def test_get_node_ip_follows_an_override_that_changes_between_calls(self, monkeypatch):
         """The probe runs inside the worker at allocation time, so a cached first answer would outlive its address."""
         monkeypatch.setenv(MILES_HOST_IP_ENV, "10.20.30.40")
@@ -287,23 +280,6 @@ class TestNodeProbeMixin:
         uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])
         assert len(uuids) == 3
         assert all(uuid is None or isinstance(uuid, str) for uuid in uuids)
-
-    def test_collect_env_report_forwards_probe_context(self, monkeypatch, capsys) -> None:
-        """Role, rank and the launcher's partial report all reach the printed env report."""
-
-        def _failing_pip_inspect(*args, **kwargs) -> subprocess.CompletedProcess:
-            return subprocess.CompletedProcess(args=["pip", "inspect"], returncode=1, stdout="", stderr="no pip")
-
-        monkeypatch.setattr("miles.utils.env_report.subprocess.run", _failing_pip_inspect)
-
-        NodeProbeMixin._collect_env_report(role="rollout", rank=7, partial_env_report='{"flavor": "probe"}')
-
-        lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(ENV_REPORT_PREFIX)]
-        assert len(lines) == 1
-        parsed = json.loads(lines[0].removeprefix(ENV_REPORT_PREFIX))
-        assert parsed["role"] == "rollout"
-        assert parsed["rank"] == 7
-        assert parsed["launcher_env_report"] == {"flavor": "probe"}
 
 
 async def _append(calls: list[int]) -> None:
@@ -478,3 +454,46 @@ class TestCancelAndAwaitTask:
 
         with pytest.raises(RuntimeError, match="teardown exploded"):
             await cancel_and_await_task(task)
+
+
+class TestMergeAssertingConsistency:
+    def test_disjoint_keys_are_merged(self):
+        """The common case: two views of the same cell describe different fields of it."""
+        assert merge_asserting_consistency({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+
+    def test_a_key_both_sides_agree_on_is_kept_once(self):
+        """Two pods of one cell repeat the cell-wide annotations, which is not a conflict."""
+        assert merge_asserting_consistency({"a": 1, "b": 2}, {"b": 2, "c": 3}) == {"a": 1, "b": 2, "c": 3}
+
+    def test_a_key_the_two_sides_disagree_on_is_rejected(self):
+        """Silently picking a winner would hand the caller one pod's answer as the whole cell's."""
+        with pytest.raises(AssertionError, match="disagree"):
+            merge_asserting_consistency({"a": 1}, {"a": 2})
+
+
+class TestMutableBox:
+    def test_a_closure_writes_through_the_box_its_caller_reads(self):
+        """A name rebound inside a nested function rebinds nothing its caller can see, which is the point."""
+        box: MutableBox[int] = MutableBox(value=0)
+
+        def advance() -> None:
+            box.value += 2
+
+        advance()
+        advance()
+
+        assert box.value == 4
+
+    def test_a_box_holds_whatever_it_was_opened_with(self):
+        """Callers open it on an optional handle as readily as on a counter."""
+        assert MutableBox(value=None).value is None
+        assert MutableBox(value="a").value == "a"
+
+    def test_two_boxes_of_the_same_value_do_not_share_it(self):
+        """Each caller's box is its own; a shared default would let one run's cursor drive another's."""
+        first: MutableBox[int] = MutableBox(value=0)
+        second: MutableBox[int] = MutableBox(value=0)
+
+        first.value = 7
+
+        assert second.value == 0

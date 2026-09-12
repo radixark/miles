@@ -1,0 +1,64 @@
+### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download zai-org/GLM-4.5
+  --local-dir /root/models/GLM-4.5
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/datasets/aime-2024
+
+### 4
+hf download
+  --repo-type dataset zhuzilin/aime-2025
+  --local-dir /root/datasets/aime-2025
+
+### 5
+[multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 4
+  --master-addr {{master_addr}}
+  --master-port 23456
+  --nnodes={{nnodes}}
+  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 96
+  --num-query-groups 8
+  --kv-channels 128
+  --num-layers 92
+  --hidden-size 5120
+  --ffn-hidden-size 12288
+  --add-qkv-bias
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --rotary-percent 0.5
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 151552
+  --rotary-base 1000000
+  --moe-ffn-hidden-size 1536
+  --moe-shared-expert-intermediate-size 1536
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-router-topk-scaling-factor 2.5
+  --moe-layer-freq '[0]*3+[1]*89'
+  --num-experts 160
+  --moe-grouped-gemm
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --hf-checkpoint /root/models/GLM-4.5
+  --save /root/models/GLM-4.5_torch_dist 
