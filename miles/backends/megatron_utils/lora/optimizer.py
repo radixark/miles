@@ -13,14 +13,12 @@ from contextlib import contextmanager
 from dataclasses import fields
 
 import torch
-import torch.distributed as dist
 from megatron.core.optimizer import get_megatron_optimizer
 from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32, get_grad_norm_fp32
 from megatron.core.optimizer.layer_wise_optimizer import LayerWiseDistributedOptimizer
 from megatron.core.optimizer.optimizer_config import OptimizerConfig
 from megatron.core.process_groups_config import ProcessGroupCollection
 
-from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
 
@@ -196,52 +194,20 @@ def step_slot_optimizers(
     *,
     clip_grad: float,
 ) -> dict[int, dict]:
-    """Step the requested slots in one pass; every rank returns the same per-slot
-    outcome: {"grad_norm"} stepped, {"skipped_nonfinite"} dropped, {"error"} failed.
-
-    Phased for cross-rank lockstep: ranks agree on preparation failures before
-    any slot's norm all-reduce, so no rank blocks in a collective its peers
-    abandoned; a slot's gradients are consumed whatever its outcome."""
+    """Step slots in the same order on every rank; execution failures invalidate the cell."""
     slots = sorted(adam_params_by_slot)
-    outcomes: dict[int, dict] = {}
-
     for slot in slots:
-        try:
-            slot_optimizers[slot].apply_adam_params(adam_params_by_slot[slot])
-            slot_optimizers[slot].prepare_grads()
-        except Exception as error:  # noqa: BLE001  one slot's failure must not skip the others
-            logger.exception(f"optim step preparation failed for slot {slot}")
-            outcomes[slot] = {"error": f"{type(error).__name__}: {error}"}
-    outcomes = _merge_outcomes_across_ranks(outcomes)
+        slot_optimizers[slot].apply_adam_params(adam_params_by_slot[slot])
+        slot_optimizers[slot].prepare_grads()
 
-    for slot in slots:
-        if slot in outcomes:
-            continue
-        try:
-            outcomes[slot] = slot_optimizers[slot].clip_and_step(clip_grad)
-        except Exception as error:  # noqa: BLE001
-            logger.exception(f"optim step failed for slot {slot}")
-            outcomes[slot] = {"error": f"{type(error).__name__}: {error}"}
-
+    outcomes = {
+        slot: slot_optimizers[slot].clip_and_step(clip_grad) for slot in slots
+    }
     for slot in slots:
         slot_optimizers[slot].zero_grads()
-
-    outcomes = _merge_outcomes_across_ranks(outcomes)
     for slot in slots:
         if "grad_norm" in outcomes[slot]:
             slot_optimizers[slot].allgather_params()
     return outcomes
 
 
-def _merge_outcomes_across_ranks(outcomes: dict[int, dict]) -> dict[int, dict]:
-    """Union the per-rank outcomes so every rank sees the same failures."""
-    if not dist.is_initialized():
-        return dict(outcomes)
-    per_rank: list[dict | None] = [None] * dist.get_world_size()
-    dist.all_gather_object(per_rank, outcomes, group=get_gloo_group())
-    merged = dict(outcomes)
-    for rank_outcomes in per_rank:
-        for slot, outcome in rank_outcomes.items():
-            if "error" in outcome and "error" not in merged.get(slot, {}):
-                merged[slot] = outcome
-    return merged
