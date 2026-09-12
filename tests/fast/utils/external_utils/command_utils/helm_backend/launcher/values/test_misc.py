@@ -52,19 +52,35 @@ class TestLaunchPlan:
             )
 
 
-def _resolved(tmp_path, *files: dict) -> str:
+def _resolved(tmp_path, *files: dict, namespace: str = "myns") -> str:
     paths = []
     for index, values in enumerate(files):
         path = tmp_path / f"infra-{index}.yaml"
         path.write_text(yaml.safe_dump(values))
         paths.append(str(path))
-    return InfraInfo.shared_root(InfraInfo.load(RUN_CHART_DIR, paths))
+    return InfraInfo.shared_root(InfraInfo.load(RUN_CHART_DIR, paths), namespace=namespace)
 
 
 class TestSharedRootOf:
     def test_falls_back_to_the_chart_defaults_when_no_file_says_otherwise(self, tmp_path):
         """The chart's own values.yaml is the single source of these defaults; Python must not carry a copy."""
-        assert _resolved(tmp_path, {}) == "/cluster-storage/miles_data"
+        assert _resolved(tmp_path, {}) == "/cluster-storage/myns/miles_data"
+
+    def test_resolves_the_namespace_the_render_resolves(self, tmp_path):
+        """The launcher and the render must name one directory: a literal ${NAMESPACE} here would be another."""
+        values = {"infra": {"paths": {"runsRoot": "/mnt/x/${NAMESPACE}/teamdata"}}}
+
+        assert _resolved(tmp_path, values, namespace="tom-other") == "/mnt/x/tom-other/teamdata"
+
+    def test_refuses_a_path_that_names_an_unknown_variable(self, tmp_path):
+        """A misspelt variable left in place would give every namespace one literal directory to share."""
+        values = {"infra": {"paths": {"runsRoot": "/mnt/x/${NAMESPCE}/teamdata"}}}
+
+        with pytest.raises(ValueError) as error:
+            _resolved(tmp_path, values)
+
+        assert "/mnt/x/${NAMESPCE}/teamdata" in str(error.value)
+        assert "${NAMESPCE}" in str(error.value)
 
     def test_is_the_container_path_the_values_file_names_and_nothing_derived(self, tmp_path):
         """The runs directory is one path on one mount; deriving it from a volume is what tied it to one disk."""
