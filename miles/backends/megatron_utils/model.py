@@ -29,6 +29,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.loss_hub.kl_control import update_adaptive_kl
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -663,6 +664,12 @@ def train_one_step(
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
+            if (
+                not disable_optimizer
+                and valid_step
+                and (not multi_lora or data_iterator[0].rollout_data.get("step_adapter_batch_sizes"))
+            ):
+                update_adaptive_kl(args, loss_reduced)
             return loss_reduced, grad_norm, outcome
 
     return {}, grad_norm, outcome
