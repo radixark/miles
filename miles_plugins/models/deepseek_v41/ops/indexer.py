@@ -1,3 +1,4 @@
+import functools
 import os
 
 import torch
@@ -35,7 +36,14 @@ try:
     import deep_select
 except ImportError:  # the torch path stays for images without it
     deep_select = None
-USE_DEEP_SELECT = deep_select is not None and os.environ.get("MILES_DSV41_DEEP_SELECT", "1") == "1"
+
+
+@functools.lru_cache(maxsize=1)
+def use_deep_select() -> bool:
+    if deep_select is None or os.environ.get("MILES_DSV41_DEEP_SELECT", "1") != "1":
+        return False
+    # the package carries sm100a and sm103a cubins, so anything older keeps torch.topk
+    return torch.cuda.get_device_capability()[0] >= 10
 
 
 def indexer_select(
@@ -57,8 +65,8 @@ def indexer_select(
     bsz, seqlen = q.shape[:2]
     n_kv = index_k.size(1)
     k_t = index_k.transpose(0, 1).contiguous()
-    use_deep_select = USE_DEEP_SELECT and allow_deep_select
-    if use_deep_select:
+    deep_selecting = allow_deep_select and use_deep_select()
+    if deep_selecting:
         # deep_select requires aligned score rows; the padded columns sit past every query's length
         align = deep_select.get_stride_requirement()[0] // 4
         pad_kv = -(-n_kv // align) * align - n_kv
@@ -86,7 +94,7 @@ def indexer_select(
         elif uses_candidates:
             assert candidates is not None
             scores[..., :n_kv].masked_fill_(~candidates[:, s:e], -torch.inf)
-        if use_deep_select:
+        if deep_selecting:
             flat = scores.reshape(bsz * (e - s), scores.size(-1))
             row_end = lens.to(torch.int32).repeat(bsz)
             _, idx = deep_select.topk(
