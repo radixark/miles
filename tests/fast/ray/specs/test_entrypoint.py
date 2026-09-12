@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import sys
+from argparse import Namespace
 from collections import Counter
 
 import pytest
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from tests.fast.ray.rollout.conftest import make_args, make_args_with_sglang_config, make_sglang_config_yaml
 
-from miles.ray.specs.entrypoint import compute_specs
+from miles.ray.specs import entrypoint
+from miles.ray.specs.entrypoint import compute_specs, compute_specs_from_argv
 from miles.ray.specs.inference import INFERENCE_REGISTRATION_REPORTER_POOL_ID, compute_router_providers
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_helm_backend_capability
@@ -20,6 +23,31 @@ def _unusable_capability():
             raise AssertionError(f"a train-only run asked for a worker provider for {pool_id!r}")
 
     return _Unusable()
+
+
+class TestComputeSpecsFromArgv:
+    def test_the_supplied_argv_builds_only_its_selected_deployment_and_restores_process_argv(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The supplied trainer argv is parsed in isolation and leaves the caller's process arguments intact."""
+        ambient_argv = ["ambient-program", "--not-a-miles-option"]
+        monkeypatch.setattr(sys, "argv", ambient_argv)
+        parsed_argv: list[str] | None = None
+
+        def parse_args() -> Namespace:
+            nonlocal parsed_argv
+            parsed_argv = sys.argv.copy()
+            component = sys.argv[sys.argv.index("--deploy-component") + 1]
+            return make_args(deploy_component=component)
+
+        monkeypatch.setattr(entrypoint, "parse_args", parse_args)
+
+        specs = compute_specs_from_argv(["--deploy-component", "trainer"])
+
+        assert [spec.name for spec in specs] == ["trainer-controller-actor", "trainer-engine-actor"]
+        assert {spec.deploy_component for spec in specs} == {DeployComponent.TRAINER}
+        assert parsed_argv == [ambient_argv[0], "--deploy-component", "trainer"]
+        assert sys.argv is ambient_argv
 
 
 class TestComputeSpecs:
