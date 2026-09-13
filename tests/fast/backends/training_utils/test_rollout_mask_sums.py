@@ -5,7 +5,9 @@ Covers:
 - ``get_sum_of_sample_mean(denominators=...)`` — legacy per-sample mean when
   ``None``, per-rollout token-weighted mean with precomputed denominators, and
   the strict no-op equivalence between the two when 1 rollout = 1 sample;
-- ``aggregate_train_losses(num_rollouts=...)`` per-rollout-mean reduction.
+- ``aggregate_train_losses(num_rollouts=...)`` per-rollout-mean reduction,
+  including the sample-counted exception that keeps ``ess_ratio`` at the
+  all-reduced sample count under that reduction.
 """
 
 from __future__ import annotations
@@ -100,6 +102,22 @@ class TestAggregateTrainLossesNumRollouts:
         losses = [self._mb(2, {"loss": 2.0}), self._mb(2, {"loss": 6.0})]
         out = log_utils.aggregate_train_losses(losses, num_rollouts=4)
         assert math.isclose(out["loss"], 2.0)
+
+    def test_segmented_rollouts_keep_ess_sample_normalizer(self):
+        # 4 rollouts arrive as 5 samples (one rollout compacted into two
+        # siblings); all importance weights are 1, so each sample's ESS is 1.
+        losses = [self._mb(3, {"loss": 3.0, "ess_ratio": 3.0}), self._mb(2, {"loss": 2.0, "ess_ratio": 2.0})]
+        out = log_utils.aggregate_train_losses(losses, num_rollouts=4)
+        # dividing ESS's 5 per-sample contributions by the 4 rollouts would
+        # report 1.25; the sample normalizer keeps the on-policy truth at 1.0
+        assert math.isclose(out["ess_ratio"], 1.0)
+        # per-rollout means are untouched: (3 + 2) / 4
+        assert math.isclose(out["loss"], 1.25)
+
+    def test_ess_unchanged_under_legacy_reduction(self):
+        losses = [self._mb(2, {"ess_ratio": 2.0}), self._mb(2, {"ess_ratio": 2.0})]
+        out = log_utils.aggregate_train_losses(losses)
+        assert math.isclose(out["ess_ratio"], 1.0)
 
     def test_legacy_reduction_without_divisor(self):
         losses = [self._mb(2, {"loss": 2.0}), self._mb(2, {"loss": 6.0})]

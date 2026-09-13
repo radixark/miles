@@ -30,6 +30,12 @@ _MULTI_TURN_REDUCTION_BY_KEY = {
     "multi_turn_metric/round_number_min": "min",
 }
 
+# Metrics whose numerator sums one entry per training sample (ESS is a
+# per-sample ratio): they always divide by the all-reduced sample count, even
+# under the num_rollouts per-rollout means, so sibling samples of one
+# segmented rollout cannot inflate them past 1.
+_SAMPLE_COUNTED_METRICS = frozenset({"ess_ratio"})
+
 
 def reduce_gathered_log_dict(
     gathered: list[dict],
@@ -455,9 +461,12 @@ def aggregate_train_losses(
             Each log_dict has format: {"keys": list[str], "values": torch.Tensor}
         num_rollouts: report per-rollout means — divide every metric by this
             step's rollout count (no CP factor; CP-chunked numerators reconstruct
-            exactly once under the DP*CP all-reduce). None keeps the legacy
-            reduction: divide by the all-reduced ``values[0]`` count, cancelled
-            by ``cp_size``.
+            exactly once under the DP*CP all-reduce). Metrics in
+            ``_SAMPLE_COUNTED_METRICS`` keep the legacy ``values[0]`` count:
+            their numerators sum one entry per training sample, so the rollout
+            divisor would inflate them when one rollout is split into sibling
+            samples. None keeps the legacy reduction: divide by the
+            all-reduced ``values[0]`` count, cancelled by ``cp_size``.
 
     Returns:
         Dictionary mapping metric names to averaged values.
@@ -482,15 +491,17 @@ def aggregate_train_losses(
 
     loss_reduced = {}
     values = values.tolist()
-    if num_rollouts is not None:
-        num_samples_or_tokens = num_rollouts
-        cp_factor = 1
-    else:
-        num_samples_or_tokens = values[0]
-        cp_factor = parallel_state.cp.size
+    sample_count = values[0]
 
     for key, value in zip(keys, values[1:], strict=False):
-        loss_reduced[key] = value * cp_factor / num_samples_or_tokens
+        if num_rollouts is not None and key not in _SAMPLE_COUNTED_METRICS:
+            # per-rollout mean; CP-chunked numerators reconstruct exactly once
+            # under the DP*CP all-reduce, so no CP factor applies
+            loss_reduced[key] = value / num_rollouts
+        else:
+            # legacy per-sample/token mean; the all-reduced count carries one
+            # copy per CP rank, so cancel with cp_size
+            loss_reduced[key] = value * parallel_state.cp.size / sample_count
 
     return loss_reduced
 
