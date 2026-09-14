@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import statistics
@@ -14,17 +15,25 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 __all__ = [
+    "METRICS_LOG_PREFIX",
     "PROFILE_LOG_PREFIX",
     "OpProfiler",
     "Stats",
     "gpu_peaks",
+    "head_tail_means",
+    "merge_series",
+    "parse_cookbook_rewards",
     "parse_serve_log",
     "render_gpu",
+    "render_metrics",
     "render_profile",
     "render_table",
 ]
 
 PROFILE_LOG_PREFIX = "multi-LoRA profile: "
+METRICS_LOG_PREFIX = "multi-LoRA metrics: "
+_COOKBOOK_STEP = re.compile(r"^\s*Step (\d+)\s*$")
+_COOKBOOK_REWARD = re.compile(r"reward/total\s*│\s*([-0-9.eE+]+)")
 _CAPACITY_LINE = re.compile(r"multi-LoRA capacity: (\d+) slots, bound by (.+?) \[")
 _LOADED_LORAS_LINE = re.compile(r"engines keep at most (\d+) adapter versions loaded")
 _TRAINER_NODE_LINE = re.compile(r"MegatronTrainRayActor pid=\d+, ip=([0-9.]+)")
@@ -74,6 +83,7 @@ class OpProfiler:
     def __init__(self) -> None:
         self._seconds: dict[str, list[float]] = {}
         self._sizes: dict[str, int] = {}
+        self._series: dict[str, dict[str, list[float]]] = {}
 
     def record(self, op: str, seconds: float, size: int = 1) -> None:
         self._seconds.setdefault(op, []).append(seconds)
@@ -104,12 +114,21 @@ class OpProfiler:
             }
         return snapshot
 
+    def observe(self, slot: int, **metrics: float) -> None:
+        """One training step's metrics for a slot; call order is step order."""
+        for name, value in metrics.items():
+            self._series.setdefault(str(slot), {}).setdefault(name, []).append(float(value))
+
+    def series(self) -> dict[str, dict[str, list[float]]]:
+        return self._series
+
     def report(self) -> str:
         return render_profile(self.snapshot())
 
     def reset(self) -> None:
         self._seconds.clear()
         self._sizes.clear()
+        self._series.clear()
 
 
 def render_table(headers: Iterable[str], rows: Iterable[Iterable[object]]) -> str:
@@ -122,6 +141,71 @@ def render_table(headers: Iterable[str], rows: Iterable[Iterable[object]]) -> st
         return "  ".join(cell.ljust(width) for cell, width in zip(cells, widths, strict=True)).rstrip()
 
     return "\n".join([line(headers), line(["-" * width for width in widths]), *(line(row) for row in body)])
+
+
+def head_tail_means(series: dict[str, dict[str, list[float]]], fraction: float = 0.1) -> dict[str, dict[str, float]]:
+    """Per metric, the mean over each tenant's first and last ``fraction`` of steps (at least one step each)."""
+    table: dict[str, dict[str, list[float]]] = {}
+    for per_metric in series.values():
+        for metric, values in per_metric.items():
+            if not values:
+                continue
+            k = max(1, math.ceil(fraction * len(values)))
+            entry = table.setdefault(metric, {"head": [], "tail": [], "steps": [], "k": []})
+            entry["head"].append(statistics.fmean(values[:k]))
+            entry["tail"].append(statistics.fmean(values[-k:]))
+            entry["steps"].append(len(values))
+            entry["k"].append(k)
+    return {
+        metric: {
+            "head": statistics.fmean(e["head"]),
+            "tail": statistics.fmean(e["tail"]),
+            "tenants": len(e["head"]),
+            "steps": statistics.fmean(e["steps"]),
+            "k": statistics.fmean(e["k"]),
+        }
+        for metric, e in table.items()
+    }
+
+
+def render_metrics(series: dict[str, dict[str, list[float]]], fraction: float = 0.1) -> str:
+    means = head_tail_means(series, fraction)
+    order = ["reward", "loss", "log_prob", "mean_len"]
+    rows = [
+        [
+            metric,
+            f"{means[metric]['head']:.4g}",
+            f"{means[metric]['tail']:.4g}",
+            f"{means[metric]['k']:.0f} of {means[metric]['steps']:.0f} steps, {means[metric]['tenants']} tenants",
+        ]
+        for metric in sorted(means, key=lambda m: order.index(m) if m in order else len(order))
+    ]
+    pct = f"{fraction:.0%}"
+    return render_table(
+        ["reward, loss, log_prob, mean_len", f"first {pct} steps", f"last {pct} steps", "window"], rows
+    )
+
+
+def parse_cookbook_rewards(paths: Iterable[str]) -> dict[str, dict[str, list[float]]]:
+    """``reward/total`` per step from tinker-cookbook client logs, one tenant per file."""
+    series: dict[str, dict[str, list[float]]] = {}
+    for path in paths:
+        rewards: list[float] = []
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                if match := _COOKBOOK_REWARD.search(line):
+                    rewards.append(float(match.group(1)))
+        if rewards:
+            series[os.path.basename(path)] = {"reward": rewards}
+    return series
+
+
+def merge_series(*parts: dict[str, dict[str, list[float]]]) -> dict[str, dict[str, list[float]]]:
+    merged: dict[str, dict[str, list[float]]] = {}
+    for part in parts:
+        for tenant, metrics in part.items():
+            merged.setdefault(tenant, {}).update(metrics)
+    return merged
 
 
 def render_profile(snapshot: dict[str, dict[str, float]]) -> str:
@@ -195,6 +279,11 @@ def parse_serve_log(path: str) -> dict:
                     facts["profile"] = json.loads(line[start + len(PROFILE_LOG_PREFIX) :])
                 except json.JSONDecodeError:
                     continue
+            elif (start := line.find(METRICS_LOG_PREFIX)) >= 0:
+                try:
+                    facts["metrics"] = json.loads(line[start + len(METRICS_LOG_PREFIX) :])
+                except json.JSONDecodeError:
+                    continue
     return facts
 
 
@@ -209,6 +298,9 @@ def main(argv: list[str] | None = None) -> None:
         default=[],
         metavar="gpu-<ip>.csv",
         help="a node's nvidia-smi samples (repeatable); the node is named by the file, its role read from the log",
+    )
+    parser.add_argument(
+        "--client-log", action="append", default=[], help="tinker-cookbook tenant logs (reward/total per step)"
     )
     args = parser.parse_args(argv)
     if not args.serve_log and not args.gpu_csv:
@@ -226,6 +318,9 @@ def main(argv: list[str] | None = None) -> None:
             sections.append(render_table(["gateway", "value", "note"], rows))
         if "profile" in facts:
             sections.append(render_profile(facts["profile"]))
+    series = merge_series(facts.get("metrics", {}), parse_cookbook_rewards(args.client_log))
+    if series:
+        sections.append(render_metrics(series))
     peaks_by_node = {}
     for path in args.gpu_csv:
         node = os.path.basename(path).removeprefix("gpu-").removesuffix(".csv")

@@ -121,5 +121,6 @@ sleep 5
 kill "$SAMPLER_PID" 2>/dev/null || true
 SAMPLER_PID=""
 python3 -m miles.utils.multi_lora_profiling --serve-log "$RUN_DIR/serve.log" $(ls "$RUN_DIR"/gpu-*.csv 2>/dev/null | sed 's/^/--gpu-csv /') \
+    $(ls "$RUN_DIR"/client-*.log 2>/dev/null | sed 's/^/--client-log /') \
     | tee "$RUN_DIR/report.txt" || log "report failed"
 exit "$rc"

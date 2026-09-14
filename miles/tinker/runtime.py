@@ -11,7 +11,7 @@ from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
-from miles.utils.multi_lora_profiling import PROFILE_LOG_PREFIX, OpProfiler, render_profile
+from miles.utils.multi_lora_profiling import METRICS_LOG_PREFIX, PROFILE_LOG_PREFIX, OpProfiler, render_profile
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,8 @@ class MilesBackend:
         if snapshot:
             logger.info("%s%s", PROFILE_LOG_PREFIX, json.dumps(snapshot))
             logger.info("trainer time by op since start\n%s", render_profile(snapshot))
+        if self.profiler.series():
+            logger.info("%s%s", METRICS_LOG_PREFIX, json.dumps(self.profiler.series()))
 
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
@@ -109,7 +111,24 @@ class MilesBackend:
                         "loss": float(datum_output["loss"]),
                         "logprobs": datum_output["logprobs"].tolist(),
                     }
-        return [by_index[index] for index in range(len(slot_datums))]
+        outputs = [by_index[index] for index in range(len(slot_datums))]
+        if method == "forward_backward":
+            self._observe_step(slot_datums, outputs)
+        return outputs
+
+    def _observe_step(self, slot_datums: list, outputs: list[dict]) -> None:
+        """Per slot in the batch: mean loss, mean token log-prob and mean response length of this training step."""
+        per_slot: dict[int, list[tuple[dict, dict]]] = {}
+        for (slot, datum), output in zip(slot_datums, outputs, strict=True):
+            per_slot.setdefault(slot, []).append((datum, output))
+        for slot, pairs in per_slot.items():
+            logprobs = [value for _, output in pairs for value in output["logprobs"]]
+            self.profiler.observe(
+                slot,
+                loss=sum(output["loss"] for _, output in pairs) / len(pairs),
+                log_prob=sum(logprobs) / len(logprobs) if logprobs else 0.0,
+                mean_len=sum(datum["target_len"] for datum, _ in pairs) / len(pairs),
+            )
 
     async def _run_batch(self, method: str, batch_id: int, train_data: dict) -> list:
         store = object_store.get_instance()
