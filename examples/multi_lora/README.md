@@ -2,9 +2,8 @@
 
 > **Read the docs:** [Multi-LoRA training](https://miles.radixark.com/docs/advanced/lora#multi-lora-training).
 
-- `serve_qwen3_30b_a3b_tinker.py`: prepare Qwen3-30B-A3B and launch the gateway; `--n-adapters -1` sizes the slot pool from measured memory.
+- `run_gateway.py`: prepare Qwen3-30B-A3B and launch the gateway.
 - `run_multi_tenant_example.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
-- `run_client_recipes.py`: the official tinker-cookbook recipes against the gateway, the wire-contract acceptance bar.
 
 ## Layout
 
@@ -74,8 +73,8 @@ for the cookbook's GRPO on GSM8K, `sft`, or `both`; each tenant is its own `TINK
 and saves the tables as `report.txt`. Knobs are environment variables; on a multi-node Ray
 cluster set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS`.
 
-The gateway times every backend op (`forward_backward`, `optim_step`, `export_slot`,
-`push_slot`, `sample`, ...) with `miles.utils.multi_lora_profiling.OpProfiler` and logs
+The gateway times every backend op (`load_slot`, `forward_backward`, `optim_step`,
+`export_slot`, `sample`, ...) with `miles.utils.multi_lora_profiling.OpProfiler` and logs
 `multi-LoRA profile: {...}` plus a table after every optimizer step and at exit. Render it,
 with the slot count and a node's GPU peaks, from the logs:
 
