@@ -104,6 +104,23 @@ class GitHub:
     def run_attempt_jobs(self, run_id: int, attempt: int) -> list:
         return self.paginate(f"repos/{self.repo}/actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
 
+    def rerun_failed_jobs(self, run_id: int) -> None:
+        url = f"{GITHUB_API}/repos/{self.repo}/actions/runs/{run_id}/rerun-failed-jobs"
+        req = urllib.request.Request(url, data=b"", method="POST")
+        req.add_header("Authorization", f"Bearer {self.token}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", "2022-11-28")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"POST {url} -> {e.code}: {body[:300]}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"POST {url} failed: {e}") from e
+        if status != 201:
+            raise RuntimeError(f"POST {url} -> {status}")
+
     def paginate_list(self, path: str, params: dict | None = None, max_pages: int = 10) -> list:
         params = dict(params or {})
         params.setdefault("per_page", 100)
@@ -504,10 +521,26 @@ def cmd_ci_status(args: argparse.Namespace, gh: GitHub) -> None:
         return
     jobs = gh.run_jobs(run["id"])
     attempt = run.get("run_attempt", 1)
+    failed = failed_job_names(jobs)
+    # failed nightly jobs get one automatic rerun; the card follows that attempt, so failed means failed twice
+    rerun_error = None
+    if attempt == 1 and failed and run["event"] == "schedule" and run.get("conclusion") != "cancelled":
+        if args.dry_run:
+            print(f"dry-run: would rerun {plural(len(failed), 'failed job')} of run {run['id']}")
+            return
+        try:
+            gh.rerun_failed_jobs(run["id"])
+        except RuntimeError as exc:
+            # a refused rerun must not cost the nightly its report: post attempt 1, then fail
+            rerun_error = exc
+        else:
+            print(
+                f"rerun requested for {plural(len(failed), 'failed job')} of run {run['id']}; card follows attempt 2"
+            )
+            return
     prev_failed = None
     if attempt > 1:
         prev_failed = failed_job_names(gh.run_attempt_jobs(run["id"], attempt - 1))
-    failed = failed_job_names(jobs)
     current_failed = list(failed.values())
     if prev_failed is not None:
         diff = diff_attempts(failed, prev_failed)
@@ -528,6 +561,8 @@ def cmd_ci_status(args: argparse.Namespace, gh: GitHub) -> None:
             print(f"ci_failure_analysis_unexpected={type(exc).__name__}", file=sys.stderr)
             analysis = AnalysisOutcome(enabled=True, reasons={}, unavailable=True)
     post_card(render_ci_status(run, jobs, prev_failed, analysis, args.repo), args.webhook, args.dry_run)
+    if rerun_error is not None:
+        raise rerun_error
 
 
 # --------------------------------------------------------------------------
