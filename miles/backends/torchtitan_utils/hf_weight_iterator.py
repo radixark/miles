@@ -14,6 +14,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_group
 from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
     iter_checkpoint_tower_units,
 )
+from miles.utils.hf_config import load_hf_config
 
 
 class TitanHfWeightIterator(HfWeightIteratorBase):
@@ -36,7 +37,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         return tensor.to(target)
 
     def _hf_atomic_update_groups(self):
-        q_lora_rank = getattr(self.model.model_config, "q_lora_rank", None) or None
+        q_lora_rank = getattr(load_hf_config(self.args.hf_checkpoint), "q_lora_rank", None) or None
         return get_hf_atomic_update_groups(self.model_name, q_lora_rank=q_lora_rank)
 
     def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
