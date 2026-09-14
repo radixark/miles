@@ -2,17 +2,16 @@
 
 This example runs [Harbor](https://github.com/harbor-framework/harbor) trials
 **inside the rollout worker**: the agent function builds a `TrialConfig` and
-calls `Trial.run()` directly, with the task sandbox on a cloud backend the worker
-reaches over the network — E2B Cloud or a self-hosted
-[AgentENV](../agentenv/README.md) (E2B API), Daytona, Modal, or any other Harbor
-`EnvironmentType`. There is no agent server.
+calls `Trial.run()` directly, with the task sandbox on a cloud
+[sandbox provider](../../../docs/user-guide/sandbox-providers.md) the worker
+reaches over the network. There is no agent server.
 
 Compared with [`examples/swe-agent-harbor-docker`](../../swe-agent-harbor-docker/README.md):
 
 | | agent server (`swe-agent-harbor-docker`) | in-process (this example) |
 | --- | --- | --- |
 | Where `Trial.run()` runs | a separate host with a Docker daemon | the rollout worker |
-| Sandbox backends | `docker` (local), `daytona` via the server's env | any Harbor backend the worker can reach; `HARBOR_ENV_TYPE` is passed straight to Harbor |
+| Sandbox backends | `docker` (local), `daytona` via the server's env | any cloud sandbox provider the worker can reach |
 | Moving parts | trainer → HTTP → agent server → Harbor | trainer → Harbor |
 | Use it when | tasks must run on the local Docker daemon | sandboxes are cloud-hosted |
 
@@ -35,17 +34,12 @@ uv pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@har
 
 ## 2. Provision the sandbox backend
 
-Credentials follow the contract every Miles sandbox integration uses: the
-worker reads the provider key from its own environment or from a key file; the
-launcher forwards only the file's path.
+Credentials and endpoints for every provider are in
+[Sandbox Providers](../../../docs/user-guide/sandbox-providers.md). The launch
+command below uses E2B:
 
 ```bash
-# E2B, cloud or self-hosted: the key first
 mkdir -p ~/.config/e2b && echo e2b_... > ~/.config/e2b/api_key
-# a self-hosted E2B-compatible service also needs the SDK pointed at it
-export E2B_API_URL=http://<server>:8000 E2B_SANDBOX_URL=http://<server>:8000
-# Daytona
-mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key
 ```
 
 Task directories: `HARBOR_TASKS_DIR` must contain one Harbor task dir per
@@ -88,6 +82,10 @@ HARBOR_ENV_TYPE=e2b python examples/experimental/harbor/run.py \
     --num-rollout 200 --save-interval 10
 ```
 
+`--save-dir` needs real headroom: a GLM-4.7-Flash torch_dist checkpoint with
+optimizer state is several hundred GB, and the end-of-run save will fill
+whatever is there.
+
 `HARBOR_ENV_TYPE` has no default: the backend decides whose quota a run spends.
 Backend-specific settings go in `HARBOR_ENV_KWARGS` as a JSON object (Harbor's
 `EnvironmentConfig.kwargs`), e.g. `'{"auto_snapshot": true}'` for Daytona.
@@ -98,14 +96,7 @@ next to the code that reads it.
 
 ## Validation
 
-The platform round trip (golden agent, real sandbox APIs) passes on e2b and
-Daytona via the sandbox smoke, `scripts/sandbox_smoke`. The GPU e2e —
-terminus-2 on real e2b sandboxes through the full rollout path with the TITO
-strict gate armed, `tests/e2e/agentic/test_harbor_e2b_rollout.py` — **passed
-2026-09-09** on a 2×H200 devbox against a self-hosted E2B-compatible service
-(2 trials, both reward 1.0, no TITO mismatches). `run.py` itself **ran 2026-09-04** on 8×H200
-with this README's exact command (data via the documented pipeline, real
-training mode, batch dials reduced to 1×2×1 rollout): both trials scored
-**reward 1.0**, one GRPO step completed. The end-of-run checkpoint save needs
-real headroom: a GLM-4.7-Flash torch_dist checkpoint with optimizer state is
-several hundred GB, so make sure `--save-dir` has that much free.
+This README's command has been run end to end: 8×H200, real training mode with
+the batch dials reduced, both trials scoring reward 1.0 and one GRPO step
+completed. Which sandbox providers this path has been run on is the table in
+[Sandbox Providers](../../../docs/user-guide/sandbox-providers.md).

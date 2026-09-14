@@ -17,8 +17,8 @@ spends real quota, so pick with ``-k`` when you hold several credentials:
     PYTHONPATH=. python -m pytest tests/e2e/agentic/test_sandbox_golden.py -k modal
 
 Each provider's credential and endpoint variables are documented on
-``PROVIDER_CREDENTIALS``; which combinations have been run is recorded in
-``scripts/sandbox_smoke/README.md``.
+``PROVIDER_CREDENTIALS``; which combinations have been run is the table in
+``docs/user-guide/sandbox-providers.md``.
 """
 
 import importlib.util
