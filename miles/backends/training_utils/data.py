@@ -130,23 +130,23 @@ def _prepare_loss_masks(
     max_seqlen: int,
     pad: int,
     allgather_cp: bool,
-    input_aligned: bool,
 ) -> torch.Tensor:
-    """Align response masks before packing and CP slicing.
+    """Expand response masks to input-token alignment, then pack/slice them like ``tokens``.
 
-    The main loss uses next-token/prediction alignment. Megatron MTP with
-    ``labels=None`` instead requires input-token alignment: it derives labels
-    and shifts the supplied mask itself. Shifting an already CP-sharded mask
-    cannot recover the values across shard or packed-sequence boundaries.
+    Contract: ``mask[i]`` is 1 iff ``tokens[i]`` is a supervised response token.
+    Whoever derives labels owns the prediction shift. Megatron does so when
+    ``labels=None``: it rolls ``input_ids`` and this mask together to build the
+    MTP labels, and it does not read the mask at all when MTP is off. The
+    alignment is fixed before CP slicing because a local roll in Miles would
+    have no halo exchange across shard or packed-sequence boundaries.
     """
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
     cp_rank = parallel_state.cp.rank
-    shift = 0 if input_aligned else 1
     aligned_masks = []
     for loss_mask, total_length, response_length in zip(loss_masks, total_lengths, response_lengths, strict=True):
         prompt_length = total_length - response_length
-        loss_mask = F.pad(loss_mask, (prompt_length - shift, shift), value=0)
+        loss_mask = F.pad(loss_mask, (prompt_length, 0), value=0)
         if not allgather_cp:
             loss_mask = slice_with_cp(loss_mask, 0, qkv_format, max_seqlen)
         aligned_masks.append(loss_mask)
@@ -174,7 +174,6 @@ def get_batch(
     qkv_format: str = "thd",
     get_position_ids: bool = False,
     allgather_cp: bool = False,
-    get_input_loss_masks: bool = False,
 ) -> dict[str, torch.Tensor | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
@@ -189,15 +188,13 @@ def get_batch(
         data_iterator: Iterator providing micro-batch data.
         keys: List of keys to fetch from the iterator.
         pad_multiplier: Multiplier for padding size calculation (default: 128).
-        get_input_loss_masks: Also return input-aligned masks for consumers that
-            derive next-token labels themselves (Megatron MTP with labels=None).
 
     Returns a dict including:
     - "tokens": torch.LongTensor of shape [1, T_padded] on the current CUDA device
     - "unconcat_tokens": list[torch.LongTensor] for the micro-batch before CP slicing/concat
     - "packed_seq_params": PackedSeqParams with T-H-D settings (cu_seqlens on CUDA, dtype=int)
-    - "full_loss_masks": next-token/prediction-aligned masks, unchanged by get_input_loss_masks
-    - "input_loss_masks": optional masks aligned with input tokens, before any prediction shift
+    - "input_loss_masks": same shape as "tokens"; 1 where the token is a supervised response token.
+      Consumers that derive labels (Megatron with labels=None) shift it themselves.
     Plus any other requested keys forwarded from the iterator.
     """
 
@@ -339,22 +336,19 @@ def get_batch(
     if (witness_ids := batch.get("witness_ids")) is not None:
         batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
 
-    mask_alignments = {"full_loss_masks": False}
-    if get_input_loss_masks:
-        mask_alignments["input_loss_masks"] = True
-    for key, input_aligned in mask_alignments.items():
-        mask = _prepare_loss_masks(
-            batch["loss_masks"],
-            batch["total_lengths"],
-            batch["response_lengths"],
-            qkv_format=qkv_format,
-            max_seqlen=max_seqlen,
-            pad=pad,
-            allgather_cp=allgather_cp,
-            input_aligned=input_aligned,
-        )
-        assert mask.shape == tokens.shape, f"{key}.shape: {mask.shape}, tokens.shape: {tokens.shape}"
-        batch[key] = mask
+    input_loss_masks = _prepare_loss_masks(
+        batch["loss_masks"],
+        batch["total_lengths"],
+        batch["response_lengths"],
+        qkv_format=qkv_format,
+        max_seqlen=max_seqlen,
+        pad=pad,
+        allgather_cp=allgather_cp,
+    )
+    assert (
+        input_loss_masks.shape == tokens.shape
+    ), f"input_loss_masks.shape: {input_loss_masks.shape}, tokens.shape: {tokens.shape}"
+    batch["input_loss_masks"] = input_loss_masks
 
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
