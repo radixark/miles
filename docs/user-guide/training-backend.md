@@ -471,8 +471,10 @@ the config a torchtitan user would write by hand.
 --seq-length 16384
 ```
 
-`--titan-model-name` is a package under `torchtitan/models/`, and `--titan-model-flavor` one
-of the sizes that package registers. `--hf-checkpoint` supplies the weights and tokenizer;
+`--titan-model-name` names a model package and `--titan-model-flavor` one of the sizes it
+registers. The name is looked up first under `miles/backends/torchtitan_utils/models/`, then
+under `torchtitan/models/`, so a model torchtitan does not ship can be added on the miles side
+without touching torchtitan (see [below](#going-deeper-a-model-torchtitan-does-not-ship)). `--hf-checkpoint` supplies the weights and tokenizer;
 torchtitan's own state-dict adapter converts them, so there is no offline conversion step.
 
 `--seq-length` sizes the rotary tables and the buffers pipeline stages exchange, so it has
@@ -533,8 +535,9 @@ because that check compares the engine against the original HF checkpoint.
 
 <Warning>
 
-**The architecture must be one torchtitan implements.** There is no per-architecture spec to
-write, which also means there is no way to bring up a model torchtitan does not have.
+**The architecture must be one torchtitan implements or one registered under
+`miles/backends/torchtitan_utils/models/`.** There is no per-architecture spec to write; a
+new model is a Python package that assembles torchtitan's own blocks.
 
 **No LoRA, no optimizer CPU offload, no disk offload, no on-policy distillation, and
 `--ref-update-interval` is rejected** rather than silently ignored.
@@ -544,6 +547,38 @@ write, which also means there is no way to bring up a model torchtitan does not 
 MoE works, including expert parallelism and `--use-rollout-routing-replay` (R3). R3 matters
 more than it looks on MoE: without it, training and rollout routing drift apart as the policy
 moves, and the disagreement compounds over rollouts rather than staying flat.
+
+### Going deeper: a model torchtitan does not ship
+
+torchtitan finds a model by importing `torchtitan.models.<name>` and calling its
+`model_registry(flavor, attn_backend)`, which returns a `ModelSpec`: the model config, the
+parallelize and pipelining functions, and the state-dict adapter that maps HF names to
+torchtitan's. Miles looks in `miles/backends/torchtitan_utils/models/<name>/` first and expects
+exactly the same function, so a miles-side package is a drop-in peer of a torchtitan one.
+
+Most new architectures are a recombination of blocks torchtitan already has — MLA or GQA
+attention, the sigmoid or softmax token-choice router, grouped experts, shared experts — and
+then the package is a flavor table plus a `model_registry` that points at an existing
+`parallelize_fn` and adapter. `models/glm4_moe_lite/` is the worked example: GLM-4.7-Flash is
+DeepSeek-V3's layer with different dimensions and the same HF parameter names, so its package
+builds the layer list with torchtitan's DeepSeek-V3 helpers, sets the GLM sizes, and reuses
+`DeepSeekV3StateDictAdapter` unchanged.
+
+```bash
+--train-backend torchtitan \
+--titan-model-name glm4_moe_lite \
+--titan-model-flavor 30B-A3B \
+--hf-checkpoint /root/models/GLM-4.7-Flash
+```
+
+When the architecture genuinely differs, the package grows in this order: a `model.py` with
+the new block (subclassing torchtitan's `TransformerBlock` / `BaseAttention`), then a
+`state_dict_adapter.py` if the HF names differ, and only then a `parallelize.py` if the
+existing sharding plans do not apply. Two checks belong with every package: a fast test that
+the flavor's dimensions match the model's `config.json` and that the adapter's map covers every
+key pattern in the checkpoint's `model.safetensors.index.json`, and an e2e case under
+`tests/e2e/torchtitan/` — SGLang has to implement the architecture too, since it is what
+consumes the streamed weights.
 
 ### Try it
 
