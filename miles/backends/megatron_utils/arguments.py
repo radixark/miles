@@ -4,7 +4,8 @@ import os
 from megatron.core.tokenizers.utils.build_tokenizer import vocab_size_with_padding as _vocab_size_with_padding
 from megatron.training.arguments import parse_args, validate_args
 
-from miles_plugins.models.deepseek_v4.arguments import is_dsv4_model, normalize_dsv4_args
+from miles.utils.hf_config import load_hf_config
+from miles_plugins.models.deepseek_v4.arguments import apply_dsv4_model_impl
 
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 
@@ -55,7 +56,23 @@ def set_default_megatron_args(args):
     if not hasattr(args, "miles_dsa_topk_backend"):
         args.miles_dsa_topk_backend = "torch"
 
-    if is_dsv4_model(args):
-        normalize_dsv4_args(args)
+    hf_config = load_hf_config(args.hf_checkpoint) if args.hf_checkpoint else None
+    args.model_family = getattr(hf_config, "model_type", None)
+    apply_model_impl(args)
 
     return args
+
+
+def apply_model_impl(args):
+    # the conversion and replay tools parse without the serving flags
+    if getattr(args, "megatron_to_hf_mode", "raw") == "bridge" and args.model_impl != "megatron":
+        raise ValueError(
+            "--model-impl miles cannot run under --megatron-to-hf-mode bridge: "
+            "Megatron-Bridge builds megatron-native modules"
+        )
+    if args.model_family == "deepseek_v4":
+        apply_dsv4_model_impl(args)
+    elif args.model_impl != "megatron":
+        raise ValueError(
+            f"--model-impl miles: {args.model_family or 'this model'} has only the megatron implementation"
+        )

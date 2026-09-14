@@ -111,8 +111,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_gpus_per_node: int = field(init=False)
     rollout_num_gpus: int = field(init=False)
     enable_mtp: bool = False
-    dsv4_impl: Literal["miles", "megatron"] = "megatron"
-    # None lets Megatron resolve it: tilelang for --dsv4-impl miles, cuDNN for megatron.
+    model_impl: Literal["miles", "megatron"] = "megatron"
+    # None lets Megatron resolve it: tilelang for --model-impl miles, cuDNN for megatron.
     dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
@@ -308,7 +308,7 @@ def _prepare_spmd(args: ScriptArgs):
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
-    extra_args = f"--dsv4-impl {args.dsv4_impl} --expert-tensor-parallel-size 1 --context-parallel-size 1 "
+    extra_args = f"--model-impl {args.model_impl} --expert-tensor-parallel-size 1 --context-parallel-size 1 "
     if args.dsa_kernel_backend is not None:
         extra_args += f"--dsa-kernel-backend {args.dsa_kernel_backend} "
     if actor_num_nodes == 1 and is_4layer:
@@ -397,7 +397,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # Single-node smoke-test configs
     if actor_num_nodes == 1:
-        if args.dsv4_impl == "megatron":
+        if args.model_impl == "megatron":
             # The plugin rejects TP>1; the TP ranks go to DP instead.
             return (
                 "--tensor-model-parallel-size 1 "
@@ -417,7 +417,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     if actor_num_gpus_per_node == 4:
         if total_gpus == 32:  # 8 nodes x 4 GPUs
-            if args.dsv4_impl == "megatron":
+            if args.model_impl == "megatron":
                 # The plugin rejects TP>1 here, and dsv4_hybrid needs qkv_format=thd for
                 # CP>1, which no launcher exercises yet -- so the TP and CP ranks both go
                 # to DP. max-tokens-per-gpu below doubles to keep the per-micro-batch
@@ -553,8 +553,8 @@ def _train(args: ScriptArgs):
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
-        f"{'--use-dynamic-batch-size ' if args.dsv4_impl == 'megatron' else '--micro-batch-size 1 '}"
-        f"--max-tokens-per-gpu {4096 if args.dsv4_impl == 'megatron' else 2048} "
+        f"{'--use-dynamic-batch-size ' if args.model_impl == 'megatron' else '--micro-batch-size 1 '}"
+        f"--max-tokens-per-gpu {4096 if args.model_impl == 'megatron' else 2048} "
     )
 
     grpo_args = (
@@ -660,10 +660,10 @@ def _train(args: ScriptArgs):
         # GB300 host RAM is smaller than the engine weight mirror plus the trainer
         # backup, so overlap the handoff on the GPU instead.
         f"{'--colocate-memory-peak-device gpu ' if args.hardware == 'GB300' else ''}"
-        f"--dsv4-impl {args.dsv4_impl} "
+        f"--model-impl {args.model_impl} "
         f"{f'--dsa-kernel-backend {args.dsa_kernel_backend} ' if args.dsa_kernel_backend else ''}"
         "--model-name deepseekv4 "  # for mbridge load
-        f"--qkv-format {'thd' if args.dsv4_impl == 'megatron' else 'bshd'} "
+        f"--qkv-format {'thd' if args.model_impl == 'megatron' else 'bshd'} "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "
