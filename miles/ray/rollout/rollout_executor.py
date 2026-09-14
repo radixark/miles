@@ -300,7 +300,8 @@ class RolloutExecutor:
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
-    def save(self, rollout_id: int) -> None:
+    # async but never awaits: the RPC layer runs sync methods on a thread, and an await-free coroutine is atomic against the rollout coroutines on this loop
+    async def save(self, rollout_id: int) -> None:
         assert self.args.save is not None, "the orchestration only saves when --save is set"
 
         target = compute_rollout_checkpoint_dir(self.args.save, rollout_id=rollout_id)
@@ -313,7 +314,8 @@ class RolloutExecutor:
                     eval_fn.save(dir_temp / _EVAL_GENERATE_ROLLOUT_DIRNAME)
             event_logger_checkpoint.snapshot(self.args, directory=dir_temp / event_logger_checkpoint.SNAPSHOT_DIRNAME)
 
-    def load(self, rollout_id: int) -> None:
+    # async but never awaits, for the same reason as save
+    async def load(self, rollout_id: int) -> None:
         if self.args.load is None:
             logger.warning("no --load: the rollout side starts fresh")
             return
