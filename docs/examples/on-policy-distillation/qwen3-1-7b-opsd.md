@@ -1,5 +1,8 @@
-# Privileged-context self-distillation (Qwen3-1.7B)
-
+---
+title: "Privileged-context self-distillation (Qwen3-1.7B)"
+description: "Privileged-context self-distillation of Qwen3-1.7B with forward KL and example-only clipping."
+# Generated from examples/on_policy_distillation/qwen3_1_7b_opsd/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
+---
 The student rolls out from the problem alone. The teacher scores that same response on a
 prompt that also contains the reference solution. Both start from the same base checkpoint.
 The teacher stays frozen while the student's LoRA adapters train; no RLVR teacher is needed.

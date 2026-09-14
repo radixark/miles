@@ -1,18 +1,5 @@
 #!/bin/bash
 
-# usage: bash examples/on_policy_distillation/qwen3_1_7b_opsd/run_opsd.sh
-#
-# Privileged-context self-distillation on Qwen3-1.7B: the student rolls out from the
-# problem alone, the teacher scores that response having also read the reference
-# solution. Teacher and student are the same weights, so the privileged context is what
-# makes them differ; plain self-distillation has a reverse-KL of ~0 and nothing moves.
-#
-# Prerequisites:
-#   hf download Qwen/Qwen3-1.7B --local-dir /root/Qwen3-1.7B
-#   hf download --repo-type dataset open-r1/OpenThoughts-114k-math --local-dir /root/openthoughts-math
-#   hf download --repo-type dataset HuggingFaceH4/aime_2024 --local-dir /root/aime24
-#   pip install math_verify
-
 set -ex
 
 MODEL_DIR=${MODEL_DIR:-/root}
@@ -22,8 +9,6 @@ EVAL_DATA=${EVAL_DATA:-/tmp/opsd-aime24.jsonl}
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-# Prompts are rendered here, not by --apply-chat-template, so the student can train with
-# thinking mode off while the teacher and the evaluation keep it on.
 python3 "${SCRIPT_DIR}/prepare_data.py" \
     "${MODEL_DIR}/Qwen3-1.7B" \
     "${DATA_DIR}/openthoughts-math" \
@@ -31,8 +16,6 @@ python3 "${SCRIPT_DIR}/prepare_data.py" \
     "$TRAIN_DATA" \
     "$EVAL_DATA"
 
-# The teacher is the base checkpoint, which LoRA keeps frozen, so it stays the initial
-# policy for the whole run. It only prefills, so it needs little memory.
 TEACHER_IP="127.0.0.1"
 TEACHER_PORT=13141
 LOG_FILE="/tmp/sglang_$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 6).log"
@@ -45,6 +28,8 @@ CUDA_VISIBLE_DEVICES=7 python3 -m sglang.launch_server \
     --chunked-prefill-size 4096 \
     --mem-fraction-static 0.25 \
     > "$LOG_FILE" 2>&1 &
+TEACHER_PID=$!
+trap 'kill "$TEACHER_PID" 2>/dev/null || true' EXIT
 
 echo "Starting teacher model server..."
 until curl -sf http://$TEACHER_IP:$TEACHER_PORT/health_generate > /dev/null; do
@@ -96,7 +81,6 @@ EVAL_ARGS=(
    --eval-max-response-len 38912
    --eval-temperature 1.0
    --eval-top-p 0.95
-   # Explicit, because an unset eval top-k falls back to --rollout-top-k.
    --eval-top-k -1
 )
 
@@ -124,24 +108,16 @@ PERF_ARGS=(
    --max-tokens-per-gpu 16384
 )
 
-# The task reward is 0, so the divergence from the teacher is the entire learning signal.
-GRPO_ARGS=(
-   --advantage-estimator grpo
+OPD_ARGS=(
    --use-opd
    --opd-type sglang
    --opd-kl-coef 1.0
-   # Forward KL reads the student from the training logits, so only the teacher needs a
-   # wide support and it never rides on the generation request. A truncated support is
-   # only a KL while it covers nearly all the teacher's mass, so opd_teacher_coverage
-   # reports what fraction it actually caught.
    --opd-log-prob-top-k 256
-   --opd-top-k-strategy only-teacher
    --opd-divergence forward_kl
-   --opd-kl-clip 0.05
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.00
+   --loss-type custom_loss
+   --custom-loss-function-path examples.on_policy_distillation.qwen3_1_7b_opsd.loss.loss_function
+   --disable-compute-advantages-and-returns
+   --custom-config-path "${SCRIPT_DIR}/config.yaml"
 )
 
 OPTIMIZER_ARGS=(
@@ -152,13 +128,6 @@ OPTIMIZER_ARGS=(
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
-)
-
-WANDB_ARGS=(
-   #--use-wandb
-   # --wandb-project miles-dev
-   # --wandb-group qwen3-1.7B-opsd
-   # --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
@@ -192,20 +161,12 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
-   ${GRPO_ARGS[@]} \
+   ${OPD_ARGS[@]} \
    ${LORA_ARGS[@]} \
-   ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]} \
    ${RM_ARGS[@]}
 
-pkill -9 sglang
-sleep 3
 ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python

@@ -4,6 +4,7 @@ from argparse import Namespace
 import pytest
 from tests.ci.ci_register import register_cpu_ci
 
+from miles.rollout import on_policy_distillation as opd
 from miles.rollout.on_policy_distillation import (
     _compute_topk_reverse_kl,
     _per_position_ids,
@@ -18,6 +19,38 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 def _entry(prob: float, token_id: int):
     return [math.log(prob), token_id]
+
+
+async def test_forward_kl_scores_only_teacher_and_preserves_metadata(monkeypatch):
+    args = Namespace(opd_log_prob_top_k=3, opd_divergence="forward_kl", rm_url="teacher", reward_key=None)
+    sample = _sample()
+    sample.train_metadata = {"existing": True}
+    calls = []
+
+    async def post(url, payload, **kwargs):
+        calls.append((url, payload))
+        return _teacher_payload()["teacher"]
+
+    monkeypatch.setattr(opd, "_post_json", post)
+    sample.reward = await opd.reward_func(args, sample)
+    assert opd.post_process_rewards(args, [sample]) == ([0.0], [0.0])
+    assert len(calls) == 1
+    assert calls[0][0] == "teacher"
+    assert calls[0][1]["top_logprobs_num"] == 3
+    assert "token_ids_logprob" not in calls[0][1]
+    assert sample.train_metadata["existing"] is True
+    assert sample.train_metadata["opd"]["ids"] == [[2, 3, 0], [4, 6, 0]]
+    assert sample.train_metadata["opd"]["logprobs"][0] == [math.log(0.5), math.log(0.5), -math.inf]
+
+
+@pytest.mark.parametrize("entries", [[None], [None, []], [None, [[math.nan, 1]]], [None, [[0.1, 1]]]])
+def test_forward_kl_rejects_missing_or_invalid_teacher_positions(entries):
+    with pytest.raises(ValueError, match="[Tt]eacher"):
+        opd.extract_teacher_support({"meta_info": {"input_top_logprobs": entries}}, 1, 2)
+
+
+def test_forward_kl_extracts_empty_response():
+    assert opd.extract_teacher_support({"meta_info": {"input_top_logprobs": []}}, 0, 2) == {"ids": [], "logprobs": []}
 
 
 def _args(strategy: str, weight_mode: str = "student_p"):

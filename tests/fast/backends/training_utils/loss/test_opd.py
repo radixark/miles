@@ -8,12 +8,17 @@ snapshot artifacts.
 
 import math
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.backends.training_utils.loss.loss_test_utils import make_args
 
 from miles.backends.training_utils import loss as loss_utils
-from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
+from miles.backends.training_utils import parallel
+from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
+from miles.backends.training_utils.loss_hub import losses
+from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages, forward_kl_loss
 
 # This module intentionally has no explicit CI registration call: modules under
 # tests/fast are implicitly assigned to the stage-a-cpu suite by the CI collector
@@ -155,163 +160,102 @@ def test_raises_on_scalar_advantage_broadcast_trap():
         apply_opd_kl_to_advantages(args, rollout_data, advantages, student)
 
 
-def test_clip_bounds_each_per_token_contribution():
-    """--opd-kl-clip caps the divergence a single token can contribute."""
+@pytest.fixture
+def forward_batch(monkeypatch):
+    monkeypatch.setattr(parallel, "_parallel_state", SimpleNamespace(cp=SimpleNamespace(size=1)))
+    args = Namespace(qkv_format="thd", true_on_policy_mode=False, opd_log_prob_top_k=3)
+    batch = {
+        "metadata": [
+            {
+                "opd": {
+                    "ids": [[0, 1, 0], [1, 2, 0]],
+                    "logprobs": [
+                        [math.log(0.6), math.log(0.3), -math.inf],
+                        [math.log(0.4), math.log(0.5), -math.inf],
+                    ],
+                }
+            },
+            {"opd": {"ids": [[1, 3, 0]], "logprobs": [[math.log(0.5), math.log(0.3), -math.inf]]}},
+        ],
+        "unconcat_tokens": [torch.tensor([0, 1, 2]), torch.tensor([1, 2])],
+        "total_lengths": [3, 2],
+        "response_lengths": [2, 1],
+        "loss_masks": [torch.tensor([1, 0]), torch.tensor([1])],
+    }
+    reducer = get_sum_of_sample_mean(batch["total_lengths"], batch["response_lengths"], batch["loss_masks"])
+    return args, batch, reducer
+
+
+@pytest.mark.parametrize("layout", ["thd", "bshd"])
+def test_forward_kl_loss_and_gradients_match_dense_reference(forward_batch, layout):
+    args, batch, reducer = forward_batch
+    args.qkv_format = layout
+    shape = (1, 5, 4) if layout == "thd" else (2, 3, 4)
+    logits = torch.linspace(-1, 1, math.prod(shape)).reshape(shape).requires_grad_()
+    batch["max_seq_lens"] = [3, 3] if layout == "bshd" else None
+    loss, metrics = forward_kl_loss(args, batch, logits, reducer)
+    reference = logits.detach().clone().requires_grad_()
+    rows = reference.reshape(-1, 4)[[0, 1, 3]]
+    teacher = torch.tensor([[0.6, 0.3, 0, 0], [0, 0.4, 0.5, 0], [0, 0.5, 0, 0.3]])
+    expected = reducer((torch.special.xlogy(teacher, teacher) - teacher * rows.log_softmax(-1)).sum(-1))
+    torch.testing.assert_close(loss, expected)
+    torch.testing.assert_close(torch.autograd.grad(loss, logits)[0], torch.autograd.grad(expected, reference)[0])
+    assert metrics["opd_teacher_coverage"].item() == pytest.approx(1.7)
+    assert all(not value.requires_grad for value in metrics.values())
+
+
+@pytest.mark.parametrize("metadata", [None, [], [{}, {}]])
+def test_forward_kl_rejects_missing_support(forward_batch, metadata):
+    args, batch, reducer = forward_batch
+    batch["metadata"] = metadata
+    with pytest.raises(ValueError, match="metadata"):
+        forward_kl_loss(args, batch, torch.zeros(1, 5, 4), reducer)
+
+
+def test_forward_kl_rejects_misaligned_support(forward_batch):
+    args, batch, reducer = forward_batch
+    batch["metadata"][0]["opd"]["ids"] = [[0, 1, 0]]
+    with pytest.raises(ValueError, match="shape"):
+        forward_kl_loss(args, batch, torch.zeros(1, 5, 4), reducer)
+
+
+def test_forward_kl_empty_responses_support_backward(forward_batch):
+    args, batch, _ = forward_batch
+    batch["response_lengths"] = [0, 0]
+    batch["loss_masks"] = [torch.zeros(0), torch.zeros(0)]
+    batch["metadata"] = [{"opd": {"ids": [], "logprobs": []}} for _ in range(2)]
+    reducer = get_sum_of_sample_mean(batch["total_lengths"], batch["response_lengths"], batch["loss_masks"])
+    logits = torch.zeros(1, 5, 4, requires_grad=True)
+    loss, metrics = forward_kl_loss(args, batch, logits, reducer)
+    loss.backward()
+    assert loss.item() == 0
+    assert metrics["opd_teacher_coverage"].item() == 0
+    torch.testing.assert_close(logits.grad, torch.zeros_like(logits))
+
+
+def test_forward_kl_does_not_modify_advantages():
     args = _args()
-    args.opd_kl_clip = 1.0
-    student = [torch.tensor([0.0, 5.0, 1.0])]
-    teacher = [torch.tensor([0.0, 0.0, 0.0])]
-    advantages = [torch.tensor([0.0, 0.0, 0.0])]
-    rollout_data = {"teacher_log_probs": teacher}
-
-    apply_opd_kl_to_advantages(args, rollout_data, advantages, student)
-
-    # raw reverse_kl is [0, 5, 1]; the 5 is the heavy tail this exists to bound.
-    assert torch.allclose(rollout_data["opd_reverse_kl"][0], torch.tensor([0.0, 1.0, 1.0]))
-    assert torch.allclose(advantages[0], torch.tensor([0.0, -1.0, -1.0]))
+    args.opd_divergence = "forward_kl"
+    advantages = [torch.tensor([2.0])]
+    apply_opd_kl_to_advantages(args, {}, advantages, [torch.zeros(1)])
+    torch.testing.assert_close(advantages[0], torch.tensor([2.0]))
 
 
-def test_clip_records_how_often_it_binds():
-    """A tau that never binds is inert and one that always binds flattens the signal."""
-    args = _args()
-    args.opd_kl_clip = 2.0
-    student = [torch.tensor([0.0, 3.0, 9.0, 1.0])]
-    teacher = [torch.tensor([0.0, 0.0, 0.0, 0.0])]
-    advantages = [torch.zeros(4)]
-    rollout_data = {"teacher_log_probs": teacher}
-
-    apply_opd_kl_to_advantages(args, rollout_data, advantages, student)
-
-    # only the 3 and the 9 exceed tau=2
-    assert torch.allclose(rollout_data["opd_kl_clipfrac"][0], torch.tensor([0.0, 1.0, 1.0, 0.0]))
-
-
-def test_unset_clip_changes_nothing_and_reports_no_clipfrac():
-    args = _args()
-    args.opd_kl_clip = None
-    student = [torch.tensor([0.0, 5.0])]
-    teacher = [torch.tensor([0.0, 0.0])]
-    advantages = [torch.zeros(2)]
-    rollout_data = {"teacher_log_probs": teacher}
-
-    apply_opd_kl_to_advantages(args, rollout_data, advantages, student)
-
-    assert torch.allclose(rollout_data["opd_reverse_kl"][0], torch.tensor([0.0, 5.0]))
-    assert "opd_kl_clipfrac" not in rollout_data
-
-
-def _forward_kl_args(coef=1.0, clip=None):
-    return Namespace(use_opd=True, opd_type="sglang", opd_kl_coef=coef, opd_divergence="forward_kl", opd_kl_clip=clip)
-
-
-def _forward_kl_batch(logits_row, ids, t_logprobs):
-    """One sample, one response token; get_responses is stubbed so no megatron env is needed."""
-    return {
-        "teacher_top_ids": [torch.tensor(ids)],
-        "teacher_top_logprobs": [torch.tensor(t_logprobs)],
-        "unconcat_tokens": [torch.tensor([0, 1])],
-        "total_lengths": [2],
-        "response_lengths": [1],
-    }, torch.tensor(logits_row)
-
-
-def test_forward_kl_matches_the_closed_form(monkeypatch):
-    """sum_v p_T(v) * (log p_T(v) - log p_S(v)) over the teacher's support."""
-    from miles.backends.training_utils.loss_hub import opd as opd_mod
-
-    # student logits over a 4-token vocab; teacher supports ids 0 and 1 with p=[0.75, 0.25]
-    logits_row = [[0.0, 0.0, 0.0, 0.0]]  # uniform student -> log p_S = log(0.25) for every id
-    t_logprobs = [[math.log(0.75), math.log(0.25)]]
-    batch, logits_chunk = _forward_kl_batch(logits_row, [[0, 1]], t_logprobs)
-
-    monkeypatch.setattr(opd_mod, "get_responses", lambda *a, **k: iter([(logits_chunk, None)]), raising=False)
-    monkeypatch.setattr(
-        "miles.backends.training_utils.loss_hub.logit_processors.get_responses",
-        lambda *a, **k: iter([(logits_chunk, None)]),
+def test_policy_loss_adds_forward_kl_once(forward_batch, monkeypatch):
+    config, batch, reducer = forward_batch
+    args = make_args(**vars(config), entropy_coef=0, observe_training_entropy=False, opd_divergence="forward_kl")
+    batch["log_probs"] = [torch.zeros(length) for length in batch["response_lengths"]]
+    batch["advantages"] = [torch.ones(length) for length in batch["response_lengths"]]
+    monkeypatch.setattr(losses, "get_log_probs_and_entropy", lambda *a, **kw: {"log_probs": batch["log_probs"]})
+    logits = torch.zeros(1, 5, 4, requires_grad=True)
+    base, _ = losses.policy_loss_function(args, batch, logits, reducer)
+    args.use_opd, args.opd_kl_coef = True, 0.37
+    loss, metrics = losses.policy_loss_function(args, batch, logits, reducer)
+    kl, kl_metrics = forward_kl_loss(args, batch, logits, reducer)
+    torch.testing.assert_close(loss, base + args.opd_kl_coef * kl)
+    torch.testing.assert_close(metrics["loss"], loss)
+    for key, value in kl_metrics.items():
+        torch.testing.assert_close(metrics[key], value)
+    torch.testing.assert_close(
+        torch.autograd.grad(loss, logits, retain_graph=True)[0], torch.autograd.grad(args.opd_kl_coef * kl, logits)[0]
     )
-
-    loss, _, _ = opd_mod.forward_kl_loss(_forward_kl_args(), batch, logits_chunk, lambda x: x.mean())
-    expected = 0.75 * (math.log(0.75) - math.log(0.25)) + 0.25 * (math.log(0.25) - math.log(0.25))
-    assert loss.item() == pytest.approx(expected, abs=1e-5)
-
-
-def test_forward_kl_ignores_padded_support_entries(monkeypatch):
-    """Padding carries -inf, so p_T is 0 and the entry must contribute nothing."""
-    from miles.backends.training_utils.loss_hub import opd as opd_mod
-
-    logits_row = [[0.0, 0.0, 0.0, 0.0]]
-    t_logprobs = [[math.log(1.0), float("-inf")]]  # second slot is padding
-    batch, logits_chunk = _forward_kl_batch(logits_row, [[0, 0]], t_logprobs)
-    monkeypatch.setattr(
-        "miles.backends.training_utils.loss_hub.logit_processors.get_responses",
-        lambda *a, **k: iter([(logits_chunk, None)]),
-    )
-    loss, _, _ = opd_mod.forward_kl_loss(_forward_kl_args(), batch, logits_chunk, lambda x: x.mean())
-    assert loss.item() == pytest.approx(math.log(1.0) - math.log(0.25), abs=1e-5)
-
-
-def test_forward_kl_is_zero_when_student_matches_teacher(monkeypatch):
-    from miles.backends.training_utils.loss_hub import opd as opd_mod
-
-    logits_row = [[0.0, 0.0, 0.0, 0.0]]
-    t_logprobs = [[math.log(0.25), math.log(0.25)]]
-    batch, logits_chunk = _forward_kl_batch(logits_row, [[0, 1]], t_logprobs)
-    monkeypatch.setattr(
-        "miles.backends.training_utils.loss_hub.logit_processors.get_responses",
-        lambda *a, **k: iter([(logits_chunk, None)]),
-    )
-    loss, _, _ = opd_mod.forward_kl_loss(_forward_kl_args(), batch, logits_chunk, lambda x: x.mean())
-    assert loss.item() == pytest.approx(0.0, abs=1e-6)
-
-
-def test_forward_kl_raises_rather_than_silently_training_on_nothing():
-    """Missing teacher support must fail loudly.
-
-    Returning None here yielded loss=0, grad_norm=0 and no opd_forward_kl metric: a run
-    that looks healthy and learns nothing.
-    """
-    from miles.backends.training_utils.loss_hub import opd as opd_mod
-
-    with pytest.raises(ValueError, match="teacher_top_ids"):
-        opd_mod.forward_kl_loss(_forward_kl_args(), {}, torch.zeros(1), lambda x: x)
-
-
-def test_forward_kl_keeps_an_infinite_contribution_instead_of_zeroing_it(monkeypatch):
-    """A student assigning ~zero mass where the teacher has some is the strongest signal.
-
-    Masking padding with isfinite (rather than nan_to_num) is what preserves it; the clip
-    is what bounds it.
-    """
-    from miles.backends.training_utils.loss_hub import opd as opd_mod
-
-    # student puts almost nothing on id 0
-    logits_row = [[-1e30, 0.0, 0.0, 0.0]]
-    t_logprobs = [[math.log(1.0), float("-inf")]]  # teacher is certain about id 0
-    batch, logits_chunk = _forward_kl_batch(logits_row, [[0, 0]], t_logprobs)
-    monkeypatch.setattr(
-        "miles.backends.training_utils.loss_hub.logit_processors.get_responses",
-        lambda *a, **k: iter([(logits_chunk, None)]),
-    )
-    unclipped, _, _ = opd_mod.forward_kl_loss(_forward_kl_args(), batch, logits_chunk, lambda x: x.mean())
-    assert unclipped.item() > 10.0, "a near-zero student probability must produce a large penalty"
-
-    clipped, frac, _ = opd_mod.forward_kl_loss(_forward_kl_args(clip=2.0), batch, logits_chunk, lambda x: x.mean())
-    assert clipped.item() == pytest.approx(2.0, abs=1e-5)
-    assert frac.item() == pytest.approx(0.5, abs=1e-6), "one of the two slots clipped"
-
-def test_forward_kl_reports_teacher_mass_inside_the_truncated_support(monkeypatch):
-    """Coverage is what makes a too-small top-k, or a server-side cap, visible."""
-    from miles.backends.training_utils.loss_hub import opd as opd_mod
-
-    logits_row = [[0.0, 0.0, 0.0, 0.0]]
-    # The support carries 0.90 of the teacher's mass; the padded slot must not count
-    # toward it, or a short position would silently read as full coverage.
-    t_logprobs = [[math.log(0.75), math.log(0.15), float("-inf")]]
-    batch, logits_chunk = _forward_kl_batch(logits_row, [[0, 1, 0]], t_logprobs)
-    monkeypatch.setattr(
-        "miles.backends.training_utils.loss_hub.logit_processors.get_responses",
-        lambda *a, **k: iter([(logits_chunk, None)]),
-    )
-
-    _, _, coverage = opd_mod.forward_kl_loss(_forward_kl_args(), batch, logits_chunk, lambda x: x.mean())
-    assert coverage.item() == pytest.approx(0.90, abs=1e-6)

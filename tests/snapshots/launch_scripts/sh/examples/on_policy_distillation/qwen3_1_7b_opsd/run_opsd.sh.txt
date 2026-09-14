@@ -134,8 +134,6 @@
 "0.9"
 "--adam-beta2"
 "0.98"
-"--advantage-estimator"
-"grpo"
 "--use-opd"
 "--opd-type"
 "sglang"
@@ -143,19 +141,15 @@
 "1.0"
 "--opd-log-prob-top-k"
 "256"
-"--opd-top-k-strategy"
-"only-teacher"
 "--opd-divergence"
 "forward_kl"
-"--opd-kl-clip"
-"0.05"
-"--use-kl-loss"
-"--kl-loss-coef"
-"0.00"
-"--kl-loss-type"
-"low_var_kl"
-"--entropy-coef"
-"0.00"
+"--loss-type"
+"custom_loss"
+"--custom-loss-function-path"
+"examples.on_policy_distillation.qwen3_1_7b_opsd.loss.loss_function"
+"--disable-compute-advantages-and-returns"
+"--custom-config-path"
+"<REPO_ROOT>/examples/on_policy_distillation/qwen3_1_7b_opsd/config.yaml"
 "--lora-rank"
 "64"
 "--lora-alpha"
@@ -221,39 +215,6 @@
 "http://127.0.0.1:13141/generate"
 
 ### 6
-"pkill"
-"-9"
-"sglang"
-
-### 7
-"sleep"
-"3"
-
-### 8
 "ray"
 "stop"
 "--force"
-
-### 9
-"pkill"
-"-9"
-"ray"
-
-### 10
-"pkill"
-"-9"
-"python"
-
-### 11
-"sleep"
-"3"
-
-### 12
-"pkill"
-"-9"
-"ray"
-
-### 13
-"pkill"
-"-9"
-"python"

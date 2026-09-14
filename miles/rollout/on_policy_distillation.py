@@ -341,49 +341,30 @@ def _compute_topk_reverse_kl(
             )
 
         weights = _reward_weights(student_logps, teacher_logps, weight_mode, normalize=normalize_weights)
-        contributions = [
+        reverse_kl = sum(
             w * (s_logp - t_logp) for w, s_logp, t_logp in zip(weights, student_logps, teacher_logps, strict=True)
-        ]
-        # Clip per vocabulary entry, before the support is summed: the heavy tail is carried by
-        # individual entries, so clipping the sum would not bound their influence.
-        clip = getattr(args, "opd_kl_clip", None)
-        if clip is not None:
-            contributions = [min(value, clip) for value in contributions]
-        reverse_kls.append(sum(contributions))
+        )
+        reverse_kls.append(reverse_kl)
 
     return torch.tensor(reverse_kls, dtype=torch.float32)
 
 
-def _teacher_top_support(
-    args: Namespace,
-    sample: Sample,
-    reward_payload: dict[str, Any],
-) -> tuple[list[int], list[float]]:
-    """The teacher's own top-k per response position, flattened to response_length * k.
-
-    Forward KL weights each vocabulary entry by the TEACHER's probability, so the support
-    is the teacher's top-k and the student is evaluated on it later from its own logits.
-    Positions are padded to a uniform width so the loss can reshape to ``[R, k]``; padding
-    uses id 0 with ``-inf`` log-prob, which contributes zero teacher mass.
-    """
-    response_length = sample.response_length
-    if response_length == 0:
-        return [], []
-
-    top_k = _get_opd_top_k(args)
-    maps = _input_logprob_maps(reward_payload["teacher"], "input_top_logprobs", response_length)
-
-    ids: list[int] = []
-    logps: list[float] = []
+def extract_teacher_support(response: dict[str, Any], response_length: int, top_k: int) -> dict[str, list]:
+    """Extract response-aligned teacher top-k, padding missing entries with zero mass."""
+    if top_k <= 0:
+        raise ValueError("Forward KL requires positive teacher top-k.")
+    maps = _input_logprob_maps(response, "input_top_logprobs", response_length)
+    if len(maps) != response_length or any(not position for position in maps):
+        raise ValueError("Teacher top-k must cover every response position.")
+    ids, logprobs = [], []
     for position in maps:
-        entries = sorted(position.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
-        for token_id, logp in entries:
-            ids.append(int(token_id))
-            logps.append(float(logp))
-        for _ in range(top_k - len(entries)):
-            ids.append(0)
-            logps.append(float("-inf"))
-    return ids, logps
+        entries = sorted(position.items(), key=lambda item: item[1], reverse=True)[:top_k]
+        if any(token_id < 0 or not math.isfinite(logp) or logp > 0 for token_id, logp in entries):
+            raise ValueError("Invalid teacher top-k token ID or log probability.")
+        entries += [(0, -math.inf)] * (top_k - len(entries))
+        ids.append([token_id for token_id, _ in entries])
+        logprobs.append([logp for _, logp in entries])
+    return {"ids": ids, "logprobs": logprobs}
 
 
 async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[str, Any]:
@@ -398,10 +379,6 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
         return await _post_json(teacher_url, _score_payload(sample.tokens), timeout_secs=request_timeout)
 
     if getattr(args, "opd_divergence", "reverse_kl") == "forward_kl":
-        # Forward KL needs only the teacher's own top-k: the student side is evaluated
-        # later from its training logits, so there is no student scoring call and no id
-        # union to broadcast. That keeps the response at top_logprobs_num * positions
-        # rather than the dense |union| * positions the reverse-KL strategies pay.
         teacher_payload = _score_payload(sample.tokens, top_k=top_k)
         return {"teacher": await _post_json(teacher_url, teacher_payload, timeout_secs=request_timeout)}
 
@@ -460,7 +437,10 @@ def post_process_rewards(args: Namespace, samples: list[Sample], **kwargs: Any) 
 
     if getattr(args, "opd_divergence", "reverse_kl") == "forward_kl":
         for sample, reward in zip(samples, raw_rewards, strict=True):
-            sample.teacher_top_ids, sample.teacher_top_logprobs = _teacher_top_support(args, sample, reward)
+            sample.train_metadata = {
+                **(sample.train_metadata or {}),
+                "opd": extract_teacher_support(reward["teacher"], sample.response_length, _get_opd_top_k(args)),
+            }
         scalar_rewards = [0.0] * len(samples)
         return scalar_rewards, scalar_rewards
 

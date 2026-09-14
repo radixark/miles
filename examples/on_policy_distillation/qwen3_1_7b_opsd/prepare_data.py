@@ -1,11 +1,4 @@
-"""Build the OPSD train and eval splits with prompts already rendered.
-
-Rendering here rather than via --apply-chat-template lets the student train with
-thinking mode off while the teacher and the evaluation keep it on, which is the
-configuration the paper adopts.
-
-usage: python3 prepare_data.py <model> <openthoughts_dir> <aime24_dir> <train.jsonl> <eval.jsonl>
-"""
+"""Render OPSD training and evaluation prompts before rollout generation."""
 
 import glob
 import json
@@ -72,9 +65,7 @@ with open(OUT_TRAIN, "w") as out:
                 {
                     "prompt": render(student_prompt(problem), thinking=False),
                     "metadata": {
-                        "teacher_prompt": render(
-                            teacher_prompt(problem, solution[:MAX_SOLUTION_CHARS]), thinking=True
-                        )
+                        "teacher_prompt": render(teacher_prompt(problem, solution[:MAX_SOLUTION_CHARS]), thinking=True)
                     },
                 }
             )
