@@ -53,6 +53,11 @@ _MEGATRON_MODEL_TYPE = {
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
+    # Context parallelism for the training actor. 1 keeps the historical layout untouched.
+    # Above 1 it is what makes long sequences fit, because it is the only axis that divides
+    # the indexer's [seqlen, seqlen_kv] score matrix -- pipeline parallelism shrinks how many
+    # layers a rank owns but every one of them still allocates the matrix in full.
+    context_parallel_size: int = 1
     run_id: str = U.create_run_id()
     model_org: str = ""
     model_name: Literal[
@@ -277,17 +282,43 @@ def _get_parallel_config(args: ScriptArgs) -> str:
         )
 
     if actor_num_gpus_per_node == 8:
-        if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash): TP4/PP4/EP8, 43 layers = 11+11+11+10
+        if total_gpus == 32:  # 4 nodes x 8 GPUs (full Flash): PP4/EP8, 43 layers = 11+11+11+10
+            pipeline_size = 4
+            cp_size = args.context_parallel_size
+            if cp_size == 1:
+                # The original layout, kept verbatim: TP4/PP4/CP1/EP8, DP2.
+                return (
+                    "--tensor-model-parallel-size 4 "
+                    "--sequence-parallel "
+                    "--pipeline-model-parallel-size 4 "
+                    "--decoder-first-pipeline-num-layers 11 "
+                    "--decoder-last-pipeline-num-layers 10 "
+                    "--context-parallel-size 1 "
+                    "--expert-model-parallel-size 8 "
+                    "--expert-tensor-parallel-size 1 "
+                )
+            # Context parallelism is spent out of the tensor-parallel budget so that the
+            # pipeline split stays 11+11+11+10 and DP collapses to 1. EP stays at 8, which
+            # keeps Megatron's expert group intact: it is built from
+            # world_size % (etp * ep * pp), a quantity CP does not enter.
+            if total_gpus % (pipeline_size * cp_size):
+                raise NotImplementedError(
+                    f"--context-parallel-size {cp_size} does not divide {total_gpus} GPUs "
+                    f"over {pipeline_size} pipeline stages."
+                )
+            tensor_size = total_gpus // (pipeline_size * cp_size)
+            config = f"--tensor-model-parallel-size {tensor_size} "
+            if tensor_size > 1:
+                # Megatron rejects sequence parallelism at TP=1 rather than ignoring it.
+                config += "--sequence-parallel "
             return (
-                "--tensor-model-parallel-size 4 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 4 "
+                config + f"--pipeline-model-parallel-size {pipeline_size} "
                 "--decoder-first-pipeline-num-layers 11 "
                 "--decoder-last-pipeline-num-layers 10 "
-                "--context-parallel-size 1 "
-                # Raising context parallelism also needs --allgather-cp: DeepSeek V4 has no
-                # zigzag CP path, and arguments.py asserts on the flag rather than setting it.
-                # "--allgather-cp "
+                f"--context-parallel-size {cp_size} "
+                # Mandatory above CP=1: DeepSeek V4 has no zigzag CP path, and arguments.py
+                # asserts on the flag rather than setting it for you.
+                "--allgather-cp "
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
