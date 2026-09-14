@@ -236,7 +236,31 @@ def _probe_row(tokens: int) -> dict:
     }
 
 
-ENGINE_WEIGHT_BYTES = 2  # the engines hold bf16 weights and bf16 adapter buffers
+_QUANT_BYTES = (
+    ("fp4", 0.5),
+    ("int4", 0.5),
+    ("awq", 0.5),
+    ("gptq", 0.5),
+    ("fp8", 1),
+    ("int8", 1),
+)  # --sglang-quantization
+_DTYPE_BYTES = {"float32": 4, "fp32": 4, "float16": 2, "half": 2, "fp16": 2, "bfloat16": 2, "bf16": 2}
+
+
+def engine_dtype_bytes(args: Namespace) -> float:
+    """Bytes per element of the engines' dtype (--sglang-dtype; auto: the bf16/fp16 checkpoint)."""
+    return _DTYPE_BYTES.get((getattr(args, "sglang_dtype", None) or "auto").lower(), 2)
+
+
+def engine_weight_bytes(args: Namespace) -> float:
+    """Bytes per base weight on the engines: --sglang-quantization when set, else the engines' dtype."""
+    quantization = (getattr(args, "sglang_quantization", None) or "").lower()
+    return next((size for key, size in _QUANT_BYTES if key in quantization), engine_dtype_bytes(args))
+
+
+def engine_kv_bytes(args: Namespace) -> float:
+    """Bytes per KV element on the engines: 1 for an fp8 --sglang-kv-cache-dtype, else the engines' dtype."""
+    return 1 if "fp8" in (getattr(args, "sglang_kv_cache_dtype", None) or "auto").lower() else engine_dtype_bytes(args)
 
 
 def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] | None:
@@ -259,11 +283,11 @@ def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] 
     )
     kv_heads = args.num_query_groups if getattr(args, "group_query_attention", False) else args.num_attention_heads
     kv_channels = getattr(args, "kv_channels", None) or args.hidden_size // args.num_attention_heads
-    kv_token = args.num_layers * -(-kv_heads // engine_tp) * kv_channels * 2 * ENGINE_WEIGHT_BYTES  # K and V
+    kv_token = args.num_layers * -(-kv_heads // engine_tp) * kv_channels * 2 * engine_kv_bytes(args)  # K and V
 
-    weights = ENGINE_WEIGHT_BYTES * (probe.base_dense_params / engine_tp + probe.base_expert_params / engine_ep)
+    weights = engine_weight_bytes(args) * (probe.base_dense_params / engine_tp + probe.base_expert_params / engine_ep)
     budget = fraction * probe.gpu_total_bytes - weights
-    adapter = ENGINE_WEIGHT_BYTES * (
+    adapter = engine_dtype_bytes(args) * (  # the LoRA buffers stay in the engines' dtype
         probe.adapter_dense_params / engine_tp + probe.adapter_expert_params_total / engine_ep
     )
     kv_per_slot = seqs * tokens * kv_token / engines  # one slot's sequences spread over the engines
