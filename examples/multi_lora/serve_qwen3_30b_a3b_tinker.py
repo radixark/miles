@@ -28,7 +28,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # LoRA slot pool; per-client rank comes from the SDK, capped by lora_rank.
     lora_rank: int = 32
     lora_alpha: int = 64
-    n_adapters: int = 4  # -1 (AUTO_SLOT_CAPACITY): probe the trainer's memory and rebuild at the measured count
+    n_adapters: int = 4
     target_modules: str = "linear_qkv,linear_proj,linear_fc1,linear_fc2,output_layer"
 
     tinker_port: int = 10613
