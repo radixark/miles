@@ -1,4 +1,4 @@
-"""Prepare a HF checkpoint (Qwen3-30B-A3B by default) and serve the Tinker gateway on separate training and sampling GPUs."""
+"""Prepare Qwen3-30B-A3B and serve the Tinker gateway on separate training and sampling GPUs."""
 
 from dataclasses import dataclass, field
 
@@ -14,7 +14,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = field(default_factory=U.create_run_id)
 
     hf_checkpoint: str | None = None
-    hf_repo: str = "Qwen/Qwen3-30B-A3B"
     model_type: str = "qwen3-30B-A3B"
     model_dir: str = "/root/models"
     save_dir: str | None = None
@@ -42,15 +41,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.save_dir is None:
             self.save_dir = f"{self.output_dir}/checkpoints"
         if self.hf_checkpoint is None:
-            self.hf_checkpoint = f"{self.model_dir}/{self.hf_repo.split('/')[-1]}"
+            self.hf_checkpoint = f"{self.model_dir}/Qwen3-30B-A3B"
 
 
 @app.command()
 @U.dataclass_cli
 def prepare(args: ScriptArgs):
-    """Download --hf-repo into --hf-checkpoint. Run once per node before serving."""
+    """Download the Qwen3-30B-A3B checkpoint. Run once per node before serving."""
     U.exec_command_cpu(f"mkdir -p {args.model_dir}")
-    U.exec_command_cpu(f"hf download {args.hf_repo} --local-dir {args.hf_checkpoint}")
+    U.exec_command_cpu(f"hf download Qwen/Qwen3-30B-A3B --local-dir {args.model_dir}/Qwen3-30B-A3B")
 
 
 @app.command()

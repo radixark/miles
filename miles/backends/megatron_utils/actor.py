@@ -13,9 +13,6 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
-from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
-from miles.backends.megatron_utils.lora import executor as lora_executor
-from miles.backends.megatron_utils.lora import slot_capacity
 from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
@@ -434,81 +431,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 store_prefix=store_prefix,
                 fp32_output=False,
             )
-
-    @with_logs
-    def forward_backward(self, batch_id: int, rollout_data_ref: Box) -> dict:
-        assert self.args.multi_lora, "forward_backward is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        with ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
-            stack.enter_context(store_get_result)
-            return lora_executor.run_loss_pass(self.args, batch_id, self.model, rollout_data)
-
-    @with_logs
-    def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
-        assert self.args.multi_lora, "optim_step is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        return lora_executor.optim_step(self.slot_optimizers, adam_params_by_slot)
-
-    @with_logs
-    def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
-        """Same loss pass as forward_backward, without the backward: the Tinker
-        forward() contract returns the requested loss per datum."""
-        assert self.args.multi_lora, "forward_only is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        with ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
-            stack.enter_context(store_get_result)
-            return lora_executor.run_loss_pass(self.args, batch_id, self.model, rollout_data, forward_only=True)
-
-    @with_logs
-    def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> dict | None:
-        assert self.args.multi_lora, "load_slot is a multi-LoRA slot command"
-        self.slot_optimizers[slot] = lora_executor.load_slot(self.args, self.model, slot, rank, alpha)
-        if ckpt_path is not None:
-            try:
-                lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
-            except CheckpointIOError as error:
-                return {"error": str(error)}
-        return None
-
-    @with_logs
-    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
-        assert self.args.multi_lora, "save_slot is a multi-LoRA slot command"
-        try:
-            lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
-        except CheckpointIOError as error:
-            return {"error": str(error)}
-        return None
-
-    @with_logs
-    def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> dict | None:
-        """Write the slot's adapter as an engine-loadable dir."""
-        assert self.args.multi_lora, "export_slot is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        try:
-            self.weight_publisher.publish_adapter(
-                AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata
-            )
-        except CheckpointIOError as error:
-            return {"error": str(error)}
-        return None
-
-    @with_logs
-    def multi_lora_memory_probe(self, phase: str) -> dict:
-        assert self.args.multi_lora, "multi_lora_memory_probe is a multi-LoRA slot command"
-        return slot_capacity.memory_snapshot(
-            self.model, self.slot_optimizers.get(slot_capacity.PROBE_SLOT), phase, self.args
-        )
-
-    @with_logs
-    def unload_slot(self, slot: int) -> dict | None:
-        assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
-        slot_optimizer = self.slot_optimizers.pop(slot)
-        lora_executor.unload_slot(self.model, slot_optimizer)
-        return None
 
     @with_logs
     @event_logger_context(

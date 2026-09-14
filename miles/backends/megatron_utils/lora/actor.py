@@ -3,6 +3,7 @@ from contextlib import ExitStack
 from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
+from miles.backends.megatron_utils.lora import slot_capacity
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import build_lora_sync_config
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
@@ -82,6 +83,12 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         except CheckpointIOError as error:
             return {"error": str(error)}
         return None
+
+    @with_logs
+    def multi_lora_memory_probe(self, phase: str) -> dict:
+        return slot_capacity.memory_snapshot(
+            self.model, self.slot_optimizers.get(slot_capacity.PROBE_SLOT), phase, self.args
+        )
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:
