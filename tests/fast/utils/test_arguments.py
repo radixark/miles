@@ -386,6 +386,24 @@ class TestSampleOwnershipCheckArguments:
         """The command-line flag asks for checking."""
         assert self._parse(["--enable-sample-ownership-checker"]).enable_sample_ownership_checker is True
 
+    def test_the_checker_can_be_disabled_explicitly(self) -> None:
+        """An explicit opt-out overrides the CI default."""
+        assert self._parse(["--no-enable-sample-ownership-checker"]).enable_sample_ownership_checker is False
+
+    @pytest.mark.parametrize(
+        "ci_test,requested,enabled",
+        [(False, None, False), (False, False, False), (False, True, True), (True, None, True), (True, False, False)],
+    )
+    def test_ci_enables_the_checker_unless_it_is_requested_explicitly(
+        self, ci_test: bool, requested: bool | None, enabled: bool
+    ) -> None:
+        """CI enables checking only where the tri-state flag was left unset."""
+        args = self._checker_args(ci_test=ci_test, enable_sample_ownership_checker=requested)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is enabled
+
     @staticmethod
     def _checker_args(**overrides) -> SimpleNamespace:
         values = dict(
@@ -400,6 +418,7 @@ class TestSampleOwnershipCheckArguments:
             megatron_config=None,
             debug_train_only=False,
             debug_rollout_only=False,
+            debug_disable_optimizer=False,
             enable_witness=False,
             save_debug_event_data=None,
             run_uuid="0123456789abcdef",
@@ -415,6 +434,7 @@ class TestSampleOwnershipCheckArguments:
             ({"multi_lora": True}, "multi-LoRA training can replay samples"),
             ({"debug_train_only": True}, "train-only mode has no issuing data source"),
             ({"debug_rollout_only": True}, "rollout-only mode has no trainer model companion"),
+            ({"debug_disable_optimizer": True}, "a disabled optimizer trains nothing"),
             ({"num_critic_only_steps": 1}, "critic-only warmup steps drop actor samples"),
         ],
     )

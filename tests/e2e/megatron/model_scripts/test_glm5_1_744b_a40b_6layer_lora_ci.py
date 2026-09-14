@@ -28,7 +28,9 @@ register_cuda_ci(
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship
 # (they keep their correct checkpoint values; everything else is verified)
 _BASE_EXTRA = (
-    "--ci-test " "--ci-disable-logprobs-checker " "--check-weight-update-skip-list fused_qkv_a_proj_with_mqa indexer. "
+    "--ci-test --no-enable-sample-ownership-checker "
+    "--ci-disable-logprobs-checker "
+    "--check-weight-update-skip-list fused_qkv_a_proj_with_mqa indexer. "
 )
 
 # (name, dsa_attention_backend, experts_shared_outer_loras, virtual_experts_serving)
