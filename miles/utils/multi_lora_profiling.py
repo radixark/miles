@@ -20,7 +20,9 @@ Render both after a run::
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import os
 import re
 import statistics
 import time
@@ -36,7 +38,9 @@ __all__ = [
     "Stats",
     "StepRecord",
     "Summary",
+    "gpu_peaks",
     "parse_serve_log",
+    "render_gpu",
     "render_profile",
     "render_summary",
     "render_table",
@@ -47,6 +51,8 @@ PHASES = ("fwd_bwd", "optim", "publish", "rollout")
 PROFILE_LOG_PREFIX = "multi-LoRA profile: "
 _CAPACITY_LINE = re.compile(r"multi-LoRA capacity: (\d+) slots, bound by (.+?) \[")
 _LOADED_LORAS_LINE = re.compile(r"engines keep at most (\d+) adapter versions loaded")
+_TRAINER_NODE_LINE = re.compile(r"MegatronTrainRayActor pid=\d+, ip=([0-9.]+)")
+_ENGINE_NODE_LINE = re.compile(r"CommandActor pid=\d+.*Uvicorn running on http://([0-9.]+):")
 _PHASE_LABELS = {
     "fwd_bwd": "forward/backward wait",
     "optim": "optim_step wait",
@@ -302,16 +308,55 @@ def render_summary(summary: Summary) -> str:
     return render_table(["client side", "time / value", "share"], rows)
 
 
+def gpu_peaks(path: str) -> dict[str, float] | None:
+    """Peaks over every sample of every GPU in one node's nvidia-smi CSV
+    (``timestamp, index, memory.used, memory.total, utilization.gpu`` rows, ``--format=csv,noheader``)."""
+    used: list[int] = []
+    util: list[int] = []
+    total = 0
+    with open(path) as handle:
+        for row in csv.reader(handle):
+            if len(row) < 5:
+                continue
+            used.append(int(row[2].split()[0]))
+            total = int(row[3].split()[0])
+            util.append(int(row[4].split()[0]))
+    if not used:
+        return None
+    return {"mem_peak_mib": max(used), "mem_total_mib": total, "util_peak": max(util), "samples": len(used)}
+
+
+def render_gpu(peaks_by_node: dict[str, dict[str, float]], roles: dict[str, str] | None = None) -> str:
+    """One row per node: peak memory as MiB and as a share of the GPU, peak SM utilization."""
+    rows = []
+    for node, peaks in peaks_by_node.items():
+        label = f"{(roles or {}).get(node, 'node')} GPUs ({node})"
+        share = 100 * peaks["mem_peak_mib"] / peaks["mem_total_mib"] if peaks["mem_total_mib"] else 0.0
+        rows.append(
+            [
+                label,
+                f"{int(peaks['mem_peak_mib']):,} / {int(peaks['mem_total_mib']):,} MiB ({share:.1f}%)",
+                f"{int(peaks['util_peak'])}%",
+                int(peaks["samples"]),
+            ]
+        )
+    return render_table(["gpu", "peak memory", "peak SM util", "samples"], rows)
+
+
 def parse_serve_log(path: str) -> dict:
     """The gateway facts a report needs: the resolved slots and their binding bound, the engine
-    adapter cap, and the last logged profile snapshot."""
-    facts: dict = {}
+    adapter cap, which node ran the trainer and which the engines, and the last profile snapshot."""
+    facts: dict = {"trainer_nodes": set(), "engine_nodes": set()}
     with open(path, errors="replace") as handle:
         for line in handle:
             if "slots" not in facts and (match := _CAPACITY_LINE.search(line)):
                 facts["slots"], facts["binding"] = int(match.group(1)), match.group(2)
             elif match := _LOADED_LORAS_LINE.search(line):
                 facts["loaded_loras"] = int(match.group(1))
+            elif match := _TRAINER_NODE_LINE.search(line):
+                facts["trainer_nodes"].add(match.group(1))
+            elif match := _ENGINE_NODE_LINE.search(line):
+                facts["engine_nodes"].add(match.group(1))
             elif (start := line.find(PROFILE_LOG_PREFIX)) >= 0:
                 try:
                     facts["profile"] = json.loads(line[start + len(PROFILE_LOG_PREFIX) :])
@@ -324,10 +369,18 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Render the multi-LoRA gateway's timing after a run.")
     parser.add_argument("--summary-json", help="client-side summary written by run_multi_tenant_example.py")
     parser.add_argument("--serve-log", help="the gateway's log: capacity line and the last profile snapshot")
+    parser.add_argument(
+        "--gpu-csv",
+        action="append",
+        default=[],
+        metavar="gpu-<ip>.csv",
+        help="a node's nvidia-smi samples (repeatable); the node is named by the file, its role read from the log",
+    )
     args = parser.parse_args(argv)
-    if not args.summary_json and not args.serve_log:
-        parser.error("pass --summary-json and/or --serve-log")
+    if not args.summary_json and not args.serve_log and not args.gpu_csv:
+        parser.error("pass --summary-json, --serve-log and/or --gpu-csv")
     sections = []
+    facts: dict = {"trainer_nodes": set(), "engine_nodes": set()}
     if args.serve_log:
         facts = parse_serve_log(args.serve_log)
         rows = []
@@ -342,6 +395,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.summary_json:
         with open(args.summary_json) as handle:
             sections.append(render_summary(Summary.from_dict(json.load(handle))))
+    peaks_by_node = {}
+    for path in args.gpu_csv:
+        node = os.path.basename(path).removeprefix("gpu-").removesuffix(".csv")
+        if (peaks := gpu_peaks(path)) is not None:
+            peaks_by_node[node] = peaks
+    if peaks_by_node:
+        roles = {node: "trainer" for node in facts["trainer_nodes"] - facts["engine_nodes"]}
+        roles.update({node: "SGLang" for node in facts["engine_nodes"] - facts["trainer_nodes"]})
+        sections.append(render_gpu(peaks_by_node, roles))
     print("\n\n".join(sections))
 
 

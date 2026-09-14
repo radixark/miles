@@ -9,8 +9,9 @@
 #   3. examples/multi_lora/run_multi_tenant_example.py --mode multi --clients N --task dapo
 #      N tenants at once, each DAPO on GSM8K on its own LoRA; every step trains on the rollout of
 #      the version just published; every tenant times the phases it waits through
-#   4. python -m miles.utils.multi_lora_profiling: the client-side phase table and the gateway's
-#      per-op timing (where the trainer's time goes), saved as $RUN_DIR/report.txt
+#   4. python -m miles.utils.multi_lora_profiling: the client-side phase table, the gateway's
+#      per-op timing (where the trainer's time goes) and every node's GPU memory / utilization
+#      peaks (nvidia-smi sampled every 15 s while the tenants ran), saved as $RUN_DIR/report.txt
 #
 # Single node: run as is (the launcher starts Ray). Several nodes: join them into one Ray cluster
 # first, then MILES_SCRIPT_EXTERNAL_RAY=1 RAY_ADDRESS=http://<head>:8265 bash run_pressure_test.sh
@@ -39,6 +40,12 @@ PROMPTS_PER_STEP=${PROMPTS_PER_STEP:-2}
 SAMPLES_PER_PROMPT=${SAMPLES_PER_PROMPT:-8}
 MAX_PROMPT_TOKENS=${MAX_PROMPT_TOKENS:-2048}
 SGLANG_MEM_FRACTION=${SGLANG_MEM_FRACTION:-0.92}            # every engine keeps one LoRA buffer per slot
+SGLANG_EP=${SGLANG_EP:-$GPUS_PER_ENGINE}                    # experts split across an engine's GPUs: halves the base weights per GPU
+SGLANG_MAX_RUNNING_REQUESTS=${SGLANG_MAX_RUNNING_REQUESTS:-512}
+SGLANG_CUDA_GRAPH_MAX_BS=${SGLANG_CUDA_GRAPH_MAX_BS:-512}   # decode batch captured in cuda graphs
+RECOMPUTE=${RECOMPUTE:-1}                                   # full activation recompute: an 8K-token step peaks at ~5 GB instead of ~42 GB
+NODE_IPS=${NODE_IPS:-}                                      # other nodes to sample GPUs on (comma-separated); this node is always sampled
+KEEP_CKPT=${KEEP_CKPT:-0}                                   # 1: keep the exported adapter versions (~1.5 GB each) after the run
 TINKER_PORT=${TINKER_PORT:-10613}
 READY_TIMEOUT=${READY_TIMEOUT:-3600}
 RAY_DASHBOARD=${RAY_ADDRESS:-http://127.0.0.1:8265}         # the Jobs API used to stop the gateway
@@ -51,6 +58,27 @@ mkdir -p "$RUN_DIR"
 [ -f "$DATASET" ] || { log "dataset $DATASET missing"; exit 2; }
 
 SERVE_PID=""
+SAMPLER_PID=""
+SAMPLER_JOBS=""
+start_gpu_samplers() {  # nvidia-smi every 15 s on this node and, through Ray, on every node in NODE_IPS
+    local ip job
+    ( exec timeout 14400 nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu \
+        --format=csv,noheader -l 15 > "$RUN_DIR/gpu-$(hostname -I | tr ' ' '\n' | grep -m1 . ).csv" 2>/dev/null ) &
+    SAMPLER_PID=$!
+    for ip in ${NODE_IPS//,/ }; do
+        [ "$ip" = "$(hostname -I | tr ' ' '\n' | grep -m1 .)" ] && continue
+        job="gpu-sampler-$(date +%s)-${ip//./-}"
+        ray job submit --address "$RAY_DASHBOARD" --submission-id "$job" --no-wait \
+            --entrypoint-resources "{\"node:$ip\": 0.001}" -- bash -c \
+            "timeout 14400 nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu --format=csv,noheader -l 15 > $RUN_DIR/gpu-$ip.csv" \
+            > /dev/null 2>&1 && SAMPLER_JOBS="$SAMPLER_JOBS $job" || true
+    done
+}
+stop_gpu_samplers() {
+    local job
+    [ -n "$SAMPLER_PID" ] && kill "$SAMPLER_PID" 2>/dev/null || true
+    for job in $SAMPLER_JOBS; do ray job stop --address "$RAY_DASHBOARD" "$job" > /dev/null 2>&1 || true; done
+}
 stop_gateway() {
     # the launcher's `ray job submit` runs in the foreground; stopping the job tears the actors down
     curl -sf "$RAY_DASHBOARD/api/jobs/" 2>/dev/null | python3 -c '
@@ -63,8 +91,10 @@ for job in json.load(sys.stdin):
 cleanup() {
     local rc=$?
     trap - EXIT
+    stop_gpu_samplers
     stop_gateway
-    log "logs in $RUN_DIR (serve.log, client.log, summary.json, report.txt)"
+    [ "$KEEP_CKPT" = "1" ] || rm -rf "$RUN_DIR/ckpt"   # every publish exported ~1.5 GB; a few runs fill a volume
+    log "logs in $RUN_DIR (serve.log, client.log, summary.json, report.txt, gpu-*.csv)"
     [ $rc -eq 0 ] && log "PRESSURE TEST PASS" || log "PRESSURE TEST FAIL (exit $rc)"
     exit $rc
 }
@@ -74,7 +104,10 @@ trap cleanup EXIT
 # every slot samples PROMPTS_PER_STEP x SAMPLES_PER_PROMPT sequences of up to CONTEXT_LEN tokens at once
 SERVE_EXTRA="--multi-lora-rollout-seqs-per-slot $((PROMPTS_PER_STEP * SAMPLES_PER_PROMPT)) \
  --multi-lora-rollout-tokens-per-seq $CONTEXT_LEN --seq-length $CONTEXT_LEN --rollout-max-context-len $CONTEXT_LEN \
- --sglang-context-length $CONTEXT_LEN --sglang-max-running-requests 512 $EXTRA_SERVE_ARGS"
+ --sglang-context-length $CONTEXT_LEN --sglang-ep-size $SGLANG_EP --sglang-max-running-requests $SGLANG_MAX_RUNNING_REQUESTS \
+ --sglang-cuda-graph-max-bs-decode $SGLANG_CUDA_GRAPH_MAX_BS --sglang-moe-runner-backend triton"
+[ "$RECOMPUTE" = "1" ] && SERVE_EXTRA="$SERVE_EXTRA --recompute-granularity full --recompute-method uniform --recompute-num-layers 1"
+SERVE_EXTRA="$SERVE_EXTRA $EXTRA_SERVE_ARGS"
 log "starting the gateway: $ACTOR_GPUS train GPUs TP$TP/EP$EP + $ROLLOUT_GPUS rollout GPUs, slots=$N_ADAPTERS, rank $LORA_RANK, context $CONTEXT_LEN"
 python3 "$REPO/examples/multi_lora/serve_qwen3_30b_a3b_tinker.py" serve \
     --hf-checkpoint "$MODEL" --model-type "$MODEL_TYPE" \
@@ -102,6 +135,7 @@ else
 fi
 N_CLIENTS=${N_CLIENTS:-$SLOTS}
 log "gateway has $SLOTS slots; running $N_CLIENTS tenants x $STEPS DAPO steps ($PROMPTS_PER_STEP prompts x $SAMPLES_PER_PROMPT samples, <= $CONTEXT_LEN tokens)"
+start_gpu_samplers
 
 # ---- 3. one tenant per slot ----
 if python3 "$REPO/examples/multi_lora/run_multi_tenant_example.py" \
@@ -115,8 +149,10 @@ else
     rc=$?
 fi
 
-# ---- 4. the tables: client-side phases, gateway-side op timing ----
+# ---- 4. the tables: client-side phases, gateway-side op timing, GPU peaks per node ----
 sleep 5  # let the gateway flush its last profile line
+stop_gpu_samplers
 python3 -m miles.utils.multi_lora_profiling --summary-json "$RUN_DIR/summary.json" \
-    --serve-log "$RUN_DIR/serve.log" | tee "$RUN_DIR/report.txt" || log "report failed"
+    --serve-log "$RUN_DIR/serve.log" $(ls "$RUN_DIR"/gpu-*.csv 2>/dev/null | sed 's/^/--gpu-csv /') \
+    | tee "$RUN_DIR/report.txt" || log "report failed"
 exit "$rc"
