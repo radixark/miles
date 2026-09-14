@@ -57,6 +57,17 @@ EXTRA_SERVE_ARGS=${EXTRA_SERVE_ARGS:-}
 
 log() { echo "[pressure $(date +%H:%M:%S)] $*"; }
 mkdir -p "$RUN_DIR"
+# every process the gateway starts carries this line; the SGLang servers outlive their Ray actors
+RUN_MARKER="MILES_PRESSURE_RUN=$(basename "$RUN_DIR")-$$"
+sweep_marked() {  # $1: environment-line pattern; this node directly, every other NODE_IPS node through Ray
+    local ip
+    bash "$REPO/examples/multi_lora/sweep_marked.sh" "$1" | sed 's/^/[pressure] /'
+    for ip in ${NODE_IPS//,/ }; do
+        [ "$ip" = "$(hostname -I | tr ' ' '\n' | grep -m1 .)" ] && continue
+        timeout 120 ray job submit --address "$RAY_DASHBOARD" --entrypoint-resources "{\"node:$ip\": 0.001}" \
+            -- bash "$REPO/examples/multi_lora/sweep_marked.sh" "$1" 2>/dev/null | grep "\[sweep" | sed 's/^/[pressure] /' || true
+    done
+}
 [ -d "$MODEL" ] || { log "model dir $MODEL missing"; exit 2; }
 [ -f "$DATASET" ] || { log "dataset $DATASET missing"; exit 2; }
 
@@ -96,6 +107,7 @@ cleanup() {
     trap - EXIT
     stop_gpu_samplers
     stop_gateway
+    sweep_marked "^$RUN_MARKER\$"
     [ "$KEEP_CKPT" = "1" ] || rm -rf "$RUN_DIR/ckpt"   # every publish exported ~1.5 GB; a few runs fill a volume
     log "logs in $RUN_DIR (serve.log, client.log, summary.json, report.txt, gpu-*.csv)"
     [ $rc -eq 0 ] && log "PRESSURE TEST PASS" || log "PRESSURE TEST FAIL (exit $rc)"
@@ -111,8 +123,10 @@ SERVE_EXTRA="--multi-lora-rollout-seqs-per-slot $((PROMPTS_PER_STEP * SAMPLES_PE
  --sglang-cuda-graph-max-bs-decode $SGLANG_CUDA_GRAPH_MAX_BS --sglang-moe-runner-backend triton"
 [ "$RECOMPUTE" = "1" ] && SERVE_EXTRA="$SERVE_EXTRA --recompute-granularity full --recompute-method uniform --recompute-num-layers 1"
 SERVE_EXTRA="$SERVE_EXTRA $EXTRA_SERVE_ARGS"
+sweep_marked "^MILES_PRESSURE_RUN="   # leftovers of earlier runs on any node
 log "starting the gateway: $ACTOR_GPUS train GPUs TP$TP/EP$EP + $ROLLOUT_GPUS rollout GPUs, slots=$N_ADAPTERS, rank $LORA_RANK, context $CONTEXT_LEN"
 python3 "$REPO/examples/multi_lora/serve_qwen3_30b_a3b_tinker.py" serve \
+    --extra-env-vars "$RUN_MARKER" \
     --hf-checkpoint "$MODEL" --model-type "$MODEL_TYPE" \
     --actor-num-gpus "$ACTOR_GPUS" --rollout-num-gpus "$ROLLOUT_GPUS" --tp "$TP" --ep "$EP" \
     --rollout-num-gpus-per-engine "$GPUS_PER_ENGINE" --sglang-mem-fraction-static "$SGLANG_MEM_FRACTION" \
