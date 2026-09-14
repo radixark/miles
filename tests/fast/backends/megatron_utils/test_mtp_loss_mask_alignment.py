@@ -1,4 +1,4 @@
-"""Exercise Miles masks through the real, optional Megatron MTP loss consumer."""
+"""Exercise the Miles mask through the real, optional Megatron MTP loss consumer."""
 
 from types import SimpleNamespace
 
@@ -14,14 +14,12 @@ packed_seq = pytest.importorskip("megatron.core.packed_seq_params")
 
 
 @pytest.mark.parametrize("num_layers", [1, 2])
-@pytest.mark.parametrize("labels_provided", [False, True])
 @pytest.mark.parametrize("all_masked", [False, True])
 @pytest.mark.parametrize("per_token_loss", [False, True])
 @pytest.mark.parametrize("qkv_format", ["thd", "bshd"])
 def test_actual_mtp_loss_selects_intended_targets(
     monkeypatch: pytest.MonkeyPatch,
     num_layers: int,
-    labels_provided: bool,
     all_masked: bool,
     per_token_loss: bool,
     qkv_format: str,
@@ -34,12 +32,11 @@ def test_actual_mtp_loss_selects_intended_targets(
     monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: state)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
     monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self)
-    monkeypatch.setattr(mtp.parallel_state, "get_context_parallel_world_size", lambda: 1)
     monkeypatch.setattr(mtp.MTPLossAutoScaler, "main_loss_backward_scale", torch.tensor(1.0))
 
     token_ids = [torch.arange(1, 13), torch.arange(101, 111)]
     mask_values = [[0, 0, 1, 1, 1, 1, 1, 0, 0], [1, 0, 1, 1, 1, 0, 1]]
-    masks = [torch.tensor(values) * int(not all_masked) for values in mask_values]
+    masks = [torch.tensor(values, dtype=torch.int) * int(not all_masked) for values in mask_values]
     rollout = {
         "tokens": token_ids,
         "loss_masks": masks,
@@ -52,7 +49,6 @@ def test_actual_mtp_loss_selects_intended_targets(
         list(rollout),
         pad_multiplier=8,
         qkv_format=qkv_format,
-        get_input_loss_masks=True,
     )
     targets = []
     losses = []
@@ -65,15 +61,14 @@ def test_actual_mtp_loss_selects_intended_targets(
         losses.append(loss)
         return loss
 
-    next_tokens = {0: 0}
+    # Every supervised response token must be an MTP target, at every depth.
     expected_targets = []
     for tokens, mask in zip(token_ids, masks, strict=True):
         ids = tokens.tolist()
-        next_tokens.update({token_id: ids[i + 1] if i + 1 < len(ids) else 0 for i, token_id in enumerate(ids)})
+        response_ids = ids[len(ids) - len(mask) :]
         expected_targets.extend(
-            token_id for token_id, selected in zip(ids[3:], mask.tolist(), strict=True) if selected
+            token_id for token_id, selected in zip(response_ids, mask.tolist(), strict=True) if selected
         )
-    labels = torch.tensor([[next_tokens[token_id] for token_id in row] for row in batch["tokens"].tolist()])
     config = SimpleNamespace(
         mtp_num_layers=num_layers,
         mtp_detach_heads=False,
@@ -82,7 +77,7 @@ def test_actual_mtp_loss_selects_intended_targets(
         cross_entropy_fusion_impl="linear",
         mtp_loss_scaling_factor=0.2,
     )
-    mask = batch["full_loss_masks"] if labels_provided else batch["input_loss_masks"]
+    mask = batch["input_loss_masks"]
     original_mask = mask.clone()
     batch_size, seq_len = batch["tokens"].shape
     hidden = torch.zeros((num_layers + 1) * seq_len, batch_size, 1, requires_grad=True)
@@ -95,9 +90,11 @@ def test_actual_mtp_loss_selects_intended_targets(
             max_seqlen_q=batch["max_seqlen"],
             max_seqlen_kv=batch["max_seqlen"],
         )
+    # Miles always calls Megatron with labels=None, so Megatron derives the
+    # labels from input_ids and rolls the input-aligned mask along with them.
     output = mtp.process_mtp_loss(
         hidden_states=hidden,
-        labels=labels if labels_provided else None,
+        labels=None,
         loss_mask=mask,
         output_layer=output_layer,
         output_weight=None,
