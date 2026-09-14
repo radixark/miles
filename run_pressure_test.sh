@@ -64,6 +64,7 @@ cleanup() {
     exit $rc
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM  # an interrupted run is a failed run
 
 # 1. the gateway at its measured capacity
 SERVE_EXTRA="--tinker-base-model $TINKER_BASE_MODEL --multi-lora-rollout-seqs-per-slot $SEQS_PER_SLOT \
