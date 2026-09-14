@@ -221,14 +221,12 @@ def _write_github_outputs(policy: WorkflowPolicy, output_path: str) -> None:
     bypass_fastfail = str(policy.bypass_fastfail).lower()
     skipped_stages = json.dumps(policy.skipped_stages, separators=(",", ":"))
     needs_cuda_image = str(bool(CUDA_STAGES.keys() - set(policy.skipped_stages))).lower()
-    needs_rocm_image = str("stage-c-4-gpu-mi350" not in policy.skipped_stages).lower()
     with open(output_path, "a", encoding="utf-8") as output:
         output.write(f"cadence={policy.cadence}\n")
         output.write(f"raw_labels={raw_labels}\n")
         output.write(f"bypass_fastfail={bypass_fastfail}\n")
         output.write(f"skipped_stages={skipped_stages}\n")
         output.write(f"needs_cuda_image={needs_cuda_image}\n")
-        output.write(f"needs_rocm_image={needs_rocm_image}\n")
     print(
         f"Resolved CI policy: cadence={policy.cadence} labels=[{raw_labels}] "
         f"bypass_fastfail={bypass_fastfail} skipped_stages={skipped_stages}"

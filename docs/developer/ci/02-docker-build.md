@@ -58,7 +58,7 @@ A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push
 
 Dockerfile changes can be build-tested on the PR itself, before merge, by selecting CUDA tests, for example with `run-ci-image`. A Dockerfile change alone does not request GPU execution or a PR image build.
 
-`pr-test.yml` calls `_build-pr-ci-image.yml` only when its final stage selection contains CUDA tests and `stage-a-cpu` satisfies its success/bypass gate. CPU-only PRs skip both the build call and `resolve-ci-image`; ROCm-only selection does not request a CUDA image. Both CPU stages run without waiting for images. An eligible PR keeps **one** image tag, `radixark/miles:pr-<num>`, for its whole life, and rebuilds it only when the content that feeds it changes:
+`pr-test.yml` calls `_build-pr-ci-image.yml` only when its final stage selection contains CUDA tests and `stage-a-cpu` satisfies its success/bypass gate. CPU-only PRs skip both the build call and its downstream `resolve-ci-image`. Both CPU stages run without waiting for images. An eligible PR keeps **one** image tag, `radixark/miles:pr-<num>`, for its whole life, and rebuilds it only when the content that feeds it changes:
 
 | Job | What it does |
 | --- | --- |

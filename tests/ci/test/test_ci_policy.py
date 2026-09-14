@@ -112,14 +112,14 @@ def test_weekly_schedule_resolves_to_independent_full_policy():
             "[]",
             "existing=value\ncadence=regular\nraw_labels=\nbypass_fastfail=false\n"
             f"skipped_stages={json.dumps(sorted(PR_GPU_STAGES), separators=(',', ':'))}\n"
-            "needs_cuda_image=false\nneeds_rocm_image=false\n",
+            "needs_cuda_image=false\n",
         ),
         (
             '["run-ci-megatron", "nightly", "run-ci-megatron", "ignored"]',
             "existing=value\ncadence=nightly\n"
             "raw_labels=run-ci-megatron nightly run-ci-megatron\n"
             "bypass_fastfail=true\n"
-            "skipped_stages=[]\nneeds_cuda_image=true\nneeds_rocm_image=true\n",
+            "skipped_stages=[]\nneeds_cuda_image=true\n",
         ),
     ],
 )
@@ -180,7 +180,6 @@ def test_non_pr_cli_preserves_image_preparation(tmp_path, event_name, schedule, 
     outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
     assert outputs["skipped_stages"] == "[]"
     assert outputs["needs_cuda_image"] == "true"
-    assert outputs["needs_rocm_image"] == "true"
 
 
 def test_cli_fails_for_unknown_schedule(tmp_path):
