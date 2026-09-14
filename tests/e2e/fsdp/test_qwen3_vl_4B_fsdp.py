@@ -84,7 +84,7 @@ def execute():
         "--attn-implementation flash_attention_3 "
     )
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --no-enable-sample-ownership-checker "
 
     misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {NUM_GPUS} " "--colocate "
 

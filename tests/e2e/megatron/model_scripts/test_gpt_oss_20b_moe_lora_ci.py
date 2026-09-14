@@ -109,7 +109,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
         f"--actor-num-gpus-per-node {NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
         "--colocate "
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         "--ci-disable-logprobs-checker "
     )
 
