@@ -604,11 +604,11 @@ def _load_training_state(
     # param group metadata), so full unpickling is required here.
     training_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
-    if load_optimizer:
+    if not load_optimizer:
+        logger.info("--no-load-optim: keeping the freshly initialized optimizer")
+    elif training_state.get("optimizer") is not None:
         optimizer.load_state_dict(training_state["optimizer"])
         logger.info("Restored optimizer state from LoRA checkpoint")
-    else:
-        logger.info("--no-load-optim: keeping the freshly initialized optimizer")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
