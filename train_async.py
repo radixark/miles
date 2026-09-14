@@ -37,8 +37,18 @@ async def train(args, *, disposer: Disposer):
     maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
     maybe_start_mini_ft_controller(args)
 
-    # always update weight first so that sglang has the loaded weights from training.
-    await update_weights(args, actor_model, rollout_executor, inference_controller)
+    initial_eval = args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train
+    overlap_initial_weight_sync = (
+        args.update_weight_transfer_mode == "disk-delta"
+        and getattr(args, "rollout_endpoint_url", None) is not None
+        and not args.check_weight_update_equal
+        and not initial_eval
+        and args.start_rollout_id < args.num_rollout
+    )
+
+    # Establish the rollout model's initial weight state before training consumes data.
+    if not overlap_initial_weight_sync:
+        await update_weights(args, actor_model, rollout_executor, inference_controller)
 
     if args.check_weight_update_equal:
         await inference_controller.check_weights(
@@ -51,7 +61,7 @@ async def train(args, *, disposer: Disposer):
     eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
     disposer.add(eval_dispatcher.drain)
 
-    if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
+    if initial_eval:
         await inference_controller.prepare_eval()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
@@ -67,7 +77,14 @@ async def train(args, *, disposer: Disposer):
         return await rollout_executor.get(rollout_id)
 
     # async train loop.
-    rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
+    if overlap_initial_weight_sync:
+        # The opaque service already serves the base checkpoint. Admit its first
+        # rollout before disk-delta captures the same checkpoint as its baseline.
+        await inference_controller.prepare_rollout(args.start_rollout_id)
+        rollout_data_next_future = await eager_create_task(rollout_executor.get(args.start_rollout_id))
+        await update_weights(args, actor_model, rollout_executor, inference_controller)
+    else:
+        rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:

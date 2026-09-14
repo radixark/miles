@@ -47,6 +47,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         skip_eval_before_train=False,
         start_rollout_id=0,
         update_weights_interval=1,
+        update_weight_transfer_mode="broadcast",
         use_critic=False,
         use_rollout_logprobs=False,
         use_tis=False,
@@ -149,6 +150,61 @@ class TestWeightEqualityCheck:
 
 
 class TestPipelinedGeneration:
+    async def test_an_opaque_disk_delta_service_rolls_out_while_its_baseline_is_captured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        events: list[str] = []
+        args = _make_args(
+            num_rollout=1,
+            rollout_endpoint_url="https://rollout.example",
+            update_weight_transfer_mode="disk-delta",
+        )
+        _install_driver_fakes(monkeypatch, args, events)
+        baseline_started = asyncio.Event()
+        finish_baseline = asyncio.Event()
+
+        async def update_weights(*_args, **_kwargs):
+            events.append("baseline_start")
+            baseline_started.set()
+            await finish_baseline.wait()
+            events.append("baseline_done")
+
+        monkeypatch.setattr(train_async_driver, "update_weights", update_weights)
+        driver = asyncio.create_task(with_disposer(train_async_driver.train, args))
+
+        await asyncio.wait_for(baseline_started.wait(), timeout=10)
+        assert events.index("generate_start:0") < events.index("baseline_start")
+        assert "actor_train:0" not in events
+
+        finish_baseline.set()
+        await asyncio.wait_for(driver, timeout=10)
+
+        assert events.index("baseline_done") < events.index("actor_train:0")
+
+    @pytest.mark.parametrize(
+        ("overrides", "barrier"),
+        [
+            ({"check_weight_update_equal": True}, "check_weights"),
+            ({"eval_interval": 1, "eval_uses_snapshots": False}, "prepare_eval"),
+        ],
+    )
+    async def test_checks_and_initial_eval_keep_the_initial_sync_barrier(
+        self, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any], barrier: str
+    ):
+        events: list[str] = []
+        args = _make_args(
+            num_rollout=1,
+            rollout_endpoint_url="https://rollout.example",
+            update_weight_transfer_mode="disk-delta",
+            **overrides,
+        )
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_async_driver.train, args)
+
+        assert events.index("update_weights:None") < events.index(barrier)
+        assert events.index(barrier) < events.index("generate_start:0")
+
     async def test_inflight_next_rollout_finishes_before_weight_publication(self, monkeypatch: pytest.MonkeyPatch):
         """Generation for the next rollout starts while this one trains, but must settle before new weights ship."""
         events: list[str] = []
