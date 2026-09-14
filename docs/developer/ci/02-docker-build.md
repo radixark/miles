@@ -56,9 +56,9 @@ A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push
 
 ## PR build check (in `pr-test.yml`)
 
-Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
+Dockerfile changes can be build-tested on the PR itself, before merge, by selecting CUDA tests, for example with `run-ci-image`. A Dockerfile change alone does not request GPU execution or a PR image build.
 
-`pr-test.yml` calls `_build-pr-ci-image.yml` after `stage-a-cpu` satisfies its success/bypass gate, while both CPU stages run without waiting for it. A PR keeps **one** image tag, `radixark/miles:pr-<num>`, for its whole life, and rebuilds it only when the content that feeds it changes:
+`pr-test.yml` calls `_build-pr-ci-image.yml` only when its final stage selection contains CUDA tests and `stage-a-cpu` satisfies its success/bypass gate. CPU-only PRs skip both the build call and `resolve-ci-image`; ROCm-only selection does not request a CUDA image. Both CPU stages run without waiting for images. An eligible PR keeps **one** image tag, `radixark/miles:pr-<num>`, for its whole life, and rebuilds it only when the content that feeds it changes:
 
 | Job | What it does |
 | --- | --- |
@@ -71,7 +71,7 @@ So a rerun, or a push that touches only source files, reuses the image the PR al
 
 `docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds `pr-test-rocm.yml`, not the `cu13` image built here.
 
-To rebuild when the inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label. Applying it starts a run that rebuilds and then removes the label, so it acts once rather than forcing a rebuild on every later run.
+To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label alongside a CUDA test request. The label does not select tests, bypass fork publishing restrictions, or make a PR whose build inputs match the base eligible. Once consumed by a build, it is removed so later runs can reuse the image.
 
 ## Rolling Docker build (`docker-build.yml`)
 
