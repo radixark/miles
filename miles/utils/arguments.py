@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from string import Formatter
 from typing import Any
 
@@ -2167,8 +2168,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--save-debug-event-data",
                 type=str,
                 default=None,
-                help="Where the audit events of this run go, including the env report. Defaults to "
-                "<save>/events, so that a run that checkpoints also records what it ran as.",
+                help="Where the audit events of this run go, including the env report. Defaults to <save>/events "
+                "(or <dump-details>/events); --ci-test falls back to a run-specific temporary directory.",
             )
             parser.add_argument(
                 "--dump-details",
@@ -2289,6 +2290,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "CI enables this unless it is explicitly disabled. Every actor step appends one full "
                 "consumption snapshot per replica to the event log, whose size therefore grows with steps "
                 "times consumed samples, so this is meant for CI and debugging.",
+            )
+            parser.add_argument(
+                "--sample-ownership-grace-steps",
+                type=int,
+                default=None,
+                help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI).",
             )
             parser.add_argument(
                 "--enable-witness",
@@ -3227,6 +3234,8 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
 
 
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
+    if args.sample_ownership_grace_steps is None:
+        args.sample_ownership_grace_steps = 2 if args.ci_test else 10
     if args.enable_sample_ownership_checker is None:
         args.enable_sample_ownership_checker = args.ci_test
     if not args.enable_sample_ownership_checker:
@@ -3257,6 +3266,15 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
     ]
     if unsupported:
         raise ValueError(f"--enable-sample-ownership-checker is not supported here: {'; '.join(unsupported)}")
+
+    if args.sample_ownership_grace_steps < 0:
+        raise ValueError("--sample-ownership-grace-steps must be non-negative")
+
+    if args.save_debug_event_data is None:
+        raise ValueError(
+            "--enable-sample-ownership-checker needs an event directory: "
+            "pass --save-debug-event-data, --save, or --dump-details"
+        )
 
 
 def miles_validate_args(args):
@@ -3934,6 +3952,9 @@ def miles_validate_args(args):
             )
 
     args.run_uuid = _resolve_run_uuid(args)
+
+    if args.save_debug_event_data is None and args.ci_test:
+        args.save_debug_event_data = os.path.join(tempfile.gettempdir(), "miles-ci", args.run_uuid, EVENTS_DIRNAME)
 
     _resolve_sample_ownership_check(args)
 

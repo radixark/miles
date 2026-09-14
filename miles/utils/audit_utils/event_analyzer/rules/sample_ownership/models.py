@@ -34,3 +34,11 @@ class SampleResolutionIssue(FrozenStrictBaseModel):
 
 
 SampleOwnershipIssue = IssuedSampleIdentityIssue | MissingModelCompanionRecordIssue | SampleResolutionIssue
+
+
+class SampleOwnershipViolation(ValueError):
+    """Raised when a direct sample ownership check finds any issue."""
+
+    def __init__(self, issues: list[SampleOwnershipIssue]) -> None:
+        super().__init__(f"Sample ownership analysis found issues: {issues}")
+        self.issues = issues
