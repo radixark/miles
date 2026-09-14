@@ -11,6 +11,8 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.ft_utils.process_group_utils import collective_bool_and
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -396,6 +398,146 @@ def create_lora_instance(args: Namespace):
 # ---------------------------------------------------------------------------
 
 
+def _all_ranks_true(value: bool) -> bool:
+    if not dist.is_initialized():
+        return value
+    return collective_bool_and(value=value, group=get_gloo_group())
+
+
+def _raise_if_any_rank_failed(local_error: Exception | None, message: str) -> None:
+    """Raise on every rank when any rank reports ``local_error``, so failures stay collective."""
+    if _all_ranks_true(local_error is None):
+        return
+    if local_error is not None:
+        raise RuntimeError(message) from local_error
+    raise RuntimeError(message)
+
+
+def _optimizer_param_state_entries(optimizer: Any, directory: Path) -> list[tuple[Any, Path]]:
+    """Return distributed optimizer children and their parameter-state files."""
+    from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    children = getattr(optimizer, "chained_optimizers", [optimizer])
+    return [
+        (child, directory / f"optimizer_param_state_rank{rank}_optimizer{index}.pt")
+        for index, child in enumerate(children)
+        if isinstance(child, DistributedOptimizer) and not child.is_stub_optimizer
+    ]
+
+
+def _optimizer_training_state_dict(optimizer: Any) -> Any:
+    """Skip chained optimizer stubs, whose inner optimizer is ``None``."""
+    children = getattr(optimizer, "chained_optimizers", None)
+    if children is None or not any(getattr(child, "is_stub_optimizer", False) for child in children):
+        return optimizer.state_dict()
+
+    active = [(index, child) for index, child in enumerate(children) if not getattr(child, "is_stub_optimizer", False)]
+    return {
+        "format": "active_optimizer_children_v1",
+        "active_child_indices": [index for index, _ in active],
+        "children": {index: child.state_dict() for index, child in active},
+    }
+
+
+def _synchronize_active_optimizer_steps(active: list[tuple[int, Any]]) -> None:
+    """Mirror Megatron's chained step sync without dereferencing stub children."""
+    steps = []
+    for _, child in active:
+        for param_group in child.optimizer.param_groups:
+            if param_group["params"] and "step" in param_group:
+                steps.append(param_group["step"])
+    steps = list(set(steps))
+    assert len(steps) <= 1, f"steps: {steps}"
+    step = steps[0] if steps else None
+    for _, child in active:
+        for param_group in child.optimizer.param_groups:
+            if param_group["params"] and "step" in param_group:
+                param_group["step"] = step
+
+
+def _load_optimizer_training_state_dict(optimizer: Any, state: Any) -> None:
+    """Restore stub-safe chained state or delegate legacy state to Megatron."""
+    if not isinstance(state, dict) or state.get("format") != "active_optimizer_children_v1":
+        optimizer.load_state_dict(state)
+        return
+
+    children = getattr(optimizer, "chained_optimizers", [optimizer])
+    active = [(index, child) for index, child in enumerate(children) if not getattr(child, "is_stub_optimizer", False)]
+    expected = [index for index, _ in active]
+    found = state.get("active_child_indices")
+    child_states = state.get("children")
+    if found != expected or not isinstance(child_states, dict) or set(child_states) != set(expected):
+        raise RuntimeError(
+            "Optimizer child layout does not match the checkpoint: "
+            f"expected active indices {expected}, found {found}"
+        )
+
+    for index, child in active:
+        child.load_state_dict(child_states[index])
+    _synchronize_active_optimizer_steps(active)
+
+
+def _holds_gathered_param_state(child: Any) -> bool:
+    """Only the data-parallel root gathers the full state, and so only it reads and writes it."""
+    return child.data_parallel_group.rank() == 0
+
+
+def _save_optimizer_param_state(optimizer: Any, directory: Path) -> None:
+    """``save_parameter_state`` gathers over the data-parallel group: every rank must call it."""
+    save_error = None
+    for child, path in _optimizer_param_state_entries(optimizer, directory):
+        try:
+            child.save_parameter_state(str(path))
+        except Exception as error:
+            save_error = save_error or error
+    _raise_if_any_rank_failed(save_error, "Failed to save optimizer parameter state on at least one rank")
+
+
+def _check_param_state_matches_buffers(child: Any, state: dict) -> None:
+    """Validate buffer sizes before entering the parameter-state scatter."""
+    child.split_state_dict_if_needed(state)
+    for gbuf_index, dtypes in enumerate(child.gbuf_ranges):
+        for dtype in dtypes:
+            expected = child.buffers[gbuf_index].numel_unpadded
+            buffer_state = state[gbuf_index][dtype]
+            found = buffer_state["numel_unpadded"]
+            if expected != found:
+                raise RuntimeError(
+                    f"Optimizer parameter state does not match the model: buffer {gbuf_index} holds "
+                    f"{expected} unpadded elements, the checkpoint holds {found}"
+                )
+            for key in ("param", "exp_avg", "exp_avg_sq"):
+                tensor = buffer_state[key]
+                if (
+                    not isinstance(tensor, torch.Tensor)
+                    or tensor.dtype != torch.float32
+                    or tensor.shape != (expected,)
+                ):
+                    raise RuntimeError(
+                        f"Optimizer parameter state has an invalid {key} tensor for buffer {gbuf_index}"
+                    )
+
+
+def _load_optimizer_param_state(entries: list[tuple[Any, Path]]) -> None:
+    """Read on data-parallel roots, then restore collectively."""
+    states = []
+    load_error = None
+    for child, path in entries:
+        state = None
+        if _holds_gathered_param_state(child):
+            try:
+                state = torch.load(path, map_location="cpu", weights_only=True)
+                _check_param_state_matches_buffers(child, state)
+            except Exception as error:
+                load_error = load_error or error
+        states.append((child, state))
+
+    _raise_if_any_rank_failed(load_error, "Failed to read optimizer parameter state on at least one rank")
+    for child, state in states:
+        child.load_parameter_state_from_dp_zero(state)
+
+
 def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
@@ -420,7 +562,8 @@ def save_lora_checkpoint(
     never change, so they are not saved.
 
     This function is collective: **all ranks must call it** because the bridge
-    export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
+    export performs TP all-gather internally and the optimizer parameter-state
+    save gathers over the data-parallel group.
     """
     import json
 
@@ -495,14 +638,20 @@ def save_lora_checkpoint(
     # ---- Training state (optimizer + scheduler) for resume ----
     if optimizer is not None:
         rank = dist.get_rank() if dist.is_initialized() else 0
-        torch.save(
-            {
-                "iteration": iteration,
-                "optimizer": optimizer.state_dict(),
-                "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
-            },
-            save_path / f"training_state_rank{rank}.pt",
-        )
+        save_error = None
+        try:
+            torch.save(
+                {
+                    "iteration": iteration,
+                    "optimizer": _optimizer_training_state_dict(optimizer),
+                    "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
+                },
+                save_path / f"training_state_rank{rank}.pt",
+            )
+        except Exception as error:
+            save_error = error
+        _raise_if_any_rank_failed(save_error, "Failed to save optimizer training state on at least one rank")
+        _save_optimizer_param_state(optimizer, save_path)
         logger.info(f"Saved optimizer/scheduler state to {save_path}")
 
     if dist.is_initialized():
@@ -565,6 +714,9 @@ def load_lora_adapter(
                     loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
+        if optimizer is not None:
+            optimizer.reload_model_params()
+
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
         return True, iteration
 
@@ -593,15 +745,41 @@ def _load_training_state(
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
-    if not state_path.exists():
+    if not _all_ranks_true(state_path.exists()):
+        if state_path.exists():
+            logger.warning(f"{state_path.name} is missing on some ranks; skipping the optimizer restore")
         return None
 
-    # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
-    # param group metadata), so full unpickling is required here.
-    training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+    training_state = None
+    load_error = None
+    try:
+        # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
+        # param group metadata), so full unpickling is required here.
+        training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+        _load_optimizer_training_state_dict(optimizer, training_state["optimizer"])
+    except Exception as error:
+        load_error = error
+    _raise_if_any_rank_failed(
+        load_error, f"Failed to restore optimizer state on at least one rank ({state_path.name})"
+    )
 
-    optimizer.load_state_dict(training_state["optimizer"])
-    logger.info("Restored optimizer state from LoRA checkpoint")
+    entries = _optimizer_param_state_entries(optimizer, adapter_dir)
+    present = [path.exists() for child, path in entries if _holds_gathered_param_state(child)]
+    all_present = _all_ranks_true(all(present))
+    none_present = _all_ranks_true(not any(present))
+    if all_present:
+        _load_optimizer_param_state(entries)
+        logger.info("Restored optimizer state from LoRA checkpoint")
+    elif none_present:
+        logger.warning(
+            "No optimizer parameter state next to the LoRA adapter; master weights and Adam "
+            "moments warm-start from the adapter instead of resuming exactly."
+        )
+    else:
+        raise RuntimeError(
+            "Optimizer parameter state is incomplete: some optimizer_param_state_rank*.pt shards are "
+            "missing. Resume from a checkpoint that has all of them, or remove them all to warm-start."
+        )
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
