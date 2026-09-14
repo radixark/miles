@@ -38,30 +38,44 @@ async def serve(args):
 
     auto_capacity = args.multi_lora_n_adapters == AUTO_SLOT_CAPACITY
     if auto_capacity:
-        # the trainer sizes its slot pool at construction: probe with one slot, rebuild at the measured count
         args.multi_lora_n_adapters = PROBE_SLOTS
-    else:
-        _cap_loaded_adapters(args)
     worker_manager = launch_worker_manager(args, trainer_only=auto_capacity)
     object_store.init_instance(args, contribute_segment=False)
 
     inference_controller = InferenceController(args)
-    if auto_capacity:
-        probe_trainer = _trainer_controller(args)
-        await probe_trainer.init()
-        # the probe only trains; the router address exists once the engines launch
-        dp_size = _data_parallel_size(args)
-        probe_backend = MilesBackend(probe_trainer, router_url="", dp_size=dp_size)
-        probes = await probe_slot_capacity(args, probe_backend, probe_trainer, dp_size)
-        args.multi_lora_n_adapters = resolve_slot_capacity(args, probes)
-        _cap_loaded_adapters(args)
-        await probe_trainer.dispose()
-        # fresh worker processes rebuild the pool at the resolved size; the engine specs read it from args
-        await worker_manager.restart_with_specs.remote(compute_specs(args))
-    await inference_controller.init()
-
-    trainer = _trainer_controller(args)
+    actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+    dp_size = actor_world_size // (
+        args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
+    )
+    trainer = TrainerController(
+        args=args,
+        role="actor",
+        with_ref=False,
+        with_opd_teacher=False,
+        inference_controller=None,
+        rollout_executor=None,
+    )
     await trainer.init()
+    if auto_capacity:
+        probes = await probe_slot_capacity(
+            args, MilesBackend(trainer, router_url="", dp_size=dp_size), trainer, dp_size
+        )
+        args.multi_lora_n_adapters = resolve_slot_capacity(args, probes)
+        if getattr(args, "sglang_max_loaded_loras", None) is None:  # before the engine specs snapshot args
+            args.sglang_max_loaded_loras = engine_loaded_adapter_cap(args.multi_lora_n_adapters)
+            logger.info(f"engines keep at most {args.sglang_max_loaded_loras} adapter versions loaded")
+        await trainer.dispose()
+        await worker_manager.restart_with_specs.remote(compute_specs(args))
+        trainer = TrainerController(
+            args=args,
+            role="actor",
+            with_ref=False,
+            with_opd_teacher=False,
+            inference_controller=None,
+            rollout_executor=None,
+        )
+        await trainer.init()
+    await inference_controller.init()
 
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
@@ -77,7 +91,7 @@ async def serve(args):
         trains_unembed="lm_head" in target_modules,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-    service = TinkerService(MilesBackend(trainer, router_url, dp_size=_data_parallel_size(args)), config)
+    service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
 
     server = uvicorn.Server(
         uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
@@ -96,33 +110,6 @@ async def serve(args):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-
-
-def _cap_loaded_adapters(args) -> None:
-    """Bound the adapter versions every engine keeps in host RAM unless the flag says otherwise; the
-    engine specs snapshot args when they are computed, so this runs before them."""
-    if getattr(args, "sglang_max_loaded_loras", None) is None:
-        args.sglang_max_loaded_loras = engine_loaded_adapter_cap(args.multi_lora_n_adapters)
-        logger.info(
-            f"engines keep at most {args.sglang_max_loaded_loras} adapter versions loaded (derived from the slot count)"
-        )
-
-
-def _trainer_controller(args) -> TrainerController:
-    return TrainerController(
-        args=args,
-        role="actor",
-        with_ref=False,
-        with_opd_teacher=False,
-        rollout_executor=None,
-    )
-
-
-def _data_parallel_size(args) -> int:
-    actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-    return actor_world_size // (
-        args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
-    )
 
 
 if __name__ == "__main__":
