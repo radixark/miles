@@ -14,6 +14,7 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.rollout.endpoint import compute_rollout_concurrency, get_rollout_url
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.inference_rollout.compatibility import load_generate_function
@@ -62,6 +63,8 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate")
     Falls back to the default router if *model_name* is not found or
     ``sglang_model_routers`` is not set.
     """
+    if getattr(args, "rollout_endpoint_url", None) is not None:
+        return get_rollout_url(args, endpoint)
     routers = getattr(args, "sglang_model_routers", None)
     if routers and model_name in routers:
         ip, port = routers[model_name]
@@ -82,9 +85,7 @@ class GenerateState(metaclass=SingletonMeta):
         )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
-        self.semaphore = asyncio.Semaphore(
-            args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
-        )
+        self.semaphore = asyncio.Semaphore(compute_rollout_concurrency(args))
         self.sampling_params: dict[str, Any] = dict(
             temperature=args.rollout_temperature,
             top_p=args.rollout_top_p,
@@ -146,7 +147,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         assert isinstance(sample.prompt, str)
 
     state = GenerateState(args)
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    url = get_rollout_url(args, "/generate")
 
     assert (
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
@@ -398,7 +399,9 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
+    if args.rollout_endpoint_url is not None:
+        urls = []
+    elif parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
         urls = response["urls"]
     else:

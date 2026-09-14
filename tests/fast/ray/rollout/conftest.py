@@ -112,6 +112,8 @@ def make_args(**overrides: Any) -> Namespace:
         # external rollout
         rollout_external=False,
         rollout_external_engine_addrs=None,
+        rollout_endpoint_url=None,
+        rollout_session_affinity_header="X-SMG-Routing-Key",
         # offload / fault tolerance
         offload_rollout=False,
         use_fault_tolerance=False,

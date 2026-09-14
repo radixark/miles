@@ -136,6 +136,20 @@ class TestGetModelUrl:
         )
         assert get_model_url(args, "anything") == "http://10.0.0.1:3000/generate"
 
+    def test_external_endpoint_takes_precedence_over_managed_routers(self):
+        from argparse import Namespace
+
+        from miles.rollout.sglang_rollout import get_model_url
+
+        args = Namespace(
+            rollout_endpoint_url="https://rollout.example",
+            sglang_router_ip="10.0.0.1",
+            sglang_router_port=3000,
+            sglang_model_routers={"actor": ("10.0.0.1", 3000)},
+        )
+
+        assert get_model_url(args, "actor") == "https://rollout.example/generate"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

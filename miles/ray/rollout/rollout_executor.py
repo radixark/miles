@@ -21,6 +21,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.endpoint import compute_rollout_concurrency
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -56,11 +57,16 @@ class RolloutExecutor:
         self.weight_version: int | None = None
         self._rollouts_since_weight_version_publish = 0
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        router_addr = (
+            None
+            if args.rollout_endpoint_url is not None
+            else f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+        )
+        init_tracking(args, primary=False, router_addr=router_addr)
         object_store.init_instance(args, contribute_segment=False)
 
         if not self.args.debug_train_only:
-            init_http_client(args)
+            init_http_client(args, max_connections=compute_rollout_concurrency(args))
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)

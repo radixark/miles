@@ -25,6 +25,7 @@ _ARGS_TO_CONFIG_FIELD = {
     "use_session_server": "use_session_server",
     "session_message_matcher": "session_message_matcher",
     "pause_generation_mode": "pause_generation_mode",
+    "rollout_session_affinity_header": "rollout_session_affinity_header",
     "session_sample_picker_path": "session_sample_picker_path",
     "session_sample_postprocessor_path": "session_sample_postprocessor_path",
 }
@@ -57,6 +58,7 @@ _DISTINCT_ARGS_VALUES = dict(
     use_session_server="v2",
     session_message_matcher="fake.matcher",
     pause_generation_mode="in_place",
+    rollout_session_affinity_header="Modal-Session-ID",
     session_sample_picker_path="fake.picker",
     session_sample_postprocessor_path="fake.postprocessor",
 )
@@ -134,6 +136,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     use_session_server=None,
     session_message_matcher="strict",
     pause_generation_mode=None,
+    rollout_session_affinity_header="X-SMG-Routing-Key",
     session_sample_picker_path=None,
     session_sample_postprocessor_path=None,
 )

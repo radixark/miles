@@ -55,6 +55,11 @@ class InferenceController:
         if self.args.debug_train_only:
             return
 
+        if self.args.rollout_endpoint_url is not None:
+            logger.info("Using external rollout service at %s", self.args.rollout_endpoint_url)
+            await wait_session_server_ready(self.args)
+            return
+
         self.servers = await create_rollout_servers(
             self.args,
             context_lock=self.context_lock,

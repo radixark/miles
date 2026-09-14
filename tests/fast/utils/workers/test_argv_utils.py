@@ -113,6 +113,7 @@ class TestConfigToArgv:
             use_session_server="v2",
             session_message_matcher="strict",
             pause_generation_mode=None,
+            rollout_session_affinity_header="X-SMG-Routing-Key",
             session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
             session_sample_postprocessor_path=("miles.rollout.session.v2.postprocessor_hub.default_postprocess"),
         )

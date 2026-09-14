@@ -179,6 +179,22 @@ class TestComputeSpecSessionServer:
         assert config.port == 5006
         assert config.instance_id == f"{args.run_uuid}-1"
 
+    def test_external_endpoint_is_used_without_a_router_pool(self):
+        args = _make_session_server_args(rollout_endpoint_url="https://rollout.example")
+        spec = spec_session_server(args)
+        ctx = LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
+            pool_addrs={},
+            gpu_ids=[],
+            local_gpu_ids=[],
+        )
+
+        config = parse_config_argv(SessionServerConfig, shlex.split(spec.launch_command(ctx))[3:])
+
+        assert config.backend_url == "https://rollout.example"
+
     def test_it_reserves_no_cpu_on_the_head_node(self):
         """Pinned to the head unconditionally, a CPU reservation would leave it pending forever on a head started with --num-cpus=0."""
         spec = spec_session_server(_make_session_server_args())
@@ -381,6 +397,11 @@ class TestInferenceEngineEnvVars:
 
 
 class TestSpecsInferenceEngine:
+    def test_external_endpoint_produces_no_engine_spec(self):
+        args = make_args(rollout_endpoint_url="https://rollout.example", rollout_num_gpus=0)
+
+        assert specs_inference_engine(args) == []
+
     def test_pg_slot_offsets_accumulate_and_placeholder_groups_keep_their_slots(self, tmp_path):
         """Group offsets follow the config order and a skipped placeholder group still occupies its gpu span."""
         config_path = tmp_path / "sglang.yaml"
@@ -421,6 +442,11 @@ class TestSpecsInferenceEngine:
 
 
 class TestSpecsRouter:
+    def test_external_endpoint_produces_no_router_spec(self):
+        args = make_args(rollout_endpoint_url="https://rollout.example", rollout_num_gpus=0)
+
+        assert specs_router(args) == []
+
     def test_one_router_spec_per_model_is_specced_by_default(self, tmp_path):
         """Rollout runs still get their router, one per model in the sglang config."""
         config_path = tmp_path / "sglang.yaml"

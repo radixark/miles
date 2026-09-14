@@ -27,6 +27,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         use_session_server=None,
         session_message_matcher="strict",
         pause_generation_mode=None,
+        rollout_session_affinity_header="X-SMG-Routing-Key",
         session_sample_picker_path=None,
         session_sample_postprocessor_path=None,
     )

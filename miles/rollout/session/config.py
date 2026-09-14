@@ -24,6 +24,7 @@ class SessionServerConfig(FrozenStrictBaseModel):
     use_session_server: bool | str | None
     session_message_matcher: str
     pause_generation_mode: str | None
+    rollout_session_affinity_header: str
     session_sample_picker_path: str | None
     session_sample_postprocessor_path: str | None
 
@@ -52,6 +53,7 @@ def compute_session_server_config(
         use_session_server=getattr(args, "use_session_server", None),
         session_message_matcher=getattr(args, "session_message_matcher", "strict"),
         pause_generation_mode=getattr(args, "pause_generation_mode", None),
+        rollout_session_affinity_header=getattr(args, "rollout_session_affinity_header", "X-SMG-Routing-Key"),
         session_sample_picker_path=getattr(args, "session_sample_picker_path", None),
         session_sample_postprocessor_path=getattr(args, "session_sample_postprocessor_path", None),
     )

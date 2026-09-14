@@ -365,6 +365,7 @@ def _build_server_config(
         use_session_server=bench_args.use_session_server,
         session_message_matcher="strict",
         pause_generation_mode="in_place" if bench_args.incremental_r3 else "retract",
+        rollout_session_affinity_header="X-SMG-Routing-Key",
         session_sample_picker_path=None,
         session_sample_postprocessor_path=None,
     )

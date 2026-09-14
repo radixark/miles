@@ -45,9 +45,9 @@ the prefill and decode phases inside an SGLang deployment.
 | Attached SGLang engines | Owned by the deployment | Fixed engine addresses supplied with `--rollout-external-engine-addrs` | miles still addresses and controls each engine through its engine handle |
 | External rollout service | Independent and dynamically scaled | One stable rollout endpoint | miles publishes versions; the rollout service materializes and activates them across its replicas |
 
-miles supports the first two topologies today. The single-endpoint external
-rollout service is coming soon and extends that separation from GPU placement
-to independent scaling, routing, and lifecycle.
+miles supports all three topologies. The single-endpoint external rollout
+service extends that separation from GPU placement to independent scaling,
+routing, and lifecycle.
 
 `--rollout-external` is the second row, not the third. It prevents miles from
 launching SGLang, but miles still knows the individual engine addresses, checks
@@ -90,6 +90,34 @@ The engines must be reachable from the miles job and must have server settings
 compatible with the rollout configuration. Because miles retains individual
 engine handles, `--rollout-external` does not hand off weight-update ownership:
 miles still runs the selected weight-update lifecycle.
+
+To use an opaque rollout service, configure its stable endpoint and Miles'
+existing rollout limits:
+
+```bash
+--rollout-endpoint-url https://rollout.example \
+--rollout-num-gpus 0 \
+--sglang-server-concurrency 16 \
+--async-max-concurrent-samples 256
+```
+
+Miles starts no inference router or engine. In fully async mode,
+`--async-max-concurrent-samples` bounds the total work Miles admits to the
+endpoint. The service owns aggregate capacity and backpressure as its replica
+count changes.
+
+<Warning>
+
+`--sglang-server-concurrency` remains a per-engine setting. Miles cannot apply
+it to engines hidden behind an opaque endpoint, so the external fleet must use
+the same value in its engine configuration.
+
+</Warning>
+
+Session serving is orthogonal to rollout placement. Agentic TITO rollouts still
+add `--use-session-server`, just as they do with Miles-managed engines. In that
+case, use `--rollout-session-affinity-header` when the external ingress expects
+the session ID in a header other than `X-SMG-Routing-Key`.
 
 ## Weight synchronization
 
@@ -173,10 +201,8 @@ general FSDP weight-update path.
 
 ## External rollout service contract
 
-The coming single-endpoint integration builds on the current disk-delta
-publication path and removes the need for miles to hold one handle per rollout
-engine. The commands above cover miles-managed and attached-engine deployments;
-this section defines the external-service boundary.
+The single-endpoint integration removes the need for miles to hold one handle
+per rollout engine. This section defines the external-service boundary.
 
 The intended boundary has two independent data paths:
 

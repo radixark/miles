@@ -14,6 +14,7 @@ import pytest
 import requests
 
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
+from miles.rollout.endpoint import compute_rollout_concurrency
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
 from miles.router.config import compute_miles_router_config
@@ -78,7 +79,7 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | Non
     ] + (extra_argv or [])
     with patch("sys.argv", argv):
         args = parse_args()
-    init_http_client(args)
+    init_http_client(args, max_connections=compute_rollout_concurrency(args))
     return args
 
 

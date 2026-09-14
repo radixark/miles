@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.endpoint import compute_rollout_concurrency
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.rollout.session.config import compute_session_server_config
@@ -215,7 +216,7 @@ def make_args(
     if moe_router_topk is not None:
         args.moe_router_topk = moe_router_topk
 
-    init_http_client(args)
+    init_http_client(args, max_connections=compute_rollout_concurrency(args))
     return args
 
 

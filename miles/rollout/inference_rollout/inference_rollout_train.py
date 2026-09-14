@@ -8,6 +8,7 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnTrainOutput
+from miles.rollout.endpoint import get_rollout_url
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
@@ -56,6 +57,8 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
 
 async def get_worker_urls(args: Namespace):
+    if args.rollout_endpoint_url is not None:
+        return []
     if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
         urls = response["urls"]
@@ -180,7 +183,7 @@ async def generate_rollout_async(
     await recompute_samples_rollout_logprobs_via_prefill(
         args,
         [sample for group in data for sample in group],
-        url=f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate",
+        url=get_rollout_url(args, "/generate"),
         sampling_params=state.sampling_params,
     )
 

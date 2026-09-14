@@ -229,6 +229,47 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+def _parse_external_endpoint(*extra: str) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    return parser.parse_args(
+        [
+            "--rollout-endpoint-url",
+            "https://rollout.example/",
+            "--rollout-num-gpus",
+            "0",
+            "--num-rollout",
+            "1",
+            *extra,
+            *REQUIRED_ARGS,
+        ]
+    )
+
+
+def test_external_endpoint_selects_an_opaque_rollout_topology():
+    args = _parse_external_endpoint()
+
+    miles_validate_args(args)
+
+    assert args.rollout_endpoint_url == "https://rollout.example"
+    assert args.rollout_external is True
+
+
+@pytest.mark.parametrize(
+    "extra,message",
+    [
+        (("--rollout-num-gpus", "1"), "set --rollout-num-gpus 0"),
+        (("--eval-num-gpus", "1"), "set --eval-num-gpus 0"),
+        (("--rollout-external-engine-addrs", "host:8000"), "different external rollout APIs"),
+    ],
+)
+def test_external_endpoint_rejects_a_second_engine_topology(extra: tuple[str, ...], message: str):
+    args = _parse_external_endpoint(*extra)
+
+    with pytest.raises(AssertionError, match=message):
+        miles_validate_args(args)
+
+
 def test_sglang_parallel_sizes_keep_server_args_destinations():
     parser = add_sglang_arguments(argparse.ArgumentParser())
     args = parser.parse_args(
