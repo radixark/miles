@@ -285,8 +285,7 @@ def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] 
     if seqs <= 0 or not probe.gpu_total_bytes or not probe.base_dense_params:
         return None
     engine_tp = args.rollout_num_gpus_per_engine
-    # without --sglang-ep-size the engines shard the experts across their TP ranks, exactly as EP = TP
-    # would; dividing by 1 here doubled the weight estimate and halved the slot count on a 2-GPU engine
+    # without --sglang-ep-size the engines shard the experts across their TP ranks, as EP = TP would
     engine_ep = getattr(args, "sglang_ep_size", None) or engine_tp
     engines = max(1, args.rollout_num_gpus // engine_tp)
     fraction = getattr(args, "sglang_mem_fraction_static", None) or 0.88

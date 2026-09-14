@@ -84,13 +84,13 @@ Timing comes from two sides and one module, `miles/utils/multi_lora_profiling.py
 - every tenant records the four phases it waits through (`fwd_bwd`, `optim`, `publish`, `rollout`) with `PhaseTimer`; the client prints the cross-tenant table and `--summary-json` saves it;
 - the gateway times every backend op (`forward_backward`, `optim_step`, `export_slot`, `push_slot`, `sample`, ...) with `OpProfiler` and logs `multi-LoRA profile: {...}` plus a table after every optimizer step and at exit.
 
-Render both after the run, plus every node's GPU peaks when `nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu --format=csv,noheader -l 15` was sampling into `gpu-<ip>.csv` (the node's role, trainer or SGLang, is read from the gateway log):
+Render both after the run, plus a node's GPU peaks when `nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu --format=csv,noheader -l 15` was sampling into `gpu-<ip>.csv` (the node's role, trainer or SGLang, is read from the gateway log):
 
 ```bash
 python -m miles.utils.multi_lora_profiling --summary-json summary.json --serve-log <gateway log> --gpu-csv gpu-<ip>.csv
 ```
 
-`run_pressure_test.sh` at the repo root does all of this in one go: it serves at the measured capacity, runs one tenant per slot, samples the GPUs of this node (and of `NODE_IPS` through Ray), and saves the tables as `report.txt`. The tenants train the unembedding because the example gateway's `--target-modules` include `output_layer`; pass `--no-train-unembed` against a gateway without it.
+`run_pressure_test.sh` at the repo root does all of this in one go: it serves at the measured capacity, runs one tenant per slot, samples this node's GPUs, and saves the tables as `report.txt`. The tenants train the unembedding because the example gateway's `--target-modules` include `output_layer`; pass `--no-train-unembed` against a gateway without it.
 
 ## Failure handling
 

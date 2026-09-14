@@ -1,21 +1,4 @@
-"""Timing for the multi-LoRA Tinker gateway.
-
-Two vantage points share one vocabulary and one table renderer.
-
-* :class:`PhaseTimer` is client-side: the wall time one tenant waits through in a
-  step, queueing behind other tenants included. The phases are ``fwd_bwd``,
-  ``optim``, ``publish`` (save_weights_for_sampler + create_sampling_client) and
-  ``rollout``. A client closes each step with :meth:`PhaseTimer.step`;
-  :func:`summarize` folds every tenant's records into one :class:`Summary`.
-* :class:`OpProfiler` is gateway-side: where the trainer's time goes, per backend
-  op (``forward_backward``, ``optim_step``, ``export_slot``, ``push_slot``, ...),
-  whichever client drives it. The gateway logs its snapshot after every
-  optimizer step as ``multi-LoRA profile: {json}``.
-
-Render both after a run::
-
-    python -m miles.utils.multi_lora_profiling --summary-json summary.json --serve-log serve.log
-"""
+"""Timing for the multi-LoRA gateway: a tenant's phases (PhaseTimer), the trainer's ops (OpProfiler), and their tables."""
 
 from __future__ import annotations
 
@@ -98,9 +81,6 @@ class Stats:
         return f"mean {self.mean:.1f} s, p50 {self.p50:.1f}, p90 {self.p90:.1f}, max {self.max:.1f} (n={self.n})"
 
 
-# ------------------------------------------------------------------ client side
-
-
 @dataclass
 class StepRecord:
     """One tenant's step: seconds per phase, plus values the client wants averaged (acc, lengths)."""
@@ -169,10 +149,7 @@ class Summary:
 def summarize(
     records_by_client: dict[str, list[StepRecord]], failed: Iterable[str] = (), elapsed_s: float = 0.0
 ) -> Summary:
-    """Fold every client's records (failed clients included, with whatever steps they finished).
-
-    A phase's share is its mean over the sum of the phase means; when every record carries all
-    four phases that is its share of a step."""
+    """Fold every client's records into one summary; a phase's share is its mean over the sum of the phase means."""
     records = [record for client_records in records_by_client.values() for record in client_records]
     phases = {
         name: Stats.of([record.phases[name] for record in records if name in record.phases])
@@ -204,12 +181,8 @@ def summarize(
     )
 
 
-# ----------------------------------------------------------------- gateway side
-
-
 class OpProfiler:
-    """Wall time per gateway op. ``size`` counts what one call covered (datums of a forward
-    pass, slots of an optimizer step, samples of a request) so units and tenant-steps stay apart."""
+    """Wall time per gateway op; ``size`` is what one call covered (datums, slots, samples)."""
 
     def __init__(self) -> None:
         self._seconds: dict[str, list[float]] = {}
@@ -250,9 +223,6 @@ class OpProfiler:
     def reset(self) -> None:
         self._seconds.clear()
         self._sizes.clear()
-
-
-# -------------------------------------------------------------------- rendering
 
 
 def render_table(headers: Iterable[str], rows: Iterable[Iterable[object]]) -> str:
@@ -309,8 +279,7 @@ def render_summary(summary: Summary) -> str:
 
 
 def gpu_peaks(path: str) -> dict[str, float] | None:
-    """Peaks over every sample of every GPU in one node's nvidia-smi CSV
-    (``timestamp, index, memory.used, memory.total, utilization.gpu`` rows, ``--format=csv,noheader``)."""
+    """Peak memory and SM utilization over one node's nvidia-smi CSV (timestamp, index, used, total, util)."""
     used: list[int] = []
     util: list[int] = []
     total = 0
@@ -344,8 +313,7 @@ def render_gpu(peaks_by_node: dict[str, dict[str, float]], roles: dict[str, str]
 
 
 def parse_serve_log(path: str) -> dict:
-    """The gateway facts a report needs: the resolved slots and their binding bound, the engine
-    adapter cap, which node ran the trainer and which the engines, and the last profile snapshot."""
+    """The gateway facts a report needs: slots and binding bound, adapter cap, node roles, the last profile snapshot."""
     facts: dict = {"trainer_nodes": set(), "engine_nodes": set()}
     with open(path, errors="replace") as handle:
         for line in handle:
