@@ -19,6 +19,7 @@ LORA_ALPHA=${LORA_ALPHA:-32}
 CONTEXT_LEN=${CONTEXT_LEN:-8192}
 STEPS=${STEPS:-3}
 TASK=${TASK:-rl}  # run_client_recipes.py --mode: rl (GRPO on GSM8K), sft, both
+CLIENT_PYTHON=${CLIENT_PYTHON:-python3}  # the interpreter with tinker-cookbook installed, e.g. a venv's; the gateway keeps python3
 SEQS_PER_SLOT=${SEQS_PER_SLOT:-8}  # sequences one tenant samples at once, for the engine-side capacity bound
 SGLANG_MEM_FRACTION=${SGLANG_MEM_FRACTION:-0.92}
 SGLANG_EP=${SGLANG_EP:-$GPUS_PER_ENGINE}
@@ -38,7 +39,7 @@ EXTRA_SERVE_ARGS=${EXTRA_SERVE_ARGS:-}
 log() { echo "[pressure $(date +%H:%M:%S)] $*"; }
 mkdir -p "$RUN_DIR"
 [ -d "$MODEL" ] || { log "model dir $MODEL missing"; exit 2; }
-python3 -c "import tinker_cookbook" 2>/dev/null || { log "pip install the tinker-cookbook pinned in examples/multi_lora/run_client_recipes.py"; exit 2; }
+"$CLIENT_PYTHON" -c "import tinker_cookbook" 2>/dev/null || { log "pip install the tinker-cookbook pinned in examples/multi_lora/run_client_recipes.py into CLIENT_PYTHON"; exit 2; }
 
 SERVE_PID=""
 SAMPLER_PID=""
@@ -103,7 +104,7 @@ SAMPLER_PID=$!
 # 3. one tenant per slot
 pids=(); started=$SECONDS
 for i in $(seq 0 $((N_CLIENTS - 1))); do
-    TINKER_API_KEY="tml-pressure-user-$(printf %02d "$i")" python3 "$REPO/examples/multi_lora/run_client_recipes.py" \
+    TINKER_API_KEY="tml-pressure-user-$(printf %02d "$i")" "$CLIENT_PYTHON" "$REPO/examples/multi_lora/run_client_recipes.py" \
         --base-url "http://$TINKER_HOST:$TINKER_PORT" --base-model "$TINKER_BASE_MODEL" --mode "$TASK" --steps "$STEPS" \
         > "$RUN_DIR/client-$i.log" 2>&1 &
     pids+=($!)
