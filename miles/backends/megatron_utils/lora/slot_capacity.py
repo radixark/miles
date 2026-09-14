@@ -1,22 +1,4 @@
-"""Slot capacity: how many resident LoRA tenants fit.
-
-``--multi-lora-n-adapters auto`` is the smallest of three bounds:
-
-1. the trainer's memory: measured, sglang-style. After the base model loads, one
-   probe slot runs a max-size forward/backward and an optimizer step through the
-   real executor path, and the bytes that slot owns, the activation peak, and the
-   memory still free give every rank's head-room (the worst rank rules). The
-   closed-form prediction only cross-checks the measurement.
-2. the rollout engines' memory: every engine GPU must hold every slot's adapter
-   buffer plus the KV cache one slot's concurrent sequences need, so every
-   resident adapter can sample at once.
-3. torch._grouped_mm's group limit: the expert adapters run one grouped-GEMM
-   group per (slot, local expert), and the kernel takes at most 1023 groups.
-
-The trainer sizes its slot pool at construction (the Bridge adapter modules and
-the per-slot LayerWise optimizers), so ``auto`` probes a one-slot trainer and
-rebuilds it at the resolved count; serve_tinker owns that sequence.
-"""
+"""Multi-LoRA slot capacity: auto = min(probed trainer memory, engine memory, torch._grouped_mm's group limit)."""
 
 import logging
 from argparse import Namespace
@@ -32,18 +14,11 @@ AUTO_SLOT_CAPACITY = -1  # --multi-lora-n-adapters auto
 PROBE_SLOTS = 1  # pool size of the probe trainer
 PROBE_SLOT = 0
 _PROBE_BATCH_ID = -1
-# torch._grouped_mm's CUDA kernel rejects 1024 groups and up (its message says "more than 1024",
-# but 1024 itself fails: measured on torch 2.13). The expert adapters run one group per
-# (slot, local expert), so the pool cannot hold more than 1023 / local_experts slots however
-# much memory is free. The probe's single slot never trips it, so the bound is arithmetic.
+# torch._grouped_mm rejects 1024 groups and up (torch 2.13); the expert adapters run one group per (slot, local expert)
 GROUPED_MM_MAX_GROUPS = 1023
 # sequences one slot samples at once, for the engine bound: one group of samples per prompt
 DEFAULT_ROLLOUT_SEQS_PER_SLOT = 8
-# Every SGLang TP-rank process keeps a host copy of each adapter version it has loaded and, without
-# --sglang-max-loaded-loras, never drops one: a rank-16 Qwen3-30B-A3B adapter costs ~1.6 GB per
-# version per process, and 8 processes holding 124 versions took a 1.9 TB node past Ray's 95%
-# memory threshold. Serving needs the latest version of every slot plus a few predecessors still
-# draining, so the cap is the slot count plus this head-room.
+# every SGLang TP-rank process keeps a host copy of each loaded adapter version (~1.6 GB at rank 16 on Qwen3-30B-A3B)
 ENGINE_LOADED_VERSIONS_HEADROOM = 16
 
 _PROBE_ADAM_PARAMS = {
@@ -94,8 +69,7 @@ def _optimizer_state_bytes(args: Namespace) -> int:
 
 
 def expert_data_parallel_size(args: Namespace, dp_size: int) -> int:
-    """Ranks that replicate one expert's params: experts are already split EP (and ETP) ways,
-    so their optimizer state is scattered over only world / (EP * ETP * PP) ranks."""
+    """Ranks that replicate one expert's params: dp * tp * cp // (ep * etp)."""
     tp = getattr(args, "tensor_model_parallel_size", 1) or 1
     cp = getattr(args, "context_parallel_size", 1) or 1
     ep = getattr(args, "expert_model_parallel_size", 1) or 1
@@ -104,8 +78,7 @@ def expert_data_parallel_size(args: Namespace, dp_size: int) -> int:
 
 
 def predicted_slot_bytes(args: Namespace, probe: RankProbe, dp_size: int) -> float:
-    """The closed-form counterpart of the measurement: dense adapters share optimizer state
-    across the data-parallel ranks, expert adapters across the expert-data-parallel ranks."""
+    """Closed-form counterpart of the measurement: dense state shared over DP, expert state over expert-DP."""
     shared, state = _weight_and_grad_bytes(args), _optimizer_state_bytes(args)
     dense = probe.adapter_local_params - probe.adapter_expert_params
     return dense * (shared + state / dp_size) + probe.adapter_expert_params * (
@@ -114,9 +87,7 @@ def predicted_slot_bytes(args: Namespace, probe: RankProbe, dp_size: int) -> flo
 
 
 def memory_snapshot(model, slot_optimizer, phase: str, args: Namespace | None = None) -> dict:
-    """Actor-side half of the probe; the orchestration lives in probe_slot_capacity.
-    ``reset`` arms the peak tracker before the measured step, ``measure`` reads it after.
-    ``slot_optimizer`` is the probe slot's SlotOptimizer (its masters and moments are the slot's)."""
+    """Actor-side half of the probe: ``reset`` arms the peak tracker, ``measure`` reads it and the slot's residency."""
     torch.cuda.synchronize()
     if phase == "reset":
         torch.cuda.reset_peak_memory_stats()
@@ -139,9 +110,7 @@ def memory_snapshot(model, slot_optimizer, phase: str, args: Namespace | None = 
 
 
 def unsharded_param_counts(args: Namespace, model, slot: int) -> dict:
-    """Whole-model and whole-adapter param counts, dense and expert, undoing this rank's
-    TP/ETP/EP sharding from megatron's own sharding attributes: what a rollout engine re-shards
-    its own way."""
+    """Whole-model and whole-adapter param counts, dense and expert, undoing this rank's TP/ETP/EP sharding."""
     tp = getattr(args, "tensor_model_parallel_size", 1) or 1
     ep = getattr(args, "expert_model_parallel_size", 1) or 1
     etp = getattr(args, "expert_tensor_parallel_size", None) or tp
@@ -202,8 +171,7 @@ def adapter_param_counts(model, slot: int) -> tuple[int, int]:
 
 
 def resident_slot_bytes(model, slot_optimizer, slot: int) -> int:
-    """CUDA bytes one resident slot owns: the adapter weights, their grad buffers, the
-    fp32 masters and the Adam moments of its SlotOptimizer. Views into one allocation count it once."""
+    """CUDA bytes one resident slot owns (weights, grads, fp32 masters, Adam moments), each allocation once."""
     storages: dict[tuple[int, int], int] = {}
 
     def record(tensor) -> None:
@@ -229,10 +197,7 @@ def slot_optimizer_children(slot_optimizer) -> list:
 
 
 async def probe_slot_capacity(args: Namespace, backend, trainer, dp_size: int = 1) -> list[RankProbe]:
-    """Load one max-rank probe slot and run two max-size steps through the real
-    executor path: the first materializes the Adam moments and the process-wide
-    workspaces every later step shares, the second is measured. Every rank reports
-    its own head-room; the trainer side is self-contained and never touches an engine."""
+    """Load one max-rank probe slot, warm up, then measure one max-size step on every rank."""
     await backend.load_slot(PROBE_SLOT, args.lora_rank, float(args.lora_alpha or 2 * args.lora_rank))
     row = _probe_row(args.max_tokens_per_gpu)
     await _probe_step(backend, row)
@@ -275,10 +240,7 @@ ENGINE_WEIGHT_BYTES = 2  # the engines hold bf16 weights and bf16 adapter buffer
 
 
 def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] | None:
-    """How many slots every rollout engine GPU can hold with all of them sampling at once:
-    n * (adapter buffer + the KV cache one slot's concurrent sequences need) must fit in the
-    engine's static memory after the base weights. None when switched off
-    (--multi-lora-rollout-seqs-per-slot 0) or when the probe did not report the totals."""
+    """Slots every engine GPU can hold with all of them sampling at once; None when off (seqs 0) or unreported."""
     seqs = getattr(args, "multi_lora_rollout_seqs_per_slot", None)
     if seqs is None:
         seqs = DEFAULT_ROLLOUT_SEQS_PER_SLOT
@@ -319,14 +281,12 @@ def engine_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, dict] 
 
 
 def engine_loaded_adapter_cap(n_slots: int) -> int:
-    """--sglang-max-loaded-loras when the user leaves it unset: every slot's current version resident,
-    a few superseded ones draining, nothing accumulating in host RAM across publishes."""
+    """--sglang-max-loaded-loras when unset: every slot's current version plus a few draining predecessors."""
     return n_slots + ENGINE_LOADED_VERSIONS_HEADROOM
 
 
 def resolve_slot_capacity(args: Namespace, probes: list[RankProbe]) -> int:
-    """min over the trainer's memory, the grouped-GEMM limit and the engines' memory, the worst
-    rank ruling each; the log names which one bound, and warns when it is not the trainer's memory."""
+    """min over the trainer's memory, the grouped-GEMM limit and the engines' memory; logs the binding one."""
     margin = getattr(args, "train_memory_margin_bytes", 0) or 0
     worst = min(probes, key=lambda probe: probe.capacity(margin))
     n_memory = worst.capacity(margin)
