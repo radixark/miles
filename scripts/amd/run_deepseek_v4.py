@@ -63,6 +63,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
     enable_eval: bool = True
     enable_mtp: bool = False
+    colocate_memory_profile: Literal["auto", "192gb", "288gb"] = "auto"
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -255,6 +256,21 @@ def _prepare_cp(args: ScriptArgs):
     )
 
 
+def _resolve_colocate_memory_profile(args: ScriptArgs) -> str:
+    """Pick the colocate memory split from the card, not from the node count."""
+    if args.colocate_memory_profile != "auto":
+        return args.colocate_memory_profile
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return "288gb"
+        gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    except Exception:
+        return "288gb"
+    return "288gb" if gib >= 256 else "192gb"
+
+
 def _get_parallel_config(args: ScriptArgs) -> str:
     """Return parallel config args for tested GPU configurations.
 
@@ -394,9 +410,12 @@ def _train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
         if args.actor_num_nodes == 4:
-            # 4-node PP4 memory balance: partial optimizer offload (keep ~25% on GPU) + keep train
-            # weights on GPU; pair with --sglang-mem-fraction-static 0.5.
-            optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
+            if _resolve_colocate_memory_profile(args) == "288gb":
+                # 288 GB card: partial optimizer offload (keep ~25% on GPU) + keep train
+                # weights on GPU; pair with --sglang-mem-fraction-static 0.5.
+                optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
+            else:
+                optimizer_args += "--optimizer-offload-fraction 1.0 " "--offload-train "
 
     sglang_world_size = 4
     sglang_tp_size = 4
@@ -434,7 +453,7 @@ def _train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.5 "
+        f"--sglang-mem-fraction-static {'0.5' if _resolve_colocate_memory_profile(args) == '288gb' else '0.85'} "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--dsv4-impl miles "  # ROCm has no cudnn/flash_mla path for the megatron impl
