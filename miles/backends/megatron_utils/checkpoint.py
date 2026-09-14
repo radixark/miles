@@ -199,15 +199,39 @@ def _hide_critic_value_head_from_hf_load(ddp_model):
             setattr(chunk, name, head)
 
 
+def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
+    """Raw-mode HF load through mbridge for models Megatron-Bridge lacks; staging copies bypass the memory saver."""
+    from contextlib import nullcontext
+
+    import torch
+
+    import miles_plugins.mbridge  # noqa: F401
+    from mbridge import AutoBridge
+
+    if args.offload_train:
+        from torch_memory_saver import torch_memory_saver
+
+        bypass = torch_memory_saver.disable()
+    else:
+        bypass = nullcontext()
+    logger.info(f"Load checkpoint from HuggingFace model into Megatron via mbridge (path={load_path})")
+    with _hide_critic_value_head_from_hf_load(ddp_model), bypass:
+        bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)
+        bridge.load_weights(ddp_model, load_path, memory_efficient=True)
+    torch.cuda.synchronize()
+
+
 def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
-    assert args.megatron_to_hf_mode == "bridge", "Only bridge mode is supported for loading HF checkpoint"
-    from megatron.bridge import AutoBridge
+    if args.megatron_to_hf_mode != "bridge":
+        _load_hf_weights_with_mbridge(ddp_model, args, load_path)
+    else:
+        from megatron.bridge import AutoBridge
 
-    logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
+        logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
 
-    with megatron_bridge_utils.patch_megatron_model(ddp_model), _hide_critic_value_head_from_hf_load(ddp_model):
-        bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
-        bridge.load_hf_weights(ddp_model)
+        with megatron_bridge_utils.patch_megatron_model(ddp_model), _hide_critic_value_head_from_hf_load(ddp_model):
+            bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
+            bridge.load_hf_weights(ddp_model)
 
     # Copied from Megatron-core :: load_checkpoint (with simplifications)
     if (args.fp16 or args.bf16) and optimizer is not None:
