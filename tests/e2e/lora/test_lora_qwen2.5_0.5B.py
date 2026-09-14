@@ -1,17 +1,22 @@
 """E2E test for LoRA training with Qwen2.5-0.5B on GSM8K.
 
-Uses the Megatron backend with bridge mode.  Runs a short GRPO training loop
+Uses the Megatron backend with bridge mode. Runs a short GRPO training loop
 with LoRA enabled (rank=32, all-linear) to validate:
   - LoRA model setup via Bridge
   - LoRA weight sync to SGLang rollout engines
   - LoRA checkpoint save (native + HF PEFT format)
+  - Rollout, LR scheduler, and dataset cursor resume
   - Training completes without errors
 
-Requires: 8 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
+Requires: 4 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
 Triggered by label: run-ci-lora
 """
 
 import os
+import shutil
+from pathlib import Path
+
+import torch
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
@@ -26,16 +31,22 @@ ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4
+ROLLOUT_BATCH_SIZE = 8
+N_SAMPLES_PER_PROMPT = 8
+CHECKPOINT_DIR = Path("/root/checkpoints/lora-qwen2.5-0.5B-ci")
 
 
 def prepare():
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command_cpu("hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k")
+    shutil.rmtree(CHECKPOINT_DIR, ignore_errors=True)
 
 
-def execute():
+def execute(adapter_path: Path | None = None):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " "--megatron-to-hf-mode bridge "
+    if adapter_path is not None:
+        ckpt_args += f"--lora-adapter-path {adapter_path} --no-load-optim "
 
     lora_args = "--lora-rank 32 " "--lora-alpha 32 " "--lora-dropout 0.0 " '--target-modules "all-linear" '
 
@@ -47,8 +58,8 @@ def execute():
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {ROLLOUT_BATCH_SIZE} "
+        f"--n-samples-per-prompt {N_SAMPLES_PER_PROMPT} "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 1.0 "
         "--global-batch-size 32 "
@@ -95,8 +106,10 @@ def execute():
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.4 "
 
     ci_args = "--ci-test "
+    if adapter_path is not None:
+        ci_args += "--ci-disable-kl-checker --ci-disable-logprobs-checker "
 
-    save_args = "--save-interval 2 " "--save /root/checkpoints/lora-qwen2.5-0.5B-ci "
+    save_args = f"--save-interval 1 --save {CHECKPOINT_DIR} "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -133,8 +146,33 @@ def execute():
     )
 
 
+def load_checkpoint_state(iteration: int):
+    adapter = CHECKPOINT_DIR / f"iter_{iteration:07d}" / "adapter"
+    training_state = torch.load(adapter / "training_state_rank0.pt", map_location="cpu", weights_only=True)
+    data_state = torch.load(
+        CHECKPOINT_DIR / "rollout" / f"global_dataset_state_dict_{iteration}.pt",
+        map_location="cpu",
+        weights_only=True,
+    )
+    return training_state, data_state
+
+
 if __name__ == "__main__":
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute()
+    resume_from = CHECKPOINT_DIR / "iter_0000001" / "adapter"
+    assert resume_from.is_dir()
+    training_state_before, data_state_before = load_checkpoint_state(1)
+    first_checkpoint = CHECKPOINT_DIR / "iter_0000000"
+    shutil.rmtree(first_checkpoint)
+    shutil.rmtree(CHECKPOINT_DIR / "iter_0000002")
+    (CHECKPOINT_DIR / "rollout" / "global_dataset_state_dict_2.pt").unlink()
+    execute(adapter_path=resume_from)
+    assert not first_checkpoint.exists()
+    training_state_after, data_state_after = load_checkpoint_state(2)
+    assert training_state_after["opt_param_scheduler"]["num_steps"] == (
+        training_state_before["opt_param_scheduler"]["num_steps"] + ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT
+    )
+    assert data_state_after["sample_offset"] == data_state_before["sample_offset"] + ROLLOUT_BATCH_SIZE

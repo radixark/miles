@@ -118,7 +118,7 @@ vision towers unadapted. Use the model launcher as the source of truth.
 | `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
 | `--target-modules` | none | Required with a positive rank. Accepts `all-linear`, HF leaf names, Megatron names, or model-specific wildcard paths. |
 | `--exclude-modules` | none | Comma-separated exact entries removed from the resolved targets. |
-| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
+| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge progress resume requires a standard `iter_*/adapter` directory with miles' native shards and the same topology; other shard directories are weight-only warm starts. HF PEFT-only adapters cannot yet load directly into Bridge. Inkling native has its own HF adapter loader. |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
 | `--experts-shared-outer-loras` | off | Use shared outer factors for grouped MoE experts. This layout is not checkpoint-compatible with per-expert LoRA. |
@@ -185,7 +185,11 @@ alternative aligned-expert path.
   also attempts a best-effort HF PEFT `adapter_model.bin` plus
   `adapter_config.json` export for external serving and warns if that export
   fails. Direct HF PEFT-to-Bridge resume is not implemented yet; native Inkling
-  supplies a model-specific HF adapter importer.
+  supplies a model-specific HF adapter importer. A native `iter_*/adapter` resume
+  also restores the next rollout ID, the LR schedule position and the
+  global-dataset cursor; weight-only adapters start a new run. The schedule
+  length is derived from `--num-rollout`, so resuming with a different one needs
+  `--override-opt-param-scheduler`.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
   the base. A checksum checker is available for the colocated path.
