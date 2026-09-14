@@ -95,6 +95,7 @@ def ssh_start_ray_workers(
     num_gpus_per_node: int,
     hostfile: str = "/root/mpi_rack_hostfile",
     head_host: str | None = None,
+    port: int = 6379,
 ):
     """Join every host in an MPI-style hostfile to the ray cluster over ssh, in parallel.
 
@@ -109,7 +110,7 @@ def ssh_start_ray_workers(
         'echo "Starting Ray worker on $worker_ip"; '
         'ssh root@"$worker_ip" '
         '"pkill -9 sglang ; ray stop --force ; pkill -9 miles ; '
-        f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node} "
+        f"ray start --address={master_addr}:{port} --num-gpus {num_gpus_per_node} "
         '--node-ip-address $worker_ip --disable-usage-stats" & '
         "done; wait"
     )
