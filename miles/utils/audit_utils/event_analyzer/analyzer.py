@@ -11,7 +11,10 @@ from miles.utils.audit_utils.event_analyzer.rules import (
     inference_engine_weight_checksum_consistency,
 )
 from miles.utils.audit_utils.event_analyzer.rules import witness as witness_rule
-from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_analyzer.rules.sample_ownership import check as sample_ownership_check
+from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import SampleOwnershipViolation
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, read_events
+from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity, TrainProcessIdentity
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,23 @@ def run_analysis(event_dir: Path) -> list[Any]:
         return []
 
     return [issue for model_events in _partition_by_model_id(events) for issue in _check_one_model_id(model_events)]
+
+
+def run_sample_ownership_analysis(*, args: Namespace, event_dir: Path | None = None) -> None:
+    if not args.enable_sample_ownership_checker:
+        return
+
+    try:
+        directory = event_dir if event_dir is not None else get_event_logger().log_dir
+        events = read_events(directory, strict=True)
+        if not any(isinstance(event, DataSourceIssuedSamplesEvent) for event in events):
+            logger.warning(f"Sample ownership check has no issued-sample evidence in {directory}")
+        if issues := sample_ownership_check.check(events, grace_steps=args.sample_ownership_grace_steps):
+            raise SampleOwnershipViolation(issues)
+    except Exception:
+        if args.ci_test:
+            raise
+        logger.exception("Sample ownership check failed")
 
 
 def _check_one_model_id(events: list[Any]) -> list[Any]:

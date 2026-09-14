@@ -137,6 +137,7 @@ class RolloutExecutor:
             await maybe_await(self.generate_rollout.dispose())
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
+        event_analyzer.run_sample_ownership_analysis(args=self.args)
         event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()
@@ -149,6 +150,7 @@ class RolloutExecutor:
     async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
         start_time = time.time()
         self.last_get_rollout_id_of_model_id[trainer_model_id] = rollout_id
+        event_analyzer.run_sample_ownership_analysis(args=self.args)
         self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
         assert_weight_version_is_published(
             self.args, rollouts_since_publish=self._rollouts_since_publish_of_model_id[trainer_model_id]
