@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Serve the multi-LoRA Tinker gateway at its measured capacity, run one DAPO tenant per slot, print the timing tables.
+# Serve the multi-LoRA Tinker gateway at its measured capacity, run one tinker-cookbook tenant per slot, print the timing tables.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 MODEL=${MODEL:-/root/models/Qwen3-30B-A3B}
 MODEL_TYPE=${MODEL_TYPE:-qwen3-30B-A3B}
-DATASET=${DATASET:-/root/datasets/gsm8k/train.parquet}
+TINKER_BASE_MODEL=${TINKER_BASE_MODEL:-Qwen/Qwen3-30B-A3B}  # the name the gateway serves; the cookbook resolves its tokenizer from it
 ACTOR_GPUS=${ACTOR_GPUS:-8}
 ROLLOUT_GPUS=${ROLLOUT_GPUS:-8}
 TP=${TP:-2}
@@ -18,9 +18,8 @@ LORA_RANK=${LORA_RANK:-16}
 LORA_ALPHA=${LORA_ALPHA:-32}
 CONTEXT_LEN=${CONTEXT_LEN:-8192}
 STEPS=${STEPS:-3}
-PROMPTS_PER_STEP=${PROMPTS_PER_STEP:-2}
-SAMPLES_PER_PROMPT=${SAMPLES_PER_PROMPT:-8}
-MAX_PROMPT_TOKENS=${MAX_PROMPT_TOKENS:-2048}
+TASK=${TASK:-rl}  # run_client_recipes.py --mode: rl (GRPO on GSM8K), sft, both
+SEQS_PER_SLOT=${SEQS_PER_SLOT:-8}  # sequences one tenant samples at once, for the engine-side capacity bound
 SGLANG_MEM_FRACTION=${SGLANG_MEM_FRACTION:-0.92}
 SGLANG_EP=${SGLANG_EP:-$GPUS_PER_ENGINE}
 SGLANG_MAX_RUNNING_REQUESTS=${SGLANG_MAX_RUNNING_REQUESTS:-512}
@@ -39,7 +38,7 @@ EXTRA_SERVE_ARGS=${EXTRA_SERVE_ARGS:-}
 log() { echo "[pressure $(date +%H:%M:%S)] $*"; }
 mkdir -p "$RUN_DIR"
 [ -d "$MODEL" ] || { log "model dir $MODEL missing"; exit 2; }
-[ -f "$DATASET" ] || { log "dataset $DATASET missing"; exit 2; }
+python3 -c "import tinker_cookbook" 2>/dev/null || { log "pip install the tinker-cookbook pinned in examples/multi_lora/run_client_recipes.py"; exit 2; }
 
 SERVE_PID=""
 SAMPLER_PID=""
@@ -57,14 +56,14 @@ cleanup() {
     [ -n "$SAMPLER_PID" ] && kill "$SAMPLER_PID" 2>/dev/null || true
     stop_gateway
     [ "$KEEP_CKPT" = "1" ] || rm -rf "$RUN_DIR/ckpt"
-    log "logs in $RUN_DIR (serve.log, client.log, summary.json, report.txt, gpu-*.csv)"
+    log "logs in $RUN_DIR (serve.log, client-*.log, report.txt, gpu-*.csv)"
     [ $rc -eq 0 ] && log "PRESSURE TEST PASS" || log "PRESSURE TEST FAIL (exit $rc)"
     exit $rc
 }
 trap cleanup EXIT
 
 # 1. the gateway at its measured capacity
-SERVE_EXTRA="--multi-lora-rollout-seqs-per-slot $((PROMPTS_PER_STEP * SAMPLES_PER_PROMPT)) \
+SERVE_EXTRA="--tinker-base-model $TINKER_BASE_MODEL --multi-lora-rollout-seqs-per-slot $SEQS_PER_SLOT \
  --multi-lora-rollout-tokens-per-seq $CONTEXT_LEN --seq-length $CONTEXT_LEN --rollout-max-context-len $CONTEXT_LEN \
  --sglang-context-length $CONTEXT_LEN --sglang-ep-size $SGLANG_EP --sglang-max-running-requests $SGLANG_MAX_RUNNING_REQUESTS \
  --sglang-cuda-graph-max-bs-decode $SGLANG_CUDA_GRAPH_MAX_BS --sglang-moe-runner-backend triton"
@@ -96,28 +95,28 @@ else
     SLOTS=$N_ADAPTERS
 fi
 N_CLIENTS=${N_CLIENTS:-$SLOTS}
-log "gateway has $SLOTS slots; running $N_CLIENTS tenants x $STEPS DAPO steps ($PROMPTS_PER_STEP prompts x $SAMPLES_PER_PROMPT samples, <= $CONTEXT_LEN tokens)"
+log "gateway has $SLOTS slots; running $N_CLIENTS tenants x $STEPS steps of the cookbook $TASK recipe"
 ( exec timeout 14400 nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu --format=csv,noheader -l 15 \
     > "$RUN_DIR/gpu-$(hostname -I | tr ' ' '\n' | grep -m1 .).csv" 2>/dev/null ) &
 SAMPLER_PID=$!
 
 # 3. one tenant per slot
-if python3 "$REPO/examples/multi_lora/run_multi_tenant_example.py" \
-    --base-url "http://$TINKER_HOST:$TINKER_PORT" --base-model "$MODEL" --mode multi --clients "$N_CLIENTS" \
-    --task dapo --dataset "$DATASET" --steps "$STEPS" --lora-rank "$LORA_RANK" \
-    --prompts-per-step "$PROMPTS_PER_STEP" --samples-per-prompt "$SAMPLES_PER_PROMPT" \
-    --max-prompt-tokens "$MAX_PROMPT_TOKENS" --context-len "$CONTEXT_LEN" --max-new-tokens "$CONTEXT_LEN" \
-    --summary-json "$RUN_DIR/summary.json" 2>&1 | tee "$RUN_DIR/client.log"; then
-    rc=0
-else
-    rc=$?
-fi
+pids=(); started=$SECONDS
+for i in $(seq 0 $((N_CLIENTS - 1))); do
+    TINKER_API_KEY="tml-pressure-user-$(printf %02d "$i")" python3 "$REPO/examples/multi_lora/run_client_recipes.py" \
+        --base-url "http://$TINKER_HOST:$TINKER_PORT" --base-model "$TINKER_BASE_MODEL" --mode "$TASK" --steps "$STEPS" \
+        > "$RUN_DIR/client-$i.log" 2>&1 &
+    pids+=($!)
+done
+failed=0
+for pid in "${pids[@]}"; do wait "$pid" || failed=$((failed + 1)); done
+log "$((N_CLIENTS - failed))/$N_CLIENTS tenants passed $STEPS steps in $((SECONDS - started))s"
+rc=$(( failed > 0 ))
 
 # 4. the tables
 sleep 5
 kill "$SAMPLER_PID" 2>/dev/null || true
 SAMPLER_PID=""
-python3 -m miles.utils.multi_lora_profiling --summary-json "$RUN_DIR/summary.json" \
-    --serve-log "$RUN_DIR/serve.log" $(ls "$RUN_DIR"/gpu-*.csv 2>/dev/null | sed 's/^/--gpu-csv /') \
+python3 -m miles.utils.multi_lora_profiling --serve-log "$RUN_DIR/serve.log" $(ls "$RUN_DIR"/gpu-*.csv 2>/dev/null | sed 's/^/--gpu-csv /') \
     | tee "$RUN_DIR/report.txt" || log "report failed"
 exit "$rc"

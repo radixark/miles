@@ -6,7 +6,7 @@ description: "Serve concurrent LoRA fine-tuning clients on one shared base model
 > **Read the docs:** [Multi-LoRA training](https://miles.radixark.com/docs/advanced/lora#multi-lora-training).
 
 - `serve_qwen3_30b_a3b_tinker.py`: prepare Qwen3-30B-A3B and launch the gateway; `--n-adapters auto` sizes the slot pool from measured memory.
-- `run_multi_tenant_example.py`: N concurrent tenants on one gateway, each on its own LoRA: a marker-memorization isolation check, or DAPO on GSM8K as a load test; every tenant times the phases it waits through.
+- `run_multi_tenant_example.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
 - `run_client_recipes.py`: the official tinker-cookbook recipes against the gateway, the wire-contract acceptance bar.
 
 ## Layout
@@ -71,29 +71,20 @@ loaded; without a cap every TP-rank process keeps a host copy of every version e
 
 ## Load test and profiling
 
-Run one tenant per resolved slot with the DAPO workload (8K context, GSM8K or a dapo-math-17k
-jsonl); every step is a dependent chain on that tenant's LoRA: `forward_backward` -> `optim_step`
--> `save_weights_for_sampler` -> sample the published version, which becomes the next step's
-training data.
+`run_pressure_test.sh` at the repo root serves the gateway with `--n-adapters auto`, reads the
+slot count it resolved to, runs one `run_client_recipes.py` tenant per slot at once (`TASK=rl`
+for the cookbook's GRPO on GSM8K, `sft`, or `both`; each tenant is its own `TINKER_API_KEY`),
+and saves the tables as `report.txt`. Knobs are environment variables; on a multi-node Ray
+cluster set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS`.
+
+The gateway times every backend op (`forward_backward`, `optim_step`, `export_slot`,
+`push_slot`, `sample`, ...) with `miles.utils.multi_lora_profiling.OpProfiler` and logs
+`multi-LoRA profile: {...}` plus a table after every optimizer step and at exit. Render it,
+with the slot count and a node's GPU peaks, from the logs:
 
 ```bash
-python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models/Qwen3-30B-A3B \
-  --mode multi --clients 47 --task dapo --dataset /root/datasets/gsm8k/train.parquet --steps 3 \
-  --summary-json summary.json
+python -m miles.utils.multi_lora_profiling --serve-log <gateway log> --gpu-csv gpu-<ip>.csv
 ```
-
-Timing comes from two sides and one module, `miles/utils/multi_lora_profiling.py`:
-
-- every tenant records the four phases it waits through (`fwd_bwd`, `optim`, `publish`, `rollout`) with `PhaseTimer`; the client prints the cross-tenant table and `--summary-json` saves it;
-- the gateway times every backend op (`forward_backward`, `optim_step`, `export_slot`, `push_slot`, `sample`, ...) with `OpProfiler` and logs `multi-LoRA profile: {...}` plus a table after every optimizer step and at exit.
-
-Render both after the run, plus a node's GPU peaks when `nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu --format=csv,noheader -l 15` was sampling into `gpu-<ip>.csv` (the node's role, trainer or SGLang, is read from the gateway log):
-
-```bash
-python -m miles.utils.multi_lora_profiling --summary-json summary.json --serve-log <gateway log> --gpu-csv gpu-<ip>.csv
-```
-
-`run_pressure_test.sh` at the repo root does all of this in one go: it serves at the measured capacity, runs one tenant per slot, samples this node's GPUs, and saves the tables as `report.txt`. The tenants train the unembedding because the example gateway's `--target-modules` include `output_layer`; pass `--no-train-unembed` against a gateway without it.
 
 ## Failure handling
 

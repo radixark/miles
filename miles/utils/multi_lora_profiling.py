@@ -1,4 +1,4 @@
-"""Timing for the multi-LoRA gateway: a tenant's phases (PhaseTimer), the trainer's ops (OpProfiler), and their tables."""
+"""Timing for the multi-LoRA gateway: where the trainer's time goes per op (OpProfiler), plus GPU peaks, as tables."""
 
 from __future__ import annotations
 
@@ -9,39 +9,26 @@ import os
 import re
 import statistics
 import time
-from collections.abc import Iterable, Iterator
-from contextlib import asynccontextmanager, contextmanager
-from dataclasses import asdict, dataclass, field
+from collections.abc import Iterable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 __all__ = [
-    "PHASES",
     "PROFILE_LOG_PREFIX",
     "OpProfiler",
-    "PhaseTimer",
     "Stats",
-    "StepRecord",
-    "Summary",
     "gpu_peaks",
     "parse_serve_log",
     "render_gpu",
     "render_profile",
-    "render_summary",
     "render_table",
-    "summarize",
 ]
 
-PHASES = ("fwd_bwd", "optim", "publish", "rollout")
 PROFILE_LOG_PREFIX = "multi-LoRA profile: "
 _CAPACITY_LINE = re.compile(r"multi-LoRA capacity: (\d+) slots, bound by (.+?) \[")
 _LOADED_LORAS_LINE = re.compile(r"engines keep at most (\d+) adapter versions loaded")
 _TRAINER_NODE_LINE = re.compile(r"MegatronTrainRayActor pid=\d+, ip=([0-9.]+)")
 _ENGINE_NODE_LINE = re.compile(r"CommandActor pid=\d+.*Uvicorn running on http://([0-9.]+):")
-_PHASE_LABELS = {
-    "fwd_bwd": "forward/backward wait",
-    "optim": "optim_step wait",
-    "publish": "publish (save + sampling client)",
-    "rollout": "rollout",
-}
 
 
 @dataclass(frozen=True)
@@ -79,106 +66,6 @@ class Stats:
 
     def describe(self) -> str:
         return f"mean {self.mean:.1f} s, p50 {self.p50:.1f}, p90 {self.p90:.1f}, max {self.max:.1f} (n={self.n})"
-
-
-@dataclass
-class StepRecord:
-    """One tenant's step: seconds per phase, plus values the client wants averaged (acc, lengths)."""
-
-    step: int
-    phases: dict[str, float]
-    extras: dict[str, float] = field(default_factory=dict)
-
-    @property
-    def total(self) -> float:
-        return sum(self.phases.values())
-
-
-class PhaseTimer:
-    """Accumulate wall time per phase; :meth:`step` closes the step and returns its record."""
-
-    def __init__(self) -> None:
-        self._phases: dict[str, float] = {}
-
-    @contextmanager
-    def phase(self, name: str) -> Iterator[None]:
-        start = time.perf_counter()
-        try:
-            yield
-        finally:
-            self._phases[name] = self._phases.get(name, 0.0) + time.perf_counter() - start
-
-    def step(self, step: int, **extras: float) -> StepRecord:
-        record = StepRecord(step=step, phases=dict(self._phases), extras={k: float(v) for k, v in extras.items()})
-        self._phases.clear()
-        return record
-
-
-@dataclass
-class Summary:
-    """Every tenant's steps folded together: per-phase statistics and each phase's share of a step."""
-
-    n_clients: int
-    passed: int
-    failed: list[str]
-    elapsed_s: float
-    client_steps: int
-    phases: dict[str, Stats]
-    shares: dict[str, float]
-    step_total: Stats | None
-    per_step: dict[int, dict[str, float]]
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> Summary:
-        return cls(
-            n_clients=data["n_clients"],
-            passed=data["passed"],
-            failed=list(data["failed"]),
-            elapsed_s=data["elapsed_s"],
-            client_steps=data["client_steps"],
-            phases={name: Stats(**value) for name, value in data["phases"].items()},
-            shares=dict(data["shares"]),
-            step_total=Stats(**data["step_total"]) if data.get("step_total") else None,
-            per_step={int(step): dict(entry) for step, entry in data["per_step"].items()},
-        )
-
-
-def summarize(
-    records_by_client: dict[str, list[StepRecord]], failed: Iterable[str] = (), elapsed_s: float = 0.0
-) -> Summary:
-    """Fold every client's records into one summary; a phase's share is its mean over the sum of the phase means."""
-    records = [record for client_records in records_by_client.values() for record in client_records]
-    phases = {
-        name: Stats.of([record.phases[name] for record in records if name in record.phases])
-        for name in PHASES
-        if any(name in record.phases for record in records)
-    }
-    mean_sum = sum(stat.mean for stat in phases.values())
-    shares = {name: (stat.mean / mean_sum if mean_sum else 0.0) for name, stat in phases.items()}
-    complete = [record.total for record in records if all(name in record.phases for name in PHASES)]
-    per_step: dict[int, dict[str, float]] = {}
-    for step in sorted({record.step for record in records}):
-        rows = [record for record in records if record.step == step]
-        entry = {"clients": float(len(rows))}
-        for key in sorted({key for record in rows for key in record.extras}):
-            values = [record.extras[key] for record in rows if key in record.extras]
-            entry[key] = max(values) if key.startswith("max_") else statistics.fmean(values)
-        per_step[step] = entry
-    failed = list(failed)
-    return Summary(
-        n_clients=len(records_by_client),
-        passed=len(records_by_client) - len(failed),
-        failed=failed,
-        elapsed_s=elapsed_s,
-        client_steps=len(records),
-        phases=phases,
-        shares=shares,
-        step_total=Stats.of(complete) if complete else None,
-        per_step=per_step,
-    )
 
 
 class OpProfiler:
@@ -256,28 +143,6 @@ def render_profile(snapshot: dict[str, dict[str, float]]) -> str:
     )
 
 
-def render_summary(summary: Summary) -> str:
-    clients = f"{summary.passed}/{summary.n_clients} passed"
-    if summary.failed:
-        clients += f", failed: {' '.join(summary.failed)}"
-    rows: list[list[object]] = [
-        ["clients", clients, ""],
-        ["client-steps", summary.client_steps, ""],
-        ["elapsed", f"{summary.elapsed_s:.0f} s", ""],
-    ]
-    for name in PHASES:
-        if name in summary.phases:
-            rows.append(
-                [_PHASE_LABELS[name], summary.phases[name].describe(), f"{summary.shares[name]:.1%} of a step"]
-            )
-    if summary.step_total is not None:
-        rows.append(["one step, one client", summary.step_total.describe(), "100%"])
-    for step, entry in summary.per_step.items():
-        details = ", ".join(f"{key} {value:.3g}" for key, value in entry.items() if key != "clients")
-        rows.append([f"step {step}", f"{int(entry['clients'])} clients", details])
-    return render_table(["client side", "time / value", "share"], rows)
-
-
 def gpu_peaks(path: str) -> dict[str, float] | None:
     """Peak memory and SM utilization over one node's nvidia-smi CSV (timestamp, index, used, total, util)."""
     used: list[int] = []
@@ -335,8 +200,9 @@ def parse_serve_log(path: str) -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Render the multi-LoRA gateway's timing after a run.")
-    parser.add_argument("--summary-json", help="client-side summary written by run_multi_tenant_example.py")
-    parser.add_argument("--serve-log", help="the gateway's log: capacity line and the last profile snapshot")
+    parser.add_argument(
+        "--serve-log", help="the gateway's log: the capacity line, node roles and the last profile snapshot"
+    )
     parser.add_argument(
         "--gpu-csv",
         action="append",
@@ -345,8 +211,8 @@ def main(argv: list[str] | None = None) -> None:
         help="a node's nvidia-smi samples (repeatable); the node is named by the file, its role read from the log",
     )
     args = parser.parse_args(argv)
-    if not args.summary_json and not args.serve_log and not args.gpu_csv:
-        parser.error("pass --summary-json, --serve-log and/or --gpu-csv")
+    if not args.serve_log and not args.gpu_csv:
+        parser.error("pass --serve-log and/or --gpu-csv")
     sections = []
     facts: dict = {"trainer_nodes": set(), "engine_nodes": set()}
     if args.serve_log:
@@ -360,9 +226,6 @@ def main(argv: list[str] | None = None) -> None:
             sections.append(render_table(["gateway", "value", "note"], rows))
         if "profile" in facts:
             sections.append(render_profile(facts["profile"]))
-    if args.summary_json:
-        with open(args.summary_json) as handle:
-            sections.append(render_summary(Summary.from_dict(json.load(handle))))
     peaks_by_node = {}
     for path in args.gpu_csv:
         node = os.path.basename(path).removeprefix("gpu-").removesuffix(".csv")
