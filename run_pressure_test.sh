@@ -39,7 +39,9 @@ EXTRA_SERVE_ARGS=${EXTRA_SERVE_ARGS:-}
 log() { echo "[pressure $(date +%H:%M:%S)] $*"; }
 mkdir -p "$RUN_DIR"
 [ -d "$MODEL" ] || { log "model dir $MODEL missing"; exit 2; }
-"$CLIENT_PYTHON" -c "import tinker_cookbook" 2>/dev/null || { log "pip install the tinker-cookbook pinned in examples/multi_lora/run_client_recipes.py into CLIENT_PYTHON"; exit 2; }
+recipes="sl_loop"; [ "$TASK" = "sft" ] || recipes="rl_loop"; [ "$TASK" = "both" ] && recipes="sl_loop, rl_loop"
+"$CLIENT_PYTHON" -c "from tinker_cookbook.recipes import $recipes" 2>/dev/null \
+    || { log "CLIENT_PYTHON needs the tinker-cookbook pinned in examples/multi_lora/run_client_recipes.py (with its math-rl extras for rl)"; exit 2; }
 
 SERVE_PID=""
 SAMPLER_PID=""
