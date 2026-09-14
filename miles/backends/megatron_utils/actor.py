@@ -807,6 +807,10 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     @timer
     def update_weights(self, info: "UpdatableEngines") -> int | None:
+        import faulthandler
+
+        faulthandler.disable()
+        faulthandler.enable(all_threads=True)
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
