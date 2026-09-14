@@ -299,7 +299,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
 
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
-            reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
+            reset_arg(parser, "--distributed-timeout-minutes", type=int, default=60)
 
             return parser
 
