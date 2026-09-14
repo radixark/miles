@@ -54,19 +54,7 @@ function toolCallBlock(name, args) {
 
 function contentBlock(part) {
   if (part?.type === "image_url") {
-    const src = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
-    const fallback = el("p", { class: "muted" }, ["Image unavailable."]);
-    if (typeof src !== "string" || !/^(https?:\/\/|data:image\/)/i.test(src)) return fallback;
-    const image = el("img", {
-      class: "msg-image",
-      src,
-      alt: "Conversation image",
-      loading: "lazy",
-      decoding: "async",
-      referrerpolicy: "no-referrer",
-    });
-    image.onerror = () => image.replaceWith(fallback);
-    return image;
+    return el("img", { class: "msg-image", src: part.image_url.url, alt: "Conversation image", loading: "lazy" });
   }
   const text = part?.type === "text" ? part.text : part;
   return el("pre", { class: "msg-text" }, [typeof text === "string" ? text : JSON.stringify(text, null, 2)]);
