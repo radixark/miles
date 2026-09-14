@@ -355,7 +355,25 @@ class TestEnvironmentVariables:
         directories = [
             spec.env_var(_make_context(cell_index=1, worker_in_cell_index=i))["TMS_DISK_BACKUP_DIR"] for i in range(2)
         ]
-        assert directories == ["/tmp/offload/cell1_rank0", "/tmp/offload/cell1_rank1"]
+        assert directories == ["/tmp/offload/actor/cell1_rank0", "/tmp/offload/actor/cell1_rank1"]
+
+    def test_disk_offload_isolated_between_actor_and_critic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Critic startup must not clear an offloaded actor's backup directory."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
+        specs = specs_trainer(_make_args(use_critic=True, offload_train=True, offload_train_target="disk"))
+
+        directories = [spec.env_var(_make_context())["TMS_DISK_BACKUP_DIR"] for spec in specs]
+
+        assert directories == ["/tmp/offload/actor/cell0_rank0", "/tmp/offload/critic/cell0_rank0"]
+
+    def test_disk_offload_isolated_between_cells(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cell restart must not reclaim another cell's backup at the same rank."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
+        (spec,) = specs_trainer(_make_args(offload_train=True, offload_train_target="disk"))
+
+        directories = [spec.env_var(_make_context(cell_index=i))["TMS_DISK_BACKUP_DIR"] for i in range(2)]
+
+        assert directories == ["/tmp/offload/actor/cell0_rank0", "/tmp/offload/actor/cell1_rank0"]
 
     def test_a_library_without_the_disk_backend_is_rejected(self, monkeypatch):
         """Launching disk offload against a library that cannot write to disk would

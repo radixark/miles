@@ -86,7 +86,7 @@ def _compute_spec_trainer(
     return ServeWorkerSpec(
         name=compute_trainer_pool_id(role),
         port_infos=[PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True)],
-        env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales),
+        env_var=lambda ctx: compute_trainer_env_vars(args, ctx, role=role, fp8_scales=fp8_scales),
         scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=gpus_per_cell,
@@ -110,7 +110,7 @@ def _compute_spec_trainer(
     )
 
 
-def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
+def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, role: str, fp8_scales: str) -> dict[str, str]:
     env_vars = {
         # because sglang will always set NCCL_CUMEM_ENABLE to 0
         # we need also set it to 0 to prevent nccl error.
@@ -140,8 +140,10 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "0"
             env_vars["TMS_INIT_ENABLE_DISK_BACKUP"] = "1"
             env_vars["TMS_DISK_BACKUP_CHUNK_MB"] = str(args.offload_train_disk_chunk_mb)
+            # Actor and critic have overlapping cell/rank IDs. Each role's
+            # startup and teardown reclaim must only touch its own backups.
             env_vars["TMS_DISK_BACKUP_DIR"] = os.path.join(
-                args.offload_train_disk_dir, f"cell{ctx.cell_index}_rank{ctx.worker_in_cell_index}"
+                args.offload_train_disk_dir, role, f"cell{ctx.cell_index}_rank{ctx.worker_in_cell_index}"
             )
         else:
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
