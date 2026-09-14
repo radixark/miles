@@ -46,6 +46,13 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         auto_model_classes=(),
         override_hf_native=True,
     ),
+    _HFConfigAlias(
+        model_type="glm5_next",
+        base_module="transformers.models.glm4v_moe.configuration_glm4v_moe",
+        base_class="Glm4vMoeConfig",
+        compat_class_name="Glm5NextConfig",
+        auto_model_classes=(),
+    ),
 )
 
 _REGISTERED_ALIASES: set[str] = set()
@@ -112,7 +119,7 @@ def load_hf_config(
 
 
 def is_dsa(hf_config) -> bool:
-    return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa")
+    return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa", "glm5_next")
 
 
 # Written by HF exports after all ranks finish, so consumers can tell finished from partial.
