@@ -12,7 +12,7 @@ ROLLOUT_GPUS=${ROLLOUT_GPUS:-8}
 TP=${TP:-2}
 EP=${EP:-8}
 GPUS_PER_ENGINE=${GPUS_PER_ENGINE:-2}
-N_ADAPTERS=${N_ADAPTERS:-auto}
+N_ADAPTERS=${N_ADAPTERS:--1}  # -1: the measured capacity
 N_CLIENTS=${N_CLIENTS:-}
 LORA_RANK=${LORA_RANK:-16}
 LORA_ALPHA=${LORA_ALPHA:-32}
@@ -91,7 +91,7 @@ done
 log "gateway ready after ${SECONDS}s"
 grep -m1 "multi-LoRA capacity" "$RUN_DIR/serve.log" | sed 's/^/[pressure] /' || true
 grep -m1 "capacity is bound by" "$RUN_DIR/serve.log" | sed 's/^/[pressure] WARNING /' || true
-if [ "$N_ADAPTERS" = "auto" ]; then
+if [ "$N_ADAPTERS" = "-1" ]; then
     SLOTS=$(grep -m1 -o "multi-LoRA capacity: [0-9]* slots" "$RUN_DIR/serve.log" | grep -o "[0-9]*")
     [ -n "$SLOTS" ] || { log "could not read the resolved slot count from serve.log"; exit 1; }
 else

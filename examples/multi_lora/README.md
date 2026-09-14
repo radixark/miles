@@ -2,7 +2,7 @@
 
 > **Read the docs:** [Multi-LoRA training](https://miles.radixark.com/docs/advanced/lora#multi-lora-training).
 
-- `serve_qwen3_30b_a3b_tinker.py`: prepare Qwen3-30B-A3B and launch the gateway; `--n-adapters auto` sizes the slot pool from measured memory.
+- `serve_qwen3_30b_a3b_tinker.py`: prepare Qwen3-30B-A3B and launch the gateway; `--n-adapters -1` sizes the slot pool from measured memory.
 - `run_multi_tenant_example.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
 - `run_client_recipes.py`: the official tinker-cookbook recipes against the gateway, the wire-contract acceptance bar.
 
@@ -46,7 +46,7 @@ python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models
 
 ## Measured slot capacity
 
-`--n-adapters auto` lets the gateway size the slot pool instead of guessing it. The trainer
+`--n-adapters -1` lets the gateway size the slot pool instead of guessing it. The trainer
 launches alone with one probe slot, runs a max-size forward/backward and an optimizer step,
 measures the CUDA bytes that slot owns and the head-room left, and rebuilds at the resolved
 count before the engines launch. `auto` is the smallest of three bounds, and the log names the
@@ -57,7 +57,7 @@ binding one:
 3. `torch._grouped_mm`'s 1023-group limit on the expert adapters (`1023 // local_experts` slots).
 
 ```bash
-python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve --n-adapters auto \
+python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve --n-adapters -1 \
   --extra-args "--multi-lora-rollout-seqs-per-slot 16 --multi-lora-rollout-tokens-per-seq 8192"
 # the log tells you what it resolved to:
 #   multi-LoRA capacity: 47 slots, bound by the rollout engines' memory with every slot sampling at once [...]
@@ -68,7 +68,7 @@ loaded; without a cap every TP-rank process keeps a host copy of every version e
 
 ## Load test and profiling
 
-`run_pressure_test.sh` at the repo root serves the gateway with `--n-adapters auto`, reads the
+`run_pressure_test.sh` at the repo root serves the gateway with `--n-adapters -1`, reads the
 slot count it resolved to, runs one `run_client_recipes.py` tenant per slot at once (`TASK=rl`
 for the cookbook's GRPO on GSM8K, `sft`, or `both`; each tenant is its own `TINKER_API_KEY`),
 and saves the tables as `report.txt`. Knobs are environment variables; on a multi-node Ray
