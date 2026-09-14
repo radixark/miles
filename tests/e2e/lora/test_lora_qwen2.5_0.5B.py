@@ -96,7 +96,7 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.4 "
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --no-enable-sample-ownership-checker "
 
     save_args = "--save-interval 2 " "--save /root/checkpoints/lora-qwen2.5-0.5B-ci "
 

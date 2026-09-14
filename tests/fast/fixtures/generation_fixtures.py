@@ -158,6 +158,7 @@ def make_args(
         "--train-backend",
         "fsdp",
         "--ci-test",
+        "--no-enable-sample-ownership-checker",
         "--rollout-batch-size",
         "1",
         "--num-rollout",

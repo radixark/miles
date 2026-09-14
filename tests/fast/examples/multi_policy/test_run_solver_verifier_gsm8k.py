@@ -87,6 +87,7 @@ class TestBuildTrainArgs:
             "--sglang-enable-metrics": None,
             "--sglang-enable-prefill-weight-versions": None,
             "--ci-test": None,
+            "--no-enable-sample-ownership-checker": None,
             "--ci-assert-prefill-lag-max": "1",
             "--save-debug-event-data": str(compute_events_dir(args)),
             "--save-debug-rollout-data": compute_rollout_data_path_template(args),

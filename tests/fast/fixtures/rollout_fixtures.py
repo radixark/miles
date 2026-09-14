@@ -46,6 +46,7 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | Non
         "--train-backend",
         "fsdp",
         "--ci-test",
+        "--no-enable-sample-ownership-checker",
         "--rollout-batch-size",
         "1",
         "--n-samples-per-prompt",
