@@ -9,15 +9,18 @@ import ray
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.lora_checkpoint import (
+    adapter_shard_topology,
+    all_megatron_checkpoints_exist,
+    local_shard_name,
+    megatron_shard_name,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.utils.adapter_config import AdapterRun
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
-
-# Cached by adapter_shard_topology(); the topology is fixed for the run.
-_shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
 
 
 def create_multi_lora_instance(args: Namespace):
@@ -48,39 +51,6 @@ def create_multi_lora_instance(args: Namespace):
     )
 
 
-def megatron_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, ep_size: int) -> str:
-    """Adapter shard name for one (tp, pp, ep) coordinate; EP ranks hold different local
-    experts. The ep suffix is omitted at ep_size == 1 so legacy checkpoints stay loadable."""
-    name = f"adapter_megatron_tp{tp_rank}_pp{pp_rank}"
-    if ep_size > 1:
-        name += f"_ep{ep_rank}"
-    return name + ".pt"
-
-
-def adapter_shard_topology() -> tuple[bool, tuple[tuple[int, int, int], ...]]:
-    """Return ``(this_rank_writes_its_shard, realized (tp, pp, ep) coords)`` via one cached gloo all-gather."""
-    global _shard_topology
-    if _shard_topology is not None:
-        return _shard_topology
-    parallel_state = get_parallel_state()
-    coords = (parallel_state.tp.rank, parallel_state.pp.rank, parallel_state.ep.rank)
-    if not dist.is_initialized():
-        _shard_topology = (True, (coords,))
-        return _shard_topology
-
-    current_rank = dist.get_rank()
-    group = get_gloo_group()
-    gathered: list[object] = [None] * dist.get_world_size(group=group)
-    dist.all_gather_object(gathered, (coords, current_rank), group=group)
-    is_writer = current_rank == min(rank for entry_coords, rank in gathered if entry_coords == coords)
-    _shard_topology = (is_writer, tuple(sorted({entry_coords for entry_coords, _ in gathered})))
-    return _shard_topology
-
-
-def all_megatron_checkpoints_exist(step_dir: Path, shard_names) -> bool:
-    return all((step_dir / name).exists() for name in shard_names)
-
-
 def find_latest_checkpoint(ckpt_dir: Path) -> tuple[Path | None, int]:
     _, coords = adapter_shard_topology()
     if not ckpt_dir.exists():
@@ -88,13 +58,13 @@ def find_latest_checkpoint(ckpt_dir: Path) -> tuple[Path | None, int]:
 
     parallel_state = get_parallel_state()
     ep_size = parallel_state.ep.size
-    my_coords = (parallel_state.tp.rank, parallel_state.pp.rank, parallel_state.ep.rank)
+    sizes = dict(ep_size=ep_size, etp_size=parallel_state.etp.size, tp_size=parallel_state.tp.size)
 
-    expected = {megatron_shard_name(*coord, ep_size) for coord in coords}
-    my_shard = megatron_shard_name(*my_coords, ep_size)
+    expected = {megatron_shard_name(*coord, **sizes) for coord in coords}
+    my_shard = local_shard_name()
     # Legacy pre-expert-adapter layout: no ep suffix; safe for all EP ranks to read (EP-replicated).
-    legacy = {megatron_shard_name(tp, pp, 0, 1) for tp, pp, _ in coords}
-    my_legacy = megatron_shard_name(my_coords[0], my_coords[1], 0, 1)
+    legacy = {megatron_shard_name(tp, pp) for tp, pp, _, _ in coords}
+    my_legacy = megatron_shard_name(parallel_state.tp.rank, parallel_state.pp.rank)
 
     def get_step(d):
         return int(d.name.split("_")[1])
@@ -192,7 +162,7 @@ def save_multi_lora_checkpoints(
     Layout (per adapter)::
 
         {adapter.save}/checkpoints/step_{iteration}/
-        ├── adapter_megatron_tp{tp}_pp{pp}[_ep{ep}].pt  ← per-rank shard, fast resume
+        ├── adapter_megatron_tp{tp}_pp{pp}[_ep{ep}][_etp{etp}].pt  ← per-rank shard, fast resume
         ├── adapter_model.safetensors           ← gathered HF, inference / external
         └── adapter_config.json                 ← HF PEFT metadata (r, alpha, ...)
     """
@@ -207,10 +177,11 @@ def save_multi_lora_checkpoints(
     tp_rank = parallel_state.tp.rank
     pp_rank = parallel_state.pp.rank
     ep_rank = parallel_state.ep.rank
-    ep_size = parallel_state.ep.size
-    # Exactly one writer per (tp, pp, ep) shard; see adapter_shard_topology.
+    # Exactly one writer per (tp, pp, ep, etp) shard; see adapter_shard_topology.
     is_shard_writer, _ = adapter_shard_topology()
-    is_global_writer = is_shard_writer and tp_rank == 0 and pp_rank == 0 and ep_rank == 0
+    # All four coordinates: at etp_size > tp_size several etp ranks share (tp, pp, ep), and two
+    # global writers would race to promote the same directory.
+    is_global_writer = is_shard_writer and (tp_rank, pp_rank, ep_rank, parallel_state.etp.rank) == (0, 0, 0, 0)
 
     target_modules_hf = (
         convert_target_modules_to_hf(list(args.target_modules))
@@ -245,7 +216,7 @@ def save_multi_lora_checkpoints(
                     for name, param in batch.named_parameters()
                     if ".adapter." in name
                 }
-                native_path = tmp_dir / megatron_shard_name(tp_rank, pp_rank, ep_rank, ep_size)
+                native_path = tmp_dir / local_shard_name()
                 torch.save(shard, native_path)
                 logger.info(f"{log_prefix} saved Megatron shard " f"({len(shard)} tensors) to {native_path}")
 
@@ -365,7 +336,6 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
 def load_adapters(args, model, optimizer, adapters) -> int:
     """Load adapters into Megatron slots; resumes step counts from checkpoints."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
-    from miles.utils.distributed_utils import get_gloo_group
 
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
@@ -391,7 +361,6 @@ def load_adapters(args, model, optimizer, adapters) -> int:
 def cleanup_adapters(args, model, optimizer, adapters) -> int:
     """Save final ckpt + clear Megatron slot, then free_slot on the controller."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
-    from miles.utils.distributed_utils import get_gloo_group
 
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
@@ -451,7 +420,6 @@ def save_due_adapter_checkpoints(args, model) -> bool:
     without a checkpoint on disk. Rank 0 picks and broadcasts, so the
     collective export lines up. Returns False when nothing is due."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
-    from miles.utils.distributed_utils import get_gloo_group
 
     due_buffer = [None]
     if is_first_replica_megatron_main_rank() and args.save_interval is not None:
