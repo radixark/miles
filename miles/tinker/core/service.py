@@ -289,9 +289,21 @@ class TinkerService:
                 await self._wake.wait()
                 self._wake.clear()
         finally:
+            self._log_profile()
             sweep_task.cancel()
             with suppress(asyncio.CancelledError):
                 await sweep_task
+
+    def profile(self) -> dict | None:
+        """The backend's per-op timing so far; None for backends that do not keep one."""
+        profiler = getattr(self.backend, "profiler", None)
+        return profiler.snapshot() if profiler is not None else None
+
+    def _log_profile(self) -> None:
+        # core stays stdlib-only: the backend owns the profiler and its rendering
+        log_profile = getattr(self.backend, "log_profile", None)
+        if log_profile is not None:
+            log_profile()
 
     async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
@@ -350,7 +362,9 @@ class TinkerService:
     async def _dispatch_barrier_op(self, barrier: BarrierUnit) -> list[dict]:
         """Return one result or error per entry; only the caller settles futures and retires models."""
         if barrier.op == CommandOp.OPTIM_STEP:
-            return await self._step_optimizers(barrier.entries)
+            outcomes = await self._step_optimizers(barrier.entries)
+            self._log_profile()
+            return outcomes
         ((stream, pending),) = barrier.entries  # every other barrier is single-entry
         record = self.models[stream.model_id]
         payload = pending.command.payload

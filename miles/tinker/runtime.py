@@ -1,6 +1,8 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
+import json
+import logging
 import uuid
 
 import httpx
@@ -9,6 +11,9 @@ from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
+from miles.utils.multi_lora_profiling import PROFILE_LOG_PREFIX, OpProfiler, render_profile
+
+logger = logging.getLogger(__name__)
 
 # internal datum key -> trainer batch key
 DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sampling_logprobs": "rollout_log_probs"}
@@ -48,19 +53,32 @@ class MilesBackend:
         self.trainer = trainer
         self.router_url = router_url
         self.dp_size = dp_size
+        # where the trainer's time goes, per op; the service logs it after every optimizer step
+        self.profiler = OpProfiler()
 
     def trainer_dead(self) -> bool:
         return self.trainer.has_errored_cell()
 
+    def log_profile(self) -> None:
+        """Where the trainer's time has gone so far: a JSON line for tools, a table for people."""
+        snapshot = self.profiler.snapshot()
+        if snapshot:
+            logger.info("%s%s", PROFILE_LOG_PREFIX, json.dumps(snapshot))
+            logger.info("trainer time by op since start\n%s", render_profile(snapshot))
+
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
     ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
-        )
+        async with self.profiler.timed("load_slot"):
+            results = await self.trainer.load_slot(
+                slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
+            )
+        return _slot_failure(results)
 
     async def unload_slot(self, slot: int) -> dict | None:
-        return _slot_failure(await self.trainer.unload_slot(slot))
+        async with self.profiler.timed("unload_slot"):
+            results = await self.trainer.unload_slot(slot)
+        return _slot_failure(results)
 
     async def forward_backward(
         self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
@@ -78,7 +96,8 @@ class MilesBackend:
         train_data = _build_train_data(_pad_to_dp_multiple(slot_datums, self.dp_size))
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
-        worker_results = await self._run_batch(method, batch_id, train_data)
+        async with self.profiler.timed(method, size=len(slot_datums)):
+            worker_results = await self._run_batch(method, batch_id, train_data)
         by_index: dict[int, dict] = {}
         for worker_result in worker_results:
             if "error" in worker_result:
@@ -101,30 +120,34 @@ class MilesBackend:
             store.remove(data_ref)
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
-        worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
+        async with self.profiler.timed("optim_step", size=len(adam_params_by_slot)):
+            worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
         return worker_results[0]
 
     async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
-        return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
+        async with self.profiler.timed("save_slot"):
+            results = await self.trainer.save_slot(slot=slot, path=path, metadata=metadata)
+        return _slot_failure(results)
 
     async def export_slot(
         self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None
     ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
-        )
+        async with self.profiler.timed("export_slot"):
+            results = await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
+        return _slot_failure(results)
 
     # -------- sampling --------
 
     async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
         request = self._generate_request(payload, lora_name, lora_path)
         try:
-            responses = await asyncio.gather(
-                *[
-                    post(f"{self.router_url}/generate", _with_sample_seed(request, index))
-                    for index in range(payload["num_samples"])
-                ]
-            )
+            async with self.profiler.timed("sample", size=payload["num_samples"]):
+                responses = await asyncio.gather(
+                    *[
+                        post(f"{self.router_url}/generate", _with_sample_seed(request, index))
+                        for index in range(payload["num_samples"])
+                    ]
+                )
         except httpx.HTTPError as error:
             return {"error": str(error)}
         sequences = [_to_sequence(response) for response in responses]

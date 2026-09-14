@@ -2,8 +2,9 @@
 
 > **Read the docs:** [Multi-LoRA training](https://miles.radixark.com/docs/advanced/lora#multi-lora-training).
 
-- `run_gateway.py`: prepare Qwen3-30B-A3B and launch the gateway.
-- `run_multi_tenant_example.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
+- `serve_qwen3_30b_a3b_tinker.py`: prepare Qwen3-30B-A3B and launch the gateway; `--n-adapters auto` sizes the slot pool from measured memory.
+- `run_multi_tenant_example.py`: N concurrent tenants on one gateway, each on its own LoRA: a marker-memorization isolation check, or DAPO on GSM8K as a load test; every tenant times the phases it waits through.
+- `run_client_recipes.py`: the official tinker-cookbook recipes against the gateway, the wire-contract acceptance bar.
 
 ## Layout
 
@@ -41,6 +42,52 @@ python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models
 # four tenants training concurrently on the same prompt with different markers;
 # passing means the adapters stayed isolated end to end
 python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models/Qwen3-30B-A3B --mode multi --clients 4
+```
+
+## Measured slot capacity
+
+`--n-adapters auto` lets the gateway size the slot pool instead of guessing it. The trainer
+launches alone with one probe slot, runs a max-size forward/backward and an optimizer step,
+measures the CUDA bytes that slot owns and the head-room left, and rebuilds at the resolved
+count before the engines launch. `auto` is the smallest of three bounds, and the log names the
+binding one:
+
+1. the trainer's memory, measured on every rank (the worst rank rules; `--train-memory-margin-bytes` is the head-room kept free);
+2. the rollout engines' memory with every slot sampling at once: each engine GPU holds every slot's adapter buffer plus the KV cache for `--multi-lora-rollout-seqs-per-slot` sequences of `--multi-lora-rollout-tokens-per-seq` tokens (defaults: 8 sequences, the context length);
+3. `torch._grouped_mm`'s 1023-group limit on the expert adapters (`1023 // local_experts` slots).
+
+```bash
+python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve --n-adapters auto \
+  --extra-args "--multi-lora-rollout-seqs-per-slot 16 --multi-lora-rollout-tokens-per-seq 8192"
+# the log tells you what it resolved to:
+#   multi-LoRA capacity: 47 slots, bound by the rollout engines' memory with every slot sampling at once [...]
+```
+
+Unless `--sglang-max-loaded-loras` is set, the engines keep at most `slots + 16` adapter versions
+loaded; without a cap every TP-rank process keeps a host copy of every version ever published.
+
+## Load test and profiling
+
+Run one tenant per resolved slot with the DAPO workload (8K context, GSM8K or a dapo-math-17k
+jsonl); every step is a dependent chain on that tenant's LoRA: `forward_backward` -> `optim_step`
+-> `save_weights_for_sampler` -> sample the published version, which becomes the next step's
+training data.
+
+```bash
+python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models/Qwen3-30B-A3B \
+  --mode multi --clients 47 --task dapo --dataset /root/datasets/gsm8k/train.parquet --steps 3 \
+  --summary-json summary.json
+```
+
+Timing comes from two sides and one module, `miles/utils/multi_lora_profiling.py`:
+
+- every tenant records the four phases it waits through (`fwd_bwd`, `optim`, `publish`, `rollout`) with `PhaseTimer`; the client prints the cross-tenant table and `--summary-json` saves it;
+- the gateway times every backend op (`forward_backward`, `optim_step`, `export_slot`, `push_slot`, `sample`, ...) with `OpProfiler` and logs `multi-LoRA profile: {...}` plus a table after every optimizer step and at exit.
+
+Render both after the run:
+
+```bash
+python -m miles.utils.multi_lora_profiling --summary-json summary.json --serve-log <gateway log>
 ```
 
 ## Failure handling
