@@ -24,7 +24,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
-from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
+from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store
 from miles.utils.async_utils import maybe_await
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -209,9 +209,7 @@ class RolloutExecutor:
 
         with timer("eval_rollout"):
             if not self.use_legacy_rollout_v1:
-                result = await asyncio.to_thread(
-                    call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
-                )
+                result = await maybe_await(self.eval_generate_rollout(RolloutFnEvalInput(rollout_id=rollout_id)))
             else:
                 result = await asyncio.to_thread(
                     call_rollout_fn,
@@ -246,7 +244,7 @@ class RolloutExecutor:
                 eval_input = RolloutFnEvalInput(
                     rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
                 )
-                result = await asyncio.to_thread(call_rollout_function, self.eval_generate_rollout, eval_input)
+                result = await maybe_await(self.eval_generate_rollout(eval_input))
             except EvalSkip as e:
                 return self.report_eval_skip(rollout_id, e.reason)
 
@@ -273,15 +271,12 @@ class RolloutExecutor:
             metrics = None
         else:
             if not self.use_legacy_rollout_v1:
-                data = await asyncio.to_thread(
-                    call_rollout_function,
-                    self.generate_rollout,
-                    RolloutFnTrainInput(
-                        rollout_id=rollout_id,
-                        weight_version=self._weight_versions_of_model_id.get(trainer_model_id),
-                        trainer_model_id=trainer_model_id,
-                    ),
+                input = RolloutFnTrainInput(
+                    rollout_id=rollout_id,
+                    weight_version=self._weight_versions_of_model_id.get(trainer_model_id),
+                    trainer_model_id=trainer_model_id,
                 )
+                data = await maybe_await(self.generate_rollout(input))
             else:
                 data = await asyncio.to_thread(
                     call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
