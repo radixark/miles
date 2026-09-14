@@ -397,7 +397,7 @@ class TestWorkflowScopeSeam:
         assert decide_job.index(live_labels) < decide_job.index("- name: Login to Docker Hub")
         assert "LABELS=$(gh api --paginate" in decide_job
         assert 'grep -Fxq "rebuild-ci-image" <<< "$LABELS"' in decide_job
-        assert "github.event.pull_request.labels.*.name" not in reusable
+        assert "github.event.pull_request.labels.*.name" not in decide_job
         assert "needs.docker-decide.outputs.force_rebuild == 'true'" in reusable
 
     def test_policy_job_is_a_thin_python_adapter(self):

@@ -25,7 +25,15 @@ REPOSITORY = "radixark/miles"
 
 @pytest.fixture
 def identity():
-    request = dict(pr=3192, merge_sha="a" * 40, inputs_hash="b" * 64, run_id=123, run_attempt=2, force_rebuild=False)
+    request = dict(
+        pr=3192,
+        merge_sha="a" * 40,
+        inputs_hash="b" * 64,
+        run_id=123,
+        run_attempt=2,
+        force_rebuild=False,
+        labels=["run-ci-image"],
+    )
     base = dict(id=1, full_name=REPOSITORY)
     fork = dict(id=2, full_name="contributor/miles", owner=dict(login="contributor"))
     pr = dict(
@@ -104,6 +112,9 @@ def test_request_is_bounded_data(identity):
     for bad in [
         dict(request, pr=True),
         dict(request, force_rebuild="false"),
+        dict(request, labels="run-ci-image"),
+        dict(request, labels=[True]),
+        dict(request, labels=None),
         dict(request, merge_sha="--upload-pack=evil"),
         dict(request, extra="script"),
         dict(request, inputs_hash="x" * 5000),
@@ -161,7 +172,7 @@ def test_cpu_gate_retains_successful_jobs_on_partial_rerun(monkeypatch, identity
     stub_api(monkeypatch, identity, cpu="failure")
     with pytest.raises(ValueError, match="CPU A gate"):
         HANDLER.current_request(identity[0], REPOSITORY)
-    identity[2]["labels"].append(dict(name="bypass-fastfail"))
+    identity[0]["labels"].append("bypass-fastfail")
     HANDLER.current_request(identity[0], REPOSITORY)
 
 
@@ -227,6 +238,39 @@ def test_validates_new_pr_registration_without_executing_source(source):
         cpu_policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
         with pytest.raises(ValueError, match="No CUDA tests"):
             HANDLER.validate_source(request, pr, cpu_policy, root)
+
+
+@pytest.mark.parametrize(
+    "labels,cpu",
+    [
+        (["run-ci-image"], "success"),
+        (["nightly"], "failure"),
+        (["run-ci-image", "bypass-fastfail"], "failure"),
+    ],
+)
+def test_label_removal_preserves_source_selection_and_cpu_gate(monkeypatch, identity, source, labels, cpu):
+    root, request, pr, _ = source
+    request["labels"] = labels
+    pr["labels"] = []
+    run = copy.deepcopy(identity[1])
+    run["head_sha"] = pr["head"]["sha"]
+    run["referenced_workflows"][0].update(
+        path=f"{REPOSITORY}/.github/workflows/_build-pr-ci-image.yml@{request['merge_sha']}",
+        sha=request["merge_sha"],
+    )
+    stub_api(monkeypatch, (request, run, pr), cpu=cpu)
+    parsed = HANDLER.parse_request(archive_request(request))
+    current_pr, fork_policy = HANDLER.current_request(parsed, REPOSITORY)
+    caller_policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
+    assert fork_policy == caller_policy
+    HANDLER.validate_source(parsed, current_pr, fork_policy, root)
+
+
+def test_live_bypass_label_cannot_change_source_cpu_gate(monkeypatch, identity):
+    identity[2]["labels"].append(dict(name="bypass-fastfail"))
+    stub_api(monkeypatch, identity, cpu="failure")
+    with pytest.raises(ValueError, match="CPU A gate"):
+        HANDLER.current_request(identity[0], REPOSITORY)
 
 
 @pytest.mark.parametrize(

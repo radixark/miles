@@ -26,7 +26,7 @@ from tests.ci.hardware import CUDA_STAGES  # noqa: E402
 from tests.ci.stage_selection import select_skipped_gpu_stages  # noqa: E402
 
 CPU_JOBS = {f"stage-a-cpu ({partition}) / run-cpu" for partition in range(4)}
-REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild"}
+REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild", "labels"}
 
 
 def require(condition, message):
@@ -56,6 +56,10 @@ def parse_request(data):
     for key in ("pr", "run_id", "run_attempt"):
         require(type(request[key]) is int and request[key] > 0, f"Invalid {key}")
     require(type(request["force_rebuild"]) is bool, "Invalid force_rebuild")
+    require(
+        isinstance(request["labels"], list) and all(isinstance(label, str) for label in request["labels"]),
+        "Invalid labels",
+    )
     for key, length in (("merge_sha", 40), ("inputs_hash", 64)):
         require(
             isinstance(request[key], str) and re.fullmatch(f"[0-9a-f]{{{length}}}", request[key]), f"Invalid {key}"
@@ -104,8 +108,8 @@ def current_request(request, repository):
         if item["head_repository"]["id"] == head["repo"]["id"] and item["head_branch"] == head["ref"]
     ]
     require(matching and max(matching) == run["id"], "A newer PR Test run superseded this request")
-    labels = [label["name"] for label in pr["labels"]]
-    policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
+    # Match the caller's event snapshot, including on reruns and after label removal.
+    policy = resolve_workflow_inputs("pull_request", "", json.dumps(request["labels"]))
     if not policy.bypass_fastfail:
         jobs = api(
             f"repos/{repository}/actions/runs/{run['id']}/jobs?filter=all&per_page=100",

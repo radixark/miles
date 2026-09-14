@@ -159,6 +159,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           INPUTS_HASH: ${{ needs.docker-decide.outputs.current }}
           FORCE_REBUILD: ${{ needs.docker-decide.outputs.force_rebuild }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           mkdir -p "$RUNNER_TEMP/fork-ci-image-request"
           python3 - <<'PY'
@@ -167,7 +168,8 @@ jobs:
           request = dict(pr=int(os.environ['PR_NUMBER']), merge_sha=os.environ['GITHUB_SHA'],
                          inputs_hash=os.environ['INPUTS_HASH'], run_id=int(os.environ['GITHUB_RUN_ID']),
                          run_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']),
-                         force_rebuild=os.environ['FORCE_REBUILD'] == 'true')
+                         force_rebuild=os.environ['FORCE_REBUILD'] == 'true',
+                         labels=json.loads(os.environ['PR_LABELS_JSON']))
           (Path(os.environ['RUNNER_TEMP']) / 'fork-ci-image-request/request.json').write_text(json.dumps(request))
           PY
       - uses: actions/upload-artifact@v4
