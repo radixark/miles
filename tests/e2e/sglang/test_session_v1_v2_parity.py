@@ -10,7 +10,7 @@ from tests.session_parity_utils import V1, V2, assert_agentic_retry_trajectory_p
 from miles.utils.test_utils.session_verify_agent import build_initial_messages
 from miles.utils.types import Sample
 
-register_cuda_ci(est_time=190, suite="stage-c-2-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=190, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper"])
 
 _MODEL_ID = "Qwen/Qwen3-8B"
 _MODEL_REVISION = "b968826d9c46dd6066d109eabc6255188de91218"

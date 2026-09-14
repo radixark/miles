@@ -26,6 +26,7 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-4-gpu-h200",
     labels=["miles-plugin", "megatron"],
+    hardware=["hopper", "blackwell"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")

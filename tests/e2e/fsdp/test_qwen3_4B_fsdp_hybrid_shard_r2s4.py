@@ -8,6 +8,7 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-8-gpu-h100",
     labels=["fsdp"],
+    hardware=["hopper", "blackwell"],
 )
 
 NUM_GPUS = 8

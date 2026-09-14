@@ -347,7 +347,7 @@ def forward_only(
             attention_mask=None,
             labels=None,
             packed_seq_params=packed_seq_params,
-            loss_mask=batch["full_loss_masks"],
+            loss_mask=batch["input_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
             fp32_output=fp32_output,
@@ -534,7 +534,7 @@ def train_one_step(
                 attention_mask=None,
                 labels=None,
                 packed_seq_params=get_packed_seq_params(batch, args),
-                loss_mask=batch["full_loss_masks"],
+                loss_mask=batch["input_loss_masks"],
             )
         else:
             forward_kwargs = {
@@ -543,7 +543,9 @@ def train_one_step(
                 "attention_mask": None,
                 "labels": None,
                 "packed_seq_params": get_packed_seq_params(batch, args),
-                "loss_mask": batch["full_loss_masks"],
+                # Aligned with input_ids. With labels=None, Megatron derives the MTP labels
+                # from input_ids and shifts this mask itself; without MTP it never reads it.
+                "loss_mask": batch["input_loss_masks"],
                 **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             }
 

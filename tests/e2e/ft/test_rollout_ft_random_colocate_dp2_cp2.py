@@ -10,6 +10,7 @@ register_cuda_ci(
     est_time=2400,
     suite="stage-c-8-gpu-h200",
     labels=["ft-long"],
+    hardware=["hopper", "blackwell"],
     disabled=(
         "FT soak tests pending CI infra support: every ft-long entry is disabled for the same reason, and the "
         "specific infra gap is not recorded anywhere in the repo. Unblock condition: an ft-long capable "

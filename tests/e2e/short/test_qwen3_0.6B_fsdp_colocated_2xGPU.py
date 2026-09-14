@@ -8,6 +8,7 @@ register_cuda_ci(
     est_time=3000,
     suite="stage-c-2-gpu-h200",
     labels=["long"],
+    hardware=["hopper", "blackwell"],
 )
 register_rocm_ci(
     est_time=3900,

@@ -84,6 +84,7 @@ jobs:
       raw_labels: ${{ steps.resolve.outputs.raw_labels }}
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
       skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}
+      needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}
     steps:
       - name: Checkout repository
         # Deliberately not inputs.ref: this job executes ci_policy.py, so it
@@ -100,7 +101,7 @@ jobs:
         run: |
           if ! git diff --name-status -z -M HEAD^1 HEAD > "$RUNNER_TEMP/changed-files.z"; then
             rm -f "$RUNNER_TEMP/changed-files.z"
-            echo "::warning::Unable to compute PR diff; all GPU stages remain eligible."
+            echo "::warning::Unable to compute PR diff; all selected GPU stages are treated as affected."
           fi
       - name: Resolve CI policy inputs
         id: resolve
@@ -114,7 +115,7 @@ jobs:
           CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
         run: python -m tests.ci.ci_policy
 
-  # Resolve and build a PR image only after the fast CPU gate completes.
+  # Selected CUDA tests need an image after the fast CPU gate completes.
   # Nightly, weekly, and bypass-fastfail preserve their cross-stage exception.
   docker-build:
     needs: [resolve-ci-policy, stage-a-cpu]
@@ -122,20 +123,24 @@ jobs:
       always() && !cancelled() &&
       github.event.action != 'closed' &&
       needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-policy.outputs.needs_cuda_image == 'true' &&
       (needs.stage-a-cpu.result == 'success' ||
          needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     # Scoped to this call: a build consumes the one-shot rebuild-ci-image label by
     # removing it. Every other job keeps the workflow-level read-only token.
     permissions:
       contents: read
+      actions: read
       pull-requests: write
     uses: ./.github/workflows/_build-pr-ci-image.yml
     secrets: inherit
 
-  # No if guard: a detector or build failure must stop the suites rather than
-  # run them against a stale image.
+  # Gate on this build alone. Without an `if` the default success() spans the whole
+  # dependency closure, so a stage-a-cpu failure skipped this and every GPU stage even
+  # on a nightly, whose policy sets bypass_fastfail precisely to keep them running.
   resolve-ci-image:
     needs: [docker-build]
+    if: always() && !cancelled() && needs.docker-build.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}

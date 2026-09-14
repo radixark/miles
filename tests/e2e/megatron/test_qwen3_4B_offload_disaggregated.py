@@ -21,6 +21,7 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "weight-update"],
+    hardware=["hopper", "blackwell"],
 )
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="rollout/raw_reward")

@@ -24,10 +24,17 @@ RERUN_WORKFLOWS = (
     ("pr-test.yml", ".github/workflows/pr-test.yml"),
     ("pr-test-rocm.yml", ".github/workflows/pr-test-rocm.yml"),
 )
-COMMAND_PATTERN = re.compile(r"/(run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
-# "/run-ci" remains the label-family marker, while "/rerun-test" owns targeted
-# file runs; either family must parse as one exact command or fail loudly.
-COMMAND_MARKERS = ("/run-ci", "/rerun-test", "/bypass-fastfail", "/clear-labels", "/rerun-failed-ci")
+COMMAND_PATTERN = re.compile(r"/(run-(?:ci|on)-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
+# Label-family markers and "/rerun-test" must parse as one exact command or
+# fail loudly.
+COMMAND_MARKERS = (
+    "/run-ci",
+    "/run-on",
+    "/rerun-test",
+    "/bypass-fastfail",
+    "/clear-labels",
+    "/rerun-failed-ci",
+)
 # Registered test files only: fixed roots, path segments that cannot form
 # ".." or an absolute path, and a test_*.py basename. The dispatched workflow
 # re-validates the same shape before the path reaches any shell command.
@@ -54,7 +61,10 @@ PR_BODY_PINS = (
         re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
     ),
 )
-LABEL_PATTERN = re.compile(r"(?:run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
+# Shapes a policy entry may take. Widening this does not widen what a comment
+# can add: `commands.add_label.allowed_labels` stays an exact default-deny
+# allowlist, and this only rejects malformed entries in it.
+LABEL_PATTERN = re.compile(r"(?:run-(?:ci|on)-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 WORKFLOW_RUN_URL_PATTERN = re.compile(rf"https://github\.com/{re.escape(REPOSITORY)}/actions/runs/[1-9][0-9]*")
 # Suite names come from the resolver, and reach a comment body verbatim.
@@ -633,7 +643,7 @@ def require_access(
 
 
 def _is_ci_control_label(label):
-    return label.startswith("run-ci") or label in CLEAR_EXACT_LABELS
+    return label.startswith(("run-ci", "run-on-")) or label in CLEAR_EXACT_LABELS
 
 
 def _latest_failed_run(

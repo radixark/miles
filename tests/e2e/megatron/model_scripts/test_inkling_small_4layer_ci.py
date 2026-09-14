@@ -15,6 +15,7 @@ register_cuda_ci(
     est_time=1800,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts"],
+    hardware=["hopper", "blackwell"],
 )
 register_rocm_ci(
     est_time=1800,

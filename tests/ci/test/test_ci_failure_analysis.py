@@ -470,6 +470,43 @@ def validate_two(items):
     )
 
 
+def failure_block(test_name, body_lines, stamp="2026-09-11T16:56:05.4909230Z "):
+    lines = [f"{stamp}Last output of {test_name}:"]
+    lines += [f"{stamp}  | {line}" for line in body_lines]
+    return "\n".join(lines)
+
+
+def two_block_log():
+    return "\n".join(
+        [
+            failure_block("tests/e2e/a/test_one.py", [f"noise {i}" for i in range(40)] + ["AssertionError: one"]),
+            failure_block("tests/e2e/b/test_two.py", [f"noise {i}" for i in range(40)] + ["AssertionError: two"]),
+            "2026-09-11T16:56:05.4909230Z FAILED:",
+            "2026-09-11T16:56:05.4909230Z   tests/e2e/a/test_one.py (exit code 1)",
+            "2026-09-11T16:56:05.4909230Z   tests/e2e/b/test_two.py (exit code 1)",
+            "2026-09-11T16:56:05.4909230Z ============================================================",
+        ]
+    )
+
+
+def test_log_evidence_drops_the_timestamp_every_line_carries():
+    evidence = ANALYZER.extract_log_evidence(two_block_log(), 10, 40_000)
+    assert "2026-09-11T16:56:05" not in evidence["text"]
+    assert "AssertionError: one" in evidence["text"]
+
+
+def test_every_failure_block_survives_whole_when_the_budget_allows():
+    evidence = ANALYZER.extract_log_evidence(two_block_log(), 10, 40_000)
+    assert evidence["text"].count("Last output of") == 2
+    assert "AssertionError: one" in evidence["text"] and "AssertionError: two" in evidence["text"]
+
+
+def test_a_budget_too_small_for_the_blocks_falls_back_to_marker_windows():
+    evidence = ANALYZER.extract_log_evidence(two_block_log(), 10, 600)
+    assert len(evidence["text"]) <= 600
+    assert evidence["text"].strip()
+
+
 def test_the_suite_summary_names_every_failing_test_in_a_job():
     assert ANALYZER.extract_failed_tests(SUITE_SUMMARY, 5) == [
         "tests/e2e/a/test_one.py",

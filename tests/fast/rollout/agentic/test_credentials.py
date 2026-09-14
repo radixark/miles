@@ -6,6 +6,7 @@ import pytest
 import miles.rollout.agentic.credentials as credentials
 from miles.rollout.agentic.credentials import (
     PROVIDER_CREDENTIALS,
+    credential_available,
     forward_address,
     preflight_sdk,
     provision_provider,
@@ -244,3 +245,32 @@ def test_provision_provider_wires_key_path_addresses_and_preflight(monkeypatch, 
     assert env["E2B_API_URL"] == "http://agentenv.internal:8000"
     assert "E2B_SANDBOX_URL" not in env  # unset vars are not forwarded
     assert "e2b_secret" not in str(env)
+
+
+def test_credential_available_accepts_either_supply(monkeypatch, tmp_path):
+    """The predicate a caller uses to decide rather than fail: a non-empty key
+    file, or every one of the provider's credential variables."""
+    key_file = tmp_path / "api_key"
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    assert not credential_available(PROVIDER_CREDENTIALS["e2b"], arg_path=str(key_file))
+
+    key_file.write_text("  \n")  # a blank placeholder is not a credential
+    assert not credential_available(PROVIDER_CREDENTIALS["e2b"], arg_path=str(key_file))
+
+    key_file.write_text("e2b_secret\n")
+    assert credential_available(PROVIDER_CREDENTIALS["e2b"], arg_path=str(key_file))
+
+    monkeypatch.setenv("E2B_API_KEY", "e2b_secret")
+    assert credential_available(PROVIDER_CREDENTIALS["e2b"], arg_path=str(tmp_path / "absent"))
+
+
+def test_credential_available_needs_every_var_of_a_multi_var_provider(monkeypatch, tmp_path):
+    """Modal's credential is a token pair: half of it is a misconfiguration,
+    not a usable supply."""
+    absent = str(tmp_path / "absent.toml")
+    monkeypatch.setenv("MODAL_TOKEN_ID", "id")
+    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    assert not credential_available(PROVIDER_CREDENTIALS["modal"], arg_path=absent)
+
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "secret")
+    assert credential_available(PROVIDER_CREDENTIALS["modal"], arg_path=absent)

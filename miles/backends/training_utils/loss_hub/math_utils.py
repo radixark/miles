@@ -978,6 +978,7 @@ def calculate_log_probs_and_entropy(
             tp_group,
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
+            chunk_size=chunk_size,
             vocab_size=vocab_size,
             sampling_mask=sampling_mask,
         )
@@ -1040,6 +1041,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     tp_group: dist.ProcessGroup | None,
     with_entropy: bool = False,
     entropy_requires_grad: bool = True,
+    chunk_size: int = -1,
     vocab_size: int | None = None,
     sampling_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -1053,6 +1055,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         with_entropy: If True, also compute entropy.
         entropy_requires_grad: If False, compute entropy as an observed metric
             without attaching it to the autograd graph.
+        chunk_size: Maximum number of response rows processed at once. A
+            non-positive value processes all rows together.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
         sampling_mask: Optional local-vocabulary support used to normalize
@@ -1070,21 +1074,54 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     log_prob_logits = _apply_sampling_mask(logits, sampling_mask)
     full_logits = _gather_true_on_policy_full_logits(log_prob_logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
-    log_probs_full = torch.log_softmax(full_logits, dim=-1)
-    _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
-    log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
-    _maybe_dump_top_logprob_backward("log_prob", log_prob)
+    entropy_logits = None
+    if with_entropy:
+        entropy_logits = (
+            full_logits
+            if sampling_mask is None
+            else _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
+        )
+    if chunk_size > 0:
+        full_logits_chunks = full_logits.split(chunk_size, dim=0)
+        tokens_chunks = tokens.split(chunk_size, dim=0)
+        entropy_logits_chunks = (
+            full_logits_chunks
+            if entropy_logits is full_logits
+            else entropy_logits.split(chunk_size, dim=0) if entropy_logits is not None else ()
+        )
+    else:
+        full_logits_chunks = (full_logits,)
+        tokens_chunks = (tokens,)
+        entropy_logits_chunks = (entropy_logits,) if entropy_logits is not None else ()
 
+    log_prob_chunks = []
+    entropy_chunks = []
+    for chunk_index, (full_logits_chunk, tokens_chunk) in enumerate(
+        zip(full_logits_chunks, tokens_chunks, strict=True)
+    ):
+        log_probs_full = torch.log_softmax(full_logits_chunk, dim=-1)
+        _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
+        log_prob_chunks.append(torch.gather(log_probs_full, dim=-1, index=tokens_chunk.unsqueeze(-1)).squeeze(-1))
+
+        if with_entropy:
+            entropy_logits_chunk = entropy_logits_chunks[chunk_index]
+            entropy_log_probs = (
+                log_probs_full
+                if entropy_logits_chunk is full_logits_chunk
+                else torch.log_softmax(entropy_logits_chunk, dim=-1)
+            )
+            if not entropy_requires_grad:
+                entropy_log_probs = entropy_log_probs.detach()
+            probs = entropy_log_probs.exp()
+            if entropy_requires_grad:
+                entropy_chunks.append(-(probs * entropy_log_probs).sum(dim=-1))
+            else:
+                entropy_chunks.append(-probs.mul_(entropy_log_probs).sum(dim=-1))
+
+    log_prob = log_prob_chunks[0] if len(log_prob_chunks) == 1 else torch.cat(log_prob_chunks, dim=0)
+    _maybe_dump_top_logprob_backward("log_prob", log_prob)
     entropy = None
     if with_entropy:
-        if sampling_mask is None:
-            entropy_log_probs = log_probs_full
-        else:
-            entropy_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
-            entropy_log_probs = torch.log_softmax(entropy_logits, dim=-1)
-        if not entropy_requires_grad:
-            entropy_log_probs = entropy_log_probs.detach()
-        probs = entropy_log_probs.exp()
-        entropy = -(probs * entropy_log_probs).sum(dim=-1)
+        entropy = entropy_chunks[0] if len(entropy_chunks) == 1 else torch.cat(entropy_chunks, dim=0)
 
     return log_prob, entropy

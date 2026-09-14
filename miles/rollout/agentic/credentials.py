@@ -94,6 +94,24 @@ def forward_address(env: dict[str, str], var: str, value: str) -> None:
     env[var] = value
 
 
+def _key_file_has_value(path: Path) -> bool:
+    try:
+        return bool(path.read_text(encoding="utf-8").strip())
+    except OSError:
+        return False
+
+
+def credential_available(spec: dict, *, arg_path: str = "") -> bool:
+    """Whether either supply this provider accepts is in place on this machine.
+
+    ``sandbox_key_supply`` raises on the same condition; a caller that needs to
+    decide rather than fail asks this.
+    """
+    if _key_file_has_value(Path(arg_path or spec["default_path"]).expanduser()):
+        return True
+    return all(os.environ.get(var, "").strip() for var in spec["key_env_vars"])
+
+
 def sandbox_key_supply(
     env: dict[str, str],
     *,
@@ -112,10 +130,7 @@ def sandbox_key_supply(
     echoes into driver logs and ray persists in job metadata, all in
     plaintext."""
     key_file = Path(arg_path or default_path).expanduser()
-    try:
-        key_present = bool(key_file.read_text(encoding="utf-8").strip())
-    except OSError:
-        key_present = False
+    key_present = _key_file_has_value(key_file)
     # Either supply is fine; neither is fully verifiable from here (the
     # launcher cannot probe worker nodes), so echo which one is in effect.
     # A provider whose credential is several variables (Modal's token pair) is
