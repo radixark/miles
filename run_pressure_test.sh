@@ -31,6 +31,8 @@ TINKER_PORT=${TINKER_PORT:-10613}
 READY_TIMEOUT=${READY_TIMEOUT:-3600}
 RAY_DASHBOARD=${RAY_ADDRESS:-http://127.0.0.1:8265}
 TINKER_HOST=${TINKER_HOST:-$(echo "$RAY_DASHBOARD" | sed -E 's#^https?://([^:/]+).*#\1#')}  # the Tinker API listens where the Ray job driver runs
+export MASTER_ADDR=${MASTER_ADDR:-$TINKER_HOST}  # torch.distributed rendezvous on the Ray head node
+[ -z "${NCCL_SOCKET_IFNAME:-}" ] || export NCCL_SOCKET_IFNAME GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-$NCCL_SOCKET_IFNAME}
 RUN_DIR=${RUN_DIR:-/tmp/multi-lora-pressure/$(date +%Y%m%d-%H%M%S)}
 EXTRA_SERVE_ARGS=${EXTRA_SERVE_ARGS:-}
 
