@@ -43,7 +43,7 @@ Both PR workflows are also reusable `workflow_call` entry points for release CI.
 
 **Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job takes the called workflow's `image_tag` first, then reads `ci-image-tag:` from the PR description or the `ci_image_tag` dispatch input, defaults to `dev`, validates the result is a bare tag, and outputs `radixark/miles:<tag>`. `release-branch-cut.yml` passes the prune-exempt `release-vX.Y.Z-ci` tag recorded in `release-lock.json`.
 
-The ROCm resolver uses only its dispatch input, defaults to its undated `rocm/sgl-dev` tag, and uses that default for called release runs too.
+The ROCm resolver uses only its dispatch input, defaults to its undated `rocm/sgl-dev` tag, and uses that default for called release runs too. For PRs, it runs only when `stage-c-4-gpu-mi350` is selected. CPU-only PRs skip both CUDA image preparation and ROCm image resolution.
 
 Distinct from image selection, the **`run-ci-image` label** selects the test scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
 

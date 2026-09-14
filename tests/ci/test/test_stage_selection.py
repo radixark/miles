@@ -249,8 +249,10 @@ def test_cli_publishes_all_gpu_stages_for_docs_diff(tmp_path):
         (["run-ci-megatron"], ", disabled='unavailable'", set()),
         (["run-ci-megatron"], ", nightly=True", set()),
         (["run-ci-megatron"], "", {"stage-c-4-gpu-h200"}),
-        (["run-ci-image"], "", {"stage-c-4-gpu-h200"}),
-        (["nightly"], ", nightly=True", {"stage-c-4-gpu-h200"}),
+        (["run-ci-amd"], "", {"stage-c-4-gpu-mi350"}),
+        (["run-ci-megatron", "run-ci-amd"], "", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
+        (["run-ci-image"], "", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
+        (["nightly"], ", nightly=True", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
     ],
 )
 def test_policy_cli_image_demand_matches_selected_gpu_tests(
@@ -259,7 +261,10 @@ def test_policy_cli_image_demand_matches_selected_gpu_tests(
     repo_root = Path(__file__).resolve().parents[3]
     test_dir = tmp_path / "tests/e2e"
     test_dir.mkdir(parents=True)
-    source = "register_cpu_ci(est_time=1, suite='stage-a-cpu', labels=[])\n"
+    source = (
+        "register_cpu_ci(est_time=1, suite='stage-a-cpu', labels=[])\n"
+        "register_rocm_ci(est_time=1, suite='stage-c-4-gpu-mi350', labels=['amd'])\n"
+    )
     if registration_args is not None:
         source += (
             "register_cuda_ci(est_time=1, suite='stage-c-4-gpu-h200', labels=['megatron'], "
@@ -287,7 +292,7 @@ def test_policy_cli_image_demand_matches_selected_gpu_tests(
     assert outputs["needs_cuda_image"] == str("stage-c-4-gpu-h200" in expected_stages).lower()
 
 
-def test_cuda_image_jobs_require_selected_cuda_tests():
+def test_image_jobs_require_their_selected_gpu_stages():
     cuda = WORKFLOW.read_text()
     build = cuda.split("\n  docker-build:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
     resolver = cuda.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-a-cpu:\n", 1)[0]
@@ -295,3 +300,11 @@ def test_cuda_image_jobs_require_selected_cuda_tests():
     assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in build
     assert "needs: [docker-build]" in resolver
     assert "needs.docker-build.result == 'success'" in resolver
+
+    rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  resolve-ci-deps:\n", 1)[0]
+    assert "needs: [resolve-ci-policy]" in resolver
+    assert (
+        "if: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') }}"
+        in resolver
+    )
