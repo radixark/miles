@@ -15,7 +15,8 @@
 #
 # Single node: run as is (the launcher starts Ray). Several nodes: join them into one Ray cluster
 # first, then MILES_SCRIPT_EXTERNAL_RAY=1 RAY_ADDRESS=http://<head>:8265 bash run_pressure_test.sh
-# on the head node, with the model and the dataset on storage every node mounts.
+# on any node of it, with the model and the dataset on storage every node mounts; the gateway's
+# Tinker API is reached on the head node (TINKER_HOST), where Ray runs the job driver.
 # Knobs are environment variables; the defaults are the two-node Qwen3-30B-A3B layout
 # (trainer TP2/EP8 on 8 GPUs, four TP2 engines on 8 GPUs, 8K context).
 set -euo pipefail
@@ -49,6 +50,8 @@ KEEP_CKPT=${KEEP_CKPT:-0}                                   # 1: keep the export
 TINKER_PORT=${TINKER_PORT:-10613}
 READY_TIMEOUT=${READY_TIMEOUT:-3600}
 RAY_DASHBOARD=${RAY_ADDRESS:-http://127.0.0.1:8265}         # the Jobs API used to stop the gateway
+# the gateway's Tinker API listens where the Ray job driver runs: the head node
+TINKER_HOST=${TINKER_HOST:-$(echo "$RAY_DASHBOARD" | sed -E 's#^https?://([^:/]+).*#\1#')}
 RUN_DIR=${RUN_DIR:-/tmp/multi-lora-pressure/$(date +%Y%m%d-%H%M%S)}
 EXTRA_SERVE_ARGS=${EXTRA_SERVE_ARGS:-}
 
@@ -119,7 +122,7 @@ SERVE_PID=$!
 
 # ---- 2. wait for the Tinker API, read the slot count ----
 deadline=$((SECONDS + READY_TIMEOUT))
-until curl -sf "http://127.0.0.1:$TINKER_PORT/api/v1/healthz" >/dev/null 2>&1; do
+until curl -sf "http://$TINKER_HOST:$TINKER_PORT/api/v1/healthz" >/dev/null 2>&1; do
     if ! kill -0 "$SERVE_PID" 2>/dev/null; then log "the gateway exited before serving:"; tail -60 "$RUN_DIR/serve.log"; exit 1; fi
     if [ $SECONDS -ge $deadline ]; then log "gateway not ready after ${READY_TIMEOUT}s"; tail -60 "$RUN_DIR/serve.log"; exit 1; fi
     sleep 10
@@ -139,7 +142,7 @@ start_gpu_samplers
 
 # ---- 3. one tenant per slot ----
 if python3 "$REPO/examples/multi_lora/run_multi_tenant_example.py" \
-    --base-url "http://127.0.0.1:$TINKER_PORT" --base-model "$MODEL" --mode multi --clients "$N_CLIENTS" \
+    --base-url "http://$TINKER_HOST:$TINKER_PORT" --base-model "$MODEL" --mode multi --clients "$N_CLIENTS" \
     --task dapo --dataset "$DATASET" --steps "$STEPS" --lora-rank "$LORA_RANK" \
     --prompts-per-step "$PROMPTS_PER_STEP" --samples-per-prompt "$SAMPLES_PER_PROMPT" \
     --max-prompt-tokens "$MAX_PROMPT_TOKENS" --context-len "$CONTEXT_LEN" --max-new-tokens "$CONTEXT_LEN" \
