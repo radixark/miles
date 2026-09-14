@@ -19,7 +19,8 @@ lib64/
 parts/
 sdist/
 var/
-wheels/
+wheels/*
+!wheels/.gitkeep
 share/python-wheels/
 *.egg-info/
 .installed.cfg

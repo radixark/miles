@@ -2,11 +2,13 @@ import dataclasses
 import itertools
 import json
 import os
+from pathlib import Path
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
 )
+from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.utils import megatron_bridge_utils
 from miles.utils.lora import is_lora_weight_name
 
@@ -21,7 +23,8 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         from megatron.bridge import AutoBridge
 
-        self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+        bridge_checkpoint = _select_bridge_checkpoint(self.args)
+        self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
 
         if (
             self.quantization_config is not None
@@ -37,6 +40,13 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     **self.quantization_config,
                     "_miles_quantized_basenames": quantized_basenames,
                 }
+
+    def _hf_atomic_update_groups(self):
+        return get_hf_atomic_update_groups(
+            self.model_name,
+            q_lora_rank=self.args.q_lora_rank,
+            dsv4_checkpoint_layout=True,
+        )
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
@@ -116,6 +126,17 @@ def _load_quantized_param_basenames(hf_checkpoint):
     with open(index_path) as f:
         names = json.load(f)["weight_map"]
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
+
+
+def _select_bridge_checkpoint(args):
+    """Use an HF trainer seed for export mappings when one is available."""
+    for candidate in (getattr(args, "load", None), getattr(args, "ref_load", None)):
+        if candidate is None:
+            continue
+        path = Path(candidate)
+        if (path / "model.safetensors.index.json").is_file() or any(path.glob("*.safetensors")):
+            return candidate
+    return args.hf_checkpoint
 
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
