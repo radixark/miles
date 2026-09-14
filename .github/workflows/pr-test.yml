@@ -130,6 +130,7 @@ jobs:
     # removing it. Every other job keeps the workflow-level read-only token.
     permissions:
       contents: read
+      actions: read
       pull-requests: write
     uses: ./.github/workflows/_build-pr-ci-image.yml
     secrets: inherit

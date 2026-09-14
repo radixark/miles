@@ -7,8 +7,10 @@ import io
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 from urllib.parse import urlencode
@@ -24,7 +26,7 @@ from tests.ci.hardware import CUDA_STAGES  # noqa: E402
 from tests.ci.stage_selection import select_skipped_gpu_stages  # noqa: E402
 
 CPU_JOBS = {f"stage-a-cpu ({partition}) / run-cpu" for partition in range(4)}
-REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt"}
+REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild"}
 
 
 def require(condition, message):
@@ -53,6 +55,7 @@ def parse_request(data):
     require(isinstance(request, dict) and request.keys() == REQUEST_KEYS, "Invalid request fields")
     for key in ("pr", "run_id", "run_attempt"):
         require(type(request[key]) is int and request[key] > 0, f"Invalid {key}")
+    require(type(request["force_rebuild"]) is bool, "Invalid force_rebuild")
     for key, length in (("merge_sha", 40), ("inputs_hash", 64)):
         require(
             isinstance(request[key], str) and re.fullmatch(f"[0-9a-f]{{{length}}}", request[key]), f"Invalid {key}"
@@ -62,8 +65,7 @@ def parse_request(data):
 
 def validate_identity(request, run, pr, repository, workflow_id):
     require(run["id"] == request["run_id"] and run["run_attempt"] == request["run_attempt"], "Stale run attempt")
-    require(run["event"] == "pull_request" and run["status"] == "completed", "Expected a completed PR run")
-    require(run["conclusion"] == "failure", "Expected the failed image handoff")
+    require(run["event"] == "pull_request" and run["status"] == "in_progress", "Expected an active PR run")
     require(run["repository"]["full_name"] == repository, "Wrong run repository")
     require(
         run["workflow_id"] == workflow_id and run["path"].split("@")[0] == ".github/workflows/pr-test.yml",
@@ -106,15 +108,17 @@ def current_request(request, repository):
     policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
     if not policy.bypass_fastfail:
         jobs = api(
-            f"repos/{repository}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100",
+            f"repos/{repository}/actions/runs/{run['id']}/jobs?filter=all&per_page=100",
             collection="jobs",
         )
-        cpu = [job for job in jobs if job["name"] in CPU_JOBS]
+        # Partial reruns retain successful dependencies from earlier attempts.
+        cpu = {}
+        for job in sorted(jobs, key=lambda job: job["run_attempt"]):
+            if job["name"] in CPU_JOBS and job["run_attempt"] <= request["run_attempt"]:
+                cpu[job["name"]] = job
         require(
-            len(cpu) == len(CPU_JOBS)
-            and {job["name"] for job in cpu} == CPU_JOBS
-            and all(job["conclusion"] == "success" for job in cpu),
-            "CPU A gate did not pass in this attempt",
+            cpu.keys() == CPU_JOBS and all(job["conclusion"] == "success" for job in cpu.values()),
+            "CPU A gate did not pass",
         )
     return pr, policy
 
@@ -135,6 +139,120 @@ def resolve_request(event, repository):
     )
     current_request(request, repository)
     return request
+
+
+def wait_request(event, repository):
+    source = event["workflow_run"]
+    while True:
+        run = api(f"repos/{repository}/actions/runs/{source['id']}")
+        if run["run_attempt"] != source["run_attempt"] or run["status"] == "completed":
+            return None
+        request = resolve_request(event, repository)
+        if request:
+            return request
+        jobs = api(
+            f"repos/{repository}/actions/runs/{source['id']}/jobs?filter=latest&per_page=100", collection="jobs"
+        )
+        if any(
+            job["name"] in ("docker-build", "docker-build / docker-build")
+            and job["run_attempt"] == source["run_attempt"]
+            and job["status"] == "completed"
+            for job in jobs
+        ):
+            return None
+        time.sleep(30)
+
+
+def require_active_source(request, repository):
+    run = api(f"repos/{repository}/actions/runs/{request['run_id']}")
+    require(
+        run["run_attempt"] == request["run_attempt"] and run["status"] == "in_progress",
+        "Source CI attempt is no longer active",
+    )
+    return run
+
+
+def wait_build(request, repository):
+    source = require_active_source(request, repository)
+    workflow = api(f"repos/{repository}/actions/workflows/build-fork-ci-image.yml")
+    query = urlencode({"event": "workflow_run", "created": f">={source['created_at']}", "per_page": 100})
+    title = f"fork-ci-image-{request['run_id']}-{request['run_attempt']}"
+    publisher = None
+    while True:
+        require_active_source(request, repository)
+        if publisher is None:
+            runs = api(
+                f"repos/{repository}/actions/workflows/{workflow['id']}/runs?{query}", collection="workflow_runs"
+            )
+            matches = [
+                run
+                for run in runs
+                if run["display_title"] == title
+                and run["event"] == "workflow_run"
+                and run["workflow_id"] == workflow["id"]
+            ]
+            if matches:
+                publisher = max(matches, key=lambda run: run["id"])
+                print(f"Waiting for {publisher['html_url']}", flush=True)
+        else:
+            publisher = api(f"repos/{repository}/actions/runs/{publisher['id']}")
+        if publisher and publisher["status"] == "completed":
+            require(
+                publisher["conclusion"] == "success",
+                f"Image publication {publisher['conclusion']}: {publisher['html_url']}",
+            )
+            jobs = api(
+                f"repos/{repository}/actions/runs/{publisher['id']}/jobs?filter=latest&per_page=100", collection="jobs"
+            )
+            require(
+                any(job["name"] == "build" and job["conclusion"] == "success" for job in jobs),
+                "Publisher completed without a successful image build",
+            )
+            return
+        time.sleep(30)
+
+
+def build_image(request, repository, source):
+    require_active_source(request, repository)
+    command = [
+        sys.executable,
+        str(ROOT / "docker/build.py"),
+        "--variant",
+        "cu13",
+        "--image-tag",
+        "custom",
+        "--custom-tag",
+        f"pr-{request['pr']}",
+        "--context",
+        str(source),
+        "--output",
+        f"type=oci,dest={os.environ['OCI_OUTPUT']},tar=false",
+    ]
+    process = subprocess.Popen(command, start_new_session=True)
+    try:
+        while True:
+            try:
+                code = process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                require_active_source(request, repository)
+                continue
+            if code:
+                raise subprocess.CalledProcessError(code, command)
+            return
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                # build.py may exit before a buildx child that ignores SIGTERM.
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                process.wait()
 
 
 def validate_source(request, pr, policy, source):
@@ -171,7 +289,20 @@ def validate_source(request, pr, policy, source):
 
 
 def verify_published(request):
-    manifest = json.loads(image_inputs.inspect_published(f"radixark/miles:pr-{request['pr']}"))
+    manifest = json.loads(
+        subprocess.check_output(
+            [
+                "docker",
+                "buildx",
+                "imagetools",
+                "inspect",
+                f"radixark/miles:pr-{request['pr']}",
+                "--format",
+                "{{ json .Image }}",
+            ],
+            text=True,
+        )
+    )
     for platform in ("linux/amd64", "linux/arm64"):
         configs = [config for key, config in manifest.items() if key == platform or key.startswith(platform + "/")]
         require(
@@ -183,12 +314,18 @@ def verify_published(request):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["resolve", "check-source", "check-current", "finish"])
+    parser.add_argument("mode", choices=["resolve", "wait-build", "check-source", "build", "check-current", "finish"])
     parser.add_argument("--source", type=Path)
     args = parser.parse_args()
     repository = os.environ["GITHUB_REPOSITORY"]
+    if args.mode == "wait-build":
+        wait_build(
+            dict(run_id=int(os.environ["GITHUB_RUN_ID"]), run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"])),
+            repository,
+        )
+        return
     if args.mode == "resolve":
-        request = resolve_request(json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), repository)
+        request = wait_request(json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), repository)
         if request:
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                 output.write(
@@ -199,18 +336,17 @@ def main():
     request = json.loads(os.environ["REQUEST_JSON"])
     pr, policy = current_request(request, repository)
     validate_source(request, pr, policy, args.source.resolve())
-    image = f"radixark/miles:pr-{request['pr']}"
-    if args.mode == "check-source":
-        if "rebuild-ci-image" not in [label["name"] for label in pr["labels"]]:
-            published = image_inputs.read_label(image_inputs.inspect_published(image))
-            require(published != request["inputs_hash"], "Image already matches; refusing a repeated build request")
+    if args.mode == "build":
+        build_image(request, repository, args.source.resolve())
     elif args.mode == "finish":
         verify_published(request)
-        if "rebuild-ci-image" in [label["name"] for label in pr["labels"]]:
-            api(f"repos/{repository}/issues/{request['pr']}/labels/rebuild-ci-image", method="DELETE")
-        current_request(request, repository)
-        # Rerunning only failed jobs would retain docker-decide's rebuild=true output.
-        api(f"repos/{repository}/actions/runs/{request['run_id']}/rerun", method="POST")
+        if request["force_rebuild"]:
+            try:
+                api(f"repos/{repository}/issues/{request['pr']}/labels/rebuild-ci-image", method="DELETE")
+            except subprocess.CalledProcessError:
+                print(
+                    "::warning::Could not remove the rebuild-ci-image label; remove it by hand or every run will rebuild."
+                )
 
 
 if __name__ == "__main__":

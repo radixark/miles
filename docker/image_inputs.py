@@ -71,20 +71,6 @@ def compute(rev: str | None = None, *, root: Path = REPO_ROOT) -> str:
     return digest.hexdigest()
 
 
-def inspect_published(image: str) -> str:
-    """Read public image metadata; only an absent tag is an empty result."""
-    result = subprocess.run(
-        ["docker", "buildx", "imagetools", "inspect", image, "--format", "{{ json .Image }}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode:
-        if result.stderr.strip().endswith(f"{image}: not found"):
-            return ""
-        raise RuntimeError(f"Image inspection failed: {result.stderr.strip()}")
-    return result.stdout
-
-
 def read_label(manifest: str) -> str:
     """Pull the recorded hash out of ``docker buildx imagetools inspect`` JSON.
 
@@ -117,17 +103,13 @@ def read_label(manifest: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rev", default=None, help="Git revision to hash (default: working tree).")
-    parser.add_argument("--published", help="Read the inputs hash from a public image tag; fail on registry errors.")
     parser.add_argument(
         "--read-label",
         action="store_true",
         help="Read imagetools inspect JSON on stdin and print the hash it recorded.",
     )
     args = parser.parse_args()
-    if args.published:
-        print(read_label(inspect_published(args.published)))
-    else:
-        print(read_label(sys.stdin.read()) if args.read_label else compute(args.rev))
+    print(read_label(sys.stdin.read()) if args.read_label else compute(args.rev))
     return 0
 
 

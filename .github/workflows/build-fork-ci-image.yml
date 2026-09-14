@@ -1,10 +1,11 @@
 # doc-dev: docs/developer/ci/02-docker-build.md
 name: Build Fork CI Image
+run-name: fork-ci-image-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
 
 on:
   workflow_run:
     workflows: [PR Test]
-    types: [completed]
+    types: [in_progress]
 
 permissions:
   contents: read
@@ -13,9 +14,9 @@ jobs:
   request:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.head_repository.id != github.event.repository.id
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     permissions:
       contents: read
       actions: read
@@ -29,7 +30,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate the attempt-bound build request
+      - name: Wait for the attempt-bound build request
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,10 +43,10 @@ jobs:
     timeout-minutes: 180
     concurrency:
       group: fork-ci-image-${{ needs.request.outputs.pr }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     permissions:
       contents: read
-      actions: write
+      actions: read
       pull-requests: write
     env:
       REQUEST_JSON: ${{ needs.request.outputs.request }}
@@ -96,11 +97,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py check-source --source source
       - name: Build without registry credentials
-        run: |
-          python3 trusted/docker/build.py --variant cu13 --image-tag custom \
-            --custom-tag "pr-${PR_NUMBER}" --context "$GITHUB_WORKSPACE/source" \
-            --output "type=oci,dest=${OCI_OUTPUT},tar=false"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 trusted/.github/workflows/scripts/fork_ci_image.py build --source source
       - name: Remove the builder before introducing publishing credentials
+        if: always() && steps.buildx.outcome == 'success'
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: docker buildx rm "$BUILDER_NAME"
@@ -117,7 +118,7 @@ jobs:
         run: |
           skopeo copy --all --retry-times 3 --authfile "$DOCKER_CONFIG/config.json" \
             "oci:${OCI_OUTPUT}" "docker://radixark/miles:pr-${PR_NUMBER}"
-      - name: Verify both architectures and rerun PR Test
+      - name: Verify both architectures and consume the rebuild label
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py finish --source source
