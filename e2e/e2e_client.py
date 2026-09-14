@@ -93,7 +93,7 @@ def load_prompts(path: str, tokenizer, args, count: int) -> list[tuple[list[int]
         messages = row.get("messages") or row["prompt"]
         # render, then encode: apply_chat_template(tokenize=True) returns two tokens on this transformers build
         text = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False, enable_thinking=args.enable_thinking
+            messages, add_generation_prompt=True, tokenize=False, enable_thinking=False  # Qwen3: no thinking mode
         )
         tokens = tokenizer.encode(text, add_special_tokens=False)
         if len(tokens) <= args.max_prompt_tokens:
@@ -185,5 +185,4 @@ if __name__ == "__main__":
         "--max-new-tokens", type=int, default=8192, help="clamped to the context left after the prompt"
     )
     parser.add_argument("--context-len", type=int, default=8192)
-    parser.add_argument("--enable-thinking", action="store_true", help="Qwen3 thinking mode (long rollouts)")
     main(parser.parse_args())

@@ -93,15 +93,6 @@ def _optimizer_state_bytes(args: Namespace) -> int:
     return master + 8
 
 
-def bytes_per_train_param(args: Namespace, dp_size: int = 1) -> float:
-    """Per-slot resident bytes per dense LoRA param on one rank, from the precision flags.
-
-    The weights are replicated and DDP all-reduces full gradients, but the LayerWise
-    optimizer scatters whole params across data-parallel ranks, so each rank keeps the
-    fp32 master and the Adam moments for only its share of the slot."""
-    return _weight_and_grad_bytes(args) + _optimizer_state_bytes(args) / dp_size
-
-
 def expert_data_parallel_size(args: Namespace, dp_size: int) -> int:
     """Ranks that replicate one expert's params: experts are already split EP (and ETP) ways,
     so their optimizer state is scattered over only world / (EP * ETP * PP) ranks."""

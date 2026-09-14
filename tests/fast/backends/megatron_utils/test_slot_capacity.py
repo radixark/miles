@@ -12,7 +12,6 @@ from miles.backends.megatron_utils.lora import slot_capacity
 from miles.backends.megatron_utils.lora.slot_capacity import (
     PROBE_SLOT,
     RankProbe,
-    bytes_per_train_param,
     engine_slot_capacity,
     expert_data_parallel_size,
     predicted_slot_bytes,
@@ -34,15 +33,17 @@ GIB = 1 << 30
     ],
     ids=["bf16-accum", "bf16-raw-grad", "fp32", "fp16-accum"],
 )
-def test_bytes_per_train_param_follows_the_precision_flags(bf16, fp16, accum_fp32, expected):
+def test_predicted_bytes_per_dense_param_follow_the_precision_flags(bf16, fp16, accum_fp32, expected):
     args = Namespace(bf16=bf16, fp16=fp16, accumulate_allreduce_grads_in_fp32=accum_fp32)
-    assert bytes_per_train_param(args) == expected
+    one_dense_param = RankProbe(free=0, slot_bytes=0, act_peak=0, adapter_local_params=1)
+    assert predicted_slot_bytes(args, one_dense_param, dp_size=1) == expected
 
 
 def test_optimizer_state_is_split_across_data_parallel_ranks():
     # bf16 weight + fp32 grad on every rank; the fp32 master and moments (12 B) are scattered over DP=2
     args = Namespace(bf16=True, fp16=False, accumulate_allreduce_grads_in_fp32=True)
-    assert bytes_per_train_param(args, dp_size=2) == 12
+    one_dense_param = RankProbe(free=0, slot_bytes=0, act_peak=0, adapter_local_params=1)
+    assert predicted_slot_bytes(args, one_dense_param, dp_size=2) == 12
 
 
 def test_expert_adapters_share_optimizer_state_over_the_expert_data_parallel_ranks():

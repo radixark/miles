@@ -8,7 +8,6 @@
 
 : "${PY:=/opt/sglang/bin/python3}"
 : "${MEGATRON_PATH:=/root/Megatron-LM}"
-: "${SGLANG_PYTHONPATH:=}"         # an sglang source tree to put ahead of the installed one (empty: installed)
 : "${RAY_GCS:=127.0.0.1:6379}"     # host:port of the cluster's GCS
 : "${RAY_DASH:=127.0.0.1:8265}"    # host:port of its dashboard (jobs API)
 : "${RAY_TEMP:=}"                  # the cluster's ray temp dir on this node; found from the raylet when empty
@@ -123,7 +122,6 @@ e2e_preflight() {
     local usage
     [ -d "$MODEL" ] || { log "model dir $MODEL missing"; exit 2; }
     [ -f "$REPO/serve_tinker.py" ] || { log "$REPO is not a miles tree"; exit 2; }
-    [ -z "$SGLANG_PYTHONPATH" ] || [ -d "$SGLANG_PYTHONPATH/sglang" ] || { log "SGLANG_PYTHONPATH $SGLANG_PYTHONPATH has no sglang package"; exit 2; }
     kill_marked "^MILES_E2E_RUN="  # leftovers of any earlier run
     e2e_sweep_other_nodes "^MILES_E2E_RUN="
     usage=$(cluster_gpu_usage) || { log "cannot read GPU usage from the Ray cluster at $RAY_GCS"; exit 2; }
@@ -150,7 +148,7 @@ e2e_submit_gateway() {  # $1: model-args line (shell-quoted), $2: serve args
 {"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0",
  "no_proxy": "127.0.0.1,localhost${NODE_IPS:+,$NODE_IPS}", "MASTER_ADDR": "$HEAD_IP", "RAY_DEDUP_LOGS": "0",
  "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1", "MILES_E2E_RUN": "$MILES_E2E_RUN", "RAY_ADDRESS": "$RAY_GCS",
- "PYTHONPATH": "$REPO:$MEGATRON_PATH${SGLANG_PYTHONPATH:+:$SGLANG_PYTHONPATH}"$fabric_env}}
+ "PYTHONPATH": "$REPO:$MEGATRON_PATH"$fabric_env}}
 JSON
 )
     JOB_ID=e2e-$(date +%s)

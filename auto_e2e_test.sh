@@ -46,7 +46,6 @@ SGLANG_MAX_RUNNING_REQUESTS=${SGLANG_MAX_RUNNING_REQUESTS:-512}
 SGLANG_CUDA_GRAPH_MAX_BS=${SGLANG_CUDA_GRAPH_MAX_BS:-512}   # decode batch captured in cuda graphs
 SGLANG_MOE_RUNNER=${SGLANG_MOE_RUNNER:-triton}              # the runner that applies expert LoRA
 SGLANG_MAX_LOADED_LORAS=${SGLANG_MAX_LOADED_LORAS:-}        # adapter versions each engine keeps in host RAM; empty: slots + 16
-ENABLE_THINKING=${ENABLE_THINKING:-0}            # 1: Qwen3 thinking mode (long rollouts)
 TINKER_PORT=${TINKER_PORT:-9646}
 READY_TIMEOUT=${READY_TIMEOUT:-3600}
 RUN_ROOT=${RUN_ROOT:-/scratch/asc3199-auto-e2e}
@@ -90,13 +89,12 @@ SLOTS=$(e2e_resolved_slots)
 N_USERS=${N_USERS:-$SLOTS}
 log "gateway has $SLOTS slots; running $N_USERS clients x $STEPS steps of DAPO ($PROMPTS_PER_STEP prompts x $SAMPLES_PER_PROMPT samples, <= $CONTEXT_LEN tokens)"
 
-thinking_flag=""; [ "$ENABLE_THINKING" = "1" ] && thinking_flag="--enable-thinking"
 if PYTHONPATH="$REPO" "$PY" "$REPO/e2e/run_clients.py" --n-clients "$N_USERS" --summary-json "$RUN_DIR/client-summary.json" -- \
     --base-url "http://127.0.0.1:$TINKER_PORT" --base-model "$MODEL" --dataset "$DATASET" \
     --steps "$STEPS" --lora-rank "$LORA_RANK" --lr "$LR" \
     --prompts-per-step "$PROMPTS_PER_STEP" --samples-per-prompt "$SAMPLES_PER_PROMPT" \
     --max-prompt-tokens "$MAX_PROMPT_TOKENS" --max-new-tokens "$MAX_NEW_TOKENS" --context-len "$CONTEXT_LEN" \
-    $thinking_flag 2>&1 | tee "$RUN_DIR/client.log"; then
+    2>&1 | tee "$RUN_DIR/client.log"; then
     rc=0
 else
     rc=$?
