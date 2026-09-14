@@ -133,8 +133,24 @@ def test_rerun_reasons_apply_only_to_current_failures():
         },
     )
     content = markdown(HANDLER.render_ci_status(run(run_attempt=2), current, previous, outcome))
-    assert "Fixed by rerun" in content and "Wrong old reason." not in content
+    assert "Flaky, passed on rerun" in content and "Wrong old reason." not in content
     assert content.count("↳") == 2
+
+
+def test_jobs_fixed_by_the_rerun_count_as_flaky_not_failed():
+    previous = {"flaky": job(10, "flaky"), "still": job(19, "still")}
+    current = [job(20, "still"), job(11, "flaky", "success")]
+    card = HANDLER.render_ci_status(run(run_attempt=2), current, previous)
+    assert card["card"]["header"]["title"]["content"] == "Nightly Test: FAILED (1 of 2 jobs, 1 flaky)"
+    content = markdown(card)
+    assert "**Flaky, passed on rerun (1)**" in content and "**Still failing (1)**" in content
+
+
+def test_a_rerun_that_fixes_every_failure_passes_with_a_flaky_count():
+    previous = {"flaky": job(10, "flaky")}
+    card = HANDLER.render_ci_status(run(run_attempt=2, conclusion="success"), [job(11, "flaky", "success")], previous)
+    assert card["card"]["header"]["title"]["content"] == "Nightly Test: PASSED (1 job, 1 flaky)"
+    assert card["card"]["header"]["template"] == "green"
 
 
 def test_model_failure_adds_one_note_without_removing_original_rows():

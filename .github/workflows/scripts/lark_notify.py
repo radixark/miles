@@ -447,19 +447,21 @@ def render_ci_status(
     sha = run["head_sha"]
     subject = ((run.get("head_commit") or {}).get("message") or "").splitlines()
     commit_md = f"[`{sha[:9]}`]({repo_url}/commit/{sha}) {subject[0] if subject else ''}"
-    rerun_prefix = f"Rerun #{attempt} - " if attempt > 1 else ""
+    diff = diff_attempts(failed, prev_failed) if prev_failed is not None else None
+    flaky = diff["fixed"] if diff else []
+    flaky_note = f", {len(flaky)} flaky" if flaky else ""
 
     if conclusion == "cancelled":
-        title = f"{rerun_prefix}{name}: CANCELLED"
+        title = f"{name}: CANCELLED"
         color = "grey"
     elif failed:
-        title = f"{rerun_prefix}{name}: FAILED ({len(failed)} of {plural(len(counted), 'job')})"
+        title = f"{name}: FAILED ({len(failed)} of {plural(len(counted), 'job')}{flaky_note})"
         color = "red"
     else:
-        title = f"{rerun_prefix}{name}: PASSED ({plural(len(counted), 'job')})"
+        title = f"{name}: PASSED ({plural(len(counted), 'job')}{flaky_note})"
         color = "green"
 
-    jobs_summary = f"{len(counted)} total, {len(failed)} failed"
+    jobs_summary = f"{len(counted)} total, {len(failed)} failed{flaky_note}"
     if cancelled:
         jobs_summary += f", {len(cancelled)} cancelled"
     commit_label = "Tested main commit" if run["event"] == "schedule" else "Commit"
@@ -477,17 +479,16 @@ def render_ci_status(
 
     sections = []
     # None: first attempt, nothing to compare against
-    if prev_failed is None:
+    if diff is None:
         if failed:
             sections.append(
                 f"**Failed jobs ({len(failed)})**\n"
                 f"{list_jobs_md(list(failed.values()), reasons=analysis.reasons if analysis else None, repo=repo)}"
             )
     else:
-        diff = diff_attempts(failed, prev_failed)
         remaining_current_jobs = MAX_LISTED_JOBS
         for key, heading in (
-            ("fixed", "Fixed by rerun"),
+            ("fixed", "Flaky, passed on rerun"),
             ("still", "Still failing"),
             ("new", "New failures"),
         ):
