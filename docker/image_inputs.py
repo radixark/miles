@@ -43,32 +43,46 @@ def _matches(path: str) -> bool:
     return any(fnmatch.fnmatch(path, glob) for glob in INPUT_GLOBS)
 
 
-def _git(*args: str) -> bytes:
-    return subprocess.run(["git", *args], cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
+def _git(*args: str, root: Path = REPO_ROOT) -> bytes:
+    return subprocess.run(["git", *args], cwd=root, check=True, stdout=subprocess.PIPE).stdout
 
 
-def _paths_at(rev: str | None) -> list[str]:
+def _paths_at(rev: str | None, root: Path = REPO_ROOT) -> list[str]:
     if rev is None:
-        listing = _git("ls-files").decode()
+        listing = _git("ls-files", root=root).decode()
     else:
-        listing = _git("ls-tree", "-r", "--name-only", rev).decode()
+        listing = _git("ls-tree", "-r", "--name-only", rev, root=root).decode()
     return sorted(p for p in listing.splitlines() if _matches(p))
 
 
-def _content_at(path: str, rev: str | None) -> bytes:
+def _content_at(path: str, rev: str | None, root: Path = REPO_ROOT) -> bytes:
     if rev is None:
-        return (REPO_ROOT / path).read_bytes()
-    return _git("show", f"{rev}:{path}")
+        return (root / path).read_bytes()
+    return _git("show", f"{rev}:{path}", root=root)
 
 
-def compute(rev: str | None = None) -> str:
+def compute(rev: str | None = None, *, root: Path = REPO_ROOT) -> str:
     """Hash the build inputs in the working tree (``rev=None``) or at a revision."""
     digest = hashlib.sha256()
-    for path in _paths_at(rev):
+    for path in _paths_at(rev, root):
         digest.update(path.encode())
         digest.update(b"\0")
-        digest.update(hashlib.sha256(_content_at(path, rev)).digest())
+        digest.update(hashlib.sha256(_content_at(path, rev, root)).digest())
     return digest.hexdigest()
+
+
+def inspect_published(image: str) -> str:
+    """Read public image metadata; only an absent tag is an empty result."""
+    result = subprocess.run(
+        ["docker", "buildx", "imagetools", "inspect", image, "--format", "{{ json .Image }}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        if result.stderr.strip().endswith(f"{image}: not found"):
+            return ""
+        raise RuntimeError(f"Image inspection failed: {result.stderr.strip()}")
+    return result.stdout
 
 
 def read_label(manifest: str) -> str:
@@ -103,13 +117,17 @@ def read_label(manifest: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rev", default=None, help="Git revision to hash (default: working tree).")
+    parser.add_argument("--published", help="Read the inputs hash from a public image tag; fail on registry errors.")
     parser.add_argument(
         "--read-label",
         action="store_true",
         help="Read imagetools inspect JSON on stdin and print the hash it recorded.",
     )
     args = parser.parse_args()
-    print(read_label(sys.stdin.read()) if args.read_label else compute(args.rev))
+    if args.published:
+        print(read_label(inspect_published(args.published)))
+    else:
+        print(read_label(sys.stdin.read()) if args.read_label else compute(args.rev))
     return 0
 
 

@@ -192,3 +192,5 @@ Like the scope labels, `bypass-fastfail` is a workflow-only input and is not in 
 ## Labels double as fork-PR CI approval
 
 GitHub holds a first-time contributor's fork-PR CI at "Approve and run" after every push. Any maintainer-applied or comment-gateway-authorized `run-ci*` label is already that human decision, so the `Approve Trusted CI` workflow (on `pull_request_target`) auto-approves those held runs while such a label is present. Removing the labels restores manual approval. This automation covers the first-time-contributor hold only; GitHub may separately hold a workflow it identifies as potentially malicious, and that hold requires approval through an authenticated web session.
+
+Approval does not grant Docker Hub credentials to fork code. Selected CUDA tests can request publication through the separate trusted [fork image workflow](/developer/ci/02-docker-build#fork-pr-publication), after the CPU A success/bypass gate.

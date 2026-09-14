@@ -64,6 +64,8 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 **Dependencies / gating.** In `pr-test.yml`, both CPU stages require only `resolve-ci-policy`. PR-image preparation requires selected CUDA tests and the `stage-a-cpu` success/bypass gate; NVIDIA GPU stages follow image resolution. `stage-b-cpu` stays parallel and does not gate that chain. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure; none creates GPU demand or bypasses policy or Docker/image failure. Scheduled, manual, and called release runs retain their existing image preparation.
 
+A fork that needs a changed CUDA image waits at the image gate while the trusted [fork image workflow](/developer/ci/02-docker-build#fork-pr-publication) publishes it. That workflow then reruns the original PR Test, including CPU stages, so the image decision can confirm and select the published tag.
+
 **Runner selection.** CUDA stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages call `_run-cpu-ci.yml`, whose only job runs on GitHub-hosted `ubuntu-latest`, so they don't occupy GPU-fleet slots.
 
 **Arch dispatch.** `tests/ci/hardware.py::CUDA_STAGES` is the single source of truth for the CUDA taxonomy: each stage's GPU generation, GPU count, and runner labels. `CI_SUITES` and the `/rerun-test` runner map both derive from it, and a stage's `--suite` already names its generation, so no job passes an arch explicitly.

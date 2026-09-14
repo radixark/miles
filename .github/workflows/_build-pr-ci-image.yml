@@ -1,3 +1,4 @@
+# doc-dev: docs/developer/ci/02-docker-build.md
 name: PR CI Image Build
 
 on:
@@ -22,6 +23,7 @@ jobs:
       needs_image: ${{ steps.decide.outputs.needs_image }}
       rebuild: ${{ steps.decide.outputs.rebuild }}
       force_rebuild: ${{ steps.prepare.outputs.force_rebuild }}
+      current: ${{ steps.compare.outputs.current }}
     env:
       SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
@@ -52,12 +54,6 @@ jobs:
           BASE=$(python3 docker/image_inputs.py --rev HEAD^1)
           if [ "$CURRENT" = "$BASE" ]; then
             echo "Build inputs match the base branch; suites use the released image."
-            emit false ""
-            exit 0
-          fi
-
-          if [ "$SAME_REPO" != "true" ]; then
-            echo "::notice::Fork PRs cannot publish an image; suites use the released image."
             emit false ""
             exit 0
           fi
@@ -93,7 +89,7 @@ jobs:
 
       # Registry auth is needed only when reading the inputs label from an existing tag.
       - name: Login to Docker Hub
-        if: steps.prepare.outputs.inspect_tag == 'true'
+        if: steps.prepare.outputs.inspect_tag == 'true' && env.SAME_REPO == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -120,9 +116,14 @@ jobs:
             exit 0
           fi
 
-          PUBLISHED=$(docker buildx imagetools inspect "radixark/miles:pr-${PR_NUMBER}" \
-            --format '{{ json .Image }}' 2>/dev/null \
-            | python3 docker/image_inputs.py --read-label || true)
+          if [ "$SAME_REPO" = "true" ]; then
+            PUBLISHED=$(docker buildx imagetools inspect "radixark/miles:pr-${PR_NUMBER}" \
+              --format '{{ json .Image }}' 2>/dev/null \
+              | python3 docker/image_inputs.py --read-label || true)
+          else
+            # A registry outage must not become another build request after publication.
+            PUBLISHED=$(python3 docker/image_inputs.py --published "radixark/miles:pr-${PR_NUMBER}")
+          fi
 
           if [ -z "$PUBLISHED" ]; then
             echo "No usable pr-${PR_NUMBER} image; building one."
@@ -141,15 +142,43 @@ jobs:
   docker-build:
     needs: [docker-decide]
     if: always() && !cancelled() && github.event.action != 'closed'
-    runs-on: ${{ fromJSON(needs.docker-decide.outputs.rebuild == 'true' && '["docker-build"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name == github.repository && '["docker-build"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 180
     outputs:
       built: ${{ steps.build.outputs.built || 'false' }}
       # Reusing an image the previous run published is as good as building one now.
       tag_available: ${{ needs.docker-decide.outputs.needs_image == 'true' && (steps.build.outputs.built == 'true' || needs.docker-decide.outputs.rebuild != 'true') }}
     env:
-      BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' }}
+      BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+      REQUEST_BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
+      - name: Request a trusted fork image build
+        if: env.REQUEST_BUILD == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUTS_HASH: ${{ needs.docker-decide.outputs.current }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/fork-ci-image-request"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          request = dict(pr=int(os.environ['PR_NUMBER']), merge_sha=os.environ['GITHUB_SHA'],
+                         inputs_hash=os.environ['INPUTS_HASH'], run_id=int(os.environ['GITHUB_RUN_ID']),
+                         run_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']))
+          (Path(os.environ['RUNNER_TEMP']) / 'fork-ci-image-request/request.json').write_text(json.dumps(request))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: env.REQUEST_BUILD == 'true'
+        with:
+          name: fork-ci-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fork-ci-image-request/request.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: Wait for trusted image publication
+        if: env.REQUEST_BUILD == 'true'
+        run: |
+          echo "::error::A fork image build was requested. Build Fork CI Image will publish it and rerun this workflow."
+          exit 1
       - name: Checkout repository
         if: env.BUILD == 'true'
         uses: actions/checkout@v4

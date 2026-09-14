@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,8 +33,8 @@ def test_compute_is_deterministic():
 def test_compute_tracks_every_declared_input(tmp_path, monkeypatch):
     """A file matching INPUT_GLOBS must move the hash, or rebuilds get skipped wrongly."""
     baseline = image_inputs.compute()
-    monkeypatch.setattr(image_inputs, "_paths_at", lambda rev: ["requirements.txt"])
-    monkeypatch.setattr(image_inputs, "_content_at", lambda path, rev: b"changed")
+    monkeypatch.setattr(image_inputs, "_paths_at", lambda rev, root: ["requirements.txt"])
+    monkeypatch.setattr(image_inputs, "_content_at", lambda path, rev, root: b"changed")
     assert image_inputs.compute() != baseline
 
 
@@ -58,3 +59,29 @@ def test_compute_tracks_every_declared_input(tmp_path, monkeypatch):
 )
 def test_read_label(manifest, expected):
     assert image_inputs.read_label(manifest) == expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "429 Too Many Requests",
+        "401 Unauthorized",
+        "context deadline exceeded",
+        "connection refused",
+        "proxy.example: not found",
+    ],
+)
+def test_registry_errors_do_not_request_a_rebuild(monkeypatch, error):
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", error))
+    with pytest.raises(RuntimeError, match="Image inspection failed"):
+        image_inputs.inspect_published("radixark/miles:pr-3192")
+
+
+def test_only_the_requested_missing_tag_is_rebuildable(monkeypatch):
+    image = "radixark/miles:pr-3192"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", f"ERROR: {image}: not found\n"),
+    )
+    assert image_inputs.inspect_published(image) == ""
