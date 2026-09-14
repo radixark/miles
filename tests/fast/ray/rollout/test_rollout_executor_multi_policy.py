@@ -65,13 +65,12 @@ def _make_executor() -> RolloutExecutor:
 def _record_generate_inputs(executor: RolloutExecutor, monkeypatch) -> list[RolloutFnTrainInput]:
     received: list[RolloutFnTrainInput] = []
     executor.use_legacy_rollout_v1 = False
-    executor.generate_rollout = object()
 
-    def _call_rollout_function(rollout_function, rollout_input: RolloutFnTrainInput):
+    def _generate_rollout(rollout_input: RolloutFnTrainInput):
         received.append(rollout_input)
         return SimpleNamespace(samples=[], metrics=None)
 
-    monkeypatch.setattr(rollout_executor_module, "call_rollout_function", _call_rollout_function)
+    executor.generate_rollout = _generate_rollout
     monkeypatch.setattr(rollout_executor_module, "assert_samples_weight_version_sane", lambda *a, **kw: None)
     return received
 
