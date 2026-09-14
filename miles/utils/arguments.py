@@ -1500,6 +1500,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="KL penalty coefficient for the loss function. This is added to the final PPO loss.",
             )
             parser.add_argument(
+                "--kl-ctrl",
+                type=str,
+                choices=["fixed", "adaptive"],
+                default="fixed",
+                help="Controller for --kl-loss-coef. Adaptive updates after each optimizer step; requires --use-kl-loss.",
+            )
+            parser.add_argument(
+                "--kl-target", type=float, default=0.1, help="Target KL for the adaptive loss KL controller."
+            )
+            parser.add_argument(
+                "--kl-horizon",
+                type=float,
+                default=10000.0,
+                help="Adaptation horizon in optimizer steps for the adaptive loss KL controller.",
+            )
+            parser.add_argument(
+                "--kl-ctrl-steps",
+                type=int,
+                default=1,
+                help="Number of optimizer steps represented by each adaptive loss KL controller update.",
+            )
+            parser.add_argument(
                 "--use-unbiased-kl",
                 action="store_true",
                 default=False,
@@ -2925,6 +2947,10 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    if getattr(args, "kl_ctrl", "fixed") == "adaptive":
+        assert getattr(args, "use_kl_loss", False), "--kl-ctrl adaptive requires --use-kl-loss"
+        assert args.kl_loss_coef > 0, "--kl-ctrl adaptive needs a positive --kl-loss-coef to scale; 0 stays 0"
 
     validate_dashboard_args(args)
 
