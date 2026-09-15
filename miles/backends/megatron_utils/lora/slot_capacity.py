@@ -10,6 +10,12 @@ import logging
 from argparse import Namespace
 from dataclasses import dataclass
 
+from miles.backends.megatron_utils.lora.max_capacity_for_once_fb import (
+    expert_groups_per_slot,
+    grouped_mm_max_groups,
+    max_capacity_for_once_fb,
+)
+
 logger = logging.getLogger(__name__)
 
 AUTO_SLOT_CAPACITY = -1  # --multi-lora-n-adapters auto
@@ -32,6 +38,8 @@ class RankProbe:
     act_peak: int  # transient peak of one max-size fb; shared across slots (single issue)
     adapter_local_params: int  # this rank's shard of one max-rank adapter
     adapter_full_params: int  # the unsharded adapter, for engine-side copies
+    expert_groups_per_slot: int = 0
+    grouped_mm_max_groups: int | None = None
 
     @property
     def slot_bytes(self) -> int:
@@ -65,7 +73,14 @@ def memory_snapshot(args: Namespace, model, phase: str) -> dict:
     free, _ = torch.cuda.mem_get_info()
     act_peak = torch.cuda.max_memory_allocated() - torch.cuda.memory_allocated()
     local, full = _adapter_param_counts(args, model)
-    return {"free": free, "act_peak": act_peak, "adapter_local_params": local, "adapter_full_params": full}
+    return {
+        "free": free,
+        "act_peak": act_peak,
+        "adapter_local_params": local,
+        "adapter_full_params": full,
+        "expert_groups_per_slot": expert_groups_per_slot(model),
+        "grouped_mm_max_groups": grouped_mm_max_groups(),
+    }
 
 
 def _adapter_param_counts(args: Namespace, model) -> tuple[int, int]:
@@ -108,6 +123,8 @@ async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankPro
             act_peak=a["act_peak"],
             adapter_local_params=a["adapter_local_params"],
             adapter_full_params=a["adapter_full_params"],
+            expert_groups_per_slot=a["expert_groups_per_slot"],
+            grouped_mm_max_groups=a["grouped_mm_max_groups"],
         )
         for b, a in zip(before, after, strict=True)
     ]
@@ -140,16 +157,20 @@ def resolve_slot_capacity(args: Namespace, probes: list[RankProbe], keep_k: int)
 
     n = n_gpu if n_host is None else min(n_gpu, n_host)
     worst = min(probes, key=lambda probe: probe.capacity(margin))
+    binding = "trainer GPU memory" if n_host is None or n_gpu <= n_host else "engine host RAM (keep-K copies)"
+    once_fb = max_capacity_for_once_fb(probes)
+    if once_fb is not None and once_fb[0] < n:
+        n, binding = once_fb
     assert n >= 1, (
         f"no room for one rank-{args.lora_rank} adapter slot: a slot needs "
         f"{worst.slot_bytes >> 20} MiB, free after the model and a max-size batch is "
         f"{(worst.free_before - worst.act_peak - margin) >> 20} MiB. "
         "Lower --lora-rank or --max-tokens-per-gpu."
     )
-    binding = "trainer GPU memory" if n_host is None or n_gpu <= n_host else "engine host RAM (keep-K copies)"
     logger.info(
         f"multi-LoRA capacity: {n} slots, bound by {binding} "
         f"(gpu={n_gpu}, host={n_host if n_host is not None else 'unchecked'}, "
+        f"once_fb={once_fb[0] if once_fb else 'unchecked'}, "
         f"slot={worst.slot_bytes >> 20}MiB, act_peak={worst.act_peak >> 20}MiB, "
         f"adapter={per_version_bytes >> 20}MiB/version)"
     )

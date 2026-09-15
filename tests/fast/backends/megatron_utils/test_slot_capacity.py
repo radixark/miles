@@ -25,13 +25,17 @@ def test_bytes_per_train_param_follows_the_precision_flags(bf16, fp16, accum_fp3
     assert bytes_per_train_param(args) == expected
 
 
-def _probe(free_before=100 * GIB, slot=2 * GIB, act_peak=10 * GIB, full_params=GIB) -> RankProbe:
+def _probe(
+    free_before=100 * GIB, slot=2 * GIB, act_peak=10 * GIB, full_params=GIB, groups=0, max_groups=None
+) -> RankProbe:
     return RankProbe(
         free_before=free_before,
         free_after=free_before - slot,
         act_peak=act_peak,
         adapter_local_params=full_params // 4,
         adapter_full_params=full_params,
+        expert_groups_per_slot=groups,
+        grouped_mm_max_groups=max_groups,
     )
 
 
@@ -50,6 +54,11 @@ def test_host_budget_binds_when_smaller():
     # gpu allows (100-10-2)/2 = 44; host allows 12GiB / (2 * 2GiB/version) = 3
     args = _args(engine_host_lora_budget_bytes=12 * GIB)
     assert resolve_slot_capacity(args, [_probe()], keep_k=2) == 3
+
+
+def test_the_measured_grouped_mm_limit_binds_on_moe():
+    # gpu allows 44; 128 local experts per slot under a measured 1023-group limit allow 1023 // 128 = 7
+    assert resolve_slot_capacity(_args(), [_probe(groups=128, max_groups=1023)], keep_k=1) == 7
 
 
 def test_no_room_for_one_slot_is_a_launch_error():
