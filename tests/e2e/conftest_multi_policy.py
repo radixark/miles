@@ -48,8 +48,10 @@ def execute(
 
     launch_train(build_train_args(args, wandb_args=wandb_args, megatron_config=megatron_config), args)
 
-    assert_ranks_trained_with_policy_args(events_dir, megatron_config=megatron_config)
-    assert_every_policy_learned(events_dir, bounds=train_reward_bounds or TRAIN_REWARD_BOUNDS)
+    assert_ranks_trained_with_policy_args(
+        events_dir, megatron_config=megatron_config, expected_num_ranks=args.actor_num_gpus_per_policy
+    )
+    assert_every_policy_reported_reward_in_bounds(events_dir, bounds=train_reward_bounds or TRAIN_REWARD_BOUNDS)
     assert_policies_reported_eval_points(
         events_dir,
         model_ids=[trainer["model_id"] for trainer in megatron_config["trainers"]],
@@ -57,7 +59,7 @@ def execute(
     )
 
 
-def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: dict) -> None:
+def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: dict, expected_num_ranks: int) -> None:
     reports_by_model_id: dict[str, list[EnvReportEvent]] = {}
     for event in read_events(events_dir):
         if isinstance(event, EnvReportEvent) and isinstance(event.source, TrainProcessIdentity):
@@ -68,6 +70,22 @@ def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: 
         f"the env reports under {events_dir} come from trainer ranks of {sorted(reports_by_model_id)}, but this "
         f"run trains {expected_model_ids}; a policy whose ranks reported nothing was never actually trained"
     )
+
+    ranks_by_model_id: dict[str, list[tuple[int, int]]] = {
+        model_id: sorted({(event.source.cell_index, event.source.rank_within_cell) for event in reports})
+        for model_id, reports in reports_by_model_id.items()
+    }
+    every_rank = sorted({rank for ranks in ranks_by_model_id.values() for rank in ranks})
+    for model_id, ranks in ranks_by_model_id.items():
+        assert len(ranks) == expected_num_ranks, (
+            f"policy {model_id!r} is reported from ranks {ranks}, while this run trains each policy on "
+            f"{expected_num_ranks} rank(s); a rank that reported nothing leaves the arguments it was built with "
+            f"unverified"
+        )
+        assert ranks == every_rank, (
+            f"policy {model_id!r} is reported from ranks {ranks}, while this run's trainer ranks are {every_rank}; "
+            f"a rank that reported nothing leaves the arguments it was built with unverified"
+        )
 
     for trainer in megatron_config["trainers"]:
         model_id = trainer["model_id"]
@@ -90,7 +108,7 @@ def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: 
             )
 
 
-def assert_every_policy_learned(events_dir: Path, *, bounds: dict[str, TrainRewardBounds]) -> None:
+def assert_every_policy_reported_reward_in_bounds(events_dir: Path, *, bounds: dict[str, TrainRewardBounds]) -> None:
     for model_id, model_bounds in bounds.items():
         rewards = _read_train_reward_series(events_dir, model_id=model_id)
         assert rewards, (
