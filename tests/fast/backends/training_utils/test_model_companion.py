@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -160,3 +162,25 @@ class TestModelCompanion:
 
         with pytest.raises(AssertionError, match="chunks diverged"):
             ModelCompanionSampleConsumptionUtils.snapshot(chunks, is_skipped=False)
+
+
+class TestFinetuneReset:
+    def test_finetune_clears_consumption_history(self) -> None:
+        """A new finetune task starts a fresh sample identity space."""
+        companion = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        companion.record_sample_consumptions([_identity(7, 0, 1)])
+        companion.record_sample_consumptions([_identity(8, 0, 1)], is_skipped=True)
+
+        ModelCompanionSampleConsumptionUtils.clear_for_finetune([companion], args=SimpleNamespace(finetune=True))
+
+        assert companion.snapshot_sample_consumptions(is_skipped=False) == {}
+        assert companion.snapshot_sample_consumptions(is_skipped=True) == {}
+
+    def test_a_plain_resume_keeps_consumption_history(self) -> None:
+        """Ordinary resume must not lose the counts that make repeated training detectable."""
+        companion = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        companion.record_sample_consumptions([_identity(7, 0, 1)])
+
+        ModelCompanionSampleConsumptionUtils.clear_for_finetune([companion], args=SimpleNamespace(finetune=False))
+
+        assert companion.snapshot_sample_consumptions(is_skipped=False) == {_identity(7, 0, 1): 1}
