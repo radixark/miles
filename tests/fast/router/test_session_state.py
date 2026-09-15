@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.types import SessionRecord
@@ -17,7 +18,7 @@ from miles.rollout.session.v2.session_state import (
     SessionStateV2,
     attach_point_for_request,
     commit_generation,
-    prepare_pretokenized,
+    prepare_token_ids_and_request_args,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplate, TITOTokenizer
 
@@ -104,9 +105,15 @@ def _commit(
 
 
 def _prepare(state, request_messages, *, tito_tokenizer, message_matcher=None) -> list[int]:
-    """Attach, then render under the attach node, as the core does."""
-    attach = attach_point_for_request(state, request_messages, message_matcher=message_matcher)
-    return prepare_pretokenized(attach.node, request_messages, template_args=None, tito_tokenizer=tito_tokenizer)
+    """Attach + request args + render for a messages-only request, as the core does; returns ``input_ids``."""
+    prepared, _parent = prepare_token_ids_and_request_args(
+        state,
+        {"messages": request_messages},
+        config=make_session_server_config(),
+        tito_tokenizer=tito_tokenizer,
+        message_matcher=message_matcher,
+    )
+    return prepared.body["input_ids"]
 
 
 def _path(state):
@@ -210,7 +217,7 @@ RETRY_SYS_MSG = {"role": "system", "content": "Please try using the tools to ans
 
 
 class TestSingleUserTurnPretokenized:
-    """Test attaching + prepare_pretokenized and commit_generation across turns."""
+    """Test prepare_token_ids_and_request_args and commit_generation across turns."""
 
     def test_first_turn_renders_from_scratch(self, registry: SessionRegistryV2):
         """First turn has no prior token_ids, so prepare renders from scratch."""
@@ -560,9 +567,7 @@ class TestRollback:
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool]
         attach = self._dispatch_and_apply(state, rollback_msgs)
         assert attach.node is state.tree.nodes[0]
-        result = prepare_pretokenized(
-            attach.node, rollback_msgs, template_args=None, tito_tokenizer=registry.tito_tokenizer
-        )
+        result = _prepare(session, rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
         # The retry attaches under the first generation; the abandoned node stays in the tree
@@ -656,9 +661,7 @@ class TestRollback:
         # Agent retries with only [sys, user, asst1, sys_retry] (4 messages)
         retry_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, RETRY_SYS_MSG]
         attach = self._dispatch_and_apply(state, retry_msgs)
-        result = prepare_pretokenized(
-            attach.node, retry_msgs, template_args=None, tito_tokenizer=registry_with_system.tito_tokenizer
-        )
+        result = _prepare(session, retry_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
         assert isinstance(result, list)
 
         assert len(attach.node.path_nodes()) == 1
@@ -688,9 +691,7 @@ class TestRollback:
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, new_tool]
         attach = self._dispatch_and_apply(state, rollback_msgs)
         assert attach.node is state.tree.nodes[1]
-        result = prepare_pretokenized(
-            attach.node, rollback_msgs, template_args=None, tito_tokenizer=registry.tito_tokenizer
-        )
+        result = _prepare(session, rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
         assert len(attach.node.path_nodes()) == 2

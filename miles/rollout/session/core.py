@@ -19,7 +19,7 @@ from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.request_args import parse_chat_request, prepare_chat_request
+from miles.rollout.session.request_args import parse_chat_request
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import (
     compute_samples_from_openai_records,
@@ -323,23 +323,20 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            prepared = prepare_chat_request(
-                parse_chat_request(body), self.registry.tito_tokenizer, config=self.config, turn_args=None
-            )
-            request_body, client_stream = prepared.body, prepared.client_stream
-            tito_tokenizer = self.registry.tito_tokenizer
-
-            request_messages = request_body.get("messages", [])
-            prompt_token_ids = session.prepare_pretokenized(
-                request_messages,
-                template_args=prepared.template_args,
-                tito_tokenizer=tito_tokenizer,
+            client_args = parse_chat_request(body)
+            prepared = session.prepare_token_ids_and_request_args(
+                client_args,
+                config=self.config,
+                tito_tokenizer=self.registry.tito_tokenizer,
                 message_matcher=self.registry.message_matcher,
             )
-            request_body["input_ids"] = prompt_token_ids
+            request_body, tito_tokenizer = prepared.body, self.registry.tito_tokenizer
+            client_stream = prepared.client_stream
+            request_messages = request_body.get("messages", [])
+            prompt_token_ids = request_body["input_ids"]
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
-            # prepare_pretokenized applied any retry rollback, so token_ids is
+            # prepare_token_ids_and_request_args applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
             self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
 
