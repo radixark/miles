@@ -113,6 +113,8 @@ def build_train_args(
         "--rollout-temperature 1 "
         "--global-batch-size 256 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
+        "--reward-key reward_value "
+        "--log-reward-category outcome "
         # retract (default) can deadlock flush_cache in fully_async under load
         "--pause-generation-mode in_place "
     )
