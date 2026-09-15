@@ -17,6 +17,8 @@ from miles.utils.workers.worker_spec import (
     WorkerLaunchContext,
 )
 
+POOL_CATEGORY_TRAINER_ENGINE = "trainer_engine"
+
 TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 TRAINER_METHOD_CONCURRENCY_GROUPS = {
     "get_heartbeat_status": "heartbeat_status",
@@ -164,6 +166,7 @@ def _compute_spec_trainer(
 
     return ServeWorkerSpec(
         name=compute_trainer_pool_id(role),
+        category=POOL_CATEGORY_TRAINER_ENGINE,
         port_infos=[PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True)],
         env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales),
         scheduling=SchedulingSpec(
