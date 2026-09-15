@@ -1324,7 +1324,9 @@ class TestGetWorkerInfos:
         assert [info.generation for info in infos] == [1, 1]
         assert [info.gpu_ids for info in infos] == [[4, 5], [6, 7]]
         assert [info.self_addrs for info in infos] == manager.get_addrs()["engine"][2:]
-        assert [manager.get_actor_handle(info.name) for info in infos] == fake_ray_cluster.handles[2:]
+        assert [
+            manager.get_actor_handle(info.name, expected_generation=info.generation) for info in infos
+        ] == fake_ray_cluster.handles[2:]
 
     async def test_a_stopped_cell_reports_no_workers_instead_of_raising(self, fake_ray_cluster: FakeRayCluster):
         """A cell stopped between snapshot and round-trip must report an empty worker list, not crash."""
@@ -1334,6 +1336,22 @@ class TestGetWorkerInfos:
         infos = manager.get_worker_infos("engine-0")
 
         assert infos == []
+
+
+class TestGetActorHandle:
+    async def test_a_cell_restarted_after_its_info_was_read_refuses_the_new_generation_handle(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A stale worker description must not resolve to the replacement generation's actor."""
+        manager = await _launch([_make_spec("engine")])
+        cell_id = next(iter(manager.get_cell_infos(pool_ids=["engine"])))
+        worker_info = manager.get_worker_infos(cell_id)[0]
+
+        await manager.stop_cells([cell_id])
+        await manager.start_cells([cell_id])
+
+        with pytest.raises(AssertionError, match="is now generation 2, not the 1 it was described as"):
+            manager.get_actor_handle(worker_info.name, expected_generation=worker_info.generation)
 
 
 class TestGetWorkerInfosErrors:
