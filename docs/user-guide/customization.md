@@ -185,7 +185,10 @@ def buffer_filter(
 ### `--rollout-sample-filter-path`
 
 Per-sample, in-place. Set `s.remove_sample = True` to exclude a sample from the loss
-(advantage normalization still uses it).
+(advantage normalization still uses it). For the common case of dropping responses that hit
+`--rollout-max-response-len` or `--rollout-max-context-len`, pass `--mask-truncated-completions`
+instead of writing a filter; it runs before the rollout metrics and debug dump, so those show the
+masked samples as removed.
 
 The framework passes `data: list[list[Sample]]` — a list of
 `n_samples_per_prompt`-size groups — so iterate the outer list once to reach `Sample`
