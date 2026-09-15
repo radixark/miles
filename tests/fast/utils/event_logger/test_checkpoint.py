@@ -7,6 +7,7 @@ import pytest
 
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
+from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 
 
@@ -27,6 +28,11 @@ def _args(
     )
 
 
+def _snapshot(args: Namespace, *, ckpt: Path, iteration: int) -> None:
+    directory = compute_rollout_checkpoint_dir(ckpt, rollout_id=iteration) / event_logger_checkpoint.SNAPSHOT_DIRNAME
+    event_logger_checkpoint.snapshot(args, directory=directory)
+
+
 def _write_tracker(ckpt: Path, content: str) -> None:
     ckpt.mkdir(parents=True, exist_ok=True)
     (ckpt / "latest_checkpointed_iteration.txt").write_text(content)
@@ -39,7 +45,7 @@ class TestSnapshotRestoreRoundtrip:
         events = tmp_path / "events"
         events.mkdir()
         (events / "main.jsonl").write_text("committed\n")
-        event_logger_checkpoint.snapshot(_args(event_dir=events, save=ckpt), iteration=3)
+        _snapshot(_args(event_dir=events, save=ckpt), ckpt=ckpt, iteration=3)
 
         # Events written after the save (would be re-executed by the resumed run).
         (events / "main.jsonl").write_text("committed\nrewound-future\n")
@@ -57,7 +63,7 @@ class TestSnapshotRestoreRoundtrip:
         events.mkdir()
         (events / "main.jsonl").write_text("committed\n")
         config = encode_megatron_config("policy")
-        event_logger_checkpoint.snapshot(_args(event_dir=events, save=ckpt, megatron_config=config), iteration=3)
+        _snapshot(_args(event_dir=events, save=ckpt, megatron_config=config), ckpt=ckpt, iteration=3)
 
         (events / "main.jsonl").write_text("committed\nrewound-future\n")
         _write_tracker(ckpt / "trainers" / "policy-actor", "3")
@@ -67,15 +73,15 @@ class TestSnapshotRestoreRoundtrip:
 
     def test_snapshot_overwrites_previous_snapshot_of_same_iteration(self, tmp_path: Path) -> None:
         """Re-saving the same iteration replaces its snapshot."""
-        ckpt = tmp_path / "ckpt"
+        directory = tmp_path / "published" / "debug_events"
         events = tmp_path / "events"
         events.mkdir()
         (events / "main.jsonl").write_text("v1\n")
-        event_logger_checkpoint.snapshot(_args(event_dir=events, save=ckpt), iteration=1)
+        event_logger_checkpoint.snapshot(_args(event_dir=events), directory=directory)
         (events / "main.jsonl").write_text("v2\n")
-        event_logger_checkpoint.snapshot(_args(event_dir=events, save=ckpt), iteration=1)
+        event_logger_checkpoint.snapshot(_args(event_dir=events), directory=directory)
 
-        assert (ckpt / "iter_0000001" / "debug_events" / "main.jsonl").read_text() == "v2\n"
+        assert (directory / "main.jsonl").read_text() == "v2\n"
 
 
 class TestNoOpCases:
@@ -107,7 +113,7 @@ class TestNoOpCases:
         events = tmp_path / "events"
         events.mkdir()
         (events / "main.jsonl").write_text("fresh\n")
-        event_logger_checkpoint.snapshot(_args(event_dir=events, save=ref), iteration=7)
+        _snapshot(_args(event_dir=events, save=ref), ckpt=ref, iteration=7)
         _write_tracker(ref, "7")
 
         event_logger_checkpoint.restore(_args(event_dir=events, load=ref, requested_load=tmp_path / "run"))
@@ -133,7 +139,7 @@ class TestNoOpCases:
         events = tmp_path / "events"
         events.mkdir()
         (events / "main.jsonl").write_text("keep\n")
-        (ckpt / "iter_0000003" / "debug_events").mkdir(parents=True)
+        (ckpt / "rollout" / "3" / "debug_events").mkdir(parents=True)
 
         event_logger_checkpoint.restore(
             _args(event_dir=events, load=ckpt, megatron_config=encode_megatron_config("policy"))
@@ -141,15 +147,13 @@ class TestNoOpCases:
 
         assert (events / "main.jsonl").read_text() == "keep\n"
 
-    def test_snapshot_skips_when_events_disabled_or_no_save(self, tmp_path: Path) -> None:
-        """Disabled events or no save dir means no snapshot."""
-        events = tmp_path / "events"
-        events.mkdir()
+    def test_snapshot_skips_when_events_are_disabled(self, tmp_path: Path) -> None:
+        """Without --save-debug-event-data there is no log to copy."""
+        directory = tmp_path / "published" / "debug_events"
 
-        event_logger_checkpoint.snapshot(_args(event_dir=None, save=tmp_path / "ckpt"), iteration=1)
-        event_logger_checkpoint.snapshot(_args(event_dir=events), iteration=1)
+        event_logger_checkpoint.snapshot(_args(event_dir=None), directory=directory)
 
-        assert not (tmp_path / "ckpt").exists()
+        assert not directory.exists()
 
 
 class TestDiscardEventLog:
