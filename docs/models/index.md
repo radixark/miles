@@ -23,6 +23,9 @@ Each model name links to its recipe page.
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
 | **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
 
+Recipes for MI350X / MI355X live under `scripts/amd/`; [AMD ROCm](/getting-started/amd)
+lists them. The CUDA launchers under `scripts/` do not accept `MI3xx` in `--hardware`.
+
 ## Diffusion
 
 | Family | Models |

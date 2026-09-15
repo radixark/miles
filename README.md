@@ -81,9 +81,10 @@ the largest models all live on Megatron-LM. See
   release day. Beyond day 0, nearly every frontier model runs on Miles, including Kimi-K2.6
   and Qwen3.5. See [Models](https://miles.radixark.com/docs/models).
 - **Extensive hardware support.** NVIDIA GB300, GB200, B300, B200, H200, H100, and A100, and
-  AMD MI300X, MI325, MI350, and MI355X via ROCm. See
+  AMD MI355X, MI350X, MI325X, and MI300X. See
   [Installation](https://miles.radixark.com/docs/getting-started/installation#hardware-requirements)
-  for per-GPU status and the container image for each.
+  for per-GPU status and [AMD ROCm](https://miles.radixark.com/docs/getting-started/amd) for
+  the ROCm images.
 - **Wide recipe support.** GRPO, GSPO, PPO, and REINFORCE++ for RL, plus SFT and
   [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation).
 - **Agentic environments.** Train coding and computer-use agents through connectors for

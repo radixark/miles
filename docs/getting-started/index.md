@@ -4,7 +4,7 @@ description: Install Miles and run your first RL training job — the two pages 
 ---
 Two pages take you from a fresh machine to a running RL training job:
 
-- **[Installation](/getting-started/installation)** — Docker (recommended), pip, or building from source on NVIDIA / AMD.
+- **[Installation](/getting-started/installation)** — Docker (recommended), pip, or building from source; AMD GPUs start at [AMD ROCm](/getting-started/amd).
 - **[Quick Start](/getting-started/quick-start)** — `docker pull` to a GRPO run on Qwen3-4B in under an hour, on a single 8-GPU node.
 
 After the loop is running, [Models](/models/index) covers the family-specific recipes and the [User Guide](/user-guide/index) walks through concepts, data, monitoring, and customization.

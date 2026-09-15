@@ -51,8 +51,8 @@ the largest models all live on Megatron-LM. See
 - **Day-0 model support.** DeepSeek-V4, Kimi-K3, GLM-5.2, Inkling and Nemotron landed on
   release day. Beyond day 0, nearly every frontier model runs on Miles, including Kimi-K2.6
   and Qwen3.5. See [Supported models](#supported-models).
-- **Extensive hardware support.** NVIDIA from H100 through GB300, and AMD MI300X through
-  MI355X via ROCm. See [Supported hardware](#supported-hardware).
+- **Extensive hardware support.** NVIDIA from H100 through GB300, and AMD MI355X, MI350X,
+  MI325X, and MI300X. See [Supported hardware](#supported-hardware).
 - **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
   [on-policy distillation](/advanced/on-policy-distillation).
 - **Agentic environments.** Train coding and computer-use agents through connectors for
@@ -94,10 +94,10 @@ diffusion recipes and validation details.
 ## Supported hardware
 
 - **NVIDIA**: GB300, GB200, B300, B200, H200, H100, A100.
-- **AMD**: MI300X, MI325, MI350, MI355X (via ROCm).
+- **AMD**: MI355X, MI350X, MI325X, MI300X.
 
 See [Installation](/getting-started/installation#hardware-requirements) for per-GPU status
-and the container images for each.
+and [AMD ROCm](/getting-started/amd) for the ROCm images.
 
 ## News
 
@@ -115,11 +115,12 @@ and the container images for each.
 ## Start here
 
 1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
-2. **[Quick Start](/getting-started/quick-start)** — a training job up and running in under an hour.
-3. **[Core concepts](/user-guide/concepts)** — the four objects in every Miles job.
-4. **[Launch script](/user-guide/launch-script)** — what `python scripts/run_*.py` does
+2. **[AMD ROCm](/getting-started/amd)** — the ROCm images and the `scripts/amd/` launchers.
+3. **[Quick Start](/getting-started/quick-start)** — a training job up and running in under an hour.
+4. **[Core concepts](/user-guide/concepts)** — the four objects in every Miles job.
+5. **[Launch script](/user-guide/launch-script)** — what `python scripts/run_*.py` does
    and how to override a recipe.
-5. **[Training backends](/user-guide/training-backend)** — Megatron-LM and FSDP: parallelism,
+6. **[Training backends](/user-guide/training-backend)** — Megatron-LM and FSDP: parallelism,
    checkpoints, and hooks.
 
 ## Acknowledgment

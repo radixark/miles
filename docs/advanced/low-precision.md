@@ -17,8 +17,8 @@ up a new model architecture.
 
 | Format | Block layout | Hardware | Models tested | Maturity |
 |---|---|---|---|---|
-| **BF16** | — | All NVIDIA + AMD MI300X / MI325 / MI350 / MI355X | All | Baseline |
-| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+) | Qwen3-4B, Qwen3-30B-A3B | Generally available |
+| **BF16** | — | All NVIDIA + AMD MI300X / MI325X / MI350X / MI355X | All | Baseline |
+| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+), AMD MI350X / MI355X | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V4-Flash | Generally available |
 | **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B, DeepSeek-V3.2 | Beta |
 | **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
 
@@ -30,7 +30,7 @@ forward precision. ✅ = supported; ✗ = not supported.
 | Rollout \ Train | BF16 | FP8 block-wise | MXFP8 | NVFP4 |
 |---|---|---|---|---|
 | **BF16**           | ✅ baseline | ✗ | ✗ | ✗ |
-| **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell | ✗ | ✗ |
+| **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell + MI350X / MI355X | ✗ | ✗ |
 | **MXFP8**          | ✅ | ✗ | ✅ Blackwell | ✗ |
 | **NVFP4**          | ✗ | ✗ | ✗ | ✅ Blackwell |
 
@@ -312,13 +312,19 @@ whose contraction axis does not match a one-dimensional scaling layout.
 | NVIDIA H100 / H200 | ✅ | ✅ | ✗ | ✗ |
 | NVIDIA B200 / B300 / GB200 / GB300 | ✅ | ✅ | ✅ | ✅ |
 | NVIDIA A100 | ✅ | ✗ | ✗ | ✗ |
-| AMD MI300X / MI325 / MI350 / MI355X | ✅ | ✗ | ✗ | ✗ |
+| AMD MI350X / MI355X | ✅ | ✅ | ✗ | ✗ |
+| AMD MI300X / MI325X | ✅ | ✗ | ✗ | ✗ |
+
+On MI350X / MI355X, FP8 block-wise is validated through the `scripts/amd/` DeepSeek-V4-Flash
+and Qwen3-30B-A3B recipes; the two ROCm CI tests that exercise it
+(`test_deepseek_v4_flash_4layer_ci.py` for training, `test_amd_moriep_fp8_bridge.py` for
+rollout) are registered but disabled.
 
 ## When BF16 is enough
 
 * Dense models below ~30 B.
 * A100 hardware (no FP8 GEMM).
-* AMD hardware today.
+* AMD MI300X / MI325X (no FP8 block-wise path).
 * Bring-up of a new model architecture, where clean BF16 numerics simplify
   debugging.
 
