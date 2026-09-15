@@ -311,10 +311,21 @@ def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str,
 
     Unlike the trainer-side log_passrate (which assumed a flat reward array with
     contiguous groups of n_samples_per_prompt), this groups samples by their
-    group_index field and computes pass@k over complete groups only. This is
-    robust to filtering that may remove individual samples from a group —
-    incomplete groups are excluded from the estimate rather than skewing it
-    or crashing the reshape.
+    group_index field and computes pass@k over complete groups only.
+
+    Each group is collapsed to one row per logical rollout before the
+    completeness check. Session compaction and sub-agents split one rollout into
+    several sibling Samples sharing a rollout ID, so a group can hold more rows
+    than n_samples_per_prompt; counting rows would make every such group look
+    incomplete and drop the metric entirely. Siblings are required to carry the
+    same reward, so keeping any one of them represents the rollout. This is the
+    same logical-rollout unit `_compute_episode_response_length_metrics` and the
+    GRPO reward normalization already use.
+
+    Groups that are still short after collapsing — filtering removed whole
+    rollouts — are excluded rather than skewing the estimate or crashing the
+    reshape in `compute_pass_rate`, which requires exactly group_size rewards
+    per group.
 
     Called on the rollout side (before convert_samples_to_train_data), so
     normally all samples are present and every group is complete.
@@ -323,16 +334,22 @@ def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str,
     if group_size <= 1:
         return {}
 
-    groups = group_by(all_samples, lambda s: s.group_index)
-    completed_groups = [g for g in groups.values() if len(g) == group_size]
-    if len(completed_groups) < len(groups):
+    rollouts_by_group: dict[int | None, dict[tuple, Sample]] = {}
+    for position, sample in enumerate(all_samples):
+        rollouts_by_group.setdefault(sample.group_index, {}).setdefault(
+            _get_rollout_key(sample, position), sample
+        )
+
+    completed_groups = [g for g in rollouts_by_group.values() if len(g) == group_size]
+    if len(completed_groups) < len(rollouts_by_group):
         logger.warning(
-            f"pass@k: excluding {len(groups) - len(completed_groups)}/{len(groups)} incomplete groups (fewer than n_samples_per_prompt={group_size} samples)."
+            f"pass@k: excluding {len(rollouts_by_group) - len(completed_groups)}/{len(rollouts_by_group)} "
+            f"groups that do not hold exactly n_samples_per_prompt={group_size} rollouts."
         )
     if not completed_groups:
         return {}
 
-    flat_rewards = [sample.get_reward_value(args) for group in completed_groups for sample in group]
+    flat_rewards = [sample.get_reward_value(args) for group in completed_groups for sample in group.values()]
 
     return compute_pass_rate(
         flat_rewards=flat_rewards,
