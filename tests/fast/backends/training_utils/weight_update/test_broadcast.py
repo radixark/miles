@@ -1,12 +1,14 @@
 import asyncio
 import threading
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
 
 from miles.backends.training_utils.weight_update.protocols.broadcast import (
+    UpdateWeightFromDistributed,
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
     update_weights_from_distributed,
@@ -110,6 +112,39 @@ class TestConnectRolloutEnginesFromDistributed:
             "group_name": "miles-pp_0",
         }
 
+    def test_missing_gpu_counts_fall_back_to_the_uniform_engine_size(self) -> None:
+        """Callers without discovered counts retain the uniform engine layout."""
+        started = threading.Semaphore(0)
+        release = threading.Event()
+        engines = [_GatedEngine(started, release) for _ in range(3)]
+        group = MagicMock(name="nccl_group")
+
+        def join(**kwargs):
+            for _ in engines:
+                assert started.acquire(timeout=30), "an engine had not been asked before the local join"
+            release.set()
+            return group
+
+        with (
+            patch(f"{_BROADCAST_MODULE}.ray") as ray_mock,
+            patch(f"{_BROADCAST_MODULE}.init_process_group", side_effect=join) as init_process_group,
+        ):
+            ray_mock._private.services.get_node_ip_address.return_value = "10.0.0.1"
+            result = connect_rollout_engines_from_distributed(
+                Namespace(rollout_num_gpus_per_engine=2),
+                "miles-pp_0",
+                engines,
+            )
+
+        assert result is group
+        master_port = engines[0].calls[0][1][1]
+        assert [engine.calls for engine in engines] == [
+            [("init_weights_update_group", ("10.0.0.1", master_port, 1, 7, "miles-pp_0"), {"backend": "nccl"})],
+            [("init_weights_update_group", ("10.0.0.1", master_port, 3, 7, "miles-pp_0"), {"backend": "nccl"})],
+            [("init_weights_update_group", ("10.0.0.1", master_port, 5, 7, "miles-pp_0"), {"backend": "nccl"})],
+        ]
+        assert init_process_group.call_args.kwargs["world_size"] == 7
+
     def test_an_engine_that_refuses_the_group_fails_the_connect(self) -> None:
         """The submitted joins are awaited, so a refusing engine surfaces instead of being dropped."""
         with (
@@ -123,6 +158,41 @@ class TestConnectRolloutEnginesFromDistributed:
                     "miles-pp_0",
                     [_AcceptingEngine(), _AcceptingEngine(), _RefusingEngine()],
                 )
+
+
+class TestUpdateWeightFromDistributedConnect:
+    def test_the_protocol_forwards_discovered_gpu_counts_to_the_group_builder(self) -> None:
+        """The protocol must not replace heterogeneous discovered counts with the uniform fallback."""
+        initial_parallel_state = SimpleNamespace(
+            pp=SimpleNamespace(size=1, rank=0),
+            tp=SimpleNamespace(rank=0),
+            intra_dp_cp=SimpleNamespace(rank=0),
+        )
+        with patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=initial_parallel_state):
+            protocol = UpdateWeightFromDistributed(Namespace())
+
+        engines = [MagicMock(name="prefill"), MagicMock(name="decode")]
+        parallel_state = SimpleNamespace(pp=SimpleNamespace(rank=0))
+        with (
+            patch(f"{_BROADCAST_MODULE}.get_data_replica_rank_and_size", return_value=(0, 1)),
+            patch(f"{_BROADCAST_MODULE}.disconnect_rollout_engines_from_distributed"),
+            patch(f"{_BROADCAST_MODULE}.connect_rollout_engines_from_distributed") as connect,
+        ):
+            protocol.connect(
+                engines,
+                engine_gpu_counts=[2, 4],
+                engine_gpu_offsets=[0, 2],
+                parallel_state=parallel_state,
+                placement=SimpleNamespace(gather_pp=False),
+                selector="all",
+            )
+
+        connect.assert_called_once_with(
+            protocol.args,
+            "miles-pp_0",
+            engines,
+            engine_gpu_counts=[2, 4],
+        )
 
 
 class TestDisconnectRolloutEnginesFromDistributed:
