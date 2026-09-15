@@ -22,3 +22,9 @@ class InstallArgs(ReleaseArgs):
 
 class ExecArgs(ReleaseArgs):
     command: tuple[str, ...]
+
+
+class DiagnosisArgs(FrozenStrictBaseModel):
+    namespace: str
+    output_dir: Path
+    run_dir: Path | None
