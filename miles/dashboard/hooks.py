@@ -378,10 +378,19 @@ def _collect_worker_infos(cells, *, provider: BaseWorkerProvider) -> list[list]:
     return provider.get_worker_infos(cell_ids=[cell.meta.cell_id for cell in cells])
 
 
+async def _no_gpu_uuids(info) -> list[str | None]:
+    return [None] * len(info.gpu_ids)
+
+
 async def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
     flat_infos = [info for worker_infos in worker_infos_per_cell for info in worker_infos]
     probed_uuids = iter(
-        await asyncio.gather(*[info.handle._get_gpu_uuids(gpu_ids=info.gpu_ids) for info in flat_infos])
+        await asyncio.gather(
+            *[
+                info.handle._get_gpu_uuids(gpu_ids=info.gpu_ids) if info.handle is not None else _no_gpu_uuids(info)
+                for info in flat_infos
+            ]
+        )
     )
 
     engines = []
