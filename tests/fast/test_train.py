@@ -86,6 +86,32 @@ class TestEvalOnlyRun:
         assert not [event for event in events if event.startswith(("prepare_rollout", "generate_start"))]
 
 
+class TestEvalBeforeTrain:
+    async def test_fresh_run_evaluates_the_initial_checkpoint_at_step_zero(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=2, eval_interval=1)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_driver.train(args)
+
+        assert events.index("eval:0") < events.index("prepare_rollout:0")
+
+    async def test_resumed_run_evaluates_the_completed_rollout_not_the_next_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """start_rollout_id is the loaded checkpoint's rollout plus one, so dispatching it
+        would ask for a checkpoint that does not exist yet and, in staging mode, export
+        into the directory the first resumed iteration goes on to overwrite."""
+        events: list[str] = []
+        args = _make_args(num_rollout=5, eval_interval=1, start_rollout_id=3)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_driver.train(args)
+
+        assert events.index("eval:2") < events.index("prepare_rollout:3")
+        assert "eval:3" not in events[: events.index("prepare_rollout:3")]
+
+
 class TestWeightEqualityCheck:
     async def test_weight_equality_check_is_routed_to_the_inference_controller(self, monkeypatch: pytest.MonkeyPatch):
         """--check-weight-update-equal must reach the inference controller with every comparison option intact."""

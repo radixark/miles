@@ -100,13 +100,16 @@ async def train(args):
             await save_training_model(critic_model)
         await rollout_executor.save.remote(rollout_id)
 
+    if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
+        await inference_controller.prepare_eval()
+        if args.start_rollout_id == 0:
+            await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
+        else:
+            await eval_dispatcher.dispatch(args.start_rollout_id - 1)
+
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
-            await inference_controller.prepare_eval()
-            await eval_dispatcher.dispatch(rollout_id, hf_dir=args.hf_checkpoint if rollout_id == 0 else None)
-
         await inference_controller.prepare_rollout(rollout_id)
         rollout_data_pack = await rollout_executor.get.remote(rollout_id)
 
