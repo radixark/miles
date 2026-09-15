@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,8 @@ SECTION_OF_CATEGORY = {
 _MOONCAKE_COMPONENT = "mooncake-master"
 _INFRA_KEY = "infra"
 _VALUES_FILE_NAME = "values.yaml"
+_NAMESPACE_VARIABLE = "${NAMESPACE}"
+_PATH_VARIABLE = re.compile(r"\$\{[^}]*\}")
 
 
 class MooncakePlan(FrozenStrictBaseModel):
@@ -86,8 +89,8 @@ class MooncakeInfo:
         if plan is None:
             return train_argv
 
-        kwargs = MooncakeInfo.cluster_init_kwargs(plan, host=host)
-        return ArgvManipulator.set(train_argv, MOONCAKE_INIT_KWARGS_FLAG, json.dumps(kwargs))
+        rendered = json.dumps(MooncakeInfo.cluster_init_kwargs(plan, host=host))
+        return ArgvManipulator.set(train_argv, MOONCAKE_INIT_KWARGS_FLAG, rendered)
 
     @staticmethod
     def cluster_init_kwargs(plan: MooncakePlan, *, host: str) -> dict[str, Any]:
@@ -112,13 +115,24 @@ class InfraInfo:
         return InfraValues.model_validate(_load_helm_values(chart, helm_values_files).get(_INFRA_KEY))
 
     @staticmethod
-    def shared_root(infra: InfraValues) -> str:
+    def shared_root(infra: InfraValues, *, namespace: str) -> str:
         runs_root = infra.paths.runs_root if infra.paths is not None else None
         assert runs_root, (
             "infra.paths.runsRoot is unset, so the launcher has no container path to write a run's directory to; "
             "set it to an absolute path under one of the infra.volumes mounts"
         )
-        return runs_root.rstrip("/")
+        return resolve_helm_yaml_entry(runs_root, namespace).rstrip("/")
+
+
+def resolve_helm_yaml_entry(raw_value: str, namespace: str) -> str:
+    for reference in _PATH_VARIABLE.findall(raw_value):
+        if reference != _NAMESPACE_VARIABLE:
+            raise ValueError(
+                f"{raw_value} names the unknown variable {reference}: {_NAMESPACE_VARIABLE} is the only variable "
+                "a path may name, and an unknown one left in place would give every namespace the same literal "
+                "directory instead of one of its own"
+            )
+    return raw_value.replace(_NAMESPACE_VARIABLE, namespace)
 
 
 def _load_helm_values(chart: str | Path, values_files: list[str] | list[Path]) -> Any:
