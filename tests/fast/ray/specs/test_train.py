@@ -21,6 +21,7 @@ def _make_args(**overrides) -> SimpleNamespace:
         use_critic=False,
         indep_dp=False,
         train_backend="megatron",
+        multi_lora=False,
         use_fault_tolerance=False,
         kl_coef=0,
         use_kl_loss=False,
@@ -175,13 +176,22 @@ class TestConstructorArguments:
         addrs = [spec.ctor_kwargs(_make_context(cell_index=i))["indep_dp_store_addr"] for i in range(2)]
         assert addrs == ["10.0.0.1:1234", "10.0.0.1:1234"]
 
-    def test_the_backend_selects_the_worker_class(self):
-        """A run must not start Megatron workers for an fsdp job."""
-        (megatron_spec,) = specs_trainer(_make_args(train_backend="megatron"))
-        (fsdp_spec,) = specs_trainer(_make_args(train_backend="fsdp"))
+    @pytest.mark.parametrize(
+        "backend,multi_lora,actor_class",
+        [
+            ("megatron", False, "miles.backends.megatron_utils.actor.MegatronTrainRayActor"),
+            ("megatron", True, "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"),
+            ("fsdp", False, "miles.backends.fsdp_utils.actor.FSDPTrainRayActor"),
+        ],
+        ids=["megatron", "multi-lora", "fsdp"],
+    )
+    def test_the_backend_selects_the_worker_class(self, backend, multi_lora, actor_class):
+        actor_spec, critic_spec = specs_trainer(
+            _make_args(train_backend=backend, multi_lora=multi_lora, use_critic=True)
+        )
 
-        assert megatron_spec.worker_class.endswith("MegatronTrainRayActor")
-        assert fsdp_spec.worker_class.endswith("FSDPTrainRayActor")
+        assert actor_spec.worker_class == actor_class
+        assert critic_spec.worker_class == train_specs._TRAINER_ACTOR_CLASSES[backend]
 
 
 class TestConcurrencyGroups:
