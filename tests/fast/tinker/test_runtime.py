@@ -49,10 +49,10 @@ async def test_forward_backward_merges_worker_replicas():
         {"sample_index": 0, "loss": 1.0, "logprobs": torch.tensor([-0.1])},
     ]
 
-    async def fake_run_batch(method, batch_id, train_data):
+    async def fake_call_trainer(method, batch_id, train_data):
         return [{"per_datum": per_datum}, {"per_datum": per_datum}]  # two ranks report the same datums
 
-    backend._run_batch = fake_run_batch
+    backend._call_trainer = fake_call_trainer
     outputs = await backend.forward_backward(1, [(0, _datum([1, 2])), (0, _datum([3, 4]))], "cross_entropy", {})
     assert outputs == [
         {"loss": 1.0, "logprobs": [pytest.approx(-0.1)]},
@@ -141,12 +141,12 @@ async def test_forward_only_runs_the_requested_loss():
     backend = MilesBackend(trainer=None, router_url="http://router")
     captured = {}
 
-    async def fake_run_batch(method, batch_id, train_data):
+    async def fake_call_trainer(method, batch_id, train_data):
         captured["method"] = method
         captured["loss_fn"] = train_data["loss_fn"]
         return [{"per_datum": [{"sample_index": 0, "loss": 3.0, "logprobs": torch.tensor([-0.3])}]}]
 
-    backend._run_batch = fake_run_batch
+    backend._call_trainer = fake_call_trainer
     outputs = await backend.forward_only(1, [(0, _datum([1, 2]))], "importance_sampling", {})
     assert captured == {"method": "forward_only", "loss_fn": "importance_sampling"}
     assert outputs == [{"loss": 3.0, "logprobs": [pytest.approx(-0.3)]}]
@@ -175,7 +175,7 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
     backend = MilesBackend(trainer=None, router_url="http://router", dp_size=2)
     seen = {}
 
-    async def fake_run_batch(method, batch_id, train_data):
+    async def fake_call_trainer(method, batch_id, train_data):
         seen.update(train_data)
         per_datum = [
             {"sample_index": index, "loss": float(index), "logprobs": torch.tensor([-0.1])}
@@ -183,7 +183,7 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
         ]
         return [{"per_datum": per_datum}]
 
-    backend._run_batch = fake_run_batch
+    backend._call_trainer = fake_call_trainer
     outputs = await backend.forward_backward(1, [(0, _datum([1, 2], weights=[1.0]))], "cross_entropy", {})
     assert seen["dynamic_global_batch_size"] == 2, "a singleton batch must be padded to the DP size"
     assert seen["loss_masks"] == [[1], [0]], "the zero mask removes padding from every loss term"
