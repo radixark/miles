@@ -10,7 +10,6 @@ from miles.utils.workers.cell_operations.ray import RayCellOperations
 from .conftest import (
     MockInferenceController,
     MockRemoteCall,
-    MockStopCellController,
     MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
@@ -34,7 +33,7 @@ def _running_status(health: TriState, *, workers_hash: str = _WORKERS_HASH) -> C
     )
 
 
-ACTOR_CELL_ID = "trainer-actor-0"
+ACTOR_CELL_ID = "trainer-engine-actor-0"
 
 
 def _make_actor_handler(
@@ -48,7 +47,7 @@ def _make_actor_handler(
         cell_type="actor",
         operations=RayCellOperations(worker_manager_handle=manager),
         controller=group,
-        pool_ids=["trainer-actor"],
+        pool_ids=["trainer-engine-actor"],
     )
     return handler, group, manager
 
