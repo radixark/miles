@@ -5,6 +5,9 @@ from typing import Annotated
 import typer
 
 ModeOption = Annotated[str, typer.Option(help="Test mode variant")]
+OptionalModeOption = Annotated[
+    str | None, typer.Option(help="Test mode variant; a suite whose scenario fixes its topology takes none")
+]
 SeedOption = Annotated[int, typer.Option(help="Random seed for fault injection")]
 PhaseOption = Annotated[str, typer.Option(help="Phase name (multi-phase tests)")]
 DumpDirOption = Annotated[str | None, typer.Option(help="Dump base directory")]
