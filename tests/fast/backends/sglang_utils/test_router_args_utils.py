@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import socket
 from argparse import Namespace
 
 import pytest
@@ -8,6 +10,7 @@ from sglang_router.launch_router import RouterArgs
 
 from miles.backends.sglang_utils.router_args_utils import (
     compute_sglang_router_args,
+    compute_sglang_router_bind_host,
     parse_router_args_argv,
     router_args_to_argv,
 )
@@ -248,3 +251,33 @@ def _make_non_default_raw_scalar(*, action: argparse.Action) -> object:
         return action.default + 1.0 if isinstance(action.default, float) else 1.0
 
     return "other-sweep-value" if action.default == "sweep-value" else "sweep-value"
+
+
+def _addrinfo_rows(*ips: str) -> list[tuple]:
+    return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 0)) for ip in ips]
+
+
+class TestComputeSglangRouterBindHost:
+    def test_a_bare_ipv6_literal_is_bracketed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The router rejects ``::1:port``; only ``[::1]:port`` parses as a socket address."""
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: pytest.fail("literals are not resolved"))
+
+        assert compute_sglang_router_bind_host("fd00::1") == "[fd00::1]"
+        assert compute_sglang_router_bind_host("[fd00::1]") == "[fd00::1]"
+        assert compute_sglang_router_bind_host("10.0.0.7") == "10.0.0.7"
+
+    def test_repeated_resolver_rows_are_one_candidate(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+        """Resolvers often list one address once per protocol; that is not an ambiguous name."""
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _addrinfo_rows("10.20.30.40", "10.20.30.40"))
+
+        with caplog.at_level(logging.WARNING):
+            assert compute_sglang_router_bind_host("worker-01.cluster.internal") == "10.20.30.40"
+
+        assert not [r for r in caplog.records if "resolves to" in r.message]
+
+    def test_a_name_without_addresses_is_reported_with_a_remedy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An empty answer is as unusable as a failed lookup and must name the host and the override."""
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [])
+
+        with pytest.raises(RuntimeError, match=r"worker-01\.cluster\.internal.*MILES_HOST_IP"):
+            compute_sglang_router_bind_host("worker-01.cluster.internal")
