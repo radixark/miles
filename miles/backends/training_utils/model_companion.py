@@ -64,6 +64,7 @@ class ModelCompanion(torch.nn.Module):
         unexpected_keys: list[str],
         error_msgs: list[str],
     ) -> None:
+        _default_missing_entries_when_load_from_state_dict(self, state_dict, prefix=prefix)
         _resize_when_load_from_state_dict(self, state_dict, "sample_consumptions", prefix=prefix)
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
@@ -157,6 +158,16 @@ class SampleIdentityExtractor:
         gathered: list[list[SampleLineage] | None] = [None] * parallel.effective_dp.size
         dist.all_gather_object(gathered, local, group=parallel.effective_dp.gloo_group)
         return [identity for identities in gathered if identities is not None for identity in identities]
+
+
+def _default_missing_entries_when_load_from_state_dict(
+    module: torch.nn.Module, state_dict: dict[str, torch.Tensor], *, prefix: str
+) -> None:
+    for name, parameter in module.named_parameters(recurse=False):
+        key = f"{prefix}{name}"
+        if key in state_dict:
+            continue
+        state_dict[key] = torch.zeros(tuple(parameter.shape), dtype=parameter.dtype, device=parameter.device)
 
 
 def _resize_when_load_from_state_dict(
