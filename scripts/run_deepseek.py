@@ -4,7 +4,6 @@ This file is in preview, and will be further refined and optimized.
 
 import re
 from dataclasses import dataclass
-from functools import partial
 from typing import Literal
 
 import typer
@@ -93,15 +92,15 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
     )
 
 
-def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
-        path_dst=f"{args.model_local_dir}/{args.model_name}_torch_dist",
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_local_dir}/{args.model_name}",
-    )
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
+    copies = [
+        U.rsync_cmd(
+            f"{args.model_dir}/{args.model_name}_torch_dist",
+            f"{args.model_local_dir}/{args.model_name}_torch_dist",
+        ),
+        U.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
+    ]
+    return {"trainer": " && ".join(copies)}
 
 
 def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
@@ -299,27 +298,37 @@ def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         # TODO may get it from `config`
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**sglang_extra_env_vars},
         megatron_path=args.megatron_path,
         before_ray_job_submit=before_ray_job_submit,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
 @app.command()
 @U.dataclass_cli
-def train(args: ScriptArgs):
+def full_train(args: ScriptArgs) -> None:
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
-    _execute_train(args, before_ray_job_submit=partial(_prepare_ray_dependent, args))
-
-
-def _prepare_ray_dependent(args: ScriptArgs):
     _prepare_megatron_ckpt(args)
-    _prepare_cp(args)
+    _execute_train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare(args: ScriptArgs) -> None:
+    _prepare_download(args)
+    _prepare_bf16_ckpt(args)
+    _prepare_megatron_ckpt(args)
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs) -> None:
+    _execute_train(args)
 
 
 @app.callback()

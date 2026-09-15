@@ -39,7 +39,7 @@ python scripts/run_deepseek_v4.py full-train \
    --num-nodes 32 --num-gpus-per-node 8
 ```
 
-The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
+The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
 
 ### 3.2 Launcher path defaults
 
@@ -47,7 +47,7 @@ The `full-train` subcommand chains `prepare-download → prepare-single → prep
 |---|---|---|
 | `--data-dir` | `/root/datasets` | HF datasets (e.g. dapo-math-17k, …) |
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts |
-| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk (set it when `--model-dir` is on shared/remote storage) |
+| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; when it differs from `--model-dir`, every trainer rsyncs the HF checkpoint and `_torch_dist` here before training starts (set it when `--model-dir` is on shared/remote storage) |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
 Pro uses the same launcher as V4-Flash, so every option above can also be preconfigured via `MILES_SCRIPT_<FIELD_NAME_UPPER>` env vars (precedence: CLI flag > env var > built-in default) — see [V4-Flash §3.2](/models/deepseek/deepseek-v4-flash#32-launcher-path-defaults) for details.
