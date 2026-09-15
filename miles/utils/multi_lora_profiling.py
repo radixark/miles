@@ -1,4 +1,4 @@
-"""Timing for the multi-LoRA gateway: where the trainer's time goes per op (OpProfiler), plus GPU peaks, as tables."""
+"""Per-LoRA-per-step timing of the multi-LoRA gateway: trainer side, engine side, the tenant's view; GPU peaks."""
 
 from __future__ import annotations
 
@@ -17,13 +17,18 @@ from dataclasses import dataclass
 __all__ = [
     "METRICS_LOG_PREFIX",
     "PROFILE_LOG_PREFIX",
+    "REQUESTS_LOG_PREFIX",
     "OpProfiler",
     "Stats",
+    "client_steps",
     "gpu_peaks",
     "head_tail_means",
+    "lora_steps",
     "merge_series",
     "parse_cookbook_rewards",
+    "parse_cookbook_step_times",
     "parse_serve_log",
+    "render_client",
     "render_gpu",
     "render_metrics",
     "render_profile",
@@ -32,8 +37,10 @@ __all__ = [
 
 PROFILE_LOG_PREFIX = "multi-LoRA profile: "
 METRICS_LOG_PREFIX = "multi-LoRA metrics: "
+REQUESTS_LOG_PREFIX = "multi-LoRA requests: "
 _COOKBOOK_STEP = re.compile(r"^\s*Step (\d+)\s*$")
 _COOKBOOK_REWARD = re.compile(r"reward/total\s*│\s*([-0-9.eE+]+)")
+_COOKBOOK_STEP_TIME = re.compile(r"time/total\s*│\s*([-0-9.eE+]+)")
 _CAPACITY_LINE = re.compile(r"multi-LoRA capacity: (\d+) slots, bound by (.+?) \[")
 _LOADED_LORAS_LINE = re.compile(r"engines keep at most (\d+) adapter versions loaded")
 _TRAINER_NODE_LINE = re.compile(r"MegatronTrainRayActor pid=\d+, ip=([0-9.]+)")
@@ -84,6 +91,7 @@ class OpProfiler:
         self._seconds: dict[str, list[float]] = {}
         self._sizes: dict[str, int] = {}
         self._series: dict[str, dict[str, list[float]]] = {}
+        self._requests: list[list] = []
 
     def record(self, op: str, seconds: float, size: int = 1) -> None:
         self._seconds.setdefault(op, []).append(seconds)
@@ -122,6 +130,15 @@ class OpProfiler:
     def series(self) -> dict[str, dict[str, list[float]]]:
         return self._series
 
+    def request(self, op: str, model: str, created_at: float, finished_at: float) -> None:
+        """One settled tenant request, arrival to result."""
+        self._requests.append([model, op, round(created_at, 3), round(finished_at, 3)])
+
+    def drain_requests(self) -> list[list]:
+        """The requests settled since the last drain; logged as one line each time."""
+        requests, self._requests = self._requests, []
+        return requests
+
     def report(self) -> str:
         return render_profile(self.snapshot())
 
@@ -129,6 +146,7 @@ class OpProfiler:
         self._seconds.clear()
         self._sizes.clear()
         self._series.clear()
+        self._requests.clear()
 
 
 def render_table(headers: Iterable[str], rows: Iterable[Iterable[object]]) -> str:
@@ -200,6 +218,15 @@ def parse_cookbook_rewards(paths: Iterable[str]) -> dict[str, dict[str, list[flo
     return series
 
 
+def parse_cookbook_step_times(paths: Iterable[str]) -> list[float]:
+    """``time/total`` of every step in tinker-cookbook client logs: one LoRA's step as the tenant clocked it."""
+    times: list[float] = []
+    for path in paths:
+        with open(path, errors="replace") as handle:
+            times.extend(float(match.group(1)) for line in handle if (match := _COOKBOOK_STEP_TIME.search(line)))
+    return times
+
+
 def merge_series(*parts: dict[str, dict[str, list[float]]]) -> dict[str, dict[str, list[float]]]:
     merged: dict[str, dict[str, list[float]]] = {}
     for part in parts:
@@ -208,23 +235,164 @@ def merge_series(*parts: dict[str, dict[str, list[float]]]) -> dict[str, dict[st
     return merged
 
 
+_OP_NOTES = {
+    "push_slot": "adapter tensors pushed to every engine",
+    "export_slot": "adapter gathered to rank 0, written as safetensors",
+    "forward_backward": "one unit packs several LoRAs' datums: total / LoRA-steps",
+    "forward_only": "forward_backward without the backward",
+    "optim_step": "one barrier steps several LoRAs' optimizers: total / LoRA-steps",
+    "load_slot": "once per LoRA, at create_model",
+    "save_slot": "save_state",
+    "unload_slot": "once per LoRA, at release",
+}
+_CLIENT_PHASES = (
+    ("publish", ("save_weights_for_sampler",)),
+    ("rollout", ("sample",)),
+    ("forward_backward", ("forward_backward", "forward_only")),
+    ("optim_step", ("optim_step",)),
+)
+
+
+def lora_steps(snapshot: dict[str, dict[str, float]]) -> int:
+    """LoRA-steps: optimizer steps summed over LoRAs, the per-LoRA-per-step denominator."""
+    return int(snapshot.get("optim_step", {}).get("size", 0)) or 1
+
+
 def render_profile(snapshot: dict[str, dict[str, float]]) -> str:
+    """server: what one LoRA's step really occupies the trainer; sample: the engine side, alongside it."""
+    steps = lora_steps(snapshot)
+    trainer = {op: value for op, value in snapshot.items() if op != "sample"}
+    busy = sum(value["total_s"] for value in trainer.values()) or 1.0
     rows = [
         [
-            op,
-            int(value["calls"]),
-            int(value["size"]),
-            f"{value['total_s']:.1f}",
-            f"{value['mean_s']:.2f}",
-            f"{value['p90_s']:.2f}",
-            f"{value['max_s']:.2f}",
-            f"{value['share']:.1%}",
+            "total",
+            f"{busy / steps:.2f}",
+            "",
+            "",
+            "100%",
+            f"trainer time one LoRA's step really takes ({steps} LoRA-steps)",
         ]
-        for op, value in sorted(snapshot.items(), key=lambda item: -item[1]["total_s"])
     ]
-    return render_table(
-        ["gateway op", "calls", "size", "total s", "mean s", "p90 s", "max s", "share of trainer time"], rows
-    )
+    for op, value in sorted(trainer.items(), key=lambda item: -item[1]["total_s"]):
+        rows.append(
+            [
+                op,
+                f"{value['total_s'] / steps:.2f}",
+                f"{value['mean_s']:.2f}",
+                int(value["calls"]),
+                f"{value['total_s'] / busy:.1%}",
+                _OP_NOTES.get(op, ""),
+            ]
+        )
+    header = [
+        "server (trainer side, one LoRA at a time)",
+        "per LoRA per step s",
+        "per call s",
+        "calls",
+        "share of trainer busy time",
+        "note",
+    ]
+    table = render_table(header, rows)
+    if (sample := snapshot.get("sample")) is not None:
+        note = (
+            f"{sample['size'] / sample['calls']:.0f} sequences per call, {sample['calls'] / steps:.1f} calls"
+            " per LoRA-step; calls overlap, the client table has the wave"
+        )
+        rows = [["sample", f"{sample['total_s'] / steps:.2f}", f"{sample['mean_s']:.2f}", int(sample["calls"]), note]]
+        header = ["sample (engine side, alongside the trainer)", "per LoRA per step s", "per call s", "calls", "note"]
+        table += "\n\n" + render_table(header, rows)
+    return table
+
+
+def client_steps(requests: list[list]) -> list[dict[str, float]]:
+    """One LoRA's step as the tenant saw it: publish, rollout wave, forward_backward, optim_step, arrival to result."""
+    by_model: dict[str, list[tuple[float, str, float]]] = {}
+    for model, op, created_at, finished_at in requests:
+        by_model.setdefault(model, []).append((created_at, op, finished_at))
+    steps: list[dict[str, float]] = []
+    for entries in by_model.values():
+        entries.sort()
+        model_steps: list[dict[str, float]] = []
+        step: dict[str, float] = {}
+        wave: list[tuple[float, float]] = []
+        for created_at, op, finished_at in entries:
+            if op == "sample":
+                wave.append((created_at, finished_at))
+                continue
+            phase = next((name for name, ops in _CLIENT_PHASES if op in ops), None)
+            if phase is None:
+                continue
+            step[phase] = step.get(phase, 0.0) + finished_at - created_at
+            if phase == "optim_step":  # the optimizer step closes a step; its rollout wave came before it
+                if wave:
+                    step["rollout"] = max(end for _, end in wave) - min(start for start, _ in wave)
+                    wave = []
+                model_steps.append(step)
+                step = {}
+        if model_steps and step.get("publish"):  # the closing publish after the last step
+            model_steps[-1]["publish"] = model_steps[-1].get("publish", 0.0) + step["publish"]
+        steps.extend(model_steps)
+    return steps
+
+
+def render_client(
+    steps: list[dict[str, float]], snapshot: dict[str, dict[str, float]], logged_step_s: list[float] = ()
+) -> str:
+    """client: one LoRA's step as the tenant saw it, per phase, beside the trainer work each phase really needed."""
+    if not steps:
+        return ""
+    n = lora_steps(snapshot)
+    means = {phase: statistics.fmean(step.get(phase, 0.0) for step in steps) for phase, _ in _CLIENT_PHASES}
+    one_step = sum(means.values()) or 1.0
+    work = {
+        "publish": sum(snapshot.get(op, {}).get("total_s", 0.0) for op in ("export_slot", "push_slot")) / n,
+        "rollout": means["rollout"],
+        "forward_backward": sum(
+            snapshot.get(op, {}).get("total_s", 0.0) for op in ("forward_backward", "forward_only")
+        )
+        / n,
+        "optim_step": snapshot.get("optim_step", {}).get("total_s", 0.0) / n,
+    }
+    notes = {
+        "publish": "save_weights_for_sampler: this LoRA's export (+ push); the rest is the queue",
+        "rollout": "first sample request in to last sample result out; engine side, counted as work",
+        "forward_backward": "its share of the packed unit; the rest is the queue",
+        "optim_step": "its share of the barrier; the rest is the queue",
+    }
+    total_work = sum(work.values())
+    rows = [
+        [
+            "one step",
+            f"{one_step:.1f}",
+            "100%",
+            f"{total_work:.1f}",
+            f"{one_step - total_work:.1f} ({(one_step - total_work) / one_step:.0%})",
+            f"{len(steps)} LoRA-steps, sum of the phases below",
+        ]
+    ]
+    for phase, _ in _CLIENT_PHASES:
+        rows.append(
+            [
+                phase,
+                f"{means[phase]:.1f}",
+                f"{means[phase] / one_step:.1%}",
+                f"{work[phase]:.1f}",
+                f"{means[phase] - work[phase]:.1f}",
+                notes[phase],
+            ]
+        )
+    if logged_step_s:
+        note = f"time/total over {len(logged_step_s)} tenant steps; adds the tenant's own work and result polling"
+        rows.append(["one step, as the tenant logged it", f"{statistics.fmean(logged_step_s):.1f}", "", "", "", note])
+    header = [
+        "client (one LoRA's step, as the tenant saw it)",
+        "per LoRA per step s",
+        "share of one step",
+        "work s",
+        "queueing s",
+        "note",
+    ]
+    return render_table(header, rows)
 
 
 def gpu_peaks(path: str) -> dict[str, float] | None:
@@ -284,6 +452,11 @@ def parse_serve_log(path: str) -> dict:
                     facts["metrics"] = json.loads(line[start + len(METRICS_LOG_PREFIX) :])
                 except json.JSONDecodeError:
                     continue
+            elif (start := line.find(REQUESTS_LOG_PREFIX)) >= 0:
+                try:
+                    facts.setdefault("requests", []).extend(json.loads(line[start + len(REQUESTS_LOG_PREFIX) :]))
+                except json.JSONDecodeError:
+                    continue
     return facts
 
 
@@ -318,6 +491,10 @@ def main(argv: list[str] | None = None) -> None:
             sections.append(render_table(["gateway", "value", "note"], rows))
         if "profile" in facts:
             sections.append(render_profile(facts["profile"]))
+            if table := render_client(
+                client_steps(facts.get("requests", [])), facts["profile"], parse_cookbook_step_times(args.client_log)
+            ):
+                sections.append(table)
     series = merge_series(facts.get("metrics", {}), parse_cookbook_rewards(args.client_log))
     if series:
         sections.append(render_metrics(series))

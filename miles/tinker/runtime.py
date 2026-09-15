@@ -11,7 +11,13 @@ from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
-from miles.utils.multi_lora_profiling import METRICS_LOG_PREFIX, PROFILE_LOG_PREFIX, OpProfiler, render_profile
+from miles.utils.multi_lora_profiling import (
+    METRICS_LOG_PREFIX,
+    PROFILE_LOG_PREFIX,
+    REQUESTS_LOG_PREFIX,
+    OpProfiler,
+    render_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +73,14 @@ class MilesBackend:
             logger.info("trainer time by op since start\n%s", render_profile(snapshot))
         if self.profiler.series():
             logger.info("%s%s", METRICS_LOG_PREFIX, json.dumps(self.profiler.series()))
+        if requests := self.profiler.drain_requests():
+            logger.info("%s%s", REQUESTS_LOG_PREFIX, json.dumps(requests))
+
+    def observe_request(self, future, result: dict) -> None:
+        """A settled tenant request: which LoRA, which op, when it arrived and when its result was ready."""
+        op = result.get("op", "?")
+        model = future.model_id.removeprefix("tinker://").split("/")[0]
+        self.profiler.request(getattr(op, "value", op), model, future.created_at, future.finished_at)
 
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True

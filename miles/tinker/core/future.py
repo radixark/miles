@@ -24,6 +24,7 @@ class Future:
     error: str | None = None
     error_category: str | None = None
     finished_at: float | None = None
+    created_at: float = field(default_factory=time.monotonic)
     # long-poll wakeup: set when the future settles
     settled: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -31,6 +32,7 @@ class Future:
 class FutureStore:
     def __init__(self) -> None:
         self._futures: dict[str, Future] = {}
+        self.on_settle = None  # optional (future, result) observer of resolved futures
 
     def create(self, model_id: str, tenant: str) -> Future:
         future = Future(request_id=f"req-{uuid.uuid4().hex}", model_id=model_id, tenant=tenant)
@@ -45,6 +47,8 @@ class FutureStore:
         future.result = result
         future.finished_at = time.monotonic()
         future.settled.set()
+        if self.on_settle is not None:
+            self.on_settle(future, result)
 
     def fail(self, request_id: str, error: str, category: str) -> None:
         future = self._futures[request_id]

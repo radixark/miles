@@ -35,6 +35,7 @@ class TinkerService:
         self.backend = backend
         self.config = config
         self.futures = FutureStore()
+        self.futures.on_settle = getattr(backend, "observe_request", None)
         self.planner = Planner(config.batch_token_budget)
         self.models: dict[str, ModelRecord] = {}
         self.sessions: dict[str, dict] = {}
