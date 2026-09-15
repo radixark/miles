@@ -38,6 +38,7 @@ class ExecuteTrainConfig:
     output_dir: str = "/root/shared_data"
     cluster_backend: ClusterBackend = ClusterBackend.RAY
     deploy_component: DeployComponent = DeployComponent.ALL
+    deploy_instance_id: str | None = None
     run_id: str = field(default_factory=create_run_id)
     run_uuid: str | None = None
     namespace: str = ""
@@ -76,6 +77,7 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
 
 CLUSTER_BACKEND_FLAG = "--cluster-backend"
 _DEPLOY_COMPONENT_FLAG = "--deploy-component"
+_RUN_UUID_FLAG = "--run-uuid"
 
 TRAINER_ROLE = "trainer"
 _PREPARE_CMD_ROLES = frozenset({TRAINER_ROLE})
@@ -117,6 +119,11 @@ class BaseCommandBackend(ABC):
             train_argv, deploy_component=self.config.deploy_component.value
         )
         train_args = f"{train_args} {_DEPLOY_COMPONENT_FLAG} {self.config.deploy_component.value}"
+        if self.config.deploy_instance_id is not None:
+            train_args = f"{train_args} --deploy-instance-id {self.config.deploy_instance_id}"
+        if config.run_uuid is not None:
+            _assert_train_args_name_no_other_run_uuid(train_argv, run_uuid=config.run_uuid)
+            train_args = f"{train_args} {_RUN_UUID_FLAG} {config.run_uuid}"
 
         self._execute_train_inner(
             ExecuteTrainRequest(
@@ -283,6 +290,13 @@ def _assert_train_args_name_no_other_deploy_component(train_argv: list[str], *, 
         f"that, so its pods cannot be told {_DEPLOY_COMPONENT_FLAG} {conflicting}; set "
         f"ExecuteTrainConfig.deploy_component instead of naming it in the train arguments"
     )
+
+
+def _assert_train_args_name_no_other_run_uuid(train_argv: list[str], *, run_uuid: str) -> None:
+    conflicting = sorted(set(ArgvManipulator.get(train_argv, _RUN_UUID_FLAG)) - {run_uuid})
+    assert (
+        not conflicting
+    ), f"the train arguments already say {_RUN_UUID_FLAG} {conflicting}, but this launch drives run {run_uuid}"
 
 
 def _declared_cluster_backends(train_argv: list[str]) -> list[str]:
