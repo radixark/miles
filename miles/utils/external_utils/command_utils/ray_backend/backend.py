@@ -5,7 +5,6 @@ import shlex
 from miles.utils.external_utils.command_utils.base_backend import (
     BaseCommandBackend,
     ExecuteTrainRequest,
-    check_has_nvlink,
     resolve_extra_env_vars,
 )
 from miles.utils.external_utils.command_utils.common import (
@@ -48,7 +47,7 @@ class RayCommandBackend(BaseCommandBackend):
                 }
             ),
             # a get() default is evaluated eagerly, which would probe even when already decided
-            "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(check_has_nvlink())),
+            "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(self._check_has_nvlink())),
             **{
                 k: os.environ[k]
                 for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
@@ -98,6 +97,12 @@ class RayCommandBackend(BaseCommandBackend):
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
         return exec_command_multi_node(cmd, capture_output=capture_output, num_nodes=num_nodes)
+
+    def _check_has_nvlink(self) -> bool:
+        output = self.exec_command_gpu(
+            "nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True
+        )
+        return int(output) > 0
 
     def _clean_up_previous_run(self, external_ray: bool) -> None:
         self.exec_command_cpu(
