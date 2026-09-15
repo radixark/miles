@@ -23,6 +23,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
+from miles.utils.multi_lora_profiling import instrument_app, instrument_backend
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ async def serve(args):
     dp_size = actor_world_size // (
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
-    backend = MilesBackend(trainer, router_url, dp_size=dp_size)
+    backend = instrument_backend(MilesBackend(trainer, router_url, dp_size=dp_size))
     if auto_capacity:
         probes = await probe_slot_capacity(args, backend, trainer)
         args.multi_lora_n_adapters = resolve_slot_capacity(args, probes, keep_k=1)
@@ -73,7 +74,7 @@ async def serve(args):
         await trainer.dispose()
         await worker_manager.restart_with_specs.remote(compute_specs(args))
         trainer = await _start_trainer(args)
-        backend = MilesBackend(trainer, router_url, dp_size=dp_size)
+        backend = instrument_backend(MilesBackend(trainer, router_url, dp_size=dp_size))
     await inference_controller.init()
 
     target_modules = set(convert_target_modules_to_hf(args.target_modules))
@@ -90,7 +91,12 @@ async def serve(args):
     service = TinkerService(backend, config)
 
     server = uvicorn.Server(
-        uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
+        uvicorn.Config(
+            instrument_app(build_app(service), backend.profiler),
+            host="0.0.0.0",
+            port=args.tinker_server_port,
+            log_level="info",
+        )
     )
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
