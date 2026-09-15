@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles.rollout.data_source import DataSource, RolloutDataSource
@@ -49,14 +50,12 @@ def _bare_source(**overrides) -> RolloutDataSource:
     return source
 
 
-def test_load_says_so_when_it_finds_no_state(tmp_path: Path, caplog) -> None:
+def test_load_rejects_a_directory_without_the_data_source_file(tmp_path: Path) -> None:
     """A dataset silently starting over is a run replaying samples its trainers already trained on."""
     source = _bare_source(rollout_global_dataset=True)
 
-    with caplog.at_level(logging.WARNING, logger="miles.utils.simple_checkpointer"):
+    with pytest.raises(AssertionError, match="state.pt"):
         source.load(tmp_path)
-
-    assert "no dataset state under" in caplog.text
 
 
 def test_load_says_so_when_the_run_keeps_no_global_dataset(tmp_path: Path, caplog) -> None:
