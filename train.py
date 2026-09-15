@@ -160,7 +160,7 @@ async def train(args):
         if args.offload_rollout:
             await inference_controller.onload_kv()
 
-        if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
+        if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 

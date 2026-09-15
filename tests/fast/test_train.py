@@ -112,6 +112,20 @@ class TestEvalBeforeTrain:
         assert "eval:3" not in events[: events.index("prepare_rollout:3")]
 
 
+class TestFinalEval:
+    async def test_the_last_rollout_is_always_evaluated_even_off_cadence(self, monkeypatch: pytest.MonkeyPatch):
+        """The final point carries force=True because training is over and backpressure is
+        free, but the cadence check has to reach it first: with num_rollout not a multiple
+        of eval_interval, the final weights would otherwise never be measured."""
+        events: list[str] = []
+        args = _make_args(num_rollout=3, eval_interval=2)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_driver.train(args)
+
+        assert [event for event in events if event.startswith("eval:")] == ["eval:0", "eval:1", "eval:2"]
+
+
 class TestWeightEqualityCheck:
     async def test_weight_equality_check_is_routed_to_the_inference_controller(self, monkeypatch: pytest.MonkeyPatch):
         """--check-weight-update-equal must reach the inference controller with every comparison option intact."""
