@@ -28,6 +28,7 @@
         "run-ci-amd",
         "run-ci-blackwell-only",
         "run-ci-ckpt",
+        "run-ci-deploy",
         "run-ci-eval",
         "run-ci-fsdp",
         "run-ci-ft-long",
