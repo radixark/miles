@@ -38,8 +38,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         messages: list[dict[str, Any]],
         *,
         add_generation_prompt: bool,
-        tools: list[dict[str, Any]] | None = None,
         tokenize: bool = False,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return list(_MOCK_FIRST_TURN_TOKENS)
 
@@ -47,7 +47,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return []
 
@@ -56,7 +57,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return list(pretokenized_token_ids)
 
@@ -104,7 +106,7 @@ def _commit(
 def _prepare(state, request_messages, *, tito_tokenizer, message_matcher=None) -> list[int]:
     """Attach, then render under the attach node, as the core does."""
     attach = attach_point_for_request(state, request_messages, message_matcher=message_matcher)
-    return prepare_pretokenized(attach.node, request_messages, tools=None, tito_tokenizer=tito_tokenizer)
+    return prepare_pretokenized(attach.node, request_messages, template_args=None, tito_tokenizer=tito_tokenizer)
 
 
 def _path(state):
@@ -558,7 +560,9 @@ class TestRollback:
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool]
         attach = self._dispatch_and_apply(state, rollback_msgs)
         assert attach.node is state.tree.nodes[0]
-        result = prepare_pretokenized(attach.node, rollback_msgs, tools=None, tito_tokenizer=registry.tito_tokenizer)
+        result = prepare_pretokenized(
+            attach.node, rollback_msgs, template_args=None, tito_tokenizer=registry.tito_tokenizer
+        )
         assert isinstance(result, list)
 
         # The retry attaches under the first generation; the abandoned node stays in the tree
@@ -653,7 +657,7 @@ class TestRollback:
         retry_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, RETRY_SYS_MSG]
         attach = self._dispatch_and_apply(state, retry_msgs)
         result = prepare_pretokenized(
-            attach.node, retry_msgs, tools=None, tito_tokenizer=registry_with_system.tito_tokenizer
+            attach.node, retry_msgs, template_args=None, tito_tokenizer=registry_with_system.tito_tokenizer
         )
         assert isinstance(result, list)
 
@@ -684,7 +688,9 @@ class TestRollback:
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, new_tool]
         attach = self._dispatch_and_apply(state, rollback_msgs)
         assert attach.node is state.tree.nodes[1]
-        result = prepare_pretokenized(attach.node, rollback_msgs, tools=None, tito_tokenizer=registry.tito_tokenizer)
+        result = prepare_pretokenized(
+            attach.node, rollback_msgs, template_args=None, tito_tokenizer=registry.tito_tokenizer
+        )
         assert isinstance(result, list)
 
         assert len(attach.node.path_nodes()) == 2
@@ -883,9 +889,9 @@ class TestComputeSessionMismatch:
         mock_comparator.compare_sequences.assert_called_once_with([1, 2, 3, 10, 11], [1, 2, 3, 10, 11])
         registry.tito_tokenizer.apply_chat_template.assert_called_once_with(
             _messages(session),
-            tools=None,
             add_generation_prompt=False,
             tokenize=True,
+            template_args={},
         )
 
     def test_returns_mismatch_dicts(self, registry: SessionRegistryV2):
@@ -957,5 +963,5 @@ class TestComputeSessionMismatch:
 
         # Verify tools were passed to the TITO renderer.
         _, kwargs = mock_tokenize.call_args
-        assert kwargs["tools"] == tools
+        assert kwargs["template_args"]["tools"] == tools
         assert kwargs["add_generation_prompt"] is False

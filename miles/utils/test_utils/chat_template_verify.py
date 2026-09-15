@@ -459,16 +459,9 @@ def verify_append_only_via_tito_instance(
         prefix_msgs = deepcopy(messages[:n])
         full_msgs = deepcopy(messages[:m])
 
-        prefix_text = tito.apply_chat_template(
-            prefix_msgs,
-            tools=tools,
-            add_generation_prompt=False,
-        )
-        full_text = tito.apply_chat_template(
-            full_msgs,
-            tools=tools,
-            add_generation_prompt=True,
-        )
+        template_args = tito.default_template_args(tools)
+        prefix_text = tito.apply_chat_template(prefix_msgs, add_generation_prompt=False, template_args=template_args)
+        full_text = tito.apply_chat_template(full_msgs, add_generation_prompt=True, template_args=template_args)
 
         prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
         # Simulate production's model-stop: in production, ``pretokenized_token_ids``
@@ -482,7 +475,7 @@ def verify_append_only_via_tito_instance(
         trailing = tito.trailing_token_ids
         while prefix_ids and prefix_ids[-1] in trailing:
             prefix_ids = prefix_ids[:-1]
-        merged_ids = tito.merge_tokens(prefix_msgs, full_msgs, prefix_ids, tools=tools)
+        merged_ids = tito.merge_tokens(prefix_msgs, full_msgs, prefix_ids, template_args=template_args)
         merged_text = tokenizer.decode(merged_ids)
 
         if merged_text == full_text:

@@ -93,6 +93,19 @@ class TestServerOwnedFields:
 
 
 class TestChatTemplateKwargs:
+    def test_request_kwargs_override_the_launch_for_renderer_and_wire(self):
+        with _serve_router() as env:
+            session_id = _create_session(env.url)
+            assert _post_chat(env.url, session_id, {"messages": [USER]}).status_code == 200
+            launch_wire = env.backend.request_log[-1]
+            assert launch_wire["chat_template_kwargs"] == LAUNCH_KWARGS
+
+            session_id = _create_session(env.url)
+            resp = _post_chat(env.url, session_id, {"messages": [USER], "chat_template_kwargs": THINKING_ON})
+            assert resp.status_code == 200
+            wire = env.backend.request_log[-1]
+            assert wire["chat_template_kwargs"] == THINKING_ON
+            assert wire["input_ids"] != launch_wire["input_ids"]  # the local render followed the request
 
     def test_non_object_chat_template_kwargs_is_400(self):
         with _serve_router() as env:

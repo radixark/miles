@@ -1,10 +1,22 @@
-"""Apply session server constraints to outgoing chat requests."""
+"""Resolve chat arguments before rendering or forwarding a request.
+
+``prepare_chat_request`` owns a copy of the client's input. Config rules apply
+Session server constraints and retain the client's streaming preference. The
+TITO tokenizer then applies model rules to the same full request.
+
+After rendering and a successful generation, the session records the complete
+resolved request as ``turn_args``. A continuation supplies that history to the
+model resolver, which decides which fields inherit or must stay compatible.
+"""
 
 import json
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 
 
@@ -14,6 +26,38 @@ def parse_chat_request(body: bytes) -> dict[str, Any]:
         return json.loads(body) if body else {}
     except json.JSONDecodeError as e:
         raise MessageValidationError(f"invalid JSON body: {e}") from e
+
+
+@dataclass
+class PreparedChatRequest:
+    """Outbound body before adding ``input_ids``, template args to render them,
+    and the client's streaming preference for the response."""
+
+    body: dict[str, Any]
+    template_args: dict[str, Any]
+    client_stream: bool
+
+
+def prepare_chat_request(
+    client_args: dict[str, Any],
+    tito_tokenizer: TITOTokenizer,
+    *,
+    config: SessionServerConfig,
+    turn_args: dict[str, Any] | None,
+) -> PreparedChatRequest:
+    """Resolve an owned request using server rules, model rules, and prior turn args.
+
+    ``turn_args`` is the continued turn's full request; ``None`` starts a root.
+    Client input and recorded history remain unchanged.
+    """
+    request_args, client_stream = resolve_request_args_by_config(deepcopy(client_args), config)
+    try:
+        request_args = tito_tokenizer.resolve_request_args(request_args, turn_args=turn_args)
+    except ValueError as e:
+        raise MessageValidationError(str(e)) from e
+    return PreparedChatRequest(
+        body=request_args, template_args=extract_template_args(request_args), client_stream=client_stream
+    )
 
 
 def resolve_request_args_by_config(

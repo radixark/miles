@@ -560,15 +560,15 @@ class TestRoutedExpertsMultiTurn:
             )
             first_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_FIRST_TURN,
-                tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
+                template_args=tito.default_template_args(SAMPLE_TOOLS),
             )
             second_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
-                tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
+                template_args=tito.default_template_args(SAMPLE_TOOLS),
             )
         else:
             first_prompt_token_ids = S.FIRST_PROMPT_TOKEN_IDS

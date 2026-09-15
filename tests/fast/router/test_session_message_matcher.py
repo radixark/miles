@@ -69,8 +69,8 @@ class _RecordingTITOTokenizer(TITOTokenizer):
         messages: list[dict[str, Any]],
         *,
         add_generation_prompt: bool,
-        tools: list[dict[str, Any]] | None = None,
         tokenize: bool = False,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return list(_FIRST_TURN_TOKENS)
 
@@ -79,7 +79,8 @@ class _RecordingTITOTokenizer(TITOTokenizer):
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         self.merge_calls.append({"old_messages": old_messages, "new_messages": new_messages})
         return list(pretokenized_token_ids) + [99]
@@ -234,7 +235,7 @@ class TestV2ReplayMatching:
         replay = [USER, REPLAYED_ASSISTANT, TOOL_RESULT]
         attach = attach_point_for_request(state, replay, message_matcher=loose_tool_call_message_matches)
 
-        result = prepare_pretokenized(attach.node, replay, tools=None, tito_tokenizer=tito)
+        result = prepare_pretokenized(attach.node, replay, template_args=None, tito_tokenizer=tito)
 
         (call,) = tito.merge_calls
         assert call["old_messages"] == [USER, STORED_ASSISTANT]

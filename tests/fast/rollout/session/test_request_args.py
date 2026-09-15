@@ -1,10 +1,14 @@
-"""Server-owned request fields and input validation."""
+"""Server constraints, full model argument resolution, and the renderer projection."""
+
+from copy import deepcopy
+from unittest.mock import MagicMock
 
 import pytest
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError
-from miles.rollout.session.request_args import resolve_request_args_by_config
+from miles.rollout.session.request_args import prepare_chat_request, resolve_request_args_by_config
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 
@@ -78,3 +82,110 @@ class TestResolveRequestArgsByConfig:
             {"lora_path": LORA_ADAPTER_NAME}, make_session_server_config(lora_rank=8)
         )
         assert wire["lora_path"] == LORA_ADAPTER_NAME
+
+
+class TestPrepareChatRequest:
+    LAUNCH = {"enable_thinking": False}
+    TOOLS = [{"type": "function", "function": {"name": "get_weather"}}]
+
+    @staticmethod
+    def _tito(**kwargs) -> TITOTokenizer:
+        return TITOTokenizer(MagicMock(), **kwargs)
+
+    def test_wire_carries_the_template_args_the_prompt_is_rendered_with(self):
+        client_args = {"messages": [], "tools": self.TOOLS, "chat_template_kwargs": {"enable_thinking": True}}
+
+        prepared = prepare_chat_request(
+            client_args,
+            self._tito(chat_template_kwargs=self.LAUNCH),
+            config=make_session_server_config(),
+            turn_args=None,
+        )
+
+        assert prepared.template_args == {"enable_thinking": True, "tools": self.TOOLS}
+        assert prepared.body["tools"] == self.TOOLS
+        assert prepared.body["chat_template_kwargs"] == {"enable_thinking": True}
+        assert prepared.body["logprobs"] is True  # resolve_request_args_by_config ran on the same body
+
+    @pytest.mark.parametrize("client_tools", [None, [], [{"function": {"name": "override"}}]])
+    def test_launch_tools_stay_top_level_and_client_tools_override_them(self, client_tools):
+        launch_kwargs = {**self.LAUNCH, "tools": self.TOOLS}
+        original = deepcopy(launch_kwargs)
+        client_args = {} if client_tools is None else {"tools": client_tools}
+        tito = self._tito(chat_template_kwargs=launch_kwargs)
+        prepared = prepare_chat_request(client_args, tito, config=make_session_server_config(), turn_args=None)
+        expected_tools = client_tools or self.TOOLS
+        assert prepared.body["tools"] == expected_tools
+        assert prepared.body["chat_template_kwargs"] == self.LAUNCH
+        assert prepared.template_args == {**self.LAUNCH, "tools": expected_tools}
+        continued = prepare_chat_request({}, tito, config=make_session_server_config(), turn_args=prepared.body)
+        assert continued.body["tools"] == expected_tools
+        assert continued.template_args == prepared.template_args
+        assert launch_kwargs == original
+
+    def test_inherited_tools_reach_the_wire_and_empty_template_args_leave_it(self):
+        recorded = {"chat_template_kwargs": self.LAUNCH, "tools": self.TOOLS}
+        prepared = prepare_chat_request(
+            {"messages": [], "tools": []},
+            self._tito(chat_template_kwargs=self.LAUNCH),
+            config=make_session_server_config(),
+            turn_args=recorded,
+        )
+        assert prepared.body["tools"] == self.TOOLS
+        assert prepared.body["chat_template_kwargs"] == self.LAUNCH
+
+        prepared = prepare_chat_request(
+            {"messages": [], "tools": [], "chat_template_kwargs": {}},
+            self._tito(),
+            config=make_session_server_config(),
+            turn_args=None,
+        )
+        assert prepared.template_args == {}
+        assert "tools" not in prepared.body and "chat_template_kwargs" not in prepared.body
+
+    def test_a_refused_request_is_a_400(self):
+        with pytest.raises(MessageValidationError, match="tools changed") as excinfo:
+            prepare_chat_request(
+                {"messages": [], "tools": self.TOOLS},
+                self._tito(chat_template_kwargs=self.LAUNCH),
+                config=make_session_server_config(),
+                turn_args={"chat_template_kwargs": self.LAUNCH},
+            )
+        assert excinfo.value.status_code == 400
+
+    def test_model_receives_and_updates_full_args_without_mutating_client_input(self):
+        class Model(TITOTokenizer):
+            def resolve_request_args(self, request_args, *, turn_args):
+                assert request_args["logprobs"] is True
+                assert "stream" not in request_args
+                assert super().resolve_request_args(request_args, turn_args=turn_args) is request_args
+                request_args["temperature"] = 0.3
+                request_args["unknown"]["values"].append(2)
+                request_args["chat_template_kwargs"]["model_option"] = True
+                return request_args
+
+        client_args = {"temperature": 0.8, "unknown": {"values": [1]}, "stream": True}
+        original = deepcopy(client_args)
+        prepared = prepare_chat_request(
+            client_args,
+            Model(MagicMock(), chat_template_kwargs={"model_option": False}),
+            config=make_session_server_config(),
+            turn_args=None,
+        )
+        assert client_args == original
+        assert prepared.body["temperature"] == 0.3
+        assert prepared.body["unknown"] == {"values": [1, 2]}
+        assert prepared.template_args == {"model_option": True}
+        assert prepared.client_stream is True
+
+
+def test_template_projection_only_selects_render_fields():
+    request_args = {
+        "model": "m",
+        "temperature": 0.7,
+        "input_ids": [1],
+        "tools": [{"name": "f"}],
+        "chat_template_kwargs": {"enable_thinking": True},
+    }
+    assert extract_template_args(request_args) == {"enable_thinking": True, "tools": [{"name": "f"}]}
+    assert extract_template_args({"temperature": 0.7}) == {}

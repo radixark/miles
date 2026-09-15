@@ -87,7 +87,7 @@ def prepare_pretokenized(
     parent: TrajectoryNode | None,
     request_messages: list[dict[str, Any]],
     *,
-    tools: list[dict[str, Any]] | None,
+    template_args: dict[str, Any] | None,
     tito_tokenizer: TITOTokenizer,
 ) -> list[int]:
     """Pretokenized input_ids for a request attaching under *parent*.
@@ -96,12 +96,13 @@ def prepare_pretokenized(
     - Otherwise: reuse the parent's token snapshot as-is and tokenize only
       the new suffix on top — the shared prefix is never re-rendered.
     """
+    template_args = tito_tokenizer.default_template_args() if template_args is None else template_args
     if parent is None:
         return tito_tokenizer.apply_chat_template(
             request_messages,
-            tools=tools,
             add_generation_prompt=True,
             tokenize=True,
+            template_args=template_args,
         )
 
     stored = parent.path_messages()
@@ -111,7 +112,7 @@ def prepare_pretokenized(
         old_messages=stored,
         new_messages=effective_messages,
         pretokenized_token_ids=parent.token_ids,
-        tools=tools,
+        template_args=template_args,
     )
 
 
@@ -193,9 +194,9 @@ class SessionRegistryV2(SessionRegistry):
         try:
             expected_ids = self.tito_tokenizer.apply_chat_template(
                 messages,
-                tools=tools,
                 add_generation_prompt=False,
                 tokenize=True,
+                template_args=self.tito_tokenizer.default_template_args(tools),
             )
             mismatches = self.comparator.compare_sequences(expected_ids, token_ids)
             return [m.to_dict() for m in mismatches]

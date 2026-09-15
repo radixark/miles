@@ -12,10 +12,10 @@ from miles.rollout.session.core import (
     _render_json,
     _samples_response,
     extract_completion,
-    prepare_chat_request,
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
+from miles.rollout.session.request_args import parse_chat_request, prepare_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
@@ -155,9 +155,11 @@ class SessionCoreV2(SessionCore):
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.config, self.registry.tito_tokenizer
+            prepared = prepare_chat_request(
+                parse_chat_request(body), self.registry.tito_tokenizer, config=self.config, turn_args=None
             )
+            request_body, client_stream = prepared.body, prepared.client_stream
+            tito_tokenizer = self.registry.tito_tokenizer
 
             request_messages = request_body.get("messages", [])
             attach_parent = attach_point_for_request(
@@ -166,7 +168,7 @@ class SessionCoreV2(SessionCore):
             prompt_token_ids = prepare_pretokenized(
                 attach_parent,
                 request_messages,
-                tools=request_body.get("tools"),
+                template_args=prepared.template_args,
                 tito_tokenizer=tito_tokenizer,
             )
             request_body["input_ids"] = prompt_token_ids

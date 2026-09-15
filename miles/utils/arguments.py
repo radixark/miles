@@ -2965,9 +2965,8 @@ def miles_validate_args(args):
         )
         args.chat_template_path = None
 
-    # A named family is one fixed renderer contract.  Letting a custom path or
-    # conflicting required kwarg through would detach its declared role
-    # capability from the renderer that actually runs.
+    # Named families require their registered template and fixed kwargs to keep
+    # the renderer consistent with the roles they support.
     if args.tito_model != TITOTokenizerType.DEFAULT.value:
         tito_model = TITOTokenizerType(args.tito_model)
         from miles.utils.chat_template_utils import resolve_fixed_chat_template
@@ -2982,13 +2981,7 @@ def miles_validate_args(args):
         if resolved_path is not None:
             args.chat_template_path = resolved_path
         user_kwargs = dict(args.apply_chat_template_kwargs or {})
-        for key, value in resolved_kwargs.items():
-            if key in user_kwargs and user_kwargs[key] != value:
-                raise ValueError(
-                    f"--apply-chat-template-kwargs {key}={user_kwargs[key]!r} conflicts "
-                    f"with the value registered for --tito-model={tito_model.value}: {value!r}"
-                )
-            user_kwargs[key] = value
+        user_kwargs.update(resolved_kwargs)
         args.apply_chat_template_kwargs = user_kwargs
 
     if args.chat_template_path is not None:

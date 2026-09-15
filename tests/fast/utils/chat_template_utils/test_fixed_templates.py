@@ -5,6 +5,7 @@ template path, required kwargs, and the role surface that renderer supports.
 """
 
 import os
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -124,9 +125,11 @@ def test_kwargs_are_copied_not_shared(monkeypatch):
         (Qwen38SmallTITOTokenizer, {"reasoning_effort": "low"}),
     ],
 )
-def test_registered_kwargs_cannot_be_overridden(tokenizer_cls, chat_template_kwargs):
-    with pytest.raises(ValueError, match="conflicts with the value registered"):
-        tokenizer_cls(object(), chat_template_kwargs=chat_template_kwargs)
+def test_registered_kwargs_override_conflicting_launch_values(tokenizer_cls, chat_template_kwargs):
+    tokenizer = MagicMock()
+    tokenizer.encode.return_value = [1]
+    tito = tokenizer_cls(tokenizer, chat_template_kwargs=chat_template_kwargs)
+    assert tito.chat_template_kwargs == tokenizer_cls.FIXED_TEMPLATE.extra_kwargs
 
 
 @pytest.mark.parametrize(

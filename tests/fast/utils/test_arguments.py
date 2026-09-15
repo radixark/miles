@@ -739,7 +739,7 @@ class TestTitoFixedTemplateConfiguration:
             "enable_thinking": True,
         }
 
-    def test_glm53_rejects_disabling_thinking(self):
+    def test_glm53_fixed_thinking_overrides_launch_value(self):
         args = self._parse(
             [
                 "--use-session-server",
@@ -749,8 +749,8 @@ class TestTitoFixedTemplateConfiguration:
                 '{"enable_thinking": false}',
             ]
         )
-        with pytest.raises(ValueError, match="enable_thinking=False conflicts"):
-            miles_validate_args(args)
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False, "enable_thinking": True}
 
     def test_named_family_rejects_custom_template(self):
         args = self._parse(
@@ -765,7 +765,7 @@ class TestTitoFixedTemplateConfiguration:
         with pytest.raises(ValueError, match="cannot override the template registered"):
             miles_validate_args(args)
 
-    def test_named_family_rejects_conflicting_registered_kwarg(self):
+    def test_named_family_fixed_kwargs_override_launch_values(self):
         args = self._parse(
             [
                 "--use-session-server",
@@ -775,8 +775,8 @@ class TestTitoFixedTemplateConfiguration:
                 '{"clear_thinking": true}',
             ]
         )
-        with pytest.raises(ValueError, match="clear_thinking=True conflicts"):
-            miles_validate_args(args)
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
     def test_named_family_accepts_same_registered_and_additional_kwargs(self):
         args = self._parse(

@@ -17,14 +17,9 @@ from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import (
-    MessageValidationError,
-    SessionNotFoundError,
-    TokenizationError,
-    UpstreamResponseError,
-)
+from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.request_args import parse_chat_request, resolve_request_args_by_config
+from miles.rollout.session.request_args import parse_chat_request, prepare_chat_request
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import (
     compute_samples_from_openai_records,
@@ -154,24 +149,6 @@ def proxy_result_to_response(result: dict) -> Response:
         # (incl. "" when upstream sent no content-type) so the wire bytes are identical.
         return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
     return Response(content=_render_json(data), status_code=status_code, headers=headers, media_type=JSON_MEDIA_TYPE)
-
-
-def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
-    """Apply server constraints and prepare the request-scoped renderer."""
-    request_body, client_stream = resolve_request_args_by_config(parse_chat_request(body), args)
-    request_ctk = request_body.get("chat_template_kwargs")
-    if request_ctk is not None and not isinstance(request_ctk, dict):
-        raise MessageValidationError("chat_template_kwargs must be an object")
-    if request_ctk:
-        try:
-            tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
-        except ValueError as e:
-            raise MessageValidationError(str(e)) from e
-    if tito_tokenizer.chat_template_kwargs:
-        request_body["chat_template_kwargs"] = dict(tito_tokenizer.chat_template_kwargs)
-    else:
-        request_body.pop("chat_template_kwargs", None)
-    return request_body, client_stream, tito_tokenizer
 
 
 def extract_completion(result: dict) -> tuple:
@@ -346,14 +323,16 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.config, self.registry.tito_tokenizer
+            prepared = prepare_chat_request(
+                parse_chat_request(body), self.registry.tito_tokenizer, config=self.config, turn_args=None
             )
+            request_body, client_stream = prepared.body, prepared.client_stream
+            tito_tokenizer = self.registry.tito_tokenizer
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
-                tools=request_body.get("tools"),
+                template_args=prepared.template_args,
                 tito_tokenizer=tito_tokenizer,
                 message_matcher=self.registry.message_matcher,
             )
