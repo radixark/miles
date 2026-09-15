@@ -28,6 +28,7 @@ Usage patterns:
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
 """
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -61,6 +62,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+    join_ray_workers: bool = True
+    ray_hostfile: str = "/root/mpi_rack_hostfile"
+    ray_port: int = 6379
     enable_eval: bool = True
     enable_mtp: bool = False
 
@@ -521,6 +525,18 @@ def _train(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**extra_env_vars},
         megatron_path=args.megatron_path,
+        before_ray_job_submit=(
+            (
+                lambda: U.ssh_start_ray_workers(
+                    master_addr=os.environ.get("MASTER_ADDR", "127.0.0.1"),
+                    num_gpus_per_node=args.num_gpus_per_node,
+                    hostfile=args.ray_hostfile,
+                    port=args.ray_port,
+                )
+            )
+            if args.join_ray_workers and args.num_nodes > 1
+            else None
+        ),
     )
 
 
