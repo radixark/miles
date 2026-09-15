@@ -17,9 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
-    if args.debug_train_only:
-        return []
-
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     return [
         _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
@@ -39,7 +36,9 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
 
         if args.use_miles_router:
             assert not model_cfg.has_pd_disaggregation, "miles router does not support PD disaggregation."
-            router_config = compute_miles_router_config(args, host=primary.host, port=primary.port)
+            router_config = compute_miles_router_config(
+                args, host=primary.host, port=primary.port, num_engines=model_cfg.num_server_cells
+            )
             launch_argv = [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
         else:
             router_args = compute_sglang_router_args(
@@ -129,9 +128,6 @@ def compute_engine_pool_id(model_idx: int, group_index: int) -> str:
 
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
-    if args.debug_train_only:
-        return []
-
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     return [

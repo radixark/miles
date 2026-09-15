@@ -104,7 +104,8 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
     }
 
 
-def resolve_file_run(test_file: str, image_tag: str, source_root: str | Path = ".") -> dict[str, str]:
+def collect_snapshot_tests(source_root: str | Path):
+    """Parse a source snapshot as data, without importing its Python modules."""
     try:
         root = Path(source_root).resolve(strict=True)
     except OSError as error:
@@ -115,10 +116,13 @@ def resolve_file_run(test_file: str, image_tag: str, source_root: str | Path = "
     previous_directory = Path.cwd()
     try:
         os.chdir(root)
-        tests = collect_tests(_discover_regular_ci_files(), sanity_check=True)
+        return collect_tests(_discover_regular_ci_files(), sanity_check=True)
     finally:
         os.chdir(previous_directory)
-    return plan_file_run(tests, test_file, image_tag)
+
+
+def resolve_file_run(test_file: str, image_tag: str, source_root: str | Path = ".") -> dict[str, str]:
+    return plan_file_run(collect_snapshot_tests(source_root), test_file, image_tag)
 
 
 def main() -> int:

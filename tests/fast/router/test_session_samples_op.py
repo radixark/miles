@@ -87,6 +87,11 @@ def addition_core():
     return _build_core(use_addition_r3=True)
 
 
+@pytest.fixture(scope="module")
+def spec_core():
+    return _build_core(_CONFIG.model_copy(update={"sglang_speculative_algorithm": "EAGLE"}))
+
+
 # ── fixtures: a two-turn trajectory with R3 / cache stats / weight versions ──
 
 
@@ -212,6 +217,26 @@ async def test_assembled_sample_golden(core):
         {"t0": None, "t1": 0.0, "turn": 2, "prev_t1": 0.0},
     ]
     assert reply.empty_reason is None
+
+
+async def test_spec_info_crosses_samples_wire(spec_core):
+    output_token_ids = [10, 11, 12, 13, 14, 15, 16]
+    record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=output_token_ids)
+    record.response["choices"][0]["meta_info"].update(
+        {"spec_num_correct_drafts": 3, "spec_num_proposed_drafts": 5, "spec_verify_ct": 2}
+    )
+    sid = await _make_session(spec_core, [record], [1, 2, 3, *output_token_ids])
+
+    status, payload = await _collect_via_op(spec_core, sid)
+    assert status == 200
+    (sample,), _ = _new_pipeline(payload, _input_sample())
+
+    assert sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 3,
+        "spec_num_proposed_drafts": 5,
+        "spec_verify_ct": 2,
+        "completion_tokens": 7,
+    }
 
 
 async def test_truncation_golden(core):

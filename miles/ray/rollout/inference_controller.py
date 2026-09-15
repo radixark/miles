@@ -52,7 +52,7 @@ class InferenceController:
 
     @lock_exempt
     async def init(self) -> None:
-        if self.args.debug_train_only:
+        if not self.args.starts_inference_engines:
             return
 
         self.servers = await create_rollout_servers(

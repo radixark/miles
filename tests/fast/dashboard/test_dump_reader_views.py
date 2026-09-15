@@ -51,6 +51,14 @@ def test_summary_matches_hand_computed(reader):
             assert entry["mean_entropy"] == pytest.approx(float(row.entropy[mask].mean()), rel=1e-5)
 
 
+def test_summary_uses_speculative_counters(reader):
+    sample = Sample(spec_info=Sample.SpecInfo(spec_num_correct_drafts=1, spec_num_proposed_drafts=4))
+
+    entry = reader._summary_row(sample, None, rollout_id=0, sample_occurrence=0)
+
+    assert entry["spec_accept_rate"] == 0.25
+
+
 def test_summary_removed_sample_has_no_masked_stats(reader):
     df = reader.summary(0)
     entry = _df_row(df, REMOVED[0])  # step 0: Sample.index == within-step position

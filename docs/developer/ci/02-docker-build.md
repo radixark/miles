@@ -52,26 +52,40 @@ The cu13 variants share one multi-arch CUDA base image and differ only in platfo
 
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
-A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`.
+A multi-arch build (`cu13`) needs Buildx's `docker-container` driver. Use `--push` to publish directly, or `--output type=oci,dest=/tmp/image,tar=false` to export a local OCI layout for later publication; it cannot load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`. `--context <repository>` selects a separate build context while keeping the driver and hash reader in their original checkout.
 
 ## PR build check (in `pr-test.yml`)
 
-Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
+Dockerfile changes can be build-tested on the PR itself, before merge, by selecting CUDA tests, for example with `run-ci-image`. A Dockerfile change alone does not request GPU execution or a PR image build.
 
-`pr-test.yml` calls `_build-pr-ci-image.yml` after `stage-a-cpu` satisfies its success/bypass gate, while both CPU stages run without waiting for it. A PR keeps **one** image tag, `radixark/miles:pr-<num>`, for its whole life, and rebuilds it only when the content that feeds it changes:
+`pr-test.yml` calls `_build-pr-ci-image.yml` only when its final stage selection contains CUDA tests and `stage-a-cpu` satisfies its success/bypass gate. CPU-only PRs skip both the build call and its downstream `resolve-ci-image`. Both CPU stages run without waiting for images. An eligible PR keeps **one** image tag, `radixark/miles:pr-<num>`, for its whole life, and rebuilds it only when the content that feeds it changes:
 
 | Job | What it does |
 | --- | --- |
-| `docker-decide` | hashes the build inputs (`docker/image_inputs.py`) and compares. Inputs equal to the base branch → no PR image, suites run on `dev`. Otherwise it reads the `miles.image-inputs` label off the published `pr-<num>` tag: same hash → reuse it, different or absent → rebuild. Fork PRs cannot publish, so they always test on `dev` |
-| `docker-build` | builds `cu13` for `linux/amd64` and `linux/arm64` and pushes `pr-<num>`, stamped with the inputs hash. Runs on a `docker-build` node only when a rebuild is due; otherwise it is a hosted-runner no-op |
-| `resolve-ci-image` | resolves the CI image to `pr-<num>` whenever that tag is current — whether this run built it or an earlier one did — so **every GPU suite runs inside the PR's image**; a failed build stops the matrix instead of testing a stale image. A PR image outranks a `ci-image-tag:` PR-body directive, which applies only when the PR has no image (non-docker or fork PRs) |
+| `docker-decide` | hashes the build inputs (`docker/image_inputs.py`) and compares. Inputs equal to the base branch → no PR image, suites run on `dev`. Otherwise it reads the `miles.image-inputs` label off the published `pr-<num>` tag: same hash → reuse it, different or absent → rebuild. Forks inspect the public tag without repository secrets |
+| `docker-build` | builds `cu13` for `linux/amd64` and `linux/arm64` and pushes `pr-<num>`, stamped with the inputs hash. Same-repository rebuilds use a `docker-build` node. Fork rebuilds wait on a hosted runner for `Build Fork CI Image` to return success; otherwise this job is a hosted-runner no-op |
+| `resolve-ci-image` | resolves the CI image to `pr-<num>` whenever that tag is current — whether this run built it or an earlier one did — so **every GPU suite runs inside the PR's image**; a failed build stops the matrix instead of testing a stale image. A PR image outranks a `ci-image-tag:` PR-body directive, which applies only when the PR has no image (PRs whose image inputs match the base) |
 | `delete-pr-tag` (`docker-pr-tag-cleanup.yml`) | removes the `pr-<num>` tag when the PR closes; the tag stays available for re-runs while the PR is open |
 
 So a rerun, or a push that touches only source files, reuses the image the PR already has instead of rebuilding an identical one. Non-docker PRs are untouched: no PR image, matrix on `dev`, as before.
 
 `docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds `pr-test-rocm.yml`, not the `cu13` image built here.
 
-To rebuild when the inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label. Applying it starts a run that rebuilds and then removes the label, so it acts once rather than forcing a rebuild on every later run.
+To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label alongside a CUDA test request. The label does not select tests or make a PR whose build inputs match the base eligible. Once consumed by a build, it is removed so later runs can reuse the image.
+
+### Fork PR publication
+
+Fork `pull_request` runs do not receive Docker Hub secrets. Their image job uses the same CUDA selection, CPU A success/bypass gate, hash decision, and output contract as same-repository PRs. When a rebuild is needed, it submits an attempt-bound request and waits for trusted publication. Success continues to `resolve-ci-image` and GPU tests in the same CI attempt; a publication failure fails the image job. CPU tests are not rerun.
+
+`build-fork-ci-image.yml` starts on `PR Test`'s `workflow_run.in_progress` event and waits for the request artifact, which is readable before the source run finishes. Only a request allocates a builder. The caller waits for the matching publisher run and its build job to succeed, so an existing tag cannot satisfy a forced rebuild prematurely. The hosted handoff has a 360-minute limit covering queue and build time; the builder retains its 180-minute limit.
+
+The trusted workflow binds the request to its source run and attempt, the open fork PR and current head, the latest matching PR Test run, and the original merge SHA recorded by GitHub for `_build-pr-ci-image.yml`. It resolves selection and fast-fail policy from the request's original PR-event labels, matching the caller even after labels are removed. These labels are policy input from the source workflow, not proof of publishing authority; credential isolation is described below. It checks the CPU gate, including successful jobs retained by partial reruns, and uses trusted code to parse the PR's test registrations without importing them. A later main advance does not change the frozen merge.
+
+Host orchestration comes from the default branch. Only the fork Dockerfile and build context enter an isolated BuildKit instance, with no secret forwarding or insecure entitlements. Both architectures are exported as a local OCI layout. BuildKit is removed before Docker Hub login; the publisher copies the layout to the fixed `pr-<num>` tag without running the image and verifies both architectures' inputs hashes. Fork edits to the host build driver, hash reader, or workflow take effect after merge.
+
+A new request cancels an older build for the same PR. During building, the trusted helper checks every 30 seconds that the source attempt remains active and stops its build process group if it ends or is superseded. The publisher rechecks the live PR and source before publication. Builder and local-output cleanup also run on failure or cancellation. A forced build consumes its original one-shot label, with the same removal-failure warning as same-repository builds.
+
+This path requires `build-fork-ci-image.yml` and its trusted helpers on the default branch. It cannot complete while introduced only on a PR branch. Existing `Approve Trusted CI` handles GitHub's contributor approval hold independently.
 
 ## Rolling Docker build (`docker-build.yml`)
 

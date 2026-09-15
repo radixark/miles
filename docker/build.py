@@ -97,6 +97,8 @@ def build_and_push(
     push: bool = False,
     custom_tag: str = "",
     extra_build_args: list[str] | None = None,
+    context: Path = REPO_ROOT,
+    output: str = "",
 ) -> None:
     extra_build_args = extra_build_args or []
     config = VARIANTS[variant]
@@ -124,7 +126,7 @@ def build_and_push(
         "buildx",
         "build",
         "-f",
-        dockerfile,
+        str(context / dockerfile),
     ]
 
     if platforms:
@@ -132,6 +134,8 @@ def build_and_push(
 
     if push:
         cmd += ["--push"]
+    if output:
+        cmd += ["--output", output]
 
     # Proxy args (pass through if set in environment, check both cases)
     for arg_name in ["HTTP_PROXY", "HTTPS_PROXY"]:
@@ -152,13 +156,13 @@ def build_and_push(
         cmd += ["--build-arg", spec]
 
     # CI reads this back off the published tag to skip rebuilds whose inputs are unchanged.
-    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute()}"]
+    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context)}"]
 
     for tag in tags:
         cmd += ["-t", tag]
 
     # Context is repo root
-    cmd += ["."]
+    cmd += [str(context)]
 
     print(f"\n=== Building {' '.join(tags)} ===", flush=True)
     run(cmd, dry_run)
@@ -187,6 +191,8 @@ def main(
     push: bool = typer.Option(False, help="Push images to registry after building."),  # noqa: B008
     custom_tag: str = typer.Option("", help="Custom tag name (required when --image-tag is custom)."),  # noqa: B008
     build_arg: list[str] = typer.Option([], help="Extra KEY=VALUE build-arg (repeatable)."),  # noqa: B008
+    context: Path = typer.Option(REPO_ROOT, help="Repository build context, separate from this driver."),  # noqa: B008
+    output: str = typer.Option("", help="Buildx exporter, e.g. type=oci,dest=/tmp/image,tar=false."),  # noqa: B008
 ) -> None:
     build_and_push(
         variant.value,
@@ -196,6 +202,8 @@ def main(
         push=push,
         custom_tag=custom_tag,
         extra_build_args=build_arg,
+        context=context.resolve(),
+        output=output,
     )
 
 

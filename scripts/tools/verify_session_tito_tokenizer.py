@@ -53,11 +53,50 @@ import sys
 
 from miles.utils.arguments import parse_args
 from miles.utils.test_utils.session_verify_agent import fixed_template_append_roles, select_schedule
-from miles.utils.test_utils.session_verify_runner import run_session_verify, session_verify_extras
+from miles.utils.test_utils.session_verify_runner import (
+    SESSION_VERIFY_INVARIANT_ARGS,
+    run_session_verify,
+    session_verify_extras,
+)
 
 
-def _print_action_table(allowed_roles: list[str]) -> None:
-    schedule = select_schedule(allowed_roles)
+def _with_session_verify_defaults(argv: list[str]) -> list[str]:
+    defaults = [
+        "--prompt-data",
+        SESSION_VERIFY_INVARIANT_ARGS["prompt_data"],
+        "--input-key",
+        SESSION_VERIFY_INVARIANT_ARGS["input_key"],
+        "--num-rollout",
+        str(SESSION_VERIFY_INVARIANT_ARGS["num_rollout"]),
+        "--rollout-batch-size",
+        str(SESSION_VERIFY_INVARIANT_ARGS["rollout_batch_size"]),
+        "--rollout-max-response-len",
+        str(SESSION_VERIFY_INVARIANT_ARGS["rollout_max_response_len"]),
+        "--rollout-temperature",
+        str(SESSION_VERIFY_INVARIANT_ARGS["rollout_temperature"]),
+        "--global-batch-size",
+        str(SESSION_VERIFY_INVARIANT_ARGS["global_batch_size"]),
+        "--rm-type",
+        SESSION_VERIFY_INVARIANT_ARGS["rm_type"],
+        "--custom-generate-function-path",
+        SESSION_VERIFY_INVARIANT_ARGS["custom_generate_function_path"],
+        "--custom-agent-function-path",
+        SESSION_VERIFY_INVARIANT_ARGS["custom_agent_function_path"],
+        "--use-session-server",
+        SESSION_VERIFY_INVARIANT_ARGS["use_session_server"],
+        "--train-backend",
+        SESSION_VERIFY_INVARIANT_ARGS["train_backend"],
+        "--sglang-ep-size",
+        str(SESSION_VERIFY_INVARIANT_ARGS["sglang_ep_size"]),
+    ]
+    for key in ("debug_rollout_only", "ci_test", "colocate"):
+        if SESSION_VERIFY_INVARIANT_ARGS[key]:
+            defaults.append("--" + key.replace("_", "-"))
+    return [*defaults, *argv]
+
+
+def _print_action_table(allowed_roles: list[str], *, cycles: int) -> None:
+    schedule = select_schedule(allowed_roles, cycles=cycles)
     print("Driver schedule (after initial completion):")
     for i, action in enumerate(schedule, 1):
         print(f"  {i}. {action.value}")
@@ -82,6 +121,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    sys.argv[1:] = _with_session_verify_defaults(sys.argv[1:])
     args = parse_args(add_custom_arguments=session_verify_extras)
 
     # Resolve the family-owned capability before any GPU work starts so an
@@ -103,12 +143,12 @@ def main() -> int:
     print()
 
     try:
-        select_schedule(allowed_roles)
+        select_schedule(allowed_roles, cycles=args.session_verify_cycles)
     except ValueError as e:
         print(f"Verdict: FAIL -- {e}", file=sys.stderr)
         return 1
 
-    _print_action_table(allowed_roles)
+    _print_action_table(allowed_roles, cycles=args.session_verify_cycles)
 
     try:
         run_session_verify(args=args)

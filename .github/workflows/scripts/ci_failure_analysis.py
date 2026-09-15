@@ -39,13 +39,16 @@ FAILED_BLOCK_RE = re.compile(r"FAILED:[ \t]*\n(?P<body>.*?)\n[^\n]*={20,}", re.S
 FAILED_ENTRY_RE = re.compile(r"(?P<path>(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.py)\s*\(")
 
 HARD_MAX_JOBS = 15
-HARD_MAX_LOG_CHARS = 20_000
-HARD_MAX_TOTAL_EVIDENCE_CHARS = 80_000
+HARD_MAX_LOG_CHARS = 60_000
+HARD_MAX_TOTAL_EVIDENCE_CHARS = 240_000
 HARD_MAX_SOURCE_FILES = 3
 HARD_MAX_SOURCE_CHARS = 20_000
 HARD_MAX_COMMITS_PER_PATH = 8
 HARD_MAX_CHANGE_PATHS = 4
 HARD_MAX_FAILURES_PER_JOB = 5
+# Enough tail to hold every failure block a job can emit, plus the summary that names them.
+HARD_MAX_LOG_SCAN_BYTES = 256 * 1024
+MIN_LOG_CHARS_PER_JOB = 4_000
 CHANGES_BUDGET_CHARS = 1_500
 HARD_MAX_RECENT_COMMITS = 8
 HARD_MAX_REASON_CHARS = 280
@@ -55,6 +58,10 @@ HARD_MAX_PROMPT_CHARS = 20_000
 HARD_MAX_TIMEOUT_SECONDS = 60
 HARD_ANALYSIS_SECONDS = 240
 
+# Every job-log line opens with a GitHub timestamp that costs 9% of an excerpt and tells the
+# model nothing the run metadata does not already carry.
+LOG_TIMESTAMP_RE = re.compile(r"(?m)^\d{4}-\d{2}-\d{2}T[\d:.]+Z ")
+FAILURE_BLOCK_RE = re.compile(r"(?m)^\s*Last output of (?P<path>\S+):\s*$")
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 FAILURE_MARKER_RE = re.compile(
@@ -363,6 +370,7 @@ def load_schema(path: Path = DEFAULT_SCHEMA_PATH, tags: list[str] | None = None)
 
 def redact_and_normalize(text: str) -> str:
     normalized = CONTROL_RE.sub("", ANSI_RE.sub("", text.replace("\r\n", "\n").replace("\r", "\n")))
+    normalized = LOG_TIMESTAMP_RE.sub("", normalized)
     for pattern in SECRET_PATTERNS:
         if pattern.groups:
             normalized = pattern.sub(lambda match: f"{match.group(1)}[REDACTED]", normalized)
@@ -398,11 +406,27 @@ def _grow_ranges(lines: list[str], ranges: list[tuple[int, int]], char_limit: in
     return ranges
 
 
+def _failure_block_ranges(lines: list[str]) -> list[tuple[int, int]]:
+    """The suite already picked these out per failing test, so keep each whole rather than
+    letting the generic marker window compete with them for one job's budget."""
+    starts = [index for index, line in enumerate(lines) if FAILURE_BLOCK_RE.match(line)]
+    return [
+        (start, starts[position + 1] if position + 1 < len(starts) else len(lines))
+        for position, start in enumerate(starts)
+    ]
+
+
 def extract_log_evidence(text: str, job_id: int, char_limit: int) -> dict[str, Any] | None:
     sanitized = redact_and_normalize(text)
     if not sanitized.strip() or char_limit <= 0:
         return None
     lines = sanitized.splitlines()
+    blocks = _failure_block_ranges(lines)
+    if blocks:
+        ranges = _merge_ranges(blocks)
+        excerpt = _render_ranges(lines, ranges)
+        if len(excerpt) <= char_limit:
+            return _log_evidence(job_id, lines, ranges, excerpt)
     markers = [index for index, line in enumerate(lines) if FAILURE_MARKER_RE.search(line)]
     seeds = [(max(0, index - 8), min(len(lines), index + 13)) for index in markers[-4:]]
     ranges = _merge_ranges(seeds) if seeds else [(max(0, len(lines) - 40), len(lines))]
@@ -414,10 +438,12 @@ def extract_log_evidence(text: str, job_id: int, char_limit: int) -> dict[str, A
         excerpt = _render_ranges(lines, ranges)
     if not excerpt.strip():
         return None
-    start_line = ranges[0][0] + 1
-    end_line = ranges[-1][1]
+    return _log_evidence(job_id, lines, ranges, excerpt)
+
+
+def _log_evidence(job_id: int, lines: list[str], ranges: list[tuple[int, int]], excerpt: str) -> dict[str, Any]:
     return {
-        "id": f"job:{job_id}:log:{start_line}-{end_line}",
+        "id": f"job:{job_id}:log:{ranges[0][0] + 1}-{ranges[-1][1]}",
         "kind": "job_log",
         "text": excerpt,
         "sha256": hashlib.sha256(excerpt.encode()).hexdigest(),
@@ -1010,8 +1036,15 @@ def _collect_evidence(
                 raise ValueError("job id must be an integer")
             jobs_left = len(selected) - index
             job_budget = remaining // jobs_left if jobs_left else 0
-            log_limit = min(policy.max_log_chars_per_job, max(0, int(job_budget * 0.7)))
-            raw_log = gh.job_log(job_id, max_bytes=max(4_096, log_limit * 4))
+            # Scan a fixed window: the number of failures, and so the budget they need, is only
+            # knowable once the suite's own summary has been read out of the log.
+            raw_log = gh.job_log(job_id, max_bytes=HARD_MAX_LOG_SCAN_BYTES)
+            failing_tests = extract_failed_tests(raw_log, HARD_MAX_FAILURES_PER_JOB)
+            # A job that failed three tests carries three failure blocks and needs three shares,
+            # while every later job keeps a floor so an early one cannot starve it.
+            wanted = policy.max_log_chars_per_job * max(1, len(failing_tests))
+            floor_for_others = (jobs_left - 1) * MIN_LOG_CHARS_PER_JOB
+            log_limit = max(min(wanted, remaining - floor_for_others), min(wanted, job_budget))
             log_evidence = extract_log_evidence(raw_log, job_id, log_limit)
         except Exception:
             log_evidence = None
@@ -1047,7 +1080,7 @@ def _collect_evidence(
                 "job_id": job["id"],
                 "name": str(job.get("name", ""))[:200],
                 "conclusion": job.get("conclusion"),
-                "failing_tests": extract_failed_tests(raw_log, HARD_MAX_FAILURES_PER_JOB),
+                "failing_tests": failing_tests,
                 "evidence_refs": [item["id"] for item in job_evidence],
             }
         )
