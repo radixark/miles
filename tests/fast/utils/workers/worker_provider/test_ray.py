@@ -416,7 +416,7 @@ class _ServingManagerHandle:
 
 def _served_worker_info(*, generation: int, port: int = 15000) -> WorkerInfo:
     return WorkerInfo(
-        name="trainer-engine-actor-0-0",
+        name="trainer-engine-actor-00000-00000",
         generation=generation,
         self_addrs={"rpc": HostAndPort(host="10.0.0.7", port=port)},
         gpu_ids=[],
@@ -433,7 +433,7 @@ class TestRayWorkerProviderRpcHandles:
         provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
         monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda refs: refs)
 
-        built = provider.get_handle("trainer-engine-actor-0-0")
+        built = provider.get_handle("trainer-engine-actor-00000-00000")
 
         assert isinstance(built, RpcWorkerHandle)
         assert built._transport._server_url == "http://10.0.0.7:15000"
@@ -446,9 +446,9 @@ class TestRayWorkerProviderRpcHandles:
         provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
         monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda refs: refs)
 
-        provider.get_handle("trainer-engine-actor-0-0")
+        provider.get_handle("trainer-engine-actor-00000-00000")
 
-        assert handle.get_worker_infos.calls == ["trainer-engine-actor-0"]
+        assert handle.get_worker_infos.calls == ["trainer-engine-actor-00000"]
 
 
 @dataclass
@@ -470,7 +470,7 @@ class _RayCommManagerHandle:
 
 def _ray_comm_worker_info(*, generation: int) -> WorkerInfo:
     return WorkerInfo(
-        name="trainer-engine-actor-0-0",
+        name="trainer-engine-actor-00000-00000",
         generation=generation,
         self_addrs={"master": HostAndPort(host="10.0.0.7", port=20000)},
         gpu_ids=[],
@@ -488,9 +488,9 @@ class TestRayWorkerProviderRayHandlesAreOfTheGenerationDescribed:
         provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
         monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda ref: ref)
 
-        provider.get_handle("trainer-engine-actor-0-0")
+        provider.get_handle("trainer-engine-actor-00000-00000")
 
-        assert handle.get_actor_handle.requested == [("trainer-engine-actor-0-0", 3)]
+        assert handle.get_actor_handle.requested == [("trainer-engine-actor-00000-00000", 3)]
 
     def test_a_cell_restarted_between_the_two_calls_is_refused(self, monkeypatch: pytest.MonkeyPatch):
         """Pairing an old cell's addresses with a new cell's actors sends new ranks to a dead rendezvous."""
@@ -502,7 +502,7 @@ class TestRayWorkerProviderRayHandlesAreOfTheGenerationDescribed:
         monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda ref: ref)
 
         with pytest.raises(AssertionError):
-            provider.get_handle("trainer-engine-actor-0-0")
+            provider.get_handle("trainer-engine-actor-00000-00000")
 
 
 class TestRayWorkerProviderWatchCellsStop:

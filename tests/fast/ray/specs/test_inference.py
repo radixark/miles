@@ -1165,7 +1165,7 @@ class TestSpecInferenceController:
 
     def test_the_worker_name_is_stable(self):
         """The driver looks the controller up by name, so this name is part of the release's contract."""
-        assert inference_controller_worker_name() == "inference-controller-0-0"
+        assert inference_controller_worker_name() == "inference-controller-00000-00000"
 
     def test_it_renders_into_static_workers_with_its_rpc_port(self, tmp_path):
         """The release has to contain the controller pod, or the address book would point at nothing."""
@@ -1305,7 +1305,7 @@ class TestRegistrationWiring:
         provider = compute_inference_controller_provider(args, capability=capability)
 
         assert isinstance(provider, StaticWorkerProvider)
-        addrs = asyncio.run(provider.get_addrs(f"{INFERENCE_CONTROLLER_POOL_ID}-0-0"))
+        addrs = asyncio.run(provider.get_addrs(f"{INFERENCE_CONTROLLER_POOL_ID}-00000-00000"))
         assert addrs[RPC_PORT_NAME] == HostAndPort(host="controller", port=9000)
         assert capability.requested_static_pool_ids == []
 
