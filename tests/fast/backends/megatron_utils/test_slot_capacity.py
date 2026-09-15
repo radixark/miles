@@ -26,7 +26,7 @@ def test_bytes_per_train_param_follows_the_precision_flags(bf16, fp16, accum_fp3
 
 
 def _probe(
-    free_before=100 * GIB, slot=2 * GIB, act_peak=10 * GIB, full_params=GIB, groups=0, max_groups=None
+    free_before=100 * GIB, slot=2 * GIB, act_peak=10 * GIB, full_params=GIB, groups=0, max_groups=None, **engine
 ) -> RankProbe:
     return RankProbe(
         free_before=free_before,
@@ -36,6 +36,7 @@ def _probe(
         adapter_full_params=full_params,
         expert_groups_per_slot=groups,
         grouped_mm_max_groups=max_groups,
+        **engine,
     )
 
 
@@ -59,6 +60,22 @@ def test_host_budget_binds_when_smaller():
 def test_the_measured_grouped_mm_limit_binds_on_moe():
     # gpu allows 44; 128 local experts per slot under a measured 1023-group limit allow 1023 // 128 = 7
     assert resolve_slot_capacity(_args(), [_probe(groups=128, max_groups=1023)], keep_k=1) == 7
+
+
+def test_the_engines_memory_binds_when_smaller():
+    # gpu allows 44; the engine keeps 0.9 * 20 GiB - 2 GiB of bf16 base weights = 16 GiB,
+    # a slot takes a 1 GiB adapter (2^29 params in bf16) plus 8 x 1024 tokens x 256 B of KV = 2 MiB -> 15 slots
+    args = _args(
+        rollout_num_gpus_per_engine=1,
+        rollout_num_gpus=1,
+        sglang_mem_fraction_static=0.9,
+        num_layers=1,
+        num_attention_heads=1,
+        hidden_size=64,
+        seq_length=1024,
+    )
+    probe = _probe(full_params=GIB // 2, gpu_total=20 * GIB, base_params=GIB)
+    assert resolve_slot_capacity(args, [probe], keep_k=1) == 15
 
 
 def test_no_room_for_one_slot_is_a_launch_error():

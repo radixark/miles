@@ -1874,6 +1874,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "caps the auto slot capacity (default: unchecked)"
                 ),
             )
+            parser.add_argument(
+                "--multi-lora-rollout-seqs-per-slot",
+                type=int,
+                default=8,
+                help="Sequences one slot samples at once, for the engine-memory bound of auto; 0 skips it (default: 8)",
+            )
+            parser.add_argument(
+                "--multi-lora-rollout-tokens-per-seq",
+                type=int,
+                default=None,
+                help="Tokens per sampled sequence for the engine-memory bound of auto (default: the engines' context)",
+            )
             return parser
 
         def add_router_arguments(parser):
