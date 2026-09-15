@@ -190,7 +190,7 @@ class _Harness:
                 router_port=20000,
                 model_name="default",
                 update_weights=True,
-                expected_num_cells=len(_CELL_IDS),
+                init_expected_num_cells=len(_CELL_IDS),
             )
         }
         self.worker_manager = _FakeWorkerManager(cell_ids=_CELL_IDS, reconcile=self.controller._reconcile)
