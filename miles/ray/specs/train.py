@@ -2,14 +2,19 @@ import copy
 import os
 from pathlib import Path
 
+from miles.ray.specs.inference import create_inference_controller_handle
 from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TRAINER_METHOD_CONCURRENCY_GROUPS
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.indep_dp import create_tcp_store
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.workers.naming import compute_cell_id, compute_worker_name
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
 
 MASTER_PORT_NAME = "master"
+
+TRAINER_CONTROLLER_WORKER_CLASS = "miles.ray.train.group.TrainerController"
 
 _TRAINER_ACTOR_CLASSES = {
     "megatron": "miles.backends.megatron_utils.actor.MegatronTrainRayActor",
@@ -19,6 +24,70 @@ _TRAINER_ACTOR_CLASSES = {
 _NUM_GPUS_PER_TRAINER_WORKER = 0.4
 
 _indep_dp_stores: list = []
+
+
+def spec_trainer_controller_actor(args) -> ServeWorkerSpec:
+    return _compute_spec_trainer_controller(
+        role="actor",
+        with_ref=args.kl_coef != 0 or args.use_kl_loss,
+        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
+        drives_inference=True,
+    )
+
+
+def spec_trainer_controller_critic(args) -> ServeWorkerSpec:
+    return _compute_spec_trainer_controller(
+        role="critic",
+        with_ref=False,
+        with_opd_teacher=False,
+        drives_inference=False,
+    )
+
+
+def create_trainer_controller_handle(*, role: str) -> BaseWorkerHandle:
+    from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+
+    provider = RayWorkerProvider.create()  # TODO inject instance
+    return provider.get_handle(trainer_controller_worker_name(role))
+
+
+def compute_trainer_controller_pool_id(role: str) -> str:
+    return f"trainer-controller-{role}"
+
+
+def trainer_controller_worker_name(role: str) -> str:
+    return compute_worker_name(pool_id=compute_trainer_controller_pool_id(role))
+
+
+def trainer_controller_cell_id(role: str) -> str:
+    return compute_cell_id(pool_id=compute_trainer_controller_pool_id(role), cell_index=0)
+
+
+def _compute_spec_trainer_controller(
+    *,
+    role: str,
+    with_ref: bool,
+    with_opd_teacher: bool,
+    drives_inference: bool,
+) -> ServeWorkerSpec:
+    return ServeWorkerSpec(
+        name=compute_trainer_controller_pool_id(role),
+        port_infos=[],
+        env_var=lambda _ctx: {},
+        scheduling=SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0,
+            num_cpus_per_worker=1,
+        ),
+        worker_class=TRAINER_CONTROLLER_WORKER_CLASS,
+        ctor_kwargs=lambda _ctx: dict(
+            role=role,
+            with_ref=with_ref,
+            with_opd_teacher=with_opd_teacher,
+            inference_controller=create_inference_controller_handle() if drives_inference else None,
+        ),
+    )
 
 
 def specs_trainer(args) -> list[ServeWorkerSpec]:

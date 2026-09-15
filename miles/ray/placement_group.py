@@ -8,8 +8,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import create_inference_controller_handle
-from miles.ray.specs.train import compute_critic_args
-from miles.ray.train.group import TrainerController
+from miles.ray.specs.train import compute_critic_args, create_trainer_controller_handle
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 from ..utils.ray_utils import compute_ray_pin_head_options
@@ -127,24 +126,13 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     return ans
 
 
-async def create_training_models(args, inference_controller: BaseWorkerHandle, rollout_executor):
-    actor_model = TrainerController(
-        args=args,
-        role="actor",
-        with_ref=args.kl_coef != 0 or args.use_kl_loss,
-        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
-        inference_controller=inference_controller,
-    )
-    actor_start_rollout_ids = await actor_model.init()
+async def create_training_models(args, rollout_executor) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
+    actor_model = create_trainer_controller_handle(role="actor")
+    actor_start_rollout_ids = await actor_model.init(args)
 
     if args.use_critic:
-        critic_model = TrainerController(
-            args=compute_critic_args(args),
-            role="critic",
-            with_ref=False,
-            inference_controller=None,
-        )
-        critic_start_rollout_ids = await critic_model.init()
+        critic_model = create_trainer_controller_handle(role="critic")
+        critic_start_rollout_ids = await critic_model.init(compute_critic_args(args))
     else:
         critic_model = None
 
