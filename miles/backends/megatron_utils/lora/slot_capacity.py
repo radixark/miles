@@ -32,10 +32,11 @@ class RankProbe:
     act_peak: int  # transient peak of one max-size fb; shared across slots (single issue)
     adapter_local_params: int  # this rank's shard of one max-rank adapter
     adapter_full_params: int  # the unsharded adapter, for engine-side copies
+    slot_scale: float = 1.0
 
     @property
     def slot_bytes(self) -> int:
-        return self.free_before - self.free_after
+        return int((self.free_before - self.free_after) * self.slot_scale)
 
     def capacity(self, margin_bytes: int) -> int:
         return max(int((self.free_before - self.act_peak - margin_bytes) // self.slot_bytes), 0)
@@ -108,6 +109,8 @@ async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankPro
     await backend.unload_slot(1)
     await backend.unload_slot(0)
 
+    weight = 2 if (args.bf16 or args.fp16) else 4
+    scale = bytes_per_train_param(args) / (bytes_per_train_param(args) - weight)
     probes = [
         RankProbe(
             free_before=b["free"],
@@ -115,6 +118,7 @@ async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankPro
             act_peak=a["act_peak"],
             adapter_local_params=a["adapter_local_params"],
             adapter_full_params=a["adapter_full_params"],
+            slot_scale=scale,
         )
         for b, a in zip(before, after, strict=True)
     ]
