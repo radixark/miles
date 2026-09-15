@@ -19,6 +19,7 @@ rollout engines, pausing producer submissions for the duration of the
 import asyncio
 import logging
 
+from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import (
     BaseRolloutFn,
     RolloutFnConstructorInput,
@@ -34,6 +35,7 @@ from miles.rollout.fully_async_data_buffer import (
     DataBufferConstructorInput,
     DataBufferInput,
     DefaultDataBuffer,
+    DefaultMultiDataBuffer,
     Group,
     first_sample,
 )
@@ -81,7 +83,10 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         if input.evaluation:
             return await self._call_eval(input)
         if self._worker is None:
-            buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
+            default_buffer_cls = (
+                DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
+            )
+            buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
             self._output = buffer_cls(
                 DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
             )
@@ -139,8 +144,10 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self, current_version: int | None) -> DataBufferInput:
-        queue_get = asyncio.create_task(self._output.get(current_version=current_version))
+    async def _next_group(self, *, current_version: int | None, trainer_model_id: str | None) -> DataBufferInput:
+        queue_get = asyncio.create_task(
+            self._output.get(current_version=current_version, trainer_model_id=trainer_model_id)
+        )
         try:
             while True:
                 done, _ = await asyncio.wait(
@@ -169,7 +176,9 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         do_print = True
 
         while len(data) < target_data_size:
-            entry = await self._next_group(input.weight_version)
+            entry = await self._next_group(
+                current_version=input.weight_version, trainer_model_id=input.trainer_model_id
+            )
             assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:
@@ -197,7 +206,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         if self._sample_filter is not None:
             self._sample_filter(args, data)
 
-        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics())
+        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics(input.trainer_model_id))
 
     def _recycle(self, prompt_group: list[Sample]) -> None:
         for sample in prompt_group:
