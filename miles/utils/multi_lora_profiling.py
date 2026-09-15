@@ -83,13 +83,16 @@ class Profiler:
         requests, self._requests = self._requests, []
         return requests
 
+    def log_requests(self) -> None:
+        if requests := self.drain_requests():
+            logger.info("%s%s", REQUESTS_LOG_PREFIX, json.dumps(requests))
+
     def log(self) -> None:
         if self._seconds:
             logger.info("%s%s", PROFILE_LOG_PREFIX, json.dumps(self.snapshot()))
         if self._series:
             logger.info("%s%s", METRICS_LOG_PREFIX, json.dumps(self._series))
-        if requests := self.drain_requests():
-            logger.info("%s%s", REQUESTS_LOG_PREFIX, json.dumps(requests))
+        self.log_requests()
 
 
 def _call_size(op: str, args: tuple, kwargs: dict) -> int:
@@ -194,6 +197,8 @@ class _RequestTiming:
         op, tenant, created_at = self.pending.pop(request_id)
         if _json_field(response_body, "error") is None:
             self.profiler.request(op, tenant, created_at, time.monotonic())
+        if op != "asample" or not self.pending:
+            self.profiler.log_requests()
 
 
 def _json_field(body: bytes, key: str):
