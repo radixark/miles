@@ -36,15 +36,19 @@ def cell(
     healthy: bool,
     cell_type: str = "actor",
     phase: str = "Running",
+    serving: bool = True,
     workers_hash: str = "generation-0",
 ) -> dict:
     status = "True" if healthy else "False"
+    conditions = [{"type": "Healthy", "status": status}]
+    if cell_type == "rollout":
+        conditions.append({"type": "Serving", "status": "True" if serving else "False"})
     return {
         "metadata": {
             "name": name,
             "labels": {"miles.io/cell-type": cell_type, "miles.io/workers-hash": workers_hash},
         },
-        "status": {"phase": phase, "conditions": [{"type": "Healthy", "status": status}]},
+        "status": {"phase": phase, "conditions": conditions},
     }
 
 
@@ -106,8 +110,8 @@ def log_of(
     return log
 
 
-def typed_cell(name: str, cell_type: str, *, healthy: bool = True) -> dict:
-    return cell(name, healthy=healthy, cell_type=cell_type)
+def typed_cell(name: str, cell_type: str, *, healthy: bool = True, serving: bool = True) -> dict:
+    return cell(name, healthy=healthy, cell_type=cell_type, serving=serving)
 
 
 def config_of(backend: ClusterBackend, *, namespace: str = NAMESPACE) -> command_utils.ExecuteTrainConfig:
