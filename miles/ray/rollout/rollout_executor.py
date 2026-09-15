@@ -315,7 +315,7 @@ class RolloutExecutor:
                 self.generate_rollout.save(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.save(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
-        event_logger_checkpoint.snapshot(self.args, rollout_id)
+        event_logger_checkpoint.snapshot(self.args, directory=directory / event_logger_checkpoint.SNAPSHOT_DIRNAME)
 
     def load(self, rollout_id: int) -> None:
         if self.args.load is None:
