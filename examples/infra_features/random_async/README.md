@@ -8,7 +8,7 @@ for bigger agentic workloads.
 ## Quick start
 
 ```bash
-# default (Qwen3.5-35B-A3B), in_place pause + broadcast weight transfer
+# default (Qwen3.5-35B-A3B), retract pause + broadcast weight transfer
 python run_random_async_3node.py
 
 # retract pause + p2p weight transfer
