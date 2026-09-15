@@ -1,4 +1,4 @@
-"""Snapshot/restore the event directory alongside model checkpoints."""
+"""Snapshot/restore the event directory alongside the rollout-side checkpoint state."""
 
 import logging
 import shutil
@@ -12,21 +12,21 @@ from miles.backends.megatron_utils.megatron_config import compute_trainer_checkp
 
 logger = logging.getLogger(__name__)
 
+SNAPSHOT_DIRNAME = "debug_events"
 
-def snapshot(args: Namespace, iteration: int) -> None:
-    if args.save_debug_event_data is None or args.save is None:
+
+def snapshot(args: Namespace, directory: Path) -> None:
+    if args.save_debug_event_data is None:
         return
 
     src = Path(args.save_debug_event_data)
     if not src.is_dir():
         return
 
-    dst = _snapshot_dir(Path(args.save), iteration)
-    if dst.exists():
-        shutil.rmtree(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst)
-    logger.info("Snapshotted event dir %s -> %s", src, dst)
+    if directory.exists():
+        shutil.rmtree(directory)
+    shutil.copytree(src, directory)
+    logger.info("Snapshotted event dir %s -> %s", src, directory)
 
 
 def restore(args: Namespace) -> None:
@@ -82,4 +82,6 @@ def _move_aside(dst: Path) -> Path:
 
 
 def _snapshot_dir(checkpoint_root: Path, iteration: int) -> Path:
-    return checkpoint_root / f"iter_{iteration:07d}" / "debug_events"
+    from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
+
+    return compute_rollout_checkpoint_dir(checkpoint_root, rollout_id=iteration) / SNAPSHOT_DIRNAME
