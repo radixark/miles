@@ -107,6 +107,8 @@ def execute():
     # This ensures true on-policy: fwd is bitwise-identical in both stages.
     true_on_policy_args = (
         "--sglang-enable-deterministic-inference "
+        "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1 "
+        "--recompute-logprobs-via-prefill "
         "--sglang-rl-on-policy-target fsdp "
         "--sglang-attention-backend triton "  # inference side: triton (AMD-compatible)
         "--attn-implementation triton "  # training side: SGLang Triton bridge
@@ -115,6 +117,8 @@ def execute():
     )
     true_on_policy_envs = {
         "NCCL_ALGO": "allreduce:tree",
+        # The precision contract keeps residuals in FP32; preserve the RoPE cache on ROCm too.
+        "SGLANG_ROPE_CACHE_FP32": "1",
         # "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
         # "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
     }
