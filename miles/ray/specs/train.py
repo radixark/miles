@@ -35,11 +35,6 @@ TRAINER_CONTROLLER_ADDRS_FLAG = "--trainer-controller-addrs"
 POOL_CATEGORY_TRAINER_ENGINE = "trainer_engine"
 
 TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
-TRAINER_METHOD_CONCURRENCY_GROUPS = {
-    "get_heartbeat_status": "heartbeat_status",
-    "inject_fault": "fault_injector",
-    "kill_self": "kill_self",
-}
 
 TRAINER_CONTROLLER_WORKER_CLASS = "miles.ray.train.group.TrainerController"
 
@@ -236,7 +231,6 @@ def _compute_spec_trainer(
             cell_index=ctx.cell_index,
         ),
         concurrency_groups=TRAINER_CONCURRENCY_GROUPS if args.use_fault_tolerance else None,
-        method_concurrency_groups=TRAINER_METHOD_CONCURRENCY_GROUPS if args.use_fault_tolerance else None,
         meta=lambda ctx: dict(role=config.role, cell_index=ctx.cell_index),
     )
 

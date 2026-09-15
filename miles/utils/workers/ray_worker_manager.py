@@ -483,9 +483,18 @@ class _ServeActorRayCommManager(_BaseActorManager[ServeWorkerSpec]):
         )
 
     def _compute_method_concurrency_groups(self, actor_class: type) -> dict[str, str]:
-        if self.spec.concurrency_groups is None:
+        if (groups := self.spec.concurrency_groups) is None:
             return {}
-        return {**declared_concurrency_groups(actor_class), **(self.spec.method_concurrency_groups or {})}
+
+        method_groups = declared_concurrency_groups(actor_class)
+        assert method_groups, (
+            f"Worker {self.spec.name!r} declares concurrency groups {sorted(groups)} but no method of "
+            f"{actor_class.__name__} is annotated with @rpc(concurrency_group=...): threading the actor "
+            f"while every method stays in the default group buys nothing"
+        )
+        undeclared = sorted(set(method_groups.values()) - set(groups))
+        assert not undeclared, f"Worker {self.spec.name!r} routes methods to undeclared groups: {undeclared}"
+        return method_groups
 
     async def post_setup(self) -> None:
         pass

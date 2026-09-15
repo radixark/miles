@@ -11,6 +11,7 @@ from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_provider.kubernetes.core import provider as core_provider
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo, KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
+from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 from miles.utils.workers.worker_spec import HostAndPort
 
 NAMESPACE = "rl"
@@ -600,14 +601,16 @@ class TestGetWorkerInfos:
         with pytest.raises(AssertionError, match="no observed worker pods"):
             _worker_infos(_trainer_provider(FakePodApi()), cell_id="engine-00009")
 
-    def test_a_worker_that_is_not_served_has_no_handle(self):
-        """A command worker has no RPC surface, so the provider must not give it a handle."""
+    def test_a_worker_that_is_not_served_names_no_class_and_refuses_a_handle(self):
+        """A command worker has no rpc surface at all, so the refusal belongs where one is asked for."""
         api = FakePodApi(pods=[make_pod(name="engine-0-0")])
         provider = _provider(api, worker_ports={"engine": {"rpc": 8000}})
 
         (info,) = _worker_infos(provider)
 
-        assert info.handle is None
+        assert info.worker_class is None
+        with pytest.raises(AssertionError, match="is not served"):
+            build_rpc_handle_of_worker_info(info)
 
     def test_fans_a_pod_out_into_one_worker_per_rank_it_serves(self):
         """A supervised pod runs one worker process per rank, and each of them has to be driven separately."""
