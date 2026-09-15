@@ -94,4 +94,4 @@ def test_an_injector_that_outlives_the_join_fails_instead_of_racing_the_log() ->
                 handle.stop_and_join()
         finally:
             released.set()
-            handle._thread.join(timeout=30)
+            handle._worker.join(timeout_seconds=30)
