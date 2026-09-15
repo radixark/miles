@@ -17,6 +17,7 @@ from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.types import ClusterBackend
 
 FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
+RAY_ROLLOUT_ENGINE_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL]
 
 DELETE_POD_FORM_NAME: str = "delete_pod"
 EXEC_SIGKILL_FORM_NAME: str = "exec_sigkill"
@@ -103,13 +104,16 @@ CellFaultForms = dict[str, list[BaseFaultForm]]
 
 
 def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrainConfig) -> CellFaultForms:
-    kill_forms: list[BaseFaultForm] = [
-        InjectFaultForm(base_url=base_url, failure_mode=failure_mode) for failure_mode in FAILURE_MODES
-    ]
+    actor_kill_forms = _inject_fault_forms(base_url=base_url, failure_modes=FAILURE_MODES)
 
     match config.cluster_backend:
         case ClusterBackend.RAY:
-            return {ACTOR_CELL_TYPE: kill_forms, ROLLOUT_CELL_TYPE: kill_forms}
+            return {
+                ACTOR_CELL_TYPE: actor_kill_forms,
+                ROLLOUT_CELL_TYPE: _inject_fault_forms(
+                    base_url=base_url, failure_modes=RAY_ROLLOUT_ENGINE_FAILURE_MODES
+                ),
+            }
         case ClusterBackend.KUBERNETES:
             delete_pod_form = DeletePodFaultForm(namespace=config.namespace, run_id=config.run_id)
             exec_sigkill_form = ExecSigkillFaultForm(
@@ -119,6 +123,10 @@ def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrain
                 process_pattern=SGLANG_PROCESS_PATTERN,
             )
             return {
-                ACTOR_CELL_TYPE: [*kill_forms, delete_pod_form],
+                ACTOR_CELL_TYPE: [*actor_kill_forms, delete_pod_form],
                 ROLLOUT_CELL_TYPE: [exec_sigkill_form, delete_pod_form],
             }
+
+
+def _inject_fault_forms(*, base_url: str, failure_modes: list[FailureMode]) -> list[BaseFaultForm]:
+    return [InjectFaultForm(base_url=base_url, failure_mode=failure_mode) for failure_mode in failure_modes]

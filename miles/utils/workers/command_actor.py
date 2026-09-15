@@ -35,7 +35,14 @@ class CommandActor(NodeProbeMixin):
         process_utils.kill_process_tree(self._process)
 
     def inject_fault(self, mode: str) -> None:
-        fault_injector.inject_fault(mode=mode)
+        assert self._process is not None, "CommandActor has no subprocess to inject a fault into"
+        assert (failure_mode := fault_injector.FailureMode(mode)) is fault_injector.FailureMode.SIGKILL, (
+            f"{failure_mode.value} is a fault a process inflicts on itself from the inside, and no signal reproduces "
+            f"it from the outside, so only sigkill can be injected into a subprocess"
+        )
+
+        logger.warning(f"CommandActor kills its subprocess group pid={self._process.pid}")
+        process_utils.kill_process_tree(self._process)
 
     def _babysit(self, process: subprocess.Popen) -> None:
         returncode = process.wait()
