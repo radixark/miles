@@ -41,6 +41,7 @@ class EnvReport(FrozenStrictBaseModel):
     editable_packages: list[EnvReportEditablePackageInfo]
     git_repos: list[EnvReportGitRepoInfo]
     full_pip_list: list[dict[str, str]]
+    packages_probed: bool
 
 
 class EventBase(FrozenStrictBaseModel):

@@ -2335,6 +2335,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "this process.",
             )
             parser.add_argument(
+                "--env-report-interval-seconds",
+                type=float,
+                default=3600.0,
+                help="How often every process re-records its environment, so that code loaded later "
+                "(lazy imports, a swapped shared disk) is still captured. Non-positive records only at startup.",
+            )
+            parser.add_argument(
                 "--debug-deterministic-collective",
                 action="store_true",
                 default=False,
@@ -3140,6 +3147,8 @@ def miles_validate_args(args):
         if args.opd_teacher_urls:
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
 
+    # TODO: refactor
+    args.requested_load = args.load
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
