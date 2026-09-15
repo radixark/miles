@@ -12,7 +12,6 @@ from miles.utils.workers.cell_operations.ray import RayCellOperations
 from .conftest import (
     MockInferenceController,
     MockRemoteCall,
-    MockStopCellController,
     MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
@@ -420,7 +419,6 @@ class TestCellStatusGeneration:
             cell_type="actor",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[BlockingController(), RecordingController()],
             pool_ids=[],
@@ -449,7 +447,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
@@ -472,7 +469,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: current})],
             pool_ids=_pool_ids_of(manager),
@@ -493,7 +489,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[
                 MockInferenceController({ENGINE_CELL_ID: _running_status(TriState.TRUE, workers_hash="gen-1")})
@@ -514,7 +509,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -542,7 +536,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
@@ -574,7 +567,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
@@ -597,7 +589,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
@@ -615,7 +606,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[
                 MockInferenceController({ENGINE_CELL_ID: _running_status(TriState.TRUE, workers_hash="gen-1")})
@@ -640,7 +630,6 @@ class TestCellStatusGeneration:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
