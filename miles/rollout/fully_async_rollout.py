@@ -81,6 +81,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         )
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._worker: asyncio.Task | None = None
+        self._worker_error_cancel_targets: set[asyncio.Task] = set()
         self._eval_prompt_dataset_cache: dict = {}
         self._curr_kv_cache_namespace: str | None = None
         self._producer_resumed = asyncio.Event()
@@ -100,6 +101,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._curr_kv_cache_namespace = compute_kv_cache_namespace(self.args, input)
         if self._worker is None:
             self._worker = asyncio.create_task(self._worker_loop())
+            self._worker.add_done_callback(self._on_worker_error)
             logger.info("Started fully-async rollout worker")
         return await self._drain(input)
 
@@ -182,15 +184,24 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     # -------------------------- consumer --------------------------
 
+    def _on_worker_error(self, worker: asyncio.Task) -> None:
+        # The worker loop never returns normally, so any completion fails the waiting step.
+        logger.error("fully-async rollout worker ended", exc_info=None if worker.cancelled() else worker.exception())
+        for target in list(self._worker_error_cancel_targets):
+            target.cancel()
+
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
         assert args.rollout_global_dataset
 
+        assert not self._worker.done(), "the fully-async rollout worker has ended"
+        self._worker_error_cancel_targets.add(asyncio.current_task())
         entries = await self._output.get(
             current_version=input.weight_version,
             num_groups=args.rollout_batch_size,
             trainer_model_id=input.trainer_model_id,
         )
+        self._worker_error_cancel_targets.discard(asyncio.current_task())
 
         data: list[Group] = []
         do_print = True
