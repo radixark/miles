@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -17,6 +18,20 @@ def override_argv(argv: list[str]) -> Iterator[None]:
         yield
     finally:
         sys.argv = original_argv
+
+
+@contextmanager
+def override_env(env: dict[str, str]) -> Iterator[None]:
+    original = {name: os.environ.get(name) for name in env}
+    os.environ.update(env)
+    try:
+        yield
+    finally:
+        for name, value in original.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def split_worker_argv(argv: list[str]) -> tuple[list[str], list[str]]:

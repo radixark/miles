@@ -1,3 +1,4 @@
+import hashlib
 import re
 import uuid
 
@@ -8,6 +9,10 @@ _RUN_UUID_PATTERN = re.compile(rf"[0-9a-f]{{{RUN_UUID_LENGTH}}}")
 
 def generate_run_uuid() -> str:
     return uuid.uuid4().hex[:RUN_UUID_LENGTH]
+
+
+def derive_run_uuid(seed: str) -> str:
+    return hashlib.blake2b(seed.encode(), digest_size=RUN_UUID_LENGTH).hexdigest()[:RUN_UUID_LENGTH]
 
 
 def validate_run_uuid(value: str) -> str:

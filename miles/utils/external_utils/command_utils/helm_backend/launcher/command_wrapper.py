@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import TypeVar
 
+import yaml
 from pydantic import BaseModel
 
 from miles.utils.external_utils.command_utils.common import run_process
@@ -15,6 +16,22 @@ class Helm:
     @staticmethod
     def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
         return run_process(["helm", *arguments], capture_output=True, check=False)
+
+    @staticmethod
+    def upgrade(
+        *,
+        release: str,
+        namespace: str,
+        chart: str | Path,
+        values_files: list[str | Path],
+    ) -> None:
+        _run(Helm.upgrade_command(release, namespace, chart, values_files), capture_output=False)
+
+    @staticmethod
+    def build_dependencies(chart: str | Path) -> None:
+        if all((Path(chart) / "charts" / name).exists() for name in _locked_dependency_names(chart)):
+            return
+        _run(["helm", "dependency", "build", str(chart)], capture_output=False)
 
     @staticmethod
     def upgrade_command(release: str, namespace: str, chart: str | Path, values_files: list[str | Path]) -> list[str]:
@@ -82,3 +99,14 @@ class Kubectl:
         arguments: list[str], *, input: str | None = None, check: bool = False
     ) -> subprocess.CompletedProcess[str]:
         return run_process(["kubectl", *arguments], capture_output=True, check=check, input=input)
+
+
+def _run(command: list[str], capture_output: bool) -> subprocess.CompletedProcess[str]:
+    return run_process(command, capture_output=capture_output, check=True)
+
+
+def _locked_dependency_names(chart: str | Path) -> list[str]:
+    lock = Path(chart) / "Chart.lock"
+    if not lock.exists():
+        return []
+    return [entry["name"] for entry in (yaml.safe_load(lock.read_text()) or {}).get("dependencies", [])]
