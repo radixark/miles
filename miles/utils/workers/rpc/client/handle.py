@@ -73,6 +73,16 @@ class RpcWorkerHandle(BaseWorkerHandle):
 
         return call
 
+    async def submit_without_result(self, method_name: str, /, **kwargs: Any) -> None:
+        spec = self._specs.get(method_name)
+        if spec is None:
+            raise AttributeError(f"{self._worker_cls_name} has no rpc method {method_name!r}")
+
+        call = await self._prepare_call(
+            spec=spec, kwargs=canonicalize_method_arguments(spec=spec, args=(), kwargs=kwargs)
+        )
+        await call.submit()
+
     async def wait_ready(self, *, timeout: float) -> None:
         async def attempt(remaining: float) -> None:
             await self._transport.request(
@@ -104,6 +114,10 @@ class RpcWorkerHandle(BaseWorkerHandle):
         return False
 
     async def _perform_call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
+        call = await self._prepare_call(spec=spec, kwargs=kwargs)
+        return await call.run()
+
+    async def _prepare_call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> RpcCall:
         call = RpcCall(
             spec=spec,
             kwargs=kwargs,
@@ -115,4 +129,4 @@ class RpcWorkerHandle(BaseWorkerHandle):
         if self._boot_uuid_pin.needs_handshake():
             await self.wait_ready(timeout=self._ready_timeout_seconds)
 
-        return await call.run()
+        return call
