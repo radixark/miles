@@ -14,6 +14,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     MEAN_INTERVAL_SECONDS,
     spawn_fault_injector,
 )
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import create_cell_fault_forms
 from tests.fast.cluster_backends import create_backend_for_run
 
 from miles.utils.external_utils import command_utils
@@ -67,6 +68,7 @@ def run_ci(
         seed=seed,
         mean_interval_seconds=mean_interval,
         cell_type="actor",
+        cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
     )
 
     try:
