@@ -47,6 +47,7 @@ def _request(train_args: str) -> ExecuteTrainRequest:
         megatron_path="/root/Megatron-LM",
         before_ray_job_submit=None,
         prepare_cmd={},
+        extra_manifests=[],
     )
 
 
