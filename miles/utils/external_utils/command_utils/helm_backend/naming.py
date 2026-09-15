@@ -64,6 +64,10 @@ class ReleaseName(FrozenStrictBaseModel):
             parts.append(self.deploy_instance_id)
         return "-".join(parts)
 
+    @staticmethod
+    def run_prefix(*, run_id: str) -> str:
+        return f"{CHART_NAME}-{run_id}-"
+
     @classmethod
     def parse(cls, release: str) -> ReleaseName | None:
         if not release.startswith(f"{CHART_NAME}-"):
