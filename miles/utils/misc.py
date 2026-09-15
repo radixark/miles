@@ -145,12 +145,6 @@ class NodeProbeMixin:
     def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
         return get_gpu_uuids(gpu_ids)
 
-    @staticmethod
-    def _collect_env_report(*, role: str, rank: int, partial_env_report: str) -> None:
-        from miles.utils.env_report.reporter import collect_and_print_node_env_report
-
-        collect_and_print_node_env_report(role=role, rank=rank, partial_env_report=partial_env_report)
-
 
 def should_run_periodic_action(
     rollout_id: int,

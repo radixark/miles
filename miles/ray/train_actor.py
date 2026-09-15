@@ -13,7 +13,6 @@ import miles.utils.eval_config
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
-from miles.utils.env_report.reporter import collect_and_print_node_env_report
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
@@ -46,9 +45,6 @@ class TrainRayActor(NodeProbeMixin):
         role: Literal["actor", "critic"],
         cell_index: int,
     ):
-        configure_logger(
-            args, source=TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank)
-        )
         self.args = args
 
         self._heartbeat = SimpleHeartbeat()
@@ -61,6 +57,10 @@ class TrainRayActor(NodeProbeMixin):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+
+        configure_logger(
+            args, source=TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank)
+        )
 
         object_store.init_instance(args)
 
@@ -77,13 +77,6 @@ class TrainRayActor(NodeProbeMixin):
         self.role = role
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
-
-        if env_report := args.env_report:
-            collect_and_print_node_env_report(
-                role=role,
-                rank=self._rank,
-                partial_env_report=env_report,
-            )
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
 

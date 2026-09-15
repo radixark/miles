@@ -8,6 +8,41 @@ from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
+class EnvReportEditablePackageInfo(FrozenStrictBaseModel):
+    name: str
+    version: str
+    location: str
+
+
+class EnvReportGitRepoInfo(FrozenStrictBaseModel):
+    package_name: str
+    location: str
+    commit: str
+    dirty: bool
+    diff_stat: str
+
+
+class EnvReportArgsDump(FrozenStrictBaseModel):
+    values: dict[str, Any]
+    skipped_names: list[str]
+
+
+class EnvReportProcessFacts(FrozenStrictBaseModel):
+    hostname: str
+    argv: list[str]
+    args: EnvReportArgsDump
+    env_vars: dict[str, str]
+    launcher_env_report: dict[str, Any] | None
+
+
+class EnvReport(FrozenStrictBaseModel):
+    process: EnvReportProcessFacts
+    key_versions: dict[str, str]
+    editable_packages: list[EnvReportEditablePackageInfo]
+    git_repos: list[EnvReportGitRepoInfo]
+    full_pip_list: list[dict[str, str]]
+
+
 class EventBase(FrozenStrictBaseModel):
     timestamp: datetime
     source: ProcessIdentity
@@ -84,6 +119,11 @@ class TrainAdvantageComputationEvent(_ActorTrainEventBase):
     witness_ids: list[list[int]]
 
 
+class EnvReportEvent(EventBase):
+    type: Literal["env_report"] = "env_report"
+    report: EnvReport
+
+
 class MetricEvent(EventBase):
     type: Literal["metric"] = "metric"
     rollout_id: int | None = None
@@ -99,6 +139,7 @@ Event = Annotated[
     | CellReconfigureEvent
     | InferenceEngineWeightChecksumEvent
     | TrainAdvantageComputationEvent
+    | EnvReportEvent
     | MetricEvent,
     Discriminator("type"),
 ]
