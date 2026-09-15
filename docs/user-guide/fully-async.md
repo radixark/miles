@@ -150,6 +150,11 @@ replaceable component with the following interface:
 | `put()` | The rollout worker, once per finished group | Store the group, or reject it |
 | `get(num_groups=...)` | The trainer, once per training batch | Return that many groups at once, waiting until the buffer holds them |
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
+| `state_dict()` | Checkpoint save | Return every accepted entry needed to resume without loss or duplication |
+| `load_state_dict(state)` | Checkpoint load | Replace the buffer state with a previously returned state |
+
+Multi-policy runs do not checkpoint the rollout data buffer: its state is skipped on save, so a
+resumed run has none to load.
 
 These methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.

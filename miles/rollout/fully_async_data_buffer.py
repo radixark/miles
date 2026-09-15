@@ -1,6 +1,6 @@
 """Data buffer between fully-async rollout production and training consumption.
 
-``DataBuffer`` is the contract (put / get / get_metrics); ``DefaultDataBuffer``
+``DataBuffer`` is the contract (put / get / metrics / checkpoint state); ``DefaultDataBuffer``
 is the built-in implementation, replaceable via ``--custom-async-data-buffer-path``.
 Every group-level decision lives here — what to keep, what to hand to
 ``--async-unused-samples-handler`` — so a custom buffer owns all of it. Only
@@ -15,6 +15,7 @@ from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter, iter_samples
@@ -86,6 +87,9 @@ class DataBufferInput:
     group: Group  # finished samples
 
 
+MULTI_POLICY_CHECKPOINT_UNSUPPORTED = "multi-policy rollout state is not checkpointed"
+
+
 class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
@@ -110,6 +114,12 @@ class DataBuffer(ABC):
     @abstractmethod
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         """Report the metrics of one policy since its previous call (its window counters reset here)."""
+
+    def state_dict(self) -> Any:
+        raise NotImplementedError(f"{type(self).__name__} must implement state_dict() for checkpointing")
+
+    def load_state_dict(self, state: Any) -> None:
+        raise NotImplementedError(f"{type(self).__name__} must implement load_state_dict() for checkpointing")
 
 
 # ============================= one policy buffer ==============================
@@ -267,6 +277,13 @@ class DefaultDataBuffer(DataBuffer):
             self._metric_selected_token_lag_sum += token_weighted_lag * stats.versioned_token_count
             self._metric_selected_versioned_tokens += stats.versioned_token_count
 
+    def state_dict(self) -> list[DataBufferInput]:
+        return list(self._buffer)
+
+    def load_state_dict(self, state: list[DataBufferInput]) -> None:
+        assert not self._buffer
+        self._buffer = list(state)
+
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"
         metrics = {
@@ -342,6 +359,13 @@ class DefaultMultiDataBuffer(DataBuffer):
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         return self._inner_of(trainer_model_id).get_metrics(trainer_model_id=trainer_model_id)
+
+    def state_dict(self) -> Any:
+        logger.warning(MULTI_POLICY_CHECKPOINT_UNSUPPORTED)
+        return []
+
+    def load_state_dict(self, state: Any) -> None:
+        logger.warning(MULTI_POLICY_CHECKPOINT_UNSUPPORTED)
 
     def _inner_of(self, trainer_model_id: str | None) -> DataBuffer:
         assert trainer_model_id in self._inners, (
