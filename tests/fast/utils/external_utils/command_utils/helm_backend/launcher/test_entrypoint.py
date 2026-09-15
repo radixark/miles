@@ -280,3 +280,56 @@ class TestTheLaunchRecordThePodsAreTold:
         pod_argv, _ = _compute_train_argv(monkeypatch, "")
 
         assert "--train-env-vars" not in pod_argv
+
+
+def _defuse(monkeypatch: pytest.MonkeyPatch, *, superseded_state_file: Path | None, state_file: Path) -> list[str]:
+    deleted: list[str] = []
+    monkeypatch.setattr(entrypoint.Kubectl, "delete_job", staticmethod(lambda name, **kwargs: deleted.append(name)))
+
+    entrypoint._defuse_previous_generation(
+        "r", namespace="rl", superseded_state_file=superseded_state_file, state_file=state_file
+    )
+    return deleted
+
+
+class TestDefusingThePreviousGeneration:
+    def test_marks_the_state_file_this_launch_supersedes(self, monkeypatch, tmp_path):
+        """The orchestrator it replaces goes on to publish its verdict and re-create the uninstall job."""
+        superseded = tmp_path / "state" / "orchestrator-old.state"
+        state_file = tmp_path / "state" / "orchestrator-new.state"
+
+        _defuse(monkeypatch, superseded_state_file=superseded, state_file=state_file)
+
+        assert entrypoint.RunFiles.superseded_marker(state_file=superseded).read_text() == f"{state_file}\n"
+
+    def test_writes_the_marker_before_it_defuses_the_job(self, monkeypatch, tmp_path):
+        """Between the two the old orchestrator may wake up, and only the marker stops it then."""
+        superseded = tmp_path / "state" / "orchestrator-old.state"
+        marked: list[bool] = []
+        monkeypatch.setattr(
+            entrypoint.Kubectl,
+            "delete_job",
+            staticmethod(
+                lambda name, **kwargs: marked.append(
+                    entrypoint.RunFiles.superseded_marker(state_file=superseded).exists()
+                )
+            ),
+        )
+
+        entrypoint._defuse_previous_generation(
+            "r", namespace="rl", superseded_state_file=superseded, state_file=tmp_path / "new.state"
+        )
+
+        assert marked == [True]
+
+    def test_a_launch_that_supersedes_nobody_marks_nothing(self, monkeypatch, tmp_path):
+        """A first install has no previous generation, and a marker with no owner would defuse a live run."""
+        _defuse(monkeypatch, superseded_state_file=None, state_file=tmp_path / "state" / "orchestrator-new.state")
+
+        assert list(tmp_path.glob("**/*.superseded")) == []
+
+    def test_the_pending_uninstall_job_is_deleted_either_way(self, monkeypatch, tmp_path):
+        """The job would uninstall the release this launch installs, marker or no marker."""
+        deleted = _defuse(monkeypatch, superseded_state_file=None, state_file=tmp_path / "new.state")
+
+        assert deleted == [entrypoint.RunNames.uninstall_job(release="r")]

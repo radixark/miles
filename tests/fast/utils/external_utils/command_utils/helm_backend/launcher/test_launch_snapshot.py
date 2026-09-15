@@ -134,7 +134,8 @@ def record_launch(monkeypatch, sandbox: Path, on_compute_specs=None, **request_o
 
     def fake_run(command: list[str], **kwargs: Any) -> Any:
         recorded.append(" ".join(str(part) for part in command))
-        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+        rendered = json.dumps({"manifest": ""}) if "--dry-run" in command else ""
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout=rendered, stderr="")
 
     monkeypatch.setattr(command_wrapper, "run_process", fake_run)
     monkeypatch.setattr(Helm, "get_manifest", staticmethod(lambda release, namespace: None))

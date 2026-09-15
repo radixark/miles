@@ -1,8 +1,13 @@
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunFiles, _orchestrator_state_path
+from miles.utils.external_utils.command_utils.helm_backend.naming import (
+    RunFiles,
+    _orchestrator_state_path,
+    platform_account_name,
+)
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state import (
     OrchestratorState,
     OrchestratorStatus,
 )
+from miles.utils.workers.types import PlatformAccess
 
 
 def _write(path, status: OrchestratorStatus, *, exit_code: int | None = None) -> None:
@@ -11,6 +16,13 @@ def _write(path, status: OrchestratorStatus, *, exit_code: int | None = None) ->
 
 def _state_file(tmp_path):
     return _orchestrator_state_path(tmp_path, "260101-000000-000001")
+
+
+class TestPlatformAccountName:
+    def test_platform_account_name_refuses_no_platform_access(self) -> None:
+        """A worker without platform access must not receive a platform service account."""
+        with pytest.raises(AssertionError, match="never reaches the platform"):
+            platform_account_name(release="miles-run-example-train", access=PlatformAccess.NONE)
 
 
 class TestRunDir:
@@ -48,3 +60,24 @@ class TestLatestExitFile:
         _write(earlier, OrchestratorStatus.EXITED, exit_code=1)
 
         assert RunFiles.latest_state_file(run_directory=tmp_path) == later
+
+
+class TestSupersededMarker:
+    def test_the_marker_sits_beside_the_state_file_it_supersedes(self):
+        """Both the launcher that writes it and the orchestrator that reads it know only that path."""
+        marker = RunFiles.superseded_marker(state_file="/runs/abc/state/orchestrator-x.state")
+
+        assert marker.as_posix() == "/runs/abc/state/orchestrator-x.state.superseded"
+
+    def test_every_generation_has_a_marker_of_its_own(self):
+        """A run is relaunched many times, and one shared marker would defuse every generation at once."""
+        first = RunFiles.superseded_marker(state_file="/runs/abc/state/orchestrator-1.state")
+        second = RunFiles.superseded_marker(state_file="/runs/abc/state/orchestrator-2.state")
+
+        assert first != second
+
+    def test_a_path_and_the_string_spelling_of_it_name_one_marker(self):
+        """The launcher holds a Path and the wrapper is given a string, and they have to meet."""
+        as_text = RunFiles.superseded_marker(state_file="/runs/abc/state/orchestrator-x.state")
+
+        assert RunFiles.superseded_marker(state_file=Path("/runs/abc/state/orchestrator-x.state")) == as_text
