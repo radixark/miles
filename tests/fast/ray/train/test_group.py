@@ -138,6 +138,20 @@ async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerCont
     return group
 
 
+class TestIndepDPStore:
+    def test_a_multi_cell_pool_gets_one_quorum_store_from_its_controller(self):
+        """The store must be minted once, where every cell can be told the same address."""
+        group = _make_controller(num_cells=3)
+
+        assert group._indep_dp_store_addr == train_conftest.FAKE_STORE_ADDR
+
+    def test_a_single_cell_pool_needs_no_quorum_store(self):
+        """One cell never renegotiates a quorum, so binding a port for it would be pure waste."""
+        group = _make_controller(num_cells=1)
+
+        assert group._indep_dp_store_addr is None
+
+
 class TestInit:
     def test_creates_correct_number_of_cells(self):
         group = _make_controller(num_cells=3)
@@ -982,7 +996,7 @@ class TestTrainRetry:
 
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
-        assert [ref.inner for ref in store.removed] == [values_ref.inner]
+        assert store.removed == [values_ref]
 
     async def test_cell_errored_does_not_retry_when_others_normal(self):
         """One cell errors during train but others return NORMAL → no retry.

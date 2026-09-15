@@ -69,12 +69,14 @@ class FSDPTrainRayActor(TrainRayActor):
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
         assert recv_ckpt_src_rank is None
         assert indep_dp_info.quorum_id == 0
+        assert indep_dp_store_addr is None
 
         if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper

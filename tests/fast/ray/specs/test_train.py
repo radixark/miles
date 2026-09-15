@@ -170,22 +170,13 @@ class TestConstructorArguments:
 
         assert spec.ctor_kwargs(_make_context())["world_size"] == 4
 
-    def test_a_single_cell_job_is_handed_no_rendezvous_store(self):
-        """The store exists to rendezvous cells with each other, so standing one up for a lone
-        cell leaks a TCPStore and a port on every ordinary run."""
-        (spec,) = specs_trainer(_make_args(actor_num_gpus_per_node=2))
-
-        assert spec.ctor_kwargs(_make_context())["indep_dp_store_addr"] is None
-
-    def test_independent_dp_cells_share_one_rendezvous_store(self, monkeypatch):
-        """Cells that must find each other need the same address, and a real one."""
+    def test_no_quorum_store_address_is_baked_into_the_spec(self, monkeypatch):
+        """Every pod recomputes the spec, so an address minted here would give each pod its own quorum."""
         monkeypatch.setattr("miles.ray.specs.train.compute_megatron_world_size_except_dp", lambda _args: 2)
-        monkeypatch.setattr("miles.ray.specs.train._create_indep_dp_store_addr", lambda: "10.0.0.1:1234")
 
-        (spec,) = specs_trainer(_make_args(actor_num_gpus_per_node=4, indep_dp=True))
+        (spec,) = specs_trainer(_make_args(actor_num_gpus_per_node=8, indep_dp=True))
 
-        addrs = [spec.ctor_kwargs(_make_context(cell_index=i))["indep_dp_store_addr"] for i in range(2)]
-        assert addrs == ["10.0.0.1:1234", "10.0.0.1:1234"]
+        assert "indep_dp_store_addr" not in spec.ctor_kwargs(_make_context())
 
     def test_the_backend_selects_the_worker_class(self):
         """A run must not start Megatron workers for an fsdp job."""
