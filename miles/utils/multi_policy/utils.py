@@ -5,6 +5,7 @@ from pathlib import Path
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args, resolve_megatron_config
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
+from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.ray.specs.train import compute_trainer_configs
 from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
@@ -58,9 +59,9 @@ def _assert_global_rollout_state_exists(args, *, leader_rollout_id: int) -> None
     if not args.rollout_global_dataset or args.load is None:
         return
 
-    path = Path(args.load) / "rollout" / f"global_dataset_state_dict_{leader_rollout_id}.pt"
-    assert path.exists(), (
-        f"the policies restored a checkpoint of rollout {leader_rollout_id}, but {path} is missing; the data "
+    directory = compute_rollout_checkpoint_dir(args.load, rollout_id=leader_rollout_id)
+    assert directory.is_dir(), (
+        f"the policies restored a checkpoint of rollout {leader_rollout_id}, but {directory} is missing; the data "
         f"source would silently restart from the first prompt and retrain what the checkpoint already saw"
     )
 

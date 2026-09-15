@@ -3,6 +3,7 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import Any, TypeVar
 
 from miles.dashboard import hooks as dashboard_hooks
@@ -49,6 +50,10 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 logger = logging.getLogger(__name__)
+
+_DATA_SOURCE_DIRNAME = "data_source"
+_GENERATE_ROLLOUT_DIRNAME = "generate_rollout"
+_EVAL_GENERATE_ROLLOUT_DIRNAME = "eval_generate_rollout"
 
 
 class RolloutExecutor:
@@ -300,23 +305,35 @@ class RolloutExecutor:
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
     def save(self, rollout_id: int) -> None:
-        self.data_source.save(rollout_id)
+        assert self.args.save is not None, "the orchestration only saves when --save is set"
+
+        directory = compute_rollout_checkpoint_dir(self.args.save, rollout_id=rollout_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        self.data_source.save(directory / _DATA_SOURCE_DIRNAME)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.save(rollout_id)
+                self.generate_rollout.save(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.save(rollout_id)
+                eval_fn.save(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id: int) -> None:
+        if self.args.load is None:
+            logger.warning("no --load: the rollout side starts fresh")
+            return
         assert rollout_id >= 0, f"rollout {rollout_id} is not a trained step"
 
-        self.data_source.load(rollout_id)
+        directory = compute_rollout_checkpoint_dir(self.args.load, rollout_id=rollout_id)
+        if not directory.is_dir():
+            logger.warning(f"No rollout state at {directory}; the rollout side starts fresh")
+            return
+
+        self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.load(rollout_id)
+                self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.load(rollout_id)
+                eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
 
     # -------------------------- misc APIs -----------------------------
 
@@ -345,6 +362,10 @@ class RolloutExecutor:
         self._eval_fleet = RolloutExecutorEvalFleet(
             self.args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
         )
+
+
+def compute_rollout_checkpoint_dir(directory: str | Path, *, rollout_id: int) -> Path:
+    return Path(directory) / "rollout" / str(rollout_id)
 
 
 _T = TypeVar("_T")
