@@ -10,6 +10,7 @@ from miles.ray.rollout.metrics import (
     _compute_spec_metrics,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
+    log_eval_rollout_data,
     log_rollout_data,
 )
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
@@ -164,6 +165,22 @@ class TestTrainingSampleMetrics:
 
 
 class TestComputeZeroStdMetrics:
+    @pytest.mark.parametrize("payload_positions", [(0,), (4,), (0, 1), (0, 1, 2, 3, 4, 5)])
+    def test_non_numeric_rewards_omit_zero_std_for_the_whole_batch(self, payload_positions):
+        args = make_args(n_samples_per_prompt=2)
+        samples = make_samples_grouped(3, 2, rewards=[0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+        assert _compute_zero_std_metrics(args, samples) == {
+            "zero_std/count_0.0": 1,
+            "zero_std/count_1.0": 1,
+            "zero_std/all_zero_percentage": pytest.approx(1 / 3),
+            "zero_std/all_one_percentage": pytest.approx(1 / 3),
+        }
+
+        for position in payload_positions:
+            samples[position].reward = {"score": float(position)}
+
+        assert _compute_zero_std_metrics(args, samples) == {}
+
     def test_returns_empty_for_ppo_regardless_of_reward_distribution(self):
         args = make_args(advantage_estimator="ppo")
         out = _compute_zero_std_metrics(args, make_samples_grouped(2, 4, rewards=[1.0] * 8))
@@ -393,6 +410,17 @@ class TestTitoMismatchMetrics:
 
 
 class TestComputePassrateFromSamples:
+    @pytest.mark.parametrize("payload_positions", [(0,), (0, 1), (0, 1, 2, 3)])
+    def test_non_numeric_rewards_omit_passrate_for_complete_groups(self, payload_positions):
+        args = make_args(n_samples_per_prompt=2)
+        samples = make_samples_grouped(2, 2, rewards=[1.0, 0.0, 1.0, 1.0])
+        assert _compute_passrate_from_samples(args, samples) == {"pass@1": 0.75, "pass@2": 1.0}
+
+        for position in payload_positions:
+            samples[position].reward = {"score": 1.0}
+
+        assert _compute_passrate_from_samples(args, samples) == {}
+
     def test_returns_empty_when_group_size_is_one(self):
         args = make_args(n_samples_per_prompt=1)
         samples = make_samples_grouped(4, 1, rewards=[1.0, 0.0, 1.0, 0.0])
@@ -433,6 +461,92 @@ class TestComputePassrateFromSamples:
             "pass@2": pytest.approx(1.0),
             "pass@4": pytest.approx(1.0),
         }
+
+
+class TestNonNumericRewardLogging:
+    def test_single_sample_groups_keep_rollout_metrics_without_zero_std(self, monkeypatch):
+        args = make_args(
+            rollout_batch_size=2,
+            n_samples_per_prompt=1,
+            use_opd=True,
+            opd_type="sglang",
+            train_backend="fsdp",
+            log_passrate=True,
+        )
+        samples = make_samples_grouped(2, 1, rewards=[0.0, 1.0])
+        logged = {}
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, metrics, **_kwargs: logged.update(metrics),
+        )
+        expected = {
+            "rollout/num_training_samples": 2,
+            "rollout/episode_raw_reward": 0.5,
+            "rollout/episode_response_length/mean": 4.0,
+            "rollout/episode_response_length/median": 4.0,
+            "rollout/episode_response_length/max": 4,
+            "rollout/episode_response_length/min": 4,
+            "rollout/episode_total_response_length/mean": 4.0,
+            "rollout/response_len/mean": 4.0,
+            "rollout/response_len/median": 4.0,
+            "rollout/response_len/max": 4,
+            "rollout/response_len/min": 4,
+            "rollout/zero_std/count_0.0": 1,
+            "rollout/zero_std/count_1.0": 1,
+            "rollout/zero_std/all_zero_percentage": 0.5,
+            "rollout/zero_std/all_one_percentage": 0.5,
+            "rollout/prefix_cache_hit_rate": 0.0,
+            "rollout/avg_cached_tokens_per_sample": 0.0,
+            "rollout/repetition_frac": 0.0,
+            "rollout/truncated_ratio": 0.0,
+            "perf/rollout_time": 1.0,
+            "perf/tokens_per_gpu_per_sec": 1.0,
+            "perf/longest_sample_tokens_per_sec": 4.0,
+            "perf/effective_tokens_per_gpu_per_sec": 1.0,
+            "perf/longest_effective_sample_tokens_per_sec": 4.0,
+            "rollout/step": 0,
+        }
+        log_rollout_data(0, args, samples, None, 1.0)
+        assert logged == expected
+
+        for sample in samples:
+            sample.reward = {"meta_info": {"input_token_logprobs": [[-0.5, 1, None]]}}
+        logged.clear()
+        log_rollout_data(0, args, samples, None, 1.0)
+
+        expected = {key: value for key, value in expected.items() if not key.startswith("rollout/zero_std/")}
+        expected["rollout/episode_raw_reward"] = 0.0
+        assert logged == expected
+
+    @pytest.mark.parametrize("other_reward", [{"score": 0.0}, 0.0, None])
+    def test_eval_omits_non_numeric_reward_metrics_per_dataset(self, monkeypatch, other_reward):
+        args = make_args(n_samples_per_eval_prompt=2, log_passrate=True)
+        monkeypatch.setattr("miles.ray.rollout.metrics.tracking.log", lambda *_args, **_kwargs: None)
+        data = {
+            "payload": {"rewards": [1.0, None], "truncated": [False, True]},
+            "scalar": {"rewards": [1.0, 1.0]},
+        }
+        expected = {
+            "eval/payload-none_reward_ratio": 0.5,
+            "eval/payload": 0.5,
+            "eval/payload-truncated_ratio": 0.5,
+            "eval/payload-pass@1": 0.5,
+            "eval/payload-pass@2": 1.0,
+            "eval/scalar-none_reward_ratio": 0.0,
+            "eval/scalar": 1.0,
+            "eval/scalar-pass@1": 1.0,
+            "eval/scalar-pass@2": 1.0,
+            "eval/step": 0,
+        }
+        assert log_eval_rollout_data(0, args, data) == expected
+
+        data["payload"]["rewards"] = [{"score": 1.0}, other_reward]
+        del expected["eval/payload"]
+        del expected["eval/payload-pass@1"]
+        del expected["eval/payload-pass@2"]
+        expected["eval/payload-none_reward_ratio"] = 0.5 if other_reward is None else 0.0
+
+        assert log_eval_rollout_data(0, args, data) == expected
 
 
 class TestWeightVersionMetrics:
