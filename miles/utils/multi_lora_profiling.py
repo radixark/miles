@@ -248,8 +248,7 @@ _OP_NOTES = {
 _CLIENT_PHASES = (
     ("publish", ("save_weights_for_sampler",)),
     ("rollout", ("sample",)),
-    ("forward_backward", ("forward_backward", "forward_only")),
-    ("optim_step", ("optim_step",)),
+    ("train", ("forward_backward", "forward_only", "optim_step")),
 )
 
 
@@ -304,41 +303,34 @@ def render_profile(snapshot: dict[str, dict[str, float]]) -> str:
     return table
 
 
-def _close_step(model_steps: list[dict[str, float]], step: dict[str, float], wave: list[tuple[float, float]]) -> None:
-    if wave:  # the rollout wave: first sample request in, last sample result out
-        step["rollout"] = max(end for _, end in wave) - min(start for start, _ in wave)
-    model_steps.append(step)
-
-
 def client_steps(requests: list[list]) -> list[dict[str, float]]:
-    """One LoRA's step as the tenant saw it: publish, rollout wave, forward_backward, optim_step, arrival to result."""
+    """One LoRA's step as the tenant saw it: publish, rollout wave and train, each first request in to last result out."""
     by_model: dict[str, list[tuple[float, str, float]]] = {}
     for model, op, created_at, finished_at in requests:
         by_model.setdefault(model, []).append((created_at, op, finished_at))
-    steps: list[dict[str, float]] = []
+    steps: list[dict[str, list[float]]] = []
     for entries in by_model.values():
         entries.sort()
-        model_steps: list[dict[str, float]] = []
-        step: dict[str, float] = {}
-        wave: list[tuple[float, float]] = []
+        spans: dict[str, list[float]] = {}
         for created_at, op, finished_at in entries:
-            if op == "sample":
-                wave.append((created_at, finished_at))
-                continue
             phase = next((name for name, ops in _CLIENT_PHASES if op in ops), None)
             if phase is None:
                 continue
-            if phase == "publish" and (step or wave):  # a step starts with its publish
-                _close_step(model_steps, step, wave)
-                step, wave = {}, []
-            step[phase] = step.get(phase, 0.0) + finished_at - created_at
-            if phase == "optim_step":  # and ends with its optimizer step, unless training was skipped
-                _close_step(model_steps, step, wave)
-                step, wave = {}, []
-        if model_steps and set(step) == {"publish"}:  # the final save after the last step
-            model_steps[-1]["publish"] = model_steps[-1].get("publish", 0.0) + step["publish"]
-        steps.extend(model_steps)
-    return steps
+            if phase == "publish" and spans:  # a step starts with its publish
+                steps.append(spans)
+                spans = {}
+            span = spans.setdefault(phase, [created_at, finished_at])
+            span[0], span[1] = min(span[0], created_at), max(span[1], finished_at)
+            if op == "optim_step":  # and ends with its optimizer step, unless training was skipped
+                steps.append(spans)
+                spans = {}
+        if spans and set(spans) != {"publish"}:  # a trailing publish alone is the final save, not a step
+            steps.append(spans)
+    return [
+        {phase: end - start for phase, (start, end) in spans.items()}
+        | {"one step": max(end for _, end in spans.values()) - min(start for start, _ in spans.values())}
+        for spans in steps
+    ]
 
 
 def render_client(
@@ -348,45 +340,36 @@ def render_client(
     if not steps:
         return ""
     n = lora_steps(snapshot)
-    means = {phase: statistics.fmean(step.get(phase, 0.0) for step in steps) for phase, _ in _CLIENT_PHASES}
-    one_step = sum(means.values()) or 1.0
+    means = {
+        phase: statistics.fmean(step.get(phase, 0.0) for step in steps)
+        for phase in ("one step", "publish", "rollout", "train")
+    }
+    one_step = means["one step"] or 1.0
+    per_step = lambda *ops: sum(snapshot.get(op, {}).get("total_s", 0.0) for op in ops) / n  # noqa: E731
     work = {
-        "publish": sum(snapshot.get(op, {}).get("total_s", 0.0) for op in ("export_slot", "push_slot")) / n,
+        "publish": per_step("export_slot", "push_slot"),
         "rollout": means["rollout"],
-        "forward_backward": sum(
-            snapshot.get(op, {}).get("total_s", 0.0) for op in ("forward_backward", "forward_only")
-        )
-        / n,
-        "optim_step": snapshot.get("optim_step", {}).get("total_s", 0.0) / n,
+        "train": per_step("forward_backward", "forward_only", "optim_step"),
     }
+    work["one step"] = sum(work.values())
     notes = {
+        "one step": f"{len(steps)} LoRA-steps, first request in to last result out; the final save after the last step is not counted",
         "publish": "save_weights_for_sampler: this LoRA's export (+ push); the rest is the queue",
-        "rollout": "first sample request in to last sample result out; engine side, counted as work",
-        "forward_backward": "its share of the packed unit; the rest is the queue",
-        "optim_step": "its share of the barrier; the rest is the queue",
+        "rollout": "sample requests, first in to last out; engine side, counted as work",
+        "train": "forward_backward + optim_step, submitted together: their share of the packed unit and barrier",
     }
-    total_work = sum(work.values())
     rows = [
         [
-            "one step",
-            f"{one_step:.1f}",
-            "100%",
-            f"{total_work:.1f}",
-            f"{one_step - total_work:.1f} ({(one_step - total_work) / one_step:.0%})",
-            f"{len(steps)} LoRA-steps, sum of the phases below",
+            phase,
+            f"{means[phase]:.1f}",
+            f"{means[phase] / one_step:.1%}",
+            f"{work[phase]:.1f}",
+            f"{means[phase] - work[phase]:.1f}"
+            + (f" ({(means[phase] - work[phase]) / one_step:.0%})" if phase == "one step" else ""),
+            notes[phase],
         ]
+        for phase in ("one step", "publish", "rollout", "train")
     ]
-    for phase, _ in _CLIENT_PHASES:
-        rows.append(
-            [
-                phase,
-                f"{means[phase]:.1f}",
-                f"{means[phase] / one_step:.1%}",
-                f"{work[phase]:.1f}",
-                f"{means[phase] - work[phase]:.1f}",
-                notes[phase],
-            ]
-        )
     if logged_step_s:
         note = f"time/total over {len(logged_step_s)} tenant steps; adds the tenant's own work and result polling"
         rows.append(["one step, as the tenant logged it", f"{statistics.fmean(logged_step_s):.1f}", "", "", "", note])
