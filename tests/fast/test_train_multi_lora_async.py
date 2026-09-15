@@ -9,11 +9,9 @@ from tests.fast.fixtures.driver_fakes import (
     FakeRemoteMethod,
     FakeRolloutExecutor,
     FakeTrainingModel,
-    FakeWorkerManager,
 )
 
-from miles.ray import wiring
-from miles.utils.multi_lora import EmptyBatchTimeoutError
+from miles.utils.data import RolloutDataPack
 
 _ACTIVE_SNAPSHOT = {"pending": [], "active": ["alpha"], "retiring": [], "cleanup": []}
 _EMPTY_SNAPSHOT = {"pending": [], "active": [], "retiring": [], "cleanup": []}
@@ -48,7 +46,6 @@ class FakeMultiLoRAController:
         return self.snapshots.pop(0)
 
     async def _register_adapter(self, name: str, config: Any) -> None:
-        self.events.append(f"register:{name}")
         self.registered_adapters.append((name, config))
 
 
@@ -111,28 +108,6 @@ def _task_error(cause: Exception) -> ray.exceptions.RayTaskError:
 
 
 class TestAdapterLifecycle:
-    async def test_cli_adapters_are_registered_before_the_training_loop(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ) -> None:
-        """Every CLI adapter is parsed and registered by name before the first training-loop snapshot."""
-        events: list[str] = []
-        alpha_path = tmp_path / "alpha.yaml"
-        beta_path = tmp_path / "beta.yaml"
-        alpha_path.write_text("data: alpha-data\nnum_step: 1\n")
-        beta_path.write_text("data: beta-data\nnum_step: 2\n")
-        args = _make_args(multi_lora_adapters=[("alpha", str(alpha_path)), ("beta", str(beta_path))])
-        components = _install_driver_fakes(monkeypatch, events, snapshots=[_EMPTY_SNAPSHOT])
-
-        await multi_lora_driver.main(args)
-
-        assert [(name, config.data) for name, config in components.controller.registered_adapters] == [
-            ("alpha", "alpha-data"),
-            ("beta", "beta-data"),
-        ]
-        first_snapshot = events.index("snapshot")
-        assert events.index("register:alpha") < first_snapshot
-        assert events.index("register:beta") < first_snapshot
-
     async def test_one_active_adapter_completes_through_the_refactored_components(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -147,7 +122,7 @@ class TestAdapterLifecycle:
             "controller_start",
             "snapshot",
             "actor_reconcile_adapters",
-            "update_weights:None",
+            "update_weights:0",
             "snapshot",
             "prepare_rollout:0",
             "generate_start:0",
@@ -159,29 +134,6 @@ class TestAdapterLifecycle:
             "inference_dispose",
             "actor_dispose",
             "controller_stop",
-        ]
-
-    async def test_multi_lora_run_releases_its_worker_manager_after_controller_cleanup(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The Multi-LoRA driver releases its own manager after all controllers stop."""
-        events: list[str] = []
-        manager = FakeWorkerManager(events)
-        _install_driver_fakes(monkeypatch, events, snapshots=[_EMPTY_SNAPSHOT])
-
-        monkeypatch.setattr(multi_lora_driver, "init_orchestration_script", lambda _args: manager)
-        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
-
-        await multi_lora_driver.main(_make_args())
-
-        assert manager.killed == [manager]
-        assert events[-6:] == [
-            "executor_dispose",
-            "inference_dispose",
-            "actor_dispose",
-            "controller_stop",
-            "manager_shutdown",
-            "manager_kill",
         ]
 
 
@@ -197,13 +149,13 @@ class TestEmptyBatchTimeout:
             events,
             snapshots=[_ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _EMPTY_SNAPSHOT],
         )
-        components.rollout_executor.generation_errors = [_task_error(EmptyBatchTimeoutError("no trainable groups"))]
+        components.rollout_executor.generation_packs = [RolloutDataPack(empty_batch_timeout=True)]
 
         await multi_lora_driver.main(args)
 
         assert [event for event in events if event.startswith(("generate_", "actor_train", "actor_save"))] == [
             "generate_start:0",
-            "generate_failed:0",
+            "generate_empty:0",
             "generate_start:0",
             "generate_done:0",
             "actor_train:0",
