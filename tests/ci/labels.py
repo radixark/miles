@@ -40,4 +40,5 @@ KNOWN_LABELS: dict[str, str] = {
     "miles-plugin": "miles_plugins extension tests (optimizers, model plugins)",
     "agentic": "Agentic sandbox e2e tests (need a sandbox-service route and key on the runner)",
     "amd": "AMD MI350 ROCm tests (stage-c-4-gpu-mi350)",
+    "rpc-comm": "Ray cluster backend driving its workers over the rpc worker comm backend",
 }
