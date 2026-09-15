@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -94,3 +95,18 @@ def container(objects: list[dict[str, Any]]) -> dict[str, Any]:
     containers = pod_spec(objects)["containers"]
     assert len(containers) == 1
     return containers[0]
+
+
+def resolved_schema(path: Path) -> dict[str, Any]:
+    schema = json.loads(path.read_text())
+    return _resolve_refs(schema, schema.get("definitions", {}))
+
+
+def _resolve_refs(node: Any, definitions: dict[str, Any]) -> Any:
+    if isinstance(node, list):
+        return [_resolve_refs(entry, definitions) for entry in node]
+    if not isinstance(node, dict):
+        return node
+    if (reference := node.get("$ref")) is not None:
+        return _resolve_refs(definitions[reference.rsplit("/", maxsplit=1)[1]], definitions)
+    return {key: _resolve_refs(value, definitions) for key, value in node.items() if key != "definitions"}
