@@ -2039,6 +2039,51 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--mlflow-run-id", type=str, default=None)
             return parser
 
+        # trackio
+        def add_trackio_arguments(parser):
+            parser.add_argument("--use-trackio", action="store_true", default=False)
+            parser.add_argument(
+                "--trackio-project",
+                type=str,
+                default=None,
+                help="trackio project. Defaults to --wandb-project if not set.",
+            )
+            parser.add_argument(
+                "--trackio-run-name",
+                type=str,
+                default=None,
+                help="trackio run name (a run is identified by project+name). "
+                "Defaults to --wandb-group; the primary rank writes back the resolved value.",
+            )
+            parser.add_argument(
+                "--trackio-group",
+                type=str,
+                default=None,
+                help="trackio run group. Defaults to --wandb-group if not set.",
+            )
+            parser.add_argument(
+                "--trackio-space-id",
+                type=str,
+                default=os.environ.get("TRACKIO_SPACE_ID"),
+                help="HuggingFace Space id to host the trackio dashboard. Enables remote "
+                "logging so all ranks coalesce into one run. Defaults to TRACKIO_SPACE_ID env var.",
+            )
+            parser.add_argument(
+                "--trackio-server-url",
+                type=str,
+                default=os.environ.get("TRACKIO_SERVER_URL"),
+                help="Self-hosted trackio server URL. Enables remote logging so all ranks "
+                "coalesce into one run. Defaults to TRACKIO_SERVER_URL env var.",
+            )
+            parser.add_argument(
+                "--trackio-dir",
+                type=str,
+                default=None,
+                help="Directory for trackio's local SQLite storage (sets TRACKIO_DIR). "
+                "Only used in local mode; ignored when a remote server/space is configured.",
+            )
+            return parser
+
         # tensorboard
         def add_tensorboard_arguments(parser):
             # tb_project_name, tb_experiment_name
@@ -2681,6 +2726,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_mlflow_arguments(parser)
+        parser = add_trackio_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_prometheus_arguments(parser)
         add_dashboard_arguments(parser)

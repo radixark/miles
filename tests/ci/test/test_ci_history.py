@@ -26,7 +26,15 @@ def test_all_backends_registered():
     # import is pruned, the backend vanishes with no error. Assert the full set.
     from miles.utils.tracking_utils.tracking import BACKEND_REGISTRY
 
-    assert set(BACKEND_REGISTRY) == {"wandb", "tensorboard", "mlflow", "prometheus", "ci_history", "miles_dashboard"}
+    assert set(BACKEND_REGISTRY) == {
+        "wandb",
+        "tensorboard",
+        "mlflow",
+        "prometheus",
+        "ci_history",
+        "miles_dashboard",
+        "trackio",
+    }
     cls, flag = BACKEND_REGISTRY["ci_history"]
     assert cls is CiHistoryBackend
     assert flag == "ci_enable_metrics_capture"

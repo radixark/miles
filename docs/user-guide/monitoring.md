@@ -33,6 +33,25 @@ ray job submit --address=auto -- \
 Available flags: `--use-wandb`, `--wandb-project`, `--wandb-group`. `WANDB_API_KEY`
 should be supplied via Ray's `env_vars` rather than baked into the launch script.
 
+## Enabling trackio
+
+[trackio](https://github.com/gradio-app/trackio) is a local-first tracker with a wandb-style API; the
+backend is opt-in and installs with `pip install miles[trackio]`.
+
+```bash
+ray job submit --address=auto -- \
+  python3 train.py ... \
+    --use-trackio \
+    --trackio-project miles \
+    --trackio-run-name qwen3-30b-grpo
+```
+
+`--trackio-project` and `--trackio-run-name` fall back to `--wandb-project` and `--wandb-group`, so one
+naming setup drives both backends. The primary rank creates the run and hands its id to the other processes,
+which log into it. Local runs write one SQLite database under `--trackio-dir` (or `TRACKIO_DIR`); on multi-node
+jobs put it on a shared filesystem, or pass `--trackio-space-id` or `--trackio-server-url` so all ranks log to
+one remote run.
+
 ## What to watch
 
 | Signal | Healthy pattern | Red flag |

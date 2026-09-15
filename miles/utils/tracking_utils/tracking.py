@@ -12,6 +12,7 @@ from .base import (
     TensorboardBackend,
     TrackingBackend,
     TrackingManager,
+    TrackioBackend,
     WandbBackend,
 )
 from .ci_history import CiHistoryBackend
@@ -24,6 +25,7 @@ BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
     "wandb": (WandbBackend, "use_wandb"),
     "tensorboard": (TensorboardBackend, "use_tensorboard"),
     "mlflow": (MlflowBackend, "use_mlflow"),
+    "trackio": (TrackioBackend, "use_trackio"),
     "prometheus": (PrometheusBackend, "use_prometheus"),
     "ci_history": (CiHistoryBackend, "ci_enable_metrics_capture"),
     "miles_dashboard": (MilesDashboardBackend, "use_miles_dashboard"),

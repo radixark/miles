@@ -116,6 +116,33 @@ class MlflowBackend(TrackingBackend):
         mlflow_utils.finish()
 
 
+class TrackioBackend(TrackingBackend):
+    # Delegates to ``trackio_utils``. Holds whether trackio is enabled for this
+    # process; every rank attaches to the primary's run (see trackio_utils).
+    # define_step_key_metric_group stays the inherited no-op: trackio has no
+    # define_metric equivalent.
+
+    def __init__(self) -> None:
+        self._active = False
+
+    def init(self, args, *, primary: bool = True, **kwargs) -> None:
+        from . import trackio_utils
+
+        self._active = trackio_utils.init_trackio(args, primary=primary, **kwargs)
+
+    def log(self, metrics: dict[str, Any], step: int | None = None, **kwargs) -> None:
+        if self._active:
+            from . import trackio_utils
+
+            trackio_utils.log_metrics(metrics, step=step)
+
+    def finish(self) -> None:
+        if self._active:
+            from . import trackio_utils
+
+            trackio_utils.finish()
+
+
 class PrometheusBackend(TrackingBackend):
     # Wraps the existing Ray-actor based prometheus collector. The actor lifetime is
     # tied to the Ray job, so finish() is intentionally a no-op.
