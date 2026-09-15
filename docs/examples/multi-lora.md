@@ -77,12 +77,16 @@ and saves the tables as `report.txt`. Knobs are environment variables; on a mult
 cluster set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS`.
 
 The gateway times every backend op (`load_slot`, `forward_backward`, `optim_step`,
-`export_slot`, `sample`, ...) with `miles.utils.multi_lora_profiling.OpProfiler` and logs
-`multi-LoRA profile: {...}` plus a table after every optimizer step and at exit. Render it,
-with the slot count and a node's GPU peaks, from the logs:
+`export_slot`, `sample`, ...) and every tenant request from arrival to result with
+`miles.utils.multi_lora_profiling.OpProfiler`, logging `multi-LoRA profile: {...}`,
+`multi-LoRA metrics: {...}` and `multi-LoRA requests: [...]` lines after every optimizer step
+and at exit. The report renders them per LoRA per step: what one step costs the trainer
+(server), the engines (sample) and the tenant (client, queueing split from work), reward,
+loss, log_prob and mean_len over the first and last 10% of steps, and each node's GPU peaks:
 
 ```bash
-python -m miles.utils.multi_lora_profiling --serve-log <gateway log> --gpu-csv gpu-<ip>.csv
+python -m miles.utils.multi_lora_profiling --serve-log <gateway log> --gpu-csv gpu-<ip>.csv \
+    --client-log <tenant log>  # --client-log is repeatable
 ```
 
 ## Failure handling
