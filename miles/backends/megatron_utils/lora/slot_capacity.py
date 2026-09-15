@@ -32,10 +32,11 @@ class RankProbe:
     act_peak: int  # transient peak of one max-size fb; shared across slots (single issue)
     adapter_local_params: int  # this rank's shard of one max-rank adapter
     adapter_full_params: int  # the unsharded adapter, for engine-side copies
+    slot_scale: float = 1.0
 
     @property
     def slot_bytes(self) -> int:
-        return self.free_before - self.free_after
+        return int((self.free_before - self.free_after) * self.slot_scale)
 
     def capacity(self, margin_bytes: int) -> int:
         return max(int((self.free_before - self.act_peak - margin_bytes) // self.slot_bytes), 0)
@@ -62,6 +63,7 @@ def memory_snapshot(args: Namespace, model, phase: str) -> dict:
         free, _ = torch.cuda.mem_get_info()
         return {"free": free}
     assert phase == "after", f"unknown memory_snapshot phase {phase!r}"
+    torch.cuda.empty_cache()
     free, _ = torch.cuda.mem_get_info()
     act_peak = torch.cuda.max_memory_allocated() - torch.cuda.memory_allocated()
     local, full = _adapter_param_counts(args, model)
@@ -90,17 +92,25 @@ def _adapter_param_counts(args: Namespace, model) -> tuple[int, int]:
 
 
 async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankProbe]:
-    """Load one max-rank probe slot, run one max-size fb and an optimizer step
-    through the real executor path, and measure every rank's head-room. Runs
-    before the rollout engines launch; the trainer side is self-contained."""
-    before = await trainer.multi_lora_memory_probe("before")
-    await backend.load_slot(0, args.lora_rank, float(args.lora_alpha or 2 * args.lora_rank))
+    """Warm up on one max-rank probe slot, then load a second one, run one
+    max-size fb and an optimizer step through the real executor path, and
+    measure every rank's head-room. Runs before the rollout engines launch;
+    the trainer side is self-contained and needs a two-slot pool."""
+    alpha = float(args.lora_alpha or 2 * args.lora_rank)
     row = _probe_row(args.max_tokens_per_gpu)
+    await backend.load_slot(0, args.lora_rank, alpha)
     await backend.forward_backward(-1, [(0, row)], "cross_entropy", {})
     await backend.optim_step({0: _PROBE_ADAM_PARAMS})
+    before = await trainer.multi_lora_memory_probe("before")
+    await backend.load_slot(1, args.lora_rank, alpha)
+    await backend.forward_backward(-1, [(1, row)], "cross_entropy", {})
+    await backend.optim_step({1: _PROBE_ADAM_PARAMS})
     after = await trainer.multi_lora_memory_probe("after")
+    await backend.unload_slot(1)
     await backend.unload_slot(0)
 
+    weight = 2 if (args.bf16 or args.fp16) else 4
+    scale = bytes_per_train_param(args) / (bytes_per_train_param(args) - weight)
     probes = [
         RankProbe(
             free_before=b["free"],
@@ -108,6 +118,7 @@ async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankPro
             act_peak=a["act_peak"],
             adapter_local_params=a["adapter_local_params"],
             adapter_full_params=a["adapter_full_params"],
+            slot_scale=scale,
         )
         for b, a in zip(before, after, strict=True)
     ]
