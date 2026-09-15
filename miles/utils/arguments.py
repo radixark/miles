@@ -1512,6 +1512,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Interval (in rollout steps) to update ref model from actor. If None, ref model is not updated.",
             )
             parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
+            parser.add_argument(
+                "--top-entropy-quantile",
+                type=float,
+                default=1.0,
+                help=(
+                    "Keep only this share of response tokens, the ones with the highest entropy, in the policy "
+                    "loss (Beyond the 80/20 Rule, https://arxiv.org/abs/2506.01939). 1.0 keeps every token; the "
+                    "paper uses 0.2. The threshold is taken over the tokens of each micro-batch on each rank."
+                ),
+            )
             parser.add_argument("--gamma", type=float, default=1.0, help="PPO GAE gamma")
             parser.add_argument("--lambd", type=float, default=1.0, help="PPO GAE lambd")
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
@@ -2929,6 +2939,8 @@ def miles_validate_args(args):
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
+    assert 0.0 < args.top_entropy_quantile <= 1.0, "--top-entropy-quantile must be in (0, 1]"
+
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (
         "rollout fault tolerance does not support a dedicated eval fleet (--eval-num-gpus > 0): "
         "the eval fleet pins engine addresses once at startup, so a healed eval cell would make "
