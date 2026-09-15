@@ -4,7 +4,6 @@ import abc
 import random
 
 import requests
-
 from tests.e2e.ft.conftest_ft.fault_injection.pod_manipulation import (
     delete_one_pod_of_cell,
     list_pod_names_of_cell,
@@ -12,9 +11,9 @@ from tests.e2e.ft.conftest_ft.fault_injection.pod_manipulation import (
 )
 
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
 RAY_ROLLOUT_ENGINE_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL]
@@ -61,7 +60,9 @@ class DeletePodFaultForm(BaseFaultForm):
         assert run_id, "Deleting a cell's pod needs the run_id naming the release that owns it"
 
         self._namespace = namespace
-        self._release = RunNames.release(run_id=run_id)
+        self._release = ReleaseName(
+            run_id=run_id, deploy_component=DeployComponent.ALL, deploy_instance_id=None
+        ).serialize()
 
     @property
     def name(self) -> str:
@@ -79,7 +80,9 @@ class ExecSigkillFaultForm(BaseFaultForm):
         assert run_id, "Crashing a process inside a cell's pod needs the run_id naming the release that owns it"
 
         self._namespace = namespace
-        self._release = RunNames.release(run_id=run_id)
+        self._release = ReleaseName(
+            run_id=run_id, deploy_component=DeployComponent.ALL, deploy_instance_id=None
+        ).serialize()
         self._container = container
         self._process_pattern = process_pattern
 

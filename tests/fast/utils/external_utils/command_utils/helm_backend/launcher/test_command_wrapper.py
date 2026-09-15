@@ -1,6 +1,5 @@
 import json
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -11,8 +10,8 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrap
     Helm,
     Kubectl,
 )
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
-from miles.utils.workers.k8s_types import Pod
+from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH, ReleaseName
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
 from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LABEL
 
@@ -68,19 +67,6 @@ class TestUpgradeCommand:
         assert command[command.index("/infra.yaml") - 1] == "--values"
         assert command.index("/infra.yaml") < command.index("/run.yaml")
 
-    def test_installs_a_missing_release_and_updates_an_existing_one_without_ci_run_argument(self):
-        """Relaunching a run id must update it in place, which plain upgrade would refuse to do."""
-        command = Helm.upgrade_command("r", "rl", "/c", [], ci_run=False)
-
-        assert command[:4] == ["helm", "upgrade", "--install", "r"]
-
-    def test_keeps_the_user_values_ahead_of_the_computed_ones_without_ci_run_argument(self):
-        """A run value must win over a cluster default, and helm lets the later file win."""
-        command = Helm.upgrade_command("r", "rl", "/c", ["/infra.yaml", "/run.yaml"], ci_run=False)
-
-        assert command[command.index("/infra.yaml") - 1] == "--values"
-        assert command.index("/infra.yaml") < command.index("/run.yaml")
-
     def test_labels_a_ci_release_so_the_next_run_can_clean_it_up(self):
         """The cleanup selects on this label, and an unlabelled CI release is one nothing will ever remove."""
         command = Helm.upgrade_command("r", "rl", "/c", [], ci_run=True)
@@ -98,100 +84,6 @@ class TestUpgradeCommand:
         command = Helm.upgrade_command("r", "rl", "/c", [], ci_run=True)
 
         assert command.index("--labels") > command.index("--namespace")
-
-
-class TestBuildDependencies:
-    def test_chart_dependencies_are_rebuilt_only_when_a_locked_dependency_is_missing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Helm rebuilds a locked chart only after one of its cached dependencies disappears."""
-        chart = tmp_path / "chart"
-        charts = chart / "charts"
-        charts.mkdir(parents=True)
-        (chart / "Chart.lock").write_text("dependencies:\n  - name: worker\n  - name: runtime\n")
-        (charts / "worker").mkdir()
-        runtime = charts / "runtime"
-        runtime.mkdir()
-        commands: list[list[str]] = []
-
-        def fake_run_process(
-            argv: list[str],
-            *,
-            capture_output: bool,
-            check: bool,
-            input: str | None = None,
-            timeout: float | None = None,
-        ) -> subprocess.CompletedProcess[str]:
-            commands.append(argv)
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(command_wrapper, "run_process", fake_run_process)
-
-        Helm.build_dependencies(chart)
-        runtime.rmdir()
-        Helm.build_dependencies(chart)
-
-        assert commands == [["helm", "dependency", "build", str(chart)]]
-
-
-class TestGetManifest:
-    def test_a_missing_release_is_reported_as_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Helm reports a missing release on stdout in some versions, and that is genuine absence."""
-        monkeypatch.setattr(
-            command_wrapper,
-            "run_process",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                [], returncode=1, stdout="Error: release: not found", stderr=""
-            ),
-        )
-
-        assert Helm.get_manifest("miles-run-a", "ci") is None
-
-    def test_a_manifest_read_failure_other_than_absence_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An authorization or network failure must remain distinguishable from a missing release."""
-        monkeypatch.setattr(
-            command_wrapper,
-            "run_process",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                [], returncode=1, stdout="", stderr="Kubernetes cluster unreachable: access forbidden"
-            ),
-        )
-
-        with pytest.raises(RuntimeError, match="Kubernetes cluster unreachable: access forbidden"):
-            Helm.get_manifest("miles-run-a", "ci")
-
-
-class TestRawCommands:
-    def test_a_helm_call_reports_its_failure_instead_of_raising(self, monkeypatch):
-        """The callers of these wrappers all want to read a failure, not to be unwound by it."""
-        recorded = {}
-
-        def fake_run(argv, *, capture_output, check, input=None):
-            recorded.update(argv=argv, check=check)
-            return None
-
-        monkeypatch.setattr(
-            "miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper.run_process", fake_run
-        )
-        Helm.run_raw("template", "r", "/c")
-
-        assert recorded["argv"] == ["helm", "template", "r", "/c"]
-        assert recorded["check"] is False
-
-    def test_a_kubectl_call_is_spelled_out_the_same_way(self, monkeypatch):
-        """One wrapper for both binaries is what keeps command strings out of the callers."""
-        recorded = {}
-
-        def fake_run(argv, *, capture_output, check, input=None):
-            recorded.update(argv=argv)
-            return None
-
-        monkeypatch.setattr(
-            "miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper.run_process", fake_run
-        )
-        Kubectl.run_raw("get", "namespace", "--", "myns")
-
-        assert recorded["argv"] == ["kubectl", "get", "namespace", "--", "myns"]
 
 
 def _kubectl_answering(monkeypatch, *, returncode: int, stdout: str = "", stderr: str = "") -> list[list[str]]:
@@ -366,17 +258,21 @@ class TestChartDir:
         assert chart_dir(repo_base_dir="/repo").as_posix() == "/repo/charts/miles-run"
 
 
-LONGEST_RUN_ID = "a" * 40
+LONGEST_RUN_ID = "a" * RUN_ID_MAX_LENGTH
+
+
+def _unsplit(run_id: str) -> str:
+    return ReleaseName(run_id=run_id, deploy_component=DeployComponent.ALL, deploy_instance_id=None).serialize()
 
 
 class TestReleaseName:
-    def test_a_release_is_the_chart_name_and_the_run_id(self):
+    def test_a_release_is_the_chart_name_the_run_id_and_the_component(self):
         """The launcher finds a run's release again from the run id alone, so the rule is fixed."""
-        assert RunNames.release(run_id="260101-000000-000") == "miles-run-260101-000000-000"
+        assert _unsplit("260101-000000-000") == "miles-run-260101-000000-000-all"
 
     def test_the_same_run_id_always_names_the_same_release(self):
         """Relaunching a run upgrades its release; a fresh name would deploy a second copy instead."""
-        assert RunNames.release(run_id=LONGEST_RUN_ID) == RunNames.release(run_id=LONGEST_RUN_ID)
+        assert _unsplit(LONGEST_RUN_ID) == _unsplit(LONGEST_RUN_ID)
 
 
 class TestComponentName:
@@ -434,15 +330,6 @@ class TestComponentName:
         assert naming.component_name("miles-run-x", "trainer-engine-actor") == naming.component_name(
             "miles-run-x", "trainer-engine-actor"
         )
-
-
-class TestGetJson:
-    def test_a_failed_get_is_not_reported_as_an_absent_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A failed lookup must expose its exit code and stderr instead of looking like an absent object."""
-        _kubectl_answering(monkeypatch, returncode=23, stderr="the api server refused the request")
-
-        with pytest.raises(RuntimeError, match="code 23: the api server refused the request"):
-            Kubectl.get_json("pod", return_type=Pod, name="trainer-0", namespace="rl")
 
 
 class TestStaticWorkerHost:

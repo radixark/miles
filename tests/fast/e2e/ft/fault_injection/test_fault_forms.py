@@ -5,9 +5,9 @@ import pytest
 from tests.e2e.ft.conftest_ft.fault_injection import fault_forms
 from tests.fast.e2e.ft.fault_injection.utils import NAMESPACE, RUN_ID, api_server_fault_forms, config_of, typed_cell
 
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 
 def test_ray_draws_the_in_process_kills_for_a_trainer_cell() -> None:
@@ -85,7 +85,9 @@ def test_the_delete_pod_form_never_reaches_the_api_server(monkeypatch) -> None:
     ).inject(cell, random.Random(0))
 
     assert [one["cell_id"] for one in seen] == ["actor-0"]
-    assert [one["release"] for one in seen] == [RunNames.release(run_id=RUN_ID)]
+    assert [one["release"] for one in seen] == [
+        ReleaseName(run_id=RUN_ID, deploy_component=DeployComponent.ALL, deploy_instance_id=None).serialize()
+    ]
     assert [one["namespace"] for one in seen] == [NAMESPACE]
     requests.post.assert_not_called()
 
