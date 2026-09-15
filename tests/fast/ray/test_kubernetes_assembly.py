@@ -21,6 +21,7 @@ from miles.ray.train.cell import TrainerCell
 from miles.utils import http_utils
 from miles.utils.data import RolloutDataPack
 from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.init_once import InitState
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.k8s_types import Pod
@@ -71,6 +72,9 @@ class FakeRolloutExecutor:
 
     async def init(self) -> None:
         self.initialized = True
+
+    async def get_init_state(self) -> str:
+        return InitState.INITED.value if self.initialized else InitState.NOT_INITED.value
 
     def dispose(self) -> None:
         return None
