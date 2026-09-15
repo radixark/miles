@@ -1,6 +1,14 @@
 import pytest
+from openai.types.chat import ChatCompletionMessageToolCall
+from sglang.srt.function_call.core_types import ToolCallItem
 
-from miles.rollout.generate_utils.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
+from miles.rollout.generate_utils.tool_call_utils import (
+    _DUMMY_USER,
+    _build_dummy_assistant,
+    _execute_tool_call,
+    execute_tool_calls,
+    tokenize_tool_responses,
+)
 from miles.utils.processing_utils import load_tokenizer
 
 TOOL_CALL_TEST_MODELS = [
@@ -57,6 +65,83 @@ SAMPLE_TOOL_RESPONSES = [
         "name": "get_temperature",
     },
 ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ['{"cmd": "pytest"', "[1, 2]", "42", '"pytest"', "null"],
+)
+async def test_invalid_tool_arguments_return_an_error_without_execution(arguments):
+    calls = []
+
+    async def execute_one(name, params):
+        calls.append((name, params))
+        return "ok"
+
+    message = await _execute_tool_call(ToolCallItem(tool_index=0, name="bash", parameters=arguments), execute_one)
+
+    assert calls == []
+    assert message["role"] == "tool"
+    assert message["name"] == "bash"
+    assert message["tool_call_id"].startswith("call_")
+    assert message["content"] == ("Invalid tool arguments: expected a JSON object. The tool was not executed.")
+
+
+async def test_openai_tool_call_preserves_id_when_arguments_are_invalid():
+    async def execute_one(name, params):
+        pytest.fail(f"executor called with {name=} and {params=}")
+
+    call = ChatCompletionMessageToolCall(
+        id="call_known",
+        function={"name": "bash", "arguments": "{"},
+        type="function",
+    )
+
+    message = await _execute_tool_call(call, execute_one)
+
+    assert message == {
+        "role": "tool",
+        "tool_call_id": "call_known",
+        "content": "Invalid tool arguments: expected a JSON object. The tool was not executed.",
+        "name": "bash",
+    }
+
+
+@pytest.mark.parametrize("arguments", ["", '{"cmd": "pytest"}'])
+async def test_valid_tool_arguments_reach_the_executor(arguments):
+    calls = []
+
+    async def execute_one(name, params):
+        calls.append((name, params))
+        return "ok"
+
+    message = await _execute_tool_call(ToolCallItem(tool_index=0, name="bash", parameters=arguments), execute_one)
+
+    expected_params = {} if not arguments else {"cmd": "pytest"}
+    assert calls == [("bash", expected_params)]
+    assert message["content"] == "ok"
+
+
+async def test_invalid_arguments_do_not_skip_later_tool_calls():
+    calls = []
+
+    async def execute_one(name, params):
+        calls.append((name, params))
+        return f"ran {name}"
+
+    messages = await execute_tool_calls(
+        [
+            ToolCallItem(tool_index=0, name="broken", parameters="{"),
+            ToolCallItem(tool_index=1, name="bash", parameters='{"cmd": "pytest"}'),
+        ],
+        execute_one,
+    )
+
+    assert calls == [("bash", {"cmd": "pytest"})]
+    assert [message["content"] for message in messages] == [
+        "Invalid tool arguments: expected a JSON object. The tool was not executed.",
+        "ran bash",
+    ]
 
 
 class TestTokenizeToolResponses:
