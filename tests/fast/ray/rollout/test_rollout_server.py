@@ -86,7 +86,7 @@ class TestRolloutServerPureFunctions:
         assert "mem_fraction_static" not in by_name["default"].server_groups[0].overrides
 
     def test_debug_train_only_builds_only_the_eval_model(self):
-        args = make_args(debug_train_only=True, rollout_num_gpus=None, eval_num_gpus=8, eval_num_gpus_per_engine=1)
+        args = make_args(debug_train_only=True, eval_num_gpus=8, eval_num_gpus_per_engine=1)
 
         config = resolve_sglang_config(args)
 
@@ -94,7 +94,7 @@ class TestRolloutServerPureFunctions:
         assert sum(group.num_gpus for model in config.models for group in model.server_groups) == 8
 
     def test_debug_train_only_without_eval_fleet_builds_no_model(self):
-        args = make_args(debug_train_only=True, rollout_num_gpus=None, eval_num_gpus=0)
+        args = make_args(debug_train_only=True, eval_num_gpus=0)
 
         assert resolve_sglang_config(args).models == []
 

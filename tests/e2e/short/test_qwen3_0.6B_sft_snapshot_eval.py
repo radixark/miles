@@ -4,6 +4,9 @@ No rollout engines exist in this mode; the only engine is the eval fleet, which 
 the HF snapshots the trainer exports. The metric checker demands exactly three eval
 points (pre-train on --hf-checkpoint, rollout 1, rollout 3), so a train-only
 short-circuit anywhere on the engine or eval path fails the test.
+
+Runs on train.py: the async trainer's snapshot-eval path is already covered by
+tests/e2e/megatron/test_qwen3_4b_fully_async_eval.py.
 """
 
 import os
@@ -14,7 +17,12 @@ from transformers import AutoTokenizer
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=600, suite="stage-c-2-gpu-h200", labels=["short", "eval", "megatron"])
+register_cuda_ci(
+    est_time=600,
+    suite="stage-c-2-gpu-h200",
+    labels=["short", "eval", "megatron"],
+    hardware=["hopper", "blackwell"],
+)
 
 MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"
@@ -135,7 +143,6 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        train_script="train_async.py",
     )
 
 

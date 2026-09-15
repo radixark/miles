@@ -335,7 +335,7 @@ def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _http_client, _client_concurrency, _distributed_post_enabled
     rollout_num_gpus = args.rollout_num_gpus or 0
-    if rollout_num_gpus == 0 and args.eval_num_gpus == 0 and not args.eval_uses_snapshots:
+    if rollout_num_gpus == 0 and not args.eval_uses_snapshots:
         return
 
     _client_concurrency = args.sglang_server_concurrency * rollout_num_gpus // args.rollout_num_gpus_per_engine

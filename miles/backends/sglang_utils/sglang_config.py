@@ -285,17 +285,12 @@ def resolve_sglang_config(args) -> SglangConfig:
     return SglangConfig.resolve(raw, args)
 
 
-def starts_inference_engines(args) -> bool:
-    """A train-only job starts engines only for a dedicated snapshot-eval fleet."""
-    return not args.debug_train_only or args.eval_num_gpus > 0
-
-
 def _compute_raw_sglang_config(args) -> _RawSglangConfig:
-    if not starts_inference_engines(args):
+    if not args.starts_inference_engines:
         return _RawSglangConfig(models=[])
 
     eval_num_gpus = args.eval_num_gpus
-    rollout_num_gpus = 0 if args.debug_train_only else args.rollout_num_gpus
+    rollout_num_gpus = args.rollout_num_gpus or 0
 
     if getattr(args, "sglang_config", None) is not None:
         config = _RawSglangConfig.from_yaml(args.sglang_config)
@@ -315,7 +310,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
             models=[_compute_eval_raw_model(m, args) if m.name == "eval" else m for m in config.models]
         )
 
-    if args.debug_train_only:
+    if rollout_num_gpus == 0:
         config = _RawSglangConfig(models=[])
     elif args.prefill_num_servers is not None:
         config = _RawSglangConfig.from_prefill_num_servers(args)
@@ -382,7 +377,7 @@ def _compute_eval_raw_model(raw: _RawModelConfig, args) -> _RawModelConfig:
 
 def _compute_rollout_offset(args) -> int:
     """Offset (in PG bundle slots) where rollout GPUs start."""
-    if args.debug_rollout_only or args.colocate or not starts_inference_engines(args):
+    if args.debug_rollout_only or args.colocate or not args.starts_inference_engines:
         return 0
     if getattr(args, "critic_train_only", False):
         return args.critic_num_nodes * args.critic_num_gpus_per_node

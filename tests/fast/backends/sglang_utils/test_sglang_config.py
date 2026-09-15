@@ -34,6 +34,11 @@ def _make_args(**overrides) -> Namespace:
         critic_train_only=False,
     )
     defaults.update(overrides)
+    defaults.setdefault(
+        "starts_inference_engines", not defaults["debug_train_only"] or defaults["eval_num_gpus"] > 0
+    )
+    if defaults["debug_train_only"]:
+        defaults["rollout_num_gpus"] = 0
     return Namespace(**defaults)
 
 

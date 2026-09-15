@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_config import starts_inference_engines
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
@@ -53,7 +52,7 @@ class InferenceController:
 
     @lock_exempt
     async def init(self) -> None:
-        if not starts_inference_engines(self.args):
+        if not self.args.starts_inference_engines:
             return
 
         self.servers = await create_rollout_servers(

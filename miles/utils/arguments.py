@@ -3322,6 +3322,7 @@ def miles_validate_args(args):
 
     if args.debug_train_only:
         args.rollout_num_gpus = 0
+    args.starts_inference_engines = not args.debug_train_only or args.eval_num_gpus > 0
 
     if args.debug_rollout_only:
         if args.colocate and (not args.rollout_num_gpus):
