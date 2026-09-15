@@ -46,9 +46,10 @@ python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models
 ## Measured slot capacity
 
 `--n-adapters -1` (`--multi-lora-n-adapters auto`) lets the gateway size the slot pool instead
-of guessing it. The trainer launches alone with one probe slot, runs a max-size
-forward/backward and an optimizer step, measures the CUDA bytes that slot owns and the
-head-room left, and is rebuilt at the resolved count before the engines launch. `auto` is the
+of guessing it. The trainer launches alone with two probe slots: the first runs a max-size
+forward/backward and an optimizer step so the one-time allocations are paid, the second
+repeats them and is measured for the CUDA bytes one slot owns and the head-room left; the
+trainer is then rebuilt at the resolved count before the engines launch. `auto` is the
 smallest of three bounds, and the log names the binding one:
 
 1. the trainer's memory, measured on every rank (the worst rank rules; `--train-memory-margin-bytes` is the head-room kept free);

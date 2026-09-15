@@ -50,7 +50,7 @@ async def serve(args):
 
     auto_capacity = args.multi_lora_n_adapters == AUTO_SLOT_CAPACITY
     if auto_capacity:
-        args.multi_lora_n_adapters = 1
+        args.multi_lora_n_adapters = 2
     worker_manager = launch_worker_manager(args, trainer_only=auto_capacity)
     object_store.init_instance(args, contribute_segment=False)
 

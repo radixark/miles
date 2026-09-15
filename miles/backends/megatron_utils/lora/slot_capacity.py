@@ -74,6 +74,7 @@ def memory_snapshot(args: Namespace, model, phase: str) -> dict:
         free, _ = torch.cuda.mem_get_info()
         return {"free": free}
     assert phase == "after", f"unknown memory_snapshot phase {phase!r}"
+    torch.cuda.empty_cache()
     free, _ = torch.cuda.mem_get_info()
     act_peak = torch.cuda.max_memory_allocated() - torch.cuda.memory_allocated()
     local, full = _adapter_param_counts(args, model)
@@ -172,15 +173,21 @@ def rollout_slot_capacity(args: Namespace, probe: RankProbe) -> tuple[int, str] 
 
 
 async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankProbe]:
-    """Load one max-rank probe slot, run one max-size fb and an optimizer step
-    through the real executor path, and measure every rank's head-room. Runs
-    before the rollout engines launch; the trainer side is self-contained."""
-    before = await trainer.multi_lora_memory_probe("before")
-    await backend.load_slot(0, args.lora_rank, float(args.lora_alpha or 2 * args.lora_rank))
+    """Warm up on one max-rank probe slot, then load a second one, run one
+    max-size fb and an optimizer step through the real executor path, and
+    measure every rank's head-room. Runs before the rollout engines launch;
+    the trainer side is self-contained."""
+    alpha = float(args.lora_alpha or 2 * args.lora_rank)
     row = _probe_row(args.max_tokens_per_gpu)
+    await backend.load_slot(0, args.lora_rank, alpha)
     await backend.forward_backward(-1, [(0, row)], "cross_entropy", {})
     await backend.optim_step({0: _PROBE_ADAM_PARAMS})
+    before = await trainer.multi_lora_memory_probe("before")
+    await backend.load_slot(1, args.lora_rank, alpha)
+    await backend.forward_backward(-1, [(1, row)], "cross_entropy", {})
+    await backend.optim_step({1: _PROBE_ADAM_PARAMS})
     after = await trainer.multi_lora_memory_probe("after")
+    await backend.unload_slot(1)
     await backend.unload_slot(0)
 
     probes = [
