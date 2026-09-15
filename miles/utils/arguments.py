@@ -2208,7 +2208,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Save the rollout data to this path for debugging. "
-                    "The file will be saved to `save_debug_rollout_data.format(rollout_id)`."
+                    "The file will be saved to `save_debug_rollout_data.format(rollout_id)`, "
+                    "so the template must contain the `{rollout_id}` placeholder."
                 ),
             )
             parser.add_argument(
@@ -2217,7 +2218,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Save per-sample role-tagged trajectory text (JSONL) next to the rollout "
-                    "dump. The file will be saved to `save_debug_trajectory_data.format(rollout_id)`."
+                    "dump. The file will be saved to `save_debug_trajectory_data.format(rollout_id)`, "
+                    "so the template must contain the `{rollout_id}` placeholder."
                 ),
             )
             parser.add_argument(

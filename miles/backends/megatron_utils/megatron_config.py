@@ -26,6 +26,7 @@ DEFAULT_MODEL_ROLE = ACTOR_ROLE
 TrainerRole = Literal["actor", "critic"]
 TRAINER_CHECKPOINT_DIRNAME = "trainers"
 MODEL_ID_PATTERN = re.compile(rf"\A{DNS_LABEL_PATTERN}\Z")
+RESERVED_MODEL_ID = "eval"
 
 PER_POLICY_ARGS: frozenset[str] = frozenset(
     {
@@ -199,6 +200,7 @@ class MegatronConfig(FrozenStrictBaseModel):
     @pydantic.model_validator(mode="after")
     def _validate_ids(self) -> "MegatronConfig":
         _assert_valid_ids(self.model_ids, kind="model")
+        _assert_no_reserved_model_id(self.model_ids)
         _assert_valid_trainer_ids([t.trainer_id for t in self.trainers])
         return self
 
@@ -397,6 +399,12 @@ def _assert_valid_trainer_ids(trainer_ids: list[str]) -> None:
         f"--megatron-config trainer ids {too_long_trainer_ids} are longer than {TRAINER_ID_MAX_LENGTH} "
         f"characters; shorten them"
     )
+
+
+def _assert_no_reserved_model_id(model_ids: list[str]) -> None:
+    assert (
+        RESERVED_MODEL_ID not in model_ids
+    ), f"--megatron-config declares the model id {RESERVED_MODEL_ID!r}, which names the shared eval rollouts"
 
 
 def _assert_valid_ids(ids: list[str], *, kind: str) -> None:

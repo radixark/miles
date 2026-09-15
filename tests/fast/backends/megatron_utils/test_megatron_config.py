@@ -14,10 +14,10 @@ from miles.backends.megatron_utils import megatron_config as megatron_config_mod
 from miles.backends.megatron_utils.megatron_config import (
     MODEL_DEFINITION_ARGS,
     PER_POLICY_ARGS,
-    _compute_trainer_checkpoint_dir,
     _has_megatron_checkpoint,
     _resolve_overrides,
     compute_trainer_args,
+    compute_trainer_checkpoint_dir,
     get_megatron_arg_parser,
     resolve_args_checkpoint_load,
     resolve_megatron_config,
@@ -112,6 +112,13 @@ class TestResolveMegatronConfig:
         assert config.model_ids == ["a", "b"]
         assert config.leader_model_id == "a"
         assert config.is_multi_policy
+
+    def test_the_eval_model_id_is_refused(self, tmp_path):
+        """A policy named eval would overwrite the shared evaluation rollout artifacts."""
+        path = _write_yaml({"trainers": [{"model_id": "eval"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="shared eval rollouts"):
+            resolve_megatron_config(_make_args(path))
 
     def test_the_first_model_is_the_leader_policy(self, tmp_path):
         """The leader owns the global checkpoint index, so its identity must be positional and stable."""
@@ -600,7 +607,7 @@ class TestTrainerCheckpointDirs:
     def test_the_derived_dir_is_the_trainer_id_under_a_trainers_directory(self):
         """The layout is a user visible contract: it is where a resume looks for a trainer's checkpoints."""
         assert (
-            _compute_trainer_checkpoint_dir(base_dir="/ckpt/run", trainer_id="policy-b-actor")
+            compute_trainer_checkpoint_dir(base_dir="/ckpt/run", trainer_id="policy-b-actor")
             == "/ckpt/run/trainers/policy-b-actor"
         )
 
