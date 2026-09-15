@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import logging
 from argparse import Namespace
+from collections.abc import Sequence
 from dataclasses import dataclass
 
+import torch
 from megatron.core.utils import get_attr_wrapped_model
 
+from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.hf_config import load_hf_config
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
@@ -31,6 +34,11 @@ class _BridgeWrapperConfig:
 
 def _ensure_model_list(model):
     return model if isinstance(model, list) else [model]
+
+
+def _install_model_companions(model_chunks: Sequence[torch.nn.Module]) -> None:
+    for chunk_index, chunk in enumerate(model_chunks):
+        ModelCompanionInstallationUtils.install(model=chunk, chunk_index=chunk_index)
 
 
 def _make_value_model_hook(hidden_size: int):
@@ -182,6 +190,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         return transformed
 
     provider.register_pre_wrap_hook(apply_lora_hook)
+    provider.register_pre_wrap_hook(_install_model_companions)
 
     is_value_model = (
         "ForTokenClassification" in hf_config.architectures[0]

@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 from tests.session_parity_utils import (
     SESSION_PARITY_SEED,
@@ -8,7 +10,12 @@ from tests.session_parity_utils import (
     run_agentic_retry_trajectories,
 )
 
-from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
+from miles.utils.test_utils.mock_sglang_server import (
+    MockSGLangServer,
+    ProcessResult,
+    ProcessResultMetaInfo,
+    with_mock_server,
+)
 from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     FORCE_FINAL_TEXT,
@@ -55,6 +62,7 @@ _AGENT_RESPONSES = {
     ),
 }
 _SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w3", "w4", "w7", "w8"]
+_SHARED_PREFIX_VERSION = "p0"
 
 
 def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise():
@@ -72,7 +80,19 @@ def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise():
         assert [[span.version for span in call.spans] for call in v2.samples[0].weight_versions] == (
             expected_weight_versions
         )
+        for run in (v1, v2):
+            _assert_prefill_spans_follow_the_kept_turns(run.samples[0].weight_versions)
         assert_agentic_retry_trajectory_parity(v1, v2)
+
+
+def _assert_prefill_spans_follow_the_kept_turns(calls):
+    """Every kept turn carries its own prompt versions in absolute coordinates, tiled up to its output."""
+    assert [call.output_start for call in calls] == sorted({call.output_start for call in calls})
+    assert [call.spans[0].abs_start for call in calls] == [call.output_start for call in calls]
+    assert [[(span.version, span.abs_start, span.abs_end) for span in call.prefill_spans] for call in calls] == [
+        [(_SHARED_PREFIX_VERSION, 0, 1), (version, 1, call.output_start)]
+        for call, version in zip(calls, _SELECTED_WEIGHT_VERSIONS, strict=True)
+    ]
 
 
 def test_sample_bitwise_comparator_distinguishes_signed_zero():
@@ -91,7 +111,10 @@ def _run_scripted_agents(version: str):
         )
         for index in range(_BATCH_SIZE)
     ]
-    with with_mock_server(model_name=_MODEL, process_fn=_process_agent_prompt, latency=0.05) as backend:
+    with (
+        patch.object(MockSGLangServer, "_compute_chat_completions_response", new=_stamp_prompt_versions),
+        with_mock_server(model_name=_MODEL, process_fn=_process_agent_prompt, latency=0.05) as backend,
+    ):
         results = run_agentic_retry_trajectories(
             backend_url=backend.url,
             hf_checkpoint=_MODEL,
@@ -102,6 +125,20 @@ def _run_scripted_agents(version: str):
         assert {request["seed"] for request in backend.request_log} == {SESSION_PARITY_SEED}
         assert backend.max_concurrent == _BATCH_SIZE
     return results
+
+
+_original_chat_completions_response = MockSGLangServer._compute_chat_completions_response
+
+
+def _stamp_prompt_versions(mock_self: MockSGLangServer, payload: dict) -> dict:
+    response = _original_chat_completions_response(mock_self, payload)
+    meta_info = response["choices"][0]["meta_info"]
+    num_prompt_tokens = len(payload["input_ids"])
+    meta_info["prefill_weight_versions"] = [
+        {"version": _SHARED_PREFIX_VERSION, "start": 0, "end": 1},
+        {"version": meta_info["weight_version"], "start": 1, "end": num_prompt_tokens},
+    ]
+    return response
 
 
 def _process_agent_prompt(prompt: str) -> ProcessResult:

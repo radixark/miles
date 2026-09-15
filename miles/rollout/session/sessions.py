@@ -100,8 +100,10 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         return Response(content=_render_json(body), status_code=response.status_code, media_type=JSON_MEDIA_TYPE)
 
     @app.post("/sessions")
-    async def create_session():
-        return await core.create_session()
+    async def create_session(request: Request):
+        body = await request.body()
+        request_body = json.loads(body) if body else {}
+        return await core.create_session(extra_key=request_body.get("extra_key"))
 
     @app.get("/sessions/{session_id}")
     async def get_session(session_id: str):

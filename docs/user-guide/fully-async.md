@@ -46,6 +46,7 @@ Starting from a working run, the rest of this page covers what you can change:
 | To change | See |
 |---|---|
 | How much generation stays in flight | [Arguments: Scheduling options](#arguments-scheduling-options) |
+| Whether the engines and the trainer share GPUs | [Colocate](#colocate) |
 | How deep the buffer is, how stale a group may be, which groups reach training, or the buffer implementation itself | [Arguments: Buffer options](#arguments-buffer-options) |
 | Where eval runs and where it gets its weights | [Evaluation](#evaluation) |
 | Which numbers tell you where the bottleneck is, or where the metrics are logged | [Metrics](#metrics) |
@@ -108,6 +109,29 @@ Three flags control how much generation stays in flight:
 | `--async-max-concurrent-samples` | In-flight cap in trajectories rather than groups, floored to `value // n_samples_per_prompt` groups. Use it to decouple generation concurrency from batch size |
 | `--rollout-submission-granularity` | Sets when a finished unit frees a submission slot. Under `--fully-async` the default is `sample`, which frees each slot as its own sample completes; `group` holds the slot until the whole group returns |
 
+## Colocate
+
+`--fully-async --colocate` puts the engines and the trainer on the same GPUs, down to a
+single one. Generation still runs continuously between training steps, but the two now
+take turns on the device instead of holding separate GPUs. Generation stops for the whole
+train window, so no samples are produced there. That is the same gap as the pause window
+in the disaggregated mode, and `--max-weight-staleness` and the weight-version
+bookkeeping are unchanged.
+
+### Launch
+
+```diff
+  python3 train_async.py ...
+    --fully-async
++   --colocate
++   --num-gpus-per-node 1
+-   --rollout-num-gpus 4
+```
+
+[`examples/retool_v2`](https://github.com/radixark/miles/blob/main/examples/retool_v2)
+runs a multi-turn tool-call recipe this way on one GPU:
+`python examples/retool_v2/run_retool_multi_turn.py --fully-async --num-gpus-per-node 1`.
+
 ## Data path
 
 ### The data buffer
@@ -119,15 +143,20 @@ The **data buffer** is the store of finished groups between the two loops, and e
 group-level decision lives in it. The producer puts each group in as it completes, the
 trainer takes groups back out one at a time, and everything in between — what to keep,
 what to discard, what to send back for regeneration — is the buffer's call. It is one
-replaceable component with three methods:
+replaceable component with the following interface:
 
 | Method | Called by | Purpose |
 |---|---|---|
 | `put()` | The rollout worker, once per finished group | Store the group, or reject it |
-| `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
+| `get(num_groups=...)` | The trainer, once per training batch | Return that many groups at once, waiting until the buffer holds them |
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
+| `state_dict()` | Checkpoint save | Return every accepted entry needed to resume without loss or duplication |
+| `load_state_dict(state)` | Checkpoint load | Replace the buffer state with a previously returned state |
 
-Those three methods are the whole interface: the worker and the trainer see nothing
+Multi-policy runs do not checkpoint the rollout data buffer: its state is skipped on save, so a
+resumed run has none to load.
+
+These methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.
 
 ```mermaid
@@ -177,7 +206,7 @@ Staleness control decides which of those groups training is allowed to see:
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
-takes over all three methods and therefore every group-level decision, and the flags in
+takes over the full interface and therefore every group-level decision, and the flags in
 this section apply only if your class reads them. The one decision that stays outside is
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.

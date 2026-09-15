@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from typing import Any
 
 import yaml
@@ -11,6 +12,7 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
+    has_megatron_checkpoint,
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
@@ -61,6 +63,10 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     return rollout_path, eval_path
 
 
+def driver_owns_generation_pause(args) -> bool:
+    return args.fully_async and args.colocate
+
+
 def _resolve_rollout_functions(args) -> None:
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
         raise ValueError(
@@ -76,7 +82,20 @@ def _resolve_rollout_functions(args) -> None:
         assert (
             args.rollout_function_path is None
         ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
-        assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
+        if args.colocate:
+            assert args.train_backend != "fsdp", (
+                "--fully-async --colocate needs the megatron IPC weight updater; the FSDP updater still "
+                "pauses and resumes generation on its own"
+            )
+            assert args.pause_generation_mode != "in_place", (
+                "--fully-async --colocate releases the KV cache to make room for training, so the "
+                "in_place promise to keep it cannot hold: use --pause-generation-mode retract"
+            )
+            assert "rollout" not in args.ft_components, (
+                "--fully-async --colocate does not support rollout fault tolerance: a cell replaced while "
+                "generation is paused for training would neither inherit the pause nor get its KV cache back "
+                "before serving"
+            )
         assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
         assert args.pause_generation_mode != "abort", (
             "--fully-async cannot use --pause-generation-mode abort: generation is always in flight, "
@@ -652,6 +671,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--namespaced-radix-cache",
+                action=argparse.BooleanOptionalAction,
+                help=(
+                    "Whether every generation request carries a radix cache key naming the rollout call "
+                    "the sample started under, so prefix KV computed under old weights cannot serve "
+                    "samples of a later call. Defaults to true when --fully-async is combined with "
+                    "--pause-generation-mode in_place, where the engine never flushes the cache and the "
+                    "staleness of a shared prompt is otherwise unbounded; an explicit "
+                    "--no-namespaced-radix-cache is respected."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-temperature",
                 type=float,
                 default=1.0,
@@ -1187,7 +1218,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--data-source-path",
                 type=str,
-                default="miles.rollout.data_source.RolloutDataSourceWithBuffer",
+                default="miles.rollout.data_source.RolloutDataSource",
                 help="The data source class for rollout data.",
             )
             parser.add_argument(
@@ -2269,8 +2300,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--save-debug-event-data",
                 type=str,
                 default=None,
-                help="Where the audit events of this run go, including the env report. Defaults to "
-                "<save>/events, so that a run that checkpoints also records what it ran as.",
+                help="Where the audit events of this run go, including the env report. Defaults to <save>/events "
+                "(or <dump-details>/events); --ci-test falls back to a run-specific temporary directory.",
             )
             parser.add_argument(
                 "--dump-details",
@@ -2395,6 +2426,29 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--enable-event-analyzer",
                 action="store_true",
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
+            )
+            parser.add_argument(
+                "--log-inference-engine-weight-checksums",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Ask every inference engine for a full weight checksum after each weight update and record it "
+                "in the event log. The engines materialize all weights to answer, which costs a large transient "
+                "allocation, so this defaults on only when an event directory was explicitly requested.",
+            )
+            parser.add_argument(
+                "--enable-sample-ownership-checker",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Verify exactly one outcome for every consumed sample and every mature issued sample; "
+                "CI enables this unless it is explicitly disabled. Every actor step appends one full "
+                "consumption snapshot per replica to the event log, whose size therefore grows with steps "
+                "times consumed samples, so this is meant for CI and debugging.",
+            )
+            parser.add_argument(
+                "--sample-ownership-grace-steps",
+                type=int,
+                default=None,
+                help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI).",
             )
             parser.add_argument(
                 "--enable-witness",
@@ -2681,6 +2735,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_ci_arguments(parser):
             parser.add_argument(
+                "--ci-inject-missing-prefetched-batch-bug",
+                action="store_true",
+                help="Discard the restored prefetched batch to test sample ownership failure detection.",
+            )
+            parser.add_argument(
                 "--ci-test",
                 action="store_true",
             )
@@ -2711,6 +2770,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help="Require exactly this many eval checks, all meeting the CI threshold.",
+            )
+            parser.add_argument(
+                "--ci-assert-prefill-lag-max",
+                type=int,
+                default=None,
+                help="Require every rollout's prompt KV to lag its decode weight version by at most this much.",
             )
             parser.add_argument(
                 "--ci-save-grad-norm",
@@ -3311,6 +3376,64 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def _resolve_event_directory(args: argparse.Namespace) -> None:
+    event_directory_was_requested = args.save_debug_event_data is not None
+
+    if not event_directory_was_requested and args.ci_test:
+        args.save_debug_event_data = os.path.join(tempfile.gettempdir(), "miles-ci", args.run_uuid, EVENTS_DIRNAME)
+
+    if args.log_inference_engine_weight_checksums is None:
+        args.log_inference_engine_weight_checksums = event_directory_was_requested
+
+
+def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
+    if args.sample_ownership_grace_steps is None:
+        args.sample_ownership_grace_steps = 2 if args.ci_test else 10
+    was_requested_explicitly = args.enable_sample_ownership_checker is True
+    if args.enable_sample_ownership_checker is None:
+        args.enable_sample_ownership_checker = args.ci_test
+    if not args.enable_sample_ownership_checker:
+        return
+
+    assert (
+        args.custom_convert_samples_to_train_data_path is None
+    ), "--enable-sample-ownership-checker is incompatible with --custom-convert-samples-to-train-data-path"
+
+    multi_policy = (
+        args.train_backend == "megatron"
+        and args.megatron_config is not None
+        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
+    )
+    unsupported = [
+        reason
+        for condition, reason in (
+            (args.train_backend != "megatron", "the FSDP backend has no model companion info"),
+            (is_lora_enabled(args), "LoRA training has no model companion info"),
+            (args.multi_lora, "multi-LoRA training can replay samples"),
+            (multi_policy, "multi-policy training has separate model companion lineages"),
+            (args.debug_train_only, "train-only mode has no issuing data source"),
+            (args.debug_rollout_only, "rollout-only mode has no trainer model companion"),
+            (args.debug_disable_optimizer, "a disabled optimizer trains nothing"),
+            (args.num_critic_only_steps > 0, "critic-only warmup steps drop actor samples"),
+        )
+        if condition
+    ]
+    if unsupported:
+        if not was_requested_explicitly:
+            args.enable_sample_ownership_checker = False
+            return
+        raise ValueError(f"--enable-sample-ownership-checker is not supported here: {'; '.join(unsupported)}")
+
+    if args.sample_ownership_grace_steps < 0:
+        raise ValueError("--sample-ownership-grace-steps must be non-negative")
+
+    if args.save_debug_event_data is None:
+        raise ValueError(
+            "--enable-sample-ownership-checker needs an event directory: "
+            "pass --save-debug-event-data, --save, or --dump-details"
+        )
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -3591,6 +3714,7 @@ def miles_validate_args(args):
     from miles.utils.multi_lora import validate_multi_lora_args
 
     validate_multi_lora_args(args)
+    _resolve_data_source_path(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -3755,6 +3879,12 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )
+        if has_megatron_checkpoint(args.requested_load):
+            raise ValueError(
+                "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
+                "the first sync only captures a baseline from --hf-checkpoint and never transfers the "
+                f"weights restored from --load={args.requested_load}."
+            )
 
     if args.colocate:
         if args.offload_train is None:
@@ -3887,6 +4017,22 @@ def miles_validate_args(args):
             f"so one group already puts n_samples_per_prompt trajectories in flight"
         )
 
+    if args.namespaced_radix_cache is None:
+        args.namespaced_radix_cache = args.fully_async and args.pause_generation_mode == "in_place"
+        if args.namespaced_radix_cache:
+            logger.info(
+                "--fully-async with --pause-generation-mode in_place never flushes the engine cache: "
+                "defaulting to --namespaced-radix-cache so prefix KV computed under old "
+                "weights cannot serve a later rollout call. Pass "
+                "--no-namespaced-radix-cache to keep one shared cache."
+            )
+
+    if args.namespaced_radix_cache:
+        assert not use_legacy_rollout_v1(), (
+            "--namespaced-radix-cache requires the class-based rollout API; "
+            "unset MILES_USE_LEGACY_ROLLOUT_V1 or pass --no-namespaced-radix-cache"
+        )
+
     _resolve_rollout_functions(args)
 
     # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
@@ -3993,6 +4139,9 @@ def miles_validate_args(args):
             )
 
     args.run_uuid = _resolve_run_uuid(args)
+
+    _resolve_event_directory(args)
+    _resolve_sample_ownership_check(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
@@ -4232,3 +4381,9 @@ def hf_validate_args(args, hf_config):
 
     if len(errors) > 0:
         raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
+
+
+def _resolve_data_source_path(args: argparse.Namespace) -> None:
+    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+        args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
+        logger.info("Partial rollout uses the legacy buffered data source by default")

@@ -14,6 +14,7 @@ from mbridge import AutoBridge
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
+from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
 from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
@@ -122,7 +123,8 @@ def main():
     hf_model_path = args.hf_checkpoint
     bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
 
-    bridge.load_weights(model, hf_model_path, memory_efficient=True)
+    with ModelCompanionInstallationUtils.hide(model):
+        bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")
 
     print_memory("after loading model")

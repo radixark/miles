@@ -4,19 +4,27 @@ import logging
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.event_analyzer import analyzer as analyzer_module
 from miles.utils.audit_utils.event_analyzer.analyzer import (
     _partition_by_model_id,
     run_analysis,
     run_analysis_from_args,
+    run_sample_ownership_analysis,
 )
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import (
     InferenceEngineWeightChecksumEvent,
+    OutputConsumption,
+    SampleLineagePayload,
     TrainEngineLocalWeightChecksumEvent,
     TrainEngineLocalWeightChecksumState,
+    TrainerModelCompanionInfoEvent,
+    TrainGroupStepEndEvent,
 )
 from miles.utils.audit_utils.process_identity import (
     SimpleProcessIdentity,
@@ -201,3 +209,100 @@ class TestRunAnalysisFromArgs:
 
         args = Namespace(enable_event_analyzer=True, save_debug_event_data=str(tmp_path))
         run_analysis_from_args(args)
+
+
+class TestRunSampleOwnershipAnalysis:
+    @staticmethod
+    def _args(**overrides: Any) -> Namespace:
+        return Namespace(
+            **{
+                "enable_sample_ownership_checker": True,
+                "sample_ownership_grace_steps": 0,
+                "ci_test": True,
+                **overrides,
+            }
+        )
+
+    @staticmethod
+    def _log_one_completed_step(log_dir: Path, *, count: int) -> None:
+        event_logger = EventLogger(log_dir=log_dir, source=SimpleProcessIdentity(component="main"))
+        event_logger.log(
+            TrainerModelCompanionInfoEvent,
+            dict(
+                rollout_id=1,
+                attempt=0,
+                cell_index=0,
+                skipped_nonfinite_sample_counts=[],
+                sample_counts=[
+                    OutputConsumption(
+                        sample=SampleLineagePayload(source_sample_index=10, output_index=0, output_count=1),
+                        count=count,
+                    )
+                ],
+            ),
+            print_log=False,
+        )
+        event_logger.log(
+            TrainGroupStepEndEvent,
+            dict(rollout_id=1, attempt=0, role="actor", cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            print_log=False,
+        )
+        event_logger.close()
+
+    def test_unissued_duplicate_consumption_is_rejected_before_the_first_completed_window(
+        self, tmp_path: Path
+    ) -> None:
+        """Missing issuance history and an incomplete window cannot suppress duplicate consumption."""
+        self._log_one_completed_step(tmp_path, count=2)
+
+        with pytest.raises(ValueError, match="count 2"):
+            run_sample_ownership_analysis(args=self._args(), event_dir=tmp_path)
+
+    def test_a_violation_outside_ci_is_logged_instead_of_raised(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A training run reports the violation and keeps going; only CI turns it into a failure."""
+        self._log_one_completed_step(tmp_path, count=2)
+
+        with caplog.at_level(logging.ERROR):
+            run_sample_ownership_analysis(args=self._args(ci_test=False), event_dir=tmp_path)
+
+        assert any(record.levelname == "ERROR" and record.exc_info for record in caplog.records)
+
+    def test_a_disabled_check_reads_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Disabled checking does not even open the event log."""
+        monkeypatch.setattr(analyzer_module, "read_events", lambda *args, **kwargs: pytest.fail("disabled check ran"))
+
+        run_sample_ownership_analysis(args=self._args(enable_sample_ownership_checker=False))
+
+    def test_the_events_come_from_the_process_event_logger(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without an explicit directory the check reads what this process has been writing."""
+        self._log_one_completed_step(tmp_path, count=1)
+        observed: list[int] = []
+
+        def check(events: list[Any], *, grace_steps: int) -> list[Any]:
+            observed.append(len(events))
+            return []
+
+        monkeypatch.setattr(analyzer_module, "get_event_logger", lambda: SimpleNamespace(log_dir=tmp_path))
+        monkeypatch.setattr(analyzer_module.sample_ownership_check, "check", check)
+
+        run_sample_ownership_analysis(args=self._args())
+
+        assert observed == [2]
+
+    def test_analysis_passes_the_step_grace_through(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The analyzer hands the rule its caller's step grace unchanged."""
+        observed: list[int] = []
+
+        def check(_events: list[Any], *, grace_steps: int) -> list[Any]:
+            observed.append(grace_steps)
+            return []
+
+        monkeypatch.setattr(analyzer_module.sample_ownership_check, "check", check)
+
+        run_sample_ownership_analysis(args=self._args(sample_ownership_grace_steps=3), event_dir=tmp_path)
+
+        assert observed == [3]

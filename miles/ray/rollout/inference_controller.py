@@ -213,6 +213,20 @@ class InferenceController:
         for srv in self.servers.values():
             await srv.onload(tags)
 
+    # -------------------------- generation pause -----------------------------
+
+    @with_lock
+    async def pause_generation(self, mode: str) -> None:
+        await asyncio.gather(*[srv.pause_generation(mode=mode) for srv in self.servers.values()])
+
+    @with_lock
+    async def continue_generation(self) -> None:
+        await asyncio.gather(*[srv.continue_generation() for srv in self.servers.values()])
+
+    @with_lock
+    async def flush_cache(self) -> None:
+        await asyncio.gather(*[srv.flush_cache() for srv in self.servers.values()])
+
     # -------------------------- engine management -----------------------------
 
     @acquires_lock

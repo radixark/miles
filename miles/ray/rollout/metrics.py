@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from numbers import Number
 from typing import Any
 
@@ -16,7 +17,7 @@ from miles.utils.metric_utils import (
     namespace_metrics,
 )
 from miles.utils.tracking_utils import tracking
-from miles.utils.types import AdapterRef, Sample
+from miles.utils.types import AdapterRef, Sample, WeightVersionSpan, compute_numeric_versions_of_spans
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +115,19 @@ def _compute_metrics_from_samples(args, samples):
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
 
-    oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]
-    if oldest_versions:
-        log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
-        mixed = sum(1 for s in samples if len({span.version for span in s.all_weight_version_spans}) > 1)
-        log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
+    log_dict |= _compute_weight_version_span_metrics(
+        samples,
+        spans_of_sample=lambda sample: sample.all_weight_version_spans,
+        prefix="weight_version/",
+    )
+    log_dict |= _compute_weight_version_span_metrics(
+        samples,
+        spans_of_sample=lambda sample: sample.all_prefill_weight_version_spans,
+        prefix="weight_version/prefill_",
+    )
+    log_dict |= _compute_prefill_lag_metrics(samples)
+    if args.ci_test and args.ci_assert_prefill_lag_max is not None:
+        _assert_prefill_lag_metrics(metrics=log_dict, bound=args.ci_assert_prefill_lag_max)
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]
@@ -182,6 +191,58 @@ def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str,
     )
     log_dict["episode_total_response_length/mean"] = np.mean(list(total_lengths_by_rollout.values())).item()
     return log_dict
+
+
+def _compute_weight_version_span_metrics(
+    samples: list[Sample],
+    *,
+    spans_of_sample: Callable[[Sample], list[WeightVersionSpan]],
+    prefix: str,
+) -> dict[str, float]:
+    spans_by_sample = [spans_of_sample(sample) for sample in samples]
+    oldest_versions = [
+        version
+        for spans in spans_by_sample
+        if (version := min(compute_numeric_versions_of_spans(spans), default=None)) is not None
+    ]
+    if not oldest_versions:
+        return {}
+
+    log_dict = dict_add_prefix(compute_statistics(oldest_versions), prefix)
+    mixed = sum(1 for spans in spans_by_sample if len({span.version for span in spans}) > 1)
+    log_dict[f"{prefix}mixed_version_ratio"] = mixed / len(samples)
+    return log_dict
+
+
+def _compute_prefill_lag_metrics(samples: list[Sample]) -> dict[str, float]:
+    comparable = [
+        (call, lag) for sample in samples for call in sample.weight_versions if (lag := call.prefill_lag) is not None
+    ]
+    if not comparable:
+        return {}
+
+    prompt_tokens = sum(
+        prefill_span.abs_end - prefill_span.abs_start for call, _ in comparable for prefill_span in call.prefill_spans
+    )
+    stale_tokens = sum(
+        prefill_span.abs_end - prefill_span.abs_start
+        for call, _ in comparable
+        for prefill_span in call.prefill_spans
+        if int(prefill_span.version) < call.max_decode_version
+    )
+    return {
+        "weight_version/prefill_stale_token_ratio": stale_tokens / prompt_tokens,
+        "weight_version/prefill_lag_max": max(lag for _, lag in comparable),
+    }
+
+
+def _assert_prefill_lag_metrics(*, metrics: dict[str, float], bound: int) -> None:
+    lag = metrics.get("weight_version/prefill_lag_max")
+    stale_ratio = metrics.get("weight_version/prefill_stale_token_ratio")
+    assert lag is not None and stale_ratio is not None, f"CI requires prompt KV lag and stale-token metrics: {metrics}"
+    assert 0 <= lag <= bound, f"prompt KV lag metric {lag} exceeds the expected range [0, {bound}]"
+    assert 0 <= stale_ratio <= 1, f"prompt KV stale-token ratio {stale_ratio} is outside [0, 1]"
+    assert lag != 0 or stale_ratio == 0, f"zero prompt KV lag must have zero stale-token ratio, got {stale_ratio}"
 
 
 def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[str, float | int]:

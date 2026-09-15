@@ -12,6 +12,7 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
+from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils
 from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
@@ -154,6 +155,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                     f"but adapter weights could not be loaded. "
                     f"Training will start with freshly initialized adapter weights."
                 )
+
+    ModelCompanionSampleConsumptionUtils.clear_for_finetune(ddp_model, args=args)
 
     return result
 

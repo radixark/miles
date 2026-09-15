@@ -163,6 +163,8 @@ def add_sglang_arguments(parser):
         inherit=True,
     )
 
+    _set_defaults_for_unsupported_server_args(parser)
+
     parser.add_argument(
         "--sglang-config",
         type=str,
@@ -183,6 +185,8 @@ def add_sglang_arguments(parser):
 
 
 def validate_args(args):
+    _assert_supported_server_args_are_requested(args)
+
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
     if args.true_on_policy_mode:
@@ -205,3 +209,44 @@ def validate_args(args):
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)
+
+
+# ====================== unsupported sglang server args ========================
+
+_MILES_SERVER_ARG_DEFAULTS = {"enable_prefill_weight_versions": False}
+
+_MILES_OWNED_FALLBACKS_DEST = "miles_owned_server_arg_fallbacks"
+
+
+def _set_defaults_for_unsupported_server_args(parser: argparse.ArgumentParser) -> None:
+    registered = _parser_option_strings(parser)
+    fallbacks: list[str] = []
+
+    for name, default in _MILES_SERVER_ARG_DEFAULTS.items():
+        flag = _server_arg_flag(name)
+        if flag in registered:
+            continue
+        assert default is False
+        parser.add_argument(flag, action="store_true", default=default)
+        fallbacks.append(name)
+
+    parser.set_defaults(**{_MILES_OWNED_FALLBACKS_DEST: tuple(fallbacks)})
+
+
+def _assert_supported_server_args_are_requested(args) -> None:
+    for name in getattr(args, _MILES_OWNED_FALLBACKS_DEST):
+        if not getattr(args, f"sglang_{name}"):
+            continue
+        flag = _server_arg_flag(name)
+        raise ValueError(
+            f"{flag} is set, but the installed sglang has no ServerArgs.{name}; "
+            f"install an sglang that supports it or drop the flag"
+        )
+
+
+def _server_arg_flag(name: str) -> str:
+    return "--sglang-" + name.replace("_", "-")
+
+
+def _parser_option_strings(parser: argparse.ArgumentParser) -> set[str]:
+    return {option for action in parser._actions for option in action.option_strings}

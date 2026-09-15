@@ -180,7 +180,7 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
         model,
         optimizer,
         opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
+        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101, restored_trained_iteration=True),
     )
     opt_param_scheduler.step.assert_not_called()
 
@@ -208,7 +208,7 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
         model,
         optimizer,
         opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
+        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101, restored_trained_iteration=True),
     )
     opt_param_scheduler.step.assert_called_once_with(increment=800)
 
@@ -272,3 +272,15 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
     def test_a_lora_run_that_really_starts_from_scratch_still_starts_at_rollout_one(self, tmp_path: Path):
         """An adapter with no training state answers iteration 0, and the run continues from the next rollout."""
         assert _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8).start_rollout_id == 1
+
+    def test_a_lora_run_that_really_starts_from_scratch_restored_no_trained_iteration(self, tmp_path: Path):
+        """Nothing was trained, so no rollout state was ever saved for the rollout side to restore."""
+        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8)
+
+        assert output.restored_trained_iteration is False
+
+    def test_a_lora_resume_restored_a_trained_iteration(self, tmp_path: Path):
+        """The adapter carries a trained iteration, so the rollout state saved beside it must be restored."""
+        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, lora_rank=8)
+
+        assert output.restored_trained_iteration is True

@@ -9,6 +9,9 @@ from miles.utils.audit_utils.event_logger.models import (
     EngineEnvReportEvent,
     Event,
     InferenceEngineWeightChecksumEvent,
+    OutputConsumption,
+    SampleLineagePayload,
+    TrainerModelCompanionInfoEvent,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
     WitnessSnapshotParamEvent,
@@ -23,6 +26,28 @@ _TRAIN_SOURCE = TrainProcessIdentity(component="actor", cell_index=0, rank_withi
 
 
 class TestEventModelsDiscriminatedUnion:
+    def test_model_companion_info_roundtrip(self) -> None:
+        """Model companion info events encode tuple identities without JSON map keys."""
+        event = TrainerModelCompanionInfoEvent(
+            timestamp=_FIXED_TS,
+            source=_TRAIN_SOURCE,
+            cell_index=2,
+            rollout_id=7,
+            attempt=2,
+            sample_counts=[
+                OutputConsumption(
+                    sample=SampleLineagePayload(source_sample_index=11, output_index=1, output_count=2),
+                    count=1,
+                )
+            ],
+            skipped_nonfinite_sample_counts=[],
+        )
+
+        parsed = _event_adapter.validate_json(event.model_dump_json())
+
+        assert isinstance(parsed, TrainerModelCompanionInfoEvent)
+        assert parsed.sample_counts == event.sample_counts
+
     def test_roundtrip_via_discriminator(self) -> None:
         event = WitnessAllocateIdEvent(
             timestamp=_FIXED_TS,
@@ -49,6 +74,8 @@ class TestEventModelsDiscriminatedUnion:
             timestamp=_FIXED_TS,
             source=_FIXED_SOURCE,
             rollout_id=0,
+            attempt=0,
+            role="actor",
             cell_outcomes={0: [TrainStepOutcome.NORMAL]},
         )
         p1 = _event_adapter.validate_json(e1.model_dump_json())
@@ -94,6 +121,8 @@ class TestTrainGroupStepEndEvent:
             timestamp=_FIXED_TS,
             source=_FIXED_SOURCE,
             rollout_id=3,
+            attempt=0,
+            role="actor",
             cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: "error"},
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
@@ -213,6 +242,8 @@ class TestDiscriminatedUnionParsesAllEvents:
                 timestamp=_FIXED_TS,
                 source=_FIXED_SOURCE,
                 rollout_id=0,
+                attempt=0,
+                role="actor",
                 cell_outcomes={0: [TrainStepOutcome.NORMAL]},
             ),
             InferenceEngineWeightChecksumEvent(

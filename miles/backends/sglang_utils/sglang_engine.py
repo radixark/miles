@@ -9,6 +9,7 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lora_rollout_enabled
 from miles.utils.multi_lora import is_multi_lora_enabled
 
@@ -35,7 +36,7 @@ def compute_engine_launch_cmd(
     *,
     interpreter_prefix: list[str],
     node_rank: int,
-    worker_type: str,
+    worker_type: WorkerType,
     base_gpu_id: int,
     sglang_overrides: dict,
     num_gpus_per_engine: int,
@@ -79,7 +80,7 @@ def _compute_server_args(
     nccl_port,
     host,
     port,
-    worker_type: str = "regular",
+    worker_type: WorkerType = WorkerType.REGULAR,
     disaggregation_bootstrap_port: int | None,
     base_gpu_id: int,
     engine_info_bootstrap_port: int | None,
@@ -122,15 +123,15 @@ def _compute_server_args(
     if os.environ.get("MILES_SGLANG_DUMMY_LOAD") == "1":
         kwargs["load_format"] = "dummy"
 
-    if worker_type == "prefill":
-        kwargs["disaggregation_mode"] = "prefill"
+    if worker_type == WorkerType.PREFILL:
+        kwargs["disaggregation_mode"] = WorkerType.PREFILL.value
         kwargs.setdefault("load_balance_method", "round_robin")
         assert (
             disaggregation_bootstrap_port is not None
         ), "disaggregation_bootstrap_port must be set for prefill worker"
         kwargs["disaggregation_bootstrap_port"] = disaggregation_bootstrap_port
-    elif worker_type == "decode":
-        kwargs["disaggregation_mode"] = "decode"
+    elif worker_type == WorkerType.DECODE:
+        kwargs["disaggregation_mode"] = WorkerType.DECODE.value
         kwargs["prefill_round_robin_balance"] = True
 
     if args.use_rollout_routing_replay:
@@ -181,7 +182,7 @@ def _compute_server_args(
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
-        if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
+        if worker_type == WorkerType.DECODE and attr.name == "enable_hierarchical_cache":
             continue
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")

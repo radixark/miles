@@ -97,6 +97,7 @@ def _score_payload(
     top_k: int = 0,
     token_ids: list[int] | None = None,
     token_ids_positions: list[list[int]] | None = None,
+    extra_key: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "input_ids": input_ids,
@@ -117,6 +118,8 @@ def _score_payload(
         payload["token_ids_logprob_positions"] = token_ids_positions
     elif token_ids:
         payload["token_ids_logprob"] = token_ids
+    if extra_key is not None:
+        payload["extra_key"] = extra_key
     return payload
 
 
@@ -387,12 +390,17 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
     reward_payload = {"teacher": teacher_response}
     if strategy in STUDENT_ON_TEACHER_STRATEGIES:
         teacher_top = _trim_input_field(teacher_response["meta_info"], "input_top_logprobs", sample.response_length)
+        student_extra_key = sample.kv_cache_namespace
         if per_position:
             student_payload = _score_payload(
-                sample.tokens, token_ids_positions=_per_position_ids(teacher_top, prompt_len)
+                sample.tokens,
+                token_ids_positions=_per_position_ids(teacher_top, prompt_len),
+                extra_key=student_extra_key,
             )
         else:
-            student_payload = _score_payload(sample.tokens, token_ids=_unique_ids(teacher_top))
+            student_payload = _score_payload(
+                sample.tokens, token_ids=_unique_ids(teacher_top), extra_key=student_extra_key
+            )
         reward_payload["student_on_teacher"] = await _post_json(
             _student_score_url(args), student_payload, timeout_secs=request_timeout
         )

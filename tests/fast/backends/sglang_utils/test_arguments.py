@@ -9,6 +9,7 @@ pytest.importorskip("sglang")
 
 from sglang.srt.server_args import ServerArgs
 
+from miles.backends.sglang_utils import arguments as sglang_arguments
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 
 
@@ -65,3 +66,53 @@ class TestAllocatorOwnedServerArgs:
     def test_the_skipped_launch_gate_port_names_a_real_server_args_field(self):
         """A renamed upstream field would leave the skip entry stale and quietly re-expose the flag."""
         assert "gated_launch_port" in {field.name for field in dataclasses.fields(ServerArgs)}
+
+
+def _hide_server_arg(monkeypatch, name: str) -> None:
+    real_add_cli_args = ServerArgs.add_cli_args
+    hidden_flag = "--" + name.replace("_", "-")
+
+    def add_cli_args(parser):
+        original_add_argument = parser.add_argument
+
+        def add_argument(*name_or_flags, **kwargs):
+            if hidden_flag in name_or_flags:
+                return None
+            return original_add_argument(*name_or_flags, **kwargs)
+
+        parser.add_argument = add_argument
+        try:
+            return real_add_cli_args(parser)
+        finally:
+            parser.add_argument = original_add_argument
+
+    monkeypatch.setattr(ServerArgs, "add_cli_args", add_cli_args)
+
+
+class TestUnsupportedServerArgs:
+    def test_prefill_weight_versions_defaults_to_false_when_sglang_lacks_the_field(self, monkeypatch):
+        """An sglang without ServerArgs.enable_prefill_weight_versions still parses the flag as False."""
+        _hide_server_arg(monkeypatch, "enable_prefill_weight_versions")
+
+        args = _parse_sglang_args([])
+
+        assert args.sglang_enable_prefill_weight_versions is False
+        assert args.miles_owned_server_arg_fallbacks == ("enable_prefill_weight_versions",)
+
+    def test_prefill_weight_versions_keeps_the_real_flag_when_sglang_has_the_field(self):
+        """With a supporting sglang the real prefixed flag parses and no miles-owned fallback is registered."""
+        if "enable_prefill_weight_versions" not in {field.name for field in dataclasses.fields(ServerArgs)}:
+            pytest.skip("the installed sglang has no ServerArgs.enable_prefill_weight_versions")
+
+        args = _parse_sglang_args(["--sglang-enable-prefill-weight-versions"])
+
+        assert args.sglang_enable_prefill_weight_versions is True
+        assert args.miles_owned_server_arg_fallbacks == ()
+
+    def test_enabling_prefill_weight_versions_on_an_unsupported_sglang_is_an_error(self, monkeypatch):
+        """The fallback flag only exists to keep parsing working, so requesting it must fail loudly."""
+        _hide_server_arg(monkeypatch, "enable_prefill_weight_versions")
+        args = _parse_sglang_args(["--sglang-enable-prefill-weight-versions"])
+
+        with pytest.raises(ValueError, match="enable_prefill_weight_versions"):
+            sglang_arguments._assert_supported_server_args_are_requested(args)

@@ -102,7 +102,7 @@ def execute():
         "--sglang-enable-metrics "
     )
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --no-enable-sample-ownership-checker "
 
     misc_args = (
         # default dropout in megatron is 0.1

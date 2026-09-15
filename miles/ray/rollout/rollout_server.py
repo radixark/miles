@@ -151,6 +151,18 @@ class RolloutServer:
         )
 
     @requires_lock
+    async def pause_generation(self, mode: str):
+        return await asyncio.gather(*[cell.pause_generation(mode=mode) for cell in self._addressable_cells()])
+
+    @requires_lock
+    async def continue_generation(self):
+        return await asyncio.gather(*[cell.continue_generation() for cell in self._addressable_cells()])
+
+    @requires_lock
+    async def flush_cache(self):
+        return await asyncio.gather(*[cell.flush_cache() for cell in self._addressable_cells()])
+
+    @requires_lock
     async def abort_all(self) -> None:
         cells = self._addressable_cells()
         await async_utils.gather_and_raise_first(

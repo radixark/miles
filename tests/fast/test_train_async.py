@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 import train_async as train_async_driver
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.driver_fakes import (
     FakeInferenceController,
     FakeObjectStore,
@@ -22,6 +23,9 @@ from miles.utils.async_utils import with_disposer
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
     args = SimpleNamespace(
+        **parser_defaults(),
+    )
+    defaults: dict[str, Any] = dict(
         api_server_host="127.0.0.1",
         api_server_port=None,
         check_weight_update_allow_quant_error=False,
@@ -51,7 +55,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         use_rollout_logprobs=False,
         use_tis=False,
     )
-    for key, value in overrides.items():
+    for key, value in {**defaults, **overrides}.items():
         setattr(args, key, value)
     return args
 

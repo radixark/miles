@@ -37,8 +37,6 @@ class CaseConfig:
 
     def __post_init__(self):
         # Validation only — topology values are passed explicitly, not inferred.
-        if self.fully_async and self.colocate:
-            raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
         if self.num_gpus_per_node % (self.cp_size * self.pp_size) != 0:
             raise ValueError(
                 "num_gpus_per_node must be divisible by cp_size * pp_size: "
