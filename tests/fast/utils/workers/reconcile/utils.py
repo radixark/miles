@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
 
-from miles.utils.workers.reconcile.source_event import SourceEvent
+from miles.utils.workers.reconcile.source_event import ReplaceEvent, SourceEvent
 
 
 async def settle(iterations: int = 200) -> None:
@@ -47,3 +47,7 @@ def pod_cell(pod: Any) -> str:
     cell = pod.metadata.labels["cell"]
     assert isinstance(cell, str), f"pod has no usable cell label {pod=}"
     return cell
+
+
+def replace_of(*pods: Any) -> ReplaceEvent:
+    return ReplaceEvent(objects={pod.metadata.name: pod for pod in pods})
