@@ -40,7 +40,7 @@ from miles.utils.object_store_config import (
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
-from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
+from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 from miles.utils.workers.worker_provider.static import parse_host_and_port
 
@@ -2474,6 +2474,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "(lazy imports, a swapped shared disk) is still captured. Non-positive records only at startup.",
             )
             parser.add_argument(
+                "--debug-unified-grad-fused-logprob",
+                action="store_true",
+                default=False,
+                help="Debug/test only: compute the stored log probabilities through the same grad-enabled fused "
+                "cross entropy the training step uses, then detach the result, so the two invocations of the "
+                "fused kernel take one execution path instead of two.",
+            )
+            parser.add_argument(
                 "--debug-deterministic-collective",
                 action="store_true",
                 default=False,
@@ -3043,6 +3051,9 @@ def _compute_custom_inference_engine_provider_path(args: argparse.Namespace) -> 
     if args.rollout_external_engine_addrs is not None:
         return _STATIC_EXTERNAL_ENGINE_PROVIDER_PATH
     return _BACKEND_ENGINE_PROVIDER_PATH
+
+
+_DEPLOY_INSTANCE_ID_PATTERN = re.compile(DNS_LABEL_PATTERN)
 
 
 def _validate_deploy_component(args: argparse.Namespace) -> None:

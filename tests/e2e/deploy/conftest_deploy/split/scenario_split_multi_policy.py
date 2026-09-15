@@ -34,12 +34,17 @@ from miles.utils.test_utils.comparisons.metrics import assert_metric_finite_and_
 TEST_NAME: str = "split_multi_policy"
 MIN_TRAINED_ROLLOUTS: int = 2
 MAX_TRAIN_ROLLOUT_LOGPROB_ABS_DIFF: float = 0.1
+UNIFIED_GRAD_FUSED_LOGPROB_FLAG: str = "--debug-unified-grad-fused-logprob"
 
 
 def _run(args: ScriptArgs) -> None:
     prepare(args)
 
-    config = dataclasses.replace(args, run_uuid=generate_run_uuid())
+    config = dataclasses.replace(
+        args,
+        run_uuid=generate_run_uuid(),
+        extra_args=f"{args.extra_args} {UNIFIED_GRAD_FUSED_LOGPROB_FLAG}".strip(),
+    )
     run_split_training_into(
         deployments=_build_deployments(config),
         launch=launch_train,

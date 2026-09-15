@@ -50,6 +50,7 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
         Namespace(
             ci_test=True,
             ci_disable_logprobs_checker=False,
+            trainer_model_id=None,
             true_on_policy_mode=True,
             qkv_format="thd",
             log_multi_turn=False,
