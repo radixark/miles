@@ -62,6 +62,19 @@ class TestBuildEntry:
 
         assert command[command.index("--dist-init-addr") + 1] == f"{placeholders.LEADER_ADDRESS_PLACEHOLDER}:9000"
 
+    def test_renders_a_sub_node_gpu_sentinel_in_the_pool_environment(self) -> None:
+        """An environment value derived from the assigned base GPU must remain a kubelet variable."""
+        spec = engine(num_cells=2, gpus_per_engine=4).model_copy(
+            update={"env_var": lambda context: {"BASE_GPU": str(context.gpu_ids[0])}}
+        )
+        layout = LAYOUT.model_copy(update={"colocate": True})
+
+        entry = build_values([spec, trainer(num_cells=1, gpus_per_cell=8)], layout).as_values()["run"][
+            "inferenceEngines"
+        ][0]
+
+        assert entry["env"]["BASE_GPU"] == placeholders._BASE_GPU_ID_PLACEHOLDER
+
 
 class TestPortEntry:
     @pytest.mark.parametrize("name", ["9000", "bad_name", "trailing-"])
