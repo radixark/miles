@@ -125,7 +125,12 @@ def get_routed_experts_from_response(args, output, num_tokens: int):
     info = output["meta_info"].get("routed_experts")
     if info is None:
         return None
-    return _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
+    routed_experts = _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
+    assert routed_experts.size == 0 or routed_experts.any(), (
+        "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
+        "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
+    )
+    return routed_experts
 
 
 def get_indexer_topk_from_response(args, output, sample):
@@ -136,5 +141,10 @@ def get_indexer_topk_from_response(args, output, sample):
     assert num_layers is not None, (
         "Server returned indexer_topk without indexer_topk_num_layers; "
         "sglang-miles must include the layer count in meta_info."
+    )
+    expected_num_streams = getattr(args, "rollout_indexer_topk_num_streams", None)
+    assert expected_num_streams is None or num_layers == expected_num_streams, (
+        f"Server returned indexer_topk with {num_layers} streams but the model has "
+        f"{expected_num_streams} indexer layers; replaying it would map streams to the wrong layers."
     )
     return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)
