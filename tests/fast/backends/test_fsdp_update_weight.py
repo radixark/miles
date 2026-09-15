@@ -442,3 +442,84 @@ def test_fsdp_actor_rejects_a_mismatched_engine_weight_version(monkeypatch):
         actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
 
     assert updater.update_weights_calls == 1
+
+
+@pytest.mark.parametrize(
+    "counts,offsets,expected_groups",
+    [
+        ([1, 2], [1, 3], [[1], [3, 4]]),
+        ([1, 2], None, [[0], [1, 2]]),
+        (None, None, [[0, 1], [2, 3]]),
+    ],
+)
+def test_fsdp_ipc_groups_follow_engine_layout(monkeypatch, counts, offsets, expected_groups):
+    engines = [object(), object()]
+    for rank in range(5):
+        groups = []
+        updater = update_weight_utils.UpdateWeightFromTensor(Namespace(rollout_num_gpus_per_engine=2), None)
+        monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda rank=rank: rank)
+
+        def new_group(ranks, backend, groups=groups):
+            assert backend == "gloo"
+            groups.append(ranks)
+            return tuple(ranks)
+
+        monkeypatch.setattr(update_weight_utils.dist, "new_group", new_group)
+        updater.connect_rollout_engines(engines, engine_gpu_counts=counts, engine_gpu_offsets=offsets)
+
+        assert groups == expected_groups
+        matching = [i for i, members in enumerate(expected_groups) if rank in members]
+        if matching:
+            index = matching[0]
+            members = expected_groups[index]
+            assert updater._ipc_engine is engines[index]
+            assert updater._ipc_gather_src == members[0]
+            assert updater._ipc_gather_group == tuple(members)
+            assert updater.tp_rank == members.index(rank)
+        else:
+            assert updater._ipc_engine is updater._ipc_gather_src is updater._ipc_gather_group is None
+
+
+def test_fsdp_ipc_reconnect_drops_rank_without_engine(monkeypatch):
+    updater = update_weight_utils.UpdateWeightFromTensor(Namespace(rollout_num_gpus_per_engine=2), None)
+    monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 2)
+    monkeypatch.setattr(update_weight_utils.dist, "new_group", lambda ranks, backend: tuple(ranks))
+    updater.connect_rollout_engines([object()], engine_gpu_counts=[3], engine_gpu_offsets=[0])
+    assert updater._ipc_engine is not None
+    updater.connect_rollout_engines([object()], engine_gpu_counts=[1], engine_gpu_offsets=[4])
+    assert updater._ipc_engine is updater._ipc_gather_src is updater._ipc_gather_group is None
+
+    def unexpected_gather(*args, **kwargs):
+        pytest.fail("A rank without an engine must not enter an IPC gather")
+
+    monkeypatch.setattr(update_weight_utils.dist, "gather_object", unexpected_gather)
+    updater.update_bucket_weights([("weight", torch.ones(2))])
+
+
+def test_fsdp_distributed_group_uses_actual_engine_counts(monkeypatch):
+    from miles.backends.training_utils.weight_update.protocols import broadcast
+
+    class Engine:
+        async def init_weights_update_group(self, address, port, rank_offset, world_size, group_name, backend):
+            self.membership = (rank_offset, world_size, group_name)
+
+    engines = [Engine(), Engine()]
+    group = object()
+    joined = {}
+
+    def join(**kwargs):
+        joined.update(kwargs)
+        return group
+
+    monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(broadcast.ray._private.services, "get_node_ip_address", lambda: "127.0.0.1")
+    monkeypatch.setattr(broadcast, "init_process_group", join)
+    updater = update_weight_utils.UpdateWeightFromDistributed(
+        Namespace(rollout_num_gpus_per_engine=4, rollout_num_gpus=8), None
+    )
+    updater.connect_rollout_engines(engines, engine_gpu_counts=[1, 2], engine_gpu_offsets=[8, 12])
+
+    assert [engine.membership for engine in engines] == [(1, 4, "miles"), (2, 4, "miles")]
+    assert joined["world_size"] == 4
+    assert joined["rank"] == 0
+    assert updater._model_update_groups is group
