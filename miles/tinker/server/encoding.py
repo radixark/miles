@@ -3,11 +3,14 @@
 Datums encode input x and explicit target labels t as x + [t[-1]],
 so each output scores logprob(t[i] | x[0..i])."""
 
+import math
+
 import pydantic
 
+from miles.tinker.core.input_validation import validate_save_options
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
-from miles.tinker.core.input_validation import validate_save_options
+from tinker.types.sample_response import MASK_LOGPROB
 
 # materialized at the boundary so core and the executor can require every key
 ADAM_PARAM_DEFAULTS = tinker_types.AdamParams().model_dump()
@@ -179,9 +182,21 @@ def render_result(result: dict) -> dict:
         }
     if op == "sample":
         rendered = {"type": "sample", "sequences": result["sequences"]}
-        for key in ("prompt_logprobs", "topk_prompt_logprobs"):
-            if result.get(key) is not None:
-                rendered[key] = result[key]
+        if result.get("prompt_logprobs") is not None:
+            rendered["prompt_logprobs"] = [
+                None if math.isnan(logprob) else logprob for logprob in result["prompt_logprobs"]
+            ]
+        if result.get("topk_prompt_logprobs") is not None:
+            topk = result["topk_prompt_logprobs"]
+            rendered["topk_prompt_logprobs"] = [
+                [
+                    (token_id, logprob)
+                    for token_id, logprob in zip(ids, probs, strict=True)
+                    if (token_id, logprob) != (0, MASK_LOGPROB)
+                ]
+                or None
+                for ids, probs in zip(topk["token_ids"], topk["logprobs"], strict=True)
+            ]
         return rendered
     if op == "create_model":
         return {"type": "create_model", "model_id": result["model_id"]}
