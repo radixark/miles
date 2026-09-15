@@ -326,11 +326,12 @@ class TestRetryBuffer:
         group = make_group(7)
         fn._recycle(group, data_buffer.UnusedReason.ABORTED)
 
-        entry = await fn._submit_one_group()
+        task = fn._submit_one_group()
 
-        assert entry.prompt_group == group
+        assert [x.prompt_group for x in fn._running_tasks] == [group]
         assert source.num_get_calls == 0
         assert not fn._retry_buffer
+        await task
 
 
 async def test_aborted_group_recycled(monkeypatch):
@@ -1743,12 +1744,13 @@ class TestInFlightBudget:
         fn._recycle(first, data_buffer.UnusedReason.ABORTED)
         fn._recycle(second, data_buffer.UnusedReason.ABORTED)
 
-        assert (await fn._submit_one_group()).prompt_group is first
-        assert (await fn._submit_one_group()).prompt_group is second
-        assert source.num_get_calls == 0
+        tasks = [fn._submit_one_group() for _ in range(3)]
+        submitted = [x.prompt_group for x in fn._running_tasks]
 
-        assert (await fn._submit_one_group()).prompt_group is not second
+        assert submitted[:2] == [first, second]
+        assert submitted[2] is not second
         assert source.num_get_calls == 1
+        await asyncio.gather(*tasks)
 
     async def test_a_finished_group_reaches_the_buffer_with_its_prompt_group_intact(self, monkeypatch) -> None:
         """Recycling resubmits the prompt group, which the buffer can only do if the put carried it along."""
@@ -1785,6 +1787,21 @@ class TestInFlightBudget:
         assert source.num_get_calls == 8
         assert fn._scheduler.samples_in_flight == 0
         assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 1
+
+        await fn.dispose()
+
+    async def test_a_group_parked_in_the_producer_put_is_still_a_running_group(self, monkeypatch) -> None:
+        """A generated group waiting for buffer capacity is still owed to the step, so it stays registered."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=8), FakeDataSource())
+        buffer, _ = make_buffer(max_groups=1)
+        fn._output = buffer
+        await put_group(buffer, make_group(99))
+
+        fn._worker = asyncio.create_task(fn._worker_loop())
+        await _settle()
+
+        assert len(fn._running_tasks) == 8
+        assert all(x.task.done() for x in fn._running_tasks)
 
         await fn.dispose()
 
