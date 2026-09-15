@@ -12,6 +12,7 @@ from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
+from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.logging_utils import configure_logger
 from miles.utils.multi_lora import define_new_adapter_metrics
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -24,6 +25,7 @@ async def main(args):
         not args.colocate
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
     configure_logger(args, source=SimpleProcessIdentity(component="main"))
+    maybe_start_periodic_pyspy_dump()
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
