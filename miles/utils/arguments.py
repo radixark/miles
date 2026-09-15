@@ -1512,6 +1512,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Interval (in rollout steps) to update ref model from actor. If None, ref model is not updated.",
             )
             parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
+            parser.add_argument(
+                "--use-adaptive-entropy",
+                action="store_true",
+                default=False,
+                help=(
+                    "Adaptive entropy regularization (Skywork-OR1): the entropy bonus acts only while the training "
+                    "entropy is at or below --entropy-target, and --entropy-coef moves by --entropy-coef-delta per "
+                    "optimizer step, up at or below the target and down above it, within "
+                    "[--entropy-coef-min, --entropy-coef-max]. --entropy-coef is the starting value."
+                ),
+            )
+            parser.add_argument("--entropy-target", type=float, default=0.2, help="Target per-token entropy (nats).")
+            parser.add_argument("--entropy-coef-delta", type=float, default=0.005, help="Per-step coefficient change.")
+            parser.add_argument("--entropy-coef-min", type=float, default=0.0, help="Lower clamp of the coefficient.")
+            parser.add_argument("--entropy-coef-max", type=float, default=1.0, help="Upper clamp of the coefficient.")
             parser.add_argument("--gamma", type=float, default=1.0, help="PPO GAE gamma")
             parser.add_argument("--lambd", type=float, default=1.0, help="PPO GAE lambd")
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
