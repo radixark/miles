@@ -172,6 +172,7 @@ def _compute_spec_trainer(
             num_gpus_per_worker=_NUM_GPUS_PER_TRAINER_WORKER,
             num_cpus_per_worker=_NUM_GPUS_PER_TRAINER_WORKER,
             num_gpu_slots_per_worker=1,
+            num_gpus_per_node=num_gpus_per_node,
             pg_name="actor",
         ),
         worker_class=_TRAINER_ACTOR_CLASSES[args.train_backend],
