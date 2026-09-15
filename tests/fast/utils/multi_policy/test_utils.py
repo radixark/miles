@@ -248,7 +248,7 @@ class TestCreatePolicyTrainers:
         """The models would resume at rollout 4 while the data source silently restarts at the first prompt."""
         self._stub_create_training_model(monkeypatch, dict(a=4, b=4))
 
-        with pytest.raises(AssertionError, match="global_dataset_state_dict_3.pt is missing"):
+        with pytest.raises(AssertionError, match="rollout/3 is missing"):
             await multi_policy_utils.create_trainers(
                 _make_trainer_args("a", "b", load=str(tmp_path)), rollout_executor=AsyncMock()
             )
@@ -256,9 +256,7 @@ class TestCreatePolicyTrainers:
     async def test_a_resume_with_the_global_rollout_state_loads_it(self, monkeypatch, tmp_path):
         """The supported resume shape has to stay reachable, or no multi policy run could ever restart."""
         self._stub_create_training_model(monkeypatch, dict(a=4, b=4))
-        state = tmp_path / "rollout" / "global_dataset_state_dict_3.pt"
-        state.parent.mkdir(parents=True)
-        state.write_bytes(b"")
+        (tmp_path / "rollout" / "3").mkdir(parents=True)
         rollout_executor = AsyncMock()
 
         await multi_policy_utils.create_trainers(

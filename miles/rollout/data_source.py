@@ -1,7 +1,6 @@
 import abc
 import copy
 import logging
-import os
 from pathlib import Path
 
 import torch
@@ -12,10 +11,7 @@ from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
-
-
-def compute_global_dataset_state_path(directory: str, *, rollout_id: int | None) -> str:
-    return os.path.join(directory, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+_STATE_FILENAME = "state.pt"
 
 
 class DataSource(abc.ABC):
@@ -26,13 +22,13 @@ class DataSource(abc.ABC):
         """
 
     @abc.abstractmethod
-    def save(self, rollout_id):
+    def save(self, directory: Path) -> None:
         """
         Save the state of the data source
         """
 
     @abc.abstractmethod
-    def load(self, rollout_id=None):
+    def load(self, directory: Path) -> None:
         """
         Load the state of the data source
         """
@@ -116,7 +112,7 @@ class RolloutDataSource(DataSource):
             samples.append(group)
         return samples
 
-    def save(self, rollout_id):
+    def save(self, directory: Path) -> None:
         if not self.args.rollout_global_dataset:
             return
 
@@ -127,21 +123,16 @@ class RolloutDataSource(DataSource):
             "sample_index": self.sample_index,
             "metadata": self.metadata,
         }
-        path = compute_global_dataset_state_path(self.args.save, rollout_id=rollout_id)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(state_dict, path)
+        directory.mkdir(parents=True, exist_ok=True)
+        torch.save(state_dict, directory / _STATE_FILENAME)
 
-    def load(self, rollout_id=None):
+    def load(self, directory: Path) -> None:
         if not self.args.rollout_global_dataset:
             logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
-        if self.args.load is None:
-            logger.warning("no --load: the dataset starts where a fresh run's would")
-            return
-
-        path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
-        if not os.path.exists(path):
+        path = directory / _STATE_FILENAME
+        if not path.exists():
             logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
             return
 
