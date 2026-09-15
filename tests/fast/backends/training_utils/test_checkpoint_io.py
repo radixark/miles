@@ -1,18 +1,18 @@
-"""Only local filesystem failures become coordinated checkpoint errors."""
+"""Checkpoint filesystem errors propagate to the trainer cell."""
+
+from pathlib import Path
 
 import pytest
 
-from miles.backends.training_utils.checkpoint_io import CheckpointIOError, run_local_io_collective
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 
 
-@pytest.mark.parametrize(
-    "error, expected", [(OSError("disk full"), CheckpointIOError), (RuntimeError("collective failed"), RuntimeError)]
-)
-def test_only_local_io_errors_are_converted(error, expected):
-    def step():
+@pytest.mark.parametrize("error", [OSError("disk full"), RuntimeError("directory creation failed")])
+def test_directory_errors_propagate(error, tmp_path, monkeypatch):
+    def make_dir(*args, **kwargs):
         raise error
 
-    with pytest.raises(expected, match=str(error)) as caught:
-        run_local_io_collective(step)
-    if expected is RuntimeError:
-        assert caught.value is error
+    monkeypatch.setattr(Path, "mkdir", make_dir)
+    with pytest.raises(type(error), match=str(error)) as caught:
+        write_checkpoint_dir(tmp_path / "checkpoint", lambda _: None)
+    assert caught.value is error

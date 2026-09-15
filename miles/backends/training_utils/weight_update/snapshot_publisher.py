@@ -5,7 +5,7 @@ import safetensors.torch
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.checkpoint_io import run_local_io_collective, write_checkpoint_dir
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.utils.multi_lora import AdapterSpec
 
@@ -21,19 +21,15 @@ class WeightPublisher:
         is_writer = dist.get_rank() == 0
 
         def write_shards(tmp_dir: Path):
-            # Tensor/collective failures must escape to the trainer cell's failure handling.
             tensors = {
                 name: tensor.detach().contiguous().cpu()
                 for name, tensor in self._iterator.materialize_adapter(adapter, materialize=is_writer).items()
             }
             data = safetensors.torch.save(tensors) if is_writer else None
 
-            def write_adapter():
-                if is_writer:
-                    config = self._adapter_config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-                    (tmp_dir / "adapter_config.json").write_text(json.dumps(config))
-                    (tmp_dir / "adapter_model.safetensors").write_bytes(data)
-
-            run_local_io_collective(write_adapter)
+            if is_writer:
+                config = self._adapter_config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
+                (tmp_dir / "adapter_config.json").write_text(json.dumps(config))
+                (tmp_dir / "adapter_model.safetensors").write_bytes(data)
 
         write_checkpoint_dir(path, write_shards, metadata=metadata, overwrite=False)

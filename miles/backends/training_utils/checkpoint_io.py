@@ -1,7 +1,8 @@
 """Checkpoint directories: written collectively, complete at their final path."""
 
+# TODO: isolate checkpoint IO failures; they currently terminate the trainer cell.
+
 import json
-import logging
 import os
 import shutil
 from collections.abc import Callable
@@ -10,30 +11,6 @@ from pathlib import Path
 import torch.distributed as dist
 
 from miles.utils.distributed_utils import get_gloo_group
-
-logger = logging.getLogger(__name__)
-
-
-class CheckpointIOError(RuntimeError):
-    """A coordinated failure of a local filesystem operation."""
-
-
-def run_local_io_collective(step: Callable[[], None]) -> None:
-    """Run local filesystem IO, then agree on its outcome; step must not contain collectives."""
-    error = None
-    try:
-        step()
-    except OSError as exc:
-        error = f"{type(exc).__name__}: {exc}"
-    if not dist.is_initialized():
-        if error is not None:
-            raise CheckpointIOError(error)
-        return
-    errors: list[str | None] = [None] * dist.get_world_size()
-    dist.all_gather_object(errors, error, group=get_gloo_group())
-    failed = [e for e in errors if e is not None]
-    if failed:
-        raise CheckpointIOError(f"failed on {len(failed)} rank(s): {failed[0]}")
 
 
 def write_checkpoint_dir(
@@ -73,17 +50,22 @@ def write_checkpoint_dir(
             except OSError:
                 os.replace(old_dir, final_dir)
                 raise
-            try:
-                shutil.rmtree(old_dir)
-            except OSError as error:
-                logger.warning("Checkpoint %s committed; could not remove %s: %s", final_dir, old_dir, error)
+            shutil.rmtree(old_dir)
         else:
             os.replace(tmp_dir, final_dir)
 
-    run_local_io_collective(make_tmp_dir)
+    make_tmp_dir()
+    _barrier()
     write_shards(tmp_dir)
-    run_local_io_collective(publish_dir)
+    _barrier()
+    publish_dir()
+    _barrier()
 
 
 def _rank() -> int:
     return dist.get_rank() if dist.is_initialized() else 0
+
+
+def _barrier() -> None:
+    if dist.is_initialized():
+        dist.barrier(group=get_gloo_group())

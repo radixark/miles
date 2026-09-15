@@ -16,6 +16,7 @@ from tests.fast.tinker.harness import (
 
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.utils import resolve_checkpoint_dir
 
 
 def _optim_payload(model_id: str, seq_id: int) -> dict:
@@ -138,7 +139,8 @@ async def test_sampler_save_publishes_successive_versions(service):
         future = await await_settled(service, "tenant", request_id)
         assert future.result["path"] == f"tinker://{model_id}/sampler_weights/{seq_id}"
     assert [export["path"] for export in service.backend.named("export_slot")] == [
-        service._checkpoint_dir(model_id, "sampler_weights", str(version)) for version in (1, 2)
+        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", str(version))
+        for version in (1, 2)
     ]
 
 
@@ -169,7 +171,7 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     path = (await await_settled(service, "tenant", request_id)).result["path"]
 
-    disk_dir = service._checkpoint_dir(model_id, "sampler_weights", "1")
+    disk_dir = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")
     assert service.backend.named("export_slot")[0]["path"] == disk_dir
 
     sample_id, _ = service.submit_sample(
@@ -211,32 +213,6 @@ async def test_sample_failure_preserves_the_snapshot_and_training_stream(service
     assert service._resolve_sampler("tenant", f"tinker://{model_id}/sampler_weights/1")[0] == f"{model_id}@1"
     fb = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
     assert (await await_settled(service, "tenant", fb)).state == DONE
-
-
-async def test_failed_export_burns_the_version_number(service):
-    """A failed export must leave its version unpublished and never reuse its number."""
-    model_id = await created_model(service)
-    service.backend.fail_on["export_slot"] = {"error": "disk full"}
-    failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
-    future = await await_settled(service, "tenant", failed)
-    assert (future.state, future.error_category) == (FAILED, "server")
-
-    retried = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
-    future = await await_settled(service, "tenant", retried)
-    assert future.result["path"] == f"tinker://{model_id}/sampler_weights/2"
-
-    with pytest.raises(UserInputError):
-        service.submit_sample(
-            "tenant",
-            {
-                "model_path": f"tinker://{model_id}/sampler_weights/1",
-                "num_samples": 1,
-                "prompt_tokens": [1],
-                "sampling_params": {"max_tokens": 2},
-                "prompt_logprobs": False,
-                "topk_prompt_logprobs": 0,
-            },
-        )
 
 
 async def test_lease_expiry_reclaims_the_tenant(service):
@@ -592,22 +568,6 @@ async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
     await service._sweep_once()  # the sweep itself survived
 
 
-async def test_a_failed_load_state_retires_the_model(service):
-    model_id = await created_model(service)
-    saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
-    )
-    path = (await await_settled(service, "tenant", saved)).result["path"]
-
-    service.backend.fail_on["load_slot"] = {"error": "shard corrupt"}
-    loaded = service.submit(
-        "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
-    )
-    future = await await_settled(service, "tenant", loaded)
-    assert (future.state, future.error_category) == (FAILED, "server")
-    assert model_id not in service.models, "a load that failed partway may have left mixed state"
-
-
 async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
     model_id = await created_model(service)
     save = service.submit(
@@ -647,7 +607,9 @@ async def test_checkpoint_meta_stores_a_digest_not_the_credential(service):
         "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
     )
     await await_settled(service, "tenant", saved)
-    meta_path = os.path.join(service._checkpoint_dir(model_id, "weights", "ck"), "META.json")
+    meta_path = os.path.join(
+        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"), "META.json"
+    )
     meta = json.loads(open(meta_path).read())
     assert "tenant" not in meta and meta["tenant_digest"] != "tenant", "the bearer credential must not be persisted"
     info = service.weights_info("tenant", f"tinker://{model_id}/weights/ck")
@@ -663,7 +625,9 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
         "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
-    meta_path = os.path.join(service._checkpoint_dir(model_id, "weights", "ck"), "META.json")
+    meta_path = os.path.join(
+        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"), "META.json"
+    )
     meta = json.loads(open(meta_path).read())
     meta["lora_alpha"] = meta["lora_alpha"] + 1  # the same tensors would be scaled differently
     open(meta_path, "w").write(json.dumps(meta))
@@ -698,15 +662,30 @@ async def test_a_recycled_slot_belongs_to_a_fresh_stream(service):
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
 
 
-@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep"])
+@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load"])
 async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
     from tests.fast.tinker.harness import make_service
 
     gateway = make_service(tmp_path)
     run_task = asyncio.create_task(gateway.run())
+    error = (
+        OSError("checkpoint IO failed") if source in ("export", "load") else RuntimeError("fatal execution failure")
+    )
     try:
         model_id = await created_model(gateway)
-        if source == "create":
+        if source == "export":
+            gateway.backend.fail_on["export_slot"] = error
+            gateway.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+        elif source == "load":
+            saved = gateway.submit(
+                "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+            )
+            path = (await await_settled(gateway, "tenant", saved)).result["path"]
+            gateway.backend.fail_on["load_slot"] = error
+            gateway.submit(
+                "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+            )
+        elif source == "create":
             gateway.backend.fail_on["load_slot"] = RuntimeError("fatal execution failure")
             gateway.create_model("tenant", model_payload(gateway))
         elif source == "sweep":
@@ -725,7 +704,7 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
             else:
                 gateway.backend.fail_on["optim_step"] = RuntimeError("fatal execution failure")
             gateway.submit("tenant", "optim_step", _optim_payload(model_id, 1))
-        with pytest.raises(RuntimeError, match="fatal execution failure"):
+        with pytest.raises(type(error), match=str(error)):
             await asyncio.wait_for(run_task, timeout=2)
     finally:
         if not run_task.done():
@@ -819,3 +798,41 @@ async def test_a_read_only_batch_failure_preserves_queued_training(service):
     assert (await await_settled(service, "tenant", readonly)).state == FAILED
     assert (await await_settled(service, "tenant", backward)).state == DONE
     assert (await await_settled(service, "tenant", step)).state == DONE
+
+
+@pytest.mark.parametrize("shutdown", ["cancel", "failure"])
+async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, monkeypatch, shutdown):
+    gateway = make_service(tmp_path)
+    started = asyncio.Queue()
+    fail_sweep = asyncio.Event()
+
+    async def blocked_backend_call(*args):
+        started.put_nowait(asyncio.current_task())
+        await asyncio.Event().wait()
+
+    async def sweep_leases():
+        await fail_sweep.wait()
+        raise RuntimeError("lease sweeper failed")
+
+    monkeypatch.setattr(gateway.backend, "load_slot", blocked_backend_call)
+    monkeypatch.setattr(gateway.backend, "sample", blocked_backend_call)
+    monkeypatch.setattr(gateway, "sweep_leases", sweep_leases)
+    run_task = asyncio.create_task(gateway.run())
+    gateway.create_model("tenant", model_payload(gateway))
+    gateway.submit_sample("tenant", {"num_samples": 1})
+    tasks = [run_task, *gateway._create_tasks, *(task for task, _ in gateway._sample_tasks.values())]
+    try:
+        backend_tasks = [await asyncio.wait_for(started.get(), timeout=2) for _ in range(2)]
+        if shutdown == "cancel":
+            run_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(run_task, timeout=2)
+        else:
+            fail_sweep.set()
+            with pytest.raises(RuntimeError, match="lease sweeper failed"):
+                await asyncio.wait_for(run_task, timeout=2)
+        assert all(task.done() for task in backend_tasks), "backend tasks outlived the dispatcher"
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

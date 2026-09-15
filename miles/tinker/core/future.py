@@ -70,6 +70,13 @@ class FutureStore:
             raise OwnershipError(f"request {request_id} does not belong to this tenant")
         return future
 
+    def request_id_for_retry(self, request_id: str, model_id: str, tenant: str) -> str:
+        if self.get(request_id, tenant) is not None:
+            return request_id
+        replacement = self.create(model_id, tenant)
+        self.fail(replacement.request_id, "result expired after retention", "user")
+        return replacement.request_id
+
     def _sweep(self) -> None:
         now = time.monotonic()
         expired = [

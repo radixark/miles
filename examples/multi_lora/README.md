@@ -95,8 +95,10 @@ This includes content validation failures with a valid model and sequence.
 Create a new model and restore a saved checkpoint to continue; completed
 futures and published checkpoints keep their results.
 
-Known request-local failures of `forward`, saving, or sampling leave the
-training stream available. Saving sampler weights commits an immutable directory;
+Known request-local failures of `forward` or sampling leave the training stream
+available. Checkpoint load/save execution failures, including filesystem errors,
+invalidate the shared trainer cell and stop the server.
+Saving sampler weights commits an immutable directory;
 it does not call the inference engines. Sampling loads that snapshot from disk
 on demand, including after cache eviction. An engine load failure fails the
 sampling request; it leaves the snapshot and training state intact. Unknown

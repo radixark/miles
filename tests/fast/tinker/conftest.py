@@ -13,9 +13,6 @@ async def service(tmp_path):
     try:
         yield gateway
     finally:
-        tasks = [run_task, *gateway._create_tasks, *(task for task, _ in gateway._sample_tasks.values())]
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            with suppress(asyncio.CancelledError):
-                await task
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
