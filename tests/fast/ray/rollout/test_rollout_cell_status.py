@@ -22,8 +22,17 @@ from miles.ray.rollout.server_cell import (
     compute_pending_rollout_cell_status,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus, TriState
+from miles.utils.workers.worker_spec import HostAndPort
 
 _ADDR_INFO = CellAddrInfo(server_url="http://10.0.0.1:30000", bootstrap_port=None, gate_url="http://10.0.0.1:13000")
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> dict[str, HostAndPort]:
+        return dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            gate=HostAndPort(host="10.0.0.1", port=13000),
+        )
 
 
 def _make_cell(state: CellState, health: TriState = TriState.TRUE, workers_hash: str = "pseudo-hash-0") -> ServerCell:
@@ -42,6 +51,7 @@ def _make_cell(state: CellState, health: TriState = TriState.TRUE, workers_hash:
             workers_hash=workers_hash,
         ),
         router_api_client=SimpleNamespace(),
+        provider=_StubProvider(),
     )
     cell._state = state
     cell._health_checker = SimpleNamespace(status=health)

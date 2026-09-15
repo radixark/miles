@@ -11,12 +11,17 @@ from miles.ray.specs.multi_lora import create_multi_lora_controller_handle
 from miles.utils.adapter_config import AdapterRun
 from miles.utils.function_registry import load_function
 from miles.utils.misc import SingletonMeta, get_current_node_ip
+from miles.utils.workers.backend_capability.ray import RayBackendCapability
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 
 @cache
 def get_multi_lora_controller() -> BaseWorkerHandle:
-    return create_multi_lora_controller_handle()
+    # TODO inject the factory instead of assuming the ray backend
+    capability = RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
+    return create_multi_lora_controller_handle(capability=capability)
 
 
 class AdaptersCache(metaclass=SingletonMeta):
@@ -55,15 +60,16 @@ def _load_subclass(path: str | None, base_cls):
 
 
 class MultiLoRAController:
-    def __init__(self, *, args, host: str = "0.0.0.0") -> None:
+    def __init__(self, *, args, router_provider: BaseWorkerProvider, host: str = "0.0.0.0") -> None:
         self.args = args
+        self._router_provider = router_provider
         self.host = host
         self.backend: MultiLoRABackend | None = None
         self.server: MultiLoRAHTTPServer | None = None
 
     async def init(self) -> int:
         args = self.args
-        await resolve_router_addrs(args)
+        await resolve_router_addrs(args, provider=self._router_provider)
         router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
 
         backend_cls = _load_subclass(getattr(args, "multi_lora_backend_path", None), MultiLoRABackend)

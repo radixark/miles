@@ -1,3 +1,5 @@
+from miles.ray.specs.inference import SESSION_SERVER_POOL_ID, compute_router_pool_id
+from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
@@ -19,15 +21,22 @@ def spec_rollout_executor(args) -> ServeWorkerSpec:
             pin_to_head=args.pin_rollout_manager_to_head,
         ),
         worker_class=ROLLOUT_EXECUTOR_WORKER_CLASS,
-        ctor_kwargs=lambda _ctx: dict(args=args),
+        ctor_kwargs=lambda ctx: dict(
+            args=args,
+            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
+            session_server_provider=(
+                ctx.capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID)
+                if args.use_session_server
+                else None
+            ),
+        ),
     )
 
 
-def create_rollout_executor_handle() -> BaseWorkerHandle:
-    from miles.utils.workers.worker_provider.ray import RayWorkerProvider
-
-    provider = RayWorkerProvider.create()  # TODO inject instance
-    return provider.get_handle(rollout_executor_worker_name())
+def create_rollout_executor_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
+    worker_name = rollout_executor_worker_name()
+    provider = capability.static_worker_provider(pool_id=ROLLOUT_EXECUTOR_POOL_ID)
+    return provider.get_handle(worker_name)
 
 
 def rollout_executor_worker_name() -> str:
