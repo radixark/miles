@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo
 
 
 class _Handle(BaseWorkerHandle):
@@ -45,6 +46,44 @@ class TestExpectedNumCells:
         provider = _RecordingProvider()
 
         assert provider.expected_num_cells(group_id="inference") is None
+
+
+class TestCellInfoWireModel:
+    def test_cell_info_round_trips_through_its_strict_wire_model(self) -> None:
+        """Cell descriptions preserve every typed wire field and reject undeclared fields."""
+        cell_info = CellInfo(
+            cell_id="trainer-engine-actor-00003",
+            pool_id="trainer-engine-actor",
+            alive=True,
+            worker_names=[
+                "trainer-engine-actor-00003-00000",
+                "trainer-engine-actor-00003-00001",
+            ],
+            workers_hash="workers-sha256",
+            meta={"attempt": 2, "draining": False, "labels": ["trainer", "primary"]},
+        )
+
+        dumped = cell_info.model_dump()
+        restored = CellInfo.model_validate(dumped)
+
+        assert dumped == {
+            "cell_id": "trainer-engine-actor-00003",
+            "pool_id": "trainer-engine-actor",
+            "alive": True,
+            "worker_names": [
+                "trainer-engine-actor-00003-00000",
+                "trainer-engine-actor-00003-00001",
+            ],
+            "workers_hash": "workers-sha256",
+            "meta": {"attempt": 2, "draining": False, "labels": ["trainer", "primary"]},
+        }
+        assert restored == cell_info
+        assert restored.meta["attempt"] == 2
+        assert isinstance(restored.meta["attempt"], int)
+        assert restored.meta["draining"] is False
+
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            CellInfo.model_validate({**dumped, "undeclared": "field"})
 
 
 class TestGetHandle:
