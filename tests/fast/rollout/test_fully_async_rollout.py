@@ -121,6 +121,10 @@ def make_args(**overrides) -> Namespace:
     return Namespace(**defaults)
 
 
+def train_input(**overrides) -> RolloutFnTrainInput:
+    return RolloutFnTrainInput(**overrides)
+
+
 def make_fn(monkeypatch, args, data_source, generate=None):
     async def default_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await asyncio.sleep(0)
@@ -509,7 +513,7 @@ async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPa
     fn._worker.cancel()
 
     try:
-        with pytest.raises(RuntimeError, match="disposed while a step waited"):
+        with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(drain, timeout=2)
         assert fn._worker.cancelled()
         assert data_source.recycled == []
@@ -517,6 +521,22 @@ async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPa
     finally:
         release.set()
         await asyncio.sleep(0)
+
+
+async def test_a_dying_worker_cancels_the_step_and_is_logged(monkeypatch, caplog):
+    """The step it was generating for has to end, and the reason has to be readable in the rollout log."""
+
+    async def failing_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        raise RuntimeError("generation exploded")
+
+    fn = make_fn(monkeypatch, make_args(), FakeDataSource(), generate=failing_generate)
+    caplog.set_level(logging.ERROR, logger=fully_async.__name__)
+    step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+
+    with pytest.raises(asyncio.CancelledError):
+        await step
+
+    assert "generation exploded" in caplog.text
 
 
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
@@ -538,6 +558,24 @@ async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release.set()
     output = await drain
     assert len(output.samples) == 4
+
+
+async def test_worker_failure_beats_queued_groups(monkeypatch):
+    """A dead worker fails the step even when it left completed groups behind."""
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+    async def boom():
+        raise RuntimeError("generation exploded")
+
+    fn._output = make_buffer()[0]
+    group = make_group(1)
+    await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+    worker = asyncio.create_task(boom())
+    watch_worker(fn, worker)
+    await asyncio.wait({worker})
+
+    with pytest.raises(AssertionError, match="worker has ended"):
+        await fn(RolloutFnTrainInput(rollout_id=0))
 
 
 async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
@@ -1160,11 +1198,13 @@ class MultiPolicyDataSource(FakeDataSource):
 class WedgedBuffer(data_buffer.DataBuffer):
     def __init__(self, input: data_buffer.DataBufferConstructorInput):
         self._never = asyncio.Event()
+        self.waiting = asyncio.Event()
 
     async def put(self, input: data_buffer.DataBufferInput) -> None:
         await self._never.wait()
 
     async def get(self, **context) -> list[data_buffer.DataBufferInput]:
+        self.waiting.set()
         await self._never.wait()
         raise AssertionError("the wedged buffer never hands out a group")
 
@@ -1232,6 +1272,144 @@ class TestBatchedGet:
         waiting.cancel()
 
 
+async def _die_now() -> None:
+    return None
+
+
+async def _explode_now() -> None:
+    raise RuntimeError("producer exploded")
+
+
+async def _never_returns() -> None:
+    await asyncio.Event().wait()
+
+
+async def _return_when(release: asyncio.Event) -> None:
+    await release.wait()
+
+
+async def _explode_when(release: asyncio.Event) -> None:
+    await release.wait()
+    raise RuntimeError("producer exploded")
+
+
+def watch_worker(fn, worker: asyncio.Task) -> None:
+    """Attaches the worker watch the way the first train call does."""
+    fn._worker = worker
+    worker.add_done_callback(fn._on_worker_error)
+
+
+def worker_errors(caplog) -> list[logging.LogRecord]:
+    """Keeps only what the rollout function logged, so an unrelated logger cannot satisfy the assertions."""
+    return [record for record in caplog.records if record.name == fully_async.__name__]
+
+
+async def start_drain_on_a_wedged_buffer(monkeypatch, worker):
+    """Parks a drain inside a get that never returns, so only the worker watch can end it."""
+    args = make_args(rollout_batch_size=1)
+    fn = make_fn(monkeypatch, args, FakeDataSource())
+    fn._output = WedgedBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
+    )
+    watch_worker(fn, asyncio.create_task(worker))
+    drain = asyncio.create_task(fn._drain(train_input(rollout_id=0)))
+    await fn._output.waiting.wait()
+    return fn, drain
+
+
+class TestDeadWorkerEndsTheWait:
+    async def test_a_worker_exception_cancels_the_waiting_step(self, monkeypatch, caplog):
+        """Waiting for a whole batch takes longer, so a dead producer has to end the step rather than hang."""
+        release = asyncio.Event()
+        fn, drain = await start_drain_on_a_wedged_buffer(monkeypatch, _explode_when(release))
+        caplog.set_level(logging.ERROR, logger=fully_async.__name__)
+
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(drain, timeout=5)
+        [record] = worker_errors(caplog)
+        assert str(record.exc_info[1]) == "producer exploded"
+
+    async def test_a_cancelled_worker_cancels_the_waiting_step(self, monkeypatch, caplog):
+        """Disposal cancels the worker, and the step parked in get must not be left there forever."""
+        fn, drain = await start_drain_on_a_wedged_buffer(monkeypatch, _never_returns())
+        caplog.set_level(logging.ERROR, logger=fully_async.__name__)
+
+        fn._worker.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(drain, timeout=5)
+        [record] = worker_errors(caplog)
+        assert record.exc_info is None
+
+    async def test_a_worker_death_cancels_every_concurrent_waiting_step(self, monkeypatch):
+        """Two policies drain the same rollout function at once, so a single cancel slot strands one of them."""
+        args = make_args(rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn._output = WedgedBuffer(
+            data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
+        )
+        watch_worker(fn, asyncio.create_task(_never_returns()))
+        drains = [asyncio.create_task(fn._drain(train_input(rollout_id=0))) for _ in range(2)]
+        await fn._output.waiting.wait()
+        assert len(fn._worker_error_cancel_targets) == 2
+
+        fn._worker.cancel()
+
+        for drain in drains:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(drain, timeout=5)
+
+    async def test_a_worker_that_returned_cancels_the_waiting_step(self, monkeypatch, caplog):
+        """The loop never returns normally, so a return is a bug that has to surface instead of hanging."""
+        release = asyncio.Event()
+        fn, drain = await start_drain_on_a_wedged_buffer(monkeypatch, _return_when(release))
+        caplog.set_level(logging.ERROR, logger=fully_async.__name__)
+
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(drain, timeout=5)
+        assert len(worker_errors(caplog)) == 1
+
+    async def test_cancelling_the_step_itself_stays_a_cancellation(self, monkeypatch, caplog):
+        """A live producer means the cancel came from the caller, which must not be reported as a producer death."""
+        fn, drain = await start_drain_on_a_wedged_buffer(monkeypatch, _never_returns())
+        caplog.set_level(logging.ERROR, logger=fully_async.__name__)
+
+        drain.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await drain
+        assert worker_errors(caplog) == []
+        fn._worker.cancel()
+
+    async def test_a_worker_death_is_noticed_before_its_buffered_groups_are_drained(self, monkeypatch):
+        """A whole batch already in the buffer would otherwise hide the producer's death for a full step."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), FakeDataSource())
+        fn._output, _ = make_buffer()
+        await put_group(fn._output, make_group(1))
+        await put_group(fn._output, make_group(2))
+        worker = asyncio.create_task(_explode_now())
+        watch_worker(fn, worker)
+        await asyncio.wait({worker})
+
+        with pytest.raises(AssertionError, match="worker has ended"):
+            await asyncio.wait_for(fn._drain(train_input(rollout_id=0)), timeout=5)
+
+    async def test_a_worker_that_died_earlier_fails_the_next_wait(self, monkeypatch):
+        """A step that starts after the producer is already gone must not wait for groups nobody produces."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        fn._output, _ = make_buffer()
+        worker = asyncio.create_task(_die_now())
+        watch_worker(fn, worker)
+        await worker
+
+        with pytest.raises(AssertionError, match="worker has ended"):
+            await asyncio.wait_for(fn._drain(train_input(rollout_id=0)), timeout=5)
+
+
 class TestDisposal:
     async def test_disposing_ends_the_producer_before_it_returns(self, monkeypatch):
         """Teardown has to be done when it returns, or the rest of it races the producer's unwinding."""
@@ -1244,6 +1422,18 @@ class TestDisposal:
         await asyncio.wait_for(fn.dispose(), timeout=5)
 
         assert fn._worker.cancelled()
+
+    async def test_disposing_cancels_a_step_that_is_waiting_for_groups(self, monkeypatch):
+        """A run whose producer is parked when it ends must not leave the waiting step there forever."""
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await asyncio.sleep(0.05)
+
+        await fn.dispose()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(step, timeout=5)
 
     async def test_disposing_a_run_that_never_started_is_quiet(self, monkeypatch):
         """dispose runs on every teardown path, including one that failed before the first step."""
@@ -1858,6 +2048,20 @@ class TestLifecycle:
         await fn(RolloutFnEvalInput(rollout_id=0, generate_state=FakeGenerateState(args)))
 
         assert resumed_during_eval == [True]
+
+    async def test_disposing_twice_is_quiet(self, monkeypatch) -> None:
+        """Teardown runs from several paths, and a second call must not turn a clean shutdown into an error."""
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await _settle()
+
+        await fn.dispose()
+        await fn.dispose()
+
+        assert fn._worker.cancelled()
+        with pytest.raises(asyncio.CancelledError):
+            await step
 
     async def test_the_custom_buffer_is_built_with_the_rollout_functions_unused_handler(self, monkeypatch) -> None:
         """A custom buffer owns every keep-or-recycle decision, so it needs the run's configured policy."""
