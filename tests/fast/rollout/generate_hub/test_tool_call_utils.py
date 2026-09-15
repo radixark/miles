@@ -1,6 +1,15 @@
-import pytest
+from unittest.mock import AsyncMock
 
-from miles.rollout.generate_utils.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
+import pytest
+from openai.types.chat import ChatCompletionMessageToolCall
+from sglang.srt.function_call.core_types import ToolCallItem
+
+from miles.rollout.generate_utils.tool_call_utils import (
+    _DUMMY_USER,
+    _build_dummy_assistant,
+    _execute_tool_call,
+    tokenize_tool_responses,
+)
 from miles.utils.processing_utils import load_tokenizer
 
 TOOL_CALL_TEST_MODELS = [
@@ -57,6 +66,59 @@ SAMPLE_TOOL_RESPONSES = [
         "name": "get_temperature",
     },
 ]
+
+
+def _make_tool_call(call_type: str, arguments: str) -> ToolCallItem | ChatCompletionMessageToolCall:
+    if call_type == "sglang":
+        return ToolCallItem(tool_index=0, name="bash", parameters=arguments)
+    return ChatCompletionMessageToolCall(
+        id="call_test",
+        type="function",
+        function={"name": "bash", "arguments": arguments},
+    )
+
+
+class TestExecuteToolCall:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call_type", ["sglang", "openai"])
+    @pytest.mark.parametrize(
+        ("arguments", "expected_params"),
+        [
+            ('{"cmd": "pytest"}', {"cmd": "pytest"}),
+            ("", {}),
+        ],
+    )
+    async def test_valid_object_arguments_reach_executor(self, call_type, arguments, expected_params):
+        execute_one = AsyncMock(return_value="ok")
+
+        message = await _execute_tool_call(_make_tool_call(call_type, arguments), execute_one)
+
+        execute_one.assert_awaited_once_with("bash", expected_params)
+        assert message["role"] == "tool"
+        assert message["content"] == "ok"
+        assert message["name"] == "bash"
+        assert message["tool_call_id"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call_type", ["sglang", "openai"])
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            pytest.param('{"cmd": "pytest"', id="malformed"),
+            pytest.param("[1, 2]", id="list"),
+            pytest.param("42", id="number"),
+        ],
+    )
+    async def test_invalid_arguments_return_tool_error_without_execution(self, call_type, arguments):
+        execute_one = AsyncMock(return_value="must not run")
+
+        message = await _execute_tool_call(_make_tool_call(call_type, arguments), execute_one)
+
+        execute_one.assert_not_awaited()
+        assert message["role"] == "tool"
+        assert message["content"] == "Error: Tool arguments must be a valid JSON object."
+        assert message["name"] == "bash"
+        assert message["tool_call_id"]
 
 
 class TestTokenizeToolResponses:
