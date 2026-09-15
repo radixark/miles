@@ -6,11 +6,14 @@ import logging
 import random
 import threading
 import time
+from datetime import datetime, timezone
 from collections.abc import Callable
 from typing import Literal
 
 import requests
+from pydantic import Field
 
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector import FailureMode
 
 logger = logging.getLogger(__name__)
@@ -26,30 +29,6 @@ FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, Failu
 
 def cell_is_alive(cell: dict) -> bool:
     return any(cond["type"] == "Healthy" and cond["status"] == "True" for cond in cell["status"]["conditions"])
-
-
-class _CellState(enum.Enum):
-    INJECTED = enum.auto()  # we crashed it; the api server may still report it Healthy
-    RECOVERING = enum.auto()  # observed unhealthy; awaiting its return to Healthy
-
-
-class RecoveryGate:
-    def __init__(self) -> None:
-        self._state_of_cell_name: dict[str, _CellState] = {}
-
-    def note_injected(self, cell_name: str) -> None:
-        self._state_of_cell_name[cell_name] = _CellState.INJECTED
-
-    def observe(self, cells_by_name: dict[str, dict]) -> None:
-        for name, state in list(self._state_of_cell_name.items()):
-            cell = cells_by_name.get(name)
-            if cell is None or not cell_is_alive(cell):
-                self._state_of_cell_name[name] = _CellState.RECOVERING
-            elif state is _CellState.RECOVERING:
-                del self._state_of_cell_name[name]
-
-    def genuinely_alive(self, cells: list[dict]) -> list[dict]:
-        return [c for c in cells if cell_is_alive(c) and c["metadata"]["name"] not in self._state_of_cell_name]
 
 
 class ObservedCellState(enum.Enum):
@@ -72,65 +51,153 @@ def compute_observed_cell_state(cell: dict) -> ObservedCellState:
     return ObservedCellState.SERVING if serving else ObservedCellState.RUNNING_NOT_SERVING
 
 
+class BaseEvent(FrozenStrictBaseModel):
+    # Wall clock, so an event can be lined up against the timestamps the metric events carry.
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class InjectionEvent(BaseEvent):
+    cell_name: str
+
+
+class CellInfo(FrozenStrictBaseModel):
+    cell_type: str
+    state: ObservedCellState
+    alive: bool
+
+
+class ObservationsEvent(BaseEvent):
+    # One whole poll, so a cell that has vanished is as recorded as one that answered.
+    cell_infos: dict[str, CellInfo]
+
+
+Event = InjectionEvent | ObservationsEvent
+
+
+class EventLog:
+    """The fault injector's only mutable state: what happened, in order. Every question is a view of it."""
+
+    def __init__(self) -> None:
+        self._events: list[Event] = []
+        self._lock = threading.Lock()
+
+    @property
+    def events(self) -> list[Event]:
+        with self._lock:
+            return list(self._events)
+
+    def note_injected(self, cell_name: str) -> None:
+        self._append(InjectionEvent(cell_name=cell_name))
+
+    def observe(self, cells: list[dict]) -> None:
+        self._append(
+            ObservationsEvent(
+                cell_infos={
+                    cell["metadata"]["name"]: CellInfo(
+                        cell_type=_cell_type_of(cell),
+                        state=compute_observed_cell_state(cell),
+                        alive=cell_is_alive(cell),
+                    )
+                    for cell in cells
+                }
+            )
+        )
+
+    def _append(self, event: Event) -> None:
+        with self._lock:
+            self._events.append(event)
+
+
+def compute_genuinely_alive(events: list[Event], cells: list[dict]) -> list[dict]:
+    awaiting = compute_cells_awaiting_recovery(events)
+    return [c for c in cells if cell_is_alive(c) and c["metadata"]["name"] not in awaiting]
+
+
+def compute_cells_awaiting_recovery(events: list[Event]) -> set[str]:
+    state_of_cell_name: dict[str, _CellState] = {}
+    for event in events:
+        if isinstance(event, InjectionEvent):
+            state_of_cell_name[event.cell_name] = _CellState.INJECTED
+            continue
+        for name, state in list(state_of_cell_name.items()):
+            info = event.cell_infos.get(name)
+            if info is None or not info.alive:
+                state_of_cell_name[name] = _CellState.RECOVERING
+            elif state is _CellState.RECOVERING:
+                del state_of_cell_name[name]
+    return set(state_of_cell_name)
+
+
+def compute_num_injections(events: list[Event], *, cell_type: str | None = None) -> int:
+    return sum(
+        sum(1 for one in cell_events if one.kind == "injected")
+        for cell_events in _compute_matching_cell_events(events, cell_type=cell_type).values()
+    )
+
+
+def compute_num_completed_recoveries(events: list[Event], *, cell_type: str | None = None) -> int:
+    return sum(
+        _compute_recovery_tally(cell_events).num_completed
+        for cell_events in _compute_matching_cell_events(events, cell_type=cell_type).values()
+    )
+
+
+def compute_cells_with_unfinished_recovery(events: list[Event], *, cell_type: str | None = None) -> dict[str, int]:
+    return {
+        name: tally.num_unfinished
+        for name, cell_events in _compute_matching_cell_events(events, cell_type=cell_type).items()
+        if (tally := _compute_recovery_tally(cell_events)).num_unfinished
+    }
+
+
+def compute_states_of_cell_name(events: list[Event]) -> dict[str, list[ObservedCellState]]:
+    return {
+        name: states
+        for name, cell_events in _compute_cell_events(events).items()
+        if (states := _compute_distinct_states(cell_events))
+    }
+
+
+class _CellState(enum.Enum):
+    INJECTED = enum.auto()  # we crashed it; the api server may still report it Healthy
+    RECOVERING = enum.auto()  # observed unhealthy; awaiting its return to Healthy
+
+
 @dataclasses.dataclass(frozen=True)
 class _CellEvent:
     kind: Literal["injected", "observed"]
     state: ObservedCellState | None = None
 
 
-@dataclasses.dataclass
-class _CellInfo:
-    cell_type: str | None = None
-    events: list[_CellEvent] = dataclasses.field(default_factory=list)
+def _compute_cell_events(events: list[Event]) -> dict[str, list[_CellEvent]]:
+    cell_events_of_name: dict[str, list[_CellEvent]] = {}
+    for event in events:
+        if isinstance(event, InjectionEvent):
+            cell_events_of_name.setdefault(event.cell_name, []).append(_CellEvent(kind="injected"))
+            continue
+        for name, info in event.cell_infos.items():
+            cell_events_of_name.setdefault(name, []).append(_CellEvent(kind="observed", state=info.state))
+    return cell_events_of_name
 
 
-class RecoveryWitness:
-    """Pairs every accepted injection with one completed relaunch-and-serve cycle of the same cell."""
+def _compute_matching_cell_events(events: list[Event], *, cell_type: str | None) -> dict[str, list[_CellEvent]]:
+    cell_events_of_name = _compute_cell_events(events)
+    if cell_type is None:
+        return cell_events_of_name
+    cell_type_of_name = _compute_cell_type_of_name(events)
+    return {
+        name: cell_events
+        for name, cell_events in cell_events_of_name.items()
+        if cell_type_of_name.get(name) == cell_type
+    }
 
-    def __init__(self) -> None:
-        self._info_of_cell_name: dict[str, _CellInfo] = {}
 
-    def note_injected(self, cell_name: str) -> None:
-        self._info(cell_name).events.append(_CellEvent(kind="injected"))
-
-    def observe(self, cells: list[dict]) -> None:
-        for cell in cells:
-            info = self._info(cell["metadata"]["name"])
-            info.cell_type = _cell_type_of(cell)
-            info.events.append(_CellEvent(kind="observed", state=compute_observed_cell_state(cell)))
-
-    @property
-    def states_of_cell_name(self) -> dict[str, list[ObservedCellState]]:
-        return {
-            name: states
-            for name, info in self._info_of_cell_name.items()
-            if (states := _compute_distinct_states(info.events))
-        }
-
-    def num_injections(self, *, cell_type: str | None = None) -> int:
-        return sum(
-            sum(1 for event in info.events if event.kind == "injected")
-            for info in self._matching_infos(cell_type=cell_type)
-        )
-
-    def num_completed_recoveries(self, *, cell_type: str | None = None) -> int:
-        return sum(
-            _compute_recovery_tally(info.events).num_completed for info in self._matching_infos(cell_type=cell_type)
-        )
-
-    def cells_with_unfinished_recovery(self, *, cell_type: str | None = None) -> dict[str, int]:
-        return {
-            name: tally.num_unfinished
-            for name, info in self._info_of_cell_name.items()
-            if (cell_type is None or info.cell_type == cell_type)
-            and (tally := _compute_recovery_tally(info.events)).num_unfinished
-        }
-
-    def _info(self, cell_name: str) -> _CellInfo:
-        return self._info_of_cell_name.setdefault(cell_name, _CellInfo())
-
-    def _matching_infos(self, *, cell_type: str | None) -> list[_CellInfo]:
-        return [info for info in self._info_of_cell_name.values() if cell_type is None or info.cell_type == cell_type]
+def _compute_cell_type_of_name(events: list[Event]) -> dict[str, str]:
+    cell_type_of_name: dict[str, str] = {}
+    for event in events:
+        if isinstance(event, ObservationsEvent):
+            cell_type_of_name.update({name: info.cell_type for name, info in event.cell_infos.items()})
+    return cell_type_of_name
 
 
 @dataclasses.dataclass(frozen=True)
@@ -181,11 +248,10 @@ def run_fault_injection_loop(
     stop_event: threading.Event,
     on_successful_injection: Callable[[], None],
     cell_type: str | None,
-    recovery_witness: RecoveryWitness,
+    event_log: EventLog,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     rng = random.Random(seed)
-    gate = RecoveryGate()
     next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
 
     while not stop_event.is_set():
@@ -196,10 +262,9 @@ def run_fault_injection_loop(
         if cells is None:
             continue
 
-        # Track recovery on every poll so a crash->detect->heal cycle that completes between two
-        # sparse injections is seen, not missed (which would exclude the cell from the live set forever).
-        gate.observe({c["metadata"]["name"]: c for c in cells})
-        recovery_witness.observe(cells)
+        # Record every poll so a crash->detect->heal cycle that completes between two sparse
+        # injections is seen, not missed (which would exclude the cell from the live set forever).
+        event_log.observe(cells)
 
         if time.monotonic() < next_injection_time:
             continue
@@ -207,7 +272,7 @@ def run_fault_injection_loop(
         # Keep >=1 cell of each kind genuinely alive: if a prior injection has not recovered yet, wait
         # and retry on a later poll rather than killing that kind's last live replica.
         alive_of_type: dict[str, list[dict]] = {}
-        for cell in gate.genuinely_alive(cells):
+        for cell in compute_genuinely_alive(event_log.events, cells):
             alive_of_type.setdefault(_cell_type_of(cell), []).append(cell)
         spare_types = sorted(kind for kind, kind_cells in alive_of_type.items() if len(kind_cells) > 1)
         if not spare_types:
@@ -227,8 +292,7 @@ def run_fault_injection_loop(
                 timeout=5,
             )
             resp.raise_for_status()
-            gate.note_injected(cell_name)
-            recovery_witness.note_injected(cell_name)
+            event_log.note_injected(cell_name)
             on_successful_injection()
             next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
         except Exception:
@@ -256,7 +320,7 @@ def _matches_cell_type(cell: dict, cell_type: str | None) -> bool:
 class FaultInjectorHandle:
     def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float, cell_type: str | None) -> None:
         self.num_successful_injections: int = 0
-        self.recovery_witness = RecoveryWitness()
+        self.event_log = EventLog()
         self._base_url = base_url
         self._cell_type = cell_type
         self._stop_event = threading.Event()
@@ -269,7 +333,7 @@ class FaultInjectorHandle:
                 "stop_event": self._stop_event,
                 "on_successful_injection": self._on_successful_injection,
                 "cell_type": cell_type,
-                "recovery_witness": self.recovery_witness,
+                "event_log": self.event_log,
             },
             daemon=True,
             name="ft-random-fault-injector",
@@ -287,7 +351,7 @@ class FaultInjectorHandle:
         cells = list_cells(base_url=self._base_url, cell_type=self._cell_type)
         if cells is None:
             return
-        self.recovery_witness.observe(cells)
+        self.event_log.observe(cells)
 
     def _on_successful_injection(self) -> None:
         self.num_successful_injections += 1
