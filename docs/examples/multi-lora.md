@@ -73,8 +73,9 @@ loaded; without a cap every TP-rank process keeps a host copy of every version e
 `run_pressure_test.sh` at the repo root serves the gateway with `--n-adapters -1`, reads the
 slot count it resolved to, runs one `run_client_recipes.py` tenant per slot at once (`TASK=rl`
 for the cookbook's GRPO on GSM8K, `sft`, or `both`; each tenant is its own `TINKER_API_KEY`),
-and saves the tables as `report.txt`. Knobs are environment variables; on a multi-node Ray
-cluster set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS`.
+and saves the tables as `report.txt`. Knobs are environment variables (`STEPS`, `MAX_TOKENS`,
+`GROUP_SIZE`, `BATCH_SIZE`, `CLIENT_LORA_RANK`, ...); on a multi-node Ray cluster set
+`MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS`.
 
 The gateway times every backend op (`load_slot`, `forward_backward`, `optim_step`,
 `export_slot`, `sample`, ...) and every tenant request from arrival to result with

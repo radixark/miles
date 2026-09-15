@@ -16,7 +16,7 @@ import os
 import tempfile
 
 
-def run_sft(base_url: str, base_model: str, steps: int) -> None:
+def run_sft(base_url: str, base_model: str, steps: int, batch_size: int | None, lora_rank: int) -> None:
     from tinker_cookbook.recipes import sl_loop
 
     sl_loop.main(
@@ -24,9 +24,9 @@ def run_sft(base_url: str, base_model: str, steps: int) -> None:
             base_url=base_url,
             model_name=base_model,
             log_path=tempfile.mkdtemp(prefix="cookbook-sl-"),
-            batch_size=4,
+            batch_size=batch_size or 4,
             max_length=1024,
-            lora_rank=8,
+            lora_rank=lora_rank,
             save_every=0,
             ttl_seconds=None,
             max_steps=steps,
@@ -34,7 +34,15 @@ def run_sft(base_url: str, base_model: str, steps: int) -> None:
     )
 
 
-def run_rl(base_url: str, base_model: str, steps: int) -> None:
+def run_rl(
+    base_url: str,
+    base_model: str,
+    steps: int,
+    batch_size: int | None,
+    group_size: int,
+    lora_rank: int,
+    max_tokens: int,
+) -> None:
     from tinker_cookbook.recipes import rl_loop
 
     rl_loop.main(
@@ -42,12 +50,12 @@ def run_rl(base_url: str, base_model: str, steps: int) -> None:
             base_url=base_url,
             model_name=base_model,
             log_path=tempfile.mkdtemp(prefix="cookbook-rl-"),
-            batch_size=2,
-            group_size=4,
-            lora_rank=8,
+            batch_size=batch_size or 2,
+            group_size=group_size,
+            lora_rank=lora_rank,
             save_every=0,
             ttl_seconds=None,
-            max_tokens=512,
+            max_tokens=max_tokens,
             max_steps=steps,
         )
     )
@@ -59,13 +67,25 @@ def main() -> None:
     parser.add_argument("--base-model", required=True)
     parser.add_argument("--mode", choices=["sft", "rl", "both"], default="both")
     parser.add_argument("--steps", type=int, default=2)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--group-size", type=int, default=4)
+    parser.add_argument("--lora-rank", type=int, default=8)
+    parser.add_argument("--max-tokens", type=int, default=512)
     args = parser.parse_args()
 
     os.environ.setdefault("TINKER_API_KEY", "tml-cookbook-acceptance")
     if args.mode in ("sft", "both"):
-        run_sft(args.base_url, args.base_model, args.steps)
+        run_sft(args.base_url, args.base_model, args.steps, args.batch_size, args.lora_rank)
     if args.mode in ("rl", "both"):
-        run_rl(args.base_url, args.base_model, args.steps)
+        run_rl(
+            args.base_url,
+            args.base_model,
+            args.steps,
+            args.batch_size,
+            args.group_size,
+            args.lora_rank,
+            args.max_tokens,
+        )
     print(f"cookbook acceptance passed: mode={args.mode} steps={args.steps}")
 
 

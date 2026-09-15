@@ -19,6 +19,10 @@ LORA_ALPHA=${LORA_ALPHA:-32}
 CONTEXT_LEN=${CONTEXT_LEN:-8192}
 STEPS=${STEPS:-3}
 TASK=${TASK:-rl}  # run_client_recipes.py --mode: rl (GRPO on GSM8K), sft, both
+MAX_TOKENS=${MAX_TOKENS:-512}  # a tenant's response length; must leave room for the prompt within CONTEXT_LEN
+BATCH_SIZE=${BATCH_SIZE:-}  # prompts per tenant step; empty keeps the recipe's default
+GROUP_SIZE=${GROUP_SIZE:-4}  # responses per prompt
+CLIENT_LORA_RANK=${CLIENT_LORA_RANK:-8}  # the rank each tenant trains at; LORA_RANK above is what one slot is sized for
 CLIENT_PYTHON=${CLIENT_PYTHON:-python3}  # the interpreter with tinker-cookbook installed, e.g. a venv's; the gateway keeps python3
 SEQS_PER_SLOT=${SEQS_PER_SLOT:-8}  # sequences one tenant samples at once, for the engine-side capacity bound
 SGLANG_MEM_FRACTION=${SGLANG_MEM_FRACTION:-0.92}
@@ -39,6 +43,8 @@ EXTRA_SERVE_ARGS=${EXTRA_SERVE_ARGS:-}
 log() { echo "[pressure $(date +%H:%M:%S)] $*"; }
 mkdir -p "$RUN_DIR"
 [ -d "$MODEL" ] || { log "model dir $MODEL missing"; exit 2; }
+[ "$MAX_TOKENS" -lt "$CONTEXT_LEN" ] || { log "MAX_TOKENS=$MAX_TOKENS must be below CONTEXT_LEN=$CONTEXT_LEN"; exit 2; }
+[ "$CLIENT_LORA_RANK" -le "$LORA_RANK" ] || { log "CLIENT_LORA_RANK=$CLIENT_LORA_RANK exceeds the slot rank LORA_RANK=$LORA_RANK"; exit 2; }
 recipes="sl_loop"; [ "$TASK" = "sft" ] || recipes="rl_loop"; [ "$TASK" = "both" ] && recipes="sl_loop, rl_loop"
 "$CLIENT_PYTHON" -c "from tinker_cookbook.recipes import $recipes" 2>/dev/null \
     || { log "CLIENT_PYTHON needs the tinker-cookbook pinned in examples/multi_lora/run_client_recipes.py (with its math-rl extras for rl)"; exit 2; }
@@ -99,7 +105,7 @@ else
     SLOTS=$N_ADAPTERS
 fi
 N_CLIENTS=${N_CLIENTS:-$SLOTS}
-log "gateway has $SLOTS slots; running $N_CLIENTS tenants x $STEPS steps of the cookbook $TASK recipe"
+log "gateway has $SLOTS slots; running $N_CLIENTS tenants x $STEPS steps of the cookbook $TASK recipe (rank $CLIENT_LORA_RANK, $MAX_TOKENS tokens)"
 ( exec timeout 14400 nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu --format=csv,noheader -l 15 \
     > "$RUN_DIR/gpu-$(hostname -I | tr ' ' '\n' | grep -m1 .).csv" 2>/dev/null ) &
 SAMPLER_PID=$!
@@ -109,6 +115,7 @@ pids=(); started=$SECONDS
 for i in $(seq 0 $((N_CLIENTS - 1))); do
     TINKER_API_KEY="tml-pressure-user-$(printf %02d "$i")" "$CLIENT_PYTHON" "$REPO/examples/multi_lora/run_client_recipes.py" \
         --base-url "http://$TINKER_HOST:$TINKER_PORT" --base-model "$TINKER_BASE_MODEL" --mode "$TASK" --steps "$STEPS" \
+        --max-tokens "$MAX_TOKENS" --group-size "$GROUP_SIZE" --lora-rank "$CLIENT_LORA_RANK" ${BATCH_SIZE:+--batch-size "$BATCH_SIZE"} \
         > "$RUN_DIR/client-$i.log" 2>&1 &
     pids+=($!)
 done
