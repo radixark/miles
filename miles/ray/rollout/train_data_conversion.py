@@ -285,6 +285,15 @@ def _post_process_rewards(
         return f(args, samples)
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
+    if args.advantage_estimator == "remax":
+        if any(not sample.metadata or sample.metadata.get("remax_baseline_reward") is None for sample in samples):
+            raise ValueError("remax requires remax_baseline_reward metadata on every training sample")
+        # Carry the baseline-adjusted rewards through the existing DP partitioning.
+        return raw_rewards, [
+            reward - sample.metadata["remax_baseline_reward"]
+            for reward, sample in zip(raw_rewards, samples, strict=True)
+        ]
+
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
         normalized_rewards = _normalize_rewards_by_rollout(args, samples, raw_rewards, prompt_group_sizes)
         return raw_rewards, normalized_rewards

@@ -5,6 +5,7 @@ import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -17,6 +18,7 @@ from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, Rollo
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.inference_rollout.compatibility import load_generate_function
+from miles.rollout.remax import generate_remax_baseline
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
@@ -363,6 +365,10 @@ async def generate_and_rm_group(
 
     if state.aborted:
         return group
+
+    if not evaluation and getattr(args, "advantage_estimator", None) == "remax":
+        if not await generate_remax_baseline(args, group, sampling_params, partial(generate_and_rm, args)):
+            return group
 
     # Generate a unique routing_key for each sample in the group (routing-key policies only)
     if policy_uses_routing_key(args):
