@@ -190,3 +190,101 @@ def test_the_transfer_mode_reaches_the_command_line_with_its_directories():
     assert "--update-weight-disk-dir " in args
     assert "--update-weight-local-checkpoint-dir " in args
     assert "--update-weight-transfer-mode" not in build_train_args(_case(), wandb_file=__file__)
+
+
+_GLM47_FLASH_HF_CONFIG = dict(
+    hidden_size=2048,
+    num_hidden_layers=47,
+    num_attention_heads=20,
+    q_lora_rank=768,
+    kv_lora_rank=512,
+    qk_nope_head_dim=192,
+    qk_rope_head_dim=64,
+    v_head_dim=256,
+    intermediate_size=10240,
+    moe_intermediate_size=1536,
+    n_routed_experts=64,
+    n_shared_experts=1,
+    num_experts_per_tok=4,
+    first_k_dense_replace=1,
+    routed_scaling_factor=1.8,
+    norm_topk_prob=True,
+    rope_theta=1000000,
+    vocab_size=154880,
+)
+
+_GLM47_FLASH_CHECKPOINT_KEYS = [
+    "lm_head.weight",
+    "model.embed_tokens.weight",
+    "model.norm.weight",
+    "model.layers.{}.input_layernorm.weight",
+    "model.layers.{}.post_attention_layernorm.weight",
+    "model.layers.{}.self_attn.q_a_proj.weight",
+    "model.layers.{}.self_attn.q_a_layernorm.weight",
+    "model.layers.{}.self_attn.q_b_proj.weight",
+    "model.layers.{}.self_attn.kv_a_proj_with_mqa.weight",
+    "model.layers.{}.self_attn.kv_a_layernorm.weight",
+    "model.layers.{}.self_attn.kv_b_proj.weight",
+    "model.layers.{}.self_attn.o_proj.weight",
+    "model.layers.{}.mlp.gate_proj.weight",
+    "model.layers.{}.mlp.up_proj.weight",
+    "model.layers.{}.mlp.down_proj.weight",
+    "model.layers.{}.mlp.gate.weight",
+    "model.layers.{}.mlp.gate.e_score_correction_bias",
+    "model.layers.{}.mlp.experts.{}.gate_proj.weight",
+    "model.layers.{}.mlp.experts.{}.up_proj.weight",
+    "model.layers.{}.mlp.experts.{}.down_proj.weight",
+    "model.layers.{}.mlp.shared_experts.gate_proj.weight",
+    "model.layers.{}.mlp.shared_experts.up_proj.weight",
+    "model.layers.{}.mlp.shared_experts.down_proj.weight",
+]
+
+
+def test_miles_model_packages_resolve_ahead_of_torchtitan_and_unknown_names_name_both_roots():
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import resolve_model_spec
+
+    spec = resolve_model_spec(_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
+    assert spec.name == "glm4_moe_lite"
+    with pytest.raises(ValueError, match="miles.backends.torchtitan_utils.models.nope.*torchtitan.models.nope"):
+        resolve_model_spec(_args(titan_model_name="nope", titan_model_flavor="x"))
+
+
+def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import resolve_model_spec
+
+    spec = resolve_model_spec(_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
+    hf = _GLM47_FLASH_HF_CONFIG
+    model = spec.model
+    assert (model.dim, model.vocab_size, len(model.layers)) == (
+        hf["hidden_size"],
+        hf["vocab_size"],
+        hf["num_hidden_layers"],
+    )
+    attention = model.layers[0].attention
+    assert attention.n_heads == hf["num_attention_heads"]
+    assert (
+        attention.q_lora_rank,
+        attention.kv_lora_rank,
+        attention.qk_nope_head_dim,
+        attention.qk_rope_head_dim,
+        attention.v_head_dim,
+    ) == (hf["q_lora_rank"], hf["kv_lora_rank"], hf["qk_nope_head_dim"], hf["qk_rope_head_dim"], hf["v_head_dim"])
+    assert attention.rope.theta == hf["rope_theta"] and attention.rope.scaling == "none"
+    assert [layer.moe is None for layer in model.layers] == [i < hf["first_k_dense_replace"] for i in range(47)]
+    assert model.layers[0].feed_forward.w1.out_features == hf["intermediate_size"]
+    moe = model.layers[1].moe
+    assert moe.num_experts == hf["n_routed_experts"]
+    assert moe.routed_experts.inner_experts.hidden_dim == hf["moe_intermediate_size"]
+    assert moe.shared_experts.w1.out_features == hf["moe_intermediate_size"] * hf["n_shared_experts"]
+    assert (moe.router.top_k, moe.router.score_func, moe.router.route_scale, moe.router.route_norm) == (
+        hf["num_experts_per_tok"],
+        "sigmoid",
+        hf["routed_scaling_factor"],
+        hf["norm_topk_prob"],
+    )
+    assert model.mtp_layers == []
+
+    adapter = spec.state_dict_adapter(model, None)
+    assert set(_GLM47_FLASH_CHECKPOINT_KEYS) <= set(adapter.from_hf_map)
