@@ -61,8 +61,9 @@ class TestHfWeightIteratorFactory:
 
         full = WeightUpdatePlacement(gather_pp=True)
         keep_pp = WeightUpdatePlacement(gather_pp=False)
+        keep_pp_ep = WeightUpdatePlacement(gather_pp=False, gather_ep=False)
         assert HfWeightIteratorBridge.forced_placement == full
-        assert HfWeightIteratorDirect.forced_placement == keep_pp
+        assert HfWeightIteratorDirect.forced_placement == keep_pp_ep
 
         captured = {}
 
@@ -74,5 +75,5 @@ class TestHfWeightIteratorFactory:
         assert captured["placement"] == full
 
         with patch.object(HfWeightIteratorDirect, "__init__", _capture_init):
-            self._create("raw", required_placement=keep_pp)
-        assert captured["placement"] == keep_pp
+            self._create("raw", required_placement=keep_pp_ep)
+        assert captured["placement"] == keep_pp_ep

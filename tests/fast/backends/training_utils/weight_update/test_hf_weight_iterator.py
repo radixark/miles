@@ -20,6 +20,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     WeightUpdatePlacement,
     resolve_placement,
 )
+from miles.backends.training_utils.weight_update.hf_weight_iterator.bucketing import AtomicUpdateGroup
 
 SAMPLE_LORA_WEIGHTS = [
     ("model.layers.0.self_attn.q_proj.lora_A.weight", torch.randn(4, 2)),
@@ -46,7 +47,7 @@ class TestWeightUpdatePlacement:
 class _StubIterator(HfWeightIteratorBase):
     """Concrete subclass with canned base and adapter unit streams."""
 
-    def __init__(self, exported, base=()):
+    def __init__(self, exported, base=(), atomic_groups=()):
         super().__init__(
             Namespace(update_weight_buffer_size=1 << 30),
             [],
@@ -56,6 +57,7 @@ class _StubIterator(HfWeightIteratorBase):
         )
         self._exported = exported
         self._base = base
+        self._atomic_groups = list(atomic_groups)
         self.export_calls = []
 
     def _iter_hf_param_units(self, weights, *, materialize):
@@ -66,6 +68,9 @@ class _StubIterator(HfWeightIteratorBase):
         self.export_calls.append(adapter)
         for name, tensor in self._exported:
             yield [(f"{lora_name}:{name}", tensor)]
+
+    def _hf_atomic_update_groups(self):
+        return self._atomic_groups
 
 
 class TestIterHfWeightsTemplate:
@@ -94,3 +99,26 @@ class TestIterHfWeightsTemplate:
         names = self._names(iterator.iter_hf_weights(None))
         assert names == [SAMPLE_BASE_ONLY_WEIGHTS[0][0]]
         assert iterator.export_calls == []
+
+    def test_unit_filter_runs_after_atomic_assembly_and_before_packing(self):
+        base = [
+            ("layers.0.dense.weight", torch.zeros(1)),
+            ("layers.0.experts.0.gate_proj.weight", torch.zeros(1)),
+            ("layers.0.experts.0.up_proj.weight", torch.zeros(1)),
+        ]
+        atomic_group = AtomicUpdateGroup("expert_gate_up", (".gate_proj.weight", ".up_proj.weight"))
+        iterator = _StubIterator([], base=base, atomic_groups=[atomic_group])
+        filtered_units = []
+
+        def keep_dense(unit):
+            names = [name for name, _tensor in unit]
+            filtered_units.append(names)
+            return ".experts." not in names[0]
+
+        names = self._names(iterator.iter_hf_weights(None, unit_filter=keep_dense))
+
+        assert filtered_units == [
+            ["layers.0.dense.weight"],
+            ["layers.0.experts.0.gate_proj.weight", "layers.0.experts.0.up_proj.weight"],
+        ]
+        assert names == ["layers.0.dense.weight"]

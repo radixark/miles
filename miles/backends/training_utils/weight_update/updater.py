@@ -63,6 +63,12 @@ class WeightUpdater:
             model_name=model_name,
             quantization_config=quantization_config,
         )
+        if getattr(args, "ci_require_ep_local_weight_update", False):
+            assert not self._hf_weight_iterator.placement.gather_ep, (
+                "--ci-require-ep-local-weight-update expected the resolved weight iterator "
+                "placement to have gather_ep=False"
+            )
+        self.protocol.configure(self.parallel_state, self._hf_weight_iterator.placement)
         self.weights_getter = weights_getter
         self.weight_version = 0
         self.is_lora = is_lora
@@ -126,6 +132,7 @@ class WeightUpdater:
                 include_base=sync_base,
                 adapters=adapters,
                 materialize=protocol.is_sender,
+                unit_filter=protocol.should_send_weight_unit,
             ):
                 if protocol.is_sender:
                     if driver and checksums is not None:

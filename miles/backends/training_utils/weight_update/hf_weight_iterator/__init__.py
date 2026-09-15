@@ -4,7 +4,7 @@ import dataclasses
 import itertools
 from abc import ABC, abstractmethod
 from argparse import Namespace
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import ClassVar
 
 import torch
@@ -26,8 +26,9 @@ class WeightUpdatePlacement:
     """
 
     gather_pp: bool
-    # Always gathered today; explicit so a future protocol can relax them.
+    # TP also governs ETP reconstruction; current iterators always gather it.
     gather_tp: bool = True
+    # Capable iterator/protocol pairs may retain EP-local parameter sets.
     gather_ep: bool = True
 
 
@@ -78,6 +79,7 @@ class HfWeightIteratorBase(ABC):
         include_base: bool = True,
         adapters: Sequence[tuple[str, object]] = (),
         materialize: bool = True,
+        unit_filter: Callable[[list[tuple[str, torch.Tensor]]], bool] | None = None,
     ) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """Model weights as size-bounded buckets of HF-named GPU tensors;
         atomic update groups are never split across buckets.
@@ -86,6 +88,7 @@ class HfWeightIteratorBase(ABC):
         model parameters. ``adapters``: ``(lora_name, adapter_or_None)`` pairs
         whose tensors join the stream under ``{lora_name}:{hf_key}`` names.
         ``materialize=False`` joins every collective but yields nothing.
+        ``unit_filter`` runs after atomic groups are complete and before packing.
         """
         hf_param_units = self._iter_hf_param_units(weights, materialize=materialize) if include_base else iter(())
         for lora_name, adapter in adapters:
@@ -94,6 +97,8 @@ class HfWeightIteratorBase(ABC):
             )
         atomic_update_groups = self._hf_atomic_update_groups() if include_base and materialize else []
         hf_param_units = assemble_atomic_update_groups(hf_param_units, atomic_update_groups)
+        if unit_filter is not None:
+            hf_param_units = (unit for unit in hf_param_units if unit_filter(unit))
         yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
 
     @abstractmethod

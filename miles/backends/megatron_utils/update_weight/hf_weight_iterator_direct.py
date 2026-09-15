@@ -1,3 +1,5 @@
+import dataclasses
+import re
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -20,18 +22,22 @@ from ..sglang import monkey_patch_torch_reductions
 
 
 class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
-    # Lower bound: TP/ETP/EP are always gathered; PP follows the requirement.
-    forced_placement = WeightUpdatePlacement(gather_pp=False)
+    # TP/ETP stay gathered; raw per-expert exports may retain PP and EP shards.
+    forced_placement = WeightUpdatePlacement(gather_pp=False, gather_ep=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         non_expert_infos, expert_infos = _get_megatron_local_param_infos(
             self.args, self.model, gather_pp=self.placement.gather_pp
         )
+        if not self.placement.gather_ep and not _can_keep_ep_sharded(
+            self.model_name, self.quantization_config, expert_infos
+        ):
+            self.placement = dataclasses.replace(self.placement, gather_ep=True)
         ep_size = get_parallel_state().ep.size
         self._non_expert_batches = _pack_param_infos_by_size(self.args, non_expert_infos)
-        # An expert batch materializes ep_size x its metadata size after the EP all_gather.
-        self._expert_batches = _pack_param_infos_by_size(self.args, expert_infos, size_multiplier=ep_size)
+        size_multiplier = ep_size if self.placement.gather_ep else 1
+        self._expert_batches = _pack_param_infos_by_size(self.args, expert_infos, size_multiplier=size_multiplier)
 
     def _iter_hf_param_units(self, weights, *, materialize):
         rank = dist.get_rank()
@@ -51,7 +57,11 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             pbar.update(1)
         for param_infos in self._expert_batches:
             named_params = _materialize_expert_batch(
-                self.args, param_infos, weights, gather_pp=self.placement.gather_pp
+                self.args,
+                param_infos,
+                weights,
+                gather_pp=self.placement.gather_pp,
+                gather_ep=self.placement.gather_ep,
             )
             if materialize:
                 yield from self._convert_to_hf_param_units(named_params)
@@ -130,11 +140,12 @@ def _materialize_expert_batch(
     megatron_local_weights,
     *,
     gather_pp: bool,
+    gather_ep: bool,
 ) -> list[tuple[str, torch.Tensor]]:
-    """Load -> PP broadcast (when gather_pp) -> ETP all_gather -> EP all_gather.
+    """Load -> optional PP broadcast -> ETP gather -> optional EP gather.
 
-    Expert metadata is EP-local; the full expert set is materialized by a
-    symmetric EP all_gather with a name exchange.
+    Expert metadata is EP-local. ``gather_ep`` adds the symmetric name and
+    tensor all-gathers that materialize the full expert set on every EP rank.
     """
     monkey_patch_torch_reductions()
     params = _load_or_allocate_params(param_infos, megatron_local_weights)
@@ -144,7 +155,7 @@ def _materialize_expert_batch(
     etp_gathered = all_gather_params_async(args, list(zip(param_infos, params, strict=True)))
 
     ep = get_parallel_state().ep
-    if ep.size == 1:
+    if not gather_ep or ep.size == 1:
         return [(info.name, param) for info, param in zip(param_infos, etp_gathered, strict=True)]
 
     names = [info.name for info in param_infos]
@@ -166,6 +177,36 @@ def _materialize_expert_batch(
         handle.wait()
 
     return [named for per_rank in all_gathered for named in per_rank]
+
+
+_INDIVIDUAL_EXPERT_WEIGHT = re.compile(
+    r"^module\.module\.decoder\.layers\.\d+\.mlp\.experts\.linear_fc[12]\.weight\d+$"
+)
+
+
+def _can_keep_ep_sharded(
+    model_name: str,
+    quantization_config: dict | None,
+    expert_infos: Sequence[ParamInfo],
+) -> bool:
+    """Whether every rank can export its EP-local experts independently.
+
+    The first supported slice is unquantized BF16 Qwen3-MoE with one globally
+    numbered Megatron parameter per expert. Fused all-expert exports retain the
+    existing EP gather.
+    """
+    if "qwen3moe" not in model_name.lower() or quantization_config is not None or get_parallel_state().ep.size <= 1:
+        return False
+
+    local_has_experts = bool(expert_infos)
+    local_supported = all(
+        info.dtype == torch.bfloat16 and _INDIVIDUAL_EXPERT_WEIGHT.search(info.name) is not None
+        for info in expert_infos
+    )
+    group = get_gloo_group()
+    all_capabilities: list = [None] * dist.get_world_size(group=group)
+    dist.all_gather_object(all_capabilities, (local_has_experts, local_supported), group=group)
+    return all(has_experts and supported for has_experts, supported in all_capabilities)
 
 
 def _pack_param_infos_by_size(

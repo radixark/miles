@@ -1,3 +1,4 @@
+import re
 import socket
 from argparse import Namespace
 from collections.abc import Sequence
@@ -9,35 +10,65 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.training_utils.parallel import ParallelState, get_parallel_state
+from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
-from miles.utils.distributed_utils import init_process_group
+from miles.utils.distributed_utils import get_gloo_group, init_process_group
+
+_GLOBAL_EXPERT_HF_NAME = re.compile(r"(?:^|\.)experts\.\d+\.")
 
 
 class UpdateWeightFromDistributed(WeightTransferProtocol):
     """
-    Update distributed engines via NCCL. Each PP rank: group "miles-pp_{pp_rank}",
-    only DP=TP=0 broadcasts. Non-expert (TP) and expert (EP) params separate.
+    Update distributed engines via NCCL from one sender per retained PP/EP shard.
+    One sender per PP shard also owns its dense, router and shared-expert weights.
     """
 
     supports_lora = True
+    required_placement = WeightUpdatePlacement(gather_pp=False, gather_ep=False)
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
         self._model_update_groups = None
-        parallel_state = get_parallel_state()
-        self._engine_lock: AbstractContextManager = (
-            create_world_ticket_lock(
-                prefix="miles/weight_update",
-                participates=parallel_state.intra_dp_cp.rank == 0 and parallel_state.tp.rank == 0,
-            )
-            if parallel_state.pp.size > 1
-            else nullcontext()
+        self._engine_lock: AbstractContextManager = nullcontext()
+        self._placement: WeightUpdatePlacement | None = None
+        self._sends_dense = False
+
+    def configure(self, parallel_state: ParallelState, placement: WeightUpdatePlacement) -> None:
+        """Select one sender per retained PP/EP shard and build their shared lock."""
+        assert self._placement is None, "broadcast protocol topology is already configured"
+        assert placement.gather_tp, "distributed broadcast requires gathered TP/ETP weights"
+
+        pp_shard = 0 if placement.gather_pp else parallel_state.pp.rank
+        ep_shard = 0 if placement.gather_ep else parallel_state.ep.rank
+        group = get_gloo_group()
+        local_coordinate = (dist.get_rank(), pp_shard, ep_shard)
+        all_coordinates: list = [None] * dist.get_world_size(group=group)
+        dist.all_gather_object(all_coordinates, local_coordinate, group=group)
+
+        sender_by_shard: dict[tuple[int, int], int] = {}
+        for rank, rank_pp_shard, rank_ep_shard in all_coordinates:
+            shard = (rank_pp_shard, rank_ep_shard)
+            sender_by_shard[shard] = min(rank, sender_by_shard.get(shard, rank))
+
+        rank = dist.get_rank()
+        sender_rank = sender_by_shard[(pp_shard, ep_shard)]
+        dense_sender_rank = min(
+            candidate_rank
+            for (candidate_pp_shard, _candidate_ep_shard), candidate_rank in sender_by_shard.items()
+            if candidate_pp_shard == pp_shard
         )
+        self.is_sender = rank == sender_rank
+        self._sends_dense = rank == dense_sender_rank
+        self.group_name = f"miles-pp_{pp_shard}" if placement.gather_ep else f"miles-pp_{pp_shard}-ep_{ep_shard}"
+        if len(sender_by_shard) > 1:
+            self._engine_lock = create_world_ticket_lock(
+                prefix="miles/weight_update",
+                participates=self.is_sender,
+            )
+        self._placement = placement
 
     def connect(
         self,
@@ -48,25 +79,34 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        """
-        Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
-        """
+        """Create this sender's NCCL group under the shared engine lock."""
+        assert self._placement == placement, "connect placement differs from configured broadcast topology"
+        assert self.is_sender is not None, "configure() must set is_sender before connect()"
         self.rollout_engines = rollout_engines
         self._selector = selector
         self._engine_gpu_counts = engine_gpu_counts
 
-        # One sender per replica set; one NCCL group (sender + all engines) per shard.
-        replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
-        self.is_sender = replica_rank == 0
-        shard = 0 if placement.gather_pp else parallel_state.pp.rank
         if self.is_sender:
-            self.group_name = f"miles-pp_{shard}"
-            disconnect_rollout_engines_from_distributed(
-                self.args, self.group_name, self._model_update_groups, self.rollout_engines
-            )
-            self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self.group_name, rollout_engines
-            )
+            with self._engine_lock:
+                disconnect_rollout_engines_from_distributed(
+                    self.args, self.group_name, self._model_update_groups, self.rollout_engines
+                )
+                self._model_update_groups = connect_rollout_engines_from_distributed(
+                    self.args,
+                    self.group_name,
+                    rollout_engines,
+                    engine_gpu_counts=engine_gpu_counts,
+                )
+
+    def should_send_weight_unit(self, unit: list[tuple[str, torch.Tensor]]) -> bool:
+        """Dense owner sends its full PP slice; other EP owners send routed experts only."""
+        if self._sends_dense:
+            return True
+        routed = [_GLOBAL_EXPERT_HF_NAME.search(name) is not None for name, _tensor in unit]
+        assert routed and (
+            all(routed) or not any(routed)
+        ), f"Weight update unit mixes routed-expert and dense tensors: {[name for name, _tensor in unit]}"
+        return all(routed)
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         """Lock → broadcast → clear → unlock. Lock prevents NCCL deadlock."""
