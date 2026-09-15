@@ -12,6 +12,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (  # noqa: E402
     InfraValues,
+    MilesRunChartValues,
     MilesWorkbenchChartValues,
     ValuesModel,
 )
@@ -23,7 +24,7 @@ _SHARED_INFRA_DESCRIPTION = (
     "Cluster-shaped values that every Miles chart accepts under the same paths, so one user-maintained "
     "values.yaml drives miles-workbench and miles-run alike. Helm does not resolve cross-file $ref, so each "
     "chart inlines these definitions verbatim into its own values.schema.json; "
-    "tools/kubernetes/generate_chart_schema.py writes them from the same Python types."
+    "tools/kubernetes/generate_chart_schema.py writes all three from the same Python types."
 )
 
 # Helm hands every chart these two sections whether or not the chart declares them, so a root that
@@ -59,6 +60,9 @@ def main(
 def generated_schemas() -> dict[Path, str]:
     return {
         _SHARED_INFRA_PATH: _rendered(_shared_infra_schema()),
+        Path("charts/miles-run/values.schema.json"): _rendered(
+            _chart_schema(MilesRunChartValues, title="miles-run values", required=["infra", "run"])
+        ),
         Path("charts/miles-workbench/values.schema.json"): _rendered(
             _chart_schema(MilesWorkbenchChartValues, title="miles-workbench values", required=["infra"])
         ),
