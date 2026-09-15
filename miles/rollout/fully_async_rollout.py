@@ -19,7 +19,7 @@ rollout engines, pausing producer submissions for the duration of the
 import asyncio
 import logging
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import (
@@ -94,6 +94,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
         )
         self._retry_buffer: deque[list[Sample]] = deque()
+        self._running_tasks: list[_RunningTask] = []
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -140,12 +141,14 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             return max(1, x // self.args.n_samples_per_prompt)
         return self.args.rollout_batch_size
 
-    def _submit_one_group(self) -> tuple[asyncio.Task, list[Sample]]:
+    def _submit_one_group(self) -> asyncio.Task:
         samples = [self._retry_buffer.popleft()] if self._retry_buffer else self.data_source.get_samples(1)
         stamp_kv_cache_namespace(samples, namespace=self._curr_kv_cache_namespace)
         self._scheduler.on_submit(samples)
         [prompt_group] = samples
-        return asyncio.create_task(self._generate_group(prompt_group)), prompt_group
+        task = asyncio.create_task(self._generate_group(prompt_group))
+        self._running_tasks.append(_RunningTask(prompt_group=prompt_group, task=task))
+        return task
 
     async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         result = await generate_and_rm_group(
@@ -158,16 +161,17 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return DataBufferInput(prompt_group=prompt_group, group=result)
 
     async def _worker_loop(self) -> None:
-        active: dict[asyncio.Task, list[Sample]] = {}
+        active: set[asyncio.Task] = set()
         while True:
             await self._producer_resumed.wait()
             while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
-                task, prompt_group = self._submit_one_group()
-                active[task] = prompt_group
-            done, _ = await self._scheduler.wait_for_progress(set(active))
+                active.add(self._submit_one_group())
+            done, active = await self._scheduler.wait_for_progress(active)
             for task in done:
-                entry = self._collect_group_result(task, active.pop(task))
+                prompt_group = next(x.prompt_group for x in self._running_tasks if x.task is task)
+                entry = self._collect_group_result(task, prompt_group)
                 await self._output.put(entry)
+                self._running_tasks = [x for x in self._running_tasks if x.task is not task]
 
     def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
         if not task.cancelled():
@@ -247,6 +251,12 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     def _drop_unused(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
         SampleOwnershipRecorder.log_dropped_samples(args=self.args, samples=prompt_group, reason=reason.value)
+
+
+@dataclass(frozen=True)
+class _RunningTask:
+    prompt_group: list[Sample]
+    task: asyncio.Task
 
 
 async def _end_worker(worker: asyncio.Task) -> None:
