@@ -548,53 +548,87 @@ class TestMergeTokensBoundary:
 
     def test_qwen3_inserts_newline_after_im_end(self, qwen3_tito: Qwen3TITOTokenizer):
         """Model stops at <|im_end|> without trailing \\n; merge_tokens inserts it."""
-        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
         im_end = qwen3_tito._im_end_id
         nl = qwen3_tito._newline_id
 
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, im_end], _BND_TOOLS)
+        result = qwen3_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [100, 200, im_end], template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == [100, 200, im_end, nl] + incremental
 
     def test_qwen3_no_newline_otherwise(self, qwen3_tito: Qwen3TITOTokenizer):
         """No insertion when prefix does not end with <|im_end|>."""
-        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
+        result = qwen3_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [100, 200, 300], template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == [100, 200, 300] + incremental
 
     # -- GLM47: strip ambiguous boundary tokens --
 
     def test_glm47_strips_observation(self, glm47_tito: GLM47TITOTokenizer):
         """Model emits <|observation|> as stop token; merge_tokens strips the duplicate."""
-        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._observation_id], _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=glm47_tito.default_template_args(_BND_TOOLS)
+        )
+        result = glm47_tito.merge_tokens(
+            _BND_OLD,
+            _BND_NEW,
+            [100, 200, glm47_tito._observation_id],
+            template_args=glm47_tito.default_template_args(_BND_TOOLS),
+        )
         assert result == [100, 200] + incremental
 
     def test_glm47_strips_user(self, glm47_tito: GLM47TITOTokenizer):
         """<|user|> is also an ambiguous boundary — stripped the same way."""
-        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._user_id], _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=glm47_tito.default_template_args(_BND_TOOLS)
+        )
+        result = glm47_tito.merge_tokens(
+            _BND_OLD,
+            _BND_NEW,
+            [100, 200, glm47_tito._user_id],
+            template_args=glm47_tito.default_template_args(_BND_TOOLS),
+        )
         assert result == [100, 200] + incremental
 
     def test_glm47_no_strip_otherwise(self, glm47_tito: GLM47TITOTokenizer):
         """Non-boundary trailing token is preserved."""
-        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=glm47_tito.default_template_args(_BND_TOOLS)
+        )
+        result = glm47_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [100, 200, 300], template_args=glm47_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == [100, 200, 300] + incremental
 
     # -- Default: no boundary handling --
 
     def test_default_concatenates(self, default_tito: TITOTokenizer):
         """Base class does plain concatenation without any prefix modification."""
-        incremental = default_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = default_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        incremental = default_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=default_tito.default_template_args(_BND_TOOLS)
+        )
+        result = default_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [100, 200, 300], template_args=default_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == [100, 200, 300] + incremental
 
     # -- Edge case --
 
     def test_empty_prefix(self, qwen3_tito: Qwen3TITOTokenizer):
         """Empty prefix → no boundary handling, result is just incremental."""
-        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [], _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
+        result = qwen3_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [], template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == incremental
 
 
@@ -621,7 +655,9 @@ class TestTokenizeAdditional:
         TITO splits against every model tokenizer.
         """
         old_msgs, new_msgs, tools = _split_at(traj_cls, pos)
-        incremental = tito.tokenize_additional_messages(old_msgs, new_msgs, tools)
+        incremental = tito.tokenize_additional_messages(
+            old_msgs, new_msgs, template_args=tito.default_template_args(tools)
+        )
         assert len(incremental) > 0
 
     def test_complete_appendix_reaches_renderer_and_its_error_propagates(
@@ -635,8 +671,8 @@ class TestTokenizeAdditional:
         ]
         calls = []
 
-        def reject_invalid_order(base_messages, appended_messages, *, tools=None, add_generation_prompt=False):
-            calls.append((base_messages, appended_messages, tools, add_generation_prompt))
+        def reject_invalid_order(base_messages, appended_messages, *, template_args=None, add_generation_prompt=False):
+            calls.append((base_messages, appended_messages, template_args, add_generation_prompt))
             if [message["role"] for message in appended_messages] == ["tool", "user", "tool"]:
                 raise ValueError("invalid tool ordering")
             return [1]
@@ -647,15 +683,15 @@ class TestTokenizeAdditional:
             qwen3_tito.tokenize_additional_messages(
                 old_msgs,
                 old_msgs + appended,
-                SingleToolTrajectory.TOOLS,
+                template_args=qwen3_tito.default_template_args(SingleToolTrajectory.TOOLS),
             )
 
         assert len(calls) == 1
-        base_messages, rendered_appendix, tools, add_generation_prompt = calls[0]
+        base_messages, rendered_appendix, template_args, add_generation_prompt = calls[0]
         assert [message["role"] for message in base_messages] == ["system", "assistant"]
         assert base_messages[-1]["tool_calls"] == old_msgs[-1]["tool_calls"]
         assert rendered_appendix == appended
-        assert tools == SingleToolTrajectory.TOOLS
+        assert template_args == qwen3_tito.default_template_args(SingleToolTrajectory.TOOLS)
         assert add_generation_prompt is True
 
     def test_generation_prompt_is_appended_once_for_full_suffix(self, qwen3_tito: Qwen3TITOTokenizer):
@@ -666,12 +702,16 @@ class TestTokenizeAdditional:
         ]
         tools = SingleToolThinkingTrajectory.TOOLS
 
-        incremental = qwen3_tito.tokenize_additional_messages(old_msgs, new_msgs, tools)
+        incremental = qwen3_tito.tokenize_additional_messages(
+            old_msgs, new_msgs, template_args=qwen3_tito.default_template_args(tools)
+        )
         decoded = qwen3_tito.tokenizer.decode(incremental)
         assert decoded.count(qwen3_tito._assistant_start_str) == 1
         assert decoded.endswith(
             qwen3_tito.tokenizer.decode(
-                qwen3_tito._tokenize_rendered_suffix(new_msgs, [], tools=tools, add_generation_prompt=True)
+                qwen3_tito._tokenize_rendered_suffix(
+                    new_msgs, [], template_args=qwen3_tito.default_template_args(tools), add_generation_prompt=True
+                )
             )
         )
 
@@ -702,7 +742,9 @@ class TestTokenizeAdditional:
             add_generation_prompt=False,
             tools=tools,
         )
-        merged = qwen3_tito.merge_tokens(old_msgs, new_msgs, pretokenized, tools)
+        merged = qwen3_tito.merge_tokens(
+            old_msgs, new_msgs, pretokenized, template_args=qwen3_tito.default_template_args(tools)
+        )
         expected = apply_chat_template(
             new_msgs,
             tokenizer=qwen3_tito.tokenizer,

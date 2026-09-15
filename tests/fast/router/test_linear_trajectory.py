@@ -32,8 +32,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         messages: list[dict[str, Any]],
         *,
         add_generation_prompt: bool,
-        tools: list[dict[str, Any]] | None = None,
         tokenize: bool = False,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return list(_MOCK_FIRST_TURN_TOKENS)
 
@@ -41,7 +41,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return []
 
@@ -50,7 +51,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return list(pretokenized_token_ids)
 
@@ -893,9 +895,9 @@ class TestComputeSessionMismatch:
         mock_comparator.compare_sequences.assert_called_once_with([1, 2, 3, 10, 11], [1, 2, 3, 10, 11])
         registry.tito_tokenizer.apply_chat_template.assert_called_once_with(
             session.messages,
-            tools=None,
             add_generation_prompt=False,
             tokenize=True,
+            template_args={},
         )
 
     def test_returns_mismatch_dicts(self, registry: SessionRegistry):
@@ -955,5 +957,5 @@ class TestComputeSessionMismatch:
 
         # Verify tools were passed to the TITO renderer.
         _, kwargs = mock_tokenize.call_args
-        assert kwargs["tools"] == tools
+        assert kwargs["template_args"]["tools"] == tools
         assert kwargs["add_generation_prompt"] is False
