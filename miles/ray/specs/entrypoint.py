@@ -1,10 +1,16 @@
 from miles.ray.specs import inference, multi_lora, rollout, train
 from miles.utils.arguments import parse_args
 from miles.utils.workers.serving.utils import override_argv
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_spec import BaseWorkerSpec
 
 
 def compute_specs(args) -> list[BaseWorkerSpec]:
+    selector = DeployComponent(args.deploy_component)
+    return [spec for spec in _compute_all_specs(args) if selector.selects(spec.deploy_component)]
+
+
+def _compute_all_specs(args) -> list[BaseWorkerSpec]:
     return [
         rollout.spec_rollout_executor(args),
         multi_lora.spec_multi_lora_controller(args),
