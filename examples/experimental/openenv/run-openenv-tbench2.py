@@ -231,7 +231,7 @@ def execute(args: ScriptArgs):
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
-    C.cleanup()
+    U.cleanup_stale_processes()
     if not args.skip_prepare:
         prepare(args)
     execute(args)

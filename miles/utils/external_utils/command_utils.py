@@ -10,7 +10,10 @@ import os
 import platform
 import random
 import shlex
+import signal
 import socket
+import subprocess
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -113,6 +116,37 @@ def ssh_start_ray_workers(
         '--node-ip-address $worker_ip --disable-usage-stats" & '
         "done; wait"
     )
+
+
+def cleanup_stale_processes(process_names: tuple[str, ...] = ("sglang", "train.py", "MegatronTrain")) -> None:
+    """Kill old Ray jobs and stale processes to free GPU resources.
+
+    No shell runs the search. Under `shell=True` the spawned shell's own command
+    line is the whole pipeline, search text included, and `pgrep -f` matches full
+    command lines -- so on linux the search finds that shell and signals it
+    (measured: the subprocess returns -15). Exec'ing pgrep directly leaves no
+    such process, since pgrep excludes only itself.
+    """
+    my_pid = os.getpid()
+    ppid = os.getppid()
+    print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
+    for name in process_names:
+        # An empty pattern matches every process on the host, so this guard is
+        # the difference between reaping stale workers and reaping the machine.
+        assert name, "process name must not be empty"
+        # Exit 1 means "nothing matched", the common case, not an error.
+        found = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True, check=False)
+        for pid in (int(line) for line in found.stdout.split()):
+            if pid in (my_pid, ppid):
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass  # exited on its own between the scan and the signal
+            except PermissionError:
+                pass  # another user's process that merely matched the name
+    time.sleep(5)
+    print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
 
 
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
