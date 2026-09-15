@@ -68,6 +68,8 @@ async def serve(args):
     if auto_capacity:
         probes = await probe_slot_capacity(args, backend, trainer)
         args.multi_lora_n_adapters = resolve_slot_capacity(args, probes, keep_k=1)
+        if getattr(args, "sglang_max_loaded_loras", None) is None:
+            args.sglang_max_loaded_loras = args.multi_lora_n_adapters + 16
         await trainer.dispose()
         await worker_manager.restart_with_specs.remote(compute_specs(args))
         trainer = await _start_trainer(args)
