@@ -60,22 +60,21 @@ async def serve(args):
 
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     dp_size = actor_world_size // (
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
-    backend = instrument_backend(MilesBackend(trainer, router_url, dp_size=dp_size))
     if auto_capacity:
-        probes = await probe_slot_capacity(args, backend, trainer)
+        probes = await probe_slot_capacity(args, MilesBackend(trainer, "", dp_size=dp_size), trainer)
         args.multi_lora_n_adapters = resolve_slot_capacity(args, probes, keep_k=1)
         if getattr(args, "sglang_max_loaded_loras", None) is None:
             args.sglang_max_loaded_loras = args.multi_lora_n_adapters + 16
         await trainer.dispose()
         await worker_manager.restart_with_specs.remote(compute_specs(args))
         trainer = await _start_trainer(args)
-        backend = instrument_backend(MilesBackend(trainer, router_url, dp_size=dp_size))
     await inference_controller.init()
+    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    backend = instrument_backend(MilesBackend(trainer, router_url, dp_size=dp_size))
 
     target_modules = set(convert_target_modules_to_hf(args.target_modules))
     config = GatewayConfig(
