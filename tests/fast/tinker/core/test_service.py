@@ -831,7 +831,7 @@ async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, m
     monkeypatch.setattr(gateway, "_run_lease_sweeper", _run_lease_sweeper)
     run_task = asyncio.create_task(gateway.run())
     gateway.create_model("tenant", model_payload(gateway))
-    gateway.submit_sample("tenant", {"num_samples": 1})
+    gateway.submit_sample("tenant", {"num_samples": 1, "prompt_tokens": [1]})
     tasks = [run_task, *gateway._create_tasks, *(task for task, _ in gateway._sample_tasks.values())]
     try:
         backend_tasks = [await asyncio.wait_for(started.get(), timeout=2) for _ in range(2)]
