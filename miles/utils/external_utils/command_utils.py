@@ -76,10 +76,10 @@ def convert_checkpoint(
             f"torchrun "
             f"--nproc-per-node {num_gpus_per_node} "
             f"{multinode_args}"
-            f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
+            f"{shlex.quote(str(repo_base_dir / 'tools/convert_hf_to_torch_dist.py'))} "
             f"{shell_safe_model_args(megatron_model_type)} "
-            f"--hf-checkpoint {hf_checkpoint} "
-            f"--save {path_dst} "
+            f"--hf-checkpoint {shlex.quote(hf_checkpoint)} "
+            f"--save {shlex.quote(path_dst)} "
             f"{extra_args}"
         )
 
