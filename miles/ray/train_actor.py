@@ -14,7 +14,7 @@ from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
-from miles.utils.logging_utils import configure_logger
+from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
@@ -47,6 +47,7 @@ class TrainRayActor(NodeProbeMixin):
     ):
         self.args = args
 
+        self._init_called = False
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
@@ -73,6 +74,11 @@ class TrainRayActor(NodeProbeMixin):
 
     # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):
+        assert (
+            not self._init_called
+        ), "init already ran in this worker process, so this is a stale worker being reused as a fresh one"
+        self._init_called = True
+
         self.args = args
         self.role = role
         self.with_ref = with_ref
@@ -103,6 +109,7 @@ class TrainRayActor(NodeProbeMixin):
 
         args.rank = dist.get_rank()
         args.world_size = dist.get_world_size()
+        rebind_env_reporting(args)
 
         try:
             if torch.version.hip is not None:
