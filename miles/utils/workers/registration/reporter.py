@@ -21,6 +21,7 @@ INGEST_TIMEOUT_SECONDS = 60.0
 
 @dataclass(kw_only=True)
 class RegistrationReporter:
+    run_uuid: str
     reporter_id: str
     hub_endpoint: BaseWorkerHandle
     worker_provider: BaseWorkerProvider
@@ -70,6 +71,7 @@ class RegistrationReporter:
 
     def _compute_snapshot(self) -> RegistrationSnapshot:
         return RegistrationSnapshot(
+            run_uuid=self.run_uuid,
             reporter_id=self.reporter_id,
             sequence_number=self._sequence_number,
             cells=_compute_cells(
