@@ -10,7 +10,7 @@ from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi
 from miles.utils.workers.reconcile.k8s_reflector import KubernetesReflector
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core import cell_view, pod_view
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys
 from miles.utils.workers.worker_spec import BaseWorkerSpec, NamedHostAndPorts
@@ -45,7 +45,7 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
             for cell_id in cell_ids
         ]
 
-    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+    async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         def notify_cell(cell_id: str) -> Awaitable[None]:
             info = self.cell_info(cell_id)
             return reconcile(cell_id, info if info is not None and info.alive else None)
