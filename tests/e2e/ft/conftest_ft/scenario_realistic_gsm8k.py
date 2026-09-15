@@ -9,7 +9,11 @@ from typing import Annotated
 import typer
 
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
-from tests.e2e.ft.conftest_ft.fault_injection import API_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
+    API_SERVER_PORT,
+    MEAN_INTERVAL_SECONDS,
+    spawn_fault_injector,
+)
 
 from miles.utils.external_utils import command_utils
 from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
