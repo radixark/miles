@@ -590,3 +590,33 @@ class TestComposedCapacity:
 
         assert accepted.done()
         assert multi.get_metrics("verifier")["rollout/fully_async/queue_size"] == 1
+
+
+class TestCheckpointQueueOrder:
+    async def test_restored_queue_preserves_sample_identities_and_fifo_order(self) -> None:
+        """Restoring a queue preserves every accepted group in its original order."""
+        args = _make_args()
+        args.rollout_batch_size = 2
+        constructor = DataBufferConstructorInput(args=args, unused_handler_fn=_ignore_group)
+        buffer = fully_async_data_buffer.DefaultDataBuffer(constructor)
+        groups = [[_make_sample(index=index, reward=1.0, trainer_model_id="solver")] for index in (8, 3)]
+        for group in groups:
+            await buffer.put(DataBufferInput(prompt_group=group, group=group))
+
+        restored = fully_async_data_buffer.DefaultDataBuffer(constructor)
+        restored.load_state_dict(buffer.state_dict())
+        [first] = await restored.get(num_groups=1)
+        [second] = await restored.get(num_groups=1)
+
+        assert [[sample.index for sample in entry.group] for entry in (first, second)] == [[8], [3]]
+        assert restored.state_dict() == []
+
+    def test_multi_policy_buffers_skip_their_state_with_a_warning(self, caplog) -> None:
+        """Multi-policy rollout state is skipped with a warning instead of blocking the checkpoint."""
+        buffer = DefaultMultiDataBuffer(DataBufferConstructorInput(args=_make_args(), unused_handler_fn=_ignore_group))
+
+        with caplog.at_level(logging.WARNING, logger="miles.rollout.fully_async_data_buffer"):
+            assert buffer.state_dict() == []
+            buffer.load_state_dict([])
+
+        assert caplog.text.count("not checkpointed") == 2
