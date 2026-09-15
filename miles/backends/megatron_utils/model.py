@@ -266,6 +266,7 @@ def forward_only(
     rollout_id: int,
     store_prefix: str = "",
     fp32_output: bool = True,
+    extra_batch_keys: Sequence[str] = (),
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -281,6 +282,7 @@ def forward_only(
         rollout_id: Rollout identifier (selects the per-rollout dump subdirectory).
         store_prefix: Prefix to prepend to stored output keys.
         fp32_output: Whether Megatron should upcast the complete model output to FP32.
+        extra_batch_keys: Additional batch fields passed to the output callback.
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
@@ -325,6 +327,7 @@ def forward_only(
                 "response_lengths",
                 "max_seq_lens",
                 "witness_ids",
+                *extra_batch_keys,
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -361,6 +364,7 @@ def forward_only(
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
+            **{key: batch[key] for key in extra_batch_keys},
         )
 
     # Turn on evaluation mode which disables dropout.
@@ -507,6 +511,11 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                "teacher_log_probs",
+                "opd_candidate_ids",
+                "opd_candidate_old_log_probs",
+                "opd_candidate_teacher_log_probs",
+                "opd_loss_weights",
                 "rollout_mask_sums",
             ],
             args.data_pad_size_multiplier,

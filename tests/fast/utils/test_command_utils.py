@@ -328,6 +328,17 @@ class TestExecuteTrain:
         assert not any("ray stop" in command or "ray start" in command for command in commands)
         assert not any("pkill -9 ray" in command for command in commands)
 
+    def test_external_cluster_can_preserve_independent_services(self, commands, monkeypatch):
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
+        command_utils.execute_train(
+            train_args="",
+            num_gpus_per_node=8,
+            megatron_model_type="qwen3-4B",
+            cleanup_processes=False,
+        )
+        assert not any("pkill" in command or "ray stop" in command or "ray start" in command for command in commands)
+        assert any("ray job submit" in command for command in commands)
+
     def test_runs_the_callback_before_submitting(self, commands):
         """before_ray_job_submit exists to prepare state the job will read."""
         command_utils.execute_train(

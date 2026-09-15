@@ -9,6 +9,7 @@ from miles.backends.training_utils.cp_utils import (
     get_local_response_loss_masks,
     get_sum_of_sample_mean,
 )
+from miles.backends.training_utils.loss_hub.candidate_opd import candidate_opd_loss_function
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss_hub.math_utils import (
@@ -89,6 +90,9 @@ def policy_loss_function(
         "tis", "ois", "tis_clipfrac" are included when the respective features
         are enabled.
     """
+    if getattr(args, "opd_loss_mode", "legacy") == "topk-candidate":
+        return candidate_opd_loss_function(args, batch, logits, sum_of_sample_mean)
+
     parallel_state = get_parallel_state()
     advantages_list = [advantage.detach() for advantage in batch["advantages"]]
     advantages = torch.cat(advantages_list, dim=0)
@@ -134,6 +138,17 @@ def policy_loss_function(
         old_log_probs = rollout_old_log_probs
     else:
         old_log_probs = trainer_scored_log_probs
+    if getattr(args, "opd_reward_refresh", False):
+        teacher = batch.get("teacher_log_probs")
+        if teacher is None:
+            raise ValueError("Sampled OPD refresh requires teacher_log_probs")
+        advantages_list = [
+            (adv + args.opd_kl_coef * (old - current.detach())).detach()
+            for adv, old, current in zip(advantages_list, old_log_probs, log_probs, strict=True)
+        ]
+        advantages = torch.cat(advantages_list)
+    if batch.get("opd_loss_weights") is not None:
+        advantages = advantages * torch.cat(batch["opd_loss_weights"])
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 
