@@ -32,6 +32,10 @@ class BaseFaultForm(abc.ABC):
     @abc.abstractmethod
     def name(self) -> str: ...
 
+    @property
+    def harms_cell(self) -> bool:
+        return True
+
     @abc.abstractmethod
     def inject(self, cell: dict, rng: random.Random) -> None: ...
 

@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 _event_adapter: TypeAdapter[Event] = TypeAdapter(Event)
 
+EVENTS_DIRNAME: str = "events"
+
 
 class EventLogger:
     def __init__(self, *, log_dir: Path | str, file_name: str = "events.jsonl", source: ProcessIdentity) -> None:
