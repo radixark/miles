@@ -5,15 +5,13 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass
-from typing import Any
 
 from miles.utils.test_utils.clock import Clock, RealClock
 from miles.utils.workers.reconcile.k8s_api import (
-    EVENT_TYPE_ADDED,
     EVENT_TYPE_BOOKMARK,
     EVENT_TYPE_DELETED,
     EVENT_TYPE_ERROR,
-    EVENT_TYPE_MODIFIED,
+    POD_EVENT_TYPES,
     KubernetesPodApi,
     PodWatchEvent,
     exception_rejects_cursor,
@@ -66,7 +64,7 @@ class KubernetesReflector:
     async def _watch_once(self, cursor: _WatchCursor) -> AsyncGenerator[SourceEvent, None]:
         if cursor.resource_version is None:
             page = await self._kube_client.list_pods(namespace=self._namespace, label_selector=self._label_selector)
-            yield ReplaceEvent(objects={_pod_key(pod): pod for pod in page.pods})
+            yield ReplaceEvent(objects={pod.metadata.name: pod for pod in page.pods})
             cursor.resource_version = page.resource_version
 
         async with aclosing(
@@ -104,25 +102,12 @@ class _WatchCursor:
 
 
 def _to_source_event(raw_event: PodWatchEvent) -> SourceEvent | None:
-    if raw_event.type in (EVENT_TYPE_ADDED, EVENT_TYPE_MODIFIED, EVENT_TYPE_DELETED):
-        key = _pod_key_or_none(raw_event.obj)
-        if key is None:
-            return None
+    if raw_event.type in POD_EVENT_TYPES:
+        assert raw_event.pod is not None, f"a {raw_event.type} frame carries no pod"
+        key = raw_event.pod.metadata.name
         if raw_event.type == EVENT_TYPE_DELETED:
-            return DeleteEvent(key=key, last_obj=raw_event.obj)
-        return UpsertEvent(key=key, obj=raw_event.obj)
+            return DeleteEvent(key=key, last_obj=raw_event.pod)
+        return UpsertEvent(key=key, obj=raw_event.pod)
     if raw_event.type != EVENT_TYPE_BOOKMARK:
         logger.warning(f"KubernetesReflector ignoring unknown event {raw_event.type=}")
     return None
-
-
-def _pod_key_or_none(obj: Any) -> str | None:
-    try:
-        return _pod_key(obj)
-    except Exception:
-        logger.error(f"KubernetesReflector skipping a watch event whose key cannot be read {obj=}", exc_info=True)
-        return None
-
-
-def _pod_key(pod: Any) -> str:
-    return pod.metadata.name
