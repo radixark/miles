@@ -16,3 +16,7 @@ helm.sh/chart: {{ include "miles-common.chart" $context | quote }}
 app.kubernetes.io/version: {{ $context.Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ $context.Release.Service | quote }}
 {{- end }}
+
+{{- define "miles-common.uninstallerServiceAccountName" -}}
+miles-uninstaller
+{{- end }}
