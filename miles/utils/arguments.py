@@ -2209,6 +2209,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
             )
             parser.add_argument(
+                "--profile-low-precision",
+                action="store_true",
+                help="Write categorized low-precision CUDA kernel summaries beside PyTorch traces.",
+            )
+            parser.add_argument(
                 "--memory-recorder",
                 type=str,
                 choices=["torch", "memray"],
