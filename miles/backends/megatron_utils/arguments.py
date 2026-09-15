@@ -23,7 +23,7 @@ def set_default_megatron_args(args):
         args, "debug_disable_optimizer", False
     )
     # Multi-LoRA: per-slot LayerWise optimizers require plain DDP all-reduce.
-    if getattr(args, "multi_lora_n_adapters", 0) > 0:
+    if getattr(args, "multi_lora_n_adapters", 0) != 0:
         args.use_distributed_optimizer = False
     # TODO: maybe change this after megatron has good fp8 support
     args.bf16 = not args.fp16

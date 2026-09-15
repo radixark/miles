@@ -11,6 +11,7 @@ from miles.backends.megatron_utils.lora.slot_capacity import (
 )
 from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.specs.entrypoint import compute_specs
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
 from miles.tinker.core.service import TinkerService
@@ -26,18 +27,7 @@ from miles.utils.logging_utils import configure_logger
 logger = logging.getLogger(__name__)
 
 
-async def serve(args):
-    assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters (a count, or 'auto')"
-    assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
-    configure_logger(args, source=MainProcessIdentity())
-
-    init_http_client(args)
-
-    _worker_manager = launch_worker_manager(args)
-    object_store.init_instance(args, contribute_segment=False)
-
-    inference_controller = InferenceController(args)
-
+async def _start_trainer(args) -> TrainerController:
     trainer = TrainerController(
         args=args,
         role="actor",
@@ -47,6 +37,25 @@ async def serve(args):
         rollout_executor=None,
     )
     await trainer.init()
+    return trainer
+
+
+async def serve(args):
+    assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters (a count, or 'auto')"
+    assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
+    configure_logger(args, source=MainProcessIdentity())
+
+    init_http_client(args)
+
+    auto_capacity = args.multi_lora_n_adapters == AUTO_SLOT_CAPACITY
+    if auto_capacity:
+        args.multi_lora_n_adapters = 1
+    worker_manager = launch_worker_manager(args, trainer_only=auto_capacity)
+    object_store.init_instance(args, contribute_segment=False)
+
+    inference_controller = InferenceController(args)
+
+    trainer = await _start_trainer(args)
 
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
@@ -56,11 +65,13 @@ async def serve(args):
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
     backend = MilesBackend(trainer, router_url, dp_size=dp_size)
-    if args.multi_lora_n_adapters == AUTO_SLOT_CAPACITY:
-        # resolved before the engines launch: they read the slot count from args
+    if auto_capacity:
         probes = await probe_slot_capacity(args, backend, trainer)
-        # one resident adapter copy per slot; the version keep-K cap left with the LRU redesign
         args.multi_lora_n_adapters = resolve_slot_capacity(args, probes, keep_k=1)
+        await trainer.dispose()
+        await worker_manager.restart_with_specs.remote(compute_specs(args))
+        trainer = await _start_trainer(args)
+        backend = MilesBackend(trainer, router_url, dp_size=dp_size)
     await inference_controller.init()
 
     target_modules = set(convert_target_modules_to_hf(args.target_modules))
