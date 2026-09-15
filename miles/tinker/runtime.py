@@ -136,12 +136,12 @@ class MilesBackend:
         for (slot, datum), output in zip(slot_datums, outputs, strict=True):
             per_slot.setdefault(slot, []).append((datum, output))
         for slot, pairs in per_slot.items():
-            logprobs = [value for _, output in pairs for value in output["logprobs"]]
+            logprobs = [value for datum, output in pairs for value in _response_logprobs(datum, output)]
             self.profiler.observe(
                 slot,
                 loss=sum(output["loss"] for _, output in pairs) / len(pairs),
                 log_prob=sum(logprobs) / len(logprobs) if logprobs else 0.0,
-                mean_len=sum(datum["target_len"] for datum, _ in pairs) / len(pairs),
+                mean_len=len(logprobs) / len(pairs),
             )
 
     async def _run_batch(self, method: str, batch_id: int, train_data: dict) -> list:
@@ -227,6 +227,14 @@ class MilesBackend:
                 # request-carried backfill source: the engine refills an evicted version itself
                 request["lora_backfill_paths"] = {lora_name: lora_path}
         return request
+
+
+def _response_logprobs(datum: dict, output: dict) -> list[float]:
+    """The trainer's log-probs at the positions the loss weights keep: the response, not the prompt."""
+    weights = datum.get("weights")
+    if weights is None:
+        return list(output["logprobs"])
+    return [value for value, weight in zip(output["logprobs"], weights, strict=False) if weight > 0]
 
 
 def _slot_failure(worker_results: list) -> dict | None:

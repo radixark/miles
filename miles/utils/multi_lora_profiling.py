@@ -43,7 +43,7 @@ _COOKBOOK_REWARD = re.compile(r"reward/total\s*│\s*([-0-9.eE+]+)")
 _COOKBOOK_STEP_TIME = re.compile(r"time/total\s*│\s*([-0-9.eE+]+)")
 _CAPACITY_LINE = re.compile(r"multi-LoRA capacity: (\d+) slots, bound by (.+?) \[")
 _LOADED_LORAS_LINE = re.compile(r"engines keep at most (\d+) adapter versions loaded")
-_TRAINER_NODE_LINE = re.compile(r"MegatronTrainRayActor pid=\d+, ip=([0-9.]+)")
+_TRAINER_NODE_LINE = re.compile(r"TrainRayActor pid=\d+, ip=([0-9.]+)")
 _ENGINE_NODE_LINE = re.compile(r"CommandActor pid=\d+.*Uvicorn running on http://([0-9.]+):")
 
 
@@ -304,6 +304,12 @@ def render_profile(snapshot: dict[str, dict[str, float]]) -> str:
     return table
 
 
+def _close_step(model_steps: list[dict[str, float]], step: dict[str, float], wave: list[tuple[float, float]]) -> None:
+    if wave:  # the rollout wave: first sample request in, last sample result out
+        step["rollout"] = max(end for _, end in wave) - min(start for start, _ in wave)
+    model_steps.append(step)
+
+
 def client_steps(requests: list[list]) -> list[dict[str, float]]:
     """One LoRA's step as the tenant saw it: publish, rollout wave, forward_backward, optim_step, arrival to result."""
     by_model: dict[str, list[tuple[float, str, float]]] = {}
@@ -322,14 +328,14 @@ def client_steps(requests: list[list]) -> list[dict[str, float]]:
             phase = next((name for name, ops in _CLIENT_PHASES if op in ops), None)
             if phase is None:
                 continue
+            if phase == "publish" and (step or wave):  # a step starts with its publish
+                _close_step(model_steps, step, wave)
+                step, wave = {}, []
             step[phase] = step.get(phase, 0.0) + finished_at - created_at
-            if phase == "optim_step":  # the optimizer step closes a step; its rollout wave came before it
-                if wave:
-                    step["rollout"] = max(end for _, end in wave) - min(start for start, _ in wave)
-                    wave = []
-                model_steps.append(step)
-                step = {}
-        if model_steps and step.get("publish"):  # the closing publish after the last step
+            if phase == "optim_step":  # and ends with its optimizer step, unless training was skipped
+                _close_step(model_steps, step, wave)
+                step, wave = {}, []
+        if model_steps and set(step) == {"publish"}:  # the final save after the last step
             model_steps[-1]["publish"] = model_steps[-1].get("publish", 0.0) + step["publish"]
         steps.extend(model_steps)
     return steps
@@ -416,6 +422,8 @@ def render_gpu(peaks_by_node: dict[str, dict[str, float]], roles: dict[str, str]
     """One row per node: peak memory as MiB and as a share of the GPU, peak SM utilization."""
     rows = []
     for node, peaks in peaks_by_node.items():
+        if peaks["util_peak"] == 0 and peaks["mem_peak_mib"] < 0.02 * peaks["mem_total_mib"]:
+            continue  # a sampled node the run never used
         label = f"{(roles or {}).get(node, 'node')} GPUs ({node})"
         share = 100 * peaks["mem_peak_mib"] / peaks["mem_total_mib"] if peaks["mem_total_mib"] else 0.0
         rows.append(
