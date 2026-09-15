@@ -11,7 +11,12 @@ from fastapi.responses import JSONResponse
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
-from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, EXPECTED_BOOT_UUID_HEADER, CallStatusResponse
+from miles.utils.workers.rpc.common.protocol import (
+    BOOT_UUID_HEADER,
+    EXPECTED_BOOT_UUID_HEADER,
+    IN_FLIGHT_PATH,
+    CallStatusResponse,
+)
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 
@@ -386,3 +391,27 @@ class TestBootUuid:
         async with _client(_Worker()) as second_client:
             second = (await second_client.get("/v1/health")).headers[BOOT_UUID_HEADER]
         assert first != second
+
+
+class TestTheInFlightEndpoint:
+    async def test_a_worker_running_nothing_reports_nothing_in_flight(self) -> None:
+        """A caller waiting a worker out reads this to decide the worker has really let go."""
+        async with _client(_Worker()) as client:
+            response = await client.get(IN_FLIGHT_PATH)
+
+            assert response.status_code == 200 and response.json() == {"call_ids": []}
+
+    async def test_it_names_the_call_the_worker_is_running(self) -> None:
+        """This is what a caller waits out, so a running call has to show up under its own id."""
+        worker = _Worker()
+        async with _client(worker) as client:
+            submitted = await _submit(client, "demo_slow", {"tag": "a"}, call_id="c1")
+            assert submitted.response.status_code == 200
+            assert worker.slow_started.wait(timeout=5.0)
+
+            assert (await client.get(IN_FLIGHT_PATH)).json() == {"call_ids": ["c1"]}
+
+            worker.release_slow.set()
+            await _poll_until_done(client, "c1")
+
+            assert (await client.get(IN_FLIGHT_PATH)).json() == {"call_ids": []}
