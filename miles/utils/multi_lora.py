@@ -60,6 +60,10 @@ def validate_multi_lora_args(args: Any) -> None:
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
     # Adapter routing is only recompute-safe without pipelining; enforce at launch.
+    assert getattr(args, "context_parallel_size", 1) == 1, (
+        "multi-LoRA requires --context-parallel-size 1: the Tinker losses zip "
+        "full-length per-datum vectors against log_probs, which CP would shard"
+    )
     assert getattr(args, "pipeline_model_parallel_size", 1) == 1, (
         "Multi-LoRA requires --pipeline-model-parallel-size 1: no single rank holds a "
         "complete adapter to push to the rollout engines, and a pipelined schedule would "
