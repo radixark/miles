@@ -3,6 +3,7 @@ from __future__ import annotations
 import abc
 from argparse import Namespace
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from miles.rollout.data_source import DataSource
@@ -96,10 +97,10 @@ class BaseRolloutFn(abc.ABC):
     def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         raise NotImplementedError
 
-    def save(self, rollout_id: int) -> None:
+    def save(self, directory: Path) -> None:
         return None
 
-    def load(self, rollout_id: int | None) -> None:
+    def load(self, directory: Path) -> None:
         return None
 
     async def dispose(self) -> None:
