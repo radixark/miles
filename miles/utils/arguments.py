@@ -894,9 +894,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Filesystem directory disk-delta weight sync publishes to: one delta directory "
-                    "(changed tensors only) per sync, written by the trainer and read by every "
-                    "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                    "Filesystem directory where disk-delta writes one changed-tensor artifact per sync. "
+                    "It may be shared with rollout hosts directly or published by "
+                    "--custom-update-weight-post-write-path. Required for "
+                    "--update-weight-transfer-mode=disk-delta."
                 ),
             )
             parser.add_argument(
@@ -907,7 +908,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Rollout-host-local directory (e.g. NVMe) holding a full HF checkpoint kept in "
                     "sync by each engine's /pull_weights: every host seeds it from the engine's model "
                     "path and patches published deltas in place, and the engines reload from it. "
-                    "Required for --update-weight-transfer-mode=disk-delta. The read-side counterpart "
+                    "Required when disk-delta reloads Miles-managed engines; artifact-only publishers "
+                    "leave it unset. The read-side counterpart "
                     "of --custom-update-weight-post-write-path is the engine's "
                     "--sglang-custom-pull-weights-pre-read-hook."
                 ),
@@ -3369,12 +3371,8 @@ def miles_validate_args(args):
         ), "Disk-delta weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for disk-delta weight transfer."
         assert args.update_weight_disk_dir, (
-            "--update-weight-transfer-mode=disk-delta requires --update-weight-disk-dir to point at "
-            "a filesystem shared between the trainer and the rollout engines."
-        )
-        assert args.update_weight_local_checkpoint_dir, (
-            "--update-weight-transfer-mode=disk-delta requires --update-weight-local-checkpoint-dir "
-            "(a rollout-host-local directory, e.g. NVMe)."
+            "--update-weight-transfer-mode=disk-delta requires --update-weight-disk-dir for "
+            "trainer-written update artifacts."
         )
         assert os.path.isdir(args.hf_checkpoint), (
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "

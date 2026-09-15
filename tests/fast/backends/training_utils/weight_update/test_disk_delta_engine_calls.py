@@ -39,7 +39,7 @@ def test_reload_engines_pulls_with_both_checkpoint_dirs_then_reloads():
 
     with patch(f"{_MODULE}.dist") as dist_mock, patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()):
         dist_mock.get_rank.return_value = 0
-        protocol._reload_engines(7)
+        protocol._publish_and_reload_engines(7)
 
     assert [name for name, _kwargs in calls] == [
         "pull_weights",
@@ -65,7 +65,7 @@ def test_in_place_pause_mode_skips_the_flush():
 
     with patch(f"{_MODULE}.dist") as dist_mock, patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()):
         dist_mock.get_rank.return_value = 0
-        protocol._reload_engines(7)
+        protocol._publish_and_reload_engines(7)
 
     assert "flush_cache" not in [name for name, _kwargs in calls]
 
@@ -76,7 +76,7 @@ def test_non_source_rank_issues_no_requests():
 
     with patch(f"{_MODULE}.dist") as dist_mock, patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()):
         dist_mock.get_rank.return_value = 1
-        protocol._reload_engines(7)
+        protocol._publish_and_reload_engines(7)
 
     assert calls == []
 
