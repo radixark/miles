@@ -232,7 +232,7 @@ class TestExpectedNumCellsAsksTheProvider:
 class TestEngineSpecNamingUsedByTheCrossCheck:
     def test_pool_names_carry_the_model_index_the_cross_check_parses(self) -> None:
         """The cross-check maps specs back to models by name, so that encoding must stay stable."""
-        assert compute_engine_pool_id(model_idx=3, group_index=7) == "inference-engine-3-7"
+        assert compute_engine_pool_id(make_args(), model_idx=3, group_index=7) == "inference-engine-3-7"
 
 
 class TestRouterFlagsAtStartup:
