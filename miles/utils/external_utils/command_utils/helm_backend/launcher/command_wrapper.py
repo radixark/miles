@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import yaml
 from pydantic import BaseModel
@@ -15,8 +15,11 @@ from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LAB
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 CI_LABEL = "miles.radixark.io/ci-run"
+_JOB_NAME_LABEL = "batch.kubernetes.io/job-name"
 _ALREADY_EXISTS = "AlreadyExists"
 _JOB_COMPLETION_JSONPATH = "jsonpath={.status.succeeded},{.status.failed}"
+_GET_REQUEST_TIMEOUT_SECONDS = 30.0
+_CREATE_REQUEST_TIMEOUT_SECONDS = 60.0
 
 
 class Helm:
@@ -47,6 +50,31 @@ class Helm:
             capture_output=True,
         )
         return Manifest.parse(json.loads(rendered.stdout)["manifest"])
+
+    @staticmethod
+    def template(
+        *,
+        release: str,
+        chart: str | Path,
+        namespace: str,
+        show_only: str,
+        values: dict[str, Any],
+        values_files: list[str],
+    ) -> str:
+        command = [
+            "helm",
+            "template",
+            release,
+            str(chart),
+            "--namespace",
+            namespace,
+            "--show-only",
+            show_only,
+            *_compute_helm_args(values),
+        ]
+        for values_file in values_files:
+            command += ["--values", values_file]
+        return _run(command, capture_output=True).stdout
 
     @staticmethod
     def get_manifest(release: str, namespace: str) -> Manifest | None:
@@ -97,8 +125,13 @@ class Kubectl:
         return Kubectl._run(list(arguments))
 
     @staticmethod
+    def apply(manifest: str, *, namespace: str) -> None:
+        result = Kubectl._run(["apply", "--namespace", namespace, "-f", "-"], input=manifest)
+        assert result.returncode == 0, f"Could not submit the job: {result.stderr}"
+
+    @staticmethod
     def create_if_absent(manifest_path: str) -> bool:
-        result = Kubectl._run(["create", "-f", manifest_path])
+        result = Kubectl._run(["create", "-f", manifest_path], timeout=_CREATE_REQUEST_TIMEOUT_SECONDS)
         if result.returncode == 0:
             return True
         if _ALREADY_EXISTS in result.stderr:
@@ -126,9 +159,8 @@ class Kubectl:
         )
 
     @staticmethod
-    def apply(manifest: str, *, namespace: str) -> None:
-        result = Kubectl._run(["apply", "--namespace", namespace, "-f", "-"], input=manifest)
-        assert result.returncode == 0, f"Could not submit the job: {result.stderr}"
+    def delete_service(name: str, *, namespace: str) -> None:
+        Kubectl._run(["delete", "service", name, "--namespace", namespace, "--ignore-not-found"])
 
     @staticmethod
     def get_json(
@@ -156,6 +188,22 @@ class Kubectl:
         return return_type.model_validate_json(result.stdout)
 
     @staticmethod
+    def tail_logs(target: str, *, namespace: str, tail: int) -> str:
+        result = run_process(
+            Kubectl.logs_command(namespace=namespace, target=target, tail=tail), capture_output=True, check=False
+        )
+        return result.stdout or result.stderr
+
+    @staticmethod
+    def full_logs(target: str, *, namespace: str) -> str:
+        result = run_process(
+            Kubectl.logs_command(namespace=namespace, target=target, timestamps=False),
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout
+
+    @staticmethod
     def logs_command(
         *,
         namespace: str,
@@ -165,8 +213,11 @@ class Kubectl:
         previous: bool = False,
         tail: int | None = None,
         since_time: str | None = None,
+        timestamps: bool = True,
     ) -> list[str]:
-        command = ["kubectl", "logs", target, "--namespace", namespace, "--timestamps"]
+        command = ["kubectl", "logs", target, "--namespace", namespace]
+        if timestamps:
+            command.append("--timestamps")
         command += ["-c", container] if container is not None else ["--all-containers"]
         if follow:
             command.append("--follow")
@@ -183,10 +234,26 @@ class Kubectl:
         return f"{INSTANCE_LABEL}={release}"
 
     @staticmethod
+    def job_selector(name: str) -> str:
+        return f"{_JOB_NAME_LABEL}={name}"
+
+    @staticmethod
     def _run(
         arguments: list[str], *, input: str | None = None, check: bool = False, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
         return run_process(["kubectl", *arguments], capture_output=True, check=check, input=input, timeout=timeout)
+
+
+def _compute_helm_args(values: dict[str, Any]) -> list[str]:
+    arguments: list[str] = []
+    for key, value in values.items():
+        if isinstance(value, (list, dict)):
+            arguments += ["--set-json", f"{key}={json.dumps(value)}"]
+        elif isinstance(value, bool):
+            arguments += ["--set", f"{key}={str(value).lower()}"]
+        else:
+            arguments += ["--set", f"{key}={value}"]
+    return arguments
 
 
 def _run(command: list[str], capture_output: bool) -> subprocess.CompletedProcess[str]:
