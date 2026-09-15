@@ -40,6 +40,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.simple_checkpointer import atomic_save_folder
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
@@ -307,15 +308,15 @@ class RolloutExecutor:
     def save(self, rollout_id: int) -> None:
         assert self.args.save is not None, "the orchestration only saves when --save is set"
 
-        directory = compute_rollout_checkpoint_dir(self.args.save, rollout_id=rollout_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        self.data_source.save(directory / _DATA_SOURCE_DIRNAME)
-        if not self.use_legacy_rollout_v1:
-            if self.generate_rollout is not None:
-                self.generate_rollout.save(directory / _GENERATE_ROLLOUT_DIRNAME)
-            if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.save(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
-        event_logger_checkpoint.snapshot(self.args, directory=directory / event_logger_checkpoint.SNAPSHOT_DIRNAME)
+        target = compute_rollout_checkpoint_dir(self.args.save, rollout_id=rollout_id)
+        with atomic_save_folder(target) as dir_temp:
+            self.data_source.save(dir_temp / _DATA_SOURCE_DIRNAME)
+            if not self.use_legacy_rollout_v1:
+                if self.generate_rollout is not None:
+                    self.generate_rollout.save(dir_temp / _GENERATE_ROLLOUT_DIRNAME)
+                if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
+                    eval_fn.save(dir_temp / _EVAL_GENERATE_ROLLOUT_DIRNAME)
+            event_logger_checkpoint.snapshot(self.args, directory=dir_temp / event_logger_checkpoint.SNAPSHOT_DIRNAME)
 
     def load(self, rollout_id: int) -> None:
         if self.args.load is None:

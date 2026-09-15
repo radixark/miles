@@ -71,17 +71,23 @@ class TestSnapshotRestoreRoundtrip:
 
         assert (events / "main.jsonl").read_text() == "committed\n"
 
-    def test_snapshot_overwrites_previous_snapshot_of_same_iteration(self, tmp_path: Path) -> None:
-        """Re-saving the same iteration replaces its snapshot."""
+    def test_snapshot_writes_into_the_directory_it_is_given(self, tmp_path: Path) -> None:
+        """The save publishes one directory per rollout, so the event copy has to land inside that directory."""
         directory = tmp_path / "published" / "debug_events"
         events = tmp_path / "events"
         events.mkdir()
         (events / "main.jsonl").write_text("v1\n")
-        event_logger_checkpoint.snapshot(_args(event_dir=events), directory=directory)
-        (events / "main.jsonl").write_text("v2\n")
+
         event_logger_checkpoint.snapshot(_args(event_dir=events), directory=directory)
 
-        assert (directory / "main.jsonl").read_text() == "v2\n"
+        assert (directory / "main.jsonl").read_text() == "v1\n"
+
+    def test_snapshot_refuses_a_missing_event_directory(self, tmp_path: Path) -> None:
+        """A checkpoint that quietly skipped the log would claim an accounting history it does not hold."""
+        directory = tmp_path / "published" / "debug_events"
+
+        with pytest.raises(AssertionError, match="absent-events"):
+            event_logger_checkpoint.snapshot(_args(event_dir=tmp_path / "absent-events"), directory=directory)
 
 
 class TestNoOpCases:
