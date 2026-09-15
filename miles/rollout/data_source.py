@@ -128,10 +128,7 @@ class RolloutDataSource(DataSource):
             logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
-        logger.info(f"load metadata: {self.metadata}")
-        if (state_dict := load_simple_checkpoint(directory=directory)) is None:
-            return
-
+        state_dict = load_simple_checkpoint(directory=directory)
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
