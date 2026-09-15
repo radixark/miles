@@ -6,8 +6,12 @@ from typing import Any
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import fault_form as fault_form_module
 from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import HOT_RESTART_ARG, compute_release_of_config
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import RunProgress
+from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
+    HOT_RESTART_ARG,
+    REPLACED_LAUNCH_EXIT_CODE,
+    compute_release_of_config,
+)
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
     HOT_RESTART_FORM_NAME,
     HotRestartFaultForm,
@@ -16,6 +20,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
 
 from miles.ray.specs.rollout import ROLLOUT_EXECUTOR_POOL_ID
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
 from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name
 
@@ -277,9 +282,85 @@ class TestTheClosingContract:
         with pytest.raises(AssertionError, match="take-over 0"):
             form.assert_take_overs_installed_cleanly()
 
+    def test_a_replaced_launch_exit_before_the_next_take_over_starts_is_reported_even_if_one_lands_later(self):
+        """A later take-over cannot explain an exit captured before that replacement started."""
+        form = _form(_raise_replaced_launch_exit)
+        form._relaunch(0)
+        form._records.append(_record(1))
+
+        with pytest.raises(AssertionError, match="take-over 0"):
+            form.assert_take_overs_installed_cleanly()
+
+    def test_a_replaced_launch_exit_after_the_next_take_over_starts_is_accepted_after_it_lands(self):
+        """A started and later landed take-over explains a replacement exit captured between those events."""
+        form = _form(_raise_replaced_launch_exit)
+        form._threads = _started_take_over_threads(2)
+        form._relaunch(0)
+
+        form._records.append(_record(1))
+
+        form.assert_take_overs_installed_cleanly()
+
+    def test_a_replaced_launch_exit_after_the_next_take_over_lands_is_accepted(self):
+        """A later landed take-over explains an earlier launch's replacement exit when landing wins the race."""
+        form = _form(_raise_replaced_launch_exit)
+        form._threads = _started_take_over_threads(2)
+        form._records.append(_record(1))
+
+        form._relaunch(0)
+
+        form.assert_take_overs_installed_cleanly()
+
+    def test_a_replaced_launch_exit_without_a_later_take_over_is_reported(self):
+        """Exit 143 without a later landed take-over is an unexplained launcher failure."""
+        form = _form(_raise_replaced_launch_exit)
+        form._records.append(_record(0))
+
+        form._relaunch(0)
+
+        with pytest.raises(AssertionError, match="take-over 0"):
+            form.assert_take_overs_installed_cleanly()
+
+    def test_a_replaced_launch_exit_without_the_exact_next_landing_is_reported(self):
+        """A started replacement needs its exact landing record to explain exit 143."""
+        form = _form(_raise_replaced_launch_exit)
+        form._threads = _started_take_over_threads(2)
+        form._records.append(_record(2))
+
+        form._relaunch(0)
+
+        with pytest.raises(AssertionError, match="take-over 0"):
+            form.assert_take_overs_installed_cleanly()
+
+    def test_another_exit_is_reported_despite_a_later_take_over(self):
+        """A later take-over only explains the replacement exit code, not an unrelated launcher failure."""
+        form = _form(_raise_another_launch_exit)
+        form._records.append(_record(1))
+
+        form._relaunch(0)
+
+        with pytest.raises(AssertionError, match="take-over 0"):
+            form.assert_take_overs_installed_cleanly()
+
 
 def _raise_run_verdict(_config: ExecuteTrainConfig) -> None:
     raise SystemExit("eval/gsm8k 0.31 is below the required 0.55")
+
+
+def _raise_replaced_launch_exit(_config: ExecuteTrainConfig) -> None:
+    raise RunExitedError(REPLACED_LAUNCH_EXIT_CODE)
+
+
+def _raise_another_launch_exit(_config: ExecuteTrainConfig) -> None:
+    raise RunExitedError(REPLACED_LAUNCH_EXIT_CODE - 1)
+
+
+def _started_take_over_threads(count: int) -> list[threading.Thread]:
+    return [threading.Thread(target=lambda: None, name=f"take-over-{index}") for index in range(count)]
+
+
+def _record(index: int) -> HotRestartRecord:
+    return HotRestartRecord(index=index, saved_iteration_at_trigger=1, frozen_rollout_id=1)
 
 
 def _stamps(

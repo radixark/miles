@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import shlex
 import shutil
@@ -46,6 +47,7 @@ from tests.e2e.ft.conftest_ft.modes import DENSE_MODEL_HF_REPO, DENSE_MODEL_NAME
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.common import ArgvManipulator, get_mooncake_object_store_args
+from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH
 
 # ========================== constants and mode table ==========================
 
@@ -55,12 +57,14 @@ MIN_TRAINED_ROLLOUTS: int = 4
 SAVE_FLAG: str = "--save"
 LOAD_FLAG: str = "--load"
 WANDB_GROUP_FLAG: str = "--wandb-group"
-
-
+WANDB_RUN_ID_FLAG: str = "--wandb-run-id"
 GLOBAL_BATCH_SIZE_FLAG: str = "--global-batch-size"
 ROLLOUT_BATCH_SIZE_FLAG: str = "--rollout-batch-size"
 SAMPLES_PER_PROMPT_FLAG: str = "--n-samples-per-prompt"
 ASYNC_SAVE_FLAG: str = "--async-save"
+_WEIGHT_VERSION_METRIC_KEYS: tuple[str, ...] = tuple(
+    f"rollout/weight_version/{statistic}" for statistic in ("mean", "median", "max", "min")
+)
 
 _MODE: FTTestMode = FTTestMode(
     model_name=DENSE_MODEL_NAME,
@@ -127,6 +131,7 @@ def create_app_and_run_ci(restart_mode: HotRestartMode) -> tuple[typer.Typer, Ca
         build_target_args=partial(_build_frozen_args, restart_mode),
         compare_fn=partial(_compare, restart_mode),
         target_side_context=partial(_driving_take_overs_of, restart_mode),
+        config_for_side=_config_for_comparison_side,
         resolve_mode_fn=lambda _name: _MODE,
     )
     return app, run_on_cluster(run_ci)
@@ -142,6 +147,15 @@ def read_installed_args(dump_dir: str) -> str:
         f"of repeating the installed ones renders a pod template of its own"
     )
     return args
+
+
+def _config_for_comparison_side(
+    side: str, config: command_utils.ExecuteTrainConfig
+) -> command_utils.ExecuteTrainConfig:
+    assert side in (BASELINE_SIDE, TARGET_SIDE), f"unknown comparison side {side!r}"
+    suffix = f"-{side}"
+    assert len(config.run_id) + len(suffix) <= RUN_ID_MAX_LENGTH, "run id too long for a side suffix"
+    return dataclasses.replace(config, run_id=f"{config.run_id}{suffix}")
 
 
 # ========================== train argument building ===========================
