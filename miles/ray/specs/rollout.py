@@ -1,4 +1,8 @@
-from miles.ray.specs.inference import SESSION_SERVER_POOL_ID, compute_router_providers
+from miles.ray.specs.inference import (
+    SESSION_SERVER_POOL_ID,
+    compute_inference_controller_provider,
+    compute_router_providers,
+)
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -29,6 +33,7 @@ def spec_rollout_executor(args) -> ServeWorkerSpec:
                 if args.use_session_server
                 else None
             ),
+            inference_controller_provider=compute_inference_controller_provider(args, capability=ctx.capability),
         ),
     )
 
