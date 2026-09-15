@@ -76,8 +76,8 @@ class TestOrchestrator:
         assert "run.stateFile" in render_run_error("--set", "run.stateFile=null")
 
     def test_refuses_a_run_with_nowhere_to_write_its_outcome(self):
-        """The launcher learns the outcome by reading the exit file, which needs a shared volume."""
-        assert "sharedStorage" in render_run_error("--set", "infra.sharedStorage.type=none")
+        """The launcher learns the outcome by reading the exit file, which needs a directory on a volume."""
+        assert "runsRoot" in render_run_error("--set", "infra.paths.runsRoot=null")
 
     def test_ships_no_job_in_a_normal_install(self):
         """Command jobs are applied on their own; installing one with a run would rerun it on every upgrade."""

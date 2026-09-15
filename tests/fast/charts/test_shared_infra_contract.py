@@ -18,15 +18,28 @@ from tests.fast.charts.utils import (
 CLUSTER_VALUES = dict(
     infra=dict(
         image=dict(repository="registry.local/miles", tag="v1"),
-        sharedStorage=dict(type="pvc", pvcClaimName="shared", mountPath="/cluster-storage"),
-        paths=dict(runsSubPath="teamdata", repos=dict(miles="myuser/miles")),
-        nodeLocalStorage=dict(hostPath="/local", mountPath="/scratch"),
+        volumes=[
+            dict(
+                name="cluster-storage",
+                persistentVolumeClaim=dict(claimName="shared"),
+                mounts=[
+                    dict(mountPath="/cluster-storage"),
+                    dict(mountPath="/root/miles", subPath="myuser/miles"),
+                ],
+            ),
+            dict(
+                name="scratch",
+                hostPath=dict(path="/local", type="DirectoryOrCreate"),
+                mounts=[dict(mountPath="/scratch")],
+            ),
+        ],
+        paths=dict(runsRoot="/cluster-storage/teamdata"),
         scheduling=dict(nodeSelector={"pool": "cpu"}),
         env={"HF_ENDPOINT": "https://mirror"},
     )
 )
 
-MILES_CODE_MOUNT = {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "myuser/miles"}
+MILES_CODE_MOUNT = {"name": "cluster-storage", "mountPath": "/root/miles", "subPath": "myuser/miles"}
 
 
 def shared_infra_schema() -> dict[str, Any]:
@@ -52,9 +65,9 @@ class TestSharedInfraContract:
         """A section with no helper behind it would be accepted by the schema and never reach a pod."""
         assert set(shared_infra_schema()["properties"]) == {
             "image",
-            "sharedStorage",
+            "volumes",
             "paths",
-            "nodeLocalStorage",
+            "devShm",
             "scheduling",
             "env",
         }

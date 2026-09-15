@@ -14,7 +14,13 @@ script = load_external_rollout_script()
 
 HOST_PATH_INFRA: dict[str, Any] = {
     "image": {"repository": "radixark/miles", "tag": "dev"},
-    "sharedStorage": {"type": "hostPath", "hostPath": "/cluster-storage", "mountPath": "/cluster-storage"},
+    "volumes": [
+        {
+            "name": "cluster-storage",
+            "hostPath": {"path": "/cluster-storage"},
+            "mounts": [{"mountPath": "/cluster-storage"}],
+        }
+    ],
 }
 
 
@@ -161,25 +167,47 @@ class TestTheEnginesAreDescribedFromTheClusterItsOwnInfra:
     def test_they_mount_the_storage_the_run_reads_its_checkpoint_from(self):
         """The engines serve the same model the trainer updates, and only the mount makes it one file."""
         assert pod_spec_of(HOST_PATH_INFRA)["volumes"] == [
-            {"name": "shared-storage", "hostPath": {"path": "/cluster-storage", "type": "Directory"}}
+            {"name": "cluster-storage", "hostPath": {"path": "/cluster-storage", "type": "Directory"}}
         ]
         assert container_of(HOST_PATH_INFRA)["volumeMounts"] == [
-            {"name": "shared-storage", "mountPath": "/cluster-storage"}
+            {"name": "cluster-storage", "mountPath": "/cluster-storage"}
         ]
 
     def test_a_cluster_that_shares_a_claim_gets_a_claim(self):
         """hostPath is one cluster's answer; a pvc cluster would silently read an empty directory."""
         infra = infra_with(
-            sharedStorage={"type": "pvc", "pvcClaimName": "miles-data", "mountPath": "/cluster-storage"},
+            volumes=[
+                {
+                    "name": "cluster-storage",
+                    "persistentVolumeClaim": {"claimName": "miles-data"},
+                    "mounts": [{"mountPath": "/cluster-storage"}],
+                }
+            ]
         )
 
         assert pod_spec_of(infra)["volumes"] == [
-            {"name": "shared-storage", "persistentVolumeClaim": {"claimName": "miles-data"}}
+            {"name": "cluster-storage", "persistentVolumeClaim": {"claimName": "miles-data"}}
         ]
+
+    def test_every_volume_the_cluster_declares_reaches_these_pods_too(self):
+        """A read-only model cache the run's own pods mount is a directory these engines read the weights from."""
+        infra = infra_with(
+            volumes=[
+                *HOST_PATH_INFRA["volumes"],
+                {
+                    "name": "models",
+                    "hostPath": {"path": "/gpfs/models", "type": "Directory"},
+                    "mounts": [{"mountPath": "/models", "readOnly": True}],
+                },
+            ]
+        )
+
+        assert [volume["name"] for volume in pod_spec_of(infra)["volumes"]] == ["cluster-storage", "models"]
+        assert {"name": "models", "mountPath": "/models", "readOnly": True} in container_of(infra)["volumeMounts"]
 
     def test_a_cluster_that_shares_nothing_mounts_nothing(self):
         """An empty volume section renders a pod kubernetes refuses, which reads as a chart bug."""
-        infra = infra_with(sharedStorage={"type": "none", "mountPath": "/cluster-storage"})
+        infra = infra_with(volumes=[])
 
         assert "volumes" not in pod_spec_of(infra)
         assert "volumeMounts" not in container_of(infra)
@@ -222,28 +250,21 @@ class TestTheInfraValuesAreReadTheWayHelmReadsThem:
 
         assert infra.image.repository == "radixark/miles"
         assert infra.image.tag == "mine"
-        assert infra.shared_storage.mount_path == "/cluster-storage"
+        assert [mount.mount_path for volume in infra.volumes for mount in volume.mounts] == ["/cluster-storage"]
 
     def test_a_launch_that_names_no_values_file_reads_what_the_chart_would(self):
         """helm starts from the chart's own values.yaml, and the launcher accepts a launch that adds none."""
         infra = script._infra_values(())
 
         assert infra.image.repository
-        assert infra.shared_storage.mount_path
+        assert infra.volumes
 
     def test_a_file_that_names_only_a_tag_is_a_legal_override(self, tmp_path):
         """This is a whole run's worth of values for the run itself, and refusing it refuses a valid launch."""
         infra = script._infra_values((values_file(tmp_path, {"image": {"tag": "mine"}}),))
 
         assert infra.image.tag == "mine"
-        assert infra.shared_storage.mount_path
-
-    def test_a_run_that_overrides_sglang_is_refused(self, tmp_path):
-        """The run's own pods import that checkout while these engines serve the image's, so the two diverge."""
-        override = values_file(tmp_path, {**HOST_PATH_INFRA, "paths": {"repos": {"sglang": "mine/sglang"}}})
-
-        with pytest.raises(AssertionError, match="infra.paths.repos.sglang"):
-            script._infra_values((override,))
+        assert infra.volumes
 
 
 @requires_helm

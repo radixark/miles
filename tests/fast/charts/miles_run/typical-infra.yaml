@@ -5,18 +5,31 @@ infra:
     pullPolicy: IfNotPresent
     pullSecrets:
     - myregistry-pull-secret
-  sharedStorage:
-    type: pvc
-    pvcClaimName: miles-shared-nvme
-    mountPath: /cluster-storage
+  volumes:
+  - name: cluster-storage
+    persistentVolumeClaim:
+      claimName: miles-shared-nvme
+    mounts:
+    - mountPath: /cluster-storage
+    - mountPath: /root/miles
+      subPath: myuser/miles
+    - mountPath: /root/Megatron-LM
+      subPath: myuser/Megatron-LM
+  - name: models
+    hostPath:
+      path: /gpfs/models
+      type: Directory
+    mounts:
+    - mountPath: /models
+      readOnly: true
+  - name: scratch
+    hostPath:
+      path: /mnt/local-nvme/miles-staging
+      type: DirectoryOrCreate
+    mounts:
+    - mountPath: /scratch
   paths:
-    runsSubPath: myteam/miles_data
-    repos:
-      miles: myuser/miles
-      megatron: myuser/Megatron-LM
-  nodeLocalStorage:
-    hostPath: /mnt/local-nvme/miles-staging
-    mountPath: /scratch
+    runsRoot: /cluster-storage/myteam/miles_data
   scheduling:
     nodeSelector:
       nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
