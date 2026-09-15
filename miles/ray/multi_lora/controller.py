@@ -12,6 +12,7 @@ from miles.ray.specs.multi_lora import create_multi_lora_controller_handle
 from miles.utils.adapter_config import AdapterRun
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
+from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import SingletonMeta, get_current_node_ip
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
@@ -71,7 +72,9 @@ class MultiLoRAController:
         self.host = host
         self.backend: MultiLoRABackend | None = None
         self.server: MultiLoRAHTTPServer | None = None
+        self._init_once = InitOnce(type(self).__name__)
 
+    @init_once
     async def init(self) -> int:
         args = self.args
         await resolve_router_addrs(args, router_providers=self._router_providers)
