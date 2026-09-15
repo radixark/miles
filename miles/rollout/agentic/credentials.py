@@ -43,8 +43,7 @@ PROVIDER_CREDENTIALS = {
         "file_env_var": "E2B_API_KEY_FILE",
         "arg_attr": "e2b_api_key_file",
         "default_path": "~/.config/e2b/api_key",
-        "provision_hint": "mkdir -p ~/.config/e2b && echo <key> > ~/.config/e2b/api_key"
-        "  # AgentENV accepts any non-empty key today",
+        "provision_hint": "mkdir -p ~/.config/e2b && echo <key> > ~/.config/e2b/api_key",
         "sdk": "e2b",
         "sdk_hint": "pip install -e '<miles>[e2b]'",
         # Older releases send the template name as `alias`, which self-hosted
