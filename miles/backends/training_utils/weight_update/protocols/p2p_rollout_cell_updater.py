@@ -1,6 +1,41 @@
+from concurrent.futures import Future
 from typing import Any
 
-from .p2p_transfer_utils import RemoteWeightInfo
+from .p2p_transfer_utils import P2PTransferManager, RemoteWeightInfo
+
+
+# This class, like the rest of the p2p weight-update code, is kept deliberately naive until yueming's refactor part 2 reshapes it.
+class _P2PRolloutCellUpdater:
+    def __init__(
+        self,
+        rollout_engine_ind: int,
+        transfer_engine: Any,
+        transfer_manager: P2PTransferManager,
+        targets_by_rollout_engine_rank: dict[int, RemoteWeightInfo],
+    ) -> None:
+        self.rollout_engine_ind = rollout_engine_ind
+        self._transfer_engine = transfer_engine
+        self._transfer_manager = transfer_manager
+        self._target_by_rollout_engine_rank = targets_by_rollout_engine_rank
+        self._pending_writes: list[Future[None]] = []
+
+    def submit_write(
+        self, rollout_engine_rank: int, names: list[str], weight_memory_registry: dict[str, tuple[int, int, int]]
+    ) -> None:
+        self._pending_writes.append(
+            self._transfer_manager.submit(
+                _do_p2p_write_one_session,
+                self._transfer_engine,
+                self._target_by_rollout_engine_rank[rollout_engine_rank],
+                names,
+                weight_memory_registry,
+            )
+        )
+
+    def wait_for_pending_writes(self) -> None:
+        pending, self._pending_writes = self._pending_writes, []
+        for future in pending:
+            future.result()
 
 
 def _do_p2p_write_one_session(
