@@ -12,8 +12,7 @@ def compute_specs(args) -> list[BaseWorkerSpec]:
         *inference.specs_router(args),
         inference.spec_session_server(args),
         *inference.specs_inference_engine(args),
-        train.spec_trainer_controller_actor(args),
-        *([train.spec_trainer_controller_critic(args)] if args.use_critic else []),
+        *train.specs_trainer_controller(args),
         *train.specs_trainer(args),
     ]
 

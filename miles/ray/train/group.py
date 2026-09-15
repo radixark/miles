@@ -56,15 +56,17 @@ class TrainerController:
         cell_provider: BaseWorkerProvider,
         cell_operations: BaseCellOperations,
         inference_controller: BaseWorkerHandle | None,
+        trainer_id: str,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
         self._inference_controller = inference_controller
+        self._trainer_id = trainer_id
         self._role = role
         self._with_ref = with_ref
         self._with_opd_teacher = with_opd_teacher
-        self._pool_id = compute_trainer_pool_id(role)
+        self._pool_id = compute_trainer_pool_id(trainer_id)
         self._provider = cell_provider
         self._cell_operations = cell_operations
         self._watcher_disposer: StopWatchFn | None = None
@@ -311,7 +313,7 @@ class TrainerController:
         model, optimzier, local ckpt, etc.
         """
         self.args = args
-        configure_logger(args, source=TrainerControllerProcessIdentity(role=self._role))
+        configure_logger(args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id))
         object_store.init_instance(args, contribute_segment=False)
 
         if self._expected_num_cells > 1:

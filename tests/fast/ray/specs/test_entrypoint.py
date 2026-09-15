@@ -3,16 +3,7 @@ from __future__ import annotations
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.ray.specs.entrypoint import compute_specs
-from miles.ray.specs.inference import compute_router_providers
 from miles.utils.workers.worker_spec import BaseWorkerSpec
-
-
-def _capability_that_refuses_to_be_used():
-    class _Unusable:
-        def static_worker_provider(self, *, pool_id):
-            raise AssertionError(f"a train-only run asked for a worker provider for {pool_id!r}")
-
-    return _Unusable()
 
 
 class TestComputeSpecs:
@@ -103,7 +94,14 @@ class TestComputeSpecs:
         """Dropping the router must not drop the training side, and the session server survives with no cells."""
         specs = {spec.name: spec for spec in _debug_train_only_specs(tmp_path)}
 
-        assert list(specs) == ["session-server", "trainer-actor"]
+        assert list(specs) == [
+            "rollout-executor",
+            "multi-lora-controller",
+            "inference-controller",
+            "session-server",
+            "trainer-controller-actor",
+            "trainer-engine-actor",
+        ]
         assert specs["session-server"].scheduling.num_cells == 0
 
 
