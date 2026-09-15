@@ -13,6 +13,8 @@ from miles.ray.specs.rollout import (
     rollout_executor_worker_name,
     spec_rollout_executor,
 )
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.function_registry import load_function
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
@@ -25,6 +27,17 @@ def _args(*, debug_train_only: bool = False, use_session_server: bool = False, *
         debug_train_only=debug_train_only,
         use_session_server=use_session_server,
         **overrides,
+    )
+
+
+def _layout() -> LaunchPlan:
+    return LaunchPlan(
+        run_id="260101-000000-000",
+        state_file="/cluster-storage/miles_data/miles-runs/run/state/orchestrator-260101-000000-000001.state",
+        release="miles-run-260101",
+        namespace="rl",
+        orchestrator_command=["python", "/repo/train.py"],
+        worker_argv=["--rollout-num-gpus", "8"],
     )
 
 
@@ -73,3 +86,17 @@ class TestRolloutExecutorSpec:
         """The driver looks the executor up by name, so these names are part of the release's contract."""
         assert rollout_executor_worker_name() == "rollout-executor-0-0"
         assert rollout_executor_cell_id() == "rollout-executor-0"
+
+    def test_it_renders_into_static_workers_with_its_rpc_port(self):
+        """The release has to contain the executor pod, or the address book would point at nothing."""
+        spec = spec_rollout_executor(_args())
+
+        values = build_values([spec], _layout()).as_values()
+
+        (entry,) = values["run"]["staticWorkers"]
+        assert SECTION_OF_CATEGORY[spec.category] == "staticWorkers"
+        assert entry["name"] == ROLLOUT_EXECUTOR_POOL_ID
+        assert entry["ports"] == [{"name": "rpc", "port": 8000}]
+        assert entry["command"][entry["command"].index("--pool-id") + 1] == ROLLOUT_EXECUTOR_POOL_ID
+        assert spec.worker_class == ROLLOUT_EXECUTOR_WORKER_CLASS
+        assert "resources" not in entry
