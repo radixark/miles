@@ -5,7 +5,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
-from miles.backends.training_utils.replay_data import register_replay_list_sequential
+from miles.backends.training_utils.replay.replay_data import register_replay_list_sequential
 
 
 class _Replay:

@@ -49,8 +49,8 @@ miles/
 │   │                     # checkpoint.py (DCP save/resume)
 │   ├── torchtitan_utils/ # torchtitan actor, Trainer config tree, weight_bridge.py (HF iterator)
 │   ├── sglang_utils/     # SGLang engine wrapper + argument glue
-│   └── training_utils/   # what the backends share: loss.py / loss_hub/, ParallelState,
-│                         # weight_update/ (engine session, transport protocols, WeightUpdater),
+│   └── training_utils/   # what the backends share: loss/ (objective, hub, CI checks), data/,
+│                         # metrics/, replay/, weight_update/ (session, transports, WeightUpdater),
 │                         # torch_native/ (the RL step FSDP and torchtitan share, the
 │                         # StepRunner seam, the routing-replay surface), log + CI checkers
 ├── ray/                  # Ray actors, placement groups, train/ and rollout/ groups
@@ -107,7 +107,7 @@ from the trainer loop and uses a continuously-running worker.
 
 | You want to … | Edit |
 |---|---|
-| Add a new RL algorithm | `miles/backends/training_utils/loss.py` and `loss_hub/`, plus the enum in `miles/utils/arguments.py` |
+| Add a new RL algorithm | `miles/backends/training_utils/loss/objective.py` and `loss/hub/`, plus the enum in `miles/utils/arguments.py` |
 | Add a new built-in reward type | `miles/rollout/rm_hub/` (the `rm_type` dispatch lives in its `__init__.py`) |
 | Add a new built-in filter | `miles/rollout/filter_hub/` |
 | Support a new architecture on Megatron | `miles_plugins/models/<model>.py` + a bridge in `miles_plugins/mbridge/` |
@@ -155,7 +155,7 @@ If you have 30 minutes and want to understand Miles end-to-end:
 
 1. `train.py` — the loop, top-to-bottom.
 2. `miles/rollout/sglang_rollout.py:generate_rollout` — how prompts become samples.
-3. `miles/backends/training_utils/loss.py` — the loss and advantage computation.
+3. `miles/backends/training_utils/loss/objective.py` — the loss and advantage computation.
 4. `miles/router/router.py` — the FastAPI proxy.
 5. `miles/backends/training_utils/weight_update/` — how trained weights reach the engines:
    the session handshake, the transport protocols, and the per-backend HF weight iterators.

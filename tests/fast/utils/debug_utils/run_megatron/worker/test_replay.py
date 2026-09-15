@@ -254,7 +254,7 @@ class TestLoadReplayCpSlicing:
         mock_zigzag = MagicMock(return_value=torch.tensor([0, 7, 1, 6]))
 
         with patch(
-            "miles.backends.training_utils.cp_utils.natural_to_zigzag_slice",
+            "miles.backends.training_utils.data.context_parallel.natural_to_zigzag_slice",
             mock_zigzag,
         ):
             _load_replay(save_path, rank=0, sequence_parallel=False)

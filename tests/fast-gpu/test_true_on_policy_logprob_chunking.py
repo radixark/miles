@@ -14,8 +14,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
-from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.parallel import set_parallel_state
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 

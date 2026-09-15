@@ -2,8 +2,8 @@ import pytest
 import torch
 from tests.fast.backends.training_utils.loss.loss_test_utils import make_args, make_parallel_state
 
-from miles.backends.training_utils.loss_hub import math_utils
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub import math_utils
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 
 MODEL_DTYPES = [torch.bfloat16, torch.float16]
 

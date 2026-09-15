@@ -4,14 +4,14 @@ from typing import Protocol
 
 import torch
 
-from miles.backends.training_utils.cp_utils import (
+from miles.backends.training_utils.data.context_parallel import (
     all_gather_with_cp,
     get_local_response_loss_masks,
     get_sum_of_sample_mean,
 )
-from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
-from miles.backends.training_utils.loss_hub.math_utils import (
+from miles.backends.training_utils.loss.hub.corrections import vanilla_tis_function
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss.hub.math_utils import (
     compute_approx_kl,
     compute_ess_ratio_contribution,
     compute_gspo_kl,
@@ -209,7 +209,7 @@ def policy_loss_function(
     )
 
     if getattr(args, "dump_details", None) is not None:
-        from miles.backends.training_utils.debug_dump import maybe_dump_policy_loss_debug
+        from miles.backends.training_utils.metrics.debug_dump import maybe_dump_policy_loss_debug
 
         maybe_dump_policy_loss_debug(
             args=args,

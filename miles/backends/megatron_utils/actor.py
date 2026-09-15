@@ -37,16 +37,16 @@ from miles.utils.workers.naming import compute_cell_id
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.data import DataIterator, get_data_iterator, get_num_rollouts, get_rollout_data
-from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
-from ..training_utils.loss import (
+from ..training_utils.data.rollout import DataIterator, get_data_iterator, get_num_rollouts, get_rollout_data
+from ..training_utils.loss.objective import (
     compute_advantages_and_returns,
     get_log_probs_and_entropy,
     get_values,
     log_train_advantage_computation_event,
 )
+from ..training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.parallel import get_parallel_state
-from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
+from ..training_utils.replay.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt

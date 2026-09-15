@@ -13,7 +13,7 @@ from miles.backends.fsdp_utils.adaptations.precision import (
     resolve_precision_policy,
 )
 from miles.backends.fsdp_utils.arguments import load_fsdp_args, parse_fsdp_cli
-from miles.backends.training_utils.data import _rollout_logprob_dtype
+from miles.backends.training_utils.data.rollout import _rollout_logprob_dtype
 from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
 
 

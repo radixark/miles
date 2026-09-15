@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.backends.training_utils.cp_utils import (
+from miles.backends.training_utils.data.context_parallel import (
     all_gather_with_cp,
     slice_log_prob_with_cp,
     slice_loss_masks_for_local_cp,

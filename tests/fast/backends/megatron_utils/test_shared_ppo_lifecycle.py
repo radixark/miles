@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 from miles.utils.tensor_backper import MainCastContext, TensorBackuper

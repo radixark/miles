@@ -1,7 +1,7 @@
 import torch
 from tests.fast.backends.training_utils.loss.loss_test_utils import make_args, make_parallel_state
 
-from miles.backends.training_utils.loss_hub.losses import sft_loss_function
+from miles.backends.training_utils.loss.hub.losses import sft_loss_function
 
 
 def test_sft_graph_placeholder_survives_fp16_logits():

@@ -17,8 +17,8 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
