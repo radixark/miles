@@ -1,5 +1,8 @@
 from enum import Enum
 
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
+
+
 class ClusterBackend(Enum):
     RAY = "ray"
     KUBERNETES = "kubernetes"
@@ -25,6 +28,11 @@ class DeployComponent(Enum):
 
     def is_split(self) -> bool:
         return self is not DeployComponent.ALL
+
+
+class DeploymentIdentity(FrozenStrictBaseModel):
+    run_uuid: str
+    deploy_component: str
 
 
 _SUPPORTED_WORKER_COMM_BACKENDS = {

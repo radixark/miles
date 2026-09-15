@@ -13,7 +13,7 @@ from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
-from miles.utils.workers.types import DeployComponent
+from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
@@ -52,6 +52,7 @@ def specs_trainer_controller(args) -> list[ServeWorkerSpec]:
         trainer_args = compute_trainer_args(args, config)
         specs.append(
             _compute_spec_trainer_controller(
+                args,
                 config=config,
                 with_ref=(config.role != CRITIC_ROLE) and (trainer_args.kl_coef != 0 or trainer_args.use_kl_loss),
                 with_opd_teacher=(config.role != CRITIC_ROLE)
@@ -110,6 +111,7 @@ def trainer_controller_cell_id(trainer_id: str) -> str:
 
 
 def _compute_spec_trainer_controller(
+    args,
     *,
     config: MegatronTrainerConfig,
     with_ref: bool,
@@ -129,6 +131,7 @@ def _compute_spec_trainer_controller(
         ),
         worker_class=TRAINER_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
+            deployment_identity=DeploymentIdentity(run_uuid=args.run_uuid, deploy_component=args.deploy_component),
             trainer_id=trainer_id,
             role=config.role,
             with_ref=with_ref,
