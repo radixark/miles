@@ -154,10 +154,11 @@ async def _make_session(core, records, accumulated) -> str:
     response = await core.create_session()
     sid = json.loads(response.body)["session_id"]
     state = core.registry.sessions[sid]
+    parent = None
     for i, record in enumerate(records):
         last = i == len(records) - 1
-        state.active_leaf = state.tree.create_node(
-            state.active_leaf,
+        parent = state.tree.create_node(
+            parent,
             delta_messages=[],
             token_ids=list(accumulated) if (last and accumulated is not None) else [],
             completion_span=(0, 0),
@@ -380,7 +381,6 @@ async def test_addition_branched_tree_materializes_each_leaf():
             [1, 2, 3, 10, 11, 21, 31],
             completion_span=(6, 7),
         )
-        state.active_leaf = leaf_b
 
         status, payload = await _collect_via_op(hooked, sid)
         assert status == 200
@@ -494,14 +494,13 @@ async def test_superseded_retry_leaf_is_trimmed(core):
         [1, 2, 3, 10, 11, 20, 30],
         completion_span=(6, 7),
     )
-    retry = _fabricate_node(  # the retry that superseded it
+    _fabricate_node(  # the retry that superseded it
         state,
         root,
         _single_turn_record([1, 2, 3, 10, 11, 21], [31]),
         [1, 2, 3, 10, 11, 21, 31],
         completion_span=(6, 7),
     )
-    state.active_leaf = retry
 
     status, payload = await _collect_via_op(core, sid)
     assert status == 200
@@ -541,7 +540,6 @@ async def test_deep_abandoned_branch_survives_and_masks_shared_prefix(core, traj
         completion_span=(6, 7),
         response_id="late",
     )
-    state.active_leaf = late_leaf
 
     status, payload = await _collect_via_op(core, sid, agent_metadata={"reward": trajectory_reward})
     assert status == 200
@@ -612,7 +610,6 @@ async def test_session_rollout_metrics_count_every_tree_node_once(spec_core):
         completion_span=(6, 7),
         response_id="late",
     )
-    state.active_leaf = late_leaf
 
     status, payload = await _collect_via_op(spec_core, sid)
     assert status == 200
@@ -699,7 +696,6 @@ async def test_picker_warns_and_trims_longer_superseded_leaf(core, caplog):
         [1, 2, 3, 10, 11, 21, 31],
         completion_span=(6, 7),
     )
-    state.active_leaf = retry
 
     with caplog.at_level(logging.WARNING, logger="miles.rollout.session.v2.picker_hub.drop_retries"):
         status, payload = await _collect_via_op(core, sid)
@@ -733,7 +729,6 @@ async def test_picker_warns_on_wall_clock_rollback_and_trims_by_seq(core, caplog
         completion_span=(6, 7),
         committed_at=5.0,
     )
-    state.active_leaf = retry
 
     with caplog.at_level(logging.WARNING, logger="miles.rollout.session.v2.picker_hub.drop_retries"):
         status, payload = await _collect_via_op(core, sid)
@@ -753,7 +748,6 @@ async def test_two_roots_yield_two_samples(core):
         state, None, _single_turn_record([1, 2, 3], [10, 11]), [1, 2, 3, 10, 11], completion_span=(3, 5)
     )
     sub = _fabricate_node(state, None, _single_turn_record([7, 8], [70, 71]), [7, 8, 70, 71], completion_span=(2, 4))
-    state.active_leaf = sub
 
     status, payload = await _collect_via_op(core, sid)
     assert status == 200
@@ -791,7 +785,6 @@ async def test_picker_orders_by_checkpoint_count_then_latest_commit(core):
         [200, 201, 202, 203, 204, 205, 206],
         completion_span=(4, 7),
     )
-    state.active_leaf = shallow_late
 
     status, payload = await _collect_via_op(core, sid)
     assert status == 200
@@ -862,14 +855,13 @@ async def _retry_shaped_session(core):
         [1, 2, 3, 10, 11, 20, 30],
         completion_span=(6, 7),
     )
-    retry = _fabricate_node(
+    _fabricate_node(
         state,
         root,
         _single_turn_record([1, 2, 3, 10, 11, 21], [31]),
         [1, 2, 3, 10, 11, 21, 31],
         completion_span=(6, 7),
     )
-    state.active_leaf = retry
     return sid
 
 

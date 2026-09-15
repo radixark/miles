@@ -21,8 +21,8 @@ from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
+    attach_point_for_request,
     commit_generation,
-    position_for_request,
     prepare_pretokenized,
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
@@ -46,7 +46,7 @@ class SessionCoreV2(SessionCore):
 
     def _session_metadata(self, session_id: str, session) -> dict:
         """Mirrors ``core.SessionCore._session_metadata``: token ids come from
-        the active path, plus the ``tree`` block."""
+        the latest committed generation's path, plus the ``tree`` block."""
         metadata: dict = {}
         try:
             mismatch = self.registry.compute_session_mismatch(session)
@@ -55,16 +55,20 @@ class SessionCoreV2(SessionCore):
             mismatch = None
         if mismatch is not None:
             metadata["tito_session_mismatch"] = mismatch
-        metadata["accumulated_token_ids"] = session.active_token_ids()
+        latest = session.latest()
+        metadata["accumulated_token_ids"] = latest.token_ids if latest is not None else []
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
         return metadata
 
     async def get_session(self, session_id: str) -> Response:
-        """Mirrors ``core.SessionCore.get_session``, serving ``active_records()``."""
+        """Mirrors ``core.SessionCore.get_session``, serving the records along the
+        latest committed generation's path."""
         session = self.registry.get_session(session_id)
         metadata = self._session_metadata(session_id, session)
-        payload = GetSessionResponse(session_id=session_id, records=session.active_records(), metadata=metadata)
+        latest = session.latest()
+        records = [node.record for node in latest.path_nodes()] if latest is not None else []
+        payload = GetSessionResponse(session_id=session_id, records=records, metadata=metadata)
         return Response(
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
         )
@@ -156,9 +160,11 @@ class SessionCoreV2(SessionCore):
             )
 
             request_messages = request_body.get("messages", [])
-            position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
+            attach_parent = attach_point_for_request(
+                session, request_messages, message_matcher=self.registry.message_matcher
+            ).node
             prompt_token_ids = prepare_pretokenized(
-                session,
+                attach_parent,
                 request_messages,
                 tools=request_body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
@@ -166,10 +172,10 @@ class SessionCoreV2(SessionCore):
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
-            self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
+            checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
+            self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
 
             proxy_body = json.dumps(request_body).encode()
-            attach_parent = session.active_leaf
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---

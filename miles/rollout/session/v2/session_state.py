@@ -7,8 +7,14 @@ extension just grows a sibling or a new root. Whether a branch was a retry
 is decided later by the sample_picker, not here.
 
 Concurrency contract: single lock on the whole tree. A commit only appends a new
-node under the parent captured at positioning time, so concurrent
-generations from the same spot become sibling nodes instead of a conflict.
+node under the parent the request attached to, so concurrent generations from
+the same spot become sibling nodes instead of a conflict.
+
+The tree is the whole state. Serving a request is: ``attach_point_for_request``
+(pure: which node the request continues), ``prepare_pretokenized`` under that
+node, and ``commit_generation`` under that node. What ``GET /sessions`` shows as
+a single chain is ``SessionStateV2.latest()``, the most recently committed
+generation's path — derived, never stored.
 """
 
 import asyncio
@@ -20,7 +26,7 @@ from typing import Any
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
 from miles.rollout.session.types import SessionRecord
-from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
+from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
@@ -31,37 +37,30 @@ logger = logging.getLogger(__name__)
 class SessionStateV2:
     """Per-session concurrency container plus the trajectory forest.
 
-    ``active_leaf`` is the head of the single-chain view: the path root ->
-    active_leaf is what GET /sessions, judgment, and sample assembly see.
-    ``None`` means no committed generation yet (empty view, first-turn
-    semantics — a failed first turn leaves the session fully retryable).
+    The forest is the whole state; ``latest()`` derives the single chain that
+    ``GET /sessions`` serves. A failed first turn commits nothing, so the
+    session stays fully retryable.
     """
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
-    active_leaf: TrajectoryNode | None = None
 
-    def active_path(self) -> list[TrajectoryNode]:
-        return self.active_leaf.path_nodes() if self.active_leaf is not None else []
-
-    def active_messages(self) -> list[dict[str, Any]]:
-        return self.active_leaf.path_messages() if self.active_leaf is not None else []
-
-    def active_records(self) -> list[SessionRecord]:
-        return [node.record for node in self.active_path()]
-
-    def active_token_ids(self) -> list[int]:
-        return self.active_leaf.token_ids if self.active_leaf is not None else []
+    def latest(self) -> TrajectoryNode | None:
+        """The most recently committed generation (always a leaf), or ``None``
+        before the first commit. Its root->node path is the single-chain view."""
+        return self.tree.nodes[-1] if self.tree.nodes else None
 
 
-def position_for_request(
+def attach_point_for_request(
     state: SessionStateV2,
     request_messages: list[dict[str, Any]],
     *,
     message_matcher: SessionMessageMatcher | None = None,
-) -> None:
-    """Move the view (``active_leaf``) to the attach point for *request_messages*."""
+) -> AttachPoint:
+    """Where *request_messages* attaches: the deepest node whose path is a
+    prefix of the request, ``node=None`` for a new root. Pure; raises 409 when
+    that node is a truncated generation."""
     attach = state.tree.find_attach_point(request_messages, message_matcher=message_matcher)
 
     if attach.node is not None and attach.node.truncated:
@@ -71,7 +70,7 @@ def position_for_request(
             "branch before the cut instead"
         )
 
-    if attach.node is not state.active_leaf:
+    if attach.node is not state.latest():
         logger.info(
             "Branching: request(%d msgs) attaches at node seq=%s "
             "(matched %d msgs, best overlap %d), tree has %d nodes",
@@ -81,23 +80,22 @@ def position_for_request(
             attach.best_overlap,
             len(state.tree.nodes),
         )
-    state.active_leaf = attach.node
+    return attach
 
 
 def prepare_pretokenized(
-    state: SessionStateV2,
+    parent: TrajectoryNode | None,
     request_messages: list[dict[str, Any]],
     *,
     tools: list[dict[str, Any]] | None,
     tito_tokenizer: TITOTokenizer,
 ) -> list[int]:
-    """Pretokenized input_ids for the positioned view.
+    """Pretokenized input_ids for a request attaching under *parent*.
 
-    - No attach node: render the whole request from scratch.
+    - No parent (new root): render the whole request from scratch.
     - Otherwise: reuse the parent's token snapshot as-is and tokenize only
       the new suffix on top — the shared prefix is never re-rendered.
     """
-    parent = state.active_leaf
     if parent is None:
         return tito_tokenizer.apply_chat_template(
             request_messages,
@@ -106,7 +104,7 @@ def prepare_pretokenized(
             tokenize=True,
         )
 
-    stored = state.active_messages()
+    stored = parent.path_messages()
     _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
     effective_messages = stored + request_messages[len(stored) :]
     return tito_tokenizer.merge_tokens(
@@ -145,9 +143,8 @@ def commit_generation(
     response_id: str,
     finish_reason: str,
 ) -> TrajectoryNode:
-    """Validate and append one generation under *parent* (captured at
-    positioning time), then advance the view to the new node. Prefix
-    validation is byte-identical to the pre-tree checkpoint check."""
+    """Validate and append one generation under *parent* (the request's attach
+    node). Prefix validation is byte-identical to the pre-tree checkpoint check."""
     all_token_ids = prompt_token_ids + completion_token_ids
     assert_pretokenized_prefix(
         parent.token_ids if parent is not None else [],
@@ -169,7 +166,6 @@ def commit_generation(
         record=record,
         finish_reason=finish_reason,
     )
-    state.active_leaf = node
     return node
 
 
@@ -207,9 +203,8 @@ class SessionRegistryV2(SessionRegistry):
             raise TokenizationError(f"failed to compute tito_session_mismatch: {e}") from e
 
     def compute_session_mismatch(self, state: SessionStateV2) -> list[dict] | None:
-        """The active-path view of ``compute_mismatch``."""
-        if state.active_leaf is None:
+        """``compute_mismatch`` over the latest committed generation's path."""
+        node = state.latest()
+        if node is None:
             return None
-        records = state.active_records()
-        tools = records[-1].request.get("tools") if records else None
-        return self.compute_mismatch(state.active_messages(), state.active_token_ids(), tools)
+        return self.compute_mismatch(node.path_messages(), node.token_ids, node.record.request.get("tools"))

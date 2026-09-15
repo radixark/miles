@@ -14,7 +14,7 @@ import pytest
 from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
 from miles.rollout.session.types import SessionRecord
-from miles.rollout.session.v2.session_state import SessionStateV2, position_for_request, prepare_pretokenized
+from miles.rollout.session.v2.session_state import SessionStateV2, attach_point_for_request, prepare_pretokenized
 from miles.utils.chat_template_utils.message_matcher_hub import (
     loose_tool_call_message_matches,
     role_content_only_message_matches,
@@ -208,7 +208,6 @@ def _state_with_one_node() -> tuple[SessionStateV2, Any]:
         record=record,
         finish_reason="stop",
     )
-    state.active_leaf = node
     return state, node
 
 
@@ -216,26 +215,26 @@ class TestV2ReplayMatching:
     def test_strict_default_starts_a_new_root_on_reserialized_arguments(self):
         state, _ = _state_with_one_node()
 
-        position_for_request(state, [USER, REPLAYED_ASSISTANT, TOOL_RESULT])
+        attach = attach_point_for_request(state, [USER, REPLAYED_ASSISTANT, TOOL_RESULT])
 
-        assert state.active_leaf is None
+        assert attach.node is None
 
     def test_loose_matcher_attaches_at_the_stored_node(self):
         state, node = _state_with_one_node()
 
-        position_for_request(
+        attach = attach_point_for_request(
             state, [USER, REPLAYED_ASSISTANT, TOOL_RESULT], message_matcher=loose_tool_call_message_matches
         )
 
-        assert state.active_leaf is node
+        assert attach.node is node
 
     def test_tito_receives_the_stored_path_verbatim_plus_the_raw_replay_suffix(self):
         state, _ = _state_with_one_node()
         tito = _RecordingTITOTokenizer()
         replay = [USER, REPLAYED_ASSISTANT, TOOL_RESULT]
-        position_for_request(state, replay, message_matcher=loose_tool_call_message_matches)
+        attach = attach_point_for_request(state, replay, message_matcher=loose_tool_call_message_matches)
 
-        result = prepare_pretokenized(state, replay, tools=None, tito_tokenizer=tito)
+        result = prepare_pretokenized(attach.node, replay, tools=None, tito_tokenizer=tito)
 
         (call,) = tito.merge_calls
         assert call["old_messages"] == [USER, STORED_ASSISTANT]
