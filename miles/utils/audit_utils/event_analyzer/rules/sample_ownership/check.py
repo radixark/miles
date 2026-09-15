@@ -6,6 +6,7 @@ from typing import NamedTuple
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import (
     IssuedSampleIdentityIssue,
+    MissingModelCompanionRecordIssue,
     SampleOwnershipIssue,
     SampleResolutionIssue,
 )
@@ -66,6 +67,7 @@ def check(events: list[Event], *, grace_steps: int) -> list[SampleOwnershipIssue
           are exactly ``0..N-1``, every count is ``1``, no sibling is both trained and skipped as nonfinite.
         - Case 2: exactly one explicit drop and no trained or skipped consumption.
     - Else is an issue: no outcome, both kinds of outcome, repeated drops, an incomplete set.
+    - A cell missing its companion record for a mature step is an issue; before maturity the check defers.
     - Every call rechecks every eligible source; a source consumed more than once is an issue (replay buffers are
       unsupported).
 
@@ -86,13 +88,15 @@ def check(events: list[Event], *, grace_steps: int) -> list[SampleOwnershipIssue
     if grace_steps < 0:
         raise ValueError("grace_steps must be non-negative")
 
+    missing_records = _missing_model_companion_record_issues(events, grace_steps=grace_steps)
     if (facts := _collect(events)) is None:
         logger.info(
             "Skipping the sample ownership check: no completed actor step has full model companion records yet"
         )
-        return []
+        return list(missing_records)
 
     return [
+        *missing_records,
         *facts.identity_issues,
         *(
             issue
@@ -160,6 +164,33 @@ def _read_latest_model_companion_info(events: list[Event]) -> list[TrainerModelC
     if {record.cell_index for record in records} != set(step.cell_outcomes):
         return None
     return sorted(records, key=lambda record: record.cell_index)
+
+
+def _missing_model_companion_record_issues(
+    events: list[Event], *, grace_steps: int
+) -> list[MissingModelCompanionRecordIssue]:
+    """Report every cell whose model companion record is still absent once its actor step is mature."""
+    if not (steps := completed_actor_steps(events)):
+        return []
+
+    latest_completed_rollout_id = max(step.rollout_id for step in steps)
+    published = {
+        (event.rollout_id, event.attempt, event.cell_index)
+        for event in events
+        if isinstance(event, TrainerModelCompanionInfoEvent)
+    }
+    return [
+        MissingModelCompanionRecordIssue(
+            description="cell published no model companion record for a mature actor step",
+            cell_index=cell_index,
+            rollout_id=step.rollout_id,
+            attempt=step.attempt,
+        )
+        for step in steps
+        if latest_completed_rollout_id - step.rollout_id >= grace_steps
+        for cell_index in sorted(step.cell_outcomes)
+        if (step.rollout_id, step.attempt, cell_index) not in published
+    ]
 
 
 def completed_actor_steps(events: list[Event]) -> list[TrainGroupStepEndEvent]:

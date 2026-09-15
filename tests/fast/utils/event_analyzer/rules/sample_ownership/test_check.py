@@ -14,6 +14,7 @@ from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.check import 
 )
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import (
     IssuedSampleIdentityIssue,
+    MissingModelCompanionRecordIssue,
     SampleResolutionIssue,
 )
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events
@@ -136,6 +137,14 @@ def _keys(issues: list[object]) -> list[tuple[int, int | None]]:
     return [(issue.sample_index, issue.cell_index) for issue in issues]
 
 
+def _missing_records(issues: list[object]) -> list[tuple[int, int, int]]:
+    return [
+        (issue.cell_index, issue.rollout_id, issue.attempt)
+        for issue in issues
+        if isinstance(issue, MissingModelCompanionRecordIssue)
+    ]
+
+
 def _check(
     events: list[object],
     *,
@@ -201,7 +210,7 @@ class TestCurrentStepSelection:
         assert _keys(check(events, grace_steps=0)) == [(10, 0)]
 
     def test_a_latest_step_missing_a_cell_record_does_not_fall_back_to_an_earlier_step(self) -> None:
-        """An unpublished cell defers the verdict instead of reusing the previous step's records."""
+        """An unpublished cell is reported instead of being judged against the previous step's records."""
         events = [
             _issued([(7, [10])], rollout_id=0),
             _witness([], rollout_id=1, timestamp=_EARLIER),
@@ -209,7 +218,7 @@ class TestCurrentStepSelection:
             _witness([_consumption(10)], rollout_id=2, cell_index=0),
             _step(rollout_id=2, cell_indices=[0, 1]),
         ]
-        assert check(events, grace_steps=0) == []
+        assert _missing_records(check(events, grace_steps=0)) == [(1, 2, 0)]
 
     def test_only_records_of_the_completed_attempt_are_current(self) -> None:
         """Records of an earlier attempt of the same rollout are not the current state."""
@@ -222,9 +231,9 @@ class TestCurrentStepSelection:
         assert check(events, grace_steps=0) == []
 
     def test_a_completed_attempt_without_records_does_not_use_the_previous_attempt(self) -> None:
-        """A retried attempt must publish its own records before anything is checked."""
+        """A retried attempt must publish its own records rather than inherit the previous attempt's."""
         events = [_issued([(7, [10])]), _witness([], attempt=0), _step(cell_indices=[0], attempt=1)]
-        assert check(events, grace_steps=0) == []
+        assert _missing_records(check(events, grace_steps=0)) == [(0, 1, 1)]
 
     def test_the_latest_completed_step_is_chosen_by_timestamp_not_by_list_order(self) -> None:
         """Event order in the log cannot override completion time when picking the current step."""
@@ -257,6 +266,26 @@ class TestCurrentStepSelection:
             _step(cell_indices=[0]),
         ]
         assert _keys(check(events, grace_steps=0)) == [(11, 0)]
+
+
+class TestMissingModelCompanionRecords:
+    def test_a_cell_record_missing_within_the_grace_is_only_late(self) -> None:
+        """A record still in flight must not be reported, or every normal step would fail the check."""
+        events = [
+            _witness([], rollout_id=1, cell_index=0),
+            _step(rollout_id=1, cell_indices=[0, 1]),
+        ]
+        assert check(events, grace_steps=2) == []
+
+    def test_a_cell_record_still_missing_after_the_grace_is_reported(self) -> None:
+        """Separate per-node event directories otherwise leave the whole check silently empty."""
+        events = [
+            _witness([], rollout_id=1, cell_index=0),
+            _step(rollout_id=1, cell_indices=[0, 1]),
+            _witness([], rollout_id=3, cell_index=0),
+            _step(rollout_id=3, cell_indices=[0], timestamp=_LATER),
+        ]
+        assert _missing_records(check(events, grace_steps=2)) == [(1, 1, 0)]
 
 
 class TestMaturity:
