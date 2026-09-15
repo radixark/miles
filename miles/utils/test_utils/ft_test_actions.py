@@ -62,8 +62,7 @@ _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestA
 
 
 def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
-    raw: str | None = getattr(args, "ci_ft_test_actions", None)
-    if not raw:
+    if not (raw := _read_declared_actions(args)):
         return []
     all_actions = _ACTION_LIST_ADAPTER.validate_json(raw)
 
@@ -197,10 +196,12 @@ class FTTestActionOrchestrationExecutor:
         actions: list[FTTestAction],
         sleep: SleepFn = asyncio.sleep,
         interval_seconds: float = SLEEP_FOREVER_INTERVAL_SECONDS,
+        actions_path: Path | None = None,
     ) -> None:
         self._actions = actions
         self._sleep = sleep
         self._interval_seconds = interval_seconds
+        self._actions_path = actions_path
 
     @staticmethod
     def from_args(args: object, *, trainer_model_id: str | None = None) -> "FTTestActionOrchestrationExecutor":
@@ -208,7 +209,11 @@ class FTTestActionOrchestrationExecutor:
         if actions:
             _assert_loop_parkable(args, trainer_model_id=trainer_model_id)
 
-        return FTTestActionOrchestrationExecutor(actions=actions)
+        path: str | None = args.ci_ft_test_actions_path
+        return FTTestActionOrchestrationExecutor(
+            actions=actions,
+            actions_path=Path(path) if path is not None else None,
+        )
 
     async def run_after_step(self, rollout_id: int) -> None:
         actions = [action for action in self._actions if action.at_rollout == rollout_id]
@@ -226,8 +231,90 @@ class FTTestActionOrchestrationExecutor:
         )
         logger.warning(msg)
         print(msg, flush=True)
+        if self._actions_path is not None:
+            write_frozen_sentinel(self._actions_path, rollout_id=rollout_id)
         await self._sleep_forever()
 
     async def _sleep_forever(self) -> None:
         while True:
             await self._sleep(self._interval_seconds)
+
+
+# ============ adhoc file delivery (revert after the args refactor) ============
+
+
+CI_FT_TEST_ACTIONS_PATH_FLAG: str = "--ci-ft-test-actions-path"
+
+
+# TODO ad hoc hack: revert after the args refactor
+def _read_declared_actions(args: object) -> str:
+    inline: str | None = args.ci_ft_test_actions
+    path: str | None = args.ci_ft_test_actions_path
+
+    assert inline is None or path is None, (
+        f"{CI_FT_TEST_ACTIONS_FLAG} and {CI_FT_TEST_ACTIONS_PATH_FLAG} both name the actions a run performs, and a "
+        f"run given both silently follows one of them"
+    )
+    return read_ft_test_actions(Path(path)) if path is not None else (inline or "")
+
+
+# TODO ad hoc hack: revert after the args refactor
+def write_ft_test_actions(path: Path, actions: Sequence[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.partial")
+    scratch.write_text(render_ft_test_actions(actions))
+    scratch.replace(path)
+
+
+# TODO ad hoc hack: revert after the args refactor
+def read_ft_test_actions(path: Path) -> str:
+    stamp = _stat_or_none(path)
+    assert stamp is not None, (
+        f"{CI_FT_TEST_ACTIONS_PATH_FLAG} names {path}, which does not exist; a run told to read its plan from a "
+        f"file nothing wrote would quietly perform no action at all"
+    )
+
+    stamped_at = (stamp.st_mtime_ns, stamp.st_size)
+    if (cached := _ACTIONS_OF_STAMP.get(path)) is not None and cached[0] == stamped_at:
+        return cached[1]
+
+    text = path.read_text()
+    _ACTIONS_OF_STAMP[path] = (stamped_at, text)
+    return text
+
+
+# TODO ad hoc hack: revert after the args refactor
+def _stat_or_none(path: Path) -> os.stat_result | None:
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
+FROZEN_SENTINEL_SUFFIX: str = "_frozen_at.json"
+# TODO ad hoc hack: revert after the args refactor
+_ACTIONS_OF_STAMP: dict[Path, tuple[tuple[int, int], str]] = {}
+
+
+# TODO ad hoc hack: revert after the args refactor
+def compute_frozen_sentinel_path(actions_path: Path) -> Path:
+    return actions_path.with_name(f"{actions_path.stem}{FROZEN_SENTINEL_SUFFIX}")
+
+
+# TODO ad hoc hack: revert after the args refactor
+def write_frozen_sentinel(actions_path: Path, *, rollout_id: int) -> None:
+    path = compute_frozen_sentinel_path(actions_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.partial")
+    scratch.write_text(json.dumps({"rollout_id": rollout_id}))
+    scratch.replace(path)
+
+
+# TODO ad hoc hack: revert after the args refactor
+def read_frozen_rollout_id(actions_path: Path) -> int | None:
+    path = compute_frozen_sentinel_path(actions_path)
+    if not path.is_file():
+        return None
+    return int(json.loads(path.read_text())["rollout_id"])
