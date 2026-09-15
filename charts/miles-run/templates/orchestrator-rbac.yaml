@@ -1,3 +1,4 @@
+{{- if .Values.run.orchestrator.command }}
 {{- $name := .Values.run.objectNames.orchestrator }}
 apiVersion: v1
 kind: ServiceAccount
@@ -39,3 +40,4 @@ subjects:
   - kind: ServiceAccount
     name: {{ $name | quote }}
     namespace: {{ .Release.Namespace | quote }}
+{{- end }}

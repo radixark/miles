@@ -1,8 +1,12 @@
 import json
 from pathlib import Path
 
-from miles.utils.env_report.launcher_report import read_launcher_report
-from miles.utils.external_utils.command_utils.helm_backend.launcher.launch_record import LaunchRecord
+from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR, read_launcher_report
+from miles.utils.external_utils.command_utils.helm_backend.launcher.launch_record import (
+    LaunchRecord,
+    installed_launch_record_file,
+)
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunFiles
 
@@ -85,3 +89,48 @@ class TestWriteLaunchRecord:
         """One file per launch is what keeps a relaunched run's earlier launches readable."""
         assert RunFiles.new_record_file(run_directory=tmp_path) != RunFiles.new_record_file(run_directory=tmp_path)
         assert RunFiles.new_record_file(run_directory=tmp_path).parent == tmp_path / "launches"
+
+
+class TestInstalledLaunchRecordFile:
+    def test_finds_the_record_file_in_any_installed_container(self) -> None:
+        """The record file is found outside the first manifest object and container."""
+        manifest = Manifest(
+            namespace="rl",
+            objects=[
+                {"kind": "Service", "metadata": {"name": "unrelated"}},
+                {
+                    "kind": "StatefulSet",
+                    "metadata": {"name": "workers"},
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": "sidecar",
+                                        "env": [{"name": f"{LAUNCHER_REPORT_ENV_VAR}_OLD", "value": "/wrong.json"}],
+                                    },
+                                    {
+                                        "name": "worker",
+                                        "env": [{"name": LAUNCHER_REPORT_ENV_VAR, "value": "/records/launch.json"}],
+                                    },
+                                ]
+                            }
+                        }
+                    },
+                },
+            ],
+        )
+
+        assert installed_launch_record_file(manifest=manifest) == "/records/launch.json"
+
+
+class TestRecordsHowOtherDeploymentsReachThisOne:
+    def test_a_trainer_release_records_the_address_the_driving_launch_has_to_be_given(self) -> None:
+        """Nothing else prints it, and the digest in the name makes it impossible to derive by hand."""
+        record = _record(reachable_at={"actor": "host-0.host.rl.svc.cluster.local:8000"})
+
+        assert record.reachable_at == {"actor": "host-0.host.rl.svc.cluster.local:8000"}
+
+    def test_a_release_nobody_dials_records_no_address(self) -> None:
+        """A primary release is reached by nothing, so an address there would be a name without a reader."""
+        assert _record().reachable_at == {}

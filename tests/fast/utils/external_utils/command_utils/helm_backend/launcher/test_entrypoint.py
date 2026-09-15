@@ -23,7 +23,9 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False) -> None:
     monkeypatch.setattr(
         entrypoint,
         "parse_args",
-        lambda: SimpleNamespace(colocate=colocate, argv=[], use_wandb=False, wandb_run_id=None),
+        lambda: SimpleNamespace(
+            colocate=colocate, deploy_component="all", argv=[], use_wandb=False, wandb_run_id=None
+        ),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)
@@ -110,7 +112,7 @@ class TestWandbRunIdReachesEveryPod:
 
 
 def _compute_train_argv(monkeypatch: pytest.MonkeyPatch, train_args: str) -> tuple[list[str], Any]:
-    monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
+    monkeypatch.setattr(entrypoint, "_compute_mooncake_plan", lambda args: None)
     request = ExecuteTrainRequest(
         train_args=f"--train-backend fsdp --rollout-batch-size 8 --num-rollout 1 --rollout-num-gpus 8 {train_args}",
         num_gpus_per_node=8,
