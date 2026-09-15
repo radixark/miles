@@ -80,7 +80,7 @@ class MooncakeInfo:
             return train_argv
 
         kwargs = MooncakeInfo.cluster_init_kwargs(plan, host=host)
-        return ArgvManipulator.replacing_value(train_argv, MOONCAKE_INIT_KWARGS_FLAG, json.dumps(kwargs))
+        return ArgvManipulator.set(train_argv, MOONCAKE_INIT_KWARGS_FLAG, json.dumps(kwargs))
 
     @staticmethod
     def cluster_init_kwargs(plan: MooncakePlan, *, host: str) -> dict[str, Any]:
