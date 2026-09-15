@@ -99,7 +99,7 @@ def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:
 
 
 def validate_seq_id(value, name: str, minimum: int = 1) -> int:
-    # request seq_ids are 1-based (the watermark starts at 0); idempotency keys are 0-based
+    # request seq_ids are 1-based (last_enqueued_seq_id starts at 0); idempotency keys are 0-based
     if not isinstance(value, int) or value < minimum:
         raise UserInputError(f"{name} must be an integer >= {minimum}, got {value!r}")
     return value

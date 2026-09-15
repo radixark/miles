@@ -19,7 +19,16 @@ from miles.tinker.core.input_validation import (
 )
 from miles.tinker.core.model_queue import ModelRequestQueue
 from miles.tinker.core.scheduler import BarrierUnit, BatchUnit, RequestScheduler
-from miles.tinker.core.types import Command, CommandOp, GatewayConfig, ModelRecord, OwnershipError, UserInputError
+from miles.tinker.core.types import (
+    Command,
+    CommandOp,
+    GatewayConfig,
+    ModelRecord,
+    OwnershipError,
+    SamplingSessionRecord,
+    SessionRecord,
+    UserInputError,
+)
 from miles.tinker.core.utils import (
     build_checkpoint_metadata,
     parse_tinker_path,
@@ -38,8 +47,8 @@ class TinkerService:
         self.futures = RequestFutureStore()
         self.scheduler = RequestScheduler(config.batch_token_budget)
         self.models: dict[str, ModelRecord] = {}
-        self.sessions: dict[str, dict] = {}
-        self.sampling_sessions: dict[str, dict] = {}
+        self.sessions: dict[str, SessionRecord] = {}
+        self.sampling_sessions: dict[str, SamplingSessionRecord] = {}
         self.free_slots = set(range(config.n_slots))
         self._wake = asyncio.Event()
         self._trainer_lock = asyncio.Lock()
@@ -52,7 +61,7 @@ class TinkerService:
         self._close_reasons: dict[str, str] = {}
 
     async def run(self) -> None:
-        sweep_task = asyncio.create_task(self.sweep_leases())
+        sweep_task = asyncio.create_task(self._run_lease_sweeper())
         sweep_task.add_done_callback(self._observe_background_task)
         try:
             while True:
@@ -70,7 +79,7 @@ class TinkerService:
                                 {"error": pending.command.validation_error, "error_category": "user"},
                             )
                         continue
-                    unit = self.scheduler.next_to_run()
+                    unit = self.scheduler.schedule_next()
                     if unit is not None:
                         if isinstance(unit, BatchUnit):
                             await self._run_batch(unit)
@@ -96,35 +105,30 @@ class TinkerService:
 
     def create_session(self, tenant: str) -> str:
         session_id = f"session-{uuid.uuid4().hex}"
-        self.sessions[session_id] = {
-            "tenant": tenant,
-            "last_heartbeat": time.monotonic(),
-            "models_by_seq": {},
-            "sampling_sessions_by_seq": {},
-        }
+        self.sessions[session_id] = SessionRecord(tenant=tenant, last_heartbeat=time.monotonic())
         return session_id
 
-    def _session_for(self, tenant: str, session_id: str) -> dict:
+    def _session_for(self, tenant: str, session_id: str) -> SessionRecord:
         session = self.sessions.get(session_id)
-        if session is None or session["tenant"] != tenant:
+        if session is None or session.tenant != tenant:
             raise UserInputError(f"unknown session {session_id!r}; create a session first")
         return session
 
     def heartbeat(self, tenant: str, session_id: str) -> bool:
         session = self.sessions.get(session_id)
-        if session is None or session["tenant"] != tenant:
+        if session is None or session.tenant != tenant:
             return False
-        session["last_heartbeat"] = time.monotonic()
+        session.last_heartbeat = time.monotonic()
         return True
 
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
         session = self._session_for(tenant, payload["session_id"])
         model_seq_id = validate_seq_id(payload["model_seq_id"], "model_seq_id", minimum=0)
-        if (previous := session["models_by_seq"].get(model_seq_id)) is not None:
+        if (previous := session.models_by_seq.get(model_seq_id)) is not None:
             request_id, model_id = previous
             request_id = self.futures.request_id_for_retry(request_id, model_id, tenant)
-            session["models_by_seq"][model_seq_id] = (request_id, model_id)
+            session.models_by_seq[model_seq_id] = (request_id, model_id)
             return request_id, model_id
         base_model = payload["base_model"]
         if base_model != self.config.base_model:
@@ -156,7 +160,7 @@ class TinkerService:
         self._create_tasks.add(task)
         task.add_done_callback(self._create_tasks.discard)
         task.add_done_callback(self._observe_background_task)
-        session["models_by_seq"][model_seq_id] = (future.request_id, model_id)
+        session.models_by_seq[model_seq_id] = (future.request_id, model_id)
         return future.request_id, model_id
 
     async def _run_create_model(self, record: ModelRecord) -> None:
@@ -189,9 +193,8 @@ class TinkerService:
         self._close_reasons[model_id] = error
         while len(self._close_reasons) > 4 * self.config.n_slots:
             self._close_reasons.pop(next(iter(self._close_reasons)))
-        model_queue = self.scheduler.model_queue(model_id)
         self.scheduler.remove_model_queue(model_id)
-        for request_id in [record.create_request_id, *model_queue.request_id_by_seq.values()]:
+        for request_id in [record.create_request_id, *record.request_id_by_seq.values()]:
             if self.futures.get(request_id, record.tenant) is not None:
                 self.futures.fail(request_id, error, category)
         if self.backend.trainer_dead():
@@ -210,18 +213,18 @@ class TinkerService:
         except ValueError:
             raise UserInputError(f"unknown command op {op!r}") from None
         model_id = payload["model_id"]
-        self.get_model(tenant, model_id)
+        record = self.get_model(tenant, model_id)
         seq_id = validate_seq_id(payload["seq_id"], "seq_id")
         model_queue = self.scheduler.model_queue(model_id)
 
         # retries must not accumulate gradients twice
-        if seq_id in model_queue.request_id_by_seq:
-            request_id = self.futures.request_id_for_retry(model_queue.request_id_by_seq[seq_id], model_id, tenant)
-            model_queue.request_id_by_seq[seq_id] = request_id
+        if seq_id in record.request_id_by_seq:
+            request_id = self.futures.request_id_for_retry(record.request_id_by_seq[seq_id], model_id, tenant)
+            record.request_id_by_seq[seq_id] = request_id
             return request_id
 
         future = self.futures.create(model_id, tenant)
-        model_queue.request_id_by_seq[seq_id] = future.request_id
+        record.request_id_by_seq[seq_id] = future.request_id
         self._arrival_counter += 1
         validation_error = payload.get("validation_error")
         if validation_error is None:
@@ -316,7 +319,7 @@ class TinkerService:
     async def _finish_request(self, model_queue, pending, outcome: dict) -> None:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
-            if pending.command.op.changes_training_state():
+            if pending.command.op.requires_model_close_on_failure():
                 await self._close_model(
                     model_queue.model_id,
                     f"model training failed ({outcome['error']}); create a new model and restore from a checkpoint",
@@ -416,34 +419,31 @@ class TinkerService:
         if base_model is not None and base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
         seq_id = validate_seq_id(payload["sampling_session_seq_id"], "sampling_session_seq_id", minimum=0)
-        if (previous := session["sampling_sessions_by_seq"].get(seq_id)) is not None:
+        if (previous := session.sampling_sessions_by_seq.get(seq_id)) is not None:
             return previous
         sampling_session_id = self._new_sampling_session(tenant, payload["session_id"], payload.get("model_path"))
-        session["sampling_sessions_by_seq"][seq_id] = sampling_session_id
+        session.sampling_sessions_by_seq[seq_id] = sampling_session_id
         return sampling_session_id
 
     def _new_sampling_session(self, tenant: str, session_id: str, model_path: str | None) -> str:
         if model_path is not None:
             resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
         sampling_session_id = f"sampling-{uuid.uuid4().hex}"
-        self.sampling_sessions[sampling_session_id] = {
-            "tenant": tenant,
-            "model_path": model_path,
-            "session_id": session_id,
-            "samples_by_seq": {},
-        }
+        self.sampling_sessions[sampling_session_id] = SamplingSessionRecord(
+            tenant=tenant, model_path=model_path, session_id=session_id
+        )
         return sampling_session_id
 
     def get_sampler(self, tenant: str, sampling_session_id: str) -> dict:
         session = self.sampling_sessions.get(sampling_session_id)
         if session is None:
             raise UserInputError(f"unknown sampling session {sampling_session_id!r}")
-        if session["tenant"] != tenant:
+        if session.tenant != tenant:
             raise OwnershipError("sampling session does not belong to this tenant")
         return {
             "sampler_id": sampling_session_id,
             "base_model": self.config.base_model,
-            "model_path": session["model_path"],
+            "model_path": session.model_path,
         }
 
     def submit_sample(self, tenant: str, payload: dict) -> tuple[str, list[str]]:
@@ -459,14 +459,14 @@ class TinkerService:
                 raise UserInputError(
                     f"unknown sampling session {sampling_session_id!r}; create a sampling session first"
                 )
-            if sampling_session["tenant"] != tenant:
+            if sampling_session.tenant != tenant:
                 raise OwnershipError("sampling session does not belong to this tenant")
-            model_path = model_path or sampling_session["model_path"]
+            model_path = model_path or sampling_session.model_path
             seq_id = validate_seq_id(payload["seq_id"], "seq_id", minimum=0)
-            if (previous := sampling_session["samples_by_seq"].get(seq_id)) is not None:
+            if (previous := sampling_session.samples_by_seq.get(seq_id)) is not None:
                 request_id, sequence_ids = previous
                 request_id = self.futures.request_id_for_retry(request_id, model_path or "base", tenant)
-                sampling_session["samples_by_seq"][seq_id] = (request_id, sequence_ids)
+                sampling_session.samples_by_seq[seq_id] = (request_id, sequence_ids)
                 return request_id, sequence_ids
         validate_sample_payload(payload, self.config)
         lora_name, lora_path = (
@@ -476,17 +476,22 @@ class TinkerService:
         )
         future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
-        task = asyncio.create_task(self._run_sample(future.request_id, payload, lora_name, lora_path))
-        session_id = sampling_session["session_id"] if sampling_session is not None else None
+        task = asyncio.create_task(self._run_sample(future.request_id, sequence_ids, payload, lora_name, lora_path))
+        session_id = sampling_session.session_id if sampling_session is not None else None
         self._sample_tasks[future.request_id] = (task, session_id)
         task.add_done_callback(lambda _t, rid=future.request_id: self._sample_tasks.pop(rid, None))
         task.add_done_callback(self._observe_background_task)
         if sampling_session is not None:
-            sampling_session["samples_by_seq"][seq_id] = (future.request_id, sequence_ids)
+            sampling_session.samples_by_seq[seq_id] = (future.request_id, sequence_ids)
         return future.request_id, sequence_ids
 
     async def _run_sample(
-        self, request_id: str, payload: dict, lora_name: str | None, lora_path: str | None = None
+        self,
+        request_id: str,
+        sequence_ids: list[str],
+        payload: dict,
+        lora_name: str | None,
+        lora_path: str | None = None,
     ) -> None:
         try:
             result = await self.backend.sample(payload, lora_name, lora_path)
@@ -498,6 +503,8 @@ class TinkerService:
             if "error" in result:
                 self.futures.fail(request_id, result["error"], "server")
             else:
+                for sequence_id, sequence in zip(sequence_ids, result["sequences"], strict=True):
+                    sequence["sequence_id"] = sequence_id
                 self.futures.resolve(request_id, {"op": "sample", **result})
 
     def cancel(self, tenant: str, request_id: str) -> None:
@@ -509,25 +516,25 @@ class TinkerService:
         if entry is not None:
             entry[0].cancel()
 
-    async def sweep_leases(self) -> None:
+    async def _run_lease_sweeper(self) -> None:
         """Reclaim from stale sessions: cancel sampling, unload models, free
         slots. Training state dies with the lease; only checkpoints survive."""
         while True:
             await asyncio.sleep(30)
-            await self._sweep_once()
+            await self._expire_sessions()
 
-    async def _sweep_once(self) -> None:
+    async def _expire_sessions(self) -> None:
         async with self._trainer_lock:
             now = time.monotonic()
             expired_sessions = {
                 session_id
                 for session_id, session in self.sessions.items()
-                if now - session["last_heartbeat"] >= self.config.lease_timeout_s
+                if now - session.last_heartbeat >= self.config.lease_timeout_s
             }
             for session_id in expired_sessions:
                 del self.sessions[session_id]
             for sampling_session_id, record in list(self.sampling_sessions.items()):
-                if record["session_id"] in expired_sessions:
+                if record.session_id in expired_sessions:
                     del self.sampling_sessions[sampling_session_id]
 
             for request_id, (task, session_id) in list(self._sample_tasks.items()):

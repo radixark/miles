@@ -4,7 +4,7 @@ An internal datum has tokens = model_input + target_tokens[-1:] and explicit tar
 Its target_len counts every label position, including prompt positions; loss inputs align to it.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -20,7 +20,7 @@ class CommandOp(str, Enum):
         """Batch ops pack into BatchUnits; every other op is a barrier."""
         return self in (CommandOp.FORWARD_BACKWARD, CommandOp.FORWARD_ONLY)
 
-    def changes_training_state(self) -> bool:
+    def requires_model_close_on_failure(self) -> bool:
         return self in (CommandOp.FORWARD_BACKWARD, CommandOp.OPTIM_STEP, CommandOp.LOAD_STATE)
 
 
@@ -86,6 +86,23 @@ class ModelRecord:
     lora_rank: int
     lora_alpha: float
     create_request_id: str
+    request_id_by_seq: dict[int, str] = field(default_factory=dict)
     slot_initialized: bool = False
     # failed publications burn their version number, leaving gaps
     next_sampler_version: int = 1
+
+
+@dataclass
+class SessionRecord:
+    tenant: str
+    last_heartbeat: float
+    models_by_seq: dict[int, tuple[str, str]] = field(default_factory=dict)
+    sampling_sessions_by_seq: dict[int, str] = field(default_factory=dict)
+
+
+@dataclass
+class SamplingSessionRecord:
+    tenant: str
+    model_path: str | None
+    session_id: str
+    samples_by_seq: dict[int, tuple[str, list[str]]] = field(default_factory=dict)

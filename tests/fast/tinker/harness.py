@@ -95,8 +95,8 @@ class FakeBackend:
             return failure
         return {
             "sequences": [
-                {"sequence_id": f"seq-{i}", "tokens": [1, 2], "logprobs": [0.0, 0.0], "stop_reason": "stop"}
-                for i in range(payload["num_samples"])
+                {"tokens": [1, 2], "logprobs": [0.0, 0.0], "stop_reason": "stop"}
+                for _ in range(payload["num_samples"])
             ]
         }
 

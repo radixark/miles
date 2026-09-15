@@ -233,8 +233,8 @@ async def test_lease_expiry_reclaims_the_tenant(service):
     await await_settled(service, "tenant", queued)
     stale = service.submit("tenant", "forward_backward", fb_payload(model_id, 3, [datum()]))  # gapped: stays queued
 
-    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat -= service.config.lease_timeout_s + 1
+    await service._expire_sessions()
 
     assert model_id not in service.models
     assert slot in service.free_slots
@@ -247,7 +247,7 @@ async def test_a_fresh_heartbeat_keeps_the_model(service):
     model_id = await created_model(service, session_id=session_id)
 
     service.heartbeat("tenant", session_id)
-    await service._sweep_once()
+    await service._expire_sessions()
 
     assert model_id in service.models
 
@@ -321,8 +321,8 @@ async def test_checkpoints_outlive_the_lease(service):
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
 
-    service.sessions[session_id]["last_heartbeat"] = -1e9
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat = -1e9
+    await service._expire_sessions()
     assert model_id not in service.models, "the lease sweep must reclaim the model"
 
     service.create_session("tenant")
@@ -470,8 +470,8 @@ async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_
     path = (await await_settled(service, "tenant", save)).result["path"]
 
     if expire_lease:
-        service.sessions[session_id]["last_heartbeat"] = -1e9
-        await service._sweep_once()
+        service.sessions[session_id].last_heartbeat = -1e9
+        await service._expire_sessions()
         assert model_id not in service.models
         service.create_session("tenant")
     lora_name, lora_path = resolve_sampler_checkpoint(
@@ -492,7 +492,7 @@ async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
     )
     result = (await await_settled(service, "tenant", unnamed)).result
     session = service.sampling_sessions[result["sampling_session_id"]]
-    assert (session["tenant"], session["model_path"]) == ("tenant", result["path"])
+    assert (session.tenant, session.model_path) == ("tenant", result["path"])
 
     named = service.submit(
         "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "ckpt"}
@@ -572,12 +572,12 @@ async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
     slot = service.models[model_id].slot
     service.backend.fail_on["unload_slot"] = {"error": "engine gone"}
 
-    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat -= service.config.lease_timeout_s + 1
+    await service._expire_sessions()
 
     assert model_id not in service.models
     assert slot not in service.free_slots, "a slot whose unload failed is dirty and must not be reused"
-    await service._sweep_once()  # the sweep itself survived
+    await service._expire_sessions()  # the sweep itself survived
 
 
 async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
@@ -660,8 +660,8 @@ async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     failed = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
     assert (await await_settled(service, "tenant", failed)).state == FAILED
 
-    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat -= service.config.lease_timeout_s + 1
+    await service._expire_sessions()
     assert slot in service.free_slots
 
     assert session_id not in service.sessions, "the sweep takes the expired session with it"
@@ -703,8 +703,8 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
         elif source == "sweep":
             gateway.backend.fail_on["unload_slot"] = RuntimeError("fatal execution failure")
             for session in gateway.sessions.values():
-                session["last_heartbeat"] -= gateway.config.lease_timeout_s + 1
-            task = asyncio.create_task(gateway._sweep_once())
+                session.last_heartbeat -= gateway.config.lease_timeout_s + 1
+            task = asyncio.create_task(gateway._expire_sessions())
             task.add_done_callback(gateway._observe_background_task)
         else:
             if source == "handler":
@@ -781,7 +781,7 @@ async def test_a_retried_sample_does_not_sample_again(service):
 
 
 async def test_an_illegal_seq_id_is_rejected(service):
-    """seq_id 0 would park behind the model queue watermark forever; every future would pend."""
+    """seq_id 0 would never enter the ordered model queue; every future would pend."""
     model_id = await created_model(service)
     with pytest.raises(UserInputError, match="seq_id"):
         service.submit("tenant", "optim_step", {"model_id": model_id, "seq_id": 0, "adam_params": dict(ADAM)})
@@ -789,8 +789,8 @@ async def test_an_illegal_seq_id_is_rejected(service):
 
 async def test_an_expired_lease_sweeps_its_sessions(service):
     session_id = service.create_session("tenant")
-    service.sessions[session_id]["last_heartbeat"] = -1e9
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat = -1e9
+    await service._expire_sessions()
     with pytest.raises(UserInputError, match="unknown session"):
         service.create_model("tenant", model_payload(service, session_id=session_id))
 
@@ -822,13 +822,13 @@ async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, m
         started.put_nowait(asyncio.current_task())
         await asyncio.Event().wait()
 
-    async def sweep_leases():
+    async def _run_lease_sweeper():
         await fail_sweep.wait()
         raise RuntimeError("lease sweeper failed")
 
     monkeypatch.setattr(gateway.backend, "load_slot", blocked_backend_call)
     monkeypatch.setattr(gateway.backend, "sample", blocked_backend_call)
-    monkeypatch.setattr(gateway, "sweep_leases", sweep_leases)
+    monkeypatch.setattr(gateway, "_run_lease_sweeper", _run_lease_sweeper)
     run_task = asyncio.create_task(gateway.run())
     gateway.create_model("tenant", model_payload(gateway))
     gateway.submit_sample("tenant", {"num_samples": 1})

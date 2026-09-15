@@ -62,7 +62,7 @@ class RequestScheduler:
             if model_queue.queue and model_queue.queue[0].command.validation_error is not None
         ]
 
-    def next_to_run(self) -> BatchUnit | BarrierUnit | None:
+    def schedule_next(self) -> BatchUnit | BarrierUnit | None:
         """Arrival order selects the seed; compatible work may overtake intervening requests."""
         datums = self._ready_datums()
         barriers = self._ready_barriers()
@@ -80,7 +80,8 @@ class RequestScheduler:
         for model_queue in self._model_queues.values():
             for request in model_queue.open_batch_run():
                 datums.extend(
-                    DatumRef(model_queue, request, index) for index in range(request.issued, len(request.datums))
+                    DatumRef(model_queue, request, index)
+                    for index in range(request.num_issued_datums, len(request.datums))
                 )
         return datums
 
@@ -106,7 +107,7 @@ class RequestScheduler:
             picked.append(ref)
             tokens += datum_tokens
         for ref in picked:
-            ref.request.issued += 1
+            ref.request.num_issued_datums += 1
         command = seed.request.command
         return BatchUnit(
             op=command.op,

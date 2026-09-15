@@ -1,7 +1,6 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
-import uuid
 
 import httpx
 
@@ -66,20 +65,20 @@ class MilesBackend:
     async def forward_backward(
         self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
     ) -> list[dict] | dict:
-        return await self._run_loss_pass("forward_backward", batch_id, slot_datums, loss_fn, loss_fn_config)
+        return await self._execute_batch("forward_backward", batch_id, slot_datums, loss_fn, loss_fn_config)
 
     async def forward_only(
         self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
     ) -> list[dict] | dict:
-        return await self._run_loss_pass("forward_only", batch_id, slot_datums, loss_fn, loss_fn_config)
+        return await self._execute_batch("forward_only", batch_id, slot_datums, loss_fn, loss_fn_config)
 
-    async def _run_loss_pass(
+    async def _execute_batch(
         self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
     ) -> list[dict] | dict:
         train_data = _build_train_data(_pad_to_dp_multiple(slot_datums, self.dp_size))
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
-        worker_results = await self._run_batch(method, batch_id, train_data)
+        worker_results = await self._call_trainer(method, batch_id, train_data)
         by_index: dict[int, dict] = {}
         for worker_result in worker_results:
             if "error" in worker_result:
@@ -93,7 +92,7 @@ class MilesBackend:
                     }
         return [by_index[index] for index in range(len(slot_datums))]
 
-    async def _run_batch(self, method: str, batch_id: int, train_data: dict) -> list:
+    async def _call_trainer(self, method: str, batch_id: int, train_data: dict) -> list:
         store = object_store.get_instance()
         data_ref = store.put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         try:
@@ -211,7 +210,6 @@ def _to_sequence(response: dict) -> dict:
         # a truncated sequence must fail the request, not pass as a completed sample
         return {"error": "the engine aborted this sample; resubmit the request"}
     return {
-        "sequence_id": f"seq-{uuid.uuid4().hex}",
         "tokens": [entry[1] for entry in output_token_logprobs],
         "logprobs": [entry[0] for entry in output_token_logprobs],
         "stop_reason": "length" if finish == "length" else "stop",
