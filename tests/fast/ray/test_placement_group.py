@@ -547,14 +547,14 @@ class TestCreateTrainingModels:
         called = [name for name, _args, _kwargs in handle.mock_calls]
         assert called.index("is_initialized") < called.index("init")
 
-    async def test_the_executor_is_loaded_at_the_position_the_trainers_start_from(self, tmp_path, monkeypatch):
-        """The dataset has to stand where the trainers do, whether the run was built or taken over."""
+    async def test_a_run_that_trained_no_step_leaves_the_executor_unloaded(self, tmp_path, monkeypatch):
+        """A freshly built run stands before rollout 0, so there is no rollout state for the executor to restore."""
         self._patched(monkeypatch, [], initialized=False)
         rollout_executor = self._rollout_executor()
 
         await create_training_models(self._args(tmp_path), rollout_executor)
 
-        rollout_executor.load.assert_awaited_once_with(-1)
+        rollout_executor.load.assert_not_awaited()
 
     async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
         """A second handle would identify one connection and drive another, so the check would guard nothing."""

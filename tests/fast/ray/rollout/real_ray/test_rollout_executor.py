@@ -880,23 +880,6 @@ class TestCheckpointWithoutARolloutFunction:
         executor.data_source.save.assert_called_once_with(3)
         executor.data_source.load.assert_called_once_with(3)
 
-    async def test_a_replay_run_restores_at_startup_without_a_rollout_id(
-        self,
-        ray_local_mode,
-        patch_low_level,
-        monkeypatch,
-    ):
-        """Startup restores the executor before the first step, so the default rollout id must reach the data source."""
-        monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
-        executor = await _make_executor(
-            _make_test_args(load_debug_rollout_data="/nonexistent/rollout_{rollout_id}.pt")
-        )
-        executor.data_source = MagicMock()
-
-        executor.load()
-
-        executor.data_source.load.assert_called_once_with(None)
-
     async def test_saving_a_replay_run_still_snapshots_the_event_log(
         self,
         ray_local_mode,
@@ -1002,23 +985,6 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
             ("eval", "save", 4),
             ("train", "load", 4),
             ("eval", "load", 4),
-        ]
-
-    async def test_loading_without_a_rollout_id_forwards_none_to_the_eval_instance(
-        self, ray_local_mode, patch_low_level
-    ):
-        """A restore of the latest checkpoint must reach the eval instance with the same unset rollout id."""
-        executor = await _make_executor(_make_test_args())
-        executor.data_source = MagicMock()
-        calls: list[tuple[str, str, object]] = []
-        executor.generate_rollout = _RecordingRolloutFn("train", calls)
-        executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
-
-        executor.load()
-
-        assert calls == [
-            ("train", "load", None),
-            ("eval", "load", None),
         ]
 
     async def test_the_legacy_protocol_leaves_a_distinct_eval_function_untouched(
