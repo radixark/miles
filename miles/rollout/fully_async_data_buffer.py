@@ -162,6 +162,7 @@ class DefaultDataBuffer(DataBuffer):
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
             return False
 
+        self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
         output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
