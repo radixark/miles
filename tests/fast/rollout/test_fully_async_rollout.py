@@ -1245,6 +1245,19 @@ class TestBatchedGet:
                 data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
             )
 
+    async def test_a_silent_producer_warns_and_keeps_waiting(self, monkeypatch, caplog):
+        """A wait that produces nothing has to say so, and stay a wait rather than fail the step."""
+        monkeypatch.setattr(data_buffer, "NO_PROGRESS_WARN_SECS", 0.01)
+        buffer, _ = make_buffer()
+        caplog.set_level(logging.WARNING, logger=data_buffer.__name__)
+
+        waiting = asyncio.create_task(buffer.get(num_groups=1))
+        await asyncio.sleep(0.05)
+
+        assert not waiting.done()
+        assert "No completed rollout groups" in caplog.text
+        waiting.cancel()
+
 
 class TestDisposal:
     async def test_disposing_ends_the_producer_before_it_returns(self, monkeypatch):
