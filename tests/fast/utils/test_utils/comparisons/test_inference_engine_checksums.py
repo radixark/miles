@@ -1,13 +1,15 @@
+"""Tests for test_utils.comparisons.inference_engine_checksums.compare_inference_engine_checksums."""
+
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
 from miles.utils.test_utils.comparisons.inference_engine_checksums import (
-    assert_engine_weights_moved,
+    assert_engine_count,
     compare_inference_engine_checksums,
 )
 
@@ -93,26 +95,6 @@ class TestCompareInferenceEngineChecksums:
         )
 
         compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
-
-    def test_the_fresh_startup_sync_is_compared_like_any_other_rollout(self, tmp_path: Path) -> None:
-        """The startup push is stamped -1 rather than skipped, so two runs that boot from different weights fail."""
-        _write_inference_engine_events(
-            tmp_path / "baseline",
-            [
-                _partial(rollout_id=-1, engine_checksums=[{"rank0/w": "init_baseline"}]),
-                _partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}]),
-            ],
-        )
-        _write_inference_engine_events(
-            tmp_path / "target",
-            [
-                _partial(rollout_id=-1, engine_checksums=[{"rank0/w": "init_target"}]),
-                _partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}]),
-            ],
-        )
-
-        with pytest.raises(AssertionError):
-            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_baseline_engines_disagree_fails(self, tmp_path: Path) -> None:
         """If baseline's own engines disagree, the comparison fails (caught by the consistency rule)."""
@@ -209,37 +191,48 @@ class TestSeveralPolicies:
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
 
-class TestAssertEngineWeightsMoved:
-    def test_fewer_than_two_updates_do_not_prove_that_engine_weights_moved(self, tmp_path: Path) -> None:
-        """A lone weight update provides no pair from which movement can be established."""
-        _write_inference_engine_events(
-            tmp_path / "target", [_partial(rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}])]
-        )
-
-        with pytest.raises(AssertionError, match="there is no pair to compare"):
-            assert_engine_weights_moved(side="target", dump_dir=str(tmp_path / "target"))
-
-    def test_identical_updates_do_not_prove_that_engine_weights_moved(self, tmp_path: Path) -> None:
-        """Reordered checksum items remain the same weights and cannot establish movement."""
+class TestAssertEngineCount:
+    def test_a_run_every_update_of_which_covered_both_engines_passes(self, tmp_path: Path) -> None:
+        """The happy path has to stay reachable, or the refusals below prove nothing."""
         _write_inference_engine_events(
             tmp_path / "target",
             [
-                _partial(rollout_id=0, engine_checksums=[{"rank0/a": "aaa", "rank0/b": "bbb"}]),
-                _partial(rollout_id=1, engine_checksums=[{"rank0/b": "bbb", "rank0/a": "aaa"}]),
+                _partial(rollout_id=None, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]),
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "bbb"}, {"rank0/w": "bbb"}]),
             ],
         )
 
-        with pytest.raises(AssertionError, match="byte-identical engine weights"):
-            assert_engine_weights_moved(side="target", dump_dir=str(tmp_path / "target"))
+        assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
 
-    def test_distinct_updates_prove_that_engine_weights_moved(self, tmp_path: Path) -> None:
-        """Two distinct checksum dictionaries establish that engine weights changed."""
+    def test_an_update_that_reached_one_engine_of_two_is_caught(self, tmp_path: Path) -> None:
+        """An engine that dropped out mid-run still leaves a run that trains, so nothing else notices."""
         _write_inference_engine_events(
             tmp_path / "target",
             [
-                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}]),
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]),
                 _partial(rollout_id=1, engine_checksums=[{"rank0/w": "bbb"}]),
             ],
         )
 
-        assert_engine_weights_moved(side="target", dump_dir=str(tmp_path / "target"))
+        with pytest.raises(AssertionError, match=r"pushed to \[1, 2\] engine"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
+
+    def test_a_startup_sync_that_reached_one_engine_of_two_is_caught(self, tmp_path: Path) -> None:
+        """The engines are synced before the first rollout, and one that joined late missed those weights."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=None, engine_checksums=[{"rank0/w": "aaa"}]),
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "bbb"}, {"rank0/w": "bbb"}]),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match=r"pushed to \[1, 2\] engine"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
+
+    def test_a_side_that_pushed_weights_to_no_engine_at_all_is_caught(self, tmp_path: Path) -> None:
+        """A side whose engines never registered would otherwise report every count it was asked for."""
+        (tmp_path / "target" / EVENTS_DIRNAME).mkdir(parents=True)
+
+        with pytest.raises(AssertionError, match="no engine ever took weights"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
