@@ -350,12 +350,10 @@ def render_client_api(requests: list[list], snapshot: dict) -> str:
     for _, op, created_at, finished_at in requests:
         durations.setdefault(op, []).append(finished_at - created_at)
     rows = []
-    total_work = 0.0
     for api, values in sorted(durations.items(), key=lambda item: -sum(item[1])):
         ops = [snapshot[op] for op in API_OPS.get(api, ()) if op in snapshot]
         work = sum(op["total_s"] for op in ops) / len(values)
         share = sum(op["share"] for op in ops)
-        total_work += work * len(values) / tenants
         ordered = sorted(values)
         rows.append(
             [
@@ -374,6 +372,9 @@ def render_client_api(requests: list[list], snapshot: dict) -> str:
         )
     wall = statistics.fmean(walls)
     summed = sum(finished_at - created_at for _, _, created_at, finished_at in requests) / tenants
+    trainer_work = sum(snapshot[op]["total_s"] for op in TRAINER_OPS if op in snapshot) / tenants
+    rollout = sum(step.get("rollout", 0.0) for step in client_steps(requests)) / tenants
+    total_work = trainer_work + rollout
     total = [
         "total",
         f"{len(requests) / tenants:.2f}",
@@ -385,7 +386,8 @@ def render_client_api(requests: list[list], snapshot: dict) -> str:
         f"{total_work:.1f}",
         f"{wall - total_work:.1f} ({(wall - total_work) / wall:.0%})",
         "100%",
-        f"tenant wall time, first request in to last result out; per-API totals sum to {summed:.1f} s (calls in flight together)",
+        f"tenant wall time, first request in to last result out; work = the trainer's ops plus the sampling waves; "
+        f"per-API totals sum to {summed:.1f} s (calls in flight together)",
     ]
     header = [
         "tinker API",
@@ -434,7 +436,7 @@ def client_steps(requests: list[list]) -> list[dict[str, float]]:
 def render_client_steps(steps: list[dict[str, float]], snapshot: dict, logged_step_s: list[float]) -> str:
     if not steps:
         return ""
-    n = lora_steps(snapshot)
+    n = len(steps)
     means = {
         phase: statistics.fmean(step.get(phase, 0.0) for step in steps)
         for phase in ("one step", *(name for name, _, _ in STEP_PHASES))
