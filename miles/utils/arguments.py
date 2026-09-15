@@ -3222,7 +3222,8 @@ def miles_validate_args(args):
 
     # TODO: refactor
     args.requested_load = args.load
-    resolve_args_checkpoint_load(args)
+    if args.megatron_config is None:
+        resolve_args_checkpoint_load(args)
 
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
