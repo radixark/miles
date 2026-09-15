@@ -78,6 +78,8 @@ class SGLangApiClient:
             if hasattr(e, "add_note"):
                 e.add_note(f"{response.text=}")
             raise
+        if not response.content:
+            return None
         return response.json()
 
     async def health_generate(self, timeout: float = 5.0) -> bool:
@@ -380,6 +382,9 @@ class SGLangApiClient:
         response = await GeneralHttpClientProvider.client().post(f"{self.server_url}/continue_generation", json={})
         response.raise_for_status()
         return response
+
+    async def abort_all_requests(self):
+        return await self._make_request("abort_request", {"abort_all": True})
 
     async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
         """Open a weight-update session on the engine. sync_base=False declares an

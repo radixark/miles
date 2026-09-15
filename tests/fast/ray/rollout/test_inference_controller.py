@@ -131,6 +131,31 @@ class _RecordingServer:
         self.waited_init_expected_num_cells += 1
 
 
+class _AbortRecordingServer:
+    def __init__(
+        self,
+        name: str,
+        *,
+        started: list[str],
+        completed: list[str],
+        error: Exception | None = None,
+        scheduling_turns: int = 1,
+    ) -> None:
+        self.name = name
+        self.started = started
+        self.completed = completed
+        self.error = error
+        self.scheduling_turns = scheduling_turns
+
+    async def abort_all(self) -> None:
+        self.started.append(self.name)
+        for _ in range(self.scheduling_turns):
+            await asyncio.sleep(0)
+        if self.error is not None:
+            raise self.error
+        self.completed.append(self.name)
+
+
 class _FakeUpdatableCell:
     def __init__(self, workers_hash: str):
         self.meta = SimpleNamespace(workers_hash=workers_hash)
@@ -223,6 +248,37 @@ def _make_controller(
     controller._engine_provider = engines
     controller._router_providers = [_FakeWorkerProvider([])]
     return controller
+
+
+class TestAbortAll:
+    async def test_abort_all_reaches_every_server_before_propagating_the_first_failure(self) -> None:
+        """Every server is aborted to completion before the first fleet failure is propagated."""
+        started: list[str] = []
+        completed: list[str] = []
+        first_failure = RuntimeError("first server refused abort")
+        controller = _make_controller(
+            {
+                "first": _AbortRecordingServer(
+                    "first",
+                    started=started,
+                    completed=completed,
+                    error=first_failure,
+                ),
+                "second": _AbortRecordingServer(
+                    "second",
+                    started=started,
+                    completed=completed,
+                    scheduling_turns=2,
+                ),
+            }
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await controller.abort_all()
+
+        assert exc_info.value is first_failure
+        assert set(started) == {"first", "second"}
+        assert completed == ["second"]
 
 
 class TestHealthCheckerActiveness:

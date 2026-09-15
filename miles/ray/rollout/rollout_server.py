@@ -7,6 +7,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils import async_utils
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import retry_until_deadline
@@ -145,6 +146,17 @@ class RolloutServer:
     async def onload(self, tags: list[str] | None = None):
         return await asyncio.gather(
             *[cell.onload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
+        )
+
+    @requires_lock
+    async def abort_all(self) -> None:
+        cells = self._addressable_cells()
+        await async_utils.gather_and_raise_first(
+            [cell.abort_all() for cell in cells],
+            describe_failure=lambda index: (
+                f"Aborting the generations of cell {cells[index].meta.cell_id} of {self.model_name} failed, so a "
+                f"request of the previous orchestration script may still be running on it"
+            ),
         )
 
     @requires_lock
