@@ -22,6 +22,8 @@ _DEFAULT_INIT_EXPECTED_NUM_CELLS = 1
 WAIT_CELLS_INITIAL_DELAY_SECONDS = 1.0
 WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
+ABORT_ALL_TIMEOUT_SECONDS = 60.0
+
 
 async def create_rollout_servers(
     args,
@@ -152,7 +154,7 @@ class RolloutServer:
     async def abort_all(self) -> None:
         cells = self._addressable_cells()
         await async_utils.gather_and_raise_first(
-            [cell.abort_all() for cell in cells],
+            [asyncio.wait_for(cell.abort_all(), timeout=ABORT_ALL_TIMEOUT_SECONDS) for cell in cells],
             describe_failure=lambda index: (
                 f"Aborting the generations of cell {cells[index].meta.cell_id} of {self.model_name} failed, so a "
                 f"request of the previous orchestration script may still be running on it"
