@@ -87,16 +87,18 @@ Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
    - checkpointed: one .trash_* per restart; resume point == the pinned save (the snapshot
      beside that checkpoint), so the run resumed there, not at step 0; the redone steps are
      exactly the pinned (save, frozen step] windows; per-step attempts all 1 or 2
-   - no_checkpoint: record carries no saved iteration; NO .trash_* (the run's --load resolves to
-     --ref-load, which holds no snapshot to restore); steps 0..1 appear exactly twice, nothing
-     thrice; the run still saves after the restart
+   - no_checkpoint: record carries no saved iteration; exactly one .trash_*, holding the log
+     thrown away (steps 0..1, each once) and sharing no step with the log that replaced it; the
+     surviving log describes each of the 6 steps exactly once; the run still saves after the
+     restart, past the step it was frozen at
 5. Compare: bitwise as in scenario_split_deterministic, engine checksums included, with one
    exemption - rollout/weight_version mean/median/max/min. The trainer outlives a take-over, so
    its weight update counter keeps counting through the steps the target redoes and stands
    ahead of the baseline's at the same step
 
 checkpointed lands every take-over on a non-save step, so unsaved steps are rolled back and
-redone; no_checkpoint has nothing to resume from and starts over at rollout 0.
+redone; no_checkpoint has nothing to resume from, so its event log is moved aside and it starts
+over at rollout 0 with the run.
 ```
 
 ### `scenario_hot_restart_realistic_gsm8k`

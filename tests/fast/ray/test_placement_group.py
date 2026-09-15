@@ -667,6 +667,57 @@ class TestTakeOverTrainers:
 
         handle.get_deployment_identity.assert_not_awaited()
 
+    @staticmethod
+    def _recorded_discards(monkeypatch) -> list[Namespace]:
+        discarded: list[Namespace] = []
+        monkeypatch.setattr(placement_group_module.event_logger_checkpoint, "discard", discarded.append)
+        return discarded
+
+    async def test_discards_the_log_without_a_checkpoint(self, monkeypatch, tmp_path):
+        """Such a run trains its steps again, and one log holding each of them twice is not a run anyone can compare."""
+        self._patched(monkeypatch, events=[])
+        discarded = self._recorded_discards(monkeypatch)
+        args = self._args(requested_load=str(tmp_path / "ckpt"))
+
+        handle = _make_trainer_handle(initialized=True, deployment_identity=self._identity())
+
+        assert await take_over_trainers(args, handles={"alpha-actor": handle}) is True
+
+        assert discarded == [args]
+
+    async def test_keeps_the_log_with_a_checkpoint(self, monkeypatch, tmp_path):
+        """That run resumes from its checkpoint, and the snapshot beside it is what replaces the log."""
+        self._patched(monkeypatch, events=[])
+        discarded = self._recorded_discards(monkeypatch)
+        ckpt = tmp_path / "ckpt"
+        ckpt.mkdir()
+        (ckpt / "latest_checkpointed_iteration.txt").write_text("3")
+
+        assert (
+            await take_over_trainers(
+                self._args(requested_load=str(ckpt)),
+                handles={"alpha-actor": _make_trainer_handle(initialized=True, deployment_identity=self._identity())},
+            )
+            is True
+        )
+
+        assert discarded == []
+
+    async def test_keeps_the_log_of_a_first_launch(self, monkeypatch, tmp_path):
+        """A launch that installed the trainers itself is the run's first, and its log is the one it just opened."""
+        self._patched(monkeypatch, events=[])
+        discarded = self._recorded_discards(monkeypatch)
+
+        assert (
+            await take_over_trainers(
+                self._args(requested_load=str(tmp_path / "ckpt")),
+                handles={"alpha-actor": _make_trainer_handle(deployment_identity=self._identity())},
+            )
+            is False
+        )
+
+        assert discarded == []
+
 
 class TestCreateTrainingModel:
     @staticmethod
