@@ -268,8 +268,8 @@ class TestStalenessFiltering:
         assert (await _get_one(under_test.buffer, current_version=5)).group is group
         assert "rollout/fully_async/avg_staleness" not in under_test.buffer.get_metrics()
 
-    async def test_a_stale_group_is_recycled_only_when_the_consumer_reaches_it(self) -> None:
-        """Staleness is decided at the pop, so a stale group behind a fresh one waits its turn."""
+    async def test_a_stale_group_is_recycled_without_waiting_for_the_consumer_to_reach_it(self) -> None:
+        """A buffer filled with stale groups would block the producer while the consumer starves."""
         under_test = _make_buffer(max_weight_staleness=2)
         fresh, stale, later = (
             _make_finished_group(1, weight_version=10),
@@ -280,10 +280,28 @@ class TestStalenessFiltering:
             await _put(under_test.buffer, group)
 
         assert (await _get_one(under_test.buffer, current_version=10)).group is fresh
-        assert under_test.unused == []
+        assert under_test.unused == [(stale, UnusedReason.STALE)]
 
         assert (await _get_one(under_test.buffer, current_version=10)).group is later
+
+    async def test_a_stale_group_at_the_back_frees_a_slot_for_the_producer(self) -> None:
+        """A stale group behind the one being consumed still occupies capacity until the get recycles it."""
+        under_test = _make_buffer(max_weight_staleness=2, async_data_buffer_capacity_factor=2.0)
+        fresh, stale = _make_finished_group(1, weight_version=10), _make_finished_group(2, weight_version=1)
+        await _put(under_test.buffer, fresh)
+        await _put(under_test.buffer, stale)
+
+        blocked = asyncio.create_task(_put(under_test.buffer, _make_finished_group(3, weight_version=10)))
+        await _settle()
+        assert not blocked.done()
+
+        assert (await _get_one(under_test.buffer, current_version=10)).group is fresh
+        await blocked
+
         assert under_test.unused == [(stale, UnusedReason.STALE)]
+        metrics = under_test.buffer.get_metrics()
+        assert metrics["rollout/fully_async/stale_groups_filtered"] == 1
+        assert metrics["rollout/fully_async/queue_size"] == 1
 
     async def test_the_version_of_the_last_get_is_the_clock_of_the_buffered_staleness_metrics(self) -> None:
         """Nothing else tells the buffer which weights the trainer is on when it reports what it holds."""
