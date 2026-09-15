@@ -10,6 +10,7 @@ import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.sampling_mask import top_p_sampling_replay_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +267,18 @@ class SglangConfig(FrozenStrictBaseModel):
         model_configs = [ModelConfig.resolve(m, args, offset_cursor) for m in raw.models]
 
         assert offset_cursor.gpu == raw.total_num_gpus
+
+        if top_p_sampling_replay_enabled(args) and model_configs:
+            for group in model_configs[0].server_groups:
+                if group.worker_type == "placeholder":
+                    continue
+                speculative_algorithm = group.overrides.get("speculative_algorithm", args.sglang_speculative_algorithm)
+                if speculative_algorithm is not None:
+                    raise ValueError(
+                        "top-p sampling replay does not support speculative decoding; "
+                        f"the primary rollout model enables {speculative_algorithm!r}"
+                    )
+
         return cls(models=model_configs)
 
     @property

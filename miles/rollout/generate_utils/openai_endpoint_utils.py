@@ -10,10 +10,12 @@ from argparse import Namespace
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     COMPUTED_FIELDS_V2,
+    ROLLOUT_SAMPLING_MASK_FIELDS,
     SamplesReply,
     decode_samples_and_merge_input_sample,
 )
 from miles.utils.http_utils import post, post_bytes_no_retry
+from miles.utils.sampling_mask import top_p_sampling_replay_enabled
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -59,11 +61,14 @@ class OpenAIEndpointTracer:
         response = await post(f"{session_url}/sessions", {}, action="post")
         session_id = response["session_id"]
         use_v2 = getattr(args, "use_session_server", None) == "v2"
+        samples_wire_fields = COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS
+        if top_p_sampling_replay_enabled(args):
+            samples_wire_fields += ROLLOUT_SAMPLING_MASK_FIELDS
         return OpenAIEndpointTracer(
             router_url=session_url,
             session_id=session_id,
             session_server_instance_id=session_server_instance_id,
-            samples_wire_fields=COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS,
+            samples_wire_fields=samples_wire_fields,
         )
 
     async def collect_samples(

@@ -16,7 +16,12 @@ import pytest
 
 import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
-from miles.rollout.session.samples.codec import COMPUTED_FIELDS, COMPUTED_FIELDS_V2, encode_samples
+from miles.rollout.session.samples.codec import (
+    COMPUTED_FIELDS,
+    COMPUTED_FIELDS_V2,
+    ROLLOUT_SAMPLING_MASK_FIELDS,
+    encode_samples,
+)
 from miles.utils.http_utils import post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -330,8 +335,18 @@ async def test_create_selects_wire_fields_by_session_server_version(monkeypatch)
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
-    def args(version):
-        return SimpleNamespace(session_server_addrs=["127.0.0.1:7000"], use_session_server=version)
+    def args(version, top_p=1.0):
+        return SimpleNamespace(
+            session_server_addrs=["127.0.0.1:7000"],
+            use_session_server=version,
+            rollout_top_p=top_p,
+        )
 
     assert (await OpenAIEndpointTracer.create(args(True))).samples_wire_fields == COMPUTED_FIELDS
     assert (await OpenAIEndpointTracer.create(args("v2"))).samples_wire_fields == COMPUTED_FIELDS_V2
+    assert (await OpenAIEndpointTracer.create(args(True, 0.95))).samples_wire_fields == (
+        COMPUTED_FIELDS + ROLLOUT_SAMPLING_MASK_FIELDS
+    )
+    assert (await OpenAIEndpointTracer.create(args("v2", 0.95))).samples_wire_fields == (
+        COMPUTED_FIELDS_V2 + ROLLOUT_SAMPLING_MASK_FIELDS
+    )

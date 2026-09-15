@@ -1,8 +1,24 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import torch
 
 from miles.utils.sampling_mask import RolloutSamplingMask
+
+
+def get_rollout_sampling_masks(batch: Mapping[str, object]) -> list[RolloutSamplingMask]:
+    """Reconstruct the per-sample masks carried by the training-data wire."""
+    ids_batch = batch.get("rollout_sampling_mask_ids")
+    offsets_batch = batch.get("rollout_sampling_mask_offsets")
+    if ids_batch is None or offsets_batch is None:
+        raise ValueError("top-p actor scoring requires both sampling-mask wire fields")
+    if not isinstance(ids_batch, Sequence) or not isinstance(offsets_batch, Sequence):
+        raise TypeError("rollout sampling-mask ids and offsets must be sequences with one entry per sample")
+    if len(ids_batch) != len(offsets_batch):
+        raise ValueError(f"sampling-mask ids batch size {len(ids_batch)} != offsets batch size {len(offsets_batch)}")
+    return [
+        RolloutSamplingMask(ids=torch.as_tensor(ids), offsets=torch.as_tensor(offsets))
+        for ids, offsets in zip(ids_batch, offsets_batch, strict=True)
+    ]
 
 
 def build_local_sampling_mask(
