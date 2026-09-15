@@ -38,6 +38,17 @@ def _set_random_seed(
     tensor_parallel.model_parallel_cuda_manual_seed(seed, te_rng_tracker, inference_rng_tracker, use_cudagraphable_rng)
 
 
+def set_random_seed_from_args(args) -> None:
+    if args.rank == 0:
+        logger.info(f"> setting random seeds to {args.seed} ...")
+    _set_random_seed(
+        args.seed,
+        args.data_parallel_random_init,
+        args.te_rng_tracker,
+        args.inference_rng_tracker,
+    )
+
+
 def _initialize_distributed(args, get_embedding_ranks=None, get_position_embedding_ranks=None):
     """Initialize torch.distributed and core model parallel."""
     # Set the tensor model-parallel, pipeline model-parallel, and
@@ -91,14 +102,7 @@ def init(
         assert args.data_parallel_size == 1
 
     # Random seeds for reproducibility.
-    if args.rank == 0:
-        logger.info(f"> setting random seeds to {args.seed} ...")
-    _set_random_seed(
-        args.seed,
-        args.data_parallel_random_init,
-        args.te_rng_tracker,
-        args.inference_rng_tracker,
-    )
+    set_random_seed_from_args(args)
     register_hf_config_aliases()
     _build_tokenizer(args)
     # We won't use this. initialize to pass some validation in megatron.

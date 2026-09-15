@@ -936,10 +936,37 @@ def initialize_model_and_optimizer(
         tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
             DDP-wrapped model chunks, optimizer, scheduler, and iteration index.
     """
+    model, optimizer, opt_param_scheduler = build_model_and_optimizer(args, role=role)
+
+    iteration = load_model_state(
+        args,
+        model=model,
+        optimizer=optimizer,
+        opt_param_scheduler=opt_param_scheduler,
+        role=role,
+        checkpointing_context=checkpointing_context,
+    )
+    return model, optimizer, opt_param_scheduler, iteration
+
+
+def build_model_and_optimizer(
+    args: Namespace, *, role: str
+) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None]:
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
+    return model, optimizer, opt_param_scheduler
 
+
+def load_model_state(
+    args: Namespace,
+    *,
+    model: list[DDP],
+    optimizer: MegatronOptimizer | None,
+    opt_param_scheduler: OptimizerParamScheduler | None,
+    role: str,
+    checkpointing_context: dict | None,
+) -> int:
     if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint.
@@ -991,4 +1018,4 @@ def initialize_model_and_optimizer(
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    return model, optimizer, opt_param_scheduler, iteration
+    return iteration
