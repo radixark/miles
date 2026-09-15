@@ -1998,6 +1998,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout.",
             )
             parser.add_argument(
+                "--log-sample-completions",
+                type=int,
+                default=0,
+                help=(
+                    "Log this many sampled prompt/response rows per rollout step as a `rollout/completions` "
+                    "table on backends with a table type (wandb). 0 disables it."
+                ),
+            )
+            parser.add_argument(
                 "--log-reward-category",
                 type=str,
                 default=None,

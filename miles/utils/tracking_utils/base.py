@@ -38,6 +38,11 @@ class TrackingBackend(ABC):
         backends that take the step numerically on every log call."""
         return
 
+    def log_table(self, name: str, columns: list[str], rows: list[list[Any]]) -> None:
+        """Log a table of text rows (e.g. sampled completions); no-op for backends
+        without a table type."""
+        return
+
 
 # Thin adapters for backwards compatibility to keep wandb_utils and tensorboard_utils untouched.
 class WandbBackend(TrackingBackend):
@@ -58,6 +63,13 @@ class WandbBackend(TrackingBackend):
         import wandb
 
         wandb.log(metrics)
+
+    def log_table(self, name: str, columns: list[str], rows: list[list[Any]]) -> None:
+        import wandb
+
+        # Like log(): no explicit step, the table rides with the metrics of the
+        # same call site and the dashboard picks the x-axis.
+        wandb.log({name: wandb.Table(columns=columns, data=rows)})
 
     def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
         # Call from the primary tracking process: definitions from secondary shared-mode writers are lost.
@@ -177,6 +189,10 @@ class TrackingManager:
     def log(self, metrics: dict[str, Any], step: int | None = None, step_key: str | None = None) -> None:
         for backend in self._backends:
             backend.log(metrics, step=step, step_key=step_key)
+
+    def log_table(self, name: str, columns: list[str], rows: list[list[Any]]) -> None:
+        for backend in self._backends:
+            backend.log_table(name, columns, rows)
 
     def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
         for backend in self._backends:
