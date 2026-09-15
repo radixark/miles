@@ -15,8 +15,6 @@ def _make_args(**overrides) -> Namespace:
         rollout_health_check_interval=10.0,
         miles_router_health_check_failure_threshold=3,
         sglang_server_concurrency=64,
-        rollout_num_gpus=8,
-        rollout_num_gpus_per_engine=2,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -25,18 +23,22 @@ def _make_args(**overrides) -> Namespace:
 class TestComputeMilesRouterConfig:
     def test_explicit_max_connections_wins(self):
         """--miles-router-max-connections overrides the derived value."""
-        config = compute_miles_router_config(_make_args(miles_router_max_connections=42), host="10.0.0.1", port=1234)
+        config = compute_miles_router_config(
+            _make_args(miles_router_max_connections=42), host="10.0.0.1", port=1234, num_engines=4
+        )
         assert config.max_connections == 42
 
     def test_max_connections_derived_from_engine_capacity(self):
-        """Without an override, capacity is concurrency * num engines."""
-        config = compute_miles_router_config(_make_args(), host="10.0.0.1", port=1234)
-        assert config.max_connections == 64 * 8 // 2
+        """Without an override, capacity is concurrency * the engines this router fronts,
+        which is not the rollout fleet's size when the router fronts the eval fleet."""
+        config = compute_miles_router_config(_make_args(), host="10.0.0.1", port=1234, num_engines=4)
+        assert config.max_connections == 64 * 4
 
     def test_remaining_fields_are_copied_from_args(self):
         """Host, port, timeout, and health check settings map one-to-one."""
         config = compute_miles_router_config(
             _make_args(miles_router_timeout=30.0, rollout_health_check_interval=5.0),
+            num_engines=4,
             host="10.0.0.1",
             port=1234,
         )
@@ -52,6 +54,7 @@ class TestComputeMilesRouterConfig:
             _make_args(miles_router_health_check_failure_threshold=7),
             host="10.0.0.1",
             port=1234,
+            num_engines=4,
         )
         assert config.health_check_failure_threshold == 7
 

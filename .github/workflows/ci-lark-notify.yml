@@ -1,6 +1,8 @@
 name: CI Lark Notify
 
-# Post scheduled PR Test results to the Miles CI bot in RL Dev.
+# Post scheduled PR Test results to the Miles CI bot in RL Dev. A first attempt
+# with failed jobs is rerun once instead of reported; the card follows the rerun
+# and lists the jobs it fixed as flaky.
 
 on:
   workflow_run:
@@ -33,7 +35,7 @@ jobs:
     environment: ci-lark-ai
     permissions:
       contents: read
-      actions: read
+      actions: write  # rerun-failed-jobs on the first nightly attempt
       id-token: write
     runs-on: ubuntu-latest
     timeout-minutes: 15

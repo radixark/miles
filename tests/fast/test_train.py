@@ -18,8 +18,10 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         colocate_memory_peak_device="cpu",
         debug_exit_after_rollout=None,
         eval_interval=None,
+        eval_uses_snapshots=False,
         ft_components=[],
         fully_async=False,
+        hf_checkpoint="/base/checkpoint",
         num_critic_only_steps=0,
         num_rollout=0,
         offload_rollout=False,
@@ -82,6 +84,44 @@ class TestEvalOnlyRun:
         assert events.index("prepare_eval") < events.index("eval:0")
         assert components.actor_model.trained == []
         assert not [event for event in events if event.startswith(("prepare_rollout", "generate_start"))]
+
+
+class TestEvalBeforeTrain:
+    async def test_fresh_run_evaluates_the_initial_checkpoint_at_step_zero(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=2, eval_interval=1)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_driver.train(args)
+
+        assert events.index("eval:0") < events.index("prepare_rollout:0")
+
+    async def test_resumed_run_evaluates_the_completed_rollout_not_the_next_one(self, monkeypatch: pytest.MonkeyPatch):
+        """start_rollout_id is the loaded checkpoint's rollout plus one, so dispatching it
+        would ask for a checkpoint that does not exist yet and, in staging mode, export
+        into the directory the first resumed iteration goes on to overwrite."""
+        events: list[str] = []
+        args = _make_args(num_rollout=5, eval_interval=1, start_rollout_id=3)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_driver.train(args)
+
+        assert events.index("eval:2") < events.index("prepare_rollout:3")
+        assert "eval:3" not in events[: events.index("prepare_rollout:3")]
+
+
+class TestFinalEval:
+    async def test_the_last_rollout_is_always_evaluated_even_off_cadence(self, monkeypatch: pytest.MonkeyPatch):
+        """The final point carries force=True because training is over and backpressure is
+        free, but the cadence check has to reach it first: with num_rollout not a multiple
+        of eval_interval, the final weights would otherwise never be measured."""
+        events: list[str] = []
+        args = _make_args(num_rollout=3, eval_interval=2)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_driver.train(args)
+
+        assert [event for event in events if event.startswith("eval:")] == ["eval:0", "eval:1", "eval:2"]
 
 
 class TestWeightEqualityCheck:

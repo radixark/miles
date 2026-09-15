@@ -93,7 +93,7 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
     actor_num_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
 
     if args.debug_train_only:
-        return actor_num_gpus, 0
+        return actor_num_gpus + args.eval_num_gpus, (actor_num_gpus if args.eval_num_gpus > 0 else 0)
     if args.rollout_external:
         if args.debug_rollout_only:
             return 0, 0

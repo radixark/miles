@@ -29,10 +29,7 @@ def _args() -> ScriptArgs:
         skip_saving=True,
         use_fault_tolerance=False,
         dsv4_impl="megatron",
-        # The CI image ships neither flash_mla nor cudnn-frontend DSA, so the
-        # default cuDNN backend cannot start; the PyTorch fallback still covers
-        # the megatron-impl model path (dsv4_hybrid attention, native mHC).
-        dsa_kernel_backend="none",
+        dsa_kernel_backend="cudnn",
         extra_args=(
             "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),

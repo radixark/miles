@@ -84,7 +84,7 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | Non
 
 @contextmanager
 def _with_miles_router(args: Namespace) -> Iterator[UvicornThreadServer]:
-    config = compute_miles_router_config(args, host=args.sglang_router_ip, port=args.sglang_router_port)
+    config = compute_miles_router_config(args, host=args.sglang_router_ip, port=args.sglang_router_port, num_engines=1)
     router = MilesRouter(config, verbose=False)
     server = UvicornThreadServer(router.app, host=config.host, port=config.port)
     try:
