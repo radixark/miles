@@ -1,7 +1,6 @@
 import asyncio
 import dataclasses
 import logging
-from collections.abc import Callable
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -9,7 +8,7 @@ from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
-from miles.utils.ft_utils.health_checker import ActiveAndEpoch
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
@@ -23,7 +22,6 @@ WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 async def create_rollout_servers(
     args,
     context_lock: ContextLock,
-    global_health_checker_activeness: Callable[[], ActiveAndEpoch],
     *,
     engine_provider: BaseWorkerProvider,
     router_addrs: dict[str, HostAndPort],
@@ -45,7 +43,6 @@ async def create_rollout_servers(
             router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
-            global_health_checker_activeness=global_health_checker_activeness,
             expected_num_cells=_compute_expected_num_cells(engine_provider, model_cfg=model_cfg),
         )
 
@@ -74,8 +71,8 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
-    global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lock_exempt(
-        lambda: ActiveAndEpoch(active=True, epoch=0)
+    health_checker_activeness: ActivenessTracker = dataclasses.field(
+        default_factory=lambda: ActivenessTracker(active=True)
     )
     expected_num_cells: int = 0
 
@@ -109,7 +106,7 @@ class RolloutServer:
             router_api_client=self._router_api_client,
             meta=cell_meta,
             provider=self.engine_provider,
-            global_health_checker_activeness=self.global_health_checker_activeness,
+            health_checker_activeness=self.health_checker_activeness.get,
         )
         self.server_cells[cell_id] = cell
         if not (self.args.colocate and cell_meta.needs_offload):

@@ -58,7 +58,7 @@ class ServerCell:
     meta: ServerCellMetadata
     router_api_client: SGLangRouterApiClient
     provider: BaseWorkerProvider
-    global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
+    health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
@@ -74,7 +74,7 @@ class ServerCell:
         self._health_checker.start()
 
     def _get_health_checker_active_and_epoch(self) -> ActiveAndEpoch:
-        controller_active_and_epoch = self.global_health_checker_activeness()
+        controller_active_and_epoch = self.health_checker_activeness()
         cell_active = isinstance(self._state, (StatePendingWeights, StateServing))
         return ActiveAndEpoch(
             active=cell_active and controller_active_and_epoch.active, epoch=controller_active_and_epoch.epoch
