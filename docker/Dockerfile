@@ -99,6 +99,12 @@ RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; the
       pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation; \
     fi
 
+# required by Megatron's cuDNN DSA backend (--dsv4-impl megatron)
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      pip install /tmp/wheels/flash_mla-*.whl && \
+      pip install --no-deps "nvidia-cudnn-frontend==1.26.0"; \
+    fi
+
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
        ls /tmp/wheels/mamba_ssm-*.whl 2>/dev/null | grep -q .; then \

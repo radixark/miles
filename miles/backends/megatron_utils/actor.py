@@ -823,13 +823,16 @@ class MegatronTrainRayActor(TrainRayActor):
 
         needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
         if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
-            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-            dist.barrier(group=get_gloo_group())
+            # Connection setup also allocates CUDA tensors (e.g. NCCL object
+            # collectives). Do not reuse unmapped, offloaded allocator blocks.
+            with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
+                self.weight_updater.connect_rollout_engines(
+                    rollout_engines,
+                    engine_gpu_counts=engine_gpu_counts,
+                    engine_gpu_offsets=engine_gpu_offsets,
+                )
+                self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
+                dist.barrier(group=get_gloo_group())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
