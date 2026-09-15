@@ -25,6 +25,7 @@ class RegistrationReporter:
     hub_endpoint: BaseWorkerHandle
     worker_provider: BaseWorkerProvider
     _info_of_cell_id: dict[str, CellInfo] = field(init=False, default_factory=dict)
+    _sequence_number: int = field(init=False, default=0)
 
     async def run(self) -> None:
         await self.worker_provider.init()
@@ -55,6 +56,7 @@ class RegistrationReporter:
             await stop_watch()
 
     async def _send_once(self) -> None:
+        self._sequence_number += 1
         snapshot = self._compute_snapshot()
         await asyncio.wait_for(
             self.hub_endpoint.registration_ingest(snapshot=snapshot), timeout=INGEST_TIMEOUT_SECONDS
@@ -69,6 +71,7 @@ class RegistrationReporter:
     def _compute_snapshot(self) -> RegistrationSnapshot:
         return RegistrationSnapshot(
             reporter_id=self.reporter_id,
+            sequence_number=self._sequence_number,
             cells=_compute_cells(
                 self._info_of_cell_id, reporter_id=self.reporter_id, worker_provider=self.worker_provider
             ),
