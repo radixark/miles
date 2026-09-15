@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from unittest.mock import patch
 
 import pytest
+from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
@@ -80,7 +81,7 @@ async def _launch(
     specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
 ) -> RayWorkerManager:
     manager = RayWorkerManager()
-    await manager.init(specs, pgs if pgs is not None else {})
+    await manager.init(worker_manager_args(), specs, pgs if pgs is not None else {})
     return manager
 
 
@@ -118,7 +119,7 @@ class _AllocPortsGate:
 class TestLaunchEntryPoint:
     async def test_the_manager_is_registered_under_its_well_known_name(self, fake_ray_cluster: FakeRayCluster):
         """Consumers find the manager by a fixed actor name, so it must be launched under that name."""
-        handle = RayWorkerManager.launch([], {})
+        handle = RayWorkerManager.launch(worker_manager_args(), [], {})
 
         assert handle.options["name"] == "ray_worker_manager"
         assert handle.actor_class is RayWorkerManager
@@ -128,12 +129,13 @@ class TestLaunchEntryPoint:
         """Returning before init completes would expose a manager whose workers have no addresses yet."""
         specs = [_make_spec("router")]
         pgs: dict = {}
+        args = worker_manager_args()
 
-        RayWorkerManager.launch(specs, pgs)
+        RayWorkerManager.launch(args, specs, pgs)
 
         init_calls = fake_ray_cluster.calls_of("init")
         assert len(init_calls) == 1
-        assert init_calls[0].args == (specs, pgs)
+        assert init_calls[0].args == (args, specs, pgs)
         assert fake_ray_cluster.resolved_refs == ["init"]
 
     async def test_launch_propagates_an_init_failure(self, fake_ray_cluster: FakeRayCluster):
@@ -141,11 +143,11 @@ class TestLaunchEntryPoint:
         fake_ray_cluster.method_errors["init"] = RuntimeError("init exploded")
 
         with pytest.raises(RuntimeError, match="init exploded"):
-            RayWorkerManager.launch([_make_spec("router")], {})
+            RayWorkerManager.launch(worker_manager_args(), [_make_spec("router")], {})
 
     async def test_get_handle_resolves_the_same_well_known_name(self, fake_ray_cluster: FakeRayCluster):
         """The lookup helper and the launcher must agree on the actor name."""
-        RayWorkerManager.launch([], {})
+        RayWorkerManager.launch(worker_manager_args(), [], {})
 
         assert RayWorkerManager.get_handle() is fake_ray_cluster.named_actors["ray_worker_manager"]
 
@@ -194,7 +196,7 @@ class TestInitLaunchesWorkers:
         with pytest.raises(RuntimeError, match="no ports"):
             with pytest.MonkeyPatch.context() as patched:
                 patched.setattr(ray_worker_manager._CommandActorManager, "alloc_ports", failing_alloc)
-                await manager.init([spec], {})
+                await manager.init(worker_manager_args(), [spec], {}, comm_backend=WorkerCommBackend.RAY)
 
         assert len(fake_ray_cluster.handles) == 2
         assert fake_ray_cluster.calls_of("run") == []
@@ -806,7 +808,9 @@ class TestAddressPublication:
         manager = RayWorkerManager()
         with pytest.MonkeyPatch.context() as patched:
             patched.setattr(_CommandActorManager, "alloc_ports", gated_alloc)
-            task = asyncio.create_task(manager.init([_make_spec("engine")], {}))
+            task = asyncio.create_task(
+                manager.init(worker_manager_args(), [_make_spec("engine")], {}, comm_backend=WorkerCommBackend.RAY)
+            )
             await asyncio.wait_for(entered.wait(), timeout=5)
 
             with pytest.raises(AssertionError, match="has not been given its ports yet"):
@@ -892,7 +896,14 @@ class TestAddressPublication:
         manager = RayWorkerManager()
         with pytest.MonkeyPatch.context() as patched:
             patched.setattr(_CommandActorManager, "alloc_ports", gated_alloc)
-            task = asyncio.create_task(manager.init([_make_spec("engine", num_workers_per_cell=2)], {}))
+            task = asyncio.create_task(
+                manager.init(
+                    worker_manager_args(),
+                    [_make_spec("engine", num_workers_per_cell=2)],
+                    {},
+                    comm_backend=WorkerCommBackend.RAY,
+                )
+            )
             await asyncio.wait_for(first_done.wait(), timeout=5)
 
             assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive is False
@@ -912,8 +923,15 @@ class TestAddressPublication:
         manager = RayWorkerManager()
         with pytest.MonkeyPatch.context() as patched:
             gate.install(patched)
-            task = asyncio.create_task(manager.init([_make_spec("engine", num_workers_per_cell=2)], {}))
-            await gate.wait_until_allocated(worker_names=["engine-0-0"])
+            task = asyncio.create_task(
+                manager.init(
+                    worker_manager_args(),
+                    [_make_spec("engine", num_workers_per_cell=2)],
+                    {},
+                    comm_backend=WorkerCommBackend.RAY,
+                )
+            )
+            await gate.wait_until_allocated(worker_names=["engine-00000-00000"])
 
             infos = manager.get_worker_infos("engine-0")
 
@@ -935,8 +953,15 @@ class TestAddressPublication:
         manager = RayWorkerManager()
         with pytest.MonkeyPatch.context() as patched:
             gate.install(patched)
-            task = asyncio.create_task(manager.init([_make_spec("engine", num_workers_per_cell=2)], {}))
-            await gate.wait_until_allocated(worker_names=["engine-0-0"])
+            task = asyncio.create_task(
+                manager.init(
+                    worker_manager_args(),
+                    [_make_spec("engine", num_workers_per_cell=2)],
+                    {},
+                    comm_backend=WorkerCommBackend.RAY,
+                )
+            )
+            await gate.wait_until_allocated(worker_names=["engine-00000-00000"])
 
             info = manager.get_cell_infos(pool_ids=["engine"])["engine-0"]
 
@@ -957,8 +982,15 @@ class TestAddressPublication:
         manager = RayWorkerManager()
         with pytest.MonkeyPatch.context() as patched:
             gate.install(patched)
-            task = asyncio.create_task(manager.init([_make_spec("engine", num_cells=2, num_workers_per_cell=2)], {}))
-            await gate.wait_until_allocated(worker_names=["engine-0-0", "engine-0-1"])
+            task = asyncio.create_task(
+                manager.init(
+                    worker_manager_args(),
+                    [_make_spec("engine", num_cells=2, num_workers_per_cell=2)],
+                    {},
+                    comm_backend=WorkerCommBackend.RAY,
+                )
+            )
+            await gate.wait_until_allocated(worker_names=["engine-00000-00000", "engine-00000-00001"])
 
             infos = manager.get_cell_infos(pool_ids=["engine"])
 
@@ -1650,7 +1682,7 @@ class TestStartCellsRollback:
         with pytest.raises(RuntimeError, match="cannot render"):
             with pytest.MonkeyPatch.context() as patched:
                 patched.setattr(ray_worker_manager._CommandActorManager, "post_setup", failing_post_setup)
-                await manager.init([spec], {})
+                await manager.init(worker_manager_args(), [spec], {}, comm_backend=WorkerCommBackend.RAY)
 
         assert not any(info.alive for info in manager.get_cell_infos(pool_ids=["engine"]).values())
 
