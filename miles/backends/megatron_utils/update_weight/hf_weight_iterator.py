@@ -1,8 +1,10 @@
 """Megatron implementations' shared base and factory for the backend-neutral
 HF weight iterator API."""
 
+import json
 import logging
 import math
+import os
 from abc import abstractmethod
 from argparse import Namespace
 from collections.abc import Sequence
@@ -28,6 +30,10 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        if self.quantization_config is not None:
+            self.quantization_config = with_checkpoint_quantized_basenames(
+                self.quantization_config, self.args.hf_checkpoint
+            )
         trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
         if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
             self.weight_update_selector = "target"
@@ -47,9 +53,7 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             return
         if not named_tensors:
             raise RuntimeError(
-                f"LoRA weight sync failed: the adapter export produced zero tensors"
-                f"{f' for adapter {adapter!r}' if adapter is not None else ''}. "
-                "This usually means the Megatron-Bridge or SGLang version is incompatible."
+                f"LoRA weight sync failed: the adapter export produced zero tensors{f' for adapter {adapter!r}' if adapter is not None else ''}. This usually means the Megatron-Bridge or SGLang version is incompatible."
             )
         if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
             raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
@@ -85,6 +89,24 @@ def get_hf_weight_iterator(
         model_name=model_name,
         quantization_config=quantization_config,
     )
+
+
+def with_checkpoint_quantized_basenames(quantization_config: dict | None, hf_checkpoint: str) -> dict | None:
+    """Quantize exactly the params the checkpoint stores packed: the published ignore list of
+    multimodal checkpoints (e.g. Kimi-K2.5 VL) omits the vision tower and projector."""
+    if quantization_config is None or quantization_config.get("quant_method") != "compressed-tensors":
+        return quantization_config
+    index_path = os.path.join(hf_checkpoint, "model.safetensors.index.json")
+    if not os.path.exists(index_path):
+        return quantization_config
+    with open(index_path) as index_file:
+        names = json.load(index_file)["weight_map"]
+    return {
+        **quantization_config,
+        "_miles_quantized_basenames": {
+            n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")
+        },
+    }
 
 
 def _gather_pp_full_adapter(

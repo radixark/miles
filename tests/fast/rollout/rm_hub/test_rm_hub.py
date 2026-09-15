@@ -21,6 +21,12 @@ class TestAsyncRm:
         "rm_type,response,label,expected",
         [
             ("math", r"\boxed{42}", "42", 1),
+            (
+                "math",
+                r"<|open|>think<|sep|>work<|close|>think<|open|>response<|sep|>Answer: \boxed{42}<|close|>response",
+                "42",
+                1,
+            ),
             ("math", r"\boxed{wrong}", "42", 0),
             ("f1", "hello world", "hello world", 1.0),
             ("dapo", "Answer: 42", "42", {"score": 1.0}),

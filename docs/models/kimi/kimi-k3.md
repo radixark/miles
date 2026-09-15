@@ -29,49 +29,60 @@ as HF-named chunks over CUDA IPC.
 
 ## 2. Supported Variants
 
-| Variant | Layers | Purpose | GPUs |
+| `--model-name` | Layers | Purpose | GPUs |
 |---|---|---|---|
-| `full` | full stack | the real model | 64 (16 × 4), validated |
-| `4layer` | 4 | smoke test, default | single node |
+| `Kimi-K3` | 93 | the release | 64 (16 × 4), validated |
+| `Kimi-K3-4layer` | 4 (1 dense + 3 MoE) | smoke test and CI, default | one node; two for rollout TP16 |
 
-`--model-variant` selects between them and sets the matching checkpoint paths and
-`megatron_model_type`.
+The name sets the checkpoint paths under `--model-dir` and the `megatron_model_type`;
+`--train-mode lora|full` picks the recipe.
 
-Architecture, from `scripts/models/kimi-k3.sh`: hidden 7168, FFN 33792, 96 attention heads,
+Architecture, from `scripts/models/kimi-k3.py`: hidden 7168, FFN 33792, 96 attention heads,
 `kv_channels=256`, MLA with `q_lora_rank=1536` / `kv_lora_rank=512` /
 `qk_head_dim=128` / `qk_pos_emb_head_dim=64` / `v_head_dim=128`, 896 experts at
 `moe_ffn_hidden_size=3072`, shared expert 6144, vocab 163840, no position embedding.
 
 ## 3. Environment Setup
 
-Use the `docker.io/radixark/miles:kimi-k3` image, which pins miles, SGLang (the
-[`sglang-miles-k3`](https://github.com/sgl-project/sglang/tree/sglang-miles-k3) branch) and
-flashinfer `0.6.15.post1` at the validated versions. On Hopper set
-`SGLANG_K3_ATTN_RES_MODE=jit`.
+Use the `radixark/miles:dev` image with the Megatron and SGLang changes from
+[radixark/Megatron-LM#94](https://github.com/radixark/Megatron-LM/pull/94) and
+[sgl-project/sglang#37704](https://github.com/sgl-project/sglang/pull/37704) until they merge.
 
-The only external asset is the Kimi-K3 MXFP4 HF checkpoint. Everything else derives in-repo.
+The only external asset is the native MXFP4 checkpoint; the BF16 dequantization and the
+`torch_dist` conversion derive from it. `scripts/run_kimi_k3.py` names the three by model:
+`{model_dir}/{model_name}`, `{model_dir}/{model_name}-bf16` and
+`{model_dir}/{model_name}-bf16_torch_dist`, each overridable with `--hf-checkpoint`,
+`--bf16-checkpoint` and `--ref-load`.
 
-### 3.1 Data
+### 3.1 Four-layer prune (one node)
 
 ```bash
-python scripts/run_kimi_k3_lora.py prepare-data --task dapo-math --data-dir <datasets>
+python scripts/run_kimi_k3.py prepare-download --model-name Kimi-K3-4layer --task gsm8k
+python scripts/run_kimi_k3.py prepare-bf16 --model-name Kimi-K3-4layer
+python scripts/run_kimi_k3.py prepare-torch-dist --model-name Kimi-K3-4layer
 ```
 
-### 3.2 MXFP4 to BF16
+`Pinaster/Kimi-K3-4layer` is the first dense layer plus three MoE layers of the release; it is
+what the `run-ci-model-scripts` recipes train.
+
+### 3.2 Full model
+
+Download the release into `{model_dir}/Kimi-K3` and dequantize it shard by shard across the
+nodes (`--shard-rank/--num-shards`, then `--finalize-only` once):
 
 ```bash
-python tools/convert_mxfp4_to_bf16.py --model-dir <native-mxfp4> --save-dir <bf16-hf>
+python tools/convert_mxfp4_to_bf16.py --model-dir <native-mxfp4> --save-dir <bf16-hf> --device cuda \
+    --shard-rank $RANK --num-shards $NUM_NODES
 ```
 
-### 3.3 BF16 to `torch_dist`
-
-Unlike the bridge-mode recipes, K3 needs an offline conversion. Run it on 32 ranks; the
-output re-shards at load, so the conversion layout does not have to match the training one:
+The `torch_dist` conversion runs on 32 ranks; the output re-shards at load, so the conversion
+layout does not have to match the training one:
 
 ```bash
-source scripts/models/kimi-k3.sh   # defines MODEL_ARGS
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py kimi-k3)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 torchrun --nnodes=8 --nproc-per-node=4 ... \
-    tools/convert_hf_to_torch_dist.py "${MODEL_ARGS[@]}" \
+    tools/convert_hf_to_torch_dist.py ${MODEL_ARGS[@]} \
     --hf-checkpoint <bf16-hf> --save <torch-dist-dcp> \
     --bf16 --tensor-model-parallel-size 32 --sequence-parallel \
     --pipeline-model-parallel-size 1 --context-parallel-size 1 \
@@ -79,17 +90,14 @@ torchrun --nnodes=8 --nproc-per-node=4 ... \
     --megatron-to-hf-mode raw
 ```
 
-Training then takes the **MXFP4** directory as `--hf-checkpoint` and the converted
-`torch_dist` as `--ref-load`.
-
 ## 4. Launch
 
-Validated on **16 nodes × 4 GPUs**. One container per node; bring up a ray cluster across
-them, `export MILES_SCRIPT_EXTERNAL_RAY=1`, then:
+`--train-mode lora` (default) or `full`. Validated on **16 nodes × 4 GPUs**: one container per
+node, a ray cluster across them, `export MILES_SCRIPT_EXTERNAL_RAY=1`, then:
 
 ```bash
-python scripts/run_kimi_k3_lora.py train \
-  --mode normal --model-variant full --task dapo-math --reward-model deepscaler \
+python scripts/run_kimi_k3.py train \
+  --mode normal --model-name Kimi-K3 --train-mode lora --task dapo-math --reward-model deepscaler \
   --num-nodes 16 --num-gpus-per-node 4 \
   --pipeline-parallel-size 8 --context-parallel-size 2 \
   --rollout-tp-size 16 --rollout-max-concurrency 8 \
@@ -104,9 +112,12 @@ python scripts/run_kimi_k3_lora.py train \
 ```
 
 `--rollout-max-concurrency 8` is passed explicitly: the field default is 64, and the
-validated runs pin 8.
+validated runs pin 8. Off the validated 64 GPUs the full model needs `--tp-size-override`
+(and `--ep-size-override`).
 
-For a single-node smoke test, drop to the default `--model-variant 4layer`.
+For a single-node smoke test use the default `--model-name Kimi-K3-4layer`: the trainer layout
+follows the GPU count (TP8/EP8 on 8 GPUs) and the rollout TP/EP default to it; `--rollout-tp-size 16
+--rollout-ep-size 1` on two nodes reproduces the TP16 Marlin layout of the full recipe.
 
 ## 5. Recipe Configuration
 
@@ -164,7 +175,6 @@ weight sync, the adapter export is leaking and the run will die later rather tha
 
 - The image preloads a small `shm_unlink` shim through `/etc/ld.so.preload`. It tolerates a
   benign PyTorch CUDA-IPC unlink race that otherwise aborts colocated weight sync at scale.
-- On Hopper, set `SGLANG_K3_ATTN_RES_MODE=jit`.
 - Weight conversion for K3 lives in
   `miles/backends/megatron_utils/megatron_to_hf/kimi_k3.py`, and the model itself in
   `miles_plugins/models/kimi_k3/`.
