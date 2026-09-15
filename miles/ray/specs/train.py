@@ -150,11 +150,7 @@ def compute_actor_args(args):
 
 def compute_critic_args(args):
     [critic_config] = [config for config in resolve_megatron_config(args).trainers if config.role == CRITIC_ROLE]
-    critic_args = compute_trainer_args(args, critic_config)
-    critic_args.kl_coef = 0
-    critic_args.use_opd = False
-    critic_args.disable_param_buffers_cpu_backup = False
-    return critic_args
+    return compute_trainer_args(args, critic_config)
 
 
 def _compute_spec_trainer(
