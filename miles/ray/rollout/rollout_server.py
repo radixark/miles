@@ -7,11 +7,11 @@ from typing import Any
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
-from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.retry_utils import retry_until_deadline
+from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
 
@@ -20,24 +20,19 @@ WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
 
 async def create_rollout_servers(
-    args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], ActiveAndEpoch]
+    args,
+    context_lock: ContextLock,
+    global_health_checker_activeness: Callable[[], ActiveAndEpoch],
+    *,
+    router_addrs: dict[str, HostAndPort],
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
-    assert args.sglang_router_ip is None, (
-        "external router mode was removed: miles always starts its own routers "
-        "(expected to return with the k8s-native mode)"
-    )
-
     config = resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
 
-    for model_idx, model_cfg in enumerate(config.models):
-        router_addr = await wait_router_ready(model_idx=model_idx)
-
-        if model_idx == 0:
-            args.sglang_router_ip = router_addr.host
-            args.sglang_router_port = router_addr.port
+    for model_cfg in config.models:
+        router_addr = router_addrs[model_cfg.name]
 
         servers[model_cfg.name] = RolloutServer(
             server_cells={},
@@ -50,8 +45,6 @@ async def create_rollout_servers(
             global_health_checker_activeness=global_health_checker_activeness,
             expected_num_cells=model_cfg.num_server_cells,
         )
-
-    args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
     return servers
 
