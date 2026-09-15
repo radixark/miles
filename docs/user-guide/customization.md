@@ -143,6 +143,13 @@ async def batched_custom_rm(args, samples: list[Sample]) -> list[float]:
     ...
 ```
 
+`--rm-timeout <seconds>` sets a positive timeout for per-sample reward calls. A timeout logs a warning and
+returns `{reward_key: 0.0}` when `--reward-key` is configured, otherwise `0.0`. Built-in synchronous graders
+run in a dedicated thread pool, created on first use with `--rm-timeout-workers` workers (default 8).
+Timed-out threads keep running until the grader returns, without consuming the event loop's default
+executor. Custom per-sample coroutines are awaited under the timeout, but custom code
+that blocks synchronously cannot be interrupted. Batch-level custom reward functions are not covered.
+
 **Built-in `--rm-type` options:** `math`, `dapo`, `deepscaler`, `gemma_math`, `f1`,
 `gpqa`, `ifbench`, `remote_rm` (with `--rm-url`), `random`, `deterministic_random`.
 Prefixing any of them with `boxed_` (for example `boxed_math`) extracts `\boxed{}`

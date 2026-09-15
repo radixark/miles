@@ -1,6 +1,10 @@
 import asyncio
 import hashlib
+import logging
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 import aiohttp
 
@@ -8,12 +12,27 @@ from miles.utils.function_registry import load_function
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import Sample
 
+logger = logging.getLogger(__name__)
+
 from .deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
 from .f1 import f1_score
 from .gpqa import compute_gpqa_reward
 from .math_dapo_utils import compute_score as compute_score_dapo
 from .math_utils import extract_answer as extract_boxed_answer
 from .math_utils import grade_answer_verl
+
+_rm_timeout_executor: ThreadPoolExecutor | None = None
+_rm_timeout_executor_lock = threading.Lock()
+
+
+def _get_timeout_executor(max_workers: int) -> ThreadPoolExecutor:
+    """Dedicated pool for graders run under --rm-timeout, so abandoned calls cannot exhaust the
+    event loop's default executor. Created lazily; the size is fixed by the first caller."""
+    global _rm_timeout_executor
+    with _rm_timeout_executor_lock:
+        if _rm_timeout_executor is None:
+            _rm_timeout_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rm-timeout")
+        return _rm_timeout_executor
 
 
 async def remote_rm(args, sample: Sample):
@@ -40,7 +59,37 @@ def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
     return custom_rm_path, rm_type
 
 
+def _timeout_reward(args) -> float | dict[str, float]:
+    """Return {reward_key: 0.0} when args.reward_key is configured, otherwise 0.0."""
+    reward_key = getattr(args, "reward_key", None)
+    return {reward_key: 0.0} if reward_key else 0.0
+
+
 async def async_rm(args, sample: Sample, **kwargs):
+    """Score one sample, optionally limiting the wait with ``--rm-timeout``.
+
+    A timeout logs a warning and returns ``{args.reward_key: 0.0}`` when a reward key is
+    configured, otherwise ``0.0``. Built-in synchronous graders use a dedicated thread
+    pool, created lazily with ``--rm-timeout-workers`` workers (default 8). Timed-out
+    threads may keep running until the grader returns. Custom per-sample
+    coroutines are awaited normally under the timeout, which cannot interrupt custom
+    code that blocks synchronously. Batch-level custom reward functions are not covered.
+    """
+    timeout = getattr(args, "rm_timeout", None)
+    if timeout is None:
+        return await _async_rm(args, sample, **kwargs)
+    try:
+        return await asyncio.wait_for(_async_rm(args, sample, in_thread=True, **kwargs), timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "reward function exceeded --rm-timeout %ss for sample index=%s; assigning reward 0",
+            timeout,
+            sample.index,
+        )
+        return _timeout_reward(args)
+
+
+async def _async_rm(args, sample: Sample, in_thread: bool = False, **kwargs):
     custom_rm_path, rm_type = _resolve_reward_config(args, sample)
 
     if custom_rm_path is not None:
@@ -58,7 +107,17 @@ async def async_rm(args, sample: Sample, **kwargs):
     # Implement the actual logic as needed.
     if rm_type == "remote_rm":
         return await remote_rm(args, sample)
-    elif rm_type == "deepscaler":
+    if in_thread:
+        executor = _get_timeout_executor(getattr(args, "rm_timeout_workers", 8))
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            executor, copy_context().run, _rule_based_rm, rm_type, sample, response, label, metadata
+        )
+    return _rule_based_rm(rm_type, sample, response, label, metadata)
+
+
+def _rule_based_rm(rm_type: str, sample: Sample, response, label, metadata):
+    if rm_type == "deepscaler":
         return get_deepscaler_rule_based_reward(response, label)
     elif rm_type == "gemma_math":
         return get_gemma_math_reward(response, label)
