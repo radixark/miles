@@ -4,7 +4,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcher,
@@ -67,6 +69,16 @@ class LinearTrajectory:
     but the agent may retry from an earlier point (e.g. re-running a tool call),
     in which case the session is rolled back at most one assistant step.
 
+    ``turn_args_history`` holds, per generated checkpoint, the template args it
+    was rendered with (``PreparedChatRequest.template_args``: chat template
+    kwargs and tools); a request continuing a checkpoint renders alike so the
+    stored token history keeps one interpretation.  It is sliced with the
+    other checkpoint lists on rollback.
+
+    ``prepare_token_ids_and_request_args`` serves a request: roll back, decide
+    the template args and the rest of the request against the new tip's
+    ``turn_args``, render the prompt.
+
     Concurrency contract: all mutating methods must be called under ``self.lock``.
     """
 
@@ -77,6 +89,12 @@ class LinearTrajectory:
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
+    turn_args_history: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def turn_args(self) -> dict[str, Any]:
+        """The template args the current tip was rendered with; empty before the first checkpoint."""
+        return self.turn_args_history[-1] if self.turn_args_history else {}
 
     @property
     def token_ids(self) -> list[int]:
@@ -86,32 +104,62 @@ class LinearTrajectory:
     def append_record(self, record: SessionRecord) -> None:
         self.records.append(record)
 
-    def prepare_pretokenized(
+    def prepare_token_ids_and_request_args(
         self,
-        request_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        client: dict[str, Any],
         *,
+        config: SessionServerConfig,
         tito_tokenizer: TITOTokenizer,
         message_matcher: SessionMessageMatcher | None = None,
-    ) -> list[int]:
-        """Build the full prompt input_ids for *request_messages*.
+    ) -> PreparedChatRequest:
+        """Turn a parsed chat request into the outbound body with ``input_ids``.
 
-        Validates that *request_messages* extends the stored history under
-        *message_matcher* (defaults to the strict matcher), rolling back at
-        most one assistant step on agent retries, then reuses the stored
-        token_ids as the pretokenized prefix.  When no stored checkpoint
-        is left to build on — the first turn, or a retry of the first turn that
-        rolled the session back to empty — renders *request_messages* from
-        scratch via the chat template instead.
+        In order: roll back to the checkpoint *client*'s messages continue
+        (``_try_detect_and_rollback_to_assistant_checkpoint``); decide the
+        template args and the rest of the request against that checkpoint's
+        recorded ``turn_args`` (``request_args.prepare_chat_request``, which may
+        raise a 400); render the prompt with those template args.  The args
+        come before the render because they change the token ids; see
+        ``request_args`` for why they are checked against the checkpoint.
 
         Must be called under ``self.lock``.
         """
         matcher = message_matcher if message_matcher is not None else strict_message_matches
-        template_args = tito_tokenizer.default_template_args(tools)
-
-        # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
-        #    first turn rolls back to the empty checkpoint, clearing token_ids.
+        request_messages = client.get("messages", [])
         self._try_detect_and_rollback_to_assistant_checkpoint(request_messages, matcher)
+        prepared = prepare_chat_request(
+            client, tito_tokenizer, config=config, turn_args=self.turn_args if self.turn_args_history else None
+        )
+        prepared.body["input_ids"] = self._render_token_ids(
+            request_messages,
+            template_args=prepared.template_args,
+            tito_tokenizer=tito_tokenizer,
+            message_matcher=matcher,
+        )
+        return prepared
+
+    def _render_token_ids(
+        self,
+        request_messages: list[dict[str, Any]],
+        *,
+        template_args: dict[str, Any],
+        tito_tokenizer: TITOTokenizer,
+        message_matcher: SessionMessageMatcher | None = None,
+    ) -> list[int]:
+        """Build prompt token IDs while reusing the stored token prefix.
+
+        Use `template_args` for newly rendered tokens after rollback.
+
+        Validates that *request_messages* extends the stored history under
+        *message_matcher* (defaults to the strict matcher) and reuses the stored
+        token_ids as the pretokenized prefix.  When no stored checkpoint is left
+        to build on — the first turn, or a retry of the first turn that rolled
+        the session back to empty — renders *request_messages* from scratch via
+        the chat template instead.
+
+        Must be called under ``self.lock``.
+        """
+        matcher = message_matcher if message_matcher is not None else strict_message_matches
 
         if not self.token_ids:
             return tito_tokenizer.apply_chat_template(
@@ -121,7 +169,7 @@ class LinearTrajectory:
                 template_args=template_args,
             )
 
-        # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
+        # Confirm the (rolled-back) stored messages are a prefix of request,
         #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
         try:
             assert_messages_append_only_with_allowed_role(
@@ -147,10 +195,12 @@ class LinearTrajectory:
         prompt_token_ids: list[int],
         completion_token_ids: list[int],
         max_trim_tokens: int,
+        turn_args: dict[str, Any] | None = None,
     ) -> None:
         """Store raw token IDs after a successful response.
 
-        Appends ``prompt_token_ids + completion_token_ids`` as a new checkpoint.
+        Appends ``prompt_token_ids + completion_token_ids`` as a new checkpoint,
+        recording ``turn_args``, the template args it was rendered with, alongside.
         Validates that the previously stored token_ids are a prefix of the new
         checkpoint (tolerating up to ``max_trim_tokens`` trailing differences).
         Must be called under ``self.lock``.
@@ -171,6 +221,7 @@ class LinearTrajectory:
         # no longer match its own session.
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
+        self.turn_args_history.append(dict(turn_args or {}))
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
@@ -282,6 +333,7 @@ class LinearTrajectory:
 
         self.messages = stored[:rollback_msg_end]
         self.trajectory_token_ids = self.trajectory_token_ids[: checkpoint_index + 1]
+        self.turn_args_history = self.turn_args_history[: checkpoint_index + 1]
         self.records = self.records[: checkpoint_index + 1]
         self.generated_checkpoint_message_ends = self.generated_checkpoint_message_ends[: checkpoint_index + 1]
         self.num_assistant = len(self.generated_checkpoint_message_ends)
@@ -333,12 +385,12 @@ class SessionRegistry:
         if not session.token_ids:
             return None
         try:
-            tools = session.records[-1].request.get("tools") if session.records else None
+            # Rendered as the tip recorded; an empty record means the launch defaults.
             expected_ids = self.tito_tokenizer.apply_chat_template(
                 session.messages,
                 add_generation_prompt=False,
                 tokenize=True,
-                template_args=self.tito_tokenizer.default_template_args(tools),
+                template_args=session.turn_args or None,
             )
             mismatches = self.comparator.compare_sequences(expected_ids, session.token_ids)
             return [m.to_dict() for m in mismatches]

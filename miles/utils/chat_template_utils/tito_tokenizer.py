@@ -107,30 +107,79 @@ class TITOTokenizer:
         special_token_ids: set[int] | None = None,
     ):
         self.tokenizer = tokenizer
-        provided_kwargs = dict(chat_template_kwargs or {})
-        for key, value in self.FIXED_TEMPLATE.extra_kwargs.items():
-            if key in provided_kwargs and provided_kwargs[key] != value:
-                raise ValueError(
-                    f"chat template kwarg {key}={provided_kwargs[key]!r} conflicts with "
-                    f"the value registered for {type(self).__name__}: {value!r}"
-                )
-            provided_kwargs[key] = value
-        self.chat_template_kwargs = provided_kwargs
+        self.chat_template_kwargs = self.canonical_kwargs(dict(chat_template_kwargs or {}))
         self._assistant_start_str = assistant_start_str
         self.allowed_append_roles = self.FIXED_TEMPLATE.allowed_append_roles
         self.special_token_ids: set[int] = special_token_ids
 
-    def clone_with_chat_template_kwargs(self, request_kwargs: dict[str, Any]) -> TITOTokenizer:
-        """Create a request-scoped copy with negligible overhead."""
-        return type(self)(
-            self.tokenizer,
-            chat_template_kwargs=template.merge_chat_template_kwargs(
-                self.chat_template_kwargs,
-                request_kwargs,
-                alias_keys=self.chat_template_kwarg_aliases,
-            ),
-            assistant_start_str=self._assistant_start_str,
+    def canonical_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Apply required template kwargs and reject conflicting values.
+
+        Model families also normalize their aliases here. This runs for both
+        launch defaults and merged request kwargs; repeated calls must preserve
+        the result.
+        """
+        canonical = dict(kwargs)
+        for key, value in self.FIXED_TEMPLATE.extra_kwargs.items():
+            if key in canonical and canonical[key] != value:
+                raise ValueError(
+                    f"chat template kwarg {key}={canonical[key]!r} conflicts with "
+                    f"the value registered for {type(self).__name__}: {value!r}"
+                )
+            canonical[key] = value
+        return canonical
+
+    def template_args_for_request(self, client: dict[str, Any], *, turn_args: dict[str, Any] | None) -> dict[str, Any]:
+        """Resolve template kwargs and tools for one chat request.
+
+        `turn_args=None` starts a new root: request kwargs override launch defaults.
+        Otherwise, omitted kwargs inherit from the recorded turn, and changes are
+        rejected to preserve the stored token prefix. Model families normalize
+        aliases and constants here and decide tool changes in `tools_for_continued_turn`.
+        The session server maps this method's `ValueError` to HTTP 400.
+        """
+        request_kwargs = client.get("chat_template_kwargs")
+        if request_kwargs is None:
+            request_kwargs = {}
+        if not isinstance(request_kwargs, dict):
+            raise ValueError("chat_template_kwargs must be an object")
+        if "tools" in request_kwargs:
+            raise ValueError("tools belongs at the top level of the request, not in chat_template_kwargs")
+
+        recorded = None if turn_args is None else {key: value for key, value in turn_args.items() if key != "tools"}
+        base = self.chat_template_kwargs if recorded is None else recorded
+        kwargs = self.canonical_kwargs(
+            template.merge_chat_template_kwargs(base, request_kwargs, alias_keys=self.chat_template_kwarg_aliases)
         )
+        if recorded is not None and kwargs != recorded:
+            raise ValueError(
+                f"chat_template_kwargs {kwargs!r} is not accepted: the turn being continued "
+                f"was rendered with {recorded!r}"
+            )
+
+        tools = client.get("tools") or None
+        if turn_args is not None:
+            tools = self.tools_for_continued_turn(tools, recorded=turn_args.get("tools"))
+        return {**kwargs, **({"tools": tools} if tools else {})}
+
+    def tools_for_continued_turn(
+        self, requested: list[dict[str, Any]] | None, *, recorded: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
+        """The tools a request continuing a turn rendered with *recorded* tools
+        renders with.  Omitted tools inherit the recorded ones: they are in the
+        prompt prefix already, and the wire must declare them for the tool-call
+        parser.  Equal tools (compared canonicalized) pass.  A change is refused
+        because this family renders tools in the prompt prefix, which a continued
+        turn reuses as-is; a family whose template lets an appended turn carry
+        new tools overrides this."""
+        if requested is None:
+            return recorded
+        if template.extract_tool_dicts(requested) != template.extract_tool_dicts(recorded):
+            raise ValueError(
+                "tools changed on a continued turn: the turn being continued was rendered with different tools, "
+                "and this model family renders tools in the prompt prefix"
+            )
+        return requested
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -728,10 +777,15 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
                 tokenizer.convert_tokens_to_ids("<｜Assistant｜>"),
             },
         )
-        self.chat_template_kwargs = {
-            **self.chat_template_kwargs,
-            "thinking": deepseek.V32.render_thinking_enabled(self.chat_template_kwargs),
-        }
+
+    def canonical_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Normalize thinking aliases to `thinking`, the key SGLang's reasoning parser reads."""
+        canonical = super().canonical_kwargs(kwargs)
+        thinking = deepseek.V32.render_thinking_enabled(canonical)
+        for alias in _DEEPSEEK_MODE_KWARG_ALIASES:
+            canonical.pop(alias, None)
+        canonical["thinking"] = thinking
+        return canonical
 
 
 # ---------------------------------------------------------------------------
@@ -781,13 +835,18 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
             tokenizer.convert_tokens_to_ids("</think>"),
         }
         self.trailing_token_ids = frozenset({self._assistant_id} | self._think_bracket_ids)
-        # sglang's dsv4 parser separates reasoning only when the request carries
-        # `thinking` (DeepSeek-V3.1's template kwarg, kept for the V4 family);
-        # make the effective render mode explicit so the session server forwards it.
-        self.chat_template_kwargs = {
-            **self.chat_template_kwargs,
-            "thinking": deepseek.V4.render_thinking_enabled(self.chat_template_kwargs),
-        }
+
+    def canonical_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Normalize thinking aliases to `thinking` for SGLang's V4 reasoning parser.
+
+        The parser separates reasoning content only when `thinking` is explicitly true.
+        """
+        canonical = super().canonical_kwargs(kwargs)
+        thinking = deepseek.V4.render_thinking_enabled(canonical)
+        for alias in _DEEPSEEK_MODE_KWARG_ALIASES:
+            canonical.pop(alias, None)
+        canonical["thinking"] = thinking
+        return canonical
 
     def tokenize_additional_messages(
         self,

@@ -360,6 +360,7 @@ def _build_server_config(
         save_debug_trajectory_data=None,
         lora_rank=0,
         lora_adapter_path=None,
+        lora_train_only=False,
         timeout=600.0,
         backend_url=backend_url,
         host=ip,

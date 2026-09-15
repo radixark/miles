@@ -10,11 +10,13 @@ Concurrency contract: single lock on the whole tree. A commit only appends a new
 node under the parent the request attached to, so concurrent generations from
 the same spot become sibling nodes instead of a conflict.
 
-The tree is the whole state. Serving a request is: ``attach_point_for_request``
-(pure: which node the request continues), ``prepare_pretokenized`` under that
-node, and ``commit_generation`` under that node. What ``GET /sessions`` shows as
-a single chain is ``SessionStateV2.latest()``, the most recently committed
-generation's path — derived, never stored.
+The tree is the whole state. Serving a request is
+``prepare_token_ids_and_request_args`` (``attach_point_for_request``, pure: which
+node the request continues; the request args against that node's ``turn_args``;
+the prompt rendered under that node) and then ``commit_generation`` under that
+node. What ``GET /sessions`` shows as a single chain is
+``SessionStateV2.latest()``, the most recently committed generation's path —
+derived, never stored.
 """
 
 import asyncio
@@ -23,8 +25,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
+from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
@@ -83,20 +87,51 @@ def attach_point_for_request(
     return attach
 
 
-def prepare_pretokenized(
+def prepare_token_ids_and_request_args(
+    state: SessionStateV2,
+    client: dict[str, Any],
+    *,
+    config: SessionServerConfig,
+    tito_tokenizer: TITOTokenizer,
+    message_matcher: SessionMessageMatcher | None = None,
+) -> tuple[PreparedChatRequest, TrajectoryNode | None]:
+    """Turn a parsed chat request into the outbound body with ``input_ids``,
+    plus the node it attaches under (the parent for ``commit_generation``).
+
+    In order: find the attach node (``attach_point_for_request``, pure); decide
+    the template args and the rest of the request against that node's recorded
+    ``turn_args`` (``request_args.prepare_chat_request``, which may raise a
+    400); render the prompt under that node with those template args. The args
+    come before the render because they change the token ids; see
+    ``request_args`` for why they are checked against the node. Nothing here
+    changes session state.
+    """
+    request_messages = client.get("messages", [])
+    parent = attach_point_for_request(state, request_messages, message_matcher=message_matcher).node
+    prepared = prepare_chat_request(
+        client, tito_tokenizer, config=config, turn_args=parent.turn_args if parent is not None else None
+    )
+    prepared.body["input_ids"] = _render_token_ids(
+        parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
+    )
+    return prepared, parent
+
+
+def _render_token_ids(
     parent: TrajectoryNode | None,
     request_messages: list[dict[str, Any]],
     *,
-    tools: list[dict[str, Any]] | None,
+    template_args: dict[str, Any],
     tito_tokenizer: TITOTokenizer,
 ) -> list[int]:
-    """Pretokenized input_ids for a request attaching under *parent*.
+    """Build prompt token IDs for a request extending `parent`.
+
+    Use `template_args` for newly rendered tokens.
 
     - No parent (new root): render the whole request from scratch.
     - Otherwise: reuse the parent's token snapshot as-is and tokenize only
       the new suffix on top — the shared prefix is never re-rendered.
     """
-    template_args = tito_tokenizer.default_template_args(tools)
     if parent is None:
         return tito_tokenizer.apply_chat_template(
             request_messages,
@@ -143,9 +178,11 @@ def commit_generation(
     record: SessionRecord,
     response_id: str,
     finish_reason: str,
+    turn_args: dict[str, Any] | None = None,
 ) -> TrajectoryNode:
     """Validate and append one generation under *parent* (the request's attach
-    node). Prefix validation is byte-identical to the pre-tree checkpoint check."""
+    node). Prefix validation is byte-identical to the pre-tree checkpoint check.
+    ``turn_args`` is what the tokenizer recorded for this generation."""
     all_token_ids = prompt_token_ids + completion_token_ids
     assert_pretokenized_prefix(
         parent.token_ids if parent is not None else [],
@@ -166,6 +203,7 @@ def commit_generation(
         response_id=response_id,
         record=record,
         finish_reason=finish_reason,
+        turn_args=turn_args,
     )
     return node
 
@@ -186,9 +224,16 @@ class SessionRegistryV2(SessionRegistry):
         self.sessions[session_id] = SessionStateV2()
         return session_id
 
-    def compute_mismatch(self, messages: list[dict[str, Any]], token_ids: list[int], tools: Any) -> list[dict] | None:
+    def compute_mismatch(
+        self,
+        messages: list[dict[str, Any]],
+        token_ids: list[int],
+        *,
+        turn_args: dict[str, Any],
+    ) -> list[dict] | None:
         """Compare accumulated token IDs against canonical chat template
-        output for one path. Read-only."""
+        output for one path, rendered as its leaf recorded (an empty record
+        means the launch defaults). Read-only."""
         if not token_ids:
             return None
         try:
@@ -196,7 +241,7 @@ class SessionRegistryV2(SessionRegistry):
                 messages,
                 add_generation_prompt=False,
                 tokenize=True,
-                template_args=self.tito_tokenizer.default_template_args(tools),
+                template_args=turn_args or None,
             )
             mismatches = self.comparator.compare_sequences(expected_ids, token_ids)
             return [m.to_dict() for m in mismatches]
@@ -208,4 +253,4 @@ class SessionRegistryV2(SessionRegistry):
         node = state.latest()
         if node is None:
             return None
-        return self.compute_mismatch(node.path_messages(), node.token_ids, node.record.request.get("tools"))
+        return self.compute_mismatch(node.path_messages(), node.token_ids, turn_args=node.turn_args)
