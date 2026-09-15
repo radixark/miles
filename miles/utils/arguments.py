@@ -13,6 +13,7 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
+    has_megatron_checkpoint,
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
@@ -3679,6 +3680,12 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )
+        if has_megatron_checkpoint(args.requested_load):
+            raise ValueError(
+                "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
+                "the first sync only captures a baseline from --hf-checkpoint and never transfers the "
+                f"weights restored from --load={args.requested_load}."
+            )
 
     if args.colocate:
         if args.offload_train is None:
