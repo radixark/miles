@@ -22,6 +22,11 @@ def lora_rollout_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and not getattr(args, "lora_train_only", False)
 
 
+def engine_loads_adapter_from_disk(args: Namespace) -> bool:
+    """Only when no trainer will push the adapter; otherwise the first weight sync carries it."""
+    return args.lora_adapter_path is not None and (args.debug_rollout_only or args.debug_skip_weight_update)
+
+
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     """LoRA + --colocate + --lora-base-cpu-backup all set."""
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)

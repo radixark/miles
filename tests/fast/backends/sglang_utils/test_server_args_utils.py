@@ -188,7 +188,9 @@ class TestServerArgsToArgv:
     def test_lora_adapter_paths_roundtrip(self):
         """The name=path lora mapping survives the argv boundary."""
         server_args = _server_args(
-            args=_args(lora_rank=8, target_modules=["linear_qkv"], lora_adapter_path="/fake/adapter")
+            args=_args(
+                lora_rank=8, target_modules=["linear_qkv"], lora_adapter_path="/fake/adapter", debug_rollout_only=True
+            )
         )
         _assert_roundtrips(server_args)
 

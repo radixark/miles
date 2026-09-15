@@ -22,6 +22,8 @@ def make_args(**overrides: object) -> SimpleNamespace:
         use_rollout_indexer_replay=False,
         fp16=False,
         lora_adapter_path=None,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
         multi_lora_n_adapters=1,
         target_modules=["linear_qkv"],
     )
@@ -114,3 +116,20 @@ class TestSglangOverridePrecedence:
         assert server_args["dtype"] == "float16"
         assert server_args["enable_lora"] is True
         assert server_args["mem_fraction_static"] == 0.7
+
+
+class TestAdapterOwnership:
+    def test_a_trainer_run_leaves_the_adapter_to_the_first_weight_sync(self):
+        """An engine that also loaded the adapter from disk would serve stale weights if the sync were skipped."""
+        server_args = compute(make_args(lora_rank=8, lora_adapter_path="/fake/adapter"))
+
+        assert server_args["enable_lora"] is True
+        assert not server_args.get("lora_paths")
+
+    @pytest.mark.parametrize(
+        "flag", ["debug_rollout_only", "debug_skip_weight_update"], ids=["rollout-only", "skip-sync"]
+    )
+    def test_without_a_trainer_push_the_engine_loads_the_adapter_itself(self, flag):
+        server_args = compute(make_args(lora_rank=8, lora_adapter_path="/fake/adapter", **{flag: True}))
+
+        assert server_args["lora_paths"] == ["miles_lora=/fake/adapter"]
