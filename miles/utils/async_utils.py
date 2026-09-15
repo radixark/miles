@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import inspect
 import logging
 import threading
 import traceback
@@ -17,6 +18,7 @@ __all__ = [
     "wait_cancelling_pending_on_first_completion",
     "eager_create_task",
     "gather_and_raise_first",
+    "maybe_await",
 ]
 
 _T = TypeVar("_T")
@@ -167,3 +169,7 @@ async def gather_and_raise_first(
     if failures:
         raise failures[0]
     return results
+
+
+async def maybe_await(value: Awaitable[_T] | _T) -> _T:
+    return await value if inspect.isawaitable(value) else value

@@ -84,6 +84,9 @@ class BaseRolloutFn(abc.ABC):
     def load(self, rollout_id: int | None) -> None:
         return None
 
+    async def dispose(self) -> None:
+        return None
+
 
 @dataclass(frozen=True)
 class GenerateFnInput:

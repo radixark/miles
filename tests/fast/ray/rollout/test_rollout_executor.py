@@ -3,6 +3,7 @@ from argparse import Namespace
 
 import pytest
 
+from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
@@ -35,6 +36,36 @@ class FakeEvalFunction:
     def __call__(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
         self.inputs.append(input)
         return RolloutFnEvalOutput(data={})
+
+
+class _SynchronousDisposable:
+    def __init__(self, disposed: list[str], name: str) -> None:
+        self._disposed = disposed
+        self._name = name
+
+    def dispose(self) -> None:
+        self._disposed.append(self._name)
+
+
+class TestDispose:
+    async def test_synchronous_train_and_eval_rollout_disposers_are_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Out-of-tree rollout hooks may tear down synchronously without returning an awaitable."""
+        disposed: list[str] = []
+        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor.use_legacy_rollout_v1 = False
+        executor.generate_rollout = _SynchronousDisposable(disposed, "train")
+        executor.eval_generate_rollout = _SynchronousDisposable(disposed, "eval")
+        executor.data_source = object()
+        executor.args = Namespace()
+        executor._metric_checker = None
+        monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
+        monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
+
+        await executor.dispose()
+
+        assert disposed == ["train", "eval"]
 
 
 class TestSetEvalFleetInfo:
