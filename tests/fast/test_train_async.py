@@ -3,9 +3,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 import train_async as train_async_driver
-from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRolloutExecutor, FakeTrainingModel
+from tests.fast.fixtures.driver_fakes import (
+    FakeInferenceController,
+    FakeObjectStore,
+    FakeRolloutExecutor,
+    FakeTrainingModel,
+)
+
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.utils import object_store
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -152,6 +159,32 @@ class TestPipelinedGeneration:
         assert events.index("generate_start:1") < events.index("actor_train:0")
         assert events.index("generate_done:1") < events.index("update_weights:0")
         assert components.actor_model.trained == [0, 1]
+
+
+class TestCriticValuesHandoff:
+    async def test_async_critic_outputs_reach_the_actor_and_are_released_after_training(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pipelined critic value references stay live through the actor step that consumes them."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, use_critic=True, keep_old_actor=True)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        store = FakeObjectStore()
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+        ref = store.put({"values": ["critic-values"]})
+        values = [TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=ref)]
+        components.critic_model.train_outputs[0] = values
+
+        def consume_critic_values(external_data: list[TrainStepOutput]) -> None:
+            assert external_data is values
+            assert store.get(external_data[0].values).value == {"values": ["critic-values"]}
+
+        components.actor_model.consume_external_data = consume_critic_values
+
+        await train_async_driver.train(args)
+
+        assert store.consumed == [ref]
+        assert not store.contains(ref)
 
 
 class TestTerminalLifecycle:
