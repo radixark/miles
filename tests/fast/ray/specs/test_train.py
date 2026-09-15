@@ -33,6 +33,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.workers.rpc.common.metadata import _find_rpc_config
+from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
@@ -615,6 +616,12 @@ class TestSpecTrainerController:
         spec = specs_trainer_controller(_make_args())[0]
 
         assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
+
+    def test_it_keeps_the_platform_delete_capability_used_to_suspend_cells(self):
+        """Fault injection deletes trainer pods, so moving readers off the orchestrator account must not break it."""
+        spec = specs_trainer_controller(_make_args())[0]
+
+        assert spec.platform_access is PlatformAccess.READ_DELETE
 
     def test_the_worker_and_cell_names_are_stable(self):
         """The driver looks the controller up by name, so these names are part of the release's contract."""

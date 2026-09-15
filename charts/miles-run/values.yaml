@@ -29,6 +29,8 @@ run:
   stateFile: /cluster-storage/miles_data/miles-runs/unset/state/orchestrator.state
   objectNames:
     orchestrator: miles-run-orchestrator
+    platformRead: miles-run-platform-read
+    platformReadDelete: miles-run-platform-read-delete
     mooncakeMaster: miles-run-mooncake-master
     colocatePairing: miles-run-colocate-pairing
     uninstall: miles-run-uninstall
