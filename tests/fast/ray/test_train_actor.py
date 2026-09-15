@@ -10,6 +10,20 @@ from miles.utils.init_once import InitOnce
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
 
 
+def _unimplemented_actor_operation(*args: object, **kwargs: object) -> None:
+    raise NotImplementedError
+
+
+class _ActorWithoutReloadSupport(TrainRayActor):
+    init = _unimplemented_actor_operation
+    sleep = _unimplemented_actor_operation
+    wake_up = _unimplemented_actor_operation
+    train = _unimplemented_actor_operation
+    save_model = _unimplemented_actor_operation
+    update_weights = _unimplemented_actor_operation
+    _get_parallel_config = _unimplemented_actor_operation
+
+
 def _inited_guard() -> InitOnce:
     guard = InitOnce("TrainRayActor")
     with guard.guarding():
@@ -52,6 +66,18 @@ class TestKillSelf:
         TrainRayActor.__new__(TrainRayActor).kill_self()
 
         assert exit_statuses == [1]
+
+
+class TestLoadState:
+    def test_an_actor_without_reload_support_refuses_in_place_state_loading(self):
+        """An unsupported backend must require a restart instead of pretending to reload in place."""
+        actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
+
+        with pytest.raises(
+            NotImplementedError,
+            match="_ActorWithoutReloadSupport cannot reload its state without restarting",
+        ):
+            actor.load_state()
 
 
 class TestConfigureMasterAddrAndPort:
