@@ -1,6 +1,7 @@
 """Worker wrapping the multi-LoRA backend + HTTP server."""
 
 import time
+from collections.abc import Sequence
 from functools import cache
 from typing import Any
 
@@ -60,16 +61,16 @@ def _load_subclass(path: str | None, base_cls):
 
 
 class MultiLoRAController:
-    def __init__(self, *, args, router_provider: BaseWorkerProvider, host: str = "0.0.0.0") -> None:
+    def __init__(self, *, args, router_providers: Sequence[BaseWorkerProvider], host: str = "0.0.0.0") -> None:
         self.args = args
-        self._router_provider = router_provider
+        self._router_providers = router_providers
         self.host = host
         self.backend: MultiLoRABackend | None = None
         self.server: MultiLoRAHTTPServer | None = None
 
     async def init(self) -> int:
         args = self.args
-        await resolve_router_addrs(args, provider=self._router_provider)
+        await resolve_router_addrs(args, router_providers=self._router_providers)
         router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
 
         backend_cls = _load_subclass(getattr(args, "multi_lora_backend_path", None), MultiLoRABackend)
