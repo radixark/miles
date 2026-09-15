@@ -195,13 +195,13 @@ class TestIndexerReplayWiring:
             assert response.status_code == 200
             assert env.backend.request_log[-1]["return_indexer_topk"] is True
 
-    def test_without_indexer_replay_the_backend_request_omits_indexer_topk(self, router_env):
-        """The flag comes from config rather than being hardcoded, so a plain server never asks for it."""
+    def test_without_indexer_replay_the_backend_request_sends_false_indexer_topk(self, router_env):
+        """The flag comes from config rather than being hardcoded: a plain server sends an explicit False."""
         session_id = _create_session(router_env.url)
         response = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]})
 
         assert response.status_code == 200
-        assert "return_indexer_topk" not in router_env.backend.request_log[-1]
+        assert router_env.backend.request_log[-1]["return_indexer_topk"] is False
 
 
 def _keep_all_picker(leaf_samples, _session_metadata):

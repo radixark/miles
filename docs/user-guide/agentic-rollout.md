@@ -121,10 +121,7 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 <Warning>
 
-**Do not set TITO control fields.** The session server replaces client
-`input_ids` and forces `logprobs=True`, `return_meta_info=True`, and the response
-metadata needed for TITO. Do not set `logprob_start_len=0`; scoring the entire
-prompt defeats prefix caching and hurts performance.
+**Do not set TITO control fields.** Leave `input_ids`, `routed_experts_start_len`, and `logprob_start_len` unset. The server selects `lora_path` and rejects conflicting control values with HTTP 400. It forces `logprobs=True`, `return_meta_info=True`, and the response metadata needed for TITO.
 
 </Warning>
 

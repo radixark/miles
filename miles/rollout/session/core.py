@@ -24,6 +24,7 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.request_args import parse_chat_request, resolve_request_args_by_config
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import (
     compute_samples_from_openai_records,
@@ -31,7 +32,6 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -157,41 +157,8 @@ def proxy_result_to_response(result: dict) -> Response:
 
 
 def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
-    """Parse and normalize a chat request body — the session-independent half
-    of chat dispatch, shared verbatim by the v1 and v2 cores. Returns
-    ``(request_body, client_stream, tito_tokenizer)``; the tokenizer may be a
-    request-scoped clone.
-    """
-    try:
-        request_body = json.loads(body) if body else {}
-    except json.JSONDecodeError as e:
-        raise MessageValidationError(f"invalid JSON body: {e}") from e
-
-    # Fake streaming: the backend must stay non-streaming (TITO needs the
-    # complete message + meta_info, and sglang rejects return_meta_info
-    # with stream=true), so pop the client's intent here and honor it
-    # when rendering the client response.
-    client_stream = bool(request_body.pop("stream", False))
-    request_body.pop("stream_options", None)
-
-    # TITO token tracking needs Miles-owned input_ids plus SGLang output
-    # metadata: logprobs=True populates meta_info.output_token_logprobs and
-    # return_meta_info wraps it in choice.meta_info. Hardcoded (not
-    # setdefault) so agent-side overrides cannot break token accumulation.
-    request_body["logprobs"] = True
-    request_body["return_meta_info"] = True
-    if getattr(args, "use_rollout_routing_replay", False):
-        request_body["return_routed_experts"] = True
-    if getattr(args, "use_rollout_indexer_replay", False):
-        request_body["return_indexer_topk"] = True
-    # Must be False so stop-token text is trimmed from assistant content;
-    # token IDs still come from logprobs below.
-    request_body["no_stop_trim"] = False
-    # Serve the adapter being trained instead of the base weights.
-    if is_lora_enabled(args):
-        request_body["lora_path"] = LORA_ADAPTER_NAME
-    # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
-    # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
+    """Apply server constraints and prepare the request-scoped renderer."""
+    request_body, client_stream = resolve_request_args_by_config(parse_chat_request(body), args)
     request_ctk = request_body.get("chat_template_kwargs")
     if request_ctk is not None and not isinstance(request_ctk, dict):
         raise MessageValidationError("chat_template_kwargs must be an object")

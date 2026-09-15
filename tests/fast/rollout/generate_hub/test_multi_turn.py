@@ -162,6 +162,9 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "logprobs": True,
         "return_meta_info": True,
         "no_stop_trim": False,
+        # The R3 replay flags follow the launch flags and are always present.
+        "return_routed_experts": False,
+        "return_indexer_topk": False,
         "chat_template_kwargs": {"clear_thinking": False},
         **extra,
     }
