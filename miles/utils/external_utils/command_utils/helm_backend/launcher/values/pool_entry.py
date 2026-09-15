@@ -14,6 +14,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     LaunchPlan,
 )
 from miles.utils.workers.argv_utils import python_argv_prefix
+from miles.utils.workers.naming import compute_port_name
 from miles.utils.workers.worker_provider.kubernetes.helm import env
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
@@ -55,12 +56,13 @@ def build_entry(
         object_name=naming.component_name(plan.release, spec.name),
         pool_id=spec.name,
         command=_with_prepare_cmd(_command_of_spec(spec, context, plan=plan), spec, plan=plan),
-        ports=[PortEntry(name=_port_name(port.name), port=port.static_port) for port in spec.port_infos],
+        ports=[PortEntry(name=compute_port_name(port.name), port=port.static_port) for port in spec.port_infos],
         env=_command_env_of_spec(spec, context, addresses=addresses) or None,
         meta=_meta_of_spec(spec) or None,
         replicas=spec.scheduling.num_cells,
         size=pods_per_cell if pods_per_cell > 1 else None,
         resources={"limits": {"nvidia.com/gpu": gpus_per_pod}} if gpus_per_pod else None,
+        restart_at=plan.rendered_restart_at(spec.name),
     )
 
 
@@ -174,7 +176,3 @@ def _with_worker_index(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
         f"argument, so the index has to reach the command unchanged"
     )
     return [_WORKER_INDEX_PLACEHOLDER if argument == sentinel else argument for argument in argv]
-
-
-def _port_name(name: str) -> str:
-    return name.replace("_", "-")[:15]

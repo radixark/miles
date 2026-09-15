@@ -313,6 +313,10 @@
         "resources": {
           "additionalProperties": true,
           "type": "object"
+        },
+        "restartAt": {
+          "minLength": 1,
+          "type": "string"
         }
       },
       "type": "object"
@@ -462,6 +466,10 @@
         "resources": {
           "additionalProperties": true,
           "type": "object"
+        },
+        "restartAt": {
+          "minLength": 1,
+          "type": "string"
         }
       },
       "required": [
