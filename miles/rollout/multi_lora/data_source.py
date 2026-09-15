@@ -127,6 +127,10 @@ class MultiLoRAAsyncDataSource(DataSource):
             source.save(rollout_id)
 
     def load(self, rollout_id=None):
+        if not self.sources:
+            logger.warning("this run serves no adapter, so no dataset state is restored")
+            return
+
         for source in self.sources.values():
             source.load(rollout_id)
 
