@@ -235,7 +235,7 @@ class TestV2ReplayMatching:
         replay = [USER, REPLAYED_ASSISTANT, TOOL_RESULT]
         attach = attach_point_for_request(state, replay, message_matcher=loose_tool_call_message_matches)
 
-        result = prepare_pretokenized(attach.node, replay, tools=None, tito_tokenizer=tito)
+        result = prepare_pretokenized(attach.node, replay, tito_tokenizer=tito)
 
         (call,) = tito.merge_calls
         assert call["old_messages"] == [USER, STORED_ASSISTANT]

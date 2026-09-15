@@ -159,8 +159,8 @@ def proxy_result_to_response(result: dict) -> Response:
 def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     """Parse and normalize a chat request body — the session-independent half
     of chat dispatch, shared verbatim by the v1 and v2 cores. Returns
-    ``(request_body, client_stream, tito_tokenizer)``; the tokenizer may be a
-    request-scoped clone.
+    ``(request_body, client_stream, template_args)``; ``template_args`` is the
+    one dict the prompt is rendered with (``TITOTokenizer.template_args_for_request``).
     """
     try:
         request_body = json.loads(body) if body else {}
@@ -190,21 +190,26 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     # Serve the adapter being trained instead of the base weights.
     if is_lora_enabled(args):
         request_body["lora_path"] = LORA_ADAPTER_NAME
-    # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
-    # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
-    request_ctk = request_body.get("chat_template_kwargs")
-    if request_ctk is not None and not isinstance(request_ctk, dict):
-        raise MessageValidationError("chat_template_kwargs must be an object")
-    if request_ctk:
-        try:
-            tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
-        except ValueError as e:
-            raise MessageValidationError(str(e)) from e
-    if tito_tokenizer.chat_template_kwargs:
-        request_body["chat_template_kwargs"] = dict(tito_tokenizer.chat_template_kwargs)
+    # The template args, one dict: the request's chat_template_kwargs merged over
+    # the launch kwargs, plus its tools.  The prompt is rendered with it and the
+    # wire carries it, so both sides render alike.
+    # FIXME(session): top-level `reasoning` and `reasoning_effort` are not mapped
+    # to template kwargs yet.
+    try:
+        template_args = tito_tokenizer.template_args_for_request(request_body)
+    except ValueError as e:
+        raise MessageValidationError(str(e)) from e
+    tools = template_args.get("tools")
+    kwargs = {key: value for key, value in template_args.items() if key != "tools"}
+    if tools:
+        request_body["tools"] = tools
+    else:
+        request_body.pop("tools", None)
+    if kwargs:
+        request_body["chat_template_kwargs"] = kwargs
     else:
         request_body.pop("chat_template_kwargs", None)
-    return request_body, client_stream, tito_tokenizer
+    return request_body, client_stream, template_args
 
 
 def extract_completion(result: dict) -> tuple:
@@ -379,14 +384,13 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.config, self.registry.tito_tokenizer
-            )
+            tito_tokenizer = self.registry.tito_tokenizer
+            request_body, client_stream, template_args = prepare_chat_request(body, self.config, tito_tokenizer)
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
-                tools=request_body.get("tools"),
+                template_args=template_args,
                 tito_tokenizer=tito_tokenizer,
                 message_matcher=self.registry.message_matcher,
             )

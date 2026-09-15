@@ -89,12 +89,13 @@ class LinearTrajectory:
     def prepare_pretokenized(
         self,
         request_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
         *,
         tito_tokenizer: TITOTokenizer,
+        template_args: dict[str, Any] | None = None,
         message_matcher: SessionMessageMatcher | None = None,
     ) -> list[int]:
-        """Build the full prompt input_ids for *request_messages*.
+        """Build the full prompt input_ids for *request_messages*, rendered with
+        *template_args* (``None``: the launch kwargs and no tools).
 
         Validates that *request_messages* extends the stored history under
         *message_matcher* (defaults to the strict matcher), rolling back at
@@ -107,7 +108,6 @@ class LinearTrajectory:
         Must be called under ``self.lock``.
         """
         matcher = message_matcher if message_matcher is not None else strict_message_matches
-        template_args = tito_tokenizer.default_template_args(tools)
 
         # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
         #    first turn rolls back to the empty checkpoint, clearing token_ids.

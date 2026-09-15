@@ -106,7 +106,7 @@ def _commit(
 def _prepare(state, request_messages, *, tito_tokenizer, message_matcher=None) -> list[int]:
     """Attach, then render under the attach node, as the core does."""
     attach = attach_point_for_request(state, request_messages, message_matcher=message_matcher)
-    return prepare_pretokenized(attach.node, request_messages, tools=None, tito_tokenizer=tito_tokenizer)
+    return prepare_pretokenized(attach.node, request_messages, tito_tokenizer=tito_tokenizer)
 
 
 def _path(state):
@@ -560,7 +560,7 @@ class TestRollback:
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool]
         attach = self._dispatch_and_apply(state, rollback_msgs)
         assert attach.node is state.tree.nodes[0]
-        result = prepare_pretokenized(attach.node, rollback_msgs, tools=None, tito_tokenizer=registry.tito_tokenizer)
+        result = prepare_pretokenized(attach.node, rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
         # The retry attaches under the first generation; the abandoned node stays in the tree
@@ -654,9 +654,7 @@ class TestRollback:
         # Agent retries with only [sys, user, asst1, sys_retry] (4 messages)
         retry_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, RETRY_SYS_MSG]
         attach = self._dispatch_and_apply(state, retry_msgs)
-        result = prepare_pretokenized(
-            attach.node, retry_msgs, tools=None, tito_tokenizer=registry_with_system.tito_tokenizer
-        )
+        result = prepare_pretokenized(attach.node, retry_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
         assert isinstance(result, list)
 
         assert len(attach.node.path_nodes()) == 1
@@ -686,7 +684,7 @@ class TestRollback:
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, new_tool]
         attach = self._dispatch_and_apply(state, rollback_msgs)
         assert attach.node is state.tree.nodes[1]
-        result = prepare_pretokenized(attach.node, rollback_msgs, tools=None, tito_tokenizer=registry.tito_tokenizer)
+        result = prepare_pretokenized(attach.node, rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
         assert len(attach.node.path_nodes()) == 2

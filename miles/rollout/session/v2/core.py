@@ -155,9 +155,8 @@ class SessionCoreV2(SessionCore):
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.config, self.registry.tito_tokenizer
-            )
+            tito_tokenizer = self.registry.tito_tokenizer
+            request_body, client_stream, template_args = prepare_chat_request(body, self.config, tito_tokenizer)
 
             request_messages = request_body.get("messages", [])
             attach_parent = attach_point_for_request(
@@ -166,7 +165,7 @@ class SessionCoreV2(SessionCore):
             prompt_token_ids = prepare_pretokenized(
                 attach_parent,
                 request_messages,
-                tools=request_body.get("tools"),
+                template_args=template_args,
                 tito_tokenizer=tito_tokenizer,
             )
             request_body["input_ids"] = prompt_token_ids

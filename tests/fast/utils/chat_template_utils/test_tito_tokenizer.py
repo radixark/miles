@@ -271,14 +271,59 @@ class TestConfig:
         tokenizer.convert_tokens_to_ids.return_value = 1
         startup_tito = tito_cls(tokenizer, chat_template_kwargs={"enable_thinking": False})
 
-        request_tito = startup_tito.clone_with_chat_template_kwargs({"thinking": True})
+        template_args = startup_tito.template_args_for_request({"chat_template_kwargs": {"thinking": True}})
 
-        assert request_tito.chat_template_kwargs == {"drop_thinking": False, "thinking": True}
+        assert template_args == {"drop_thinking": False, "thinking": True}
 
     def test_comparator_inherits_trailing_ids(self, qwen3_tito: Qwen3TITOTokenizer):
         """create_comparator propagates trailing_token_ids to the comparator's trim set."""
         comp = qwen3_tito.create_comparator()
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
+
+
+class TestTemplateArgsForRequest:
+    """``template_args_for_request``: the one dict a session-server request renders with."""
+
+    LAUNCH = {"enable_thinking": False}
+    TOOLS = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
+
+    def test_merges_request_kwargs_over_the_launch_and_takes_the_request_tools(self):
+        launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)
+
+        args = launch.template_args_for_request(
+            {"chat_template_kwargs": {"enable_thinking": True}, "tools": self.TOOLS}
+        )
+
+        assert args == {"enable_thinking": True, "tools": self.TOOLS}
+        assert args["tools"] is self.TOOLS  # as sent: the wire keeps the client's spelling
+
+    def test_request_without_kwargs_or_tools_renders_like_the_launch(self):
+        launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)
+        assert launch.template_args_for_request({"messages": []}) == self.LAUNCH
+        assert launch.template_args_for_request({"chat_template_kwargs": None, "tools": []}) == self.LAUNCH
+
+    def test_malformed_kwargs_are_refused(self):
+        launch = TITOTokenizer(MagicMock())
+        with pytest.raises(ValueError, match="chat_template_kwargs must be an object"):
+            launch.template_args_for_request({"chat_template_kwargs": "oops"})
+        with pytest.raises(ValueError, match="tools belongs at the top level"):
+            launch.template_args_for_request({"chat_template_kwargs": {"tools": self.TOOLS}})
+
+    def test_family_constants_are_kept_and_a_conflict_is_refused(self, qwen3_tito: Qwen3TITOTokenizer):
+        args = qwen3_tito.template_args_for_request({"chat_template_kwargs": {"enable_thinking": True}})
+        assert args == {"clear_thinking": False, "enable_thinking": True}
+        with pytest.raises(ValueError, match="conflicts with the value registered"):
+            qwen3_tito.template_args_for_request({"chat_template_kwargs": {"clear_thinking": True}})
+
+    @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
+    def test_deepseek_aliases_resolve_to_one_thinking_flag(self, tito_cls):
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        launch = tito_cls(tokenizer, chat_template_kwargs={"enable_thinking": False})
+        assert launch.chat_template_kwargs == {"drop_thinking": False, "thinking": False}
+
+        args = launch.template_args_for_request({"chat_template_kwargs": {"thinking_mode": "thinking"}})
+        assert args == {"drop_thinking": False, "thinking": True}
 
 
 class TestCompletionPostprocess:

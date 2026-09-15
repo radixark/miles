@@ -87,16 +87,16 @@ def prepare_pretokenized(
     parent: TrajectoryNode | None,
     request_messages: list[dict[str, Any]],
     *,
-    tools: list[dict[str, Any]] | None,
     tito_tokenizer: TITOTokenizer,
+    template_args: dict[str, Any] | None = None,
 ) -> list[int]:
-    """Pretokenized input_ids for a request attaching under *parent*.
+    """Pretokenized input_ids for a request attaching under *parent*, rendered
+    with *template_args* (``None``: the launch kwargs and no tools).
 
     - No parent (new root): render the whole request from scratch.
     - Otherwise: reuse the parent's token snapshot as-is and tokenize only
       the new suffix on top — the shared prefix is never re-rendered.
     """
-    template_args = tito_tokenizer.default_template_args(tools)
     if parent is None:
         return tito_tokenizer.apply_chat_template(
             request_messages,
