@@ -172,11 +172,13 @@ def select_skipped_gpu_stages(
     raw_labels: Iterable[str],
 ) -> tuple[str, ...]:
     """Return local GPU stage IDs that a workflow can safely skip."""
-    if event_name != "pull_request" or changed_files is None:
+    if event_name != "pull_request":
         return ()
 
     registrations = tuple(registrations)
     runnable = _runnable_stages(registrations, run_policy)
+    if changed_files is None:
+        return tuple(sorted(PR_GPU_STAGES - runnable))
     affected = _affected_stages(changed_files, registrations, run_policy)
     affected.update(_explicit_scope_stages(registrations, run_policy, raw_labels, runnable))
     return tuple(sorted(PR_GPU_STAGES - (runnable & affected)))

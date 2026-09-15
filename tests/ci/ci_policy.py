@@ -8,7 +8,7 @@ import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
-from tests.ci.hardware import KNOWN_ARCHES
+from tests.ci.hardware import CUDA_STAGES, KNOWN_ARCHES
 from tests.ci.labels import KNOWN_LABELS
 
 _RUN_CI_PREFIX = "run-ci-"
@@ -220,11 +220,13 @@ def _write_github_outputs(policy: WorkflowPolicy, output_path: str) -> None:
     raw_labels = " ".join(policy.raw_labels)
     bypass_fastfail = str(policy.bypass_fastfail).lower()
     skipped_stages = json.dumps(policy.skipped_stages, separators=(",", ":"))
+    needs_cuda_image = str(bool(CUDA_STAGES.keys() - set(policy.skipped_stages))).lower()
     with open(output_path, "a", encoding="utf-8") as output:
         output.write(f"cadence={policy.cadence}\n")
         output.write(f"raw_labels={raw_labels}\n")
         output.write(f"bypass_fastfail={bypass_fastfail}\n")
         output.write(f"skipped_stages={skipped_stages}\n")
+        output.write(f"needs_cuda_image={needs_cuda_image}\n")
     print(
         f"Resolved CI policy: cadence={policy.cadence} labels=[{raw_labels}] "
         f"bypass_fastfail={bypass_fastfail} skipped_stages={skipped_stages}"
@@ -246,17 +248,16 @@ def main() -> int:
 
             changed_files = read_changed_files(os.environ.get("CHANGED_FILES_PATH", ""))
             if changed_files is None:
-                print("Changed-file diff is unavailable or empty; GPU stage pruning is disabled.")
-            else:
-                run_policy = resolve_policy(policy.cadence, set(policy.raw_labels))
-                skipped_stages = select_skipped_gpu_stages(
-                    event_name=event_name,
-                    changed_files=changed_files,
-                    registrations=collect_tests(discover_ci_files(), sanity_check=True),
-                    run_policy=run_policy,
-                    raw_labels=policy.raw_labels,
-                )
-                policy = replace(policy, skipped_stages=skipped_stages)
+                print("Changed-file diff is unavailable or empty; all selected GPU stages are treated as affected.")
+            run_policy = resolve_policy(policy.cadence, set(policy.raw_labels))
+            skipped_stages = select_skipped_gpu_stages(
+                event_name=event_name,
+                changed_files=changed_files,
+                registrations=collect_tests(discover_ci_files(), sanity_check=True),
+                run_policy=run_policy,
+                raw_labels=policy.raw_labels,
+            )
+            policy = replace(policy, skipped_stages=skipped_stages)
     except ValueError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
