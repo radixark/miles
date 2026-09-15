@@ -4,7 +4,7 @@ from pathlib import Path
 
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args, resolve_megatron_config
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
-from miles.ray.placement_group import create_training_model, wait_external_trainers
+from miles.ray.placement_group import create_trainer_handles, create_training_model, wait_external_trainers
 from miles.ray.specs.train import compute_trainer_configs
 from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
@@ -22,14 +22,18 @@ class TrainerInfo:
 
 
 async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[str, TrainerInfo]:
-    await wait_external_trainers(args)
+    trainer_configs = compute_trainer_configs(args)
+    handles = create_trainer_handles(args, trainer_configs=trainer_configs)
+    await wait_external_trainers(args, handles=handles)
 
     trainers: dict[str, TrainerInfo] = {}
-    for trainer_config in compute_trainer_configs(args):
+    for trainer_config in trainer_configs:
         model_id = trainer_config.model_id
         assert model_id is not None, f"{trainer_config} carries no policy model id"
         created = await create_training_model(
-            compute_trainer_args(args, trainer_config), trainer_id=trainer_config.trainer_id
+            compute_trainer_args(args, trainer_config),
+            handle=handles[trainer_config.trainer_id],
+            trainer_id=trainer_config.trainer_id,
         )
         assert model_id not in trainers, f"{trainer_config} shares its model id with an already created trainer"
         trainers[model_id] = TrainerInfo(
