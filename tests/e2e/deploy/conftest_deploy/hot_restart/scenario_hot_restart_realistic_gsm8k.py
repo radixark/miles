@@ -83,7 +83,7 @@ def run_ci(
             mean_interval_seconds_of_cell_type={_HOT_RESTART_CELL_TYPE: hot_restart_interval_seconds},
             create_forms=create_forms,
             get_virtual_cells=lambda: _create_virtual_cells_before(hot_restart_form.value),
-            build_extra_train_args=_build_train_args,
+            build_extra_train_args=lambda dump_dir: _build_train_args(dump_dir, wandb_run_id=config.run_id),
             enable_fault_tolerance=False,
         )
 
@@ -115,8 +115,8 @@ def run_ci(
     print(f"Hot restart realistic gsm8k test PASSED (seed={seed}, rollouts={num_rollout})")
 
 
-def _build_train_args(dump_dir: str) -> str:
-    return build_checkpoint_args(dump_dir) + "--ci-disable-weight-update-checker "
+def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
+    return build_checkpoint_args(dump_dir) + f"--wandb-run-id {wandb_run_id} " + "--ci-disable-weight-update-checker "
 
 
 def assert_no_take_over_attempt_failed(events: list[Event]) -> None:
