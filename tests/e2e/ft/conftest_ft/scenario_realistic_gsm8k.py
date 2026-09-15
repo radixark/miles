@@ -148,7 +148,7 @@ def run_realistic_gsm8k(
     train_args += extra_train_args
 
     run = Gsm8kRun(
-        base_url=f"http://{U.api_server_host()}:{API_SERVER_PORT}",
+        base_url=f"http://{U.api_server_host(config)}:{API_SERVER_PORT}",
         config=config,
         dump_dir=dump_dir,
         train_args=train_args,

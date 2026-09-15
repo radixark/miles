@@ -91,8 +91,8 @@ def _called_name(func: ast.expr) -> str:
 def _capture_backend(monkeypatch) -> list[ClusterBackend]:
     chosen: list[ClusterBackend] = []
 
-    def _execute_train_inner(self, request) -> None:
-        chosen.append(self.config.cluster_backend)
+    def _execute_train_inner(self, *, request, config) -> None:
+        chosen.append(config.cluster_backend)
 
     for backend_cls in (RayCommandBackend, KubernetesCommandBackend):
         monkeypatch.setattr(backend_cls, "_execute_train_inner", _execute_train_inner)
