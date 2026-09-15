@@ -29,7 +29,6 @@ from miles.backends.training_utils.weight_update.session import (
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
-from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.timer import timer
 
 logger = logging.getLogger(__name__)
@@ -149,9 +148,6 @@ class WeightUpdater:
         """``(lora_name, adapter_or_None)`` pairs for this sync; the push set is
         identical on every rank so the iterator's collectives align."""
         if not self.is_lora:
-            return []
-        if is_multi_lora_enabled(self.args):
-            # multi-LoRA adapters ship via explicit push_adapter commands, never with the base sync
             return []
         return [(LORA_ADAPTER_NAME, None)]
 

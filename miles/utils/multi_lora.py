@@ -1,4 +1,4 @@
-"""Multi-LoRA arg surface and engine-side slot naming. Slot mechanics live in
+"""Multi-LoRA arguments and adapter configuration. Slot mechanics live in
 ``miles/backends/megatron_utils/lora/slots.py``."""
 
 from dataclasses import dataclass
@@ -7,7 +7,6 @@ from typing import Any
 __all__ = [
     "AdapterSpec",
     "is_multi_lora_enabled",
-    "slot_lora_name",
     "targets_expert_leaves",
     "validate_multi_lora_args",
 ]
@@ -15,7 +14,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class AdapterSpec:
-    """What the weight-update path needs to export one slot's adapter."""
+    """The slot and scaling needed to export one adapter."""
 
     slot: int
     rank: int
@@ -24,12 +23,6 @@ class AdapterSpec:
 
 def is_multi_lora_enabled(args: Any) -> bool:
     return getattr(args, "multi_lora", False)
-
-
-def slot_lora_name(slot: int) -> str:
-    """Engine-side LoRA adapter name for a slot. Weight pushes and every
-    inference request must agree on this."""
-    return f"__miles_slot_{slot}"
 
 
 # Leaf module names that can live inside MoE experts (they also name the dense MLP
@@ -65,8 +58,7 @@ def validate_multi_lora_args(args: Any) -> None:
         "full-length per-datum vectors against log_probs, which CP would shard"
     )
     assert getattr(args, "pipeline_model_parallel_size", 1) == 1, (
-        "Multi-LoRA requires --pipeline-model-parallel-size 1: no single rank holds a "
-        "complete adapter to push to the rollout engines, and a pipelined schedule would "
+        "Multi-LoRA requires --pipeline-model-parallel-size 1: a pipelined schedule would "
         "recompute activations against a later micro-batch's adapter routing."
     )
     # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
@@ -82,10 +74,7 @@ def validate_multi_lora_args(args: Any) -> None:
         "Multi-LoRA does not support Muon: per-adapter decoupled stepping is only "
         "implemented for Adam-family per-slot optimizers"
     )
-    assert not args.colocate, (
-        "Multi-LoRA requires disaggregated rollout engines: weight sync is only "
-        "implemented for the distributed path, not the colocated tensor path."
-    )
+    assert not args.colocate, "Multi-LoRA requires separate training and sampling GPUs to retain accumulated gradients"
     assert (
         not getattr(args, "indep_dp", False) and "train" not in args.ft_components
     ), "Multi-LoRA does not support independent-DP training; remove 'train' from --ft-components"
@@ -98,11 +87,8 @@ def validate_multi_lora_args(args: Any) -> None:
         "optimizers); the witness module assumes use_distributed_optimizer"
     )
     assert getattr(args, "sglang_tokenizer_worker_num", 1) == 1, (
-        "Multi-LoRA requires --sglang-tokenizer-worker-num 1: each tokenizer "
-        "worker process holds its own LoRA registry, so per-step adapter "
-        "upserts resolve against whichever worker the router picks and fail "
-        "non-deterministically. sglang rejects the upsert at runtime anyway; "
-        "fail at launch instead of burning GPU time until the first weight push."
+        "Multi-LoRA requires --sglang-tokenizer-worker-num 1: dynamic adapter loading "
+        "requires a single tokenizer-side LoRA registry."
     )
     assert not args.calculate_per_token_loss, (
         "Multi-LoRA normalizes each sample by its adapter batch "
