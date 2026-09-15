@@ -28,8 +28,8 @@ def _plan(**overrides) -> LaunchPlan:
     return LaunchPlan(**fields)
 
 
-def _record(**overrides):
-    return LaunchRecord.compute(plan=_plan(**overrides), values_file=VALUES_FILE)
+def _record(*, reachable_at=None, **overrides):
+    return LaunchRecord.compute(plan=_plan(**overrides), values_file=VALUES_FILE, reachable_at=reachable_at or {})
 
 
 class TestComputeLaunchRecord:
