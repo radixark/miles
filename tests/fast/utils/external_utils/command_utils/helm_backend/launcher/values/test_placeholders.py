@@ -59,6 +59,43 @@ class TestBaseGpuIdOfASubNodeEngine:
 
         assert _base_gpu_id_argument(command) == "0"
 
+    def test_leaves_a_disaggregated_engine_alone_even_when_it_is_narrower_than_a_node(self):
+        """A pool past the trainer's gpus owns its nodes, so its cards are its own and start at zero."""
+        specs = [
+            engine(num_cells=1, gpus_per_engine=4, name="inference-engine-0-0", gpu_offset=0),
+            engine(num_cells=1, gpus_per_engine=4, name="inference-engine-0-1", gpu_offset=16),
+            trainer(num_cells=2, gpus_per_cell=8),
+        ]
+
+        entries = build_values(specs, COLOCATE_LAYOUT).as_values()["run"]["inferenceEngines"]
+        after_trainer = next(entry for entry in entries if entry["poolId"] == "inference-engine-0-1")
+
+        assert _base_gpu_id_argument(after_trainer["command"]) == "0"
+
+    def test_asks_the_kubelet_for_the_card_an_engine_sharing_a_trainer_node_was_given(self):
+        """Which card a shared node hands this pod is decided when the pairing seats it, not when helm renders."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        assert _base_gpu_id_argument(command) == "$(MILES_BASE_GPU_ID)"
+
+    def test_substitutes_the_card_as_a_whole_argument_of_its_own(self):
+        """The kubelet expands a whole argument at a time, so a sentinel welded into one never resolves."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        assert str(placeholders._BASE_GPU_ID_SENTINEL) not in " ".join(command)
+
+    def test_wraps_the_command_in_no_shell_of_its_own(self):
+        """The value arrives already computed, so nothing in the pod has to redo the pairing's arithmetic."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        assert command[:2] != ["bash", "-c"]
+
     def test_refuses_a_spec_that_builds_the_card_into_a_larger_argument(self):
         """Kubelet substitutes whole arguments, so a spelling like --gpus=N would reach sglang unexpanded."""
         spec = engine(num_cells=2, gpus_per_engine=4).model_copy(
@@ -67,6 +104,34 @@ class TestBaseGpuIdOfASubNodeEngine:
 
         with pytest.raises(AssertionError, match="out of its base gpu id"):
             build_values([spec, trainer(num_cells=1, gpus_per_cell=8)], COLOCATE_LAYOUT).as_values()
+
+
+class TestEveryPairTheTableKnows:
+    def test_substitutes_the_rank_and_the_card_in_one_pass(self):
+        """One command carries both sentinels, and a pass that stopped at the first would ship the other raw."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        assert command[command.index("--node-rank") + 1] == placeholders._WORKER_INDEX_PLACEHOLDER
+        assert _base_gpu_id_argument(command) == placeholders._BASE_GPU_ID_PLACEHOLDER
+
+    def test_leaves_no_sentinel_of_any_kind_in_a_rendered_command(self):
+        """Every test above names one sentinel; this one refuses a table entry nobody thought to substitute."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        for substitution in placeholders._SUBSTITUTIONS:
+            assert str(substitution.sentinel) not in " ".join(command)
+
+    def test_every_placeholder_of_the_table_reached_the_command(self):
+        """A substitution that quietly stopped happening leaves no sentinel behind either, so absence is not enough."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        assert {substitution.placeholder for substitution in placeholders._SUBSTITUTIONS} <= set(command)
 
 
 class TestTheSubstitutionTableItself:
