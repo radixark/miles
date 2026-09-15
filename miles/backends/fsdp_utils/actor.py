@@ -2,7 +2,6 @@ import logging
 import os
 import random
 from contextlib import ExitStack
-from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -20,17 +19,19 @@ from miles.backends.training_utils.log_utils import (
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, train_dump_utils, train_metric_utils
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.object_store import StoreObjectRef
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.profile_utils import TrainProfiler
-from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.workers.rpc.common.wire_types import Pickled
@@ -43,10 +44,6 @@ from .adaptations.precision import apply_fp32_master, precision_forward_context,
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import UpdatableEngines
-    from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +68,7 @@ class FSDPTrainRayActor(TrainRayActor):
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
-        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
         assert recv_ckpt_src_rank is None
@@ -217,7 +214,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
-    def get_model_cls(self):
+    def _get_model_cls(self):
         if hasattr(self.hf_config, "vision_config"):
             from transformers import AutoModelForImageTextToText
 
@@ -243,7 +240,7 @@ class FSDPTrainRayActor(TrainRayActor):
         effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
 
         with init_context():
-            model = self.get_model_cls().from_pretrained(
+            model = self._get_model_cls().from_pretrained(
                 checkpoint_path,
                 trust_remote_code=True,
                 attn_implementation=effective_attn,
@@ -441,14 +438,16 @@ class FSDPTrainRayActor(TrainRayActor):
     def train(
         self,
         rollout_id: int,
-        rollout_data_ref: Box,
-        witness_info: "WitnessInfo | None" = None,
+        rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
+        witness_info: WitnessInfo | None = None,
         attempt: int = 0,
+        external_data: TrainStepOutput | None = None,
     ) -> TrainStepOutput:
         """Run one training update over a rollout batch (``rollout_data_ref`` is a Box handle to the
         Ray object ref with the rollout tensors; fetched and partitioned by data-parallel rank)."""
         assert witness_info is None
         assert attempt == 0
+        assert external_data is None, "the fsdp backend trains no critic, so it is never handed critic values"
 
         self._heartbeat.bump()
         if self.args.offload_train:
@@ -608,7 +607,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: "UpdatableEngines") -> int | None:  # type: ignore[override]
+    def update_weights(self, info: UpdatableEngines) -> int | None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
