@@ -3320,10 +3320,6 @@ def miles_validate_args(args):
         args.offload_rollout = True
     del args.offload
 
-    if args.debug_train_only:
-        args.rollout_num_gpus = 0
-    args.starts_inference_engines = not args.debug_train_only or args.eval_num_gpus > 0
-
     if args.debug_rollout_only:
         if args.colocate and (not args.rollout_num_gpus):
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
@@ -3407,6 +3403,10 @@ def miles_validate_args(args):
                 f"* actor_num_nodes {args.actor_num_nodes}, overriding rollout_num_gpus to match actor_num_gpus_per_node * actor_num_nodes."
             )
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
+
+    if args.debug_train_only:
+        args.rollout_num_gpus = 0
+    args.starts_inference_engines = not args.debug_train_only or args.eval_num_gpus > 0
 
     if args.use_critic and not args.debug_rollout_only:
         if args.offload_train is None:

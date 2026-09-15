@@ -660,6 +660,16 @@ class TestSnapshotEvalValidation:
         with pytest.raises(AssertionError, match="eval-function-path"):
             miles_validate_args(args)
 
+    def test_train_only_leaves_no_rollout_gpus_even_under_colocate(self):
+        """The colocate normalization puts the actor's GPU count on rollout_num_gpus, which
+        would claim rollout engines for a job that starts none."""
+        args = self._parse(["--debug-train-only", "--colocate"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_num_gpus == 0
+        assert args.starts_inference_engines is False
+
 
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):

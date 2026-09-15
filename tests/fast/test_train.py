@@ -96,9 +96,7 @@ class TestEvalBeforeTrain:
 
         assert events.index("eval:0") < events.index("prepare_rollout:0")
 
-    async def test_resumed_run_evaluates_the_completed_rollout_not_the_next_one(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    async def test_resumed_run_evaluates_the_completed_rollout_not_the_next_one(self, monkeypatch: pytest.MonkeyPatch):
         """start_rollout_id is the loaded checkpoint's rollout plus one, so dispatching it
         would ask for a checkpoint that does not exist yet and, in staging mode, export
         into the directory the first resumed iteration goes on to overwrite."""
