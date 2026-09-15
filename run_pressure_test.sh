@@ -81,7 +81,7 @@ SERVE_EXTRA="--tinker-base-model $TINKER_BASE_MODEL --multi-lora-rollout-seqs-pe
 SERVE_EXTRA="$SERVE_EXTRA $EXTRA_SERVE_ARGS"
 log "starting the gateway: $ACTOR_GPUS train GPUs TP$TP/EP$EP + $ROLLOUT_GPUS rollout GPUs, slots=$N_ADAPTERS, rank $LORA_RANK, context $CONTEXT_LEN"
 python3 "$REPO/examples/multi_lora/serve_qwen3_30b_a3b_tinker.py" serve \
-    --hf-checkpoint "$MODEL" --model-type "$MODEL_TYPE" \
+    --hf-checkpoint "$MODEL" --hf-repo "$TINKER_BASE_MODEL" --model-type "$MODEL_TYPE" \
     --actor-num-gpus "$ACTOR_GPUS" --rollout-num-gpus "$ROLLOUT_GPUS" --tp "$TP" --ep "$EP" \
     --rollout-num-gpus-per-engine "$GPUS_PER_ENGINE" --sglang-mem-fraction-static "$SGLANG_MEM_FRACTION" \
     --n-adapters "$N_ADAPTERS" --lora-rank "$LORA_RANK" --lora-alpha "$LORA_ALPHA" \
