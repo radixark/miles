@@ -1,14 +1,19 @@
 import asyncio
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
+import torch
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
+from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -161,3 +166,58 @@ class TestSetEvalFleetInfo:
         assert first.generate_state.args.rollout_num_gpus == info.num_gpus
         assert first.generate_state.args.rollout_num_gpus_per_engine == info.num_gpus_per_engine
         assert second.generate_state is None
+
+
+class _FakeDataSource(RolloutDataSource):
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self.args = Namespace(load=path, rollout_global_dataset=False)
+        self.loaded: list[Path] = []
+
+    def save(self, directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        torch.save({"sample_group_index": 1, "sample_index": 1}, directory / "state.pt")
+
+    def load(self, directory: Path) -> None:
+        super().load(directory)
+        self.loaded.append(directory)
+
+
+class _CountingRolloutFn:
+    def __init__(self, start_index: int = 0) -> None:
+        self.next_index = start_index
+        self.num_calls = 0
+
+    def __call__(self, args, rollout_id, data_source, evaluation) -> RolloutFnTrainOutput:
+        self.num_calls += 1
+        self.next_index += 1
+        sample = Sample(
+            index=self.next_index,
+            group_index=self.next_index,
+            prompt="p",
+            status=Sample.Status.COMPLETED,
+        )
+        return RolloutFnTrainOutput(samples=[[sample]])
+
+
+def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor.args = make_args(load=str(tmp_path), save=str(tmp_path))
+    executor.use_legacy_rollout_v1 = True
+    executor.generate_rollout = rollout_fn
+    executor.eval_generate_rollout = rollout_fn
+    executor.data_source = _FakeDataSource(tmp_path)
+    executor._train_parallel_configs_of_model_id = {None: {}}
+    executor._weight_versions_of_model_id = {}
+    return executor
+
+
+class TestOneDirectoryPerRolloutCheckpoint:
+    def test_a_step_that_was_never_trained_is_refused(self, tmp_path: Path) -> None:
+        """A run whose trainer starts from scratch has no rollout state, and must not be asked for any."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        with pytest.raises(AssertionError, match="is not a trained step"):
+            executor.load(-1)
+
+        assert executor.data_source.loaded == []

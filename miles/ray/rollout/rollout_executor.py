@@ -308,7 +308,9 @@ class RolloutExecutor:
                 eval_fn.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
-    def load(self, rollout_id: int | None = None) -> None:
+    def load(self, rollout_id: int) -> None:
+        assert rollout_id >= 0, f"rollout {rollout_id} is not a trained step"
+
         self.data_source.load(rollout_id)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
