@@ -1,8 +1,8 @@
-"""Choose the earliest ready seed, then pack compatible work across streams."""
+"""Choose the earliest ready seed, then pack compatible work across model queues."""
 
 from dataclasses import dataclass
 
-from miles.tinker.core.stream import ModelStream, PendingRequest
+from miles.tinker.core.model_queue import ModelRequestQueue, PendingRequest
 from miles.tinker.core.types import CommandOp
 
 
@@ -10,7 +10,7 @@ from miles.tinker.core.types import CommandOp
 class DatumRef:
     """Pointer to ``request.datums[local_index]``; the datum's output is written back through it."""
 
-    stream: ModelStream
+    model_queue: ModelRequestQueue
     request: PendingRequest
     local_index: int
 
@@ -35,31 +35,31 @@ class BatchUnit:
 
 @dataclass
 class BarrierUnit:
-    """One barrier call after all preceding batch requests in its stream finish."""
+    """One barrier call after all preceding batch requests in its model queue finish."""
 
     op: CommandOp  # OPTIM_STEP | SAVE_STATE | LOAD_STATE | SAVE_WEIGHTS_FOR_SAMPLER
-    entries: list[tuple[ModelStream, PendingRequest]]
+    entries: list[tuple[ModelRequestQueue, PendingRequest]]
 
 
 class Planner:
     def __init__(self, batch_token_budget: int) -> None:
         self.batch_token_budget = batch_token_budget
-        self._streams: dict[str, ModelStream] = {}
+        self._model_queues: dict[str, ModelRequestQueue] = {}
 
-    def add_stream(self, stream: ModelStream) -> None:
-        self._streams[stream.model_id] = stream
+    def add_model_queue(self, model_queue: ModelRequestQueue) -> None:
+        self._model_queues[model_queue.model_id] = model_queue
 
-    def remove_stream(self, model_id: str) -> None:
-        del self._streams[model_id]
+    def remove_model_queue(self, model_id: str) -> None:
+        del self._model_queues[model_id]
 
-    def stream(self, model_id: str) -> ModelStream:
-        return self._streams[model_id]
+    def model_queue(self, model_id: str) -> ModelRequestQueue:
+        return self._model_queues[model_id]
 
-    def ready_rejections(self) -> list[tuple[ModelStream, PendingRequest]]:
+    def ready_rejections(self) -> list[tuple[ModelRequestQueue, PendingRequest]]:
         return [
-            (stream, stream.queue[0])
-            for stream in self._streams.values()
-            if stream.queue and stream.queue[0].command.validation_error is not None
+            (model_queue, model_queue.queue[0])
+            for model_queue in self._model_queues.values()
+            if model_queue.queue and model_queue.queue[0].command.validation_error is not None
         ]
 
     def next_to_run(self) -> BatchUnit | BarrierUnit | None:
@@ -77,14 +77,18 @@ class Planner:
 
     def _ready_datums(self) -> list[DatumRef]:
         datums = []
-        for stream in self._streams.values():
-            for request in stream.open_batch_run():
-                datums.extend(DatumRef(stream, request, index) for index in range(request.issued, len(request.datums)))
+        for model_queue in self._model_queues.values():
+            for request in model_queue.open_batch_run():
+                datums.extend(
+                    DatumRef(model_queue, request, index) for index in range(request.issued, len(request.datums))
+                )
         return datums
 
-    def _ready_barriers(self) -> list[tuple[ModelStream, PendingRequest]]:
+    def _ready_barriers(self) -> list[tuple[ModelRequestQueue, PendingRequest]]:
         return [
-            (stream, barrier) for stream in self._streams.values() if (barrier := stream.ready_barrier()) is not None
+            (model_queue, barrier)
+            for model_queue in self._model_queues.values()
+            if (barrier := model_queue.ready_barrier()) is not None
         ]
 
     def _pack_batch(self, seed: DatumRef, datums: list[DatumRef]) -> BatchUnit:
@@ -113,13 +117,13 @@ class Planner:
 
     def _merge_barriers(
         self,
-        seed: tuple[ModelStream, PendingRequest],
-        barriers: list[tuple[ModelStream, PendingRequest]],
+        seed: tuple[ModelRequestQueue, PendingRequest],
+        barriers: list[tuple[ModelRequestQueue, PendingRequest]],
     ) -> BarrierUnit:
         op = seed[1].command.op
         if op == CommandOp.OPTIM_STEP:
             # optim barriers of different models step in one trainer call
-            entries = [(stream, barrier) for stream, barrier in barriers if barrier.command.op == op]
+            entries = [(model_queue, barrier) for model_queue, barrier in barriers if barrier.command.op == op]
         else:
             entries = [seed]
         return BarrierUnit(op=op, entries=entries)

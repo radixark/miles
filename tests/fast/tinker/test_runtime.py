@@ -152,7 +152,7 @@ async def test_forward_only_runs_the_requested_loss():
     assert outputs == [{"loss": 3.0, "logprobs": [pytest.approx(-0.3)]}]
 
 
-def test_a_pinned_seed_still_gets_one_stream_per_sample():
+def test_a_pinned_seed_still_gets_one_model_queue_per_sample():
     from miles.tinker.runtime import _with_sample_seed
 
     request = {"sampling_params": {"sampling_seed": 7, "temperature": 0.0}}

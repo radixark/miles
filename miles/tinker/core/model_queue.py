@@ -32,7 +32,7 @@ class PendingRequest:
         return (self.command.op, self.command.payload["loss_fn"], tuple(sorted(config.items())))
 
 
-class ModelStream:
+class ModelRequestQueue:
     def __init__(self, model_id: str, tenant: str, slot: int) -> None:
         self.model_id = model_id
         self.tenant = tenant

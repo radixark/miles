@@ -52,12 +52,12 @@ are not supported. Sampling requires a `/sampler_weights/` path returned by
 ## Failure handling
 
 A terminal failure of `forward_backward`, `optim_step`, or `load_state` ends
-that model's training stream, including commands already queued behind it.
+training for that model, including commands already queued behind it.
 This includes content validation failures with a valid model and sequence.
 Create a new model and restore a saved checkpoint to continue; completed
 futures and published checkpoints keep their results.
 
-Known request-local failures of `forward` or sampling leave the training stream
+Known request-local failures of `forward` or sampling leave model training
 available. Checkpoint load/save execution failures, including filesystem errors,
 invalidate the shared trainer cell and stop the server.
 Saving sampler weights commits an immutable directory;

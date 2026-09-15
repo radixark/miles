@@ -3,7 +3,7 @@
 import asyncio
 
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
-from miles.tinker.core.future import DONE, PENDING, Future
+from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
 
@@ -157,7 +157,7 @@ async def created_model(service: TinkerService, tenant: str = "tenant", session_
     return model_id
 
 
-async def await_settled(service: TinkerService, tenant: str, request_id: str, timeout: float = 2.0) -> Future:
+async def await_settled(service: TinkerService, tenant: str, request_id: str, timeout: float = 2.0) -> RequestFuture:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         future = service.retrieve_future(tenant, request_id)

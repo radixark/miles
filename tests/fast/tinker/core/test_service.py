@@ -86,7 +86,7 @@ async def test_out_of_order_chunks_complete_and_the_barrier_waits(service):
     assert calls.index("optim_step") > max(i for i, name in enumerate(calls) if name == "forward_backward")
 
 
-async def test_admission_failure_terminates_the_training_stream(service):
+async def test_admission_failure_terminates_the_training_model_queue(service):
     model_id = await created_model(service)
 
     oversized = service.submit(
@@ -191,7 +191,7 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     assert service.backend.named("sample")[0]["lora_path"] == disk_dir
 
 
-async def test_sample_failure_preserves_the_snapshot_and_training_stream(service):
+async def test_sample_failure_preserves_the_snapshot_and_training_model_queue(service):
     model_id = await created_model(service)
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     future = await await_settled(service, "tenant", request_id)
@@ -347,7 +347,7 @@ async def test_a_foreign_tenants_checkpoint_does_not_load(service):
     assert "belong" in future.error
 
 
-async def test_a_failed_batch_terminates_the_stream(service):
+async def test_a_failed_batch_terminates_the_model_queue(service):
     model_id = await created_model(service)
     first = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum(), datum()]))
     second = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
@@ -355,7 +355,7 @@ async def test_a_failed_batch_terminates_the_stream(service):
     assert (await await_settled(service, "tenant", first)).state == FAILED
     assert (
         await await_settled(service, "tenant", second)
-    ).state == FAILED, "the failed accumulation terminates the stream"
+    ).state == FAILED, "the failed accumulation terminates model training"
     assert model_id not in service.models
     assert service.backend.named("unload_slot")
 
@@ -652,7 +652,7 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
 
 
-async def test_a_recycled_slot_belongs_to_a_fresh_stream(service):
+async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
     slot = service.models[model_id].slot
@@ -781,7 +781,7 @@ async def test_a_retried_sample_does_not_sample_again(service):
 
 
 async def test_an_illegal_seq_id_is_rejected(service):
-    """seq_id 0 would park behind the stream watermark forever; every future would pend."""
+    """seq_id 0 would park behind the model queue watermark forever; every future would pend."""
     model_id = await created_model(service)
     with pytest.raises(UserInputError, match="seq_id"):
         service.submit("tenant", "optim_step", {"model_id": model_id, "seq_id": 0, "adam_params": dict(ADAM)})

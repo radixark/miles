@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 
-from miles.tinker.core.future import Future, FutureStore
+from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
     validate_batch_payload,
     validate_checkpoint_compatibility,
@@ -17,8 +17,8 @@ from miles.tinker.core.input_validation import (
     validate_sample_payload,
     validate_seq_id,
 )
+from miles.tinker.core.model_queue import ModelRequestQueue
 from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
-from miles.tinker.core.stream import ModelStream
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig, ModelRecord, OwnershipError, UserInputError
 from miles.tinker.core.utils import (
     build_checkpoint_metadata,
@@ -35,7 +35,7 @@ class TinkerService:
     def __init__(self, backend, config: GatewayConfig) -> None:
         self.backend = backend
         self.config = config
-        self.futures = FutureStore()
+        self.futures = RequestFutureStore()
         self.planner = Planner(config.batch_token_budget)
         self.models: dict[str, ModelRecord] = {}
         self.sessions: dict[str, dict] = {}
@@ -59,13 +59,15 @@ class TinkerService:
                 if self._background_error is not None:
                     raise self._background_error
                 # unit selection shares the critical section with execution, so
-                # lease expiry cannot reclaim a stream between the two
+                # lease expiry cannot reclaim a model queue between the two
                 async with self._trainer_lock:
                     rejections = self.planner.ready_rejections()
                     if rejections:
-                        for stream, pending in rejections:
+                        for model_queue, pending in rejections:
                             await self._finish_request(
-                                stream, pending, {"error": pending.command.validation_error, "error_category": "user"}
+                                model_queue,
+                                pending,
+                                {"error": pending.command.validation_error, "error_category": "user"},
                             )
                         continue
                     unit = self.planner.next_to_run()
@@ -149,7 +151,7 @@ class TinkerService:
             create_request_id=future.request_id,
         )
         self.models[model_id] = record
-        self.planner.add_stream(ModelStream(model_id, tenant, slot))
+        self.planner.add_model_queue(ModelRequestQueue(model_id, tenant, slot))
         task = asyncio.create_task(self._run_create_model(record))
         self._create_tasks.add(task)
         task.add_done_callback(self._create_tasks.discard)
@@ -187,9 +189,9 @@ class TinkerService:
         self._close_reasons[model_id] = error
         while len(self._close_reasons) > 4 * self.config.n_slots:
             self._close_reasons.pop(next(iter(self._close_reasons)))
-        stream = self.planner.stream(model_id)
-        self.planner.remove_stream(model_id)
-        for request_id in [record.create_request_id, *stream.request_id_by_seq.values()]:
+        model_queue = self.planner.model_queue(model_id)
+        self.planner.remove_model_queue(model_id)
+        for request_id in [record.create_request_id, *model_queue.request_id_by_seq.values()]:
             if self.futures.get(request_id, record.tenant) is not None:
                 self.futures.fail(request_id, error, category)
         if self.backend.trainer_dead():
@@ -210,16 +212,16 @@ class TinkerService:
         model_id = payload["model_id"]
         self.get_model(tenant, model_id)
         seq_id = validate_seq_id(payload["seq_id"], "seq_id")
-        stream = self.planner.stream(model_id)
+        model_queue = self.planner.model_queue(model_id)
 
         # retries must not accumulate gradients twice
-        if seq_id in stream.request_id_by_seq:
-            request_id = self.futures.request_id_for_retry(stream.request_id_by_seq[seq_id], model_id, tenant)
-            stream.request_id_by_seq[seq_id] = request_id
+        if seq_id in model_queue.request_id_by_seq:
+            request_id = self.futures.request_id_for_retry(model_queue.request_id_by_seq[seq_id], model_id, tenant)
+            model_queue.request_id_by_seq[seq_id] = request_id
             return request_id
 
         future = self.futures.create(model_id, tenant)
-        stream.request_id_by_seq[seq_id] = future.request_id
+        model_queue.request_id_by_seq[seq_id] = future.request_id
         self._arrival_counter += 1
         validation_error = payload.get("validation_error")
         if validation_error is None:
@@ -227,7 +229,7 @@ class TinkerService:
                 validate_batch_payload(op, payload, self.config)
             except UserInputError as error:
                 validation_error = str(error)
-        stream.submit(
+        model_queue.submit(
             Command(
                 model_id=model_id,
                 seq_id=seq_id,
@@ -241,13 +243,13 @@ class TinkerService:
         self._wake.set()
         return future.request_id
 
-    def retrieve_future(self, tenant: str, request_id: str) -> Future | None:
+    def retrieve_future(self, tenant: str, request_id: str) -> RequestFuture | None:
         return self.futures.get(request_id, tenant)
 
     async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
-        refs = sorted(batch.datums, key=lambda ref: ref.stream.slot)
-        slot_datums = [(ref.stream.slot, ref.datum) for ref in refs]
+        refs = sorted(batch.datums, key=lambda ref: ref.model_queue.slot)
+        slot_datums = [(ref.model_queue.slot, ref.datum) for ref in refs]
         self._batch_counter += 1
         forward = (
             self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
@@ -265,27 +267,29 @@ class TinkerService:
         for ref, output in zip(refs, outputs, strict=True):
             request = ref.request
             if request.record_output(ref.local_index, output):
-                await self._finish_request(ref.stream, request, {"op": request.command.op, "outputs": request.outputs})
+                await self._finish_request(
+                    ref.model_queue, request, {"op": request.command.op, "outputs": request.outputs}
+                )
 
     async def _fail_batch(self, batch: BatchUnit, error: str, category: str) -> None:
-        requests = {ref.request.command.request_id: (ref.stream, ref.request) for ref in batch.datums}
-        for stream, pending in requests.values():
-            await self._finish_request(stream, pending, {"error": error, "error_category": category})
+        requests = {ref.request.command.request_id: (ref.model_queue, ref.request) for ref in batch.datums}
+        for model_queue, pending in requests.values():
+            await self._finish_request(model_queue, pending, {"error": error, "error_category": category})
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
             outcomes = await self._dispatch_barrier_op(barrier)
         except (UserInputError, OwnershipError) as error:
             outcomes = [{"error": str(error), "error_category": "user"} for _ in barrier.entries]
-        for (stream, pending), outcome in zip(barrier.entries, outcomes, strict=True):
-            await self._finish_request(stream, pending, outcome)
+        for (model_queue, pending), outcome in zip(barrier.entries, outcomes, strict=True):
+            await self._finish_request(model_queue, pending, outcome)
 
     async def _dispatch_barrier_op(self, barrier: BarrierUnit) -> list[dict]:
         """Return one result or error per entry; only the caller settles futures and retires models."""
         if barrier.op == CommandOp.OPTIM_STEP:
             return await self._step_optimizers(barrier.entries)
-        ((stream, pending),) = barrier.entries  # every other barrier is single-entry
-        record = self.models[stream.model_id]
+        ((model_queue, pending),) = barrier.entries  # every other barrier is single-entry
+        record = self.models[model_queue.model_id]
         payload = pending.command.payload
         if barrier.op == CommandOp.SAVE_STATE:
             return [await self._save_state(record, payload)]
@@ -296,31 +300,33 @@ class TinkerService:
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
     async def _step_optimizers(self, entries: list) -> list[dict]:
-        adam_params_by_slot = {stream.slot: pending.command.payload["adam_params"] for stream, pending in entries}
+        adam_params_by_slot = {
+            model_queue.slot: pending.command.payload["adam_params"] for model_queue, pending in entries
+        }
         slot_outcomes = await self.backend.optim_step(adam_params_by_slot)
         outcomes = []
-        for stream, _ in entries:
-            outcome = slot_outcomes[stream.slot]
+        for model_queue, _ in entries:
+            outcome = slot_outcomes[model_queue.slot]
             if "error" in outcome:
                 outcomes.append(outcome)
             else:
                 outcomes.append({"op": "optim_step", "metrics": {key: float(value) for key, value in outcome.items()}})
         return outcomes
 
-    async def _finish_request(self, stream, pending, outcome: dict) -> None:
+    async def _finish_request(self, model_queue, pending, outcome: dict) -> None:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
             if pending.command.op.changes_training_state():
                 await self._close_model(
-                    stream.model_id,
-                    f"training stream failed ({outcome['error']}); create a new model and restore from a checkpoint",
+                    model_queue.model_id,
+                    f"model training failed ({outcome['error']}); create a new model and restore from a checkpoint",
                     category,
                 )
                 return
             self.futures.fail(pending.command.request_id, outcome["error"], category)
         else:
             self.futures.resolve(pending.command.request_id, outcome)
-        stream.finish(pending)
+        model_queue.finish(pending)
 
     async def _save_state(self, record: ModelRecord, payload: dict) -> dict:
         """Save parameters and optimizer state; call after optim_step to persist accumulated training work."""
