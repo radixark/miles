@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shlex
 
@@ -13,6 +14,7 @@ from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
     _pythonpath_with_sources,
     get_bool_env_var,
+    get_owned_mooncake_master_port,
     run_shell_command,
     train_env_vars,
 )
@@ -21,6 +23,8 @@ from miles.utils.external_utils.command_utils.ray_backend.command import (
     start_mooncake_master,
 )
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
+
+logger = logging.getLogger(__name__)
 
 
 class RayCommandBackend(BaseCommandBackend):
@@ -42,8 +46,8 @@ class RayCommandBackend(BaseCommandBackend):
                 f"ray start --head --node-ip-address {master_addr} --num-gpus {request.num_gpus_per_node} --disable-usage-stats"
             )
 
-        if MOONCAKE_BACKEND_NAME in ArgvManipulator.get(shlex.split(request.train_args), OBJECT_STORE_BACKEND_FLAG):
-            start_mooncake_master()
+        if mooncake_master_port is not None:
+            start_mooncake_master(rpc_port=mooncake_master_port, run_command=self.exec_command_cpu)
 
         for cmd in request.prepare_cmd.values():
             self.exec_command_multi_node(cmd)
@@ -68,12 +72,22 @@ class RayCommandBackend(BaseCommandBackend):
                 f"{request.train_args}"
             )
 
-    def exec_command_gpu(
+    def _resolve_owned_mooncake_master_port(self, train_args: str) -> int | None:
+        train_argv = shlex.split(train_args)
+        if ArgvManipulator.get_effective(train_argv, OBJECT_STORE_BACKEND_FLAG) != MOONCAKE_BACKEND_NAME:
+            return None
+
+        port = get_owned_mooncake_master_port(train_argv)
+        if port is None:
+            logger.info("The mooncake master the train arguments name is the caller's, so miles starts none")
+        return port
+
+    def _exec_command_gpu_inner(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None:
         return run_shell_command(cmd, capture_output=capture_output)
 
-    def exec_command_multi_node(
+    def _exec_command_multi_node_inner(
         self,
         cmd: str,
         capture_output: bool = False,
