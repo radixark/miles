@@ -142,21 +142,33 @@ class TITOTokenizer:
             trim_trailing_ids=self.trailing_token_ids or None,
         )
 
+    def default_template_args(self, tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """This tokenizer's launch kwargs plus *tools*: the ``template_args`` a
+        render gets when nothing was resolved for it."""
+        args = dict(self.chat_template_kwargs)
+        if tools:
+            args["tools"] = tools
+        return args
+
     def apply_chat_template(
         self,
         messages: list[dict[str, Any]],
         *,
         add_generation_prompt: bool,
-        tools: list[dict[str, Any]] | None = None,
         tokenize: bool = False,
+        template_args: dict[str, Any] | None = None,
     ) -> str | list[int]:
+        """Render *messages* with ``template_args``: every keyword
+        ``template.apply_chat_template`` takes besides the messages, ``tools``
+        included, used verbatim.  ``None`` renders with this tokenizer's launch
+        kwargs and no tools."""
+        args = self.chat_template_kwargs if template_args is None else template_args
         return template.apply_chat_template(
             messages,
             tokenizer=self.tokenizer,
             tokenize=tokenize,
             add_generation_prompt=add_generation_prompt,
-            tools=tools,
-            **self.chat_template_kwargs,
+            **args,
         )
 
     def postprocess_completion(
@@ -190,7 +202,7 @@ class TITOTokenizer:
         base_messages: list[dict[str, Any]],
         appended_messages: list[dict[str, Any]],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        template_args: dict[str, Any] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
         """Render *base_messages* and *base_messages + appended_messages*, return
@@ -199,11 +211,13 @@ class TITOTokenizer:
         When *add_generation_prompt* is True and *appended_messages* is empty,
         this computes the generation-prompt suffix (the assistant opener tokens).
         """
-        text_without = self.apply_chat_template(base_messages, add_generation_prompt=False, tools=tools)
+        text_without = self.apply_chat_template(
+            base_messages, add_generation_prompt=False, template_args=template_args
+        )
         text_with = self.apply_chat_template(
             base_messages + appended_messages,
             add_generation_prompt=add_generation_prompt,
-            tools=tools,
+            template_args=template_args,
         )
         if not text_with.startswith(text_without):
             roles = [msg["role"] for msg in appended_messages] if appended_messages else ["generation_prompt"]
@@ -214,7 +228,8 @@ class TITOTokenizer:
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         """Compute incremental token IDs for messages appended after the
         pretokenized prefix.
@@ -227,7 +242,7 @@ class TITOTokenizer:
             old_messages: Previously stored messages (prefix).
             new_messages: Full new message list (must be a superset of
                 *old_messages* with only allowed-role messages appended).
-            tools: Tool definitions in OpenAI format (may vary per call).
+            template_args: See ``apply_chat_template``; ``tools`` rides in it.
 
         Returns:
             Incremental token IDs (including the generation prompt) that,
@@ -239,7 +254,7 @@ class TITOTokenizer:
         return self._tokenize_rendered_suffix(
             [_DUMMY_SYSTEM, _build_dummy_assistant(old_messages[-1])],
             appended_messages,
-            tools=tools,
+            template_args=template_args,
             add_generation_prompt=True,
         )
 
@@ -248,7 +263,8 @@ class TITOTokenizer:
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         """Merge *pretokenized_token_ids* with incremental tokens to produce
         the complete prompt token IDs (including generation prompt).
@@ -256,7 +272,7 @@ class TITOTokenizer:
         The default implementation is simple concatenation.  Subclasses
         override this to handle model-specific boundary token logic.
         """
-        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, template_args=template_args)
         return list(pretokenized_token_ids) + incremental
 
 
@@ -306,9 +322,10 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
-        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, template_args=template_args)
         prefix = list(pretokenized_token_ids)
         # Weakly post-trained Qwen3 models, notably 0.6B, may emit the pretraining/padding token `<|endoftext|>`.
         # Seen in TITO's March 2026 bring-up; rare in larger models. See https://github.com/radixark/miles/issues/3113.
@@ -421,9 +438,10 @@ class GLM47TITOTokenizer(TITOTokenizer):
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
-        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, template_args=template_args)
         prefix = list(pretokenized_token_ids)
         if prefix and prefix[-1] in self._ambiguous_boundary_ids:
             prefix = prefix[:-1]
@@ -628,9 +646,10 @@ class MinimaxM25TITOTokenizer(TITOTokenizer):
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
-        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, template_args=template_args)
         prefix = list(pretokenized_token_ids)
         if prefix and prefix[-1] == self._eos_id:
             prefix.append(self._newline_id)
@@ -772,12 +791,13 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns."""
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
-        text_old = self.apply_chat_template(old_messages, add_generation_prompt=False, tools=tools)
-        text_new = self.apply_chat_template(new_messages, add_generation_prompt=True, tools=tools)
+        text_old = self.apply_chat_template(old_messages, add_generation_prompt=False, template_args=template_args)
+        text_new = self.apply_chat_template(new_messages, add_generation_prompt=True, template_args=template_args)
         if not text_new.startswith(text_old):
             raise ValueError(
                 "deepseek_v4 render is not append-only for the appended messages "

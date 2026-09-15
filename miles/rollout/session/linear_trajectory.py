@@ -107,6 +107,7 @@ class LinearTrajectory:
         Must be called under ``self.lock``.
         """
         matcher = message_matcher if message_matcher is not None else strict_message_matches
+        template_args = tito_tokenizer.default_template_args(tools)
 
         # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
         #    first turn rolls back to the empty checkpoint, clearing token_ids.
@@ -115,9 +116,9 @@ class LinearTrajectory:
         if not self.token_ids:
             return tito_tokenizer.apply_chat_template(
                 request_messages,
-                tools=tools,
                 add_generation_prompt=True,
                 tokenize=True,
+                template_args=template_args,
             )
 
         # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
@@ -136,7 +137,7 @@ class LinearTrajectory:
             old_messages=self.messages,
             new_messages=effective_messages,
             pretokenized_token_ids=self.token_ids,
-            tools=tools,
+            template_args=template_args,
         )
 
     def update_pretokenized_state(
@@ -335,9 +336,9 @@ class SessionRegistry:
             tools = session.records[-1].request.get("tools") if session.records else None
             expected_ids = self.tito_tokenizer.apply_chat_template(
                 session.messages,
-                tools=tools,
                 add_generation_prompt=False,
                 tokenize=True,
+                template_args=self.tito_tokenizer.default_template_args(tools),
             )
             mismatches = self.comparator.compare_sequences(expected_ids, session.token_ids)
             return [m.to_dict() for m in mismatches]
