@@ -143,8 +143,7 @@ class TITOTokenizer:
         )
 
     def default_template_args(self, tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        """This tokenizer's launch kwargs plus *tools*: the ``template_args`` a
-        render gets when nothing was resolved for it."""
+        """Return launch template kwargs with optional tools for direct rendering."""
         args = dict(self.chat_template_kwargs)
         if tools:
             args["tools"] = tools
@@ -158,10 +157,13 @@ class TITOTokenizer:
         tokenize: bool = False,
         template_args: dict[str, Any] | None = None,
     ) -> str | list[int]:
-        """Render *messages* with ``template_args``: every keyword
-        ``template.apply_chat_template`` takes besides the messages, ``tools``
-        included, used verbatim.  ``None`` renders with this tokenizer's launch
-        kwargs and no tools."""
+        """Render messages using resolved template kwargs and tools.
+
+        Pass `template_args` as the complete argument set; it is not merged with
+        launch defaults. `None` uses this tokenizer's launch defaults.
+        """
+        # TODO: Use the unified kwargs resolver for launch and request arguments once
+        # available, then check whether callers still need this default fallback.
         args = self.chat_template_kwargs if template_args is None else template_args
         return template.apply_chat_template(
             messages,
@@ -242,7 +244,7 @@ class TITOTokenizer:
             old_messages: Previously stored messages (prefix).
             new_messages: Full new message list (must be a superset of
                 *old_messages* with only allowed-role messages appended).
-            template_args: See ``apply_chat_template``; ``tools`` rides in it.
+            template_args: Resolved template kwargs and tools, or `None` for launch defaults.
 
         Returns:
             Incremental token IDs (including the generation prompt) that,
