@@ -44,10 +44,11 @@ class RankProbe:
     grouped_mm_max_groups: int | None = None  # groups torch._grouped_mm accepts, probed; None without the op
     gpu_total: int = 0  # bytes of one GPU, the engine-memory bound's budget base
     base_params: int = 0  # the unsharded base model, the engines' weights
+    slot_scale: float = 1.0
 
     @property
     def slot_bytes(self) -> int:
-        return self.free_before - self.free_after
+        return int((self.free_before - self.free_after) * self.slot_scale)
 
     def capacity(self, margin_bytes: int) -> int:
         return max(int((self.free_before - self.act_peak - margin_bytes) // self.slot_bytes), 0)
@@ -190,6 +191,8 @@ async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankPro
     await backend.unload_slot(1)
     await backend.unload_slot(0)
 
+    weight = 2 if (args.bf16 or args.fp16) else 4
+    scale = bytes_per_train_param(args) / (bytes_per_train_param(args) - weight)
     probes = [
         RankProbe(
             free_before=b["free"],
@@ -201,6 +204,7 @@ async def probe_slot_capacity(args: Namespace, backend, trainer) -> list[RankPro
             grouped_mm_max_groups=a["grouped_mm_max_groups"],
             gpu_total=a["gpu_total"],
             base_params=a["base_params"],
+            slot_scale=scale,
         )
         for b, a in zip(before, after, strict=True)
     ]
