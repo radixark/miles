@@ -24,6 +24,7 @@ _TRAIN_BACKEND_DEFAULTS: dict[str, Any] = dict(
 _RESOLVED_AFTER_PARSING: dict[str, Any] = dict(
     offload_train=False,
     offload_rollout=False,
+    eval_uses_snapshots=False,
     run_uuid="0" * RUN_UUID_LENGTH,
 )
 

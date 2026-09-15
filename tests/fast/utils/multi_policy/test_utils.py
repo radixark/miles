@@ -98,12 +98,18 @@ class TestValidateMultiPolicyArgs:
         with pytest.raises(AssertionError, match=message):
             self._validate(_make_args("a", "b", **overrides))
 
-    def test_an_evaluating_run_is_refused(self, monkeypatch):
-        """There is no eval dispatcher here, so --eval-interval would be accepted and never honored."""
+    def test_a_shared_engine_evaluating_run_is_accepted(self, monkeypatch):
+        """train_multi_policy.py dispatches shared-engine eval, so --eval-interval alone is a valid run."""
         _stub_sglang_models(monkeypatch, ("a", True), ("b", True))
 
-        with pytest.raises(AssertionError, match="does not evaluate"):
-            self._validate(_make_args("a", "b", eval_interval=10))
+        self._validate(_make_args("a", "b", eval_interval=10))
+
+    def test_a_snapshot_evaluating_run_is_refused(self, monkeypatch):
+        """A snapshot backend exports one trainer's checkpoint, which cannot represent several policies."""
+        _stub_sglang_models(monkeypatch, ("a", True), ("b", True))
+
+        with pytest.raises(AssertionError, match="shared rollout engines only"):
+            self._validate(_make_args("a", "b", eval_interval=10, eval_uses_snapshots=True))
 
     def test_a_run_without_an_sglang_config_is_refused(self, monkeypatch):
         """Without one inference model per policy, every update would land on the same engines."""
