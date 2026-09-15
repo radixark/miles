@@ -18,7 +18,7 @@ from miles.tinker.core.input_validation import (
     validate_seq_id,
 )
 from miles.tinker.core.model_queue import ModelRequestQueue
-from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
+from miles.tinker.core.scheduler import BarrierUnit, BatchUnit, RequestScheduler
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig, ModelRecord, OwnershipError, UserInputError
 from miles.tinker.core.utils import (
     build_checkpoint_metadata,
@@ -36,7 +36,7 @@ class TinkerService:
         self.backend = backend
         self.config = config
         self.futures = RequestFutureStore()
-        self.planner = Planner(config.batch_token_budget)
+        self.scheduler = RequestScheduler(config.batch_token_budget)
         self.models: dict[str, ModelRecord] = {}
         self.sessions: dict[str, dict] = {}
         self.sampling_sessions: dict[str, dict] = {}
@@ -61,7 +61,7 @@ class TinkerService:
                 # unit selection shares the critical section with execution, so
                 # lease expiry cannot reclaim a model queue between the two
                 async with self._trainer_lock:
-                    rejections = self.planner.ready_rejections()
+                    rejections = self.scheduler.ready_rejections()
                     if rejections:
                         for model_queue, pending in rejections:
                             await self._finish_request(
@@ -70,7 +70,7 @@ class TinkerService:
                                 {"error": pending.command.validation_error, "error_category": "user"},
                             )
                         continue
-                    unit = self.planner.next_to_run()
+                    unit = self.scheduler.next_to_run()
                     if unit is not None:
                         if isinstance(unit, BatchUnit):
                             await self._run_batch(unit)
@@ -151,7 +151,7 @@ class TinkerService:
             create_request_id=future.request_id,
         )
         self.models[model_id] = record
-        self.planner.add_model_queue(ModelRequestQueue(model_id, tenant, slot))
+        self.scheduler.add_model_queue(ModelRequestQueue(model_id, tenant, slot))
         task = asyncio.create_task(self._run_create_model(record))
         self._create_tasks.add(task)
         task.add_done_callback(self._create_tasks.discard)
@@ -189,8 +189,8 @@ class TinkerService:
         self._close_reasons[model_id] = error
         while len(self._close_reasons) > 4 * self.config.n_slots:
             self._close_reasons.pop(next(iter(self._close_reasons)))
-        model_queue = self.planner.model_queue(model_id)
-        self.planner.remove_model_queue(model_id)
+        model_queue = self.scheduler.model_queue(model_id)
+        self.scheduler.remove_model_queue(model_id)
         for request_id in [record.create_request_id, *model_queue.request_id_by_seq.values()]:
             if self.futures.get(request_id, record.tenant) is not None:
                 self.futures.fail(request_id, error, category)
@@ -212,7 +212,7 @@ class TinkerService:
         model_id = payload["model_id"]
         self.get_model(tenant, model_id)
         seq_id = validate_seq_id(payload["seq_id"], "seq_id")
-        model_queue = self.planner.model_queue(model_id)
+        model_queue = self.scheduler.model_queue(model_id)
 
         # retries must not accumulate gradients twice
         if seq_id in model_queue.request_id_by_seq:

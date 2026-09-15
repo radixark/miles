@@ -41,7 +41,7 @@ class BarrierUnit:
     entries: list[tuple[ModelRequestQueue, PendingRequest]]
 
 
-class Planner:
+class RequestScheduler:
     def __init__(self, batch_token_budget: int) -> None:
         self.batch_token_budget = batch_token_budget
         self._model_queues: dict[str, ModelRequestQueue] = {}

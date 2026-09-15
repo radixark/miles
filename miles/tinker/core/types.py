@@ -72,7 +72,7 @@ class Command:
     op: CommandOp
     payload: dict
     request_id: str
-    arrival: int  # global submit order for selecting the planner's seed
+    arrival: int  # global submit order for selecting the scheduler's seed
     validation_error: str | None = None
 
 
