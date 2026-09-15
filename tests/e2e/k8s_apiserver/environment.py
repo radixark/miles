@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from miles.utils.misc import exec_command
+from miles.utils.external_utils.command_utils.common import run_shell_command
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def _docker_failure_reason() -> str | None:
     if shutil.which("docker") is None:
         return "docker is not on PATH"
     try:
-        exec_command("docker info", capture_output=True)
+        run_shell_command("docker info", capture_output=True)
     except subprocess.CalledProcessError as error:
         return f"`docker info` exited with {error.returncode}"
     return None
