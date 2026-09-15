@@ -72,6 +72,32 @@ class TestOuterServeForwarding:
         assert captured["env"]["MILES_SERVE_SMOKE_ENV"] == ",".join(worker_argv)
         assert captured["env"]["MILES_SERVE_SMOKE_POOL_ID"] == POOL_ID
 
+    def test_computed_env_overrides_the_parent_without_dropping_unrelated_variables(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A computed variable replaces its parent value while unrelated inherited variables survive."""
+        captured: dict[str, object] = {}
+
+        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            captured.update(path=path, argv=argv, env=env)
+
+        computed_name = "MILES_TEST_COMPUTED_ENV"
+        inherited_name = "MILES_TEST_INHERITED_ENV"
+        monkeypatch.setattr(serve_module.os, "execve", fake_execve)
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        monkeypatch.setenv(SMOKE_EXTRA_ENV_VAR, computed_name)
+        monkeypatch.setenv(computed_name, "from-parent")
+        monkeypatch.setenv(inherited_name, "kept")
+        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", RPC_PORT_FLAG, "9000"])
+
+        serve_module.main()
+
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env[computed_name] == "0"
+        assert env[inherited_name] == "kept"
+
     def test_refuses_a_spec_that_overwrites_the_identity_the_platform_gave_the_pod(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -88,45 +114,6 @@ class TestOuterServeForwarding:
 
 def _refuse_exec(path: str, argv: list[str], env: dict[str, str]) -> None:
     raise AssertionError("a spec that overwrites the pod's identity must not reach exec")
-
-    def test_env_var_hook_overrides_same_named_parent_variable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A computed variable wins over a same-named variable inherited from the parent environment."""
-        captured: dict[str, object] = {}
-
-        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
-            captured.update(path=path, argv=argv, env=env)
-
-        monkeypatch.setenv("MILES_TEST_ENV", "from-parent")
-        monkeypatch.setenv("MILES_TEST_UNTOUCHED", "kept")
-        monkeypatch.setattr(serve_module.os, "execve", fake_execve)
-        monkeypatch.setattr(
-            serve_module,
-            "load_function",
-            lambda path: lambda worker_argv: {"MILES_TEST_ENV": ",".join(worker_argv)},
-        )
-
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [
-                "serve.py",
-                "--worker",
-                "package.worker",
-                "--env-var-fn",
-                "package.env",
-                "--",
-                "--flag",
-                "value",
-            ],
-        )
-
-        serve_module.main()
-
-        assert captured["env"]["MILES_TEST_ENV"] == "--flag,value"
-        assert captured["env"]["MILES_TEST_UNTOUCHED"] == "kept"
 
 
 class TestOuterServeInterpreterFlags:

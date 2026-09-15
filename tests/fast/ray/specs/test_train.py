@@ -31,8 +31,8 @@ from miles.ray.specs.train import (
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
-from miles.utils.workers.rpc.common.metadata import _find_rpc_config
-from miles.utils.workers.types import PlatformAccess
+from miles.utils.workers.rpc.common.metadata import _find_rpc_config, declared_concurrency_groups
+from miles.utils.workers.types import DeployComponent, PlatformAccess
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
@@ -574,6 +574,26 @@ def _controller_providers() -> FakeBackendCapability:
 
 
 class TestSpecTrainerController:
+    def test_the_constructor_receives_its_deployment_identity_and_cell_operations(self) -> None:
+        """The controller receives the exact deployment identity and backend operations for its trainer release."""
+        operations = object()
+        capability = FakeBackendCapability(cells_provider=object(), cell_operations=operations)
+        args = _make_args(
+            run_uuid="run-uuid",
+            deploy_component=DeployComponent.TRAINER,
+            deploy_instance_id="policy-b",
+        )
+
+        kwargs = specs_trainer_controller(args)[0].ctor_kwargs(_controller_context(capability))
+
+        identity = kwargs["deployment_identity"]
+        assert (identity.run_uuid, identity.deploy_component, identity.deploy_instance_id) == (
+            "run-uuid",
+            DeployComponent.TRAINER.value,
+            "policy-b",
+        )
+        assert kwargs["cell_operations"] is operations
+
     def test_one_controller_per_trainer_role(self):
         """Each controller owns exactly one trainer pool, so a critic run needs a second one."""
         assert specs_trainer_controller(_make_args())[0].name == "trainer-controller-actor"
