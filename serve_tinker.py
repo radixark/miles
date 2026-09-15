@@ -11,6 +11,7 @@ from miles.backends.megatron_utils.lora.slot_capacity import (
 )
 from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.specs.entrypoint import compute_specs
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
 from miles.tinker.core.service import TinkerService
@@ -23,8 +24,22 @@ from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.hf_config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
+from miles.utils.multi_lora_profiling import instrument_app, instrument_backend
 
 logger = logging.getLogger(__name__)
+
+
+async def _start_trainer(args) -> TrainerController:
+    trainer = TrainerController(
+        args=args,
+        role="actor",
+        with_ref=False,
+        with_opd_teacher=False,
+        inference_controller=None,
+        rollout_executor=None,
+    )
+    await trainer.init()
+    return trainer
 
 
 async def serve(args):
@@ -37,33 +52,31 @@ async def serve(args):
 
     init_http_client(args)
 
-    _worker_manager = launch_worker_manager(args)
+    auto_capacity = args.multi_lora_n_adapters == AUTO_SLOT_CAPACITY
+    if auto_capacity:
+        args.multi_lora_n_adapters = 2
+    worker_manager = launch_worker_manager(args, trainer_only=auto_capacity)
     object_store.init_instance(args, contribute_segment=False)
 
     inference_controller = InferenceController(args)
 
-    trainer = TrainerController(
-        args=args,
-        role="actor",
-        with_ref=False,
-        with_opd_teacher=False,
-        inference_controller=None,
-        rollout_executor=None,
-    )
-    await trainer.init()
+    trainer = await _start_trainer(args)
 
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     dp_size = actor_world_size // (
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
-    backend = MilesBackend(trainer, router_url, dp_size=dp_size)
-    if args.multi_lora_n_adapters == AUTO_SLOT_CAPACITY:
-        # resolved before the engines launch: they read the slot count from args
-        probes = await probe_slot_capacity(args, backend, trainer)
-        # one resident adapter copy per slot; the version keep-K cap left with the LRU redesign
+    if auto_capacity:
+        probes = await probe_slot_capacity(args, MilesBackend(trainer, "", dp_size=dp_size), trainer)
         args.multi_lora_n_adapters = resolve_slot_capacity(args, probes, keep_k=1)
+        if getattr(args, "sglang_max_loaded_loras", None) is None:
+            args.sglang_max_loaded_loras = args.multi_lora_n_adapters + 16
+        await trainer.dispose()
+        await worker_manager.restart_with_specs.remote(compute_specs(args))
+        trainer = await _start_trainer(args)
     await inference_controller.init()
+    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    backend = instrument_backend(MilesBackend(trainer, router_url, dp_size=dp_size))
 
     target_modules = set(convert_target_modules_to_hf(args.target_modules))
     config = GatewayConfig(
@@ -80,7 +93,12 @@ async def serve(args):
     service = TinkerService(backend, config)
 
     server = uvicorn.Server(
-        uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
+        uvicorn.Config(
+            instrument_app(build_app(service), backend.profiler),
+            host="0.0.0.0",
+            port=args.tinker_server_port,
+            log_level="info",
+        )
     )
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
