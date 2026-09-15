@@ -103,3 +103,20 @@ class TestMaybeParkFollower:
         await asyncio.wait_for(task, timeout=5)
 
         assert finished
+
+
+class TestTheFollowerAlwaysGivesTheLoopATurn:
+    async def test_an_open_gate_still_suspends_the_follower(self):
+        """An open gate that returns without suspending lets the follower's unbounded loop starve the loop."""
+        parker = Parker(num_followers=1)
+        other_task_ran = False
+
+        async def other_task() -> None:
+            nonlocal other_task_ran
+            other_task_ran = True
+
+        asyncio.create_task(other_task())
+
+        await parker.maybe_park_follower()
+
+        assert other_task_ran

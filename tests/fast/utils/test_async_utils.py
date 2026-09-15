@@ -468,6 +468,38 @@ class TestWaitFutures:
 
 @pytest.mark.asyncio
 class TestWaitCancellingPendingOnFirstCompletion:
+    async def test_callback_runs_before_pending_tasks_are_cancelled(self) -> None:
+        """The first-completion callback runs once before a pending follower observes cancellation."""
+        follower_started = asyncio.Event()
+        leader_release = asyncio.Event()
+        events: list[str] = []
+
+        async def leader() -> None:
+            await leader_release.wait()
+
+        async def follower() -> None:
+            follower_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                events.append("follower cancelled")
+                raise
+
+        leader_task: asyncio.Task[None] = asyncio.create_task(leader())
+        follower_task: asyncio.Task[None] = asyncio.create_task(follower())
+        await follower_started.wait()
+
+        def on_first_completion() -> None:
+            assert follower_task.cancelling() == 0
+            events.append("callback")
+
+        leader_release.set()
+        await wait_cancelling_pending_on_first_completion(
+            [leader_task, follower_task], on_first_completion=on_first_completion
+        )
+
+        assert events == ["callback", "follower cancelled"]
+
     async def test_the_first_task_to_return_cancels_the_rest(self):
         """The leader owns the length of a multi policy run, and its followers loop until it is over."""
         cancelled = False
@@ -557,6 +589,26 @@ class TestWaitCancellingPendingOnFirstCompletion:
                 [asyncio.create_task(failing()), asyncio.create_task(slow())]
             )
 
+    async def test_primary_failure_precedes_a_cleanup_failure_from_an_earlier_task(self):
+        """Cancellation cleanup is attached without masking the failure that ended the run."""
+
+        async def cleanup_failure():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup exploded") from None
+
+        async def primary_failure():
+            await asyncio.sleep(0.01)
+            raise ValueError("training failed")
+
+        with pytest.raises(ValueError, match="training failed") as exc_info:
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(cleanup_failure()), asyncio.create_task(primary_failure())]
+            )
+
+        assert any("RuntimeError: cleanup exploded" in note for note in exc_info.value.__notes__)
+
     async def test_the_cancelled_members_are_awaited_before_the_error_is_raised(self):
         """Raising before the cleanup lands would let a half-cancelled task outlive the caller."""
         cleaned_up = False
@@ -622,3 +674,82 @@ class TestGatherAndRaiseFirst:
                 await async_utils.gather_and_raise_first([_failing("quiet")])
 
         assert caplog.text == ""
+
+
+class TestGetAsyncLoop:
+    def test_threads_arriving_together_share_one_loop(self, monkeypatch):
+        """A second loop would strand whatever already awaits on the first, which no caller can recover from."""
+        monkeypatch.setattr(async_utils, "async_loop", None)
+        built: list[object] = []
+
+        class SlowToBuild:
+            def __init__(self):
+                time.sleep(0.05)
+                built.append(self)
+
+        monkeypatch.setattr(async_utils, "AsyncLoopThread", SlowToBuild)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            loops = [future.result() for future in [pool.submit(async_utils.get_async_loop) for _ in range(8)]]
+
+        assert len(built) == 1
+        assert all(loop is built[0] for loop in loops)
+
+    def test_a_later_caller_is_answered_from_the_loop_already_built(self, monkeypatch):
+        """The guard must not rebuild the loop once one exists, nor pay a lock on every rollout call."""
+        monkeypatch.setattr(async_utils, "async_loop", None)
+        monkeypatch.setattr(async_utils, "AsyncLoopThread", lambda: object())
+
+        first = async_utils.get_async_loop()
+
+        assert async_utils.get_async_loop() is first
+
+
+class _ErrorWithoutAddNote(Exception):
+    def __getattribute__(self, name: str):
+        if name == "add_note":
+            raise AttributeError(name)
+        return super().__getattribute__(name)
+
+
+class TestKeepingASecondaryFailureWhereNotesDoNotExist:
+    def test_a_secondary_failure_is_logged_when_the_primary_cannot_carry_notes(self, caplog):
+        """On 3.10 the annotation raised AttributeError from the error path and replaced the failure it described."""
+        primary = _ErrorWithoutAddNote("training failed")
+
+        with caplog.at_level(logging.ERROR):
+            async_utils._exception_add_note_or_log(primary, "RuntimeError: cleanup")
+
+        assert "RuntimeError: cleanup" in caplog.text
+
+    def test_a_primary_that_can_carry_notes_is_annotated_rather_than_logged(self, caplog):
+        """On 3.11 and later the note travels with the exception, which is where a caller reads it."""
+        primary = ValueError("training failed")
+
+        with caplog.at_level(logging.ERROR):
+            async_utils._exception_add_note_or_log(primary, "RuntimeError: cleanup")
+
+        assert any("RuntimeError: cleanup" in note for note in primary.__notes__)
+        assert caplog.text == ""
+
+    async def test_the_primary_failure_still_reaches_the_caller_unreplaced(self, caplog):
+        """Annotating the failure must never be able to become the failure the run reports."""
+
+        async def cleanup_failure():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup exploded") from None
+
+        async def primary_failure():
+            await asyncio.sleep(0.01)
+            raise _ErrorWithoutAddNote("training failed")
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(_ErrorWithoutAddNote, match="training failed"):
+                await wait_cancelling_pending_on_first_completion(
+                    [asyncio.create_task(cleanup_failure()), asyncio.create_task(primary_failure())]
+                )
+
+        assert "Additional task failure while cancelling peers" in caplog.text
+        assert "RuntimeError: cleanup exploded" in caplog.text

@@ -38,6 +38,8 @@ def _make_args(**overrides: Any) -> Namespace:
 def _make_trainers(model_ids, handles=None, start_rollout_ids=None) -> dict[str, TrainerInfo]:
     handles = {model_id: AsyncMock() for model_id in model_ids} if handles is None else handles
     start_rollout_ids = start_rollout_ids or {}
+    for handle in handles.values():
+        _let_follower_yield(handle)
     return {
         model_id: TrainerInfo(model_id=model_id, start_rollout_id=start_rollout_ids.get(model_id, 0), handle=handle)
         for model_id, handle in handles.items()
@@ -95,6 +97,22 @@ def _stub_update_weights(monkeypatch):
     monkeypatch.setattr(multi_policy_driver, "update_weights", AsyncMock())
 
 
+async def _slow_train(rollout_id: int, rollout_data_ref, **kwargs) -> None:
+    await asyncio.sleep(0.05)
+
+
+async def _train_never_returning(rollout_id: int, rollout_data_ref: Any, **kwargs: Any) -> None:
+    await asyncio.Event().wait()
+
+
+def _let_follower_yield(handle) -> None:
+    async def yield_to_leader(rollout_id: int, rollout_data_ref, **kwargs) -> None:
+        await asyncio.sleep(0)
+
+    if isinstance(handle.train, AsyncMock) and handle.train.side_effect is None:
+        handle.train.side_effect = yield_to_leader
+
+
 class TestInitialWeightPublication:
     async def test_every_policy_compares_its_engines_against_its_own_trainer(self):
         """--ci-test asks for this comparison, and running it for one policy would leave the others unchecked."""
@@ -134,7 +152,10 @@ class TestRunPolicies:
 
     async def test_a_policy_only_resumes_the_health_probing_of_its_own_engines(self):
         """Resuming the whole fleet here un-pauses probing of a policy that is mid weight broadcast."""
-        context = await _run(_make_args(num_rollout=1))
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["b"].train = _train_never_returning
+
+        context = await _run(_make_args(num_rollout=1), trainers=trainers)
 
         prepared = context["inference_controller"].prepare_rollout.await_args_list
         assert sorted((call.args[0], call.kwargs["model_id"]) for call in prepared) == [(0, "a"), (0, "b")]
@@ -260,11 +281,17 @@ class TestSaving:
     async def test_a_parked_follower_is_saved_at_the_round_it_reached(self):
         """A record naming a policy at a rollout it never checkpointed cannot be resumed."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        saves: list[tuple[int, int]] = []
+
+        async def _note_follower_position(rollout_id: int, **kwargs: Any) -> None:
+            saves.append((rollout_id, trainers["b"].train.await_args_list[-1].args[0]))
+
+        trainers["b"].save_model = AsyncMock(side_effect=_note_follower_position)
 
         await _run(_make_args(num_rollout=1, save=None, save_interval=1), trainers=trainers)
 
-        [saved_at] = [call.args[0] for call in trainers["b"].save_model.await_args_list]
-        assert saved_at == trainers["b"].train.await_args_list[-1].args[0]
+        [(saved_at, reached)] = saves
+        assert saved_at == reached
 
     async def test_every_policy_is_on_disk_before_the_record_claims_the_checkpoint_exists(self):
         """An asynchronous follower save still running would leave the record pointing at files nobody wrote."""
@@ -342,3 +369,33 @@ class TestSaving:
         trainers["a"].save_model.assert_not_awaited()
         trainers["b"].save_model.assert_not_awaited()
         context["rollout_executor"].save.assert_not_awaited()
+
+
+class TestARunThatCancellationCannotEnd:
+    async def test_a_follower_that_absorbs_cancellation_still_stops(self):
+        """A follower loops without bound, so ending the run must not depend on cancellation reaching it."""
+        absorbed = False
+
+        async def _train(rollout_id: int, rollout_data_ref: Any, **kwargs: Any) -> None:
+            nonlocal absorbed
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if absorbed:
+                    raise
+                absorbed = True
+
+        async def _get(rollout_id: int, trainer_model_id: str | None = None) -> dict:
+            await asyncio.sleep(0.01)
+            return dict(data_ref=None)
+
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["b"].train = _train
+        rollout_executor = AsyncMock()
+        rollout_executor.get = _get
+
+        await asyncio.wait_for(
+            _run(_make_args(num_rollout=1), trainers=trainers, rollout_executor=rollout_executor), timeout=10
+        )
+
+        assert absorbed
