@@ -186,7 +186,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     async def _next_group(self, *, current_version: int | None, trainer_model_id: str | None) -> DataBufferInput:
         queue_get = asyncio.create_task(
-            self._output.get(current_version=current_version, trainer_model_id=trainer_model_id)
+            self._output.get(num_groups=1, current_version=current_version, trainer_model_id=trainer_model_id)
         )
         try:
             while True:
@@ -203,7 +203,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
                     self._worker.result()
                     raise RuntimeError("fully-async rollout worker exited without an exception")
                 if queue_get in done:
-                    return queue_get.result()
+                    [entry] = queue_get.result()
+                    return entry
                 logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
         finally:
             if not queue_get.done():
