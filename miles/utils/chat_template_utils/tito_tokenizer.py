@@ -129,11 +129,13 @@ class TITOTokenizer:
             canonical[key] = value
         return canonical
 
-    def template_args_for_request(self, client: dict[str, Any]) -> dict[str, Any]:
+    def template_args_for_request(self, client: dict[str, Any], *, turn_args: dict[str, Any] | None) -> dict[str, Any]:
         """Resolve template kwargs and tools for one chat request.
 
-        Request kwargs override launch defaults, subject to the model family's
-        constants and alias rules. Tools come from the request's top-level `tools`.
+        `turn_args=None` starts a new root: request kwargs override launch defaults.
+        Otherwise, omitted kwargs inherit from the recorded turn, and changes are
+        rejected to preserve the stored token prefix. Model families normalize
+        aliases and constants here and decide tool changes in `tools_for_continued_turn`.
         The session server maps this method's `ValueError` to HTTP 400.
         """
         request_kwargs = client.get("chat_template_kwargs")
@@ -143,13 +145,41 @@ class TITOTokenizer:
             raise ValueError("chat_template_kwargs must be an object")
         if "tools" in request_kwargs:
             raise ValueError("tools belongs at the top level of the request, not in chat_template_kwargs")
+
+        recorded = None if turn_args is None else {key: value for key, value in turn_args.items() if key != "tools"}
+        base = self.chat_template_kwargs if recorded is None else recorded
         kwargs = self.canonical_kwargs(
-            template.merge_chat_template_kwargs(
-                self.chat_template_kwargs, request_kwargs, alias_keys=self.chat_template_kwarg_aliases
-            )
+            template.merge_chat_template_kwargs(base, request_kwargs, alias_keys=self.chat_template_kwarg_aliases)
         )
+        if recorded is not None and kwargs != recorded:
+            raise ValueError(
+                f"chat_template_kwargs {kwargs!r} is not accepted: the turn being continued "
+                f"was rendered with {recorded!r}"
+            )
+
         tools = client.get("tools") or None
+        if turn_args is not None:
+            tools = self.tools_for_continued_turn(tools, recorded=turn_args.get("tools"))
         return {**kwargs, **({"tools": tools} if tools else {})}
+
+    def tools_for_continued_turn(
+        self, requested: list[dict[str, Any]] | None, *, recorded: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
+        """The tools a request continuing a turn rendered with *recorded* tools
+        renders with.  Omitted tools inherit the recorded ones: they are in the
+        prompt prefix already, and the wire must declare them for the tool-call
+        parser.  Equal tools (compared canonicalized) pass.  A change is refused
+        because this family renders tools in the prompt prefix, which a continued
+        turn reuses as-is; a family whose template lets an appended turn carry
+        new tools overrides this."""
+        if requested is None:
+            return recorded
+        if template.extract_tool_dicts(requested) != template.extract_tool_dicts(recorded):
+            raise ValueError(
+                "tools changed on a continued turn: the turn being continued was rendered with different tools, "
+                "and this model family renders tools in the prompt prefix"
+            )
+        return requested
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this

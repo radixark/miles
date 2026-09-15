@@ -121,12 +121,32 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 <Warning>
 
-**Do not set TITO control fields.** The session server replaces client
-`input_ids` and forces `logprobs=True`, `return_meta_info=True`, and the response
-metadata needed for TITO. Do not set `logprob_start_len=0`; scoring the entire
-prompt defeats prefix caching and hurts performance.
+**Do not set TITO control fields.** The session server owns `input_ids`,
+`routed_experts_start_len`, `logprob_start_len`, and `lora_path`; a request that
+sets any of them is rejected with HTTP 400. It also forces `logprobs=True`,
+`return_meta_info=True`, and the response metadata needed for TITO, overriding
+client values.
 
 </Warning>
+
+### Choose template options per session
+
+`chat_template_kwargs` in a request are merged over the launch
+`--apply-chat-template-kwargs` for that turn, both in the locally rendered
+`input_ids` and in the request sent to SGLang. A family's fixed kwargs (for example
+`preserve_thinking=true`) cannot be changed and return HTTP 400.
+
+Each committed turn records the template arguments it was rendered with: the
+effective `chat_template_kwargs` and the `tools`. A request that continues that turn
+inherits both when it omits them, and is rejected with HTTP 400 when it would render
+differently, because the token history it continues was rendered under them. Whether
+`tools` may change on a continued turn is decided per model family; the default
+refuses a change, because most templates render the tool definitions at the start
+of the prompt, which a continued turn reuses as-is. A request that starts a new root
+(a v2 branch from the first message, or a v1 retry of the first turn) may choose
+again. `GET /sessions/{id}` reports the template arguments of the turn its records
+end with as `turn_args` in the metadata; under v2 each `tree.nodes` entry carries its
+own.
 
 ### Choose the session behavior
 
