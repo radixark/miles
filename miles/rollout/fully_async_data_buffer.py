@@ -86,8 +86,8 @@ class DataBufferInput:
 class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
-    The producer puts each finished group as it completes; the consumer gets one
-    group at a time; get_metrics is collected once per training step. Storage,
+    The producer puts each finished group as it completes; the consumer gets a whole
+    training batch at once; get_metrics is collected once per training step. Storage,
     ordering, and filtering are invisible to callers — an implementation is free
     to reject a group on put, on get, or not at all.
     """
@@ -97,8 +97,8 @@ class DataBuffer(ABC):
         """Accept a finished group; may store it, reject it, or evict to make room."""
 
     @abstractmethod
-    async def get(self, **context) -> DataBufferInput:
-        """Return one group to train on, waiting until one is available.
+    async def get(self, *, num_groups: int, **context) -> list[DataBufferInput]:
+        """Return exactly ``num_groups`` groups at once, waiting until that many are available.
 
         ``context`` is the extra information for sample processing at get() time,
         including the ``trainer_model_id`` whose groups are asked for.
@@ -143,7 +143,10 @@ class DefaultDataBuffer(DataBuffer):
         self._buffer: list[DataBufferInput] = []
         assert args.async_data_buffer_capacity_factor > 0
         self._capacity = int(args.async_data_buffer_capacity_factor * args.rollout_batch_size)
-        assert self._capacity >= 1
+        assert self._capacity >= args.rollout_batch_size, (
+            f"buffer capacity {self._capacity} is below the rollout batch of {args.rollout_batch_size} groups that "
+            f"one get asks for, so --async-data-buffer-capacity-factor must be at least 1.0"
+        )
 
         self._unused_handler_fn = input.unused_handler_fn
         self._dynamic_filter = load_function(args.dynamic_sampling_filter_path)
@@ -196,24 +199,26 @@ class DefaultDataBuffer(DataBuffer):
             return False
         return True
 
-    async def get(self, current_version: int | None = None, **_) -> DataBufferInput:
+    async def get(self, *, num_groups: int, current_version: int | None = None, **_) -> list[DataBufferInput]:
         if current_version is not None:
             self._current_version = current_version
         async with self._cond:
             while True:
                 # filters at retrieving sample: staleness filter
                 self._drop_stale(current_version)
-                if self._buffer:
+                if len(self._buffer) >= num_groups:
                     break
                 await self._cond.wait()
 
-            entry = self._buffer.pop(0)
+            entries = self._buffer[:num_groups]
+            del self._buffer[:num_groups]
             self._cond.notify_all()  # wake producers blocked on a full buffer
-            version_stats = group_weight_version_stats(entry.group)
-            if (staleness := version_stats.oldest_lag(current_version)) is not None:
-                self._metric_consumed_staleness.append(staleness)
-            self._record_selected_version_stats(version_stats, current_version)
-            return entry
+            for entry in entries:
+                version_stats = group_weight_version_stats(entry.group)
+                if (staleness := version_stats.oldest_lag(current_version)) is not None:
+                    self._metric_consumed_staleness.append(staleness)
+                self._record_selected_version_stats(version_stats, current_version)
+            return entries
 
     def _drop_stale(self, current_version: int | None) -> None:
         limit = self._args.max_weight_staleness
@@ -321,7 +326,7 @@ class DefaultMultiDataBuffer(DataBuffer):
         for trainer_model_id, entry in _split_by_trainer_model_id(input).items():
             await self._inner_of(trainer_model_id).put(entry)
 
-    async def get(self, trainer_model_id: str | None = None, **context) -> DataBufferInput:
+    async def get(self, *, trainer_model_id: str | None = None, **context) -> list[DataBufferInput]:
         return await self._inner_of(trainer_model_id).get(trainer_model_id=trainer_model_id, **context)
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:

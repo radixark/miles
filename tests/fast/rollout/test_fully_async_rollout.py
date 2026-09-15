@@ -670,6 +670,12 @@ async def put_group(buffer, group):
     await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
 
 
+async def get_one(buffer, **context):
+    """These tests consume one group at a time from a buffer that now hands out whole batches."""
+    [entry] = await buffer.get(num_groups=1, **context)
+    return entry
+
+
 async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
     """The accepted-only raw_reward is conditioned by the filter, so this mean must still see dropped groups."""
     args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
@@ -734,7 +740,7 @@ async def test_stale_group_reports_the_reason_to_the_unused_policy() -> None:
     await put_group(buffer, stale)
     await put_group(buffer, fresh)
 
-    assert (await buffer.get(current_version=2)).group == fresh
+    assert (await get_one(buffer, current_version=2)).group == fresh
     assert calls == [(stale, data_buffer.UnusedReason.STALE)]
 
 
@@ -748,10 +754,10 @@ async def test_buffer_blocks_producer_when_full():
     assert not blocked.done()
     assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 2
 
-    assert (await buffer.get()).group[0].group_index == 1
+    assert (await get_one(buffer)).group[0].group_index == 1
     await blocked
-    assert (await buffer.get()).group[0].group_index == 2
-    assert (await buffer.get()).group[0].group_index == 3
+    assert (await get_one(buffer)).group[0].group_index == 2
+    assert (await get_one(buffer)).group[0].group_index == 3
 
 
 async def test_buffer_get_ignores_unknown_context_keys():
@@ -759,7 +765,7 @@ async def test_buffer_get_ignores_unknown_context_keys():
     buffer, _ = make_buffer()
     await put_group(buffer, make_group(1))
 
-    assert (await buffer.get(current_version=1, some_future_key=2)).group[0].group_index == 1
+    assert (await get_one(buffer, current_version=1, some_future_key=2)).group[0].group_index == 1
 
 
 async def test_buffer_get_skips_groups_stale_at_consumption_time():
@@ -769,7 +775,7 @@ async def test_buffer_get_skips_groups_stale_at_consumption_time():
     await put_group(buffer, stale)
     await put_group(buffer, make_group(2, weight_versions=["8"]))
 
-    assert (await buffer.get(current_version=10)).group[0].group_index == 2
+    assert (await get_one(buffer, current_version=10)).group[0].group_index == 2
     assert unused == [stale]
     assert buffer.get_metrics()["rollout/fully_async/stale_groups_filtered"] == 1
 
@@ -781,7 +787,7 @@ async def test_buffer_staleness_metrics():
 
     await put_group(buffer, make_group(2, weight_versions=["6"]))
     await put_group(buffer, make_group(3, weight_versions=["8"]))
-    await buffer.get(current_version=10)  # pops group 1 and tracks the engine version clock
+    await get_one(buffer, current_version=10)  # pops group 1 and tracks the engine version clock
     metrics = buffer.get_metrics()
     assert metrics["rollout/fully_async/avg_staleness"] == 6.0  # consumed group 1: 10 - 4
     assert metrics["rollout/fully_async/buffer_avg_staleness"] == 3.0  # buffered groups 2, 3: (4 + 2) / 2
@@ -793,7 +799,7 @@ async def test_buffer_reports_selected_policy_provenance():
     await put_group(buffer, make_group(1, weight_versions=["2", "4"]))
     await put_group(buffer, make_group(2, weight_versions=["8", "10"]))
 
-    assert (await buffer.get(current_version=10)).group[0].group_index == 2
+    assert (await get_one(buffer, current_version=10)).group[0].group_index == 2
     metrics = buffer.get_metrics()
 
     assert metrics["rollout/fully_async/avg_staleness"] == 2
@@ -808,7 +814,7 @@ async def test_buffer_reports_generation_span_without_current_version():
     buffer, _ = make_buffer(max_groups=8)
     await put_group(buffer, make_group(1, weight_versions=["2", "4"]))
 
-    await buffer.get(current_version=None)
+    await get_one(buffer, current_version=None)
     metrics = buffer.get_metrics()
 
     assert metrics["rollout/fully_async/avg_generation_version_span"] == 2
@@ -822,7 +828,7 @@ async def test_buffer_reports_missing_weight_version_coverage_without_inventing_
     partial_group[1].weight_versions = []
     await put_group(buffer, partial_group)
 
-    await buffer.get(current_version=10)
+    await get_one(buffer, current_version=10)
     metrics = buffer.get_metrics()
 
     assert metrics["rollout/fully_async/weight_version_sample_coverage"] == 0.5
@@ -871,7 +877,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
         await put_group(buffer, make_multi_policy_group(1, "solver", "verifier"))
 
-        entry = await buffer.get(trainer_model_id="verifier")
+        entry = await get_one(buffer, trainer_model_id="verifier")
 
         assert [sample.trainer_model_id for sample in data_buffer.iter_samples(entry.group)] == ["verifier"]
 
@@ -880,7 +886,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
         await put_group(buffer, make_multi_policy_group(1, "solver", "solver"))
 
-        waiting = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+        waiting = asyncio.create_task(get_one(buffer, trainer_model_id="verifier"))
         await asyncio.sleep(0.01)
 
         assert not waiting.done()
@@ -907,7 +913,7 @@ class TestPerPolicyQueues:
         group[0].trainer_model_id, group[1].trainer_model_id = "solver", "verifier"
 
         await put_group(buffer, group)
-        drained = asyncio.create_task(buffer.get(current_version=9, trainer_model_id="solver"))
+        drained = asyncio.create_task(get_one(buffer, current_version=9, trainer_model_id="solver"))
         await asyncio.sleep(0.01)
 
         assert unused == [group]
@@ -918,7 +924,7 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
 
         with pytest.raises(AssertionError, match="trains no policy of this run"):
-            await buffer.get(trainer_model_id="reviewer")
+            await get_one(buffer, trainer_model_id="reviewer")
 
     async def test_every_policy_of_the_config_gets_a_queue_of_its_own(self):
         """The queues are built from --megatron-config, so a policy missing one has nowhere to put its groups."""
@@ -945,12 +951,12 @@ class TestPerPolicyQueues:
         class _RecordingInner:
             async def get(self, **context):
                 seen.append(context)
-                return "entry"
+                return ["entry"]
 
         buffer._inners["solver"] = _RecordingInner()
 
-        assert await buffer.get(current_version=4, trainer_model_id="solver") == "entry"
-        assert seen == [{"current_version": 4, "trainer_model_id": "solver"}]
+        assert await buffer.get(num_groups=1, current_version=4, trainer_model_id="solver") == ["entry"]
+        assert seen == [{"num_groups": 1, "current_version": 4, "trainer_model_id": "solver"}]
 
 
 def make_tagged_sample(index: int, trainer_model_id: str | None) -> Sample:
@@ -1185,12 +1191,59 @@ class WedgedBuffer(data_buffer.DataBuffer):
     async def put(self, input: data_buffer.DataBufferInput) -> None:
         await self._never.wait()
 
-    async def get(self, **context) -> data_buffer.DataBufferInput:
+    async def get(self, **context) -> list[data_buffer.DataBufferInput]:
         await self._never.wait()
         raise AssertionError("the wedged buffer never hands out a group")
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         return {}
+
+
+class TestBatchedGet:
+    async def test_a_whole_batch_is_handed_over_in_one_get(self):
+        """Half a batch held in a caller local would vanish from the checkpoint the buffer still owns."""
+        buffer, _ = make_buffer()
+        for group_index in (1, 2, 3):
+            await put_group(buffer, make_group(group_index))
+
+        entries = await buffer.get(num_groups=2)
+
+        assert [entry.group[0].group_index for entry in entries] == [1, 2]
+        assert [entry.group[0].group_index for entry in buffer._buffer] == [3]
+
+    async def test_an_incomplete_batch_keeps_every_group_in_the_buffer(self):
+        """A wait that parked groups outside the buffer would lose them on a checkpoint taken meanwhile."""
+        buffer, _ = make_buffer()
+        await put_group(buffer, make_group(1))
+
+        waiting = asyncio.create_task(buffer.get(num_groups=2))
+        await asyncio.sleep(0.01)
+
+        assert not waiting.done()
+        assert [entry.group[0].group_index for entry in buffer._buffer] == [1]
+        waiting.cancel()
+
+    async def test_stale_groups_are_recycled_while_the_batch_is_still_incomplete(self):
+        """A buffer filled with stale groups would block put forever while the get waits for a count."""
+        buffer, unused = make_buffer(max_groups=2, max_staleness=0)
+        stale = make_group(1, weight_versions=["1"])
+        await put_group(buffer, stale)
+
+        waiting = asyncio.create_task(buffer.get(num_groups=2, current_version=9))
+        await asyncio.sleep(0.01)
+
+        assert unused == [stale]
+        assert buffer._buffer == []
+        waiting.cancel()
+
+    async def test_a_capacity_below_one_batch_is_refused(self):
+        """A buffer that cannot hold one batch deadlocks: put blocks full while get waits for the count."""
+        args = make_args(rollout_batch_size=4, async_data_buffer_capacity_factor=0.5)
+
+        with pytest.raises(AssertionError, match="below the rollout batch"):
+            data_buffer.DefaultDataBuffer(
+                data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
+            )
 
 
 class TestDisposal:
@@ -1280,7 +1333,7 @@ class TestBufferSelection:
 
         await fn(RolloutFnTrainInput(rollout_id=0, weight_version=4, trainer_model_id="a"))
 
-        assert RecordingMultiBuffer.get_calls == [dict(current_version=4, trainer_model_id="a")]
+        assert RecordingMultiBuffer.get_calls == [dict(num_groups=1, current_version=4, trainer_model_id="a")]
 
 
 async def test_worker_defaults_to_sample_granularity(monkeypatch):
