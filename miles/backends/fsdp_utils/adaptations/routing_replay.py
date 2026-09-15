@@ -13,23 +13,29 @@ only call sites and never touches ``routing_replay_manager`` directly.
 import logging
 import re
 from collections.abc import Callable
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
 import torch.nn as nn
 
-from miles.backends.training_utils.replay_data import fill_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.torch_native.routing_replay import (
+    FALLTHROUGH,
+    RECORD,
+    REPLAY_BACKWARD,
+    REPLAY_FORWARD,
+    enable,
+    fill,
+    log_prob_stage,
+    reset,
+    rewind,
+    stage,
+    uses_rollout_replay,
+)
 from miles.utils.replay_base import routing_replay_manager
 
 logger = logging.getLogger(__name__)
 
 _LAYER_INDEX_RE = re.compile(r"\.layers\.(\d+)\.")
-
-FALLTHROUGH = "fallthrough"
-RECORD = "record"
-REPLAY_FORWARD = "replay_forward"
-REPLAY_BACKWARD = "replay_backward"
 
 
 @dataclass(frozen=True)
@@ -58,23 +64,6 @@ def resolve_routing_replay_adapter(hf_config) -> RoutingReplayAdapter | None:
         if adapter.applies_to(hf_config):
             return adapter
     return None
-
-
-def uses_rollout_replay(args) -> bool:
-    """True when routing comes from the rollout rather than from a recording pass."""
-    return bool(getattr(args, "use_rollout_routing_replay", False))
-
-
-def enable(args) -> bool:
-    """Settle manager state before the model is built, and report whether R3 is on.
-
-    ``--use-rollout-routing-replay`` sets ``use_routing_replay`` during arg validation;
-    ``--use-routing-replay`` alone selects the record-then-replay variant.
-    """
-    routing_replay_manager.enabled = bool(getattr(args, "use_routing_replay", False))
-    routing_replay_manager.enable_check_replay_result = routing_replay_manager.enabled and args.ci_test
-    routing_replay_manager.register_replay_list_func = register_replay_list_sequential
-    return routing_replay_manager.enabled
 
 
 def discover_moe_modules(model: nn.Module, module_cls_name: str) -> list[tuple[int, nn.Module]]:
@@ -131,60 +120,17 @@ def install(model: nn.Module, hf_config) -> int:
     return len(layers)
 
 
-def fill(args, model, data_iterator, num_microbatches, rollout_data) -> None:
-    """Load the rollout's routing into the per-layer replay queues.
-
-    Takes the iterator list rather than a single iterator: ``fill_replay_data`` resets every
-    element and reads through element 0, so call before the caller unwraps it.
-    """
-    if not uses_rollout_replay(args):
-        return
-
-    fill_replay_data(
-        args=args,
-        models=model,
-        data_iterator=data_iterator,
-        num_microbatches=num_microbatches,
-        rollout_data=rollout_data,
-        data_key=routing_replay_manager.data_key,
-        replay_list=routing_replay_manager.replays,
-        register_replay_list_func=routing_replay_manager.register_replay_list_func,
-        if_sp_region=routing_replay_manager.if_sp_region,
-        indices_are_token_positions=routing_replay_manager.replay_indices_are_token_positions,
-    )
-
-
-def log_prob_stage(args) -> str:
-    """Stage for the actor log-prob pass.
-
-    Rollout replay consumes the queues filled from the rollout; the record-then-replay variant
-    has nothing to consume yet and records this pass instead.
-    """
-    if not routing_replay_manager.enabled:
-        return FALLTHROUGH
-    return REPLAY_FORWARD if uses_rollout_replay(args) else RECORD
-
-
-@contextmanager
-def stage(name: str):
-    """Run a block with the replay manager in ``name``, restoring the previous stage after.
-
-    Nesting a ``replay_forward`` forward inside a ``replay_backward`` step is what lets
-    activation-checkpoint recompute draw from the independent backward cursor.
-    """
-    previous = routing_replay_manager.stage
-    routing_replay_manager.stage = name
-    try:
-        yield
-    finally:
-        routing_replay_manager.stage = previous
-
-
-def rewind() -> None:
-    """Return the forward cursors to the head of their queues."""
-    routing_replay_manager.clear_all_forward()
-
-
-def reset() -> None:
-    """Drop the recorded routing once the rollout is done training."""
-    routing_replay_manager.clear_all()
+__all__ = [
+    "FALLTHROUGH",
+    "RECORD",
+    "REPLAY_BACKWARD",
+    "REPLAY_FORWARD",
+    "enable",
+    "fill",
+    "install",
+    "log_prob_stage",
+    "reset",
+    "rewind",
+    "stage",
+    "uses_rollout_replay",
+]

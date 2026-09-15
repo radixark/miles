@@ -45,6 +45,7 @@
         "run-ci-replay",
         "run-ci-sglang",
         "run-ci-short",
+        "run-ci-torchtitan",
         "run-ci-weight-update",
         "run-on-blackwell",
         "run-on-hopper"

@@ -307,7 +307,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--train-backend",
                 type=str,
-                choices=["megatron", "fsdp"],
+                choices=["megatron", "fsdp", "torchtitan"],
                 default="megatron",
                 help="The backend for training.",
             )
@@ -2750,9 +2750,14 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
     else:
-        from miles.backends.fsdp_utils.arguments import load_fsdp_args
+        if backend == "torchtitan":
+            from miles.backends.torchtitan_utils.arguments import load_torchtitan_args
 
-        args = load_fsdp_args(extra_args_provider=add_miles_arguments)
+            args = load_torchtitan_args(extra_args_provider=add_miles_arguments)
+        else:
+            from miles.backends.fsdp_utils.arguments import load_fsdp_args
+
+            args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -2785,6 +2790,10 @@ def parse_args(add_custom_arguments=None):
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
                 "pipeline_model_parallel_size is 1."
             )
+    elif backend == "torchtitan":
+        from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
+
+        validate_torchtitan_args(args)
     else:
         from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args
 

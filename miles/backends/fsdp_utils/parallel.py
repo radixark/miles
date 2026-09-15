@@ -89,14 +89,10 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
             size=1,
             group=self_group,
         ),
-        pp=GroupInfo(rank=0, size=1, group=None),
-        ep=GroupInfo(rank=0, size=1, group=None),
-        etp=GroupInfo(rank=0, size=1, group=None),
-        indep_dp=GroupInfo(
-            rank=0,
-            size=1,
-            group=None,
-        ),
+        pp=GroupInfo(rank=0, size=1, group=self_group),
+        ep=GroupInfo(rank=0, size=1, group=self_group),
+        etp=GroupInfo(rank=0, size=1, group=self_group),
+        indep_dp=GroupInfo(rank=0, size=1, group=self_group),
         meshes=meshes,
     )
 

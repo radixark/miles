@@ -23,6 +23,8 @@ ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
+ARG TORCHTITAN_REPO=pytorch/torchtitan
+ARG TORCHTITAN_COMMIT=2f10a2590c76e77d6b732dd0229ab59964535318
 
 ARG ENABLE_CUDA_13=1
 
@@ -168,6 +170,15 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
+
+# torchtitan backend: the checkout is pinned to a commit because torchtitan tracks
+# torch nightly and its model/adapter layouts move; --no-deps keeps its torch and
+# datasets pins from touching the versions sglang links against. Its own python
+# deps are pinned explicitly (spmd_types is a hard import in parallel_dims).
+RUN git clone https://github.com/${TORCHTITAN_REPO}.git torchtitan && \
+    cd torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    pip install --no-deps -e .
+RUN pip install "spmd_types==0.2.3" "tyro>=1.0.5" && pip install --no-deps "torchdata>=0.8.0"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt

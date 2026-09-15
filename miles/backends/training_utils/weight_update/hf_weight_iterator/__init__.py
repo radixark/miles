@@ -71,6 +71,24 @@ class HfWeightIteratorBase(ABC):
         self.model_name = model_name
         self.quantization_config = quantization_config
 
+    @classmethod
+    def build(
+        cls,
+        args: Namespace,
+        model,
+        *,
+        required_placement: WeightUpdatePlacement,
+        model_name: str,
+        quantization_config: dict | None,
+    ) -> "HfWeightIteratorBase":
+        return cls(
+            args,
+            model,
+            placement=resolve_placement(required_placement, cls.forced_placement),
+            model_name=model_name,
+            quantization_config=quantization_config,
+        )
+
     def iter_hf_weights(
         self,
         weights: Mapping[str, torch.Tensor] | None,

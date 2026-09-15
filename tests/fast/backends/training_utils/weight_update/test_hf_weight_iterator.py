@@ -12,6 +12,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -94,3 +95,65 @@ class TestIterHfWeightsTemplate:
         names = self._names(iterator.iter_hf_weights(None))
         assert names == [SAMPLE_BASE_ONLY_WEIGHTS[0][0]]
         assert iterator.export_calls == []
+
+
+import json
+
+from safetensors.torch import save_file
+
+from miles.backends.training_utils.weight_update.hf_weight_iterator import checkpoint_towers
+
+_TOWERS_MODULE = "miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers"
+
+
+def _tower_checkpoint(tmp_path, *, indexed: bool):
+    tensors = {
+        "model.layers.0.weight": torch.ones(2),
+        "visual.blocks.0.norm1.weight": torch.full((3,), 2.0),
+        "model.visual.merger.bias": torch.full((1,), 3.0),
+        "audio.encoder.weight": torch.full((2,), 4.0),
+    }
+    save_file(tensors, str(tmp_path / "model-00001-of-00001.safetensors"))
+    if indexed:
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {k: "model-00001-of-00001.safetensors" for k in tensors}})
+        )
+    return str(tmp_path)
+
+
+def _tower_names(units):
+    return sorted(name for unit in units for name, _ in unit)
+
+
+def test_only_tower_keys_stream_with_or_without_an_index(tmp_path):
+    for indexed in (True, False):
+        root = tmp_path / ("indexed" if indexed else "flat")
+        root.mkdir()
+        ckpt = _tower_checkpoint(root, indexed=indexed)
+        with patch(f"{_TOWERS_MODULE}.torch.cuda.current_device", return_value="cpu"):
+            units = list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))
+        assert _tower_names(units) == [
+            "audio.encoder.weight",
+            "model.visual.merger.bias",
+            "visual.blocks.0.norm1.weight",
+        ]
+        assert torch.equal(
+            dict(u for unit in units for u in unit)["visual.blocks.0.norm1.weight"], torch.full((3,), 2.0)
+        )
+
+
+def test_non_materializing_ranks_yield_nothing_and_read_nothing(tmp_path):
+    ckpt = _tower_checkpoint(tmp_path, indexed=True)
+    with patch(f"{_TOWERS_MODULE}.safe_open") as opened:
+        assert list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=False)) == []
+    opened.assert_not_called()
+
+
+def test_the_checkpoint_is_read_once_per_path(tmp_path):
+    ckpt = _tower_checkpoint(tmp_path, indexed=True)
+    checkpoint_towers._load_towers.cache_clear()
+    with patch(f"{_TOWERS_MODULE}.torch.cuda.current_device", return_value="cpu"):
+        list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))
+        with patch(f"{_TOWERS_MODULE}.safe_open") as opened:
+            list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))
+    opened.assert_not_called()

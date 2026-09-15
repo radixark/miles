@@ -12,11 +12,7 @@ import torch.distributed as dist
 from megatron.core.utils import unwrap_model
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.hf_weight_iterator import (
-    HfWeightIteratorBase,
-    WeightUpdatePlacement,
-    resolve_placement,
-)
+from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.utils.lora import is_lora_weight_name
 
@@ -78,10 +74,10 @@ def get_hf_weight_iterator(
         "bridge": HfWeightIteratorBridge,
     }[args.megatron_to_hf_mode]
 
-    return cls(
+    return cls.build(
         args,
         model,
-        placement=resolve_placement(required_placement, cls.forced_placement),
+        required_placement=required_placement,
         model_name=model_name,
         quantization_config=quantization_config,
     )
