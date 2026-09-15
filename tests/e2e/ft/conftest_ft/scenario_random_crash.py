@@ -86,7 +86,7 @@ def run_ci(
     try:
         run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir, config=config)
     finally:
-        injector.stop_and_join(timeout_seconds=5)
+        injector.stop_and_join()
 
     assert_healing(ft_mode, injector=injector, dump_dir=dump_dir)
 
