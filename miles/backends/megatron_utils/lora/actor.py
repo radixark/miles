@@ -3,6 +3,7 @@ from contextlib import ExitStack
 from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
+from miles.backends.megatron_utils.lora import slot_capacity
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import build_lora_sync_config
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
@@ -67,6 +68,10 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         """Write the slot's adapter as an engine-loadable dir."""
         self._heartbeat.bump()
         self.weight_publisher.publish_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata)
+
+    @with_logs
+    def multi_lora_memory_probe(self, phase: str) -> dict:
+        return slot_capacity.memory_snapshot(self.args, self.model, phase)
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:

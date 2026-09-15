@@ -1858,9 +1858,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--multi-lora-n-adapters",
-                type=int,
+                type=lambda value: -1 if value == "auto" else int(value),
                 default=0,
-                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
+                help=(
+                    "Concurrent adapter slots for multi-LoRA. 0 disables multi-LoRA; "
+                    "'auto' derives the count from measured GPU memory (serve entry only)"
+                ),
+            )
+            parser.add_argument(
+                "--engine-host-lora-budget-bytes",
+                type=int,
+                default=None,
+                help=(
+                    "Host-RAM budget for the rollout engines' resident adapter copies; "
+                    "caps the auto slot capacity (default: unchecked)"
+                ),
             )
             return parser
 
