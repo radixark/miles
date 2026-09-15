@@ -365,7 +365,7 @@ class TestAddCellRollback:
         """Only the cell that failed may be dropped, or a single bad engine unmanages the healthy ones too."""
         srv = RolloutServer(
             server_cells={},
-            args=SimpleNamespace(colocate=False, ft_components=[]),
+            args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
         )
@@ -392,7 +392,7 @@ class TestAddCellRollback:
 
         srv = RolloutServer(
             server_cells={},
-            args=SimpleNamespace(colocate=False, ft_components=[]),
+            args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
         )
@@ -410,7 +410,7 @@ class TestAddCellRollback:
         """Retrying is the whole point: the next observation of the same cell must be able to build it again."""
         srv = RolloutServer(
             server_cells={},
-            args=SimpleNamespace(colocate=False, ft_components=[]),
+            args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
         )
@@ -554,7 +554,7 @@ class TestAddCellInitTiming:
 
         srv = RolloutServer(
             server_cells={},
-            args=SimpleNamespace(colocate=True, ft_components=[]),
+            args=make_args(colocate=True, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
         )
@@ -590,7 +590,7 @@ class TestDeferredInitMatchesTheStartupBarrier:
 
         srv = RolloutServer(
             server_cells={},
-            args=SimpleNamespace(colocate=colocate, ft_components=[]),
+            args=make_args(colocate=colocate, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
         )

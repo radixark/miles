@@ -69,6 +69,9 @@ class _FakeEngineApiClient:
     async def resume_memory_occupation(self, tags: list[str] | None = None) -> None:
         return None
 
+    async def get_server_info(self) -> dict[str, Any]:
+        return {"model_path": "/fake/model", "internal_states": [{"env_vars": {"RANK": "0"}}]}
+
 
 class _RemoteMethod:
     def __init__(self, fn: Callable[..., Any]) -> None:
