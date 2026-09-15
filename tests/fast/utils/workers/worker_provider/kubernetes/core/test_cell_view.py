@@ -62,6 +62,7 @@ def make_run(
             cell_size_annotation="cell-size",
             meta_annotation_prefix="meta-",
             gpu_ids_meta="gpu_ids",
+            base_gpu_id_annotation="base-gpu-id",
         ),
     )
 

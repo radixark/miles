@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
@@ -7,7 +9,7 @@ from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABE
 
 _GATE_NAME = "miles.radixark.io/colocate-pairing"
 
-_HOSTNAME_LABEL = "kubernetes.io/hostname"
+_NODE_NAME_FIELD = "metadata.name"
 
 
 class PodCoordinate(FrozenStrictBaseModel):
@@ -29,15 +31,36 @@ def coordinate_of(pod: Pod) -> PodCoordinate | None:
     )
 
 
-def release_patch(*, node_name: str, gates: list[str], has_node_selector: bool) -> list[dict[str, object]]:
-    index = gates.index(_GATE_NAME)
-    pin = (
-        {"op": "add", "path": f"/spec/nodeSelector/{_escape_pointer(_HOSTNAME_LABEL)}", "value": node_name}
-        if has_node_selector
-        else {"op": "add", "path": "/spec/nodeSelector", "value": {_HOSTNAME_LABEL: node_name}}
+def release_patch(
+    *,
+    node_name: str,
+    base_gpu_id: int,
+    gates: list[str],
+    annotations: Mapping[str, str],
+) -> list[dict[str, object]]:
+    key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
+    assert annotations, (
+        f"the pod carries no annotations, so adding {key} under a map that does not exist is a patch "
+        f"the apiserver refuses"
     )
+
+    index = gates.index(_GATE_NAME)
+    pin = {
+        "op": "add",
+        "path": "/spec/affinity",
+        "value": {
+            "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                    "nodeSelectorTerms": [
+                        {"matchFields": [{"key": _NODE_NAME_FIELD, "operator": "In", "values": [node_name]}]}
+                    ]
+                }
+            }
+        },
+    }
     return [
         pin,
+        {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)},
         {"op": "test", "path": f"/spec/schedulingGates/{index}/name", "value": _GATE_NAME},
         {"op": "remove", "path": f"/spec/schedulingGates/{index}"},
     ]
