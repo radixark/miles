@@ -44,6 +44,9 @@ spec:
       {{- end }}
     spec:
       {{- include "miles-run.podDefaults" $context | nindent 6 }}
+      {{- with $worker.serviceAccountName }}
+      serviceAccountName: {{ . | quote }}
+      {{- end }}
       restartPolicy: Always
       containers:
         - name: worker

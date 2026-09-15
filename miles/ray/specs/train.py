@@ -121,6 +121,7 @@ def _compute_spec_trainer_controller(
     return ServeWorkerSpec(
         name=compute_trainer_controller_pool_id(trainer_id),
         deploy_component=DeployComponent.TRAINER,
+        needs_platform_read_permission=True,
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
