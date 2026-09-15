@@ -289,6 +289,52 @@ def test_loss_dispatcher_uses_args_without_extra_policy_kwargs(monkeypatch, skip
     assert policy_loss.call_args.kwargs == {}
 
 
+def test_loss_dispatcher_excludes_fully_masked_samples_from_token_normalizer(monkeypatch):
+    make_parallel_state()
+    args = make_args(
+        calculate_per_token_loss=True,
+        observe_training_entropy=False,
+        true_on_policy_mode=False,
+    )
+    inputs = make_inputs(
+        seed=20,
+        batch_size=2,
+        prompt_lens=[3, 3],
+        response_lens=[3, 4],
+        vocab_size=8,
+        args=args,
+    )
+    batch = make_batch(inputs, "policy_loss")
+    batch["loss_masks"][0].zero_()
+    logits = deep_clone(inputs["policy_logits"])
+    policy_loss = Mock(return_value=(logits.sum() * 0, {"loss": logits.new_zeros(())}))
+    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args: policy_loss)
+
+    _, normalizer, _ = loss_module.loss_function(args, batch, 1, logits)
+
+    assert normalizer.item() == batch["loss_masks"][1].sum().item() == 4
+
+
+def test_loss_dispatcher_allows_zero_active_tokens(monkeypatch):
+    make_parallel_state()
+    args = make_args(
+        calculate_per_token_loss=True,
+        observe_training_entropy=False,
+        true_on_policy_mode=False,
+    )
+    inputs = make_inputs(seed=21, batch_size=1, prompt_lens=[3], response_lens=[3], vocab_size=8, args=args)
+    batch = make_batch(inputs, "policy_loss")
+    batch["loss_masks"][0].zero_()
+    logits = deep_clone(inputs["policy_logits"])
+    policy_loss = Mock(return_value=(logits.sum() * 0, {"loss": logits.new_zeros(())}))
+    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args: policy_loss)
+
+    loss, normalizer, _ = loss_module.loss_function(args, batch, 1, logits)
+
+    assert loss.item() == 0
+    assert normalizer.item() == 0
+
+
 def test_loss_dispatcher_does_not_apply_actor_skip_to_value_loss(monkeypatch):
     make_parallel_state()
     args = make_args(loss_type="value_loss", skip_actor_forward_only=True)
