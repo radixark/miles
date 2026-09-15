@@ -356,6 +356,20 @@ class TestInferenceEngineEnvVars:
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "true"
         assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "false"
 
+    def test_compile_caches_are_node_local_unless_set(self, monkeypatch):
+        """SGLang engines JIT-compile too, so they get the same pin as the trainers (#3158)."""
+        monkeypatch.delenv("SGLANG_CACHE_DIR", raising=False)
+        monkeypatch.delenv("TRITON_CACHE_DIR", raising=False)
+        monkeypatch.setenv("TVM_FFI_CACHE_DIR", "/nvme/tvm")
+
+        envs = compute_inference_engine_env_vars(make_args())
+
+        # sglang's import-time preset of the Inductor dir under ~/.cache/sglang is replaced too.
+        assert envs["SGLANG_CACHE_DIR"].startswith("/tmp/miles-compile-cache-")
+        assert envs["TRITON_CACHE_DIR"].startswith("/tmp/miles-compile-cache-")
+        assert envs["TORCHINDUCTOR_CACHE_DIR"].endswith("/torchinductor")
+        assert envs["TVM_FFI_CACHE_DIR"] == "/nvme/tvm"
+
     def test_the_built_in_defaults_apply_without_a_process_override(self, monkeypatch):
         """Without an override the engine must still get miles' own safety values rather than sglang's."""
         monkeypatch.delenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", raising=False)

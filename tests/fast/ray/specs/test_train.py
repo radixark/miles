@@ -244,6 +244,20 @@ class TestEnvironmentVariables:
 
         assert spec.env_var(_make_context())["MY_VAR"] == "1"
 
+    def test_compile_caches_are_node_local_unless_set(self, monkeypatch):
+        """Every trainer actor, whichever launcher started the job, must inherit the pin (#3158)."""
+        monkeypatch.delenv("SGLANG_CACHE_DIR", raising=False)
+        monkeypatch.delenv("TRITON_CACHE_DIR", raising=False)
+        monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "/nvme/inductor")
+
+        (spec,) = specs_trainer(_make_args(train_env_vars={"TVM_FFI_CACHE_DIR": "/nvme/tvm"}))
+        env_vars = spec.env_var(_make_context())
+
+        assert env_vars["TRITON_CACHE_DIR"].startswith("/tmp/miles-compile-cache-")
+        assert env_vars["TRITON_CACHE_DIR"].endswith("/triton")
+        assert env_vars["TORCHINDUCTOR_CACHE_DIR"] == "/nvme/inductor"
+        assert env_vars["TVM_FFI_CACHE_DIR"] == "/nvme/tvm"
+
     def test_user_train_env_vars_override_framework_defaults(self, monkeypatch):
         """A user who overrides a framework default must win, otherwise the flag is unusable."""
         monkeypatch.setenv("NCCL_CUMEM_ENABLE", "0")
