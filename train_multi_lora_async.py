@@ -4,8 +4,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-import ray
-
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
 from miles.ray.wiring import launch_worker_manager
@@ -15,17 +13,10 @@ from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.logging_utils import configure_logger
-from miles.utils.multi_lora import EmptyBatchTimeoutError, define_new_adapter_metrics
+from miles.utils.multi_lora import define_new_adapter_metrics
 from miles.utils.tracking_utils.tracking import init_tracking
 
 logger = logging.getLogger(__name__)
-
-
-def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
-    cause = getattr(task_error, "cause", None)
-    if isinstance(cause, EmptyBatchTimeoutError):
-        return True
-    return isinstance(task_error.as_instanceof_cause(), EmptyBatchTimeoutError)
 
 
 async def main(args):
@@ -81,14 +72,11 @@ async def main(args):
         if not (post_update["active"] or post_update["retiring"]):
             continue
 
-        try:
-            await inference_controller.prepare_rollout(rollout_id)
-            rollout_data = await rollout_executor.get(rollout_id)
-        except ray.exceptions.RayTaskError as e:
-            if _is_empty_batch_timeout(e):
-                logger.warning(f"Generate timed out with no trainable groups; retrying reconcile/update. {e}")
-                continue
-            raise
+        await inference_controller.prepare_rollout(rollout_id)
+        rollout_data = await rollout_executor.get(rollout_id)
+        if rollout_data.empty_batch_timeout:
+            logger.warning("Generate timed out with no trainable groups; retrying reconcile/update.")
+            continue
         await actor_model.train(rollout_id, rollout_data)
         remove_rollout_data_refs(args, rollout_data)
 

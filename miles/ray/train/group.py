@@ -21,7 +21,7 @@ from miles.utils.audit_utils.event_logger.models import (
 )
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
-from miles.utils.data import remove_train_output_refs
+from miles.utils.data import RolloutDataPack, remove_train_output_refs
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
@@ -160,7 +160,7 @@ class TrainerController:
     # ------------------------ API :: train ------------------------
 
     async def train(
-        self, rollout_id: int, rollout_data_pack: dict[str, Any], external_data: list[Any] | None = None
+        self, rollout_id: int, rollout_data_pack: RolloutDataPack, external_data: list[Any] | None = None
     ) -> list[Any]:
         """Do one rollout training"""
 
@@ -174,7 +174,7 @@ class TrainerController:
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
                 attempt=attempt,
-                sample_indices=rollout_data_pack["sample_indices"],
+                sample_indices=rollout_data_pack.sample_indices,
             )
 
             log_structured(logger.info, tag="ft", op="train", phase="start", rollout=rollout_id, attempt=attempt)
@@ -182,7 +182,7 @@ class TrainerController:
             snapshot_alive_cells, results = await self._gather_all_alive_and_catch(
                 lambda cell: cell.train(
                     rollout_id=rollout_id,
-                    rollout_data_ref=rollout_data_pack["data_ref"],
+                    rollout_data_ref=rollout_data_pack.data_ref,
                     witness_info=witness_info,
                     attempt=attempt,
                     external_data=external_data,
