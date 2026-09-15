@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from copy import deepcopy
 
 from starlette.responses import Response
 
@@ -58,6 +59,7 @@ class SessionCoreV2(SessionCore):
         metadata["accumulated_token_ids"] = latest.token_ids if latest is not None else []
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
+        metadata["turn_args"] = deepcopy(latest.turn_args) if latest is not None else {}
         return metadata
 
     async def get_session(self, session_id: str) -> Response:
@@ -218,6 +220,7 @@ class SessionCoreV2(SessionCore):
                 record=record,
                 response_id=response.get("id", ""),
                 finish_reason=choice.get("finish_reason") or "",
+                turn_args=request_body,
             )
         # --- lock released ---
 

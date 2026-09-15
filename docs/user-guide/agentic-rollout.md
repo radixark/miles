@@ -125,6 +125,12 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 </Warning>
 
+### Choose template options per session
+
+- Ordinary `chat_template_kwargs` use request > continued turn > launch defaults. Fields required to preserve the reused prompt retain their recorded values; fixed model settings override conflicts. Qwen3.8 currently fixes `reasoning_effort` to `xhigh`.
+- Omitted `tools` inherit on continuation; incompatible changes return HTTP 400 by default. Sampling parameters remain per-request. New roots resolve without turn history.
+- Each successful turn records the full resolved request as `turn_args`, available in session metadata and, for v2, each tree node.
+
 ### Choose the session behavior
 
 History handling depends on the selected server version:

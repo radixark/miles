@@ -124,9 +124,17 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
         # Session server populates diagnostic metadata (token IDs,
-        # trim config, mismatch analysis, dashboard lifecycle timing) that
-        # varies with mock setup. Strip these before comparing structure.
-        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens", "lifecycle", "leaf"):
+        # trim config, mismatch analysis, dashboard lifecycle timing, the
+        # template kwargs the last turn recorded) that varies with mock setup.
+        # Strip these before comparing structure.
+        for key in (
+            "tito_session_mismatch",
+            "accumulated_token_ids",
+            "max_trim_tokens",
+            "lifecycle",
+            "leaf",
+            "turn_args",
+        ):
             actual_partial.metadata.pop(key, None)
         assert actual_partial == expected_item.partial_sample
 

@@ -11,6 +11,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 import json
 import logging
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 
 from starlette.responses import Response
@@ -249,6 +250,7 @@ class SessionCore:
             metadata["tito_session_mismatch"] = mismatch
         metadata["accumulated_token_ids"] = session.token_ids
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
+        metadata["turn_args"] = deepcopy(session.turn_args)
         return metadata
 
     async def get_session(self, session_id: str) -> Response:
@@ -386,6 +388,7 @@ class SessionCore:
                 prompt_token_ids=prompt_token_ids,
                 completion_token_ids=completion_token_ids,
                 max_trim_tokens=self.registry.tito_tokenizer.max_trim_tokens,
+                turn_args=request_body,
             )
 
             record = SessionRecord(

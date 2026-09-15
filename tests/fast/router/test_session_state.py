@@ -926,18 +926,19 @@ class TestComputeSessionMismatch:
         with pytest.raises(TokenizationError, match="tokenizer failed"):
             registry.compute_session_mismatch(session)
 
-    def test_uses_tools_from_last_record(self, registry: SessionRegistryV2):
+    def test_renders_with_the_tools_the_latest_node_recorded(self, registry: SessionRegistryV2):
         sid = registry.create_session()
         session = registry.get_session(sid)
         _commit(session, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
 
         tools = [{"type": "function", "function": {"name": "get_weather"}}]
+        # A record carrying other tools does not matter: the node's template args do.
         record = SessionRecord(
             timestamp=1.0,
             method="POST",
             path="/v1/chat/completions",
             status_code=200,
-            request={"tools": tools},
+            request={"tools": [{"type": "function", "function": {"name": "get_time"}}]},
             response={},
         )
         t2 = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
@@ -952,6 +953,7 @@ class TestComputeSessionMismatch:
             record=record,
             response_id="resp-tools",
             finish_reason="stop",
+            turn_args={"tools": tools},
         )
 
         mock_tokenize = MagicMock(return_value=[1, 2, 10])
@@ -962,7 +964,66 @@ class TestComputeSessionMismatch:
 
         registry.compute_session_mismatch(session)
 
-        # Verify tools were passed to the TITO renderer.
         _, kwargs = mock_tokenize.call_args
-        assert kwargs["template_args"]["tools"] == tools
+        assert kwargs["template_args"] == {"tools": tools}
         assert kwargs["add_generation_prompt"] is False
+
+    def test_renders_with_the_kwargs_the_latest_node_recorded(self, registry: SessionRegistryV2):
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        _commit(session, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+        session.latest().turn_args = {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "low"}}
+
+        mock_tokenize = MagicMock(return_value=[1, 2, 3, 10, 11])
+        registry.tito_tokenizer.apply_chat_template = mock_tokenize
+        registry.comparator = MagicMock(compare_sequences=MagicMock(return_value=[]))
+
+        assert registry.compute_session_mismatch(session) == []
+        assert mock_tokenize.call_args.kwargs["template_args"] == {"reasoning_effort": "low"}
+
+
+def test_committed_full_turn_args_are_isolated_between_siblings(registry):
+    session = registry.get_session(registry.create_session())
+    request_args = {"temperature": 0.7, "chat_template_kwargs": {"nested": [1]}, "input_ids": [1, 2]}
+    record = SessionRecord(
+        timestamp=1.0, method="POST", path="/v1/chat/completions", status_code=200, request=request_args, response={}
+    )
+    first = commit_generation(
+        session,
+        parent=None,
+        request_messages=[SYS_MSG, USER_MSG],
+        assistant_message=ASSISTANT_MSG_1,
+        prompt_token_ids=[1, 2],
+        completion_token_ids=[3],
+        max_trim_tokens=0,
+        record=record,
+        response_id="first",
+        finish_reason="stop",
+        turn_args=request_args,
+    )
+    request_args["temperature"] = 0.1
+    request_args["chat_template_kwargs"]["nested"].append(2)
+    second = commit_generation(
+        session,
+        parent=None,
+        request_messages=[SYS_MSG, USER_MSG],
+        assistant_message=ASSISTANT_MSG_1,
+        prompt_token_ids=[1, 2],
+        completion_token_ids=[4],
+        max_trim_tokens=0,
+        record=record,
+        response_id="second",
+        finish_reason="stop",
+        turn_args=request_args,
+    )
+    request_args["input_ids"].append(9)
+    assert first.turn_args == {"temperature": 0.7, "chat_template_kwargs": {"nested": [1]}, "input_ids": [1, 2]}
+    assert second.turn_args == {"temperature": 0.1, "chat_template_kwargs": {"nested": [1, 2]}, "input_ids": [1, 2]}
+
+
+def test_mismatch_does_not_resolve_defaults_for_an_empty_committed_record(registry):
+    registry.tito_tokenizer.chat_template_kwargs = {"enable_thinking": True}
+    registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1, 2])
+    registry.comparator = MagicMock(compare_sequences=MagicMock(return_value=[]))
+    assert registry.compute_mismatch([SYS_MSG, USER_MSG, ASSISTANT_MSG_1], [1, 2], turn_args={}) == []
+    assert registry.tito_tokenizer.apply_chat_template.call_args.kwargs["template_args"] == {}

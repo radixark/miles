@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,7 +14,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     assert_messages_append_only_with_allowed_role,
     strict_message_matches,
 )
-from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,10 @@ class LinearTrajectory:
     but the agent may retry from an earlier point (e.g. re-running a tool call),
     in which case the session is rolled back at most one assistant step.
 
+    ``turn_args_history`` stores each successful generation's full resolved request.
+    Rollback slices it with the token checkpoints. Model rules decide which of
+    these fields a continuation inherits or must keep unchanged.
+
     ``prepare_token_ids_and_request_args`` resolves arguments and renders from
     the selected checkpoint before applying rollback.
 
@@ -82,6 +87,12 @@ class LinearTrajectory:
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
+    turn_args_history: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def turn_args(self) -> dict[str, Any]:
+        """The full resolved request at the current tip; empty before the first checkpoint."""
+        return self.turn_args_history[-1] if self.turn_args_history else {}
 
     @property
     def token_ids(self) -> list[int]:
@@ -114,7 +125,8 @@ class LinearTrajectory:
         matcher = message_matcher if message_matcher is not None else strict_message_matches
         request_messages = client_args.get("messages", [])
         checkpoint_index = self._find_rollback_checkpoint(request_messages, matcher)
-        prepared = prepare_chat_request(client_args, tito_tokenizer, config=config, turn_args=None)
+        turn_args = self.turn_args_history[checkpoint_index] if checkpoint_index >= 0 else None
+        prepared = prepare_chat_request(client_args, tito_tokenizer, config=config, turn_args=turn_args)
         prepared.body["input_ids"] = self._render_token_ids(
             request_messages,
             checkpoint_index=checkpoint_index,
@@ -186,10 +198,12 @@ class LinearTrajectory:
         prompt_token_ids: list[int],
         completion_token_ids: list[int],
         max_trim_tokens: int,
+        turn_args: dict[str, Any] | None = None,
     ) -> None:
         """Store raw token IDs after a successful response.
 
-        Appends ``prompt_token_ids + completion_token_ids`` as a new checkpoint.
+        Appends ``prompt_token_ids + completion_token_ids`` as a new checkpoint,
+        recording the full resolved request in ``turn_args`` alongside.
         Validates that the previously stored token_ids are a prefix of the new
         checkpoint (tolerating up to ``max_trim_tokens`` trailing differences).
         Must be called under ``self.lock``.
@@ -210,6 +224,7 @@ class LinearTrajectory:
         # no longer match its own session.
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
+        self.turn_args_history.append(deepcopy(turn_args or {}))
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
@@ -329,6 +344,7 @@ class LinearTrajectory:
 
         self.messages = self.messages[:rollback_msg_end]
         self.trajectory_token_ids = self.trajectory_token_ids[: checkpoint_index + 1]
+        self.turn_args_history = self.turn_args_history[: checkpoint_index + 1]
         self.records = self.records[: checkpoint_index + 1]
         self.generated_checkpoint_message_ends = self.generated_checkpoint_message_ends[: checkpoint_index + 1]
         self.num_assistant = len(self.generated_checkpoint_message_ends)
@@ -380,12 +396,12 @@ class SessionRegistry:
         if not session.token_ids:
             return None
         try:
-            tools = session.records[-1].request.get("tools") if session.records else None
+            # No new request is available here; use the committed turn's renderer fields.
             expected_ids = self.tito_tokenizer.apply_chat_template(
                 session.messages,
                 add_generation_prompt=False,
                 tokenize=True,
-                template_args=self.tito_tokenizer.default_template_args(tools),
+                template_args=extract_template_args(session.turn_args),
             )
             mismatches = self.comparator.compare_sequences(expected_ids, session.token_ids)
             return [m.to_dict() for m in mismatches]

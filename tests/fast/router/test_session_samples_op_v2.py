@@ -1005,3 +1005,25 @@ def test_samples_route_registered_before_catch_all_proxy(app_client):
     assert response.headers["content-type"] == "application/octet-stream"
     reply = decode_samples_and_merge_input_sample(response.content, Sample(), fields=COMPUTED_FIELDS_V2)
     assert reply.empty_reason == "no_records", "catch-all session_proxy swallowed the samples route"
+
+
+@pytest.mark.asyncio
+async def test_hooks_cannot_mutate_committed_turn_args():
+    def mutate_metadata(samples, metadata):
+        metadata["turn_args"]["chat_template_kwargs"]["nested"].append("session-hook")
+        for node in metadata["tree"]["nodes"]:
+            node["turn_args"]["chat_template_kwargs"]["nested"].append("tree-hook")
+        for sample in samples:
+            sample.metadata["turn_args"]["chat_template_kwargs"]["nested"].append("sample-hook")
+        return samples
+
+    with function_registry.temporary("test_hooks.mutate_turn_args", mutate_metadata):
+        hooked = _build_core_with_hooks(session_sample_picker_path="test_hooks.mutate_turn_args")
+        sid = await _retry_shaped_session(hooked)
+        nodes = hooked.registry.sessions[sid].tree.nodes
+        for node in nodes:
+            node.turn_args = {"temperature": 0.7, "chat_template_kwargs": {"nested": [node.seq]}}
+        before = [deepcopy(node.turn_args) for node in nodes]
+        response = await hooked.collect_samples(sid, max_seq_len=None)
+        assert response.status_code == 200, response.body
+        assert [node.turn_args for node in nodes] == before
