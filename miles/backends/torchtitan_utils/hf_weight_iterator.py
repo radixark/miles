@@ -63,58 +63,85 @@ def _stage_process_groups(stage_ranks: tuple[tuple[int, ...], ...]) -> tuple:
     return tuple(dist.new_group(list(ranks)) for ranks in stage_ranks)
 
 
+_GROUPED_EXPERTS = "moe.routed_experts.inner_experts"
+
+
 def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
     sd_adapter = getattr(trainer.checkpointer, "sd_adapter", None)
     if sd_adapter is None:
         sd_adapter = trainer.config.model_spec.state_dict_adapter(trainer.model_config, trainer.config.hf_assets_path)
-    local = sd_adapter.to_hf({k: v for part in trainer.model_parts for k, v in part.state_dict().items()})
+    state = {k: v for part in trainer.model_parts for k, v in part.state_dict().items()}
+    layout = _StageLayout.gather(trainer, complete_across_pp=complete_across_pp)
 
-    world = dist.get_world_size()
-    local_meta = {name: (tuple(t.shape), str(t.dtype)) for name, t in local.items()}
-    gathered: list = [None] * world
-    dist.all_gather_object(gathered, local_meta)
+    dense = {k: v for k, v in state.items() if _GROUPED_EXPERTS not in k}
+    yield from layout.stream(sd_adapter.to_hf(dense))
 
-    if all(meta.keys() == local_meta.keys() for meta in gathered):
-        for name in sorted(local):
-            yield name, gather_full_param(local[name])
-        return
+    mine = sorted(k for k in state if _GROUPED_EXPERTS in k)
+    everyone: list = [None] * layout.world
+    dist.all_gather_object(everyone, mine)
+    for key in sorted(set().union(*everyone)):
+        local = sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {}
+        yield from layout.stream(local)
 
-    owners: dict[str, list[int]] = {}
-    specs: dict[str, tuple] = {}
-    for rank, meta in enumerate(gathered):
-        for name, (shape, dtype) in meta.items():
-            owners.setdefault(name, []).append(rank)
-            if specs.setdefault(name, (shape, dtype)) != (shape, dtype):
-                raise RuntimeError(f"ranks disagree on the shape/dtype of {name}")
 
-    my_rank = dist.get_rank()
-    stage_of: list = [None] * world
-    pp_mesh = trainer.parallel_dims.get_optional_mesh("pp")
-    my_stage_id = dist.get_rank(group=pp_mesh.get_group()) if pp_mesh is not None else 0
-    dist.all_gather_object(stage_of, my_stage_id)
-    stage_groups: dict[int, list[int]] = {}
-    for rank, stage in enumerate(stage_of):
-        stage_groups.setdefault(stage, []).append(rank)
-    my_stage = stage_of[my_rank]
+class _StageLayout:
+    def __init__(self, *, world: int, my_rank: int, device, audience: list[int], broadcast_group):
+        self.world = world
+        self.my_rank = my_rank
+        self.device = device
+        self.audience = set(audience)
+        self.broadcast_group = broadcast_group
 
-    if complete_across_pp:
-        audience, broadcast_group = list(range(world)), None
-    else:
-        groups = _stage_process_groups(tuple(tuple(ranks) for _, ranks in sorted(stage_groups.items())))
-        audience, broadcast_group = stage_groups[my_stage], groups[sorted(stage_groups).index(my_stage)]
-
-    audience_set = set(audience)
-    names = [name for name in sorted(owners) if audience_set.intersection(owners[name])]
-    for name in names:
-        shape, dtype = specs[name]
-        holders = [rank for rank in owners[name] if rank in audience_set]
-        if my_rank in holders:
-            tensor = gather_full_param(local[name]).contiguous()
+    @classmethod
+    def gather(cls, trainer, *, complete_across_pp: bool) -> "_StageLayout":
+        world = dist.get_world_size()
+        my_rank = dist.get_rank()
+        stage_of: list = [None] * world
+        pp_mesh = trainer.parallel_dims.get_optional_mesh("pp")
+        my_stage_id = dist.get_rank(group=pp_mesh.get_group()) if pp_mesh is not None else 0
+        dist.all_gather_object(stage_of, my_stage_id)
+        stage_groups: dict[int, list[int]] = {}
+        for rank, stage in enumerate(stage_of):
+            stage_groups.setdefault(stage, []).append(rank)
+        my_stage = stage_of[my_rank]
+        if complete_across_pp:
+            audience, broadcast_group = list(range(world)), None
         else:
-            tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=trainer.device)
-        dist.broadcast(tensor, src=holders[0], group=broadcast_group)
-        yield name, tensor
-        del tensor
+            groups = _stage_process_groups(tuple(tuple(ranks) for _, ranks in sorted(stage_groups.items())))
+            audience, broadcast_group = stage_groups[my_stage], groups[sorted(stage_groups).index(my_stage)]
+        return cls(
+            world=world, my_rank=my_rank, device=trainer.device, audience=audience, broadcast_group=broadcast_group
+        )
+
+    def stream(self, local: dict[str, torch.Tensor]) -> Iterator[tuple[str, torch.Tensor]]:
+        local_meta = {name: (tuple(t.shape), str(t.dtype)) for name, t in local.items()}
+        gathered: list = [None] * self.world
+        dist.all_gather_object(gathered, local_meta)
+
+        if all(meta.keys() == local_meta.keys() for meta in gathered):
+            for name in sorted(local):
+                yield name, gather_full_param(local[name])
+            return
+
+        owners: dict[str, list[int]] = {}
+        specs: dict[str, tuple] = {}
+        for rank, meta in enumerate(gathered):
+            for name, (shape, dtype) in meta.items():
+                owners.setdefault(name, []).append(rank)
+                if specs.setdefault(name, (shape, dtype)) != (shape, dtype):
+                    raise RuntimeError(f"ranks disagree on the shape/dtype of {name}")
+
+        names = [name for name in sorted(owners) if self.audience.intersection(owners[name])]
+        for name in names:
+            shape, dtype = specs[name]
+            holders = [rank for rank in owners[name] if rank in self.audience]
+            if self.my_rank in holders:
+                tensor = gather_full_param(local[name]).contiguous()
+            else:
+                tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=self.device)
+            dist.broadcast(tensor, src=holders[0], group=self.broadcast_group)
+            yield name, tensor
+            del tensor
 
 
 _SAFETENSORS_DTYPES = {
