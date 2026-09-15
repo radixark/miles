@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 from tests.fast import cluster_backends
 
@@ -19,31 +21,73 @@ class TestKubernetesAvailability:
         assert cluster_backends.NAMESPACE_ENV_VAR in reason
         assert "cluster-backend" in reason
 
+    def test_names_the_variable_the_caller_reads_rather_than_its_own(self, monkeypatch):
+        """Two callers feed this from two different variables, so a hardcoded hint sends one of them to the wrong knob."""
+        monkeypatch.setattr(cluster_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        reason = cluster_backends.kubernetes_availability_of_namespace(
+            "", namespace_source="MILES_SCRIPT_NAMESPACE"
+        ).reason
+
+        assert "MILES_SCRIPT_NAMESPACE" in reason
+        assert cluster_backends.NAMESPACE_ENV_VAR not in reason
+
     def test_reports_what_the_cluster_said_when_it_refuses(self, monkeypatch):
         """An expired token and a missing cluster look identical unless the message is passed through."""
-        monkeypatch.setattr(cluster_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setenv(cluster_backends.NAMESPACE_ENV_VAR, "mine")
-        monkeypatch.setattr(
-            cluster_backends.subprocess,
-            "run",
-            lambda *args, **kwargs: _completed(returncode=1, stderr="Unauthorized"),
-        )
+        _fake_kubectl(monkeypatch, lambda argv: _completed(returncode=1, stderr="Unauthorized"))
 
         assert "Unauthorized" in cluster_backends.kubernetes_availability().reason
 
     def test_says_an_admin_has_to_install_leaderworkerset(self, monkeypatch):
         """Nothing a developer can do about it, so the message has to say who can."""
-        monkeypatch.setattr(cluster_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setenv(cluster_backends.NAMESPACE_ENV_VAR, "mine")
-        calls = []
-
-        def fake_run(command, *args, **kwargs):
-            calls.append(command)
-            return _completed(returncode=0 if "--raw" in command else 1)
-
-        monkeypatch.setattr(cluster_backends.subprocess, "run", fake_run)
+        _fake_kubectl(
+            monkeypatch,
+            lambda argv: _completed(returncode=1 if cluster_backends.LEADER_WORKER_SET_API_PATH in argv else 0),
+        )
 
         assert "admin" in cluster_backends.kubernetes_availability().reason
+
+    def test_asks_the_api_for_leaderworkerset_instead_of_reading_the_crd(self, monkeypatch):
+        """The workbench holds a namespaced Role, so a cluster-scoped read reports "not installed" for a cluster that has it."""
+        calls = _fake_kubectl(monkeypatch, lambda argv: _completed(stdout="yes"))
+
+        cluster_backends.kubernetes_availability()
+
+        assert any(cluster_backends.LEADER_WORKER_SET_API_PATH in argv for argv in calls)
+        assert not any("crd" in argv or "customresourcedefinitions" in argv for argv in calls)
+
+    def test_refuses_when_the_account_may_not_delete_pods(self, monkeypatch):
+        """Injecting a fault deletes a pod, so discovering the missing verb mid-soak wastes the whole run."""
+        _fake_kubectl(monkeypatch, lambda argv: _completed(stdout="" if "delete" in argv else "yes"))
+
+        reason = cluster_backends.kubernetes_availability().reason
+
+        assert "delete" in reason and "pods" in reason
+
+    def test_bounds_every_call_so_an_unreachable_cluster_cannot_hang_the_probe(self, monkeypatch):
+        """kubectl against a black-holed endpoint blocks forever, and the probe runs before anything can time it out."""
+        timeouts = []
+
+        def fake_run_process(argv, *, capture_output, check, input=None, timeout=None):
+            timeouts.append(timeout)
+            return _completed(stdout="yes")
+
+        monkeypatch.setattr(cluster_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setenv(cluster_backends.NAMESPACE_ENV_VAR, "mine")
+        monkeypatch.setattr(cluster_backends, "run_process", fake_run_process)
+
+        cluster_backends.kubernetes_availability()
+
+        assert timeouts and all(t == cluster_backends.KUBECTL_TIMEOUT_SECONDS for t in timeouts)
+
+    def test_accepts_a_cluster_that_serves_the_api_and_grants_every_verb(self, monkeypatch):
+        """The negative cases prove nothing unless the positive one still passes."""
+        _fake_kubectl(monkeypatch, lambda argv: _completed(stdout="yes"))
+
+        availability = cluster_backends.kubernetes_availability()
+
+        assert availability.available
+        assert "mine" in availability.reason
 
 
 class TestRequireBackend:
@@ -77,7 +121,18 @@ class TestBothBackends:
         assert cluster_backend in ("ray", "kubernetes")
 
 
-def _completed(returncode=0, stdout="", stderr=""):
-    import subprocess
+def _fake_kubectl(monkeypatch, respond) -> list[list[str]]:
+    calls: list[list[str]] = []
 
+    def fake_run_process(argv, *, capture_output, check, input=None, timeout=None):
+        calls.append(argv)
+        return respond(argv)
+
+    monkeypatch.setattr(cluster_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv(cluster_backends.NAMESPACE_ENV_VAR, "mine")
+    monkeypatch.setattr(cluster_backends, "run_process", fake_run_process)
+    return calls
+
+
+def _completed(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
