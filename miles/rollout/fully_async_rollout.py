@@ -35,6 +35,7 @@ from miles.rollout.base_types import (
     stamp_kv_cache_namespace,
 )
 from miles.rollout.fully_async_data_buffer import (
+    NO_PROGRESS_WARN_SECS,
     DataBuffer,
     DataBufferConstructorInput,
     DataBufferInput,
@@ -54,8 +55,6 @@ from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
-
-NO_PROGRESS_WARN_SECS = 30.0
 
 
 class FullyAsyncRolloutFn(BaseRolloutFn):
