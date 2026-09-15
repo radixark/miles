@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from tests.e2e.ft.conftest_ft.fault_injection import entrypoint, fault_forms, state
+from tests.e2e.ft.conftest_ft.fault_injection import entrypoint, fault_forms, state, views
 from tests.e2e.ft.conftest_ft.scenario_random_crash import _assert_drawn_fault_forms_worked, assert_healing
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
@@ -101,7 +101,7 @@ def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
 
 
 def _write_shrink_only_events(event_dir: Path) -> None:
-    event_logger = EventLogger(log_dir=event_dir, source=MainProcessIdentity())
+    event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="main"))
     event_logger.log(
         CellReconfigureEvent,
         dict(rollout_id=2, quorum_id=1, src_cell_index=None, healed_cell_indices=[], alive_cell_indices_after=[0]),
@@ -149,8 +149,8 @@ class TestAssertHealing:
         with pytest.raises(AssertionError, match="Soak proved too little"):
             assert_healing(("train", "rollout"), injector=injector, event_dir=tmp_path / "events", context="soak")
 
-    def test_rollout_soak_rejects_unfinished_engine_recovery(self, tmp_path: Path) -> None:
-        """A rollout-only soak that ends with an accepted injection still relaunching must fail."""
+    def test_rollout_soak_rejects_a_cell_never_seen_serving_after_its_last_injection(self, tmp_path: Path) -> None:
+        """A rollout-only soak that ends with its last victim still relaunching must fail."""
         injector = _injector(cell_types=("rollout",))
         log = injector.event_log
         log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
@@ -159,6 +159,33 @@ class TestAssertHealing:
         log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
         _note_rollout_injection(log)
         log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
+
+        with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
+            assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
+
+    def test_rollout_soak_accepts_a_fresh_serve_after_the_last_injection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The witness must stay invisible on the path a healthy soak actually takes."""
+        monkeypatch.setattr(views, "STALE_STATUS_GRACE_SECONDS", 0.0)
+        injector = _injector(cell_types=("rollout",))
+        log = injector.event_log
+        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        for _ in range(2):
+            _note_rollout_injection(log)
+        log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
+        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+
+        assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
+
+    def test_rollout_soak_rejects_a_serve_still_inside_the_stale_window(self, tmp_path: Path) -> None:
+        """A serve observed right after the kill can be the dead cell's stale reading, and proves nothing."""
+        injector = _injector(cell_types=("rollout",))
+        log = injector.event_log
+        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        for _ in range(2):
+            _note_rollout_injection(log)
+        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
 
         with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
             assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
