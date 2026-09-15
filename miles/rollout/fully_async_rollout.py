@@ -87,7 +87,13 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._curr_kv_cache_namespace: str | None = None
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
-        self._output: DataBuffer | None = None
+        default_buffer_cls = (
+            DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
+        )
+        buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
+        self._output: DataBuffer = buffer_cls(
+            DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
+        )
         self._retry_buffer: deque[list[Sample]] = deque()
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
@@ -95,13 +101,6 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             return await self._call_eval(input)
         self._curr_kv_cache_namespace = compute_kv_cache_namespace(self.args, input)
         if self._worker is None:
-            default_buffer_cls = (
-                DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
-            )
-            buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
-            self._output = buffer_cls(
-                DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
-            )
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
         return await self._drain(input)
