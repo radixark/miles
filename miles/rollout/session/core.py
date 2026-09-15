@@ -157,10 +157,10 @@ def proxy_result_to_response(result: dict) -> Response:
 
 
 def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
-    """Parse and normalize a chat request body — the session-independent half
-    of chat dispatch, shared verbatim by the v1 and v2 cores. Returns
-    ``(request_body, client_stream, template_args)``; ``template_args`` is the
-    one dict the prompt is rendered with (``TITOTokenizer.template_args_for_request``).
+    """Normalize a chat request for the v1 and v2 session cores.
+
+    Return `(request_body, client_stream, template_args)`, where `template_args`
+    contains the resolved template kwargs and tools for local rendering.
     """
     try:
         request_body = json.loads(body) if body else {}
@@ -190,15 +190,14 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     # Serve the adapter being trained instead of the base weights.
     if is_lora_enabled(args):
         request_body["lora_path"] = LORA_ADAPTER_NAME
-    # The template args, one dict: the request's chat_template_kwargs merged over
-    # the launch kwargs, plus its tools.  The prompt is rendered with it and the
-    # wire carries it, so both sides render alike.
     # FIXME(session): top-level `reasoning` and `reasoning_effort` are not mapped
     # to template kwargs yet.
     try:
         template_args = tito_tokenizer.template_args_for_request(request_body)
     except ValueError as e:
         raise MessageValidationError(str(e)) from e
+    # Send SGLang the same tools and template kwargs used for local rendering.
+    # Its HTTP API keeps `tools` separate from `chat_template_kwargs`.
     tools = template_args.get("tools")
     kwargs = {key: value for key, value in template_args.items() if key != "tools"}
     if tools:

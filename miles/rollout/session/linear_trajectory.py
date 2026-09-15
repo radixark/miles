@@ -94,8 +94,10 @@ class LinearTrajectory:
         template_args: dict[str, Any] | None = None,
         message_matcher: SessionMessageMatcher | None = None,
     ) -> list[int]:
-        """Build the full prompt input_ids for *request_messages*, rendered with
-        *template_args* (``None``: the launch kwargs and no tools).
+        """Build prompt token IDs while reusing the stored token prefix.
+
+        Use `template_args` for newly rendered tokens; `None` uses the
+        tokenizer's launch defaults.
 
         Validates that *request_messages* extends the stored history under
         *message_matcher* (defaults to the strict matcher), rolling back at

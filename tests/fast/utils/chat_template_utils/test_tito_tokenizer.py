@@ -282,8 +282,6 @@ class TestConfig:
 
 
 class TestTemplateArgsForRequest:
-    """``template_args_for_request``: the one dict a session-server request renders with."""
-
     LAUNCH = {"enable_thinking": False}
     TOOLS = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
 
@@ -295,7 +293,7 @@ class TestTemplateArgsForRequest:
         )
 
         assert args == {"enable_thinking": True, "tools": self.TOOLS}
-        assert args["tools"] is self.TOOLS  # as sent: the wire keeps the client's spelling
+        assert args["tools"] is self.TOOLS
 
     def test_request_without_kwargs_or_tools_renders_like_the_launch(self):
         launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)

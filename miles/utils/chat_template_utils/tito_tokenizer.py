@@ -107,28 +107,18 @@ class TITOTokenizer:
         special_token_ids: set[int] | None = None,
     ):
         self.tokenizer = tokenizer
-        # The launch kwargs in the family's canonical form: the base of every request's template args.
         self.chat_template_kwargs = self.canonical_kwargs(dict(chat_template_kwargs or {}))
         self._assistant_start_str = assistant_start_str
         self.allowed_append_roles = self.FIXED_TEMPLATE.allowed_append_roles
         self.special_token_ids: set[int] = special_token_ids
 
-    # --- session server: the template args of one request -----------------
-    # ``template_args`` is one dict: every keyword ``template.apply_chat_template``
-    # takes besides the messages, ``tools`` included.  The session server
-    # resolves it once per request here, renders the prompt with it and puts
-    # it on the wire, so both sides render alike.  Families override the part
-    # that is theirs: ``canonical_kwargs`` (alias keys, fixed constants), or
-    # ``template_args_for_request`` itself for families that read other
-    # request fields into the template (Qwen3.8's ``reasoning_effort``),
-    # folding them into a copy of the request's ``chat_template_kwargs``
-    # before calling ``super()``.
-
     def canonical_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """The family's canonical form of a template-kwargs dict (no ``tools``):
-        the fixed template's constants applied, a conflicting value refused.
-        Families with alias keys resolve them here.  Idempotent; the
-        constructor runs the launch kwargs through it too."""
+        """Apply required template kwargs and reject conflicting values.
+
+        Model families also normalize their aliases here. This runs for both
+        launch defaults and merged request kwargs; repeated calls must preserve
+        the result.
+        """
         canonical = dict(kwargs)
         for key, value in self.FIXED_TEMPLATE.extra_kwargs.items():
             if key in canonical and canonical[key] != value:
@@ -140,11 +130,12 @@ class TITOTokenizer:
         return canonical
 
     def template_args_for_request(self, client: dict[str, Any]) -> dict[str, Any]:
-        """The ``template_args`` one session-server request renders with: the
-        request's ``chat_template_kwargs`` merged over the launch kwargs, in the
-        family's canonical form, plus the request's ``tools``.  Raises
-        ``ValueError`` for a refused request; the session server turns that
-        into HTTP 400."""
+        """Resolve template kwargs and tools for one chat request.
+
+        Request kwargs override launch defaults, subject to the model family's
+        constants and alias rules. Tools come from the request's top-level `tools`.
+        The session server maps this method's `ValueError` to HTTP 400.
+        """
         request_kwargs = client.get("chat_template_kwargs")
         if request_kwargs is None:
             request_kwargs = {}
@@ -758,8 +749,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
         )
 
     def canonical_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """Resolve the thinking-mode alias group to one explicit ``thinking``
-        flag, the key sglang's DeepSeek reasoning parser reads from the request."""
+        """Normalize thinking aliases to `thinking`, the key SGLang's reasoning parser reads."""
         canonical = super().canonical_kwargs(kwargs)
         thinking = deepseek.V32.render_thinking_enabled(canonical)
         for alias in _DEEPSEEK_MODE_KWARG_ALIASES:
@@ -817,10 +807,10 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         self.trailing_token_ids = frozenset({self._assistant_id} | self._think_bracket_ids)
 
     def canonical_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """Resolve the thinking-mode alias group to one explicit ``thinking``
-        flag: sglang's dsv4 parser separates reasoning only when the request
-        carries ``thinking`` (DeepSeek-V3.1's template kwarg, kept for V4), so
-        the session server must forward the effective mode under that key."""
+        """Normalize thinking aliases to `thinking` for SGLang's V4 reasoning parser.
+
+        The parser separates reasoning content only when `thinking` is explicitly true.
+        """
         canonical = super().canonical_kwargs(kwargs)
         thinking = deepseek.V4.render_thinking_enabled(canonical)
         for alias in _DEEPSEEK_MODE_KWARG_ALIASES:

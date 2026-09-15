@@ -90,8 +90,10 @@ def prepare_pretokenized(
     tito_tokenizer: TITOTokenizer,
     template_args: dict[str, Any] | None = None,
 ) -> list[int]:
-    """Pretokenized input_ids for a request attaching under *parent*, rendered
-    with *template_args* (``None``: the launch kwargs and no tools).
+    """Build prompt token IDs for a request extending `parent`.
+
+    Use `template_args` for newly rendered tokens; `None` uses the
+    tokenizer's launch defaults.
 
     - No parent (new root): render the whole request from scratch.
     - Otherwise: reuse the parent's token snapshot as-is and tokenize only
