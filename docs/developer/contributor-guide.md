@@ -53,6 +53,26 @@ git commit -m "feat(rollout): add partial-rollout buffer"
 git push me feat/awesome && gh pr create
 ```
 
+### Lightweight utility tests
+
+For changes to dependency-light helpers, you can run their tests without installing
+the training image or SGLang. For example, from the repository root:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install pytest pytest-asyncio
+python -m pytest tests/fast/test_conftest_imports.py \
+    tests/fast/utils/test_file_arg_utils.py \
+    tests/fast/utils/test_function_registry.py
+```
+
+This is a small subset, not an environment for all of `tests/fast/`. Other tests
+still require their own dependencies; the full CPU CI environment is defined in
+`.github/workflows/_run-cpu-ci.yml`. Rollout fixtures are registered only where
+they are used, so unrelated utility tests do not import the serving stack during
+collection.
+
 ## Code style
 
 Formatting is not a matter of taste here, it is a hook. `.pre-commit-config.yaml` is the
