@@ -6,16 +6,11 @@ from pathlib import Path
 
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
-from miles.ray.wiring import launch_worker_manager
-from miles.utils import object_store
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
-from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
-from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
-from miles.utils.logging_utils import configure_logger
 from miles.utils.multi_lora import define_new_adapter_metrics
-from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.orchestration_utils import init_orchestration_script
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +19,9 @@ async def main(args):
     assert (
         not args.colocate
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
-    configure_logger(args, source=SimpleProcessIdentity(component="main"))
-    maybe_start_periodic_pyspy_dump()
-
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
-    init_tracking(args)
-    _worker_manager = launch_worker_manager(args)
-    object_store.init_instance(args, contribute_segment=False)
+    _worker_manager = init_orchestration_script(args)
     inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
