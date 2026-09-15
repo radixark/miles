@@ -10,6 +10,7 @@ from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 
 from miles.backends.megatron_utils.megatron_config import compute_trainer_args
+from miles.ray.placement_group import _get_placement_group_layout
 from miles.ray.specs import train as train_specs
 from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
@@ -706,6 +707,122 @@ class TestTrainerConfigs:
         assert [config.trainer_id for config in configs] == ["actor", "critic"]
         assert [config.model_id for config in configs] == [None, None]
         assert [config.role for config in configs] == ["actor", "critic"]
+
+    def test_every_policy_of_a_multi_policy_run_gets_a_trainer_of_its_own(self, tmp_path):
+        """One TrainerController per trainer id is what keeps two policies from sharing cells."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        configs = compute_trainer_configs(args)
+
+        assert [config.trainer_id for config in configs] == ["alpha-actor", "beta-actor"]
+        assert [config.model_id for config in configs] == ["alpha", "beta"]
+        assert [config.role for config in configs] == ["actor", "actor"]
+
+    def test_the_pool_ids_of_two_policies_do_not_collide(self, tmp_path):
+        """Pool ids become Kubernetes names, so a collision would put both policies in one pool."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        specs = specs_trainer(args)
+
+        assert [spec.name for spec in specs] == ["trainer-engine-alpha-actor", "trainer-engine-beta-actor"]
+
+    def test_each_policy_gets_its_own_slice_of_the_placement_group(self, tmp_path):
+        """Two policies sharing the same slots would be scheduled onto the same gpus."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        specs = specs_trainer(args)
+
+        assert [spec.scheduling.pg_slot_offset for spec in specs] == [0, 4]
+
+    def test_the_slice_of_each_policy_follows_the_trainer_size(self, tmp_path):
+        """The stride is one trainer's gpu count; a hardcoded one overlaps as soon as a policy grows."""
+        args = _make_args(
+            megatron_config=write_megatron_config(tmp_path, "alpha", "beta", "gamma"),
+            actor_num_nodes=2,
+            actor_num_gpus_per_node=4,
+        )
+
+        specs = specs_trainer(args)
+
+        assert [spec.scheduling.pg_slot_offset for spec in specs] == [0, 8, 16]
+
+    def test_a_critic_shares_the_first_slice_with_its_actor(self):
+        """Actor and critic sit in one placement group on purpose; changing that must be deliberate."""
+        specs = specs_trainer(_make_args(use_critic=True))
+
+        assert [(spec.name, spec.scheduling.pg_slot_offset) for spec in specs] == [
+            ("trainer-engine-actor", 0),
+            ("trainer-engine-critic", 0),
+        ]
+
+    def test_every_slice_fits_inside_the_placement_group(self, tmp_path):
+        """A slot past the end of the group is a pending bundle nobody ever schedules."""
+        megatron_config = write_megatron_config(tmp_path, "alpha", "beta", "gamma")
+        args = _make_args(megatron_config=megatron_config, actor_num_nodes=2, actor_num_gpus_per_node=4)
+        _, actor_num_gpus = _get_placement_group_layout(
+            SimpleNamespace(
+                actor_num_nodes=2,
+                actor_num_gpus_per_node=4,
+                rollout_num_gpus=8,
+                eval_num_gpus=0,
+                debug_train_only=False,
+                debug_rollout_only=False,
+                rollout_external=False,
+                colocate=False,
+                use_critic=False,
+                megatron_config=megatron_config,
+            )
+        )
+
+        specs = specs_trainer(args)
+
+        for spec in specs:
+            reserved = spec.scheduling.num_cells * spec.scheduling.gpus_per_cell()
+            assert spec.scheduling.pg_slot_offset + reserved <= actor_num_gpus
+
+    def test_each_policy_controller_drives_the_inference_controller(self, tmp_path):
+        """A policy that cannot reach the engines can never publish its weights."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        specs = specs_trainer_controller(args)
+        kwargs = [spec.ctor_kwargs(_controller_context(_controller_providers())) for spec in specs]
+
+        assert [entry["trainer_id"] for entry in kwargs] == ["alpha-actor", "beta-actor"]
+        assert all(entry["inference_controller"] is not None for entry in kwargs)
+        assert [entry["role"] for entry in kwargs] == ["actor", "actor"]
+
+    def test_a_worker_is_told_which_policy_it_serves_through_its_args(self, tmp_path):
+        """The worker namespaces its logs and metrics by this id; a shared one merges the two runs."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        kwargs = [spec.ctor_kwargs(_make_context()) for spec in specs_trainer(args)]
+
+        assert [entry["args"].trainer_model_id for entry in kwargs] == ["alpha", "beta"]
+        assert [entry["role"] for entry in kwargs] == ["actor", "actor"]
+
+    def test_a_worker_of_every_policy_still_gets_the_plain_actor_role(self, tmp_path):
+        """The worker layer branches on the role literal, so a policy specific role would break training."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        [kwargs] = [spec.ctor_kwargs(_make_context()) for spec in specs_trainer(_make_args())]
+
+        assert (kwargs["args"].trainer_model_id, kwargs["role"]) == (None, "actor")
+        assert [spec.name for spec in specs_trainer(args)] == [
+            "trainer-engine-alpha-actor",
+            "trainer-engine-beta-actor",
+        ]
+
+    def test_a_policy_overlays_its_own_megatron_args_onto_its_worker(self, tmp_path):
+        """A per-policy --lr that never reaches the worker would train both policies identically."""
+        args = _make_args(
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "alpha", "overrides": {"lr": 5e-7}}, {"model_id": "beta"}]
+            ),
+        )
+
+        kwargs = [spec.ctor_kwargs(_make_context()) for spec in specs_trainer(args)]
+
+        assert [entry["args"].lr for entry in kwargs] == [5e-7, 1e-6]
 
     def test_the_critic_of_a_configured_policy_is_a_trainer_of_that_policy(self, tmp_path):
         """A critic left without a model id would be built from raw args, ignoring the policy overlay."""
