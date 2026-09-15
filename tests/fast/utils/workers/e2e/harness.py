@@ -13,9 +13,12 @@ from pathlib import Path
 
 import httpx
 
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
+
 REPO_ROOT = Path(__file__).resolve().parents[5]
-WORKER_PATH = "tests.fast.utils.workers.e2e.e2e_worker.make_worker"
-ENV_FN_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_env_vars"
+SPECS_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_specs"
+POOL_ID = "e2e-pool"
+RPC_PORT_FLAG = "--rpc-port"
 
 READY_TIMEOUT_SECONDS = 60.0
 STOP_TIMEOUT_SECONDS = 15.0
@@ -76,22 +79,20 @@ def spawn_server(
     log_path: Path,
     port: int | None = None,
     worker_argv: list[str] | None = None,
-    env_var_fn: bool = True,
     extra_env: dict[str, str] | None = None,
-    worker_path: str = WORKER_PATH,
+    specs_path: str = SPECS_PATH,
 ) -> ServerProcess:
     port = reserve_port() if port is None else port
 
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
     env["PYTHONUNBUFFERED"] = "1"
+    env[CELL_INDEX_ENV_VAR] = "0"
     env.update(extra_env or {})
 
-    argv = [sys.executable, "-m", "miles.utils.workers.serving.serve", "--worker", worker_path]
-    if env_var_fn:
-        argv += ["--env-var-fn", ENV_FN_PATH]
-    argv += ["--host", "127.0.0.1", "--port", str(port)]
-    argv += ["--", "--state-dir", str(state_dir)]
+    argv = [sys.executable, "-m", "miles.utils.workers.serving.serve"]
+    argv += ["--specs", specs_path, "--pool-id", POOL_ID]
+    argv += ["--", "--state-dir", str(state_dir), RPC_PORT_FLAG, str(port)]
     argv += worker_argv or []
 
     with log_path.open("w") as log_file:
