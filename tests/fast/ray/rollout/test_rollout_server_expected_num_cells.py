@@ -113,7 +113,7 @@ class _CountingProvider(_StubProvider):
     def __init__(self, count: int) -> None:
         self._count = count
 
-    def expected_num_cells(self, *, model_id: str) -> int:
+    def expected_num_cells(self, *, group_id: str) -> int:
         return self._count
 
 
