@@ -11,7 +11,11 @@ from tests.fast.ray.train.conftest import (
     make_indep_dp_info,
 )
 
+from miles.ray.train import cell as cell_module
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_info import WorkerInfo
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,8 +37,28 @@ class TestInitialState:
         assert all(isinstance(h, BaseWorkerHandle) for h in handles)
         assert all(isinstance(h, ray.actor.ActorHandle) for h in get_raw_actor_handles(cell))
 
+    def test_a_cell_refuses_worker_infos_without_callable_handles(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Every described trainer rank must have a handle or the collective would silently omit it."""
+
+        def _no_handles(_provider: RayWorkerProvider, _infos: list[WorkerInfo]) -> dict[str, BaseWorkerHandle]:
+            return {}
+
+        monkeypatch.setattr(RayWorkerProvider, "get_handles_of_worker_infos", _no_handles)
+
+        with pytest.raises(AssertionError, match="holds workers that cannot be called"):
+            make_cell(actor_count=2)
+
 
 class TestKillWorkers:
+    async def test_a_restarted_worker_is_already_gone_for_killing(self):
+        """A stale handle that reaches a new server must not make cell teardown fail."""
+
+        class RestartedHandle:
+            async def kill_self(self) -> None:
+                raise ServerRestartedError
+
+        await cell_module._kill_worker(RestartedHandle())
+
     async def test_killing_reaches_every_worker(self):
         """The dead workers must not linger in a cross-cell collective."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
@@ -54,8 +78,8 @@ class TestKillWorkers:
 
         assert train_conftest.fake_worker_manager.stopped_cell_ids == []
 
-    async def test_stop_kills_the_underlying_workers(self):
-        """Stopping a cell really kills its workers, so every handle is confirmed dead and rejects new calls."""
+    async def test_teardown_leaves_every_worker_handle_confirmed_dead(self):
+        """Teardown really kills its workers, so every handle is confirmed dead and rejects new calls."""
         cell = make_cell(actor_count=2)
         wrapped_handles = cell._get_worker_handles()
 
@@ -176,10 +200,11 @@ class TestErroredCellTeardown:
 
 class TestAsyncInit:
     async def test_dispatches_init_and_marks_alive(self):
+        """Init configures the rendezvous address on every worker before dispatching init itself."""
         cell = make_cell(actor_count=2)
         info = make_indep_dp_info()
 
-        results = await cell.init(indep_dp_info=info)
+        results = await cell.init(indep_dp_info=info, indep_dp_store_addr="10.0.0.9:1234")
 
         assert len(results) == 2
         assert cell.is_alive
@@ -187,9 +212,11 @@ class TestAsyncInit:
 
         for handle in get_raw_actor_handles(cell):
             calls = ray.get(handle.get_calls.remote())
-            assert [name for name, _args, _kwargs in calls] == ["configure_master_addr_and_port", "init"]
+            assert [call[0] for call in calls] == ["configure_master_addr_and_port", "init"]
+            assert calls[0][2] == {"master_addr": "10.0.0.1", "master_port": 20000}
             kwargs = calls[1][2]
             assert kwargs["indep_dp_info"] == info
+            assert kwargs["indep_dp_store_addr"] == "10.0.0.9:1234"
             assert kwargs["recv_ckpt_src_rank"] is None
 
     async def test_health_checking_starts_on_an_alive_cell_and_is_running_when_init_returns(self):
@@ -198,34 +225,11 @@ class TestAsyncInit:
         cell = make_cell(actor_count=1, health_checker=checker)
         checker.observe_alive = lambda: cell.is_alive
 
-        await cell.init(indep_dp_info=make_indep_dp_info())
+        await cell.init(indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
 
         assert checker.start_count == 1
         assert checker.alive_when_started is True
         assert checker.task_started
-
-
-class TestSetRolloutExecutor:
-    async def test_a_cell_without_an_executor_issues_no_worker_rpc(self):
-        """The critic pool has no executor, and a None handle reaching a worker would break its next rollout call."""
-        cell = make_cell(actor_count=2, rollout_executor=None)
-
-        assert await cell.set_rollout_executor() == []
-
-        for handle in get_raw_actor_handles(cell):
-            calls = ray.get(handle.get_calls.remote())
-            assert [name for name, _args, _kwargs in calls] == []
-
-    async def test_present_rollout_executor_reaches_every_actor(self):
-        """A configured rollout executor handle is forwarded to every actor of the cell."""
-        cell = make_cell(actor_count=2, rollout_executor="executor-handle")
-
-        results = await cell.set_rollout_executor()
-
-        assert len(results) == 2
-        for handle in get_raw_actor_handles(cell):
-            calls = ray.get(handle.get_calls.remote())
-            assert calls == [("set_rollout_executor", (), {"rollout_executor": "executor-handle"})]
 
 
 class _EntryBarrier:
@@ -300,7 +304,7 @@ class TestAsyncInitFailure:
             ray.get(handle.set_fail_methods.remote(["init"]))
 
         with pytest.raises(RuntimeError, match="Injected failure"):
-            await cell.init(indep_dp_info=make_indep_dp_info())
+            await cell.init(indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
 
         assert not cell.is_alive
         for handle in get_raw_actor_handles(cell):
@@ -313,7 +317,9 @@ class TestPrepareIndepDPModeAlive:
         cell = make_alive_cell(0, alive_cell_indices=[0, 1, 2])
 
         new_info = make_indep_dp_info(alive_cell_indices=[0, 2], quorum_id=2)
-        await cell.prepare_indep_dp_mode_alive(indep_dp_info=new_info, send_ckpt_dst_ranks=[])
+        await cell.prepare_indep_dp_mode_alive(
+            indep_dp_info=new_info, indep_dp_store_addr="10.0.0.9:1234", send_ckpt_dst_ranks=[]
+        )
 
         assert cell.indep_dp_info == new_info
         assert cell.is_alive
@@ -323,12 +329,15 @@ class TestPrepareIndepDPModeAlive:
             reconfig_calls = [c for c in calls if c[0] == "reconfigure_indep_dp"]
             assert len(reconfig_calls) == 1
             assert reconfig_calls[0][2]["indep_dp_info"] == new_info
+            assert reconfig_calls[0][2]["indep_dp_store_addr"] == "10.0.0.9:1234"
 
     async def test_sends_ckpt_to_correct_dst_ranks(self):
         cell = make_alive_cell(0, alive_cell_indices=[0, 1, 2])
 
         new_info = make_indep_dp_info(alive_cell_indices=[0, 1, 2], quorum_id=2)
-        await cell.prepare_indep_dp_mode_alive(indep_dp_info=new_info, send_ckpt_dst_ranks=[1, 2])
+        await cell.prepare_indep_dp_mode_alive(
+            indep_dp_info=new_info, indep_dp_store_addr=None, send_ckpt_dst_ranks=[1, 2]
+        )
 
         handle = get_raw_actor_handles(cell)[0]
         calls = ray.get(handle.get_calls.remote())
@@ -343,7 +352,7 @@ class TestPrepareIndepDPModeHealing:
         cell = make_cell(actor_count=1)
         info = make_indep_dp_info()
 
-        await cell.prepare_indep_dp_mode_healing(indep_dp_info=info, recv_ckpt_src_rank=None)
+        await cell.prepare_indep_dp_mode_healing(indep_dp_info=info, indep_dp_store_addr=None, recv_ckpt_src_rank=None)
 
         assert cell.is_alive
         assert cell.indep_dp_info == info

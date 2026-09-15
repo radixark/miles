@@ -2,7 +2,8 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 import ray
 
@@ -14,6 +15,21 @@ logger = logging.getLogger(__name__)
 # ray uses 10002-19999, and 32768+ is the ephemeral range, so wrapped scans restart above ray's block
 _MIN_DYNAMIC_PORT = 20000
 _MAX_PORT = 65535
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+_T = TypeVar("_T")
+
+
+@dataclass
+class MutableBox(Generic[_T]):
+    value: _T
+
+
+def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V]:
+    conflicts = {key: (a[key], b[key]) for key in a.keys() & b.keys() if a[key] != b[key]}
+    assert not conflicts, f"cannot merge two dicts that disagree: {conflicts}"
+    return a | b
 
 
 async def call_agent_abort_hook(args) -> None:
@@ -135,12 +151,6 @@ class NodeProbeMixin:
     @staticmethod
     def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
         return get_gpu_uuids(gpu_ids)
-
-    @staticmethod
-    def _collect_env_report(*, role: str, rank: int, partial_env_report: str) -> None:
-        from miles.utils.env_report import collect_and_print_node_env_report
-
-        collect_and_print_node_env_report(role=role, rank=rank, partial_env_report=partial_env_report)
 
 
 def should_run_periodic_action(

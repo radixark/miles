@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import shlex
 import sys
 
@@ -8,14 +9,16 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_mod
 
 pytest.importorskip("sglang")
 
+from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import _assert_launch_gate_served, compute_engine_launch_cmd
 
 
 def _cmd(
     *,
     worker_type: str = "regular",
     args=None,
+    interpreter_prefix: list[str] | None = None,
     addr_overrides: dict | None = None,
     base_gpu_id: int = 0,
     random_seed: int = 0,
@@ -33,12 +36,11 @@ def _cmd(
     addr_and_ports.update(addr_overrides or {})
     return compute_engine_launch_cmd(
         args or make_engine_args(),
+        interpreter_prefix=interpreter_prefix or [sys.executable],
         node_rank=0,
         worker_type=worker_type,
         base_gpu_id=base_gpu_id,
-        # ServerArgs probes the local accelerator when no device is given, which a CPU-only
-        # CI runner cannot answer. Production resolves it to the engine's own device the same way.
-        sglang_overrides={"device": "cuda"},
+        sglang_overrides={},
         num_gpus_per_engine=1,
         dist_init_addr=addr_and_ports["dist_init_addr"],
         nccl_port=addr_and_ports["nccl_port"],
@@ -53,6 +55,20 @@ def _cmd(
 
 
 class TestComputeEngineLaunchCmd:
+    def test_the_command_preserves_every_interpreter_prefix_token(self):
+        """Every interpreter option stays ordered immediately before the SGLang module invocation."""
+        interpreter_prefix = [sys.executable, "-O", "-X", "faulthandler"]
+
+        tokens = shlex.split(_cmd(interpreter_prefix=interpreter_prefix))
+
+        assert tokens[: len(interpreter_prefix) + 2] == [*interpreter_prefix, "-m", "sglang.launch_server"]
+
+    def test_a_cpu_only_controller_renders_the_worker_device(self):
+        """A controller without an accelerator still renders a CUDA worker command."""
+        parsed = parse_server_args_argv(shlex.split(_cmd())[3:])
+
+        assert parsed.device == "cuda"
+
     def test_the_command_launches_sglang_with_the_allocated_addressing(self):
         """The rendered launch_server command carries the addr map."""
         tokens = shlex.split(_cmd())
@@ -116,6 +132,44 @@ class TestLoraTargetModules:
 
         assert sorted(targets) == ["in_proj_ba", "in_proj_qkvz"]
 
+    def test_gdn_output_targets_are_named_one_by_one(self):
+        """Qwen3.5 GDN output adapters reach SGLang by their exact module name."""
+        targets = self._parsed_lora_targets(["layers.*.self_attention.in_proj", "layers.*.self_attention.out_proj"])
+
+        assert sorted(targets) == ["in_proj_ba", "in_proj_qkvz", "out_proj"]
+
+    def test_a_qwen3_5_lora_run_keeps_every_named_target(self):
+        """The Qwen3.5 LoRA launch keeps its complete target inventory explicit."""
+        from scripts.run_qwen3_5_35b_a3b_lora import _DEFAULT_TARGET_MODULES
+
+        named = _DEFAULT_TARGET_MODULES.split(",")
+
+        assert sorted(self._parsed_lora_targets(named)) == [
+            "down_proj",
+            "gate_proj",
+            "in_proj_ba",
+            "in_proj_qkvz",
+            "k_proj",
+            "o_proj",
+            "out_proj",
+            "q_proj",
+            "up_proj",
+            "v_proj",
+        ]
+
+    def test_a_multi_lora_launch_keeps_gdn_targets_explicit(self):
+        """Multi-LoRA sizes its shared slots from the exact GDN target inventory."""
+        args = make_engine_args(
+            lora_rank=16,
+            target_modules=["layers.*.self_attention.in_proj", "layers.*.self_attention.out_proj"],
+            multi_lora=True,
+            multi_lora_n_adapters=4,
+        )
+
+        targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
+
+        assert sorted(targets) == ["in_proj_ba", "in_proj_qkvz", "out_proj"]
+
     def test_an_inkling_checkpoint_asks_sglang_to_discover_the_names(self, monkeypatch: pytest.MonkeyPatch):
         """Inkling exposes module names the megatron-to-HF mapping cannot produce, so it is the
         one family that hands SGLang the shorthand instead of naming its targets."""
@@ -150,3 +204,35 @@ class TestLoraTargetModules:
         targets = self._parsed_lora_targets(["all"])
 
         assert set(targets) == {"all"}
+
+
+@dataclasses.dataclass
+class _SglangWithTheGate:
+    model_path: str = ""
+    gated_launch_port: int = 0
+
+
+@dataclasses.dataclass
+class _SglangWithoutTheGate:
+    model_path: str = ""
+
+
+class TestTheLaunchGateSglangMustServe:
+    @staticmethod
+    def _pretend_sglang_is(monkeypatch, server_args: type) -> None:
+        monkeypatch.setattr(sglang_engine, "ServerArgs", server_args)
+        _assert_launch_gate_served.cache_clear()
+
+    def test_an_sglang_that_serves_the_gate_is_accepted(self, monkeypatch) -> None:
+        """The run launches every engine through the gate, so the one field it needs is the whole check."""
+        self._pretend_sglang_is(monkeypatch, _SglangWithTheGate)
+
+        _assert_launch_gate_served()
+
+    def test_an_sglang_without_the_gate_is_refused(self, monkeypatch) -> None:
+        """An sglang serving nothing on that port leaves each cell waiting out its whole activation
+        deadline against an engine that is already up, so it has to be refused at spec time."""
+        self._pretend_sglang_is(monkeypatch, _SglangWithoutTheGate)
+
+        with pytest.raises(AssertionError, match="--gated-launch-port"):
+            _assert_launch_gate_served()

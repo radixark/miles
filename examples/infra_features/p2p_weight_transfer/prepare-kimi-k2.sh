@@ -28,9 +28,10 @@ mkdir -p /root/models /root/datasets
 hf download "$HF_REPO" --local-dir "/root/models/${MODEL_NAME}"
 
 python3 -c "
-from miles.utils.external_utils.command_utils import hf_download_dataset
-hf_download_dataset('zhuzilin/dapo-math-17k')
-hf_download_dataset('zhuzilin/aime-2024')
+from miles.utils.external_utils import command_utils
+U = command_utils.default_config().create_backend()
+U.hf_download_dataset('zhuzilin/dapo-math-17k')
+U.hf_download_dataset('zhuzilin/aime-2024')
 "
 
 # ---------------------------------------------------------------------------
@@ -39,8 +40,9 @@ hf_download_dataset('zhuzilin/aime-2024')
 # ---------------------------------------------------------------------------
 mkdir -p /root/multinode
 python3 -c "
-from miles.utils.external_utils.command_utils import convert_checkpoint
-convert_checkpoint(
+from miles.utils.external_utils import command_utils
+U = command_utils.default_config().create_backend()
+U.convert_checkpoint(
     model_name='${MODEL_NAME}',
     megatron_model_type='${MODEL_TYPE}',
     num_gpus_per_node=${GPUS_PER_NODE},

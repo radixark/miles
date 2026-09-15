@@ -1,15 +1,41 @@
 import asyncio
 from collections import defaultdict
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
+
+from miles.utils.data import RolloutDataPack
+from miles.utils.object_store import (
+    BaseObjectStore,
+    ObjectStoreGetResult,
+    StoreObjectRef,
+    ValueSpec,
+    _MooncakeStoreObjectRef,
+)
+
+TAKE_OVER_GATE_EVENTS = ["rollout_components", "training_models", "inference_take_over"]
 
 
 class FakeRemoteMethod:
     def __init__(self, fn: Callable[..., Any]) -> None:
         self._fn = fn
 
-    def remote(self, *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._fn(*args, **kwargs)
+
+
+class FakeWorkerManager:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.killed: list[object] = []
+        self.shutdown = SimpleNamespace(remote=self._shutdown)
+
+    async def _shutdown(self) -> None:
+        self.events.append("manager_shutdown")
+
+    def kill(self, handle: object) -> None:
+        self.killed.append(handle)
+        self.events.append("manager_kill")
 
 
 class FakeRolloutExecutor:
@@ -17,21 +43,24 @@ class FakeRolloutExecutor:
         self.events = events
         self.generation_gates: dict[int, asyncio.Event] = {}
         self.generation_errors: list[BaseException | None] = []
+        self.generation_packs: list[RolloutDataPack] = []
         self.get = FakeRemoteMethod(self._get)
         self.eval = FakeRemoteMethod(self._eval)
         self.save = FakeRemoteMethod(self._save)
-        self.dispose = FakeRemoteMethod(self._dispose)
         self.report_eval_skip = FakeRemoteMethod(self._report_eval_skip)
 
-    async def _get(self, rollout_id: int) -> dict[str, Any]:
+    async def _get(self, rollout_id: int) -> RolloutDataPack:
         self.events.append(f"generate_start:{rollout_id}")
         if (gate := self.generation_gates.get(rollout_id)) is not None:
             await gate.wait()
         if self.generation_errors and (error := self.generation_errors.pop(0)) is not None:
             self.events.append(f"generate_failed:{rollout_id}")
             raise error
-        self.events.append(f"generate_done:{rollout_id}")
-        return {"data_ref": f"rollout-data-{rollout_id}"}
+        pack = self.generation_packs.pop(0) if self.generation_packs else RolloutDataPack()
+        self.events.append(
+            f"generate_empty:{rollout_id}" if pack.empty_batch_timeout else f"generate_done:{rollout_id}"
+        )
+        return pack
 
     async def _eval(self, rollout_id: int, **_kwargs: Any) -> None:
         self.events.append(f"eval:{rollout_id}")
@@ -39,7 +68,7 @@ class FakeRolloutExecutor:
     async def _save(self, rollout_id: int) -> None:
         self.events.append(f"executor_save:{rollout_id}")
 
-    async def _dispose(self) -> None:
+    async def dispose(self) -> None:
         self.events.append("executor_dispose")
 
     async def _report_eval_skip(self, rollout_id: int, reason: str) -> None:
@@ -80,13 +109,19 @@ class FakeTrainingModel:
         self.role = role
         self.trained: list[int] = []
         self.saved: list[int] = []
+        self.external_data: dict[int, Any] = {}
+        self.train_outputs: dict[int, Any] = {}
         self.train_started: dict[int, asyncio.Event] = defaultdict(asyncio.Event)
+        self.consume_external_data: Callable[[Any], None] | None = None
 
-    async def train(self, rollout_id: int, rollout_data: Any, external_data: Any = None) -> str:
+    async def train(self, rollout_id: int, rollout_data: Any, external_data: Any = None) -> Any:
         self.events.append(f"{self.role}_train:{rollout_id}")
         self.trained.append(rollout_id)
+        self.external_data[rollout_id] = external_data
+        if (consume := self.consume_external_data) is not None:
+            consume(external_data)
         self.train_started[rollout_id].set()
-        return f"{self.role}-values-{rollout_id}"
+        return self.train_outputs.get(rollout_id, f"{self.role}-values-{rollout_id}")
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self.events.append(f"{self.role}_save:{rollout_id}")
@@ -109,3 +144,25 @@ class FakeTrainingModel:
 
     async def dispose(self) -> None:
         self.events.append(f"{self.role}_dispose")
+
+
+class FakeObjectStore(BaseObjectStore):
+    def __init__(self) -> None:
+        self._values: dict[StoreObjectRef, Any] = {}
+        self.consumed: list[StoreObjectRef] = []
+
+    def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
+        ref = _MooncakeStoreObjectRef(payload=f"fake-object-{len(self._values)}")
+        self._values[ref] = value
+        return ref
+
+    def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
+        value = self._values[ref]
+        self.consumed.append(ref)
+        return ObjectStoreGetResult(value=value, release_fn=lambda _value: None)
+
+    def remove(self, ref: StoreObjectRef) -> None:
+        del self._values[ref]
+
+    def contains(self, ref: StoreObjectRef) -> bool:
+        return ref in self._values

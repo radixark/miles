@@ -24,9 +24,16 @@ def _mode(
 
 
 class TestTotalNodeGpus:
+    def test_rollout_only_colocated_mode_uses_plain_four_way_data_parallelism(self) -> None:
+        """Rollout-only FT must not add context parallelism to the four-GPU trainer."""
+        mode = MODES["kill_rollout__dp4__colocate"]
+
+        assert mode.num_cells == 4
+        assert mode.parallel_args == ""
+
     def test_colocated_mode_counts_shared_gpus_once(self) -> None:
         """The registered colocated mode reserves only the trainer's gpus, not trainer plus rollout."""
-        mode = MODES["colocate_dp2_cp2_rollout_ft"]
+        mode = MODES["kill_rollout__dp4__colocate"]
 
         assert mode.colocate
         assert mode.total_rollout_gpus == 4
@@ -34,7 +41,7 @@ class TestTotalNodeGpus:
 
     def test_disaggregated_mode_adds_rollout_gpus_to_train_gpus(self) -> None:
         """Without colocation the rollout engines need their own gpus on top of the trainer's."""
-        mode = MODES["dp2_cp2_real_rollout"]
+        mode = MODES["kill_train__dp2_cp2__moe_5layer"]
 
         assert not mode.colocate
         assert mode.total_node_gpus == 8
@@ -71,3 +78,19 @@ class TestColocationValidation:
         )
 
         assert mode.total_node_gpus == 6
+
+
+class TestMixedFtMode:
+    def test_the_mixed_mode_enables_ft_on_both_kinds_of_cell(self) -> None:
+        """Trainer and rollout healing must interleave in one run, which needs ft on both."""
+        mode = MODES["kill_train_rollout__dp2_cp2"]
+
+        assert mode.ft_components == ("train", "rollout")
+        assert mode.has_real_rollout
+
+    def test_the_mixed_mode_is_disaggregated(self) -> None:
+        """Colocation makes a trainer crash and an engine crash contend for the same gpus, which is not the case to soak first."""
+        mode = MODES["kill_train_rollout__dp2_cp2"]
+
+        assert not mode.colocate
+        assert mode.total_node_gpus == 8

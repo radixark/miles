@@ -10,6 +10,7 @@ BOOT_UUID_HEADER = "x-miles-boot-uuid"
 BOOT_UUID_MISMATCH_STATUS = 412
 
 HEALTH_PATH = "/v1/health"
+IN_FLIGHT_PATH = "/v1/in-flight"
 CALL_STATUS_PATH = "/v1/calls/{call_id}"
 SUBMIT_PATH = "/v1/{method_name}"
 
@@ -35,3 +36,7 @@ class CallStatusResponse(StrictBaseModel):
 
 class HealthResponse(StrictBaseModel):
     status: Literal["ok"] = "ok"
+
+
+class InFlightResponse(StrictBaseModel):
+    call_ids: list[str]

@@ -5,6 +5,12 @@ import pytest
 
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.utils.context_lock import ContextLock
+from miles.utils.workers.worker_spec import NamedHostAndPorts
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"no cell in this module is ever addressed ({worker_name=})")
 
 
 def _make_server(context_lock: ContextLock | None = None, **overrides) -> RolloutServer:
@@ -12,6 +18,7 @@ def _make_server(context_lock: ContextLock | None = None, **overrides) -> Rollou
         server_cells={},
         args=SimpleNamespace(colocate=True),
         context_lock=context_lock or ContextLock("InferenceController"),
+        engine_provider=_StubProvider(),
         **overrides,
     )
 
@@ -65,14 +72,14 @@ class TestWaitExpectedNumCellsIsLockFree:
     @pytest.mark.asyncio
     async def test_it_can_be_awaited_without_the_lock(self):
         """It runs during startup from create(), which deliberately holds no lock."""
-        srv = _make_server(expected_num_cells=0)
-        await srv.wait_expected_num_cells()
+        srv = _make_server(init_expected_num_cells=0)
+        await srv.wait_init_expected_num_cells()
 
     @pytest.mark.asyncio
     async def test_cells_can_still_be_added_while_it_polls(self):
         """Polling must not hold the lock, otherwise reconcile could never add the cells it waits for."""
-        srv = _make_server(expected_num_cells=1)
-        waiter = asyncio.create_task(srv.wait_expected_num_cells())
+        srv = _make_server(init_expected_num_cells=1)
+        waiter = asyncio.create_task(srv.wait_init_expected_num_cells())
         await asyncio.sleep(0)
 
         async with srv.context_lock:

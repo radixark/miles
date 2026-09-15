@@ -11,7 +11,7 @@ from miles.ray.rollout.cell_state import CellAddrInfo, StateDisposed, StateServi
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 
 
-def _make_meta() -> ServerCellMetadata:
+def _make_meta(*, needs_offload: bool = False) -> ServerCellMetadata:
     return ServerCellMetadata(
         model_id="default",
         worker_type="regular",
@@ -20,17 +20,23 @@ def _make_meta() -> ServerCellMetadata:
         gpu_offset=0,
         sglang_api_key=None,
         worker_name="inference-engine-0-0-0-0",
-        needs_offload=False,
+        needs_offload=needs_offload,
         update_weights=True,
         workers_hash="pseudo-hash-0",
     )
 
 
-def _make_cell(*, router_api_client: MagicMock, **args_overrides: object) -> ServerCell:
+class _StubProvider:
+    async def get_addrs(self, worker_name: str):
+        raise AssertionError(f"disposing a cell must not address it ({worker_name=})")
+
+
+def _make_cell(*, router_api_client: MagicMock, needs_offload: bool = False, **args_overrides: object) -> ServerCell:
     return ServerCell(
         args=make_args(num_gpus_per_node=8, **args_overrides),
-        meta=_make_meta(),
+        meta=_make_meta(needs_offload=needs_offload),
         router_api_client=router_api_client,
+        provider=_StubProvider(),
     )
 
 

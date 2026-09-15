@@ -1,7 +1,9 @@
 import pytest
 from pydantic import ValidationError
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
-from miles.utils.workers.serving import serve_inner
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import _assert_worker_ports_fit
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT,
     RPC_PORT_NAME,
@@ -12,6 +14,7 @@ from miles.utils.workers.worker_spec import (
     PortInfo,
     SchedulingSpec,
     ServeWorkerSpec,
+    WorkerCtorContext,
     WorkerLaunchContext,
 )
 
@@ -20,12 +23,6 @@ def _make_launch_context(**overrides) -> WorkerLaunchContext:
     kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
     kwargs.update(overrides)
     return WorkerLaunchContext(**kwargs)
-
-
-def _make_port_info(**overrides) -> PortInfo:
-    kwargs = dict(name="http", static_port=8000, mode="per_worker", allow_dynamic=False)
-    kwargs.update(overrides)
-    return PortInfo(**kwargs)
 
 
 def _make_launch_command_context(**overrides) -> LaunchCommandContext:
@@ -39,6 +36,18 @@ def _make_launch_command_context(**overrides) -> LaunchCommandContext:
     )
     kwargs.update(overrides)
     return LaunchCommandContext(**kwargs)
+
+
+def _make_ctor_context(**overrides) -> WorkerCtorContext:
+    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=FakeBackendCapability())
+    kwargs.update(overrides)
+    return WorkerCtorContext(**kwargs)
+
+
+def _make_port_info(**overrides) -> PortInfo:
+    kwargs = dict(name="http", static_port=8080, mode="per_worker", allow_dynamic=False)
+    kwargs.update(overrides)
+    return PortInfo(**kwargs)
 
 
 def _make_base_kwargs(**overrides) -> dict:
@@ -80,6 +89,20 @@ class TestPortInfo:
             port_info.static_port = 9000
 
 
+class TestPortInfoEffectiveStaticPort:
+    def test_offsets_a_per_worker_port_by_the_whole_block_of_the_workers_before_it(self):
+        """Offsetting by the bare index hands a worker an address inside the previous worker's block."""
+        port_info = _make_port_info(static_port=8080, mode="per_worker", num_consecutive=4)
+
+        assert port_info.effective_static_port(worker_in_pod_index=2) == 8088
+
+    def test_leaves_a_master_port_where_every_worker_of_the_pod_expects_it(self):
+        """A master port names one endpoint the whole pod talks to, so shifting it per worker would split them."""
+        port_info = _make_port_info(static_port=8080, mode="master", num_consecutive=4)
+
+        assert port_info.effective_static_port(worker_in_pod_index=2) == 8080
+
+
 class TestPortInfoCellOffset:
     def test_a_dynamically_allocated_port_cannot_be_offset_by_cell(self):
         """A cell offset applied to a port whose number is chosen at runtime would point at an unrelated socket."""
@@ -94,11 +117,19 @@ class TestPortInfoCellOffset:
 
 
 class TestBaseWorkerSpec:
+    def test_the_all_selector_cannot_be_stored_as_a_pool_component(self) -> None:
+        """A worker pool must name one concrete deployment component rather than the all-components selector."""
+        concrete = BaseWorkerSpec(**_make_base_kwargs(deploy_component=DeployComponent.TRAINER))
+
+        assert concrete.deploy_component is DeployComponent.TRAINER
+        with pytest.raises(ValidationError, match="must name the one component.*not the selector"):
+            BaseWorkerSpec(**_make_base_kwargs(deploy_component=DeployComponent.ALL))
+
     def test_constructs_and_exposes_fields(self):
         """A spec keeps its name, ports, and scheduling as provided."""
         spec = BaseWorkerSpec(**_make_base_kwargs())
         assert spec.name == "demo-worker"
-        assert spec.port_infos[0].static_port == 8000
+        assert spec.port_infos[0].static_port == 8080
         assert spec.scheduling.num_cells == 2
 
     def test_env_var_is_stored_uncalled(self):
@@ -190,7 +221,7 @@ class TestServeWorkerSpec:
             ctor_kwargs=ctor_kwargs,
         )
         assert calls == []
-        assert spec.ctor_kwargs(_make_launch_context()) == {"x": 1}
+        assert spec.ctor_kwargs(_make_ctor_context()) == {"x": 1}
 
 
 class TestServeWorkerSpecRpcPortInjection:
@@ -239,10 +270,6 @@ class TestServeWorkerSpecRpcPortInjection:
         assert RPC_PORT_NAME not in [port_info.name for port_info in base.port_infos]
         assert RPC_PORT_NAME not in [port_info.name for port_info in command.port_infos]
 
-    def test_the_injected_port_is_the_one_the_serve_entrypoint_binds_by_default(self):
-        """A spec advertising a port its own process does not bind leaves every caller talking to nothing."""
-        assert DEFAULT_RPC_PORT == serve_inner.DEFAULT_PORT
-
 
 class TestSchedulingSpecPinToHead:
     def test_workers_are_not_pinned_to_the_head_node_by_default(self):
@@ -257,6 +284,130 @@ class TestSchedulingSpecPinToHead:
         assert (scheduling.num_cells, scheduling.num_workers_per_cell) == (1, 1)
         assert scheduling.num_gpus_per_worker == 0.5
         assert scheduling.pin_to_head is True
+
+
+class TestSchedulingSpecPodPacking:
+    def test_a_cell_a_node_can_hold_rides_in_one_pod(self):
+        """A cell no bigger than a node must not be spread, however many workers it holds."""
+        scheduling = _gpu_scheduling(num_workers_per_cell=8, num_gpus_per_node=8)
+
+        assert (scheduling.pods_per_cell(), scheduling.workers_per_pod()) == (1, 8)
+
+    def test_a_cell_spanning_several_nodes_is_tiled_by_them(self):
+        """This is the whole point of the derivation: 16 gpus on 8-gpu nodes are two equal pods."""
+        scheduling = _gpu_scheduling(num_workers_per_cell=16, num_gpus_per_node=8)
+
+        assert (scheduling.pods_per_cell(), scheduling.workers_per_pod()) == (2, 8)
+
+    def test_a_cell_that_claims_no_gpu_rides_in_one_pod(self):
+        """A cpu spec has no node shape to tile, so its whole cell travels together."""
+        scheduling = SchedulingSpec(num_cells=1, num_workers_per_cell=4, num_gpus_per_worker=0)
+
+        assert (scheduling.pods_per_cell(), scheduling.workers_per_pod()) == (1, 4)
+
+    def test_rejects_a_gpu_cell_that_never_says_how_big_a_node_is(self):
+        """Forgetting the node shape used to pack one rank per pod in silence."""
+        scheduling = _gpu_scheduling(num_workers_per_cell=8, num_gpus_per_node=0)
+
+        with pytest.raises(AssertionError, match="divide 8 by zero"):
+            scheduling.pods_per_cell()
+
+    def test_rejects_a_cell_that_is_not_a_whole_number_of_nodes(self):
+        """A trailing partial node would leave the last pod fewer gpus than its ranks need."""
+        scheduling = _gpu_scheduling(num_workers_per_cell=12, num_gpus_per_node=8)
+
+        with pytest.raises(AssertionError, match="12 is not a whole number of 8"):
+            scheduling.pods_per_cell()
+
+    def test_rejects_a_cell_whose_workers_cannot_tile_its_pods(self):
+        """A trailing partial pod would shift every later worker's name and rpc port."""
+        scheduling = SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=2,
+            num_gpus_per_worker=1,
+            num_gpu_slots_per_worker=12,
+            num_gpus_per_node=8,
+        )
+
+        with pytest.raises(AssertionError, match="2 is not a whole number of 3"):
+            scheduling.workers_per_pod()
+
+
+def _gpu_scheduling(*, num_workers_per_cell: int, num_gpus_per_node: int) -> SchedulingSpec:
+    return SchedulingSpec(
+        num_cells=1,
+        num_workers_per_cell=num_workers_per_cell,
+        num_gpus_per_worker=1,
+        num_gpu_slots_per_worker=1,
+        num_gpus_per_node=num_gpus_per_node,
+    )
+
+
+class TestAssertRankPortsFit:
+    def test_ranks_sharing_a_pod_may_climb_up_to_the_next_port_block(self):
+        """The ports a pod hands its ranks are free, so the spec must be accepted."""
+        spec = _serve_spec(
+            num_gpus_per_node=4,
+            port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=8004)],
+        )
+
+        _assert_worker_ports_fit(spec)
+
+    def test_rejects_rank_ports_reaching_into_another_port(self):
+        """Rank 2 would bind the master port and every collective would rendezvous on nothing."""
+        spec = _serve_spec(
+            num_gpus_per_node=4,
+            port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=8002)],
+        )
+
+        with pytest.raises(AssertionError, match="reaches into"):
+            _assert_worker_ports_fit(spec)
+
+    def test_rejects_rank_ports_reaching_into_a_consecutive_port_block(self):
+        """A block claims num_consecutive ports, so the collision test must span all of them."""
+        spec = _serve_spec(
+            num_gpus_per_node=8,
+            port_infos=[
+                PortInfo(name=RPC_PORT_NAME, static_port=8000),
+                PortInfo(name="dist_init", static_port=8003, num_consecutive=30),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match="reaches into"):
+            _assert_worker_ports_fit(spec)
+
+    def test_a_port_below_the_rpc_port_is_untouched(self):
+        """Ranks climb upwards only, so a lower port can never be reached."""
+        spec = _serve_spec(
+            num_gpus_per_node=8,
+            port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=7000)],
+        )
+
+        _assert_worker_ports_fit(spec)
+
+    def test_a_pod_of_one_rank_needs_only_its_own_rpc_port(self):
+        """Nodes as wide as a cell put one rank in each pod, which must not be constrained by neighbours."""
+        spec = _serve_spec(
+            num_gpus_per_node=1,
+            port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=8001)],
+        )
+
+        _assert_worker_ports_fit(spec)
+
+
+def _serve_spec(*, num_gpus_per_node: int, **overrides) -> ServeWorkerSpec:
+    scheduling = SchedulingSpec(
+        num_cells=1,
+        num_workers_per_cell=8,
+        num_gpus_per_worker=1,
+        num_gpu_slots_per_worker=1,
+        num_gpus_per_node=num_gpus_per_node,
+    )
+    return ServeWorkerSpec(
+        **_make_base_kwargs(scheduling=scheduling, **overrides),
+        worker_class="miles.demo.Worker",
+        ctor_kwargs=lambda _ctx: {},
+    )
 
 
 class TestServeWorkerSpecExtraScheduling:
@@ -277,69 +428,9 @@ class TestServeWorkerSpecExtraScheduling:
             worker_class="miles.demo.Worker",
             ctor_kwargs=lambda _ctx: {},
             concurrency_groups={"heartbeat_status": 1, "default": 1},
-            method_concurrency_groups={"get_heartbeat_status": "heartbeat_status"},
         )
 
         assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1}
-        assert spec.method_concurrency_groups == {"get_heartbeat_status": "heartbeat_status"}
-
-    def test_groups_without_routed_methods_are_rejected(self):
-        """Threading the actor while every method stays in the default group buys nothing."""
-        with pytest.raises(ValidationError, match="together"):
-            ServeWorkerSpec(
-                **_make_base_kwargs(),
-                worker_class="miles.demo.Worker",
-                ctor_kwargs=lambda _ctx: {},
-                concurrency_groups={"heartbeat_status": 1, "default": 1},
-            )
-
-    def test_routed_methods_without_groups_are_rejected(self):
-        """Ray rejects an actor whose method names a concurrency group the class never declares."""
-        with pytest.raises(ValidationError, match="together"):
-            ServeWorkerSpec(
-                **_make_base_kwargs(),
-                worker_class="miles.demo.Worker",
-                ctor_kwargs=lambda _ctx: {},
-                method_concurrency_groups={"get_heartbeat_status": "heartbeat_status"},
-            )
-
-    def test_a_method_routed_to_an_undeclared_group_is_rejected(self):
-        """Ray rejects the actor at creation time, long after the spec could have said why."""
-        with pytest.raises(ValidationError, match="undeclared concurrency groups"):
-            ServeWorkerSpec(
-                **_make_base_kwargs(),
-                worker_class="miles.demo.Worker",
-                ctor_kwargs=lambda _ctx: {},
-                concurrency_groups={"default": 1},
-                method_concurrency_groups={"get_heartbeat_status": "heartbeat_status"},
-            )
-
-    def test_a_declared_group_nobody_routes_to_is_allowed(self):
-        """The trainer declares a default group precisely because no method is routed to it."""
-        spec = ServeWorkerSpec(
-            **_make_base_kwargs(),
-            worker_class="miles.demo.Worker",
-            ctor_kwargs=lambda _ctx: {},
-            concurrency_groups={"heartbeat_status": 1, "default": 1, "kill_self": 1},
-            method_concurrency_groups={"get_heartbeat_status": "heartbeat_status"},
-        )
-
-        assert set(spec.concurrency_groups) - set(spec.method_concurrency_groups.values()) == {"default", "kill_self"}
-
-    def test_the_rejection_names_the_worker_and_every_undeclared_group(self):
-        """A message listing the declared groups instead of the missing ones sends the reader the wrong way."""
-        with pytest.raises(ValidationError, match=r"'demo-worker'.*\['fault_injector', 'kill_self'\]"):
-            ServeWorkerSpec(
-                **_make_base_kwargs(),
-                worker_class="miles.demo.Worker",
-                ctor_kwargs=lambda _ctx: {},
-                concurrency_groups={"heartbeat_status": 1, "default": 1},
-                method_concurrency_groups={
-                    "get_heartbeat_status": "heartbeat_status",
-                    "kill_self": "kill_self",
-                    "inject_fault": "fault_injector",
-                },
-            )
 
     def test_ctor_kwargs_receive_the_worker_position(self):
         """Each worker needs its own rank, so the callable is per worker."""
@@ -349,7 +440,7 @@ class TestServeWorkerSpecExtraScheduling:
             ctor_kwargs=lambda ctx: {"rank": ctx.worker_in_cell_index, "gpu_ids": ctx.gpu_ids},
         )
 
-        kwargs = spec.ctor_kwargs(_make_launch_context(worker_in_cell_index=3, gpu_ids=[2]))
+        kwargs = spec.ctor_kwargs(_make_ctor_context(worker_in_cell_index=3, gpu_ids=[2]))
 
         assert kwargs == {"rank": 3, "gpu_ids": [2]}
 

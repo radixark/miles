@@ -28,6 +28,7 @@ from miles.dashboard.store import (
 )
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.timer import Timer
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +56,8 @@ def _default_resolve_identity() -> _Identity:
     )
 
 
-def _default_ray_get(refs: list):
-    import ray
-
-    return ray.get(refs)
-
-
 # test seams; production always uses the defaults
 _resolve_identity = _default_resolve_identity
-_ray_get = _default_ray_get
 
 
 class PhaseSink:
@@ -322,7 +316,7 @@ def register_router(args) -> None:
         _warner.warn("dashboard router registration failed; engine metrics will be missing")
 
 
-async def register_engines(servers) -> None:
+async def register_engines(servers, *, provider: BaseWorkerProvider) -> None:
     """Called at the top of every InferenceController.prepare_rollout(): pushes an engine
     topology snapshot whenever the set of engine actors changed (startup,
     fault-tolerance recovery). Steady state costs one worker-manager round trip
@@ -335,7 +329,7 @@ async def register_engines(servers) -> None:
         return
     try:
         cells = _alive_engine_cells(servers)
-        worker_infos_per_cell = _collect_worker_infos(cells)
+        worker_infos_per_cell = _collect_worker_infos(cells, provider=provider)
         fingerprint = tuple(
             (info.name, info.generation, info.self_addrs["primary"].host, info.self_addrs["primary"].port)
             for worker_infos in worker_infos_per_cell
@@ -343,7 +337,7 @@ async def register_engines(servers) -> None:
         )
         if fingerprint == _engines_fingerprint:
             return
-        engines = await _compute_engine_infos(cells, worker_infos_per_cell)
+        engines = await _compute_engine_infos(cells, worker_infos_per_cell, provider=provider)
         handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=engines))
         _engines_fingerprint = fingerprint
     except Exception:
@@ -380,20 +374,28 @@ def _alive_engine_cells(servers) -> list:
     return cells
 
 
-def _collect_worker_infos(cells) -> list[list]:
-    from miles.utils.workers.ray_worker_manager import RayWorkerManager
-
-    manager_handle = RayWorkerManager.get_handle()
-    futures = []
-    for cell in cells:
-        futures.append(manager_handle.get_worker_infos.remote(cell_id=cell.meta.cell_id))
-    return _ray_get(futures)
+def _collect_worker_infos(cells, *, provider: BaseWorkerProvider) -> list[list]:
+    return provider.get_worker_infos(cell_ids=[cell.meta.cell_id for cell in cells])
 
 
-async def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
+async def _no_gpu_uuids(info) -> list[str | None]:
+    return [None] * len(info.gpu_ids)
+
+
+async def _compute_engine_infos(cells, worker_infos_per_cell, *, provider: BaseWorkerProvider) -> list[EngineInfo]:
     flat_infos = [info for worker_infos in worker_infos_per_cell for info in worker_infos]
+    handles = provider.get_handles_of_worker_infos(flat_infos)
     probed_uuids = iter(
-        await asyncio.gather(*[info.handle._get_gpu_uuids(gpu_ids=info.gpu_ids) for info in flat_infos])
+        await asyncio.gather(
+            *[
+                (
+                    handle._get_gpu_uuids(gpu_ids=info.gpu_ids)
+                    if (handle := handles.get(info.name)) is not None
+                    else _no_gpu_uuids(info)
+                )
+                for info in flat_infos
+            ]
+        )
     )
 
     engines = []
