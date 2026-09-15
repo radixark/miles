@@ -49,12 +49,22 @@ def _decode_forward_backward(message) -> dict:
         inputs = {name: _decode_tensor(name, tensor) for name, tensor in datum.loss_fn_inputs.items()}
         datums.append(build_datum(tokens, inputs, index))
 
+    loss_fn_config = dict(message.loss_fn_config)
+    # Tinker SDK's v2 protobuf config supports both numeric and string values.
+    if message.loss_fn_config_v2:
+        loss_fn_config = {}
+        for name, value in message.loss_fn_config_v2.items():
+            kind = value.WhichOneof("value")
+            if kind is None:
+                raise UserInputError(f"loss_fn_config[{name!r}]: missing number or text value")
+            loss_fn_config[name] = getattr(value, kind)
+
     decoded = {
         "model_id": message.model_id,
         "seq_id": message.seq_id,
         "datums": datums,
         "loss_fn": message.loss_fn,
-        "loss_fn_config": dict(message.loss_fn_config),
+        "loss_fn_config": loss_fn_config,
     }
     return decoded
 

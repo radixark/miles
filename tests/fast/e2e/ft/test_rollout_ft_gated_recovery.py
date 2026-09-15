@@ -195,11 +195,7 @@ class _Harness:
         tick_task = asyncio.create_task(self._tick_forever())
         try:
             engines = await asyncio.wait_for(self.controller.start_update_weights(), timeout=5)
-            try:
-                if mark_weights_ready:
-                    await self.controller.mark_weights_ready(engines.snapshot_cell_id_to_hashes)
-            finally:
-                await self.controller.end_update_weights()
+            await self.controller.end_update_weights(engines.snapshot_cell_id_to_hashes if mark_weights_ready else {})
         finally:
             tick_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -142,6 +142,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                 adapter_path,
                 optimizer=optimizer,
                 opt_param_scheduler=opt_param_scheduler,
+                load_optimizer=not args.no_load_optim,
             )
             if loaded:
                 logger.info(f"Successfully loaded LoRA adapter from {adapter_path}")

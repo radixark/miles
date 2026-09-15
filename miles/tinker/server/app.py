@@ -82,7 +82,8 @@ def build_app(service: TinkerService) -> FastAPI:
     async def session_heartbeat(request: Request):
         tenant = _tenant(request)
         payload = await request.json()
-        service.heartbeat(tenant, payload["session_id"])
+        if not service.heartbeat(tenant, payload["session_id"]):
+            return JSONResponse(status_code=410, content={"error": "unknown or expired session"})
         return {"type": "session_heartbeat"}
 
     @app.post("/api/v1/get_server_capabilities")
@@ -169,6 +170,10 @@ def build_app(service: TinkerService) -> FastAPI:
         validate_create_sampling_session(payload)
         sampling_session_id = service.create_sampling_session(_tenant(request), payload)
         return {"type": "create_sampling_session", "sampling_session_id": sampling_session_id}
+
+    @app.get("/api/v1/samplers/{sampling_session_id}")
+    async def get_sampler(sampling_session_id: str, request: Request):
+        return service.get_sampler(_tenant(request), sampling_session_id)
 
     @app.post("/api/v1/asample")
     async def asample(request: Request):

@@ -192,5 +192,9 @@ def _compute_server_args(
 
     if is_multi_lora_enabled(args):
         assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
+        if kwargs.get("max_loaded_loras") is None:
+            # use --sglang-max-loaded-loras to override
+            # TODO: dynamic allocation
+            kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
     return kwargs

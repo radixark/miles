@@ -1,4 +1,4 @@
-"""Per-model command ordering, deduplication, and batch runs separated by barriers."""
+"""Per-model command ordering and batch runs separated by barriers."""
 
 from collections import deque
 from dataclasses import dataclass, field
@@ -12,7 +12,7 @@ class PendingRequest:
 
     command: Command
     datums: list[dict] = field(default_factory=list)  # batch ops only
-    issued: int = 0
+    num_issued_datums: int = 0
     outputs: list[dict | None] = field(default_factory=list)
     remaining: int = 0
 
@@ -32,26 +32,25 @@ class PendingRequest:
         return (self.command.op, self.command.payload["loss_fn"], tuple(sorted(config.items())))
 
 
-class ModelStream:
+class ModelRequestQueue:
     def __init__(self, model_id: str, tenant: str, slot: int) -> None:
         self.model_id = model_id
         self.tenant = tenant
         self.slot = slot
         # seq_ids are 1-based
-        self.watermark = 0
-        self.arrivals: dict[int, Command] = {}
-        self.request_id_by_seq: dict[int, str] = {}
+        self.last_enqueued_seq_id = 0
+        self.pending_by_seq: dict[int, Command] = {}
         self.queue: deque[PendingRequest] = deque()
 
     def submit(self, command: Command) -> None:
         """Accept one deduplicated command; feed the queue in seq order."""
-        self.arrivals[command.seq_id] = command
-        self._drain_arrivals()
+        self.pending_by_seq[command.seq_id] = command
+        self._enqueue_contiguous_commands()
 
-    def _drain_arrivals(self) -> None:
-        while self.watermark + 1 in self.arrivals:
-            self.watermark += 1
-            next_command = self.arrivals.pop(self.watermark)
+    def _enqueue_contiguous_commands(self) -> None:
+        while self.last_enqueued_seq_id + 1 in self.pending_by_seq:
+            self.last_enqueued_seq_id += 1
+            next_command = self.pending_by_seq.pop(self.last_enqueued_seq_id)
             pending = PendingRequest(command=next_command)
             if pending.is_batch_op and pending.command.validation_error is None:
                 pending.datums = next_command.payload["datums"]

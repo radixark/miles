@@ -2,7 +2,7 @@
 
 > **Read the docs:** [Multi-LoRA training](https://miles.radixark.com/docs/advanced/lora#multi-lora-training).
 
-- `run_gateway.py`: prepare Qwen3-30B-A3B and launch the gateway.
+- `serve_qwen3_30b_a3b_tinker.py`: prepare Qwen3-30B-A3B and launch the gateway.
 - `run_multi_tenant_example.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
 
 ## Layout
@@ -42,6 +42,12 @@ python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models
 # passing means the adapters stayed isolated end to end
 python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models/Qwen3-30B-A3B --mode multi --clients 4
 ```
+
+## Supported inputs
+
+Training accepts text with 1-D loss inputs. 2-D soft targets, including SDFT,
+are not supported. Sampling requires a `/sampler_weights/` path returned by
+`save_weights_for_sampler()`; `/weights/` training checkpoints cannot be sampled directly.
 
 ## Measured slot capacity
 
@@ -94,12 +100,12 @@ python -m miles.utils.multi_lora_profiling --serve-log <gateway log> --gpu-csv g
 ## Failure handling
 
 A terminal failure of `forward_backward`, `optim_step`, or `load_state` ends
-that model's training stream, including commands already queued behind it.
+training for that model, including commands already queued behind it.
 This includes content validation failures with a valid model and sequence.
 Create a new model and restore a saved checkpoint to continue; completed
 futures and published checkpoints keep their results.
 
-Known request-local failures of `forward` or sampling leave the training stream
+Known request-local failures of `forward` or sampling leave model training
 available. Checkpoint load/save execution failures, including filesystem errors,
 invalidate the shared trainer cell and stop the server.
 Saving sampler weights commits an immutable directory;
@@ -121,6 +127,11 @@ single-LoRA training continue to use the existing weight updater.
 
 `--tinker-checkpoint-root` must be on storage shared by the trainers, gateway,
 and every inference engine. A sampler save exports the current adapter weights,
-then commits its tensors, adapter config, and `META.json` together by renaming
-the completed directory. Existing versions cannot be overwritten. Saving between
+then publishes its tensors, adapter config, and `META.json` together through an
+atomic symlink replacement. Existing sampler versions cannot be overwritten. Saving between
 `forward_backward` and `optim_step` neither applies nor discards pending gradients.
+
+Training checkpoint names also point to immutable version directories. Overwriting
+atomically switches the link; older versions remain on disk for active readers.
+Legacy directory checkpoints can still be loaded; save under a new name instead
+of overwriting them.

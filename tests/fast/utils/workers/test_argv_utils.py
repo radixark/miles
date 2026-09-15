@@ -592,6 +592,29 @@ _REPO_ROOT = Path(__file__).parents[4]
 
 
 class TestPythonArgvPrefix:
+    @pytest.mark.parametrize("selector,kept", [("-c", []), ("-uc", ["-u"]), ("-OOuc", ["-OOu"])])
+    def test_attached_command_does_not_replace_the_child_entrypoint(self, selector, kept):
+        prefix = _run_prefix_printing_command([sys.executable, "-B", selector + _PRINT_PREFIX_SOURCE])
+        assert prefix == [sys.executable, "-B", *kept]
+        completed = subprocess.run(
+            [*prefix, "-c", "print('child entrypoint')"], capture_output=True, check=True, text=True
+        )
+        assert completed.stdout.strip() == "child entrypoint"
+
+    @pytest.mark.parametrize("selector,kept", [("-m", []), ("-um", ["-u"])])
+    def test_attached_module_is_not_forwarded(self, tmp_path, selector, kept):
+        (tmp_path / "prefix_probe.py").write_text(_PRINT_PREFIX_SOURCE)
+        prefix = _run_prefix_printing_command(
+            [sys.executable, "-B", selector + "prefix_probe", "--parent-only"], extra_python_path=tmp_path
+        )
+        assert prefix == [sys.executable, "-B", *kept]
+
+    @pytest.mark.parametrize(
+        "flags", [["-Wignore::DeprecationWarning"], ["-Ximporttime"], ["-uW", "ignore"], ["-uX", "dev"]]
+    )
+    def test_short_option_values_are_not_scanned_as_entrypoint_flags(self, flags):
+        assert self._run_prefix_under(flags) == [sys.executable, *flags]
+
     def _run_prefix_under(self, interpreter_flags: list[str]) -> list[str]:
         script = "import json, sys; from miles.utils.workers.argv_utils import python_argv_prefix; print(json.dumps(python_argv_prefix()))"
         completed = subprocess.run(

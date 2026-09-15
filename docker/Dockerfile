@@ -52,7 +52,7 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
     rm -rf /tmp/nccl-tests
 
 # ====================================== Collect pre-built wheels ============================================
-# Optional: drop pre-built wheels into <miles>/wheels/ to skip the release download below.
+# Optional: supply non-router wheels in <miles>/wheels/ to skip their release downloads.
 # `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
 COPY wheel[s]/ /tmp/wheels/
 
@@ -67,7 +67,8 @@ RUN case "${TARGETARCH}" in \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
 [subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
  for a in json.load(sys.stdin).get('assets',[]) \
- if a['name'].endswith(('.whl', '.tar.gz')) and not os.path.exists(os.path.join(w,a['name']))]" && \
+ if a['name'].endswith(('.whl', '.tar.gz')) and not a['name'].startswith(('sglang_router-', 'sgl-model-gateway-')) \
+ and not os.path.exists(os.path.join(w,a['name']))]" && \
     ls -lh /tmp/wheels/
 
 # ====================================== Python dependencies ============================================
@@ -97,6 +98,12 @@ RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; the
       pip install /tmp/wheels/fast_hadamard_transform-*.whl; \
     else \
       pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation; \
+    fi
+
+# required by Megatron's cuDNN DSA backend (--dsv4-impl megatron)
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      pip install /tmp/wheels/flash_mla-*.whl && \
+      pip install --no-deps "nvidia-cudnn-frontend==1.26.0"; \
     fi
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
@@ -163,7 +170,7 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 
 # torch_memory_saver's source build needs TMS_CUDA_MAJOR; take it from torch.
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
-    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@f05a8754daf68238d54e4cf31cb3ba866684bbaf --no-cache-dir --force-reinstall
+    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@b5588e83de86412a48689a6583a4b567e75f7acc --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
@@ -252,15 +259,25 @@ RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
 ARG SGL_ROUTER_USE_WHEELS=1
 ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
 ARG SGL_ROUTER_BRANCH=main
+# The source and prebuilt artifacts must preserve lora_backfill_paths (sgl-router-for-miles#19).
+ARG SGL_ROUTER_COMMIT=650df7f1834047cda313bf1b8068dc73ffb8306e
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     set -eux; \
     if [ "${SGL_ROUTER_USE_WHEELS}" = "1" ]; then \
-      pip install --force-reinstall /tmp/wheels/sglang_router-*.whl && \
-      tar xzf /tmp/wheels/sgl-model-gateway-linux-*.tar.gz -C /usr/local/bin/ && \
-      chmod +x /usr/local/bin/sgl-model-gateway; \
+      ROUTER_RELEASE="https://github.com/${WHEELS_REPO}/releases/download/sgl-router-${SGL_ROUTER_COMMIT}" && \
+      ROUTER_WHEEL="sglang_router-0.3.2-cp38-abi3-manylinux_2_39_$(uname -m).whl" && \
+      ROUTER_BINARY="sgl-model-gateway-linux-$(uname -m).tar.gz" && \
+      curl -fSL "${ROUTER_RELEASE}/${ROUTER_WHEEL}" -o "/tmp/${ROUTER_WHEEL}" && \
+      curl -fSL "${ROUTER_RELEASE}/${ROUTER_BINARY}" -o "/tmp/${ROUTER_BINARY}" && \
+      pip install --force-reinstall "/tmp/${ROUTER_WHEEL}" && \
+      tar xzf "/tmp/${ROUTER_BINARY}" -C /usr/local/bin/ && \
+      chmod +x /usr/local/bin/sgl-model-gateway && \
+      rm "/tmp/${ROUTER_WHEEL}" "/tmp/${ROUTER_BINARY}"; \
     elif [ "${SGL_ROUTER_USE_WHEELS}" = "0" ]; then \
       git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
+      git -C /build/sgl-model-gateway fetch --depth 1 origin "${SGL_ROUTER_COMMIT}" && \
+      git -C /build/sgl-model-gateway checkout --detach FETCH_HEAD && \
       curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y && \
       export PATH="/root/.cargo/bin:${PATH}" && \
       python3 -m pip install maturin && \

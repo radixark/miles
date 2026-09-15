@@ -1,14 +1,14 @@
-"""Future reads enforce tenant ownership and expire finished results."""
+"""RequestFuture reads enforce tenant ownership and expire finished results."""
 
 import pytest
 
 from miles.tinker.core import future as future_module
-from miles.tinker.core.future import DONE, FAILED, PENDING, FutureStore
+from miles.tinker.core.future import DONE, FAILED, PENDING, RequestFutureStore
 from miles.tinker.core.types import OwnershipError
 
 
 def test_resolve_and_fail_settle_the_state():
-    store = FutureStore()
+    store = RequestFutureStore()
     done = store.create("model", "tenant")
     failed = store.create("model", "tenant")
     assert done.state == PENDING
@@ -22,14 +22,14 @@ def test_resolve_and_fail_settle_the_state():
 
 
 def test_cross_tenant_get_raises_ownership():
-    store = FutureStore()
+    store = RequestFutureStore()
     future = store.create("model", "tenant-a")
     with pytest.raises(OwnershipError):
         store.get(future.request_id, "tenant-b")
 
 
 def test_an_expired_future_returns_none(monkeypatch):
-    store = FutureStore()
+    store = RequestFutureStore()
     future = store.create("model", "tenant")
     store.resolve(future.request_id, {"op": "optim_step"})
 
@@ -38,7 +38,7 @@ def test_an_expired_future_returns_none(monkeypatch):
 
 
 def test_terminal_states_do_not_flip():
-    store = FutureStore()
+    store = RequestFutureStore()
     failed = store.create("model", "tenant")
     store.fail(failed.request_id, "lease expired", "user")
     store.resolve(failed.request_id, {"op": "forward_backward"})

@@ -309,7 +309,7 @@ call it after `optim_step` to save the effect of the accumulated training work.
 Sampler saves commit an immutable adapter directory on shared storage, without
 contacting inference engines. Engines load the same frozen base at startup and
 load adapter snapshots from disk on demand. A failed engine load fails sampling
-without invalidating the saved snapshot or the training stream.
+without invalidating the saved snapshot or model training.
 
 Futures, model leases, and sequence deduplication are in memory and are lost on
 gateway restart. Saved checkpoints retain their ownership and adapter metadata

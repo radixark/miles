@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import suppress
+from pathlib import Path
 
 import pytest
 from tests.fast.tinker.harness import (
@@ -16,7 +17,7 @@ from tests.fast.tinker.harness import (
 
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
-from miles.tinker.core.utils import resolve_checkpoint_dir
+from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
 
 
 def _optim_payload(model_id: str, seq_id: int) -> dict:
@@ -85,7 +86,7 @@ async def test_out_of_order_chunks_complete_and_the_barrier_waits(service):
     assert calls.index("optim_step") > max(i for i, name in enumerate(calls) if name == "forward_backward")
 
 
-async def test_admission_failure_terminates_the_training_stream(service):
+async def test_admission_failure_terminates_the_training_model_queue(service):
     model_id = await created_model(service)
 
     oversized = service.submit(
@@ -129,7 +130,8 @@ async def test_save_then_load_roundtrip_paths(service):
     assert (await await_settled(service, "tenant", load)).state == DONE
     weights_only = service.backend.named("load_slot")[-1]
     assert weights_only["load_optimizer"] is False
-    assert weights_only["ckpt_path"].endswith(f"{model_id}/weights/ckpt")
+    checkpoint = Path(service.config.checkpoint_root) / model_id / "weights" / "ckpt"
+    assert weights_only["ckpt_path"] == str(checkpoint.resolve())
 
 
 async def test_sampler_save_publishes_successive_versions(service):
@@ -189,7 +191,7 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     assert service.backend.named("sample")[0]["lora_path"] == disk_dir
 
 
-async def test_sample_failure_preserves_the_snapshot_and_training_stream(service):
+async def test_sample_failure_preserves_the_snapshot_and_training_model_queue(service):
     model_id = await created_model(service)
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     future = await await_settled(service, "tenant", request_id)
@@ -210,7 +212,15 @@ async def test_sample_failure_preserves_the_snapshot_and_training_stream(service
     future = await await_settled(service, "tenant", sample_id)
     assert future.state == FAILED
     assert future.error == "engine down"
-    assert service._resolve_sampler("tenant", f"tinker://{model_id}/sampler_weights/1")[0] == f"{model_id}@1"
+    assert (
+        resolve_sampler_checkpoint(
+            service.config.checkpoint_root,
+            "tenant",
+            f"tinker://{model_id}/sampler_weights/1",
+            service.config.base_model,
+        )[0]
+        == f"{model_id}@1"
+    )
     fb = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
     assert (await await_settled(service, "tenant", fb)).state == DONE
 
@@ -223,8 +233,8 @@ async def test_lease_expiry_reclaims_the_tenant(service):
     await await_settled(service, "tenant", queued)
     stale = service.submit("tenant", "forward_backward", fb_payload(model_id, 3, [datum()]))  # gapped: stays queued
 
-    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat -= service.config.lease_timeout_s + 1
+    await service._expire_sessions()
 
     assert model_id not in service.models
     assert slot in service.free_slots
@@ -237,7 +247,7 @@ async def test_a_fresh_heartbeat_keeps_the_model(service):
     model_id = await created_model(service, session_id=session_id)
 
     service.heartbeat("tenant", session_id)
-    await service._sweep_once()
+    await service._expire_sessions()
 
     assert model_id in service.models
 
@@ -311,8 +321,8 @@ async def test_checkpoints_outlive_the_lease(service):
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
 
-    service.sessions[session_id]["last_heartbeat"] = -1e9
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat = -1e9
+    await service._expire_sessions()
     assert model_id not in service.models, "the lease sweep must reclaim the model"
 
     service.create_session("tenant")
@@ -337,7 +347,7 @@ async def test_a_foreign_tenants_checkpoint_does_not_load(service):
     assert "belong" in future.error
 
 
-async def test_a_failed_batch_terminates_the_stream(service):
+async def test_a_failed_batch_terminates_the_model_queue(service):
     model_id = await created_model(service)
     first = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum(), datum()]))
     second = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
@@ -345,7 +355,7 @@ async def test_a_failed_batch_terminates_the_stream(service):
     assert (await await_settled(service, "tenant", first)).state == FAILED
     assert (
         await await_settled(service, "tenant", second)
-    ).state == FAILED, "the failed accumulation terminates the stream"
+    ).state == FAILED, "the failed accumulation terminates model training"
     assert model_id not in service.models
     assert service.backend.named("unload_slot")
 
@@ -460,17 +470,19 @@ async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_
     path = (await await_settled(service, "tenant", save)).result["path"]
 
     if expire_lease:
-        service.sessions[session_id]["last_heartbeat"] = -1e9
-        await service._sweep_once()
+        service.sessions[session_id].last_heartbeat = -1e9
+        await service._expire_sessions()
         assert model_id not in service.models
         service.create_session("tenant")
-    lora_name, lora_path = service._resolve_sampler("tenant", path)
+    lora_name, lora_path = resolve_sampler_checkpoint(
+        service.config.checkpoint_root, "tenant", path, service.config.base_model
+    )
     assert lora_name == f"{model_id}@1" and lora_path.endswith("/sampler_weights/1")
     with pytest.raises((UserInputError, OwnershipError)):
-        service._resolve_sampler("thief", path)
+        resolve_sampler_checkpoint(service.config.checkpoint_root, "thief", path, service.config.base_model)
     service.config.base_model = "other"
     with pytest.raises(UserInputError, match="base_model"):
-        service._resolve_sampler("tenant", path)
+        resolve_sampler_checkpoint(service.config.checkpoint_root, "tenant", path, service.config.base_model)
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
@@ -480,7 +492,7 @@ async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
     )
     result = (await await_settled(service, "tenant", unnamed)).result
     session = service.sampling_sessions[result["sampling_session_id"]]
-    assert (session["tenant"], session["model_path"]) == ("tenant", result["path"])
+    assert (session.tenant, session.model_path) == ("tenant", result["path"])
 
     named = service.submit(
         "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "ckpt"}
@@ -560,12 +572,12 @@ async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
     slot = service.models[model_id].slot
     service.backend.fail_on["unload_slot"] = {"error": "engine gone"}
 
-    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat -= service.config.lease_timeout_s + 1
+    await service._expire_sessions()
 
     assert model_id not in service.models
     assert slot not in service.free_slots, "a slot whose unload failed is dirty and must not be reused"
-    await service._sweep_once()  # the sweep itself survived
+    await service._expire_sessions()  # the sweep itself survived
 
 
 async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
@@ -640,7 +652,7 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
 
 
-async def test_a_recycled_slot_belongs_to_a_fresh_stream(service):
+async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
     slot = service.models[model_id].slot
@@ -648,8 +660,8 @@ async def test_a_recycled_slot_belongs_to_a_fresh_stream(service):
     failed = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
     assert (await await_settled(service, "tenant", failed)).state == FAILED
 
-    service.sessions[session_id]["last_heartbeat"] -= service.config.lease_timeout_s + 1
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat -= service.config.lease_timeout_s + 1
+    await service._expire_sessions()
     assert slot in service.free_slots
 
     assert session_id not in service.sessions, "the sweep takes the expired session with it"
@@ -691,8 +703,8 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
         elif source == "sweep":
             gateway.backend.fail_on["unload_slot"] = RuntimeError("fatal execution failure")
             for session in gateway.sessions.values():
-                session["last_heartbeat"] -= gateway.config.lease_timeout_s + 1
-            task = asyncio.create_task(gateway._sweep_once())
+                session.last_heartbeat -= gateway.config.lease_timeout_s + 1
+            task = asyncio.create_task(gateway._expire_sessions())
             task.add_done_callback(gateway._observe_background_task)
         else:
             if source == "handler":
@@ -769,7 +781,7 @@ async def test_a_retried_sample_does_not_sample_again(service):
 
 
 async def test_an_illegal_seq_id_is_rejected(service):
-    """seq_id 0 would park behind the stream watermark forever; every future would pend."""
+    """seq_id 0 would never enter the ordered model queue; every future would pend."""
     model_id = await created_model(service)
     with pytest.raises(UserInputError, match="seq_id"):
         service.submit("tenant", "optim_step", {"model_id": model_id, "seq_id": 0, "adam_params": dict(ADAM)})
@@ -777,8 +789,8 @@ async def test_an_illegal_seq_id_is_rejected(service):
 
 async def test_an_expired_lease_sweeps_its_sessions(service):
     session_id = service.create_session("tenant")
-    service.sessions[session_id]["last_heartbeat"] = -1e9
-    await service._sweep_once()
+    service.sessions[session_id].last_heartbeat = -1e9
+    await service._expire_sessions()
     with pytest.raises(UserInputError, match="unknown session"):
         service.create_model("tenant", model_payload(service, session_id=session_id))
 
@@ -810,16 +822,16 @@ async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, m
         started.put_nowait(asyncio.current_task())
         await asyncio.Event().wait()
 
-    async def sweep_leases():
+    async def _run_lease_sweeper():
         await fail_sweep.wait()
         raise RuntimeError("lease sweeper failed")
 
     monkeypatch.setattr(gateway.backend, "load_slot", blocked_backend_call)
     monkeypatch.setattr(gateway.backend, "sample", blocked_backend_call)
-    monkeypatch.setattr(gateway, "sweep_leases", sweep_leases)
+    monkeypatch.setattr(gateway, "_run_lease_sweeper", _run_lease_sweeper)
     run_task = asyncio.create_task(gateway.run())
     gateway.create_model("tenant", model_payload(gateway))
-    gateway.submit_sample("tenant", {"num_samples": 1})
+    gateway.submit_sample("tenant", {"num_samples": 1, "prompt_tokens": [1]})
     tasks = [run_task, *gateway._create_tasks, *(task for task, _ in gateway._sample_tasks.values())]
     try:
         backend_tasks = [await asyncio.wait_for(started.get(), timeout=2) for _ in range(2)]

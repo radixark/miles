@@ -507,16 +507,17 @@ def run_forward_backward_pass(
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
-    return forward_backward_func(
-        forward_step_func=forward_step,
-        data_iterator=data_iterator,
-        model=model,
-        num_microbatches=num_microbatches,
-        seq_length=args.seq_length,
-        micro_batch_size=args.micro_batch_size,
-        decoder_seq_length=args.decoder_seq_length,
-        forward_only=forward_only,
-    )
+    with torch.no_grad() if forward_only else nullcontext():
+        return forward_backward_func(
+            forward_step_func=forward_step,
+            data_iterator=data_iterator,
+            model=model,
+            num_microbatches=num_microbatches,
+            seq_length=args.seq_length,
+            micro_batch_size=args.micro_batch_size,
+            decoder_seq_length=args.decoder_seq_length,
+            forward_only=forward_only,
+        )
 
 
 def train_one_step(

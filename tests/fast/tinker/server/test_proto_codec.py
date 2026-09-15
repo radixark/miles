@@ -114,7 +114,7 @@ def test_the_sdk_parses_our_sample_response():
 
 @pytest.mark.parametrize("forward_only", [False, True])
 @pytest.mark.parametrize("invalid", ["missing_targets", "bad_shape"])
-def test_content_errors_preserve_the_stream_envelope(forward_only, invalid):
+def test_content_errors_preserve_the_model_queue_envelope(forward_only, invalid):
     from tinker.proto import tinker_public_pb2 as public_pb
 
     request = public_pb.ForwardBackwardRequest()

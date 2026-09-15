@@ -419,9 +419,10 @@ def save_lora_checkpoint(
        checkpoint resume without name/weight conversion. Each TP/PP rank saves its
        own shard with original parameter names.
 
-    When ``optimizer`` is provided, training state (optimizer + LR scheduler) is
-    also saved per-rank for checkpoint resume. Base model weights are frozen and
-    never change, so they are not saved.
+    When ``optimizer`` is provided, resume state (iteration + LR scheduler) is also
+    saved per-rank. ``--no-save-optim`` drops the optimizer entry from that file and
+    nothing else, so a resumed run still restarts at the right step and LR.
+    Base model weights are frozen and never change, so they are not saved.
 
     This function is collective: **all ranks must call it** because the bridge
     export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
@@ -496,18 +497,19 @@ def save_lora_checkpoint(
             f"shards + training state are sufficient for training resume."
         )
 
-    # ---- Training state (optimizer + scheduler) for resume ----
+    # ---- Training state (iteration + scheduler, and the optimizer unless opted out) ----
     if optimizer is not None:
+        save_optimizer = not getattr(args, "no_save_optim", False)
         rank = dist.get_rank() if dist.is_initialized() else 0
         torch.save(
             {
                 "iteration": iteration,
-                "optimizer": optimizer.state_dict(),
+                "optimizer": optimizer.state_dict() if save_optimizer else None,
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             },
             save_path / f"training_state_rank{rank}.pt",
         )
-        logger.info(f"Saved optimizer/scheduler state to {save_path}")
+        logger.info(f"Saved {'optimizer/scheduler' if save_optimizer else 'scheduler'} state to {save_path}")
 
     if dist.is_initialized():
         dist.barrier()
@@ -521,6 +523,7 @@ def load_lora_adapter(
     *,
     optimizer: Any | None = None,
     opt_param_scheduler: Any | None = None,
+    load_optimizer: bool = True,
 ) -> tuple[bool, int | None]:
     """Load LoRA adapter weights from a saved checkpoint into the model.
 
@@ -529,14 +532,17 @@ def load_lora_adapter(
     Falls back to HF PEFT ``adapter_model.bin`` if native files are not found
     (not yet implemented for HF PEFT format).
 
-    When ``optimizer`` is provided, also restores training state (optimizer +
-    LR scheduler) from a co-located ``training_state_rank*.pt`` file.
+    When ``optimizer`` is provided, also restores training state (iteration, LR
+    scheduler, and the optimizer when the checkpoint carries it) from a co-located
+    ``training_state_rank*.pt`` file.
 
     Args:
         model: List of DDP-wrapped model chunks with LoRA layers already applied.
         adapter_path: Path to the adapter checkpoint directory.
         optimizer: If provided, restore optimizer state for training resume.
         opt_param_scheduler: If provided, restore LR scheduler state.
+        load_optimizer: False (``--no-load-optim``) keeps the freshly initialized
+            optimizer while still restoring the iteration and the LR scheduler.
 
     Returns:
         ``(loaded, iteration)`` — *loaded* is True if adapter weights were
@@ -569,7 +575,7 @@ def load_lora_adapter(
                     loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
+        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler, load_optimizer)
         return True, iteration
 
     # ---- HF PEFT format (future work) ----
@@ -590,6 +596,7 @@ def _load_training_state(
     adapter_dir: Path,
     optimizer: Any | None,
     opt_param_scheduler: Any | None,
+    load_optimizer: bool = True,
 ) -> int | None:
     """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
     if optimizer is None:
@@ -604,8 +611,11 @@ def _load_training_state(
     # param group metadata), so full unpickling is required here.
     training_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
-    optimizer.load_state_dict(training_state["optimizer"])
-    logger.info("Restored optimizer state from LoRA checkpoint")
+    if not load_optimizer:
+        logger.info("--no-load-optim: keeping the freshly initialized optimizer")
+    elif training_state.get("optimizer") is not None:
+        optimizer.load_state_dict(training_state["optimizer"])
+        logger.info("Restored optimizer state from LoRA checkpoint")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])

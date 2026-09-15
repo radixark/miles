@@ -15,7 +15,7 @@ _FINISHED_TTL_S = 3600.0
 
 
 @dataclass
-class Future:
+class RequestFuture:
     request_id: str
     model_id: str
     tenant: str
@@ -28,12 +28,12 @@ class Future:
     settled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
-class FutureStore:
+class RequestFutureStore:
     def __init__(self) -> None:
-        self._futures: dict[str, Future] = {}
+        self._futures: dict[str, RequestFuture] = {}
 
-    def create(self, model_id: str, tenant: str) -> Future:
-        future = Future(request_id=f"req-{uuid.uuid4().hex}", model_id=model_id, tenant=tenant)
+    def create(self, model_id: str, tenant: str) -> RequestFuture:
+        future = RequestFuture(request_id=f"req-{uuid.uuid4().hex}", model_id=model_id, tenant=tenant)
         self._futures[future.request_id] = future
         return future
 
@@ -56,7 +56,7 @@ class FutureStore:
         future.finished_at = time.monotonic()
         future.settled.set()
 
-    def get(self, request_id: str, tenant: str) -> Future | None:
+    def get(self, request_id: str, tenant: str) -> RequestFuture | None:
         """Return None for unknown or expired futures; enforce tenant ownership otherwise."""
         self._sweep()
         future = self._futures.get(request_id)

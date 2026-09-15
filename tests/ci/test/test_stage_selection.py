@@ -191,7 +191,7 @@ def test_rename_from_unknown_source_path_affects_every_runnable_stage():
     ("event_name", "changed_files"),
     [("schedule", (ChangedFile("M", ("docs/index.md",)),)), ("workflow_dispatch", ()), ("pull_request", None)],
 )
-def test_non_pr_or_missing_diff_never_prunes(event_name, changed_files):
+def test_non_pr_or_missing_diff_keeps_all_runnable_stages(event_name, changed_files):
     assert _select(changed_files, _all_runnable_registrations(), event_name=event_name) == ()
 
 
@@ -234,3 +234,77 @@ def test_cli_publishes_all_gpu_stages_for_docs_diff(tmp_path):
     assert result.returncode == 0, result.stderr
     outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
     assert set(json.loads(outputs["skipped_stages"])) == PR_GPU_STAGES
+    assert outputs["needs_cuda_image"] == "false"
+
+
+@pytest.mark.parametrize("diff_payload", [b"M\0docker/Dockerfile\0", b"", b"invalid"])
+@pytest.mark.parametrize(
+    ("raw_labels", "registration_args", "expected_stages"),
+    [
+        ([], "", set()),
+        (["run-ci-cpu"], "", set()),
+        (["run-ci"], "", set()),
+        (["rebuild-ci-image"], "", set()),
+        (["run-ci-megatron"], None, set()),
+        (["run-ci-megatron"], ", disabled='unavailable'", set()),
+        (["run-ci-megatron"], ", nightly=True", set()),
+        (["run-ci-megatron"], "", {"stage-c-4-gpu-h200"}),
+        (["run-ci-amd"], "", {"stage-c-4-gpu-mi350"}),
+        (["run-ci-megatron", "run-ci-amd"], "", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
+        (["run-ci-image"], "", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
+        (["nightly"], ", nightly=True", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
+    ],
+)
+def test_policy_cli_image_demand_matches_selected_gpu_tests(
+    tmp_path, diff_payload, raw_labels, registration_args, expected_stages
+):
+    repo_root = Path(__file__).resolve().parents[3]
+    test_dir = tmp_path / "tests/e2e"
+    test_dir.mkdir(parents=True)
+    source = (
+        "register_cpu_ci(est_time=1, suite='stage-a-cpu', labels=[])\n"
+        "register_rocm_ci(est_time=1, suite='stage-c-4-gpu-mi350', labels=['amd'])\n"
+    )
+    if registration_args is not None:
+        source += (
+            "register_cuda_ci(est_time=1, suite='stage-c-4-gpu-h200', labels=['megatron'], "
+            f"hardware=['hopper']{registration_args})\n"
+        )
+    (test_dir / "test_selection.py").write_text(source)
+    diff_path = tmp_path / "changed-files.z"
+    diff_path.write_bytes(diff_payload)
+    output_path = tmp_path / "github-output"
+    env = os.environ.copy()
+    env.update(
+        EVENT_NAME="pull_request",
+        PR_LABELS_JSON=json.dumps(raw_labels),
+        CADENCE_OVERRIDE="",
+        CHANGED_FILES_PATH=str(diff_path),
+        GITHUB_OUTPUT=str(output_path),
+        PYTHONPATH=str(repo_root),
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.ci.ci_policy"], cwd=tmp_path, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
+    assert PR_GPU_STAGES - set(json.loads(outputs["skipped_stages"])) == expected_stages
+    assert outputs["needs_cuda_image"] == str("stage-c-4-gpu-h200" in expected_stages).lower()
+
+
+def test_image_jobs_require_their_selected_gpu_stages():
+    cuda = WORKFLOW.read_text()
+    build = cuda.split("\n  docker-build:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
+    resolver = cuda.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-a-cpu:\n", 1)[0]
+    assert "needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}" in cuda
+    assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in build
+    assert "needs: [docker-build]" in resolver
+    assert "needs.docker-build.result == 'success'" in resolver
+
+    rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  resolve-ci-deps:\n", 1)[0]
+    assert "needs: [resolve-ci-policy]" in resolver
+    assert (
+        "if: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') }}"
+        in resolver
+    )

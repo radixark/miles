@@ -1,10 +1,9 @@
 """Shared fakes for the tinker gateway suite."""
 
 import asyncio
-import json
-from pathlib import Path
 
-from miles.tinker.core.future import DONE, PENDING, Future
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
 
@@ -87,8 +86,7 @@ class FakeBackend:
     def _write_checkpoint(self, name, path, metadata, **kwargs):
         failure = self._record(name, path=path, metadata=metadata, **kwargs)
         if failure is None and metadata is not None:
-            Path(path).mkdir(parents=True, exist_ok=True)
-            (Path(path) / "META.json").write_text(json.dumps(metadata))
+            write_checkpoint_dir(path, lambda _: None, metadata=metadata, overwrite=name == "save_slot")
         return failure
 
     async def sample(self, payload, lora_name, lora_path=None):
@@ -97,14 +95,14 @@ class FakeBackend:
             return failure
         return {
             "sequences": [
-                {"sequence_id": f"seq-{i}", "tokens": [1, 2], "logprobs": [0.0, 0.0], "stop_reason": "stop"}
-                for i in range(payload["num_samples"])
+                {"tokens": [1, 2], "logprobs": [0.0, 0.0], "stop_reason": "stop"}
+                for _ in range(payload["num_samples"])
             ]
         }
 
 
 def make_config(checkpoint_root, **overrides) -> GatewayConfig:
-    defaults = dict(base_model="base", n_slots=2, checkpoint_root=str(checkpoint_root))
+    defaults = dict(base_model="base", n_slots=2, checkpoint_root=str(checkpoint_root), vocab_size=128000)
     return GatewayConfig(**{**defaults, **overrides})
 
 
@@ -113,13 +111,19 @@ def make_service(checkpoint_root, **config_overrides) -> TinkerService:
 
 
 def datum(tokens: int = 3) -> dict:
-    return {"tokens": list(range(tokens + 1)), "target_len": tokens, "weights": [1.0] * tokens}
+    return {
+        "tokens": list(range(tokens + 1)),
+        "target_tokens": list(range(1, tokens + 1)),
+        "target_len": tokens,
+        "weights": [1.0] * tokens,
+    }
 
 
 def rl_datum(tokens: int = 3) -> dict:
     """RL losses read logprobs+advantages and reject the cross-entropy weights."""
     return {
         "tokens": list(range(tokens + 1)),
+        "target_tokens": list(range(1, tokens + 1)),
         "target_len": tokens,
         "sampling_logprobs": [0.0] * tokens,
         "advantages": [1.0] * tokens,
@@ -159,7 +163,7 @@ async def created_model(service: TinkerService, tenant: str = "tenant", session_
     return model_id
 
 
-async def await_settled(service: TinkerService, tenant: str, request_id: str, timeout: float = 2.0) -> Future:
+async def await_settled(service: TinkerService, tenant: str, request_id: str, timeout: float = 2.0) -> RequestFuture:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         future = service.retrieve_future(tenant, request_id)

@@ -11,7 +11,7 @@ time. Once you know which side is wrong, it becomes an ordinary debugging sessio
 | Flag | What it does |
 |---|---|
 | `--debug-rollout-only` | Run generation only. The training backend (Megatron or FSDP) is never initialized. |
-| `--debug-train-only` | Run training only. No SGLang engines are started. |
+| `--debug-train-only` | Run training only. No rollout engines are started; a snapshot-eval fleet (`--eval-num-gpus`) still is when configured. |
 | `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. |
 | `--load-debug-rollout-data <path>` | Train from those recordings instead of generating. Implies `--debug-train-only`, since it does not start engines. |
 
