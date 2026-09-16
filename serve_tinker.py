@@ -66,6 +66,8 @@ async def serve(args):
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
+    # TODO(thinker-session-agentic): load the HF tokenizer, build TrajectoryCollector(service.backend, config, tokenizer)
+    # and pass it as build_app(service, collector) so the /oai routes come up next to the Tinker API.
 
     server = uvicorn.Server(
         uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
