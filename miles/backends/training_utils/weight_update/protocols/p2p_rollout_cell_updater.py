@@ -46,7 +46,10 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
             return
         pending, self._pending_writes = self._pending_writes, []
         for future in pending:
-            future.result()
+            try:
+                future.result()
+            except Exception as error:
+                self.mark_errored(error)
 
     def _write_if_active(
         self,

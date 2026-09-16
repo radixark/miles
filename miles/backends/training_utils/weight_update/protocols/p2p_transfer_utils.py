@@ -151,15 +151,13 @@ class RemoteWeightInfo:
 class P2PTransferManager:
     """Generic async task manager for P2P writes.
 
-    Accepts arbitrary callables via submit(), runs them in a thread pool,
-    and tracks futures for bulk waiting.
+    Accepts arbitrary callables via submit() and runs them in a thread pool.
     """
 
     def __init__(self, num_workers: int = 8, transfer_timeout: float = 30.0):
         self.num_workers = num_workers
         self.transfer_timeout = transfer_timeout
         self.executor: ThreadPoolExecutor | None = None
-        self.transfer_futures: list[Future] = []
 
     def ensure_started(self) -> None:
         if self.executor is None:
@@ -167,17 +165,9 @@ class P2PTransferManager:
             self.executor = ThreadPoolExecutor(max_workers=self.num_workers)
 
     def submit(self, fn: Callable, *args) -> Future:
-        """Submit a callable and return its future (also tracked for bulk waiting)."""
+        """Submit a callable and return its future."""
         self.ensure_started()
-        future = self.executor.submit(fn, *args)
-        self.transfer_futures.append(future)
-        return future
-
-    def wait_transfers(self) -> None:
-        """Wait for all submitted tasks to complete."""
-        for future in self.transfer_futures:
-            future.result(timeout=self.transfer_timeout)
-        self.transfer_futures.clear()
+        return self.executor.submit(fn, *args)
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
