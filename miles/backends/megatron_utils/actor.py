@@ -36,6 +36,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef, ValueSpec
@@ -118,7 +119,7 @@ class MegatronTrainRayActor(TrainRayActor):
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
-    ) -> int | None:
+    ) -> TrainerLoadState | None:
         self.weight_updater: WeightUpdater | None = None
         self.snapshot_publisher: SnapshotPublisher | None = None
         monkey_patch_torch_dist()
@@ -193,7 +194,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 _setup_disk_offload_reclaim(os.environ.get("TMS_DISK_BACKUP_DIR"))
 
         if self.args.debug_rollout_only:
-            return 0
+            return TrainerLoadState(start_rollout_id=0, restored_trained_iteration=False)
 
         if role != "critic":
             for m in all_replay_managers:
@@ -236,7 +237,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             if self.args.offload_train:
                 self.sleep()
-            return load_output.start_rollout_id
+            return _to_load_state(load_output)
 
         main_cast_ctx = None
         if args.rematerialize_param_from_master_weight:
@@ -268,7 +269,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.prof.on_init_end()
 
-        return load_output.start_rollout_id
+        return _to_load_state(load_output)
 
     def _init_training_state(self) -> None:
         args = self.args
@@ -338,7 +339,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     module._fp8_workspaces.clear()
 
     @with_logs
-    def load_state(self) -> int:
+    def load_state(self) -> TrainerLoadState:
         assert self.is_initialized()
 
         # reloading does not support things like these
@@ -402,7 +403,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._last_rollout_id = None
 
         logger.info(f"load_state rolled this trainer back to checkpoint iteration {load_output.loaded_rollout_id}")
-        return load_output.start_rollout_id
+        return _to_load_state(load_output)
 
     def _load_state_core(
         self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object]
@@ -1053,3 +1054,10 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         if self.weight_updater is not None:
             self.weight_updater.conn_status.mark_trainer_stale()
+
+
+def _to_load_state(load_output: LoadCheckpointOutput) -> TrainerLoadState:
+    return TrainerLoadState(
+        start_rollout_id=load_output.start_rollout_id,
+        restored_trained_iteration=load_output.restored_trained_iteration,
+    )

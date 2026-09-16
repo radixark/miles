@@ -25,6 +25,7 @@ from miles.utils.data import RolloutDataPack, remove_train_output_refs
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
+from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
@@ -313,7 +314,7 @@ class TrainerController:
     # ------------------------ API :: others ------------------------
 
     @init_once
-    async def init(self, args: Pickled) -> list[Any]:
+    async def init(self, args: Pickled) -> list[TrainerLoadState]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
@@ -362,7 +363,7 @@ class TrainerController:
     async def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
 
-    async def load_state(self) -> list[Any]:
+    async def load_state(self) -> list[TrainerLoadState]:
         assert self._init_once.is_initialized()
 
         await self._wait_expected_num_cells(timeout=_CELLS_READY_TIMEOUT_SECONDS)

@@ -13,6 +13,7 @@ from miles.ray.train.cell_state import (
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
@@ -65,7 +66,7 @@ class TrainerCell:
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
         recv_ckpt_src_rank: int | None = None,
-    ):
+    ) -> list[TrainerLoadState]:
         await self.execute(
             "configure_master_addr_and_port",
             master_addr=self._master_addr.host.strip("[]"),
@@ -86,7 +87,7 @@ class TrainerCell:
         await asyncio.sleep(0)
         return results
 
-    async def load_state(self) -> list:
+    async def load_state(self) -> list[TrainerLoadState]:
         return await self.execute("load_state")
 
     async def train(

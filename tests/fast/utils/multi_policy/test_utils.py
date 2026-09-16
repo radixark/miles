@@ -164,7 +164,12 @@ class TestCreatePolicyTrainers:
         async def _create(trainer_args, *, handle, trainer_id, resumed):
             handle.get_train_parallel_config = AsyncMock(return_value=f"parallel-config-of-{trainer_id}")
             created.append(dict(trainer_id=trainer_id, args=trainer_args, handle=handle, resumed=resumed))
-            return SimpleNamespace(handle=handle, start_rollout_id=start_rollout_ids[trainer_args.trainer_model_id])
+            start_rollout_id = start_rollout_ids[trainer_args.trainer_model_id]
+            return SimpleNamespace(
+                handle=handle,
+                start_rollout_id=start_rollout_id,
+                restored_trained_iteration=start_rollout_id > 0,
+            )
 
         monkeypatch.setattr(multi_policy_utils, "create_training_model", _create)
         monkeypatch.setattr(
@@ -309,7 +314,12 @@ class TestAssertConsistentRestore:
     @staticmethod
     def _trainers(**start_rollout_ids: int) -> dict[str, TrainerInfo]:
         return {
-            model_id: TrainerInfo(model_id=model_id, start_rollout_id=value, handle=AsyncMock())
+            model_id: TrainerInfo(
+                model_id=model_id,
+                start_rollout_id=value,
+                restored_trained_iteration=value > 0,
+                handle=AsyncMock(),
+            )
             for model_id, value in start_rollout_ids.items()
         }
 

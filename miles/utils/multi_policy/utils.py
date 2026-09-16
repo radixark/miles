@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 class TrainerInfo:
     model_id: str
     start_rollout_id: int
+    restored_trained_iteration: bool
     handle: BaseWorkerHandle
 
 
@@ -39,7 +40,10 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         )
         assert model_id not in trainers, f"{trainer_config} shares its model id with an already created trainer"
         trainers[model_id] = TrainerInfo(
-            model_id=model_id, start_rollout_id=created.start_rollout_id, handle=created.handle
+            model_id=model_id,
+            start_rollout_id=created.start_rollout_id,
+            restored_trained_iteration=created.restored_trained_iteration,
+            handle=created.handle,
         )
 
     for model_id, trainer in trainers.items():
@@ -48,7 +52,7 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         )
     leader_model_id = resolve_megatron_config(args).leader_model_id
     leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
-    if leader_rollout_id >= 0:
+    if leader_rollout_id >= 0 and trainers[leader_model_id].restored_trained_iteration:
         _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
         await rollout_executor.load(leader_rollout_id)
 

@@ -6,6 +6,7 @@ from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _assert_external_trainer_in_run, _get_placement_group_layout
+from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.workers.types import DeploymentIdentity
 
 _RUN_UUID = "0" * 16
@@ -216,7 +217,10 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
         async def init(self, args):
             calls.append((self.trainer_id, "init"))
             self.inited_with = args
-            return (restored or {}).get(self.trainer_id, [0])
+            return [
+                TrainerLoadState(start_rollout_id=value, restored_trained_iteration=value > 0)
+                for value in (restored or {}).get(self.trainer_id, [0])
+            ]
 
         async def get_train_parallel_config(self):
             calls.append((self.trainer_id, "get_train_parallel_config"))
@@ -259,6 +263,7 @@ def _training_models_args(**overrides):
         "trainer_model_id": None,
         "load": "/ckpt/run",
         "save": "/ckpt/run",
+        "save_debug_event_data": None,
         "lr": 1e-6,
         "lr_warmup_iters": 10,
         "critic_load": "/ckpt/critic",
@@ -461,9 +466,9 @@ class _IdentifyingHandle:
         self.calls.append((self.trainer_id, "get_deployment_identity"))
         return self.identity
 
-    async def init(self, args) -> list[int]:
+    async def init(self, args) -> list[TrainerLoadState]:
         self.calls.append((self.trainer_id, "init"))
-        return [0]
+        return [TrainerLoadState(start_rollout_id=0, restored_trained_iteration=False)]
 
 
 def _split_run_args(**overrides):

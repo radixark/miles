@@ -48,7 +48,12 @@ def _make_trainers(model_ids, handles=None, start_rollout_ids=None) -> dict[str,
     for handle in handles.values():
         _let_follower_yield(handle)
     return {
-        model_id: TrainerInfo(model_id=model_id, start_rollout_id=start_rollout_ids.get(model_id, 0), handle=handle)
+        model_id: TrainerInfo(
+            model_id=model_id,
+            start_rollout_id=start_rollout_ids.get(model_id, 0),
+            restored_trained_iteration=start_rollout_ids.get(model_id, 0) > 0,
+            handle=handle,
+        )
         for model_id, handle in handles.items()
     }
 

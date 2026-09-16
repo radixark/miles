@@ -19,6 +19,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
@@ -100,7 +101,7 @@ class TrainRayActor(NodeProbeMixin):
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
-    ) -> int | None:
+    ) -> TrainerLoadState | None:
         raise NotImplementedError
 
     @init_once
@@ -164,7 +165,7 @@ class TrainRayActor(NodeProbeMixin):
     def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
 
-    def load_state(self) -> int:
+    def load_state(self) -> TrainerLoadState:
         raise NotImplementedError(f"{type(self).__name__} cannot reload its state without restarting")
 
     @rpc(concurrency_group="heartbeat_status")

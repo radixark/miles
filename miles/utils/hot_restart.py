@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from argparse import Namespace
-from typing import Any
+from typing import NamedTuple
 
 from miles.utils.init_once import InitState
 from miles.utils.misc import call_agent_abort_hook
@@ -69,15 +69,20 @@ async def wait_trainers_idle(handles: dict[str, BaseWorkerHandle]) -> bool:
     return resumed
 
 
+class TrainerLoadState(NamedTuple):
+    start_rollout_id: int
+    restored_trained_iteration: bool
+
+
 async def trainer_init_or_load_state(
     trainer: BaseWorkerHandle, model_args: Namespace, *, trainer_id: str, resumed: bool
-) -> list[Any]:
+) -> list[TrainerLoadState]:
     if not resumed:
         return await trainer.init(model_args)
 
-    start_rollout_ids = await asyncio.wait_for(trainer.load_state(), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS)
-    logger.info(f"Resumed the already-initialized trainer {trainer_id!r} at rollout ids {start_rollout_ids}")
-    return start_rollout_ids
+    load_states = await asyncio.wait_for(trainer.load_state(), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS)
+    logger.info(f"Resumed the already-initialized trainer {trainer_id!r} at {load_states}")
+    return load_states
 
 
 # ============================ inference take-over =============================
