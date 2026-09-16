@@ -38,8 +38,8 @@ class _FakeSlotOptimizer(SlotOptimizer):
 
 
 def _step(slot_optimizers):
-    adam = {slot: {"learning_rate": 1e-4} for slot in slot_optimizers}
-    return step_slot_optimizers(slot_optimizers, adam, clip_grad=1.0)
+    adam = {slot: {"learning_rate": 1e-4, "grad_clip_norm": 1.0} for slot in slot_optimizers}
+    return step_slot_optimizers(slot_optimizers, adam)
 
 
 def test_an_unknown_step_failure_escapes_before_success_is_reported():

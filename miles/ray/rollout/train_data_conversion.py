@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 ROLLOUT_DATA_TENSOR_DTYPES = {
     "tokens": "int32",
+    "target_tokens": "int32",
     "loss_masks": "int32",
     "rollout_log_probs": "float32",
     "rollout_sampling_mask_ids": "int32",
@@ -382,6 +383,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
+            "loss_weights",
+            "advantages",
+            "target_tokens",
         ]:
             if key not in data:
                 continue
@@ -393,6 +397,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "total_lengths",
             "dynamic_global_batch_size",
             "prompt_group_sizes",
+            "loss_fn",
+            "loss_fn_config",
         ]:
             if key not in data:
                 continue
