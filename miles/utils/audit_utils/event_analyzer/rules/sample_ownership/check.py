@@ -60,7 +60,7 @@ class _Facts:
 def check(events: list[Event], *, grace_steps: int) -> list[SampleOwnershipIssue]:
     """Sample ownership invariant.
 
-    - Eligible: a source that is mature, or already consumed on some cell.
+    - Eligible: a source that is mature, already consumed on some cell, or explicitly dropped more than once.
     - Mature: at least ``grace_steps`` actor steps completed after the step that issued it.
     - Pass, per cell
         - Case 1: exactly one complete output set -- consumptions share one ``output_count = N``, output indices
@@ -254,7 +254,7 @@ def _issued_sources(
 
 
 def _eligible_sources(facts: _Facts, *, grace_steps: int) -> list[_IssuedSource]:
-    """List what this round must resolve: every mature source plus every source already consumed somewhere."""
+    """List mature sources and sources already consumed or repeatedly dropped."""
     consumed = {
         key.source_sample_index for key in (*facts.trained_consumptions, *facts.skipped_nonfinite_consumptions)
     }
@@ -266,6 +266,7 @@ def _eligible_sources(facts: _Facts, *, grace_steps: int) -> list[_IssuedSource]
             source
             for source in facts.issued_sources
             if source.source_sample_index in consumed
+            or facts.drop_counts[source.source_sample_index] > 1
             or _is_mature(
                 source, latest_completed_rollout_id=facts.latest_completed_rollout_id, grace_steps=grace_steps
             )

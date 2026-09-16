@@ -7,6 +7,7 @@ import pytest
 import torch
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
@@ -23,8 +24,14 @@ from miles.rollout.base_types import (
 from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import SampleOwnershipViolation
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, ExplicitlyDroppedSamplesEvent
+from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
+    ExplicitlyDroppedSamplesEvent,
+    TrainerModelCompanionInfoEvent,
+    TrainGroupStepEndEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.types import Sample
@@ -67,6 +74,63 @@ class _SynchronousDisposable:
 
 
 class TestDispose:
+    @pytest.mark.parametrize("issued_rollout_id", [3, 4, 6])
+    async def test_shutdown_preserves_grace_without_inventing_drops(
+        self, tmp_path: Path, issued_rollout_id: int
+    ) -> None:
+        """Shutdown defers only immature losses and never fabricates drops for prefetched output."""
+        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor.use_legacy_rollout_v1 = False
+        executor.generate_rollout = None
+        executor.eval_generate_rollout = None
+        executor.data_source = object()
+        executor.args = Namespace(
+            enable_sample_ownership_checker=True,
+            sample_ownership_grace_steps=2,
+            ci_test=True,
+            enable_event_analyzer=False,
+        )
+        executor._metric_checker = None
+        executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=make_args())
+        executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=6, data=[Sample(index=10)], metadata={})
+        event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor"))
+        event_logger.log(
+            DataSourceIssuedSamplesEvent,
+            dict(
+                rollout_id=issued_rollout_id,
+                groups=[dict(group_index=0, sample_indices=[10])],
+            ),
+        )
+        event_logger.log(
+            TrainerModelCompanionInfoEvent,
+            dict(
+                rollout_id=5,
+                attempt=0,
+                cell_index=0,
+                sample_counts=[],
+                skipped_nonfinite_sample_counts=[],
+            ),
+        )
+        event_logger.log(
+            TrainGroupStepEndEvent,
+            dict(
+                rollout_id=5,
+                attempt=0,
+                role="actor",
+                cell_outcomes={0: [TrainStepOutcome.NORMAL]},
+            ),
+        )
+        set_event_logger(event_logger)
+        try:
+            if issued_rollout_id == 3:
+                with pytest.raises(SampleOwnershipViolation):
+                    await executor.dispose()
+            else:
+                await executor.dispose()
+            assert not any(isinstance(event, ExplicitlyDroppedSamplesEvent) for event in read_events(tmp_path))
+        finally:
+            set_event_logger(None)
+
     async def test_synchronous_train_and_eval_rollout_disposers_are_accepted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
