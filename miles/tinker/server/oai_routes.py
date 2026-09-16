@@ -12,9 +12,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from miles.tinker.core.service import TinkerService
-from miles.tinker.core.tinker_session_server import SamplingBackendError, TrajectoryCollector, UnknownSessionError
+from miles.tinker.core.tinker_session_server import (
+    SamplingBackendError,
+    SessionLimitError,
+    TrajectoryCollector,
+    UnknownSessionError,
+)
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.app import _tenant, build_app
+
+# an agent's chat history is a few hundred KB at most; anything near this is a mistake or an attack on the shared loop
+MAX_BODY_BYTES = 16 * 1024 * 1024
 
 
 def _optional_tenant(request: Request) -> str | None:
@@ -26,8 +34,10 @@ def _optional_tenant(request: Request) -> str | None:
 
 
 async def _json_body(request: Request) -> dict:
-    """The JSON object body, or a UserInputError (400) instead of an unhandled decode error."""
+    """The JSON object body, or a UserInputError (400) instead of an unhandled decode error; bodies over MAX_BODY_BYTES are refused."""
     body = await request.body()
+    if len(body) > MAX_BODY_BYTES:
+        raise UserInputError(f"request body of {len(body)} bytes exceeds the {MAX_BODY_BYTES}-byte limit")
     if not body:
         return {}
     try:
@@ -40,11 +50,15 @@ async def _json_body(request: Request) -> dict:
 
 
 def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None:
-    """Mount the four /oai/sessions routes, the UnknownSessionError→404 handler and the SamplingBackendError→502 handler."""
+    """Mount the four /oai/sessions routes and their handlers: UnknownSessionError→404, SessionLimitError→429, SamplingBackendError→502 (400/403 come from build_app)."""
 
     @app.exception_handler(UnknownSessionError)
     async def _unknown_session(request: Request, error: UnknownSessionError):
         return JSONResponse(status_code=404, content={"error": str(error)})
+
+    @app.exception_handler(SessionLimitError)
+    async def _session_limit(request: Request, error: SessionLimitError):
+        return JSONResponse(status_code=429, content={"error": str(error)})
 
     @app.exception_handler(SamplingBackendError)
     async def _backend_error(request: Request, error: SamplingBackendError):
