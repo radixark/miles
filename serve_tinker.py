@@ -9,6 +9,7 @@ from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
 from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
 from miles.tinker.core.service import TinkerService
+from miles.tinker.core.tinker_session_server import TrajectoryCollector
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
@@ -20,6 +21,16 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 
 logger = logging.getLogger(__name__)
+
+
+def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
+    """(Skeleton) load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path) → TrajectoryCollector(service, tokenizer, session_ttl_s=args.tinker_session_ttl_s, chat_template_kwargs=args.tinker_chat_template_kwargs); the only place the tokenizer is loaded, core never imports it."""
+    raise NotImplementedError
+
+
+async def _sweep_collector(collector: TrajectoryCollector, interval_s: float) -> None:
+    """(Skeleton) Every interval_s call collector.sweep(); runs as a third supervised task next to service.run() and server.serve()."""
+    raise NotImplementedError
 
 
 async def serve(args):
