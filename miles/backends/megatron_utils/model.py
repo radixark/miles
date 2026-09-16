@@ -1017,7 +1017,7 @@ def load_model_state(
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:
-            iteration, _, native_optimizer_restored = load_checkpoint(
+            iteration, restored_trained_iteration, native_optimizer_restored = load_checkpoint(
                 model,
                 optimizer,
                 opt_param_scheduler,
@@ -1028,6 +1028,7 @@ def load_model_state(
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
         iteration = 0
+        restored_trained_iteration = not args.finetune
 
     if (
         is_lora_enabled(args)
@@ -1055,11 +1056,8 @@ def load_model_state(
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    if args.finetune and not is_lora_enabled(args):
-        assert iteration == 0, (
-            f"--finetune loaded {args.load} and found iteration {iteration}, so the checkpoint and the flag disagree "
-            f"about where this run stands"
-        )
+    if not restored_trained_iteration:
+        assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
         start_rollout_id = 0
     else:
         start_rollout_id = iteration + 1
