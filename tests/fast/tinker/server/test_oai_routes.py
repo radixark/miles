@@ -5,6 +5,7 @@ import pytest
 from tests.fast.tinker.oai_fakes import OTHER_TENANT, SAMPLER, TENANT, FakeTokenizer, write_sampler
 
 from miles.tinker.core.tinker_session_server import TrajectoryCollector
+from miles.tinker.server import oai_routes
 from miles.tinker.server.oai_routes import build_app_with_collector
 
 OWNER = {"Authorization": f"Bearer {TENANT}"}
@@ -22,6 +23,7 @@ async def client(service, tmp_path):
     transport = httpx.ASGITransport(app=build_app_with_collector(service, collector))
     async with httpx.AsyncClient(transport=transport, base_url="http://gateway") as http:
         http.service = service
+        http.collector = collector
         yield http
 
 
@@ -77,6 +79,27 @@ async def test_engine_failure_is_502_and_records_nothing(client):
     client.service.backend.fail_on["sample"] = {"error": "engine aborted"}
     failed = await client.post("/oai/sessions/s1/v1/chat/completions", json=CHAT, headers=DUMMY)
     assert failed.status_code == 502 and failed.json() == {"error": "engine aborted"}
+    assert (await client.get("/oai/sessions/s1", headers=OWNER)).json()["turns"] == []
+
+
+async def test_tenancy_status_codes(client, monkeypatch):
+    """Another tenant's key on a bound session is 403, a placeholder key on an unknown session 404, caps 429, an oversized body 400."""
+    await client.post("/oai/sessions/s1", json={"model": SAMPLER}, headers=OWNER)
+    foreign = await client.post("/oai/sessions/s1/v1/chat/completions", json=CHAT, headers=OTHER)
+    assert foreign.status_code == 403
+    assert (await client.post("/oai/sessions/s1", json={"model": SAMPLER}, headers=OTHER)).status_code == 403
+    assert (await client.post("/oai/sessions/nope/v1/chat/completions", json=CHAT, headers=DUMMY)).status_code == 404
+    assert (await client.post("/oai/sessions/bad id", json={}, headers=OWNER)).status_code == 400
+
+    client.collector.max_sessions_per_tenant = 1
+    capped = await client.post("/oai/sessions/s2", json={"model": SAMPLER}, headers=OWNER)
+    assert capped.status_code == 429 and "cap 1" in capped.json()["error"]
+    client.collector.max_turns_per_session = 0
+    assert (await client.post("/oai/sessions/s1/v1/chat/completions", json=CHAT, headers=DUMMY)).status_code == 429
+
+    monkeypatch.setattr(oai_routes, "MAX_BODY_BYTES", 64)
+    big = await client.post("/oai/sessions/s1/v1/chat/completions", json={**CHAT, "pad": "x" * 200}, headers=DUMMY)
+    assert big.status_code == 400 and "exceeds" in big.json()["error"]
     assert (await client.get("/oai/sessions/s1", headers=OWNER)).json()["turns"] == []
 
 

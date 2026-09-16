@@ -14,15 +14,25 @@ Reused, not reimplemented:
 - sampling-session binding: ``TinkerService.get_sampler(tenant, sampling_session_id)["model_path"]``.
 - rendering: the HF tokenizer's ``apply_chat_template`` / ``decode``, injected by ``serve_tinker.py``.
 
+Tenancy rules (one gateway, many tenants): a session belongs to the key that bound it; a request on a bound session
+may carry no key or the harness placeholder ``dummy`` (Harbor hands agents ``api_key="dummy"``), but a *different*
+real key is refused (403) so one tenant cannot record into or sample on another tenant's adapter; placeholders can
+neither bind nor auto-register (404). Each tenant has a cap on open sessions and each session a cap on turns (429),
+token ids are stored as compact arrays, prompts are rendered off the event loop, and the TTL sweep never drops a
+session with a sample in flight.
+
 Core layer: stdlib plus ``miles.tinker.core`` only.
 """
 
 from __future__ import annotations
 
+import asyncio
+import re
 import time
 import uuid
-from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from array import array
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from miles.tinker.core.future import FAILED
@@ -31,6 +41,9 @@ from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_sampler_checkpoint
 
 TINKER_PATH_PREFIX = "tinker://"
+# what Harbor's harness bindings hand the agent as its OpenAI key (harbor_agent_function.build_trial_config)
+PLACEHOLDER_KEYS = frozenset({"dummy"})
+_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
 class UnknownSessionError(Exception):
@@ -41,15 +54,35 @@ class SamplingBackendError(Exception):
     """The engine failed the sample; the turn is not recorded (HTTP 502)."""
 
 
+class SessionLimitError(Exception):
+    """The tenant's open sessions or the session's turns hit the collector's cap (HTTP 429)."""
+
+
+def validate_session_id(session_id: str) -> None:
+    """Session ids come from the URL path: one to 128 chars of [A-Za-z0-9._:-], starting alphanumeric."""
+    if not isinstance(session_id, str) or _SESSION_ID.fullmatch(session_id) is None:
+        raise UserInputError(f"invalid session id {session_id!r}: use 1-128 chars of A-Z a-z 0-9 . _ : -")
+
+
 @dataclass
 class Turn:
-    """One recorded generation: exactly the ids the engine consumed and produced, plus their logprobs (= a cookbook Transition)."""
+    """One recorded generation: exactly the ids the engine consumed and produced, plus their logprobs (= a cookbook Transition); stored as arrays (4 bytes a token) because every turn keeps its full prompt."""
 
-    input_ids: list[int]
-    output_ids: list[int]
-    logprobs: list[float]
+    input_ids: Sequence[int]
+    output_ids: Sequence[int]
+    logprobs: Sequence[float]
     finish_reason: str  # "stop" | "length"
     created_at: float = field(default_factory=time.time)
+
+    def as_json(self) -> dict[str, Any]:
+        """Plain lists for the GET export (what the client's turns_to_trajectory reads)."""
+        return {
+            "input_ids": list(self.input_ids),
+            "output_ids": list(self.output_ids),
+            "logprobs": list(self.logprobs),
+            "finish_reason": self.finish_reason,
+            "created_at": self.created_at,
+        }
 
 
 @dataclass
@@ -62,6 +95,7 @@ class TrajectorySession:
     turns: list[Turn] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
+    in_flight: int = 0  # samples running right now; the TTL sweep leaves such a session alone
 
 
 # --- TITO hooks (empty for now) ------------------------------------------------
@@ -192,20 +226,25 @@ class TrajectoryCollector:
         session_ttl_s: float,
         chat_template_kwargs: dict | None,
         clock: Callable[[], float] = time.time,
+        max_sessions_per_tenant: int = 1024,
+        max_turns_per_session: int = 1024,
     ) -> None:
-        """Keep the TinkerService (submit_sample / retrieve_future / get_sampler), the injected HF tokenizer, and the collector's two settings."""
+        """Keep the TinkerService (submit_sample / retrieve_future / get_sampler), the injected HF tokenizer, the collector's settings and the two per-tenant caps."""
         self.service = service
         self.tokenizer = tokenizer
         self.session_ttl_s = session_ttl_s
         self.chat_template_kwargs = dict(chat_template_kwargs or {})
         self.clock = clock
+        self.max_sessions_per_tenant = max_sessions_per_tenant
+        self.max_turns_per_session = max_turns_per_session
         self.sessions: dict[str, TrajectorySession] = {}
 
     def bind(
         self, session_id: str, tenant: str, model: str | None = None, sampling_session_id: str | None = None
     ) -> TrajectorySession:
-        """Create or re-bind a session: model is a tinker:// path (checked eagerly with resolve_sampler_checkpoint) or a Tinker sampling_session_id (resolved with service.get_sampler); base model when neither is given; a different tinker:// path on a bound session is a UserInputError."""
-        if not tenant:
+        """Create or re-bind a session: model is a tinker:// path (checked eagerly with resolve_sampler_checkpoint) or a Tinker sampling_session_id (resolved with service.get_sampler); base model when neither is given; a different tinker:// path on a bound session is a UserInputError; a placeholder key cannot bind; the tenant's open-session cap is enforced."""
+        validate_session_id(session_id)
+        if not tenant or tenant in PLACEHOLDER_KEYS:
             raise UserInputError("binding a session needs the tenant's API key")
         session = self.sessions.get(session_id)
         if session is not None:
@@ -214,6 +253,12 @@ class TrajectoryCollector:
             self._check_same_version(session, model)
             session.last_seen = self.clock()
             return session
+        open_sessions = sum(1 for existing in self.sessions.values() if existing.tenant == tenant)
+        if open_sessions >= self.max_sessions_per_tenant:
+            raise SessionLimitError(
+                f"tenant has {open_sessions} open recorded sessions (cap {self.max_sessions_per_tenant}); "
+                "DELETE finished sessions or wait for the TTL sweep"
+            )
         now = self.clock()
         session = TrajectorySession(
             session_id=session_id,
@@ -240,45 +285,59 @@ class TrajectoryCollector:
         del self.sessions[session_id]
 
     def trajectory(self, session_id: str, tenant: str) -> dict[str, Any]:
-        """Export {session_id, model_path, turns: [asdict(turn)]} for the client's turns_to_trajectory; owner only."""
+        """Export {session_id, model_path, turns: [turn.as_json()]} for the client's turns_to_trajectory; owner only."""
         session = self.get(session_id, tenant)
         return {
             "session_id": session.session_id,
             "model_path": session.model_path,
-            "turns": [asdict(turn) for turn in session.turns],
+            "turns": [turn.as_json() for turn in session.turns],
         }
 
     def sweep(self, now: float | None = None) -> int:
-        """Safety net for trials that died before DELETE: drop sessions idle longer than session_ttl_s; returns how many."""
+        """Safety net for trials that died before DELETE: drop sessions idle longer than session_ttl_s and with no sample in flight; returns how many."""
         now = self.clock() if now is None else now
-        expired = [sid for sid, session in self.sessions.items() if now - session.last_seen >= self.session_ttl_s]
+        expired = [
+            sid
+            for sid, session in self.sessions.items()
+            if session.in_flight == 0 and now - session.last_seen >= self.session_ttl_s
+        ]
         for sid in expired:
             del self.sessions[sid]
         return len(expired)
 
     async def chat(self, request: dict[str, Any], *, session_id: str, tenant: str | None = None) -> dict[str, Any]:
-        """The recorded chat completion: session lookup or auto-register, tito_render_prompt then render_prompt, _sample, record a Turn, build_chat_response."""
+        """The recorded chat completion: session lookup or auto-register, turn cap, tito_render_prompt then render_prompt (off the event loop), _sample, record a Turn, build_chat_response."""
         session = self._session_for_request(session_id, tenant, request.get("model"))
+        if len(session.turns) >= self.max_turns_per_session:
+            raise SessionLimitError(
+                f"session {session_id!r} already holds {len(session.turns)} turns (cap {self.max_turns_per_session})"
+            )
         messages = request.get("messages")
         tools = request.get("tools") or None
         template_kwargs = self._template_kwargs(request)
         prompt_ids = tito_render_prompt(session, messages, tools, template_kwargs, self.tokenizer)
         if prompt_ids is None:
-            prompt_ids = render_prompt(messages, tools, template_kwargs, self.tokenizer)
+            # tokenizing a long history is CPU work; keep it off the loop that serves every tenant's Tinker traffic
+            prompt_ids = await asyncio.to_thread(render_prompt, messages, tools, template_kwargs, self.tokenizer)
         payload = to_sample_payload(prompt_ids, request, session.model_path)
-        sequence = await self._sample(session.tenant, payload)
+        session.in_flight += 1
+        try:
+            sequence = await self._sample(session.tenant, payload)
+        finally:
+            session.in_flight -= 1
         turn = Turn(
-            input_ids=list(prompt_ids),
-            output_ids=[int(token) for token in sequence["tokens"]],
-            logprobs=[float(value) for value in sequence["logprobs"]],
+            input_ids=array("i", prompt_ids),
+            output_ids=array("i", (int(token) for token in sequence["tokens"])),
+            logprobs=array("d", (float(value) for value in sequence["logprobs"])),
             finish_reason="length" if sequence.get("stop_reason") == "length" else "stop",
             created_at=self.clock(),
         )
         session.turns.append(turn)
         session.last_seen = turn.created_at
         on_turn_committed(session, turn)
-        text = self.tokenizer.decode(turn.output_ids, skip_special_tokens=True)
-        return build_chat_response(request, turn.output_ids, text, turn.finish_reason, len(prompt_ids))
+        output_ids = list(turn.output_ids)
+        text = self.tokenizer.decode(output_ids, skip_special_tokens=True)
+        return build_chat_response(request, output_ids, text, turn.finish_reason, len(prompt_ids))
 
     async def _sample(self, tenant: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Reuse the gateway's sampling pipeline end to end: service.submit_sample(tenant, payload) → service.retrieve_future(tenant, request_id) → await future.settled.wait() → future.result["sequences"][0] (tokens, logprobs, stop_reason) or raise on future.error."""
@@ -293,15 +352,19 @@ class TrajectoryCollector:
         return future.result["sequences"][0]
 
     def _session_for_request(self, session_id: str, tenant: str | None, model: str | None) -> TrajectorySession:
-        """The recorded session this request samples in: a known id (same version, any key) or a new id auto-registered under a valid bearer."""
+        """The recorded session this request samples in: a known id (same version; no key, the placeholder key or the owner's key) or a new id auto-registered under a real bearer; another tenant's key is refused."""
+        validate_session_id(session_id)
+        placeholder = not tenant or tenant in PLACEHOLDER_KEYS
         session = self.sessions.get(session_id)
         if session is None:
-            if not tenant:
+            if placeholder:
                 raise UnknownSessionError(
                     f"unknown session {session_id!r}: bind it with POST /oai/sessions/{session_id} "
                     "or send the tenant's bearer token"
                 )
             return self.bind(session_id, tenant, model)
+        if not placeholder and tenant != session.tenant:
+            raise OwnershipError("session does not belong to this tenant")
         self._check_same_version(session, model)
         session.last_seen = self.clock()
         return session

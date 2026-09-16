@@ -19,6 +19,7 @@ from tests.fast.tinker.oai_fakes import (
 
 from miles.tinker.core.tinker_session_server import (
     SamplingBackendError,
+    SessionLimitError,
     TrajectoryCollector,
     UnknownSessionError,
     to_sample_payload,
@@ -228,3 +229,76 @@ async def test_exported_turns_round_trip_through_cookbook(collector):
     datums = trajectory_to_data(trajectory, traj_advantage=1.0)
     assert len(datums) == 2  # the character template re-renders history without the previous output: split per turn
     assert datums[1].loss_fn_inputs["target_tokens"].tolist()[-2:] == [1, 2]  # the engine's ids become the targets
+
+
+# --- multi-tenant hardening ------------------------------------------------------
+
+
+async def test_foreign_key_on_a_bound_session_is_forbidden(collector):
+    """Another tenant's real key cannot sample on (or record into) a session it does not own; nothing is recorded."""
+    collector.bind("s1", TENANT, SAMPLER)
+    with pytest.raises(OwnershipError):
+        await _chat(collector, "s1", tenant=OTHER_TENANT)
+    assert collector.trajectory("s1", TENANT)["turns"] == [] and _sample_calls(collector) == []
+    await _chat(collector, "s1", tenant=TENANT)  # the owner's own key is fine
+    assert len(collector.trajectory("s1", TENANT)["turns"]) == 1
+
+
+async def test_placeholder_key_cannot_register_or_bind(collector):
+    """The harness's dummy key is treated like no key: it serves bound sessions but creates nothing."""
+    with pytest.raises(UnknownSessionError):
+        await _chat(collector, "fresh", tenant="dummy")
+    with pytest.raises(UserInputError):
+        collector.bind("fresh", "dummy", SAMPLER)
+    assert collector.sessions == {}
+
+
+def test_session_id_is_validated(collector):
+    """Session ids are URL path segments: 1-128 chars of [A-Za-z0-9._:-], alphanumeric first."""
+    for bad in ("", "-leading", "a/b", "x" * 129, "sp ace"):
+        with pytest.raises(UserInputError):
+            collector.bind(bad, TENANT, SAMPLER)
+    collector.bind("harbor-" + "a" * 32 + ":1.0", TENANT, SAMPLER)
+
+
+async def test_session_and_turn_caps(collector):
+    """A tenant's open sessions and a session's turns are capped (429); DELETE frees capacity; other tenants are unaffected."""
+    collector.max_sessions_per_tenant = 2
+    collector.max_turns_per_session = 1
+    collector.bind("a", TENANT, SAMPLER)
+    collector.bind("b", TENANT, SAMPLER)
+    with pytest.raises(SessionLimitError):
+        collector.bind("c", TENANT, SAMPLER)
+    collector.bind("a", TENANT, SAMPLER)  # re-binding an open session is not a new one
+    collector.bind("other", OTHER_TENANT, BASE)  # the cap is per tenant
+    collector.delete("b", TENANT)
+    collector.bind("c", TENANT, SAMPLER)
+
+    await _chat(collector, "a")
+    with pytest.raises(SessionLimitError):
+        await _chat(collector, "a")
+    assert len(collector.trajectory("a", TENANT)["turns"]) == 1 and len(_sample_calls(collector)) == 1
+
+
+def test_sweep_leaves_in_flight_sessions_alone(collector):
+    """A session with a sample running is not swept even when idle past the TTL; it is swept once the sample settled."""
+    collector.bind("busy", TENANT, SAMPLER)
+    collector.sessions["busy"].in_flight = 1
+    collector.now[0] += collector.session_ttl_s + 1
+    assert collector.sweep() == 0 and "busy" in collector.sessions
+    collector.sessions["busy"].in_flight = 0
+    assert collector.sweep() == 1 and collector.sessions == {}
+
+
+async def test_turns_are_stored_compactly_and_exported_as_lists(collector):
+    """Token ids and logprobs live in arrays (4 or 8 bytes each) but the export is plain JSON lists."""
+    collector.bind("s1", TENANT, SAMPLER)
+    await _chat(collector, "s1")
+    (turn,) = collector.sessions["s1"].turns
+    assert turn.input_ids.typecode == "i" and turn.output_ids.typecode == "i" and turn.logprobs.typecode == "d"
+    (exported,) = collector.trajectory("s1", TENANT)["turns"]
+    assert (
+        isinstance(exported["input_ids"], list)
+        and exported["output_ids"] == [1, 2]
+        and exported["logprobs"] == [0.0, 0.0]
+    )
