@@ -882,8 +882,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "Maximum allowed gap between a group's oldest weight version and the current "
-                    "engine weight version. Groups exceeding this threshold are recycled back to "
+                    "Maximum allowed gap between a group's oldest generated-token weight version and the current "
+                    "engine weight version. Prompt KV weight staleness is not considered. "
+                    "Groups exceeding this threshold are recycled back to "
                     "the data buffer instead of being sent to training. Only effective in fully "
                     "async mode. None (default) disables staleness filtering."
                 ),
