@@ -39,7 +39,8 @@ def _write_tracker(ckpt: Path, content: str) -> None:
 
 
 class TestSnapshotRestoreRoundtrip:
-    def test_restore_replaces_live_dir_with_snapshot(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("resumed", [False, True])
+    def test_restore_replaces_live_dir_with_snapshot(self, tmp_path: Path, resumed: bool) -> None:
         """A resumed run sees exactly the snapshotted events, not the live dir's leftovers."""
         ckpt = tmp_path / "ckpt"
         events = tmp_path / "events"
@@ -51,10 +52,14 @@ class TestSnapshotRestoreRoundtrip:
         (events / "main.jsonl").write_text("committed\nrewound-future\n")
         (events / "straggler.jsonl").write_text("late\n")
         _write_tracker(ckpt, "3")
-        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt))
+        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt), resumed=resumed)
 
         assert (events / "main.jsonl").read_text() == "committed\n"
         assert not (events / "straggler.jsonl").exists()
+        [archive] = list(tmp_path.glob(".trash_*" if resumed else ".startup_events_*"))
+        assert (archive / "main.jsonl").read_text() == "committed\nrewound-future\n"
+        assert (archive / "straggler.jsonl").read_text() == "late\n"
+        assert not list(tmp_path.glob(".startup_events_*" if resumed else ".trash_*"))
 
     def test_a_named_trainer_restores_from_the_tracker_in_its_own_namespace(self, tmp_path: Path) -> None:
         """Such a run writes every trainer's checkpoints, tracker included, under `<save>/trainers/<trainer_id>/`."""
@@ -67,7 +72,7 @@ class TestSnapshotRestoreRoundtrip:
 
         (events / "main.jsonl").write_text("committed\nrewound-future\n")
         _write_tracker(ckpt / "trainers" / "policy-actor", "3")
-        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt, megatron_config=config))
+        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt, megatron_config=config), resumed=False)
 
         assert (events / "main.jsonl").read_text() == "committed\n"
 
@@ -90,53 +95,62 @@ class TestSnapshotRestoreRoundtrip:
             event_logger_checkpoint.snapshot(_args(event_dir=tmp_path / "absent-events"), directory=directory)
 
 
-class TestNoOpCases:
-    def test_restore_skips_when_not_resuming(self, tmp_path: Path) -> None:
-        """No --load means no restore."""
+def _assert_moved_aside(tmp_path: Path, events: Path, *, stale: str) -> None:
+    [trash] = list(tmp_path.glob(".startup_events_*"))
+    assert not list(tmp_path.glob(".trash_*"))
+    assert (trash / "main.jsonl").read_text() == stale
+    assert events.is_dir() and list(events.iterdir()) == []
+
+
+class TestEveryRunStartsFromACleanEventDir:
+    def test_restore_moves_a_stale_dir_aside_when_not_resuming(self, tmp_path: Path) -> None:
+        """A fresh --save run reusing a previous run's save dir must not append to its event log."""
         events = tmp_path / "events"
         events.mkdir()
-        (events / "main.jsonl").write_text("keep\n")
+        (events / "main.jsonl").write_text("previous run\n")
 
-        event_logger_checkpoint.restore(_args(event_dir=events))
+        event_logger_checkpoint.restore(_args(event_dir=events), resumed=False)
 
-        assert (events / "main.jsonl").read_text() == "keep\n"
+        _assert_moved_aside(tmp_path, events, stale="previous run\n")
 
-    def test_restore_skips_when_checkpoint_has_no_snapshot(self, tmp_path: Path) -> None:
-        """Checkpoints predating event snapshots leave the live dir untouched."""
+    def test_restore_moves_a_stale_dir_aside_when_the_checkpoint_has_no_snapshot(self, tmp_path: Path) -> None:
+        """Checkpoints predating event snapshots still may not leave the previous run's events behind."""
         ckpt = tmp_path / "ckpt"
         _write_tracker(ckpt, "2")
         events = tmp_path / "events"
         events.mkdir()
-        (events / "main.jsonl").write_text("keep\n")
+        (events / "main.jsonl").write_text("previous run\n")
 
-        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt))
+        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt), resumed=False)
 
-        assert (events / "main.jsonl").read_text() == "keep\n"
+        _assert_moved_aside(tmp_path, events, stale="previous run\n")
 
-    def test_restore_skips_a_reference_checkpoint_a_fresh_run_fell_back_to(self, tmp_path: Path) -> None:
+    def test_restore_does_not_import_a_reference_checkpoint_a_fresh_run_fell_back_to(self, tmp_path: Path) -> None:
         """A run whose --load holds nothing resumable must not import the reference events."""
         ref = tmp_path / "ref"
         events = tmp_path / "events"
         events.mkdir()
-        (events / "main.jsonl").write_text("fresh\n")
+        (events / "main.jsonl").write_text("reference\n")
         _snapshot(_args(event_dir=events, save=ref), ckpt=ref, iteration=7)
         _write_tracker(ref, "7")
 
-        event_logger_checkpoint.restore(_args(event_dir=events, load=ref, requested_load=tmp_path / "run"))
+        event_logger_checkpoint.restore(
+            _args(event_dir=events, load=ref, requested_load=tmp_path / "run"), resumed=False
+        )
 
-        assert (events / "main.jsonl").read_text() == "fresh\n"
+        _assert_moved_aside(tmp_path, events, stale="reference\n")
 
-    def test_restore_skips_release_tracker(self, tmp_path: Path) -> None:
+    def test_restore_moves_a_stale_dir_aside_for_a_release_tracker(self, tmp_path: Path) -> None:
         """A non-numeric tracker (e.g. 'release') is not a resumable iteration."""
         ckpt = tmp_path / "ckpt"
         _write_tracker(ckpt, "release")
         events = tmp_path / "events"
         events.mkdir()
-        (events / "main.jsonl").write_text("keep\n")
+        (events / "main.jsonl").write_text("previous run\n")
 
-        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt))
+        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt), resumed=False)
 
-        assert (events / "main.jsonl").read_text() == "keep\n"
+        _assert_moved_aside(tmp_path, events, stale="previous run\n")
 
     def test_restore_of_a_named_trainer_ignores_a_tracker_left_at_the_root(self, tmp_path: Path) -> None:
         """The cursor such a run rewinds to is its own, so a root tracker is some other layout's."""
@@ -144,15 +158,26 @@ class TestNoOpCases:
         _write_tracker(ckpt, "3")
         events = tmp_path / "events"
         events.mkdir()
-        (events / "main.jsonl").write_text("keep\n")
+        (events / "main.jsonl").write_text("previous run\n")
         (ckpt / "rollout" / "3" / "debug_events").mkdir(parents=True)
 
         event_logger_checkpoint.restore(
-            _args(event_dir=events, load=ckpt, megatron_config=encode_megatron_config("policy"))
+            _args(event_dir=events, load=ckpt, megatron_config=encode_megatron_config("policy")), resumed=False
         )
 
-        assert (events / "main.jsonl").read_text() == "keep\n"
+        _assert_moved_aside(tmp_path, events, stale="previous run\n")
 
+    def test_restore_leaves_a_first_run_with_no_event_dir_alone(self, tmp_path: Path) -> None:
+        """A fresh event directory is ready for loggers already initialized before takeover."""
+        events = tmp_path / "events"
+
+        event_logger_checkpoint.restore(_args(event_dir=events), resumed=False)
+
+        assert list(tmp_path.glob(".trash_*")) == []
+        assert events.is_dir() and list(events.iterdir()) == []
+
+
+class TestNoOpCases:
     def test_snapshot_skips_when_events_are_disabled(self, tmp_path: Path) -> None:
         """Without --save-debug-event-data there is no log to copy."""
         directory = tmp_path / "published" / "debug_events"
@@ -160,6 +185,12 @@ class TestNoOpCases:
         event_logger_checkpoint.snapshot(_args(event_dir=None), directory=directory)
 
         assert not directory.exists()
+
+    def test_restore_skips_when_events_are_disabled(self, tmp_path: Path) -> None:
+        """Without --save-debug-event-data there is no directory this run owns."""
+        event_logger_checkpoint.restore(_args(event_dir=None), resumed=False)
+
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestDiscardEventLog:

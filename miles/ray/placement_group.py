@@ -7,7 +7,6 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
@@ -183,15 +182,9 @@ async def take_over_trainers(args, *, handles: dict[str, BaseWorkerHandle]) -> b
     await wait_external_trainers(args, handles=handles)
     resumed = await wait_trainers_idle(handles)
 
-    if resumed and not _trainer_has_checkpoint(args):
-        event_logger_checkpoint.discard(args)
+    event_logger_checkpoint.restore(args, resumed=resumed)
 
     return resumed
-
-
-def _trainer_has_checkpoint(args) -> bool:
-    assert args.megatron_config is None, "a multi policy run's base --load holds no tracker to read"
-    return read_checkpoint_tracker_iteration(args.requested_load) is not None
 
 
 # TODO: move (when reorganizing files)

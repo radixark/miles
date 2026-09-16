@@ -9,15 +9,11 @@ from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 
 class TestInitOrchestrationScript:
     def test_initializes_the_shared_driver_machinery_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Every driver restores the event history first, then initializes the shared machinery in order."""
+        """Every driver initializes the shared machinery before trainer takeover."""
         args = Namespace(run="test")
         worker_manager = object()
         calls: list[str] = []
         captured: dict[str, object] = {}
-
-        def fake_restore(actual_args: Namespace) -> None:
-            calls.append("event_logger_checkpoint.restore")
-            captured["restore_args"] = actual_args
 
         def fake_configure_logger(actual_args: Namespace, *, source: SimpleProcessIdentity) -> None:
             calls.append("configure_logger")
@@ -41,7 +37,6 @@ class TestInitOrchestrationScript:
             captured["object_store_args"] = actual_args
             captured["contribute_segment"] = contribute_segment
 
-        monkeypatch.setattr(orchestration_utils.event_logger_checkpoint, "restore", fake_restore)
         monkeypatch.setattr(orchestration_utils, "configure_logger", fake_configure_logger)
         monkeypatch.setattr(
             orchestration_utils,
@@ -55,14 +50,12 @@ class TestInitOrchestrationScript:
         result = orchestration_utils.init_orchestration_script(args, disposer=Disposer())
 
         assert calls == [
-            "event_logger_checkpoint.restore",
             "configure_logger",
             "maybe_start_periodic_pyspy_dump",
             "init_tracking",
             "launch_worker_manager",
             "object_store.init_instance",
         ]
-        assert captured["restore_args"] is args
         assert captured["logger_args"] is args
         assert captured["source"] == SimpleProcessIdentity(component="main")
         assert captured["tracking_args"] is args
@@ -81,7 +74,6 @@ class TestInitOrchestrationScript:
         async def fake_shutdown_worker_manager(handle: object) -> None:
             released.append(handle)
 
-        monkeypatch.setattr(orchestration_utils.event_logger_checkpoint, "restore", lambda _args: None)
         monkeypatch.setattr(orchestration_utils, "configure_logger", lambda _args, *, source: None)
         monkeypatch.setattr(orchestration_utils, "maybe_start_periodic_pyspy_dump", lambda: None)
         monkeypatch.setattr(orchestration_utils, "init_tracking", lambda _args: None)

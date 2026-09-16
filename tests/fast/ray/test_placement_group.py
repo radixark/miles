@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from argparse import Namespace
 from pathlib import Path
@@ -640,6 +641,7 @@ class TestCreateTrainingModels:
             critic_lr=None,
             critic_lr_warmup_iters=None,
             trainer_controller_addrs=None,
+            save_debug_event_data=None,
         )
 
         await create_training_models(args, self._rollout_executor())
@@ -733,56 +735,85 @@ class TestTakeOverTrainers:
 
         handle.get_deployment_identity.assert_not_awaited()
 
-    @staticmethod
-    def _recorded_discards(monkeypatch) -> list[Namespace]:
-        discarded: list[Namespace] = []
-        monkeypatch.setattr(placement_group_module.event_logger_checkpoint, "discard", discarded.append)
-        return discarded
-
-    async def test_discards_the_log_without_a_checkpoint(self, monkeypatch, tmp_path):
-        """Such a run trains its steps again, and one log holding each of them twice is not a run anyone can compare."""
+    @pytest.mark.parametrize("initialized", [False, True])
+    @pytest.mark.parametrize("has_checkpoint", [False, True])
+    async def test_event_history_is_replaced_only_after_trainers_are_idle(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, initialized: bool, has_checkpoint: bool
+    ) -> None:
+        """A retained trainer can finish logging its step before the old history is replaced."""
         self._patched(monkeypatch, events=[])
-        discarded = self._recorded_discards(monkeypatch)
-        args = self._args(requested_load=str(tmp_path / "ckpt"))
-
-        handle = _make_trainer_handle(initialized=True, deployment_identity=self._identity())
-
-        assert await take_over_trainers(args, handles={"alpha-actor": handle}) is True
-
-        assert discarded == [args]
-
-    async def test_keeps_the_log_with_a_checkpoint(self, monkeypatch, tmp_path):
-        """That run resumes from its checkpoint, and the snapshot beside it is what replaces the log."""
-        self._patched(monkeypatch, events=[])
-        discarded = self._recorded_discards(monkeypatch)
-        ckpt = tmp_path / "ckpt"
-        ckpt.mkdir()
-        (ckpt / "latest_checkpointed_iteration.txt").write_text("3")
-
-        assert (
-            await take_over_trainers(
-                self._args(requested_load=str(ckpt)),
-                handles={"alpha-actor": _make_trainer_handle(initialized=True, deployment_identity=self._identity())},
-            )
-            is True
+        event_dir = tmp_path / "events"
+        event_dir.mkdir()
+        log_path = event_dir / "trainer.jsonl"
+        log_path.write_text("old step\n")
+        checkpoint = tmp_path / "checkpoint"
+        if has_checkpoint:
+            snapshot = checkpoint / "rollout" / "3" / "debug_events"
+            snapshot.mkdir(parents=True)
+            (snapshot / "trainer.jsonl").write_text("checkpoint step\n")
+            (checkpoint / "latest_checkpointed_iteration.txt").write_text("3")
+        args = self._args(
+            save_debug_event_data=str(event_dir), requested_load=str(checkpoint) if has_checkpoint else None
         )
+        handle = _make_trainer_handle(initialized=initialized, deployment_identity=self._identity())
 
-        assert discarded == []
+        async def finish_step(*, timeout: float) -> None:
+            with log_path.open("a") as stream:
+                stream.write("finished step\n")
 
-    async def test_keeps_the_log_of_a_first_launch(self, monkeypatch, tmp_path):
-        """A launch that installed the trainers itself is the run's first, and its log is the one it just opened."""
-        self._patched(monkeypatch, events=[])
-        discarded = self._recorded_discards(monkeypatch)
+        handle.wait_idle = AsyncMock(side_effect=finish_step)
 
-        assert (
-            await take_over_trainers(
-                self._args(requested_load=str(tmp_path / "ckpt")),
-                handles={"alpha-actor": _make_trainer_handle(deployment_identity=self._identity())},
-            )
-            is False
-        )
+        assert await take_over_trainers(args, handles={"alpha-actor": handle}) is initialized
 
-        assert discarded == []
+        [trash] = list(tmp_path.glob(".trash_*" if initialized else ".startup_events_*"))
+        assert not list(tmp_path.glob(".startup_events_*" if initialized else ".trash_*"))
+        assert (trash / "trainer.jsonl").read_text() == ("old step\nfinished step\n" if initialized else "old step\n")
+        if has_checkpoint:
+            assert log_path.read_text() == "checkpoint step\n"
+        else:
+            assert event_dir.is_dir() and list(event_dir.iterdir()) == []
+        with log_path.open("a") as stream:
+            stream.write("new step\n")
+        assert log_path.read_text() == ("checkpoint step\nnew step\n" if has_checkpoint else "new step\n")
+
+    async def test_last_trainer_must_be_idle_before_the_single_global_archive(self, tmp_path: Path) -> None:
+        """All trainers finish their tail writes before one global history replacement."""
+        event_dir = tmp_path / "events"
+        event_dir.mkdir()
+        log_path = event_dir / "trainer.jsonl"
+        log_path.write_text("old step\n")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        first = _make_trainer_handle(initialized=True)
+        last = _make_trainer_handle(initialized=True)
+
+        async def finish_first(*, timeout: float) -> None:
+            with log_path.open("a") as stream:
+                stream.write("first finished\n")
+
+        async def finish_last(*, timeout: float) -> None:
+            entered.set()
+            await release.wait()
+            with log_path.open("a") as stream:
+                stream.write("last finished\n")
+
+        first.wait_idle = AsyncMock(side_effect=finish_first)
+        last.wait_idle = AsyncMock(side_effect=finish_last)
+        args = self._args(trainer_controller_addrs=None, save_debug_event_data=str(event_dir), requested_load=None)
+        task = asyncio.create_task(take_over_trainers(args, handles={"first": first, "last": last}))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert log_path.read_text() == "old step\nfirst finished\n"
+            assert not list(tmp_path.glob(".trash_*"))
+            assert not list(tmp_path.glob(".startup_events_*"))
+        finally:
+            release.set()
+            resumed = await asyncio.wait_for(task, timeout=5)
+
+        assert resumed is True
+        [archive] = list(tmp_path.glob(".trash_*"))
+        assert (archive / "trainer.jsonl").read_text() == "old step\nfirst finished\nlast finished\n"
+        assert list(event_dir.iterdir()) == []
 
 
 class TestCreateTrainingModel:

@@ -26,23 +26,20 @@ def snapshot(args: Namespace, directory: Path) -> None:
     logger.info("Snapshotted event dir %s -> %s", src, directory)
 
 
-def restore(args: Namespace) -> None:
-    if args.save_debug_event_data is None or args.requested_load is None:
-        return
-
-    requested_load = Path(args.requested_load)
-    iteration = _read_checkpoint_iteration(args)
-    if iteration is None:
-        return
-
-    src = _snapshot_dir(requested_load, iteration)
-    if not src.is_dir():
+def restore(args: Namespace, *, resumed: bool) -> None:
+    if args.save_debug_event_data is None:
         return
 
     dst = Path(args.save_debug_event_data)
     if dst.exists():
-        trash = _move_aside(dst)
+        trash = _move_aside(dst, resumed=resumed)
         logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
+
+    src = _restorable_snapshot_dir(args)
+    if src is None:
+        dst.mkdir(parents=True, exist_ok=True)
+        return
+
     shutil.copytree(src, dst)
     logger.info("Restored event dir %s <- %s", dst, src)
 
@@ -57,9 +54,21 @@ def discard(args: Namespace) -> None:
         return
 
     # TODO: startup events the new incarnation already wrote go into the trash with the abandoned log
-    trash = _move_aside(dst)
+    trash = _move_aside(dst, resumed=True)
     dst.mkdir(parents=True)
     logger.info("Moved the log of the run a hot restart takes over %s -> %s", dst, trash)
+
+
+def _restorable_snapshot_dir(args: Namespace) -> Path | None:
+    if args.requested_load is None:
+        return None
+
+    iteration = _read_checkpoint_iteration(args)
+    if iteration is None:
+        return None
+
+    src = _snapshot_dir(Path(args.requested_load), iteration)
+    return src if src.is_dir() else None
 
 
 def _read_checkpoint_iteration(args: Namespace) -> int | None:
@@ -72,8 +81,9 @@ def _read_checkpoint_iteration(args: Namespace) -> int | None:
     return read_checkpoint_tracker_iteration(load_dir)
 
 
-def _move_aside(dst: Path) -> Path:
-    trash = dst.parent / f".trash_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+def _move_aside(dst: Path, *, resumed: bool) -> Path:
+    prefix = ".trash" if resumed else ".startup_events"
+    trash = dst.parent / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     dst.rename(trash)
     return trash
 

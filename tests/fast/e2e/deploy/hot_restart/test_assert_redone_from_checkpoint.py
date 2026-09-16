@@ -8,6 +8,7 @@ import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
     RedoneSteps,
     assert_only_post_checkpoint_steps_redone,
+    read_discarded_event_dirs,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
@@ -15,8 +16,14 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_determini
 
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
-from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
-from miles.utils.audit_utils.event_logger.models import MetricEvent
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger, read_events
+from miles.utils.audit_utils.event_logger.models import (
+    EnvReport,
+    EnvReportArgsDump,
+    EnvReportEvent,
+    EnvReportProcessFacts,
+    MetricEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 
 TRACKER_FILENAME: str = "latest_checkpointed_iteration.txt"
@@ -24,6 +31,48 @@ SCHEDULE: tuple[ScheduledFreeze, ...] = (
     ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1),
     ScheduledFreeze(frozen_rollout_id=4, saved_iteration=3),
 )
+
+
+def test_startup_report_is_preserved_without_counting_as_a_takeover(tmp_path: Path) -> None:
+    """The archive reader counts only retained takeovers even when startup reports exist."""
+    run = _Run(dump_dir=tmp_path)
+    logger = EventLogger(
+        log_dir=run.events_dir, file_name="main.jsonl", source=SimpleProcessIdentity(component="main")
+    )
+    report = EnvReport(
+        process=EnvReportProcessFacts(
+            hostname="node-0",
+            argv=[],
+            args=EnvReportArgsDump(values={}, skipped_names=[]),
+            env_vars={},
+            launcher_env_report=None,
+        ),
+        key_versions={},
+        editable_packages=[],
+        git_repos=[],
+        full_pip_list=[],
+        packages_probed=False,
+    )
+    logger.log(EnvReportEvent, {"report": report}, print_log=False)
+
+    event_logger_checkpoint.restore(run.megatron_args, resumed=False)
+
+    [startup] = list(tmp_path.glob(".startup_events_*"))
+    [event] = read_events(startup)
+    assert isinstance(event, EnvReportEvent)
+    assert event.report == report
+    assert read_discarded_event_dirs(str(tmp_path)) == []
+    assert run.events_dir.is_dir() and list(run.events_dir.iterdir()) == []
+
+    run.train(0)
+    run.take_over()
+
+    [takeover] = read_discarded_event_dirs(str(tmp_path))
+    [event] = read_events(takeover)
+    assert isinstance(event, MetricEvent)
+    assert event.rollout_id == 0
+    assert startup.is_dir()
+    assert list(run.events_dir.iterdir()) == []
 
 
 def _write_finished_step(events_dir: Path, *, rollout_id: int) -> None:
@@ -68,7 +117,7 @@ class _Run:
         (self.checkpoint_dir / TRACKER_FILENAME).write_text(str(iteration))
 
     def take_over(self) -> None:
-        event_logger_checkpoint.restore(self.megatron_args)
+        event_logger_checkpoint.restore(self.megatron_args, resumed=True)
 
     def assert_redone_steps(
         self,

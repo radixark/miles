@@ -65,7 +65,7 @@ class _Run:
         (self.checkpoint_dir / TRACKER_FILENAME).write_text(str(iteration))
 
     def take_over(self) -> None:
-        event_logger_checkpoint.restore(self.megatron_args)
+        event_logger_checkpoint.restore(self.megatron_args, resumed=True)
         if read_checkpoint_tracker_iteration(self.checkpoint_dir) is None:
             event_logger_checkpoint.discard(self.megatron_args)
 
