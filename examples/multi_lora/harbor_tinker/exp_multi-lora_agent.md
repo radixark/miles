@@ -83,9 +83,24 @@ Totals: 47 trajectories recorded (one cobol trial errored out), 417 chat complet
 
 Not bugs in the PR, but worth knowing: (a) launching the example launcher from a checkout that is not first on `PYTHONPATH` makes it import the image's `/root/miles` and point the Ray job at `/root/miles/serve_tinker.py`; put the checkout first. (b) A client that exits keeps its adapter slot for the 300 s session lease; with `--multi-lora-n-adapters 2`, two quick test clients in a row make the third `create_model` fail with `no free adapter slots` until the sweeper frees them. (c) `overfull-hbox`'s first trials hit AgentENV `snapshot … is not ready` (template build in progress); later trials ran.
 
-## Run 3 — 12 steps, 2 tasks × 8 trials per step (16 trials/step)
+## Run 3 — 12 steps × 16 trials, crashed at the first training step (bug found and fixed)
 
-`groups_per_batch=2 group_size=8 epochs=6 max_steps=12 max_tokens=2048 max_seq_len=24576 learning_rate=3e-4 HARBOR_AGENT_MAX_ITERATIONS=15` — in progress; results appended below when done.
+`groups_per_batch=2 group_size=8 epochs=6 max_steps=12 max_tokens=2048 max_seq_len=24576 learning_rate=3e-4 HARBOR_AGENT_MAX_ITERATIONS=15`
+
+Batch 0 sampled fine (16 trajectories: fix-git 8 × reward 0, cobol-modernization 8 × reward 0; 14 turns per episode, final
+sequence mean 14,598 tokens, max 33,669; 1 of 224 turns hit the 2048 cap; 641 recorded chats in total on the gateway, still 0
+non-200). The first `forward_backward` was then refused by the gateway, `model training failed (datum 4: 33669 tokens exceeds
+32768)`: one turn's prompt+output exceeded the gateway's per-datum cap (`--tinker-max-tokens-per-datum`, 32768 by default),
+the gateway closes the model on a failed training request, and the cookbook run died. Harbor's own `max_seq_len` (24,576 here)
+did not stop the agent first because it counts tokens approximately.
+
+Fix (PR files): `truncate_turns` in `harbor_env.py` keeps only the leading turns whose prompt+output fit `max_datum_tokens`
+(default 32768, the gateway default) before building the `Trajectory`; the drop is logged and recorded per trajectory
+(`dropped_turns`). Exposed as `max_datum_tokens=` on the entry point. Run 4 re-runs the configuration with it.
+
+## Run 4 — 12 steps × 16 trials with the datum cap
+
+`groups_per_batch=2 group_size=8 epochs=6 max_steps=12 max_tokens=1536 max_seq_len=16384 max_datum_tokens=32768 learning_rate=3e-4 HARBOR_AGENT_MAX_ITERATIONS=12` — in progress; results appended below when done.
 
 ## Reproduce
 
