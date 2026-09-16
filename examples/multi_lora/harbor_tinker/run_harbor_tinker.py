@@ -37,7 +37,9 @@ class HarborTinkerConfig:
     concurrency: int = 16
     max_seq_len: int = 65536
     max_tokens: int = 8192
-    max_datum_tokens: int = 32768  # the gateway's --tinker-max-tokens-per-datum; longer turns are dropped client-side
+    max_datum_tokens: int = (
+        32768  # set to the gateway's per-datum cap (min of model max_position_embeddings and --max-tokens-per-gpu); longer turns are dropped client-side
+    )
     temperature: float = 1.0
     loss_fn: str = "ppo"
     learning_rate: float = 3e-5

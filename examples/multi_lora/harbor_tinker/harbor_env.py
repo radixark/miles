@@ -156,7 +156,7 @@ class HarborDatasetBuilder(RLDatasetBuilder):
 
 
 def truncate_turns(turns: list[dict[str, Any]], max_tokens: int | None) -> list[dict[str, Any]]:
-    """Keep the leading turns whose prompt + output fit the gateway's per-datum cap (--tinker-max-tokens-per-datum, 32768 by default); prompts grow every turn, so the first over-long turn ends the trainable part of the trajectory (the Harbor agent's own max_seq_len check counts tokens approximately)."""
+    """Keep the leading turns whose prompt + output fit the gateway's per-datum cap (serve_tinker.py: min(model max_position_embeddings, --max-tokens-per-gpu rounded to the pad size); 8192 with the example launcher's defaults, so raise --max-tokens-per-gpu for agent contexts); prompts grow every turn, so the first over-long turn ends the trainable part of the trajectory (the Harbor agent's own max_seq_len check counts tokens approximately)."""
     if max_tokens is None:
         return turns
     kept = []
@@ -226,7 +226,7 @@ class SessionRolloutStrategy(RolloutStrategy):
     temperature: float = 1.0
     http_timeout_s: float = 60.0
     max_datum_tokens: int | None = (
-        32768  # the gateway's --tinker-max-tokens-per-datum; longer turns are cut off the trajectory
+        32768  # must not exceed the gateway's per-datum cap (see truncate_turns); longer turns are cut off the trajectory
     )
     record_path: str | None = None  # append one JSON line per trajectory (task, turns, token counts, reward) when set
     # test seams: the trial runner (default harbor_agent_function.run) and an httpx transport (default: the network)
