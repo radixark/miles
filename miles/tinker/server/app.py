@@ -89,7 +89,14 @@ def _install_oai_routes(app: FastAPI, collector: TrajectoryCollector) -> None:
         raise NotImplementedError
 
 
-def build_app(service: TinkerService, collector: TrajectoryCollector | None = None) -> FastAPI:
+def build_app_with_collector(service: TinkerService, collector: TrajectoryCollector) -> FastAPI:
+    """build_app plus the /oai routes served by the token trajectory collector; the Tinker routes are untouched."""
+    app = build_app(service)
+    _install_oai_routes(app, collector)
+    return app
+
+
+def build_app(service: TinkerService) -> FastAPI:
     app = FastAPI()
 
     @app.exception_handler(UserInputError)
@@ -225,8 +232,5 @@ def build_app(service: TinkerService, collector: TrajectoryCollector | None = No
         payload = decode_sample_request(await request.json())
         request_id, sequence_ids = service.submit_sample(_tenant(request), payload)
         return {"request_id": request_id, "sample_sequence_ids": sequence_ids}
-
-    if collector is not None:
-        _install_oai_routes(app, collector)
 
     return app
