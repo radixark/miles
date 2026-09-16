@@ -1,47 +1,81 @@
 """The four recorded-session routes the Harbor × cookbook example needs, mounted next to the Tinker API.
 
-Skeleton: route bodies land with the collector.
-
 Dependency decision: the gateway stays Tinker-wire only plus these four routes. No OpenAI-parity surface
 (stateless ``/oai/api/v1/*``, ``/completions``, streaming) in stage 1; the agent harness only needs a recorded
 chat endpoint. Reused, not reimplemented: ``build_app`` (all Tinker routes and the UserInputError→400 /
 OwnershipError→403 handlers) and ``_tenant`` from ``miles.tinker.server.app``.
 """
 
+import json
+
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from miles.tinker.core.service import TinkerService
-from miles.tinker.core.tinker_session_server import TrajectoryCollector
-from miles.tinker.server.app import build_app
+from miles.tinker.core.tinker_session_server import SamplingBackendError, TrajectoryCollector, UnknownSessionError
+from miles.tinker.core.types import UserInputError
+from miles.tinker.server.app import _tenant, build_app
 
 
 def _optional_tenant(request: Request) -> str | None:
     """_tenant, but None instead of UserInputError when no key is present (a pre-bound session serves the harness's dummy key)."""
-    raise NotImplementedError
+    try:
+        return _tenant(request)
+    except UserInputError:
+        return None
+
+
+async def _json_body(request: Request) -> dict:
+    """The JSON object body, or a UserInputError (400) instead of an unhandled decode error."""
+    body = await request.body()
+    if not body:
+        return {}
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise UserInputError(f"invalid JSON body: {error}") from error
+    if not isinstance(payload, dict):
+        raise UserInputError("request body must be a JSON object")
+    return payload
 
 
 def _install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None:
-    """Mount the four /oai/sessions routes and the UnknownSessionError→404 handler."""
+    """Mount the four /oai/sessions routes, the UnknownSessionError→404 handler and the SamplingBackendError→502 handler."""
+
+    @app.exception_handler(UnknownSessionError)
+    async def _unknown_session(request: Request, error: UnknownSessionError):
+        return JSONResponse(status_code=404, content={"error": str(error)})
+
+    @app.exception_handler(SamplingBackendError)
+    async def _backend_error(request: Request, error: SamplingBackendError):
+        return JSONResponse(status_code=502, content={"error": str(error)})
 
     @app.post("/oai/sessions/{session_id}")
     async def bind_session(session_id: str, request: Request):
         """Pin the session to {model: tinker://M/sampler_weights/V} (or {sampling_session_id}); bearer required; the example's step 1."""
-        raise NotImplementedError
+        tenant = _tenant(request)
+        payload = await _json_body(request)
+        session = collector.bind(
+            session_id, tenant, model=payload.get("model"), sampling_session_id=payload.get("sampling_session_id")
+        )
+        return {"session_id": session.session_id, "model_path": session.model_path}
 
     @app.post("/oai/sessions/{session_id}/v1/chat/completions")
     async def session_chat_completions(session_id: str, request: Request):
         """OpenAI chat completion recorded as one Turn; a pre-bound session accepts the harness's dummy key, a new id with a valid bearer auto-registers; the example's step 2."""
-        raise NotImplementedError
+        tenant = _optional_tenant(request)
+        return await collector.chat(await _json_body(request), session_id=session_id, tenant=tenant)
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
         """Export {session_id, model_path, turns: [{input_ids, output_ids, logprobs, finish_reason}]}; bearer must match the owner; the example's step 3."""
-        raise NotImplementedError
+        return collector.trajectory(session_id, _tenant(request))
 
     @app.delete("/oai/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request):
         """Free the session and its turns; bearer must match the owner."""
-        raise NotImplementedError
+        collector.delete(session_id, _tenant(request))
+        return {"session_id": session_id, "deleted": True}
 
 
 def build_app_with_collector(service: TinkerService, collector: TrajectoryCollector) -> FastAPI:
