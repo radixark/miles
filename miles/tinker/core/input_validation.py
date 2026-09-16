@@ -157,5 +157,5 @@ def validate_checkpoint_metadata(meta, shown_path: str) -> None:
 
 
 def accept_cookbook_save_options(payload: dict) -> None:
-    """(Skeleton) Replace validate_save_options' ttl_seconds rejection with accept-and-ignore: tinker-cookbook's CheckpointManager sends Config.ttl_seconds (7 days by default) on every periodic save, and checkpoints on this gateway never expire."""
-    raise NotImplementedError
+    """Accept and ignore ttl_seconds ahead of validate_save_options: tinker-cookbook's CheckpointManager sends Config.ttl_seconds (7 days by default) on every periodic save, and checkpoints on this gateway never expire, so the field is dropped from the request instead of failing the save."""
+    payload.pop("ttl_seconds", None)

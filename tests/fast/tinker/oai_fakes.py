@@ -37,9 +37,11 @@ class FakeTokenizer:
         return "".join(chr(token) for token in ids if token >= 32)
 
 
-def write_sampler(checkpoint_root: Path, base_model: str, tenant: str = TENANT) -> str:
-    """Lay down m1/sampler_weights/v0/META.json owned by `tenant`, the way save_weights_for_sampler does (build_checkpoint_metadata + write_checkpoint_dir)."""
-    path = resolve_checkpoint_dir(str(checkpoint_root), "m1", "sampler_weights", "v0")
+def write_sampler(
+    checkpoint_root: Path, base_model: str, tenant: str = TENANT, kind: str = "sampler_weights", name: str = "v0"
+) -> str:
+    """Lay down m1/<kind>/<name>/META.json owned by `tenant`, the way save_weights_for_sampler / save_state do (build_checkpoint_metadata + write_checkpoint_dir)."""
+    path = resolve_checkpoint_dir(str(checkpoint_root), "m1", kind, name)
     metadata = {
         "tenant_digest": hashlib.sha256(tenant.encode()).hexdigest(),
         "base_model": base_model,
