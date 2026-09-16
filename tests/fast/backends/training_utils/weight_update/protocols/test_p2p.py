@@ -353,6 +353,7 @@ class TestSendBucket:
         assert send_state == "returned"
         assert drain_state == "draining"
         assert ("write", api.session_id(0)) in drain.log_at_return
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
 
     def test_an_empty_bucket_loads_and_sends_nothing_and_the_next_bucket_still_goes_out(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
