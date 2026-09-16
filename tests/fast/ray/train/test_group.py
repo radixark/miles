@@ -14,6 +14,7 @@ from tests.fast.train_parallel_config_utils import make_train_parallel_config
 import miles.ray.train.group as group_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
@@ -39,6 +40,8 @@ def _make_mock_args(
     num_cells: int = 3,
     ci_ft_test_actions: str | None = None,
     ci_ft_test_actions_path: str | None = None,
+    colocate: bool = True,
+    update_weight_transfer_mode: str = "broadcast",
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
@@ -68,6 +71,9 @@ def _make_mock_args(
         object_store_backend="ray",
         worker_comm_backend="ray",
         trainer_model_id=None,
+        colocate=colocate,
+        update_weight_transfer_mode=update_weight_transfer_mode,
+        update_weights_timeout=None,
     )
 
 
@@ -156,6 +162,21 @@ async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerCont
     group = _make_controller(num_cells=num_cells, **kwargs)
     await _init_controller(group)
     return group
+
+
+def _output(weight_version: int | None, *failed_cell_ids: str) -> WeightUpdateOutput:
+    return WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=failed_cell_ids)
+
+
+def _make_broadcast_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        debug_train_only=False,
+        debug_rollout_only=False,
+        trainer_model_id=None,
+        colocate=True,
+        update_weight_transfer_mode="broadcast",
+        update_weights_timeout=None,
+    )
 
 
 class TestIndepDPStore:
@@ -1214,33 +1235,35 @@ class TestCellStatusesUnderConcurrentReconcile:
 
 
 class TestUpdateWeightsReturnsTheVersion:
-    def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
+    def _make_group(self, *, per_worker_outputs: list[WeightUpdateOutput]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
-        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
+        group.args = _make_broadcast_args()
         group._trainer_id = "trainer-0"
-        group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
+        group._execute_first_alive = AsyncMock(return_value=per_worker_outputs)
         return group
 
     async def test_the_controller_answers_the_version_the_engines_now_serve(self):
         """The driver can only publish the version to the executor if the controller hands it back."""
-        group = self._make_group(per_worker_versions=[1, 1])
+        group = self._make_group(per_worker_outputs=[_output(1), _output(1)])
 
-        assert await group.update_weights(info=MagicMock()) == 1
+        assert await group.update_weights(info=MagicMock()) == _output(1)
 
     async def test_a_trainer_that_skipped_the_broadcast_answers_nothing(self):
         """--debug-skip-weight-update returns None from every worker, which must reach the driver as None."""
-        group = self._make_group(per_worker_versions=[None])
+        group = self._make_group(per_worker_outputs=[_output(None)])
 
-        assert await group.update_weights(info=MagicMock()) is None
+        assert (await group.update_weights(info=MagicMock())).weight_version is None
 
     async def test_it_broadcasts_the_window_the_orchestration_script_opened(self):
         """The engines it writes into are the ones the script snapshotted, not a set it fetched for itself."""
-        group = self._make_group(per_worker_versions=[1])
+        group = self._make_group(per_worker_outputs=[_output(1)])
         info = MagicMock()
 
         await group.update_weights(info=info)
 
-        group._execute_first_alive.assert_awaited_once_with("update_weights", info=info)
+        group._execute_first_alive.assert_awaited_once_with(
+            "update_weights", timeout=group.args.update_weights_timeout, info=info
+        )
 
 
 class TestModelOwnedWeightVersions:
@@ -1248,20 +1271,28 @@ class TestModelOwnedWeightVersions:
     async def test_controller_returns_model_versions_without_allocating_ordinals(self, versions: list) -> None:
         """Republishing, skipped steps and checkpoint rewinds preserve model versions."""
         controller = TrainerController.__new__(TrainerController)
+        controller.args = _make_broadcast_args()
         controller._trainer_id = "trainer-0"
-        controller._execute_first_alive = AsyncMock(side_effect=[[version, version] for version in versions])
+        controller._execute_first_alive = AsyncMock(
+            side_effect=[[_output(version), _output(version)] for version in versions]
+        )
         info = MagicMock()
 
-        assert [await controller.update_weights(info=info) for _ in versions] == versions
-        assert all(call.kwargs == {"info": info} for call in controller._execute_first_alive.await_args_list)
+        outputs = [await controller.update_weights(info=info) for _ in versions]
+
+        assert [output.weight_version for output in outputs] == versions
+        assert all(call.kwargs["info"] is info for call in controller._execute_first_alive.await_args_list)
 
     async def test_retry_reads_the_recovered_models_version(self) -> None:
         """A failed trainer does not reserve a version for its replacement."""
         controller = TrainerController.__new__(TrainerController)
+        controller.args = _make_broadcast_args()
         controller._trainer_id = "trainer-0"
-        controller._execute_first_alive = AsyncMock(side_effect=[RuntimeError("cell died"), [12, 12]])
+        controller._execute_first_alive = AsyncMock(
+            side_effect=[RuntimeError("cell died"), [_output(12), _output(12)]]
+        )
 
-        assert await controller.update_weights(info=MagicMock()) == 12
+        assert (await controller.update_weights(info=MagicMock())).weight_version == 12
 
 
 class TestInitForwardsModelFlags:
@@ -1336,9 +1367,9 @@ class TestUpdateWeightsReachesTheWorker:
         info = SimpleNamespace(snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"})
         group = await _make_alive_controller(num_cells=1)
         for handle in get_raw_actor_handles(_cell(group, 0)):
-            ray.get(handle.set_update_weights_return_value.remote(1))
+            ray.get(handle.set_update_weights_return_value.remote(_output(1)))
 
-        assert await group.update_weights(info=info, rollout_id=3) == 1
+        assert await group.update_weights(info=info, rollout_id=3) == _output(1)
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
@@ -1351,14 +1382,14 @@ class TestUpdateWeightsReachesTheWorker:
         group = await _make_alive_controller(num_cells=1)
         handles = get_raw_actor_handles(_cell(group, 0))
         for handle in handles:
-            ray.get(handle.set_update_weights_return_value.remote(1))
-        assert await group.update_weights(info=info) == 1
+            ray.get(handle.set_update_weights_return_value.remote(_output(1)))
+        assert await group.update_weights(info=info) == _output(1)
 
         await group.load_state()
         for handle in handles:
-            ray.get(handle.set_update_weights_return_value.remote(2))
+            ray.get(handle.set_update_weights_return_value.remote(_output(2)))
 
-        assert await group.update_weights(info=info) == 2
+        assert await group.update_weights(info=info) == _output(2)
 
         for handle in handles:
             calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]

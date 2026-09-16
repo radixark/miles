@@ -6,7 +6,7 @@ import pytest
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray import placement_group, train_actor
-from miles.ray.train_actor import TrainRayActor
+from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.init_once import InitOnce
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
@@ -241,3 +241,40 @@ class TestTheLocalGpuIsFoundWithoutRay:
         monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [5])
 
         assert train_actor.get_local_gpu_id() == 5
+
+
+class TestWeightUpdateOutputMerge:
+    def test_merging_nothing_answers_an_empty_report(self):
+        """An update window with no engines runs no trainer cell, and that is not a failure."""
+        assert WeightUpdateOutput.merge([]) == WeightUpdateOutput(weight_version=None, failed_cell_ids=())
+
+    def test_trainer_cells_that_all_succeeded_publish_one_version_and_no_failure(self):
+        """The driver publishes this version to the executor, so a merge must not invent a second one."""
+        outputs = [
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=()),
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=()),
+        ]
+
+        assert WeightUpdateOutput.merge(outputs) == WeightUpdateOutput(weight_version=5, failed_cell_ids=())
+
+    def test_the_failed_cell_ids_of_every_trainer_cell_are_concatenated(self):
+        """A dropped id leaves an engine serving half-written weights in service."""
+        outputs = [
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=("rollout-1",)),
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=("rollout-3", "rollout-4")),
+        ]
+
+        merged = WeightUpdateOutput.merge(outputs)
+
+        assert merged.weight_version == 5
+        assert set(merged.failed_cell_ids) == {"rollout-1", "rollout-3", "rollout-4"}
+
+    def test_one_rollout_cell_blamed_by_two_trainer_cells_is_rejected(self):
+        """The targets are split disjointly, so the same id twice means the split leaked."""
+        outputs = [
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=("rollout-1",)),
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=("rollout-1",)),
+        ]
+
+        with pytest.raises(AssertionError, match="more than one trainer cell"):
+            WeightUpdateOutput.merge(outputs)

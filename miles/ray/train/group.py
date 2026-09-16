@@ -1,15 +1,16 @@
 import asyncio
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
 from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -36,6 +37,8 @@ from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -389,16 +392,16 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> int | None:
-        """Broadcast weights to rollout engines and answer the version they now serve."""
+    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
+        """Broadcast weights to rollout engines and return which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        weight_versions = await retry(
+        outputs = await retry(
             lambda _: self._execute_first_alive("update_weights", timeout=self.args.update_weights_timeout, info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        return weight_versions[0]
+        return _unique(outputs)
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
         return self._deployment_identity
@@ -681,6 +684,11 @@ class TrainerController:
     @property
     def num_cells(self) -> int:
         return len(self._cells)
+
+
+def _unique(xs: Sequence[_T]) -> _T:
+    [x] = set(xs)
+    return x
 
 
 def _first_exception(results) -> BaseException | None:
