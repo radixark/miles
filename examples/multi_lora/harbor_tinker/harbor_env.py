@@ -126,7 +126,7 @@ class SessionRolloutStrategy(RolloutStrategy):
         raise NotImplementedError
 
     async def _run_one(self, env: HarborEnv, sampler_model_path: str) -> Trajectory:
-        """Bind a fresh session to sampler_model_path, run harbor_agent_function.run (or toy_tool_agent.run) against it, store the verdict on env, fetch and delete the session, return turns_to_trajectory(...)."""
+        """Bind a fresh session to sampler_model_path, run harbor_agent_function.run against it, store the verdict on env, fetch the Trajectory through SessionClient.trajectory, delete the session."""
         raise NotImplementedError
 
     def _sampler_model_path(self, policy: TokenCompleter) -> str:
