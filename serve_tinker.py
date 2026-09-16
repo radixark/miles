@@ -13,24 +13,37 @@ from miles.tinker.core.tinker_session_server import TrajectoryCollector
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
+from miles.tinker.server.oai_routes import install_session_routes
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.hf_config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
+from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
 
+_SWEEP_INTERVAL_S = 60.0
+
 
 def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
-    """(Skeleton) load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path) → TrajectoryCollector(service, tokenizer, session_ttl_s=args.tinker_session_ttl_s, chat_template_kwargs=args.tinker_chat_template_kwargs); the only place the tokenizer is loaded, core never imports it."""
-    raise NotImplementedError
+    """The recorded-session collector over the running service: the HF tokenizer is loaded here and only here (core never imports it); the TTL comes from --tinker-session-ttl-s and the template kwargs from --apply-chat-template-kwargs."""
+    tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path)
+    return TrajectoryCollector(
+        service,
+        tokenizer,
+        session_ttl_s=args.tinker_session_ttl_s,
+        chat_template_kwargs=args.apply_chat_template_kwargs,
+    )
 
 
 async def _sweep_collector(collector: TrajectoryCollector, interval_s: float) -> None:
-    """(Skeleton) Every interval_s call collector.sweep(); runs as a third supervised task next to service.run() and server.serve()."""
-    raise NotImplementedError
+    """Every interval_s drop the recorded sessions idle past their TTL (trials that died before DELETE); lives and dies with service.run()."""
+    while True:
+        await asyncio.sleep(interval_s)
+        if dropped := collector.sweep():
+            logger.info(f"swept {dropped} idle recorded session(s)")
 
 
 async def serve(args):
@@ -84,19 +97,22 @@ async def serve(args):
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
-    # TODO(thinker-session-agentic): tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path);
-    # collector = TrajectoryCollector(service, tokenizer, session_ttl_s=..., chat_template_kwargs=...);
-    # serve miles.tinker.server.oai_routes.build_app_with_collector(service, collector) and sweep the collector alongside service.run().
+    collector = _build_collector(args, service)
 
     server = uvicorn.Server(
         uvicorn.Config(
             build_app(service), host=args.tinker_server_host, port=args.tinker_server_port, log_level="info"
         )
     )
+    # the four /oai/sessions routes ride on the same app (uvicorn keeps it on server.config.app); Tinker routes untouched
+    install_session_routes(server.config.app, collector)
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
     # not keep answering /healthz while every training future pends forever
     service_task = asyncio.create_task(service.run())
+    # the sweep lives exactly as long as the dispatcher; nothing else needs to know about it
+    sweep_task = asyncio.create_task(_sweep_collector(collector, _SWEEP_INTERVAL_S))
+    service_task.add_done_callback(lambda _: sweep_task.cancel())
     server_task = asyncio.create_task(server.serve())
     try:
         done, _ = await asyncio.wait({service_task, server_task}, return_when=asyncio.FIRST_COMPLETED)
