@@ -1135,12 +1135,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--p2p-transfer-num-workers",
-                type=int,
-                default=4,
-                help="Number of thread pool workers for P2P weight transfer.",
-            )
-            parser.add_argument(
                 "--p2p-transfer-timeout",
                 type=float,
                 default=30.0,

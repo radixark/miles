@@ -27,7 +27,6 @@ from miles.utils.distributed_utils import get_gloo_group
 
 from .p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 from .p2p_transfer_utils import (
-    P2PTransferManager,
     RemoteTransferPlan,
     RemoteWeightInfo,
     TransferTaskP2PMeta,
@@ -61,10 +60,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
-        self.transfer_manager = P2PTransferManager(
-            num_workers=getattr(args, "p2p_transfer_num_workers", 4),
-            transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
-        )
         self._transfer_engine: Any | None = None
         self._cpu_replicas = _CPUReplicasManager(model_path=args.hf_checkpoint)
         self._weight_memory_registry: dict[str, tuple[int, int, int]] = {}
@@ -77,7 +72,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         if not self.is_sender:
             return
         for cell_updater in self.cell_updaters_of_cell_id.values():
-            cell_updater.wait_for_pending_writes(timeout=self.transfer_manager.transfer_timeout)
+            cell_updater.wait_for_pending_writes(timeout=self.args.p2p_transfer_timeout)
         self._model_param_stager.assert_all_done()
 
     def begin_sync(
@@ -121,13 +116,12 @@ class UpdateWeightP2P(WeightTransferProtocol):
                         names=transfer_ready_params,
                         weight_memory_registry=self._weight_memory_registry,
                         transfer_engine=self._transfer_engine,
-                        transfer_manager=self.transfer_manager,
                     )
 
                 if i != last_idx:
                     # Non-last rollout engine rank needs to be fully written to target before next update can happen.
                     for cell_updater in meta.target_cell_updaters:
-                        cell_updater.wait_for_pending_writes(timeout=self.transfer_manager.transfer_timeout)
+                        cell_updater.wait_for_pending_writes(timeout=self.args.p2p_transfer_timeout)
 
         converted_named_tensors.clear()
 
@@ -228,7 +222,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     def disconnect(self) -> None:
         for cell_updater in self.cell_updaters_of_cell_id.values():
-            cell_updater.wait_for_pending_writes(timeout=self.transfer_manager.transfer_timeout)
+            cell_updater.wait_for_pending_writes(timeout=self.args.p2p_transfer_timeout)
         self._rollout_engine_rank_infos = []
         self.remote_weight_infos_by_session_id = {}
         self.session_id_to_server_args = {}
