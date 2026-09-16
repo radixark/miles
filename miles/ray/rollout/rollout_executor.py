@@ -14,11 +14,13 @@ from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
+from miles.ray.rollout.runtime_config import RolloutRuntimeState, compute_rollout_runtime_config
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
+from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
@@ -82,6 +84,7 @@ class RolloutExecutor:
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
         self.args = args
+        self._runtime = RolloutRuntimeState()
         # set by the training actor after each weight update, keyed by trainer model id (None for one policy)
         self._weight_versions_of_model_id: dict[str | None, int] = {}
         self.last_get_rollout_id_of_model_id: dict[str | None, int] = {}
@@ -93,15 +96,34 @@ class RolloutExecutor:
         self._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=args)
 
     @init_once
-    async def init(self) -> None:
+    async def init(
+        self,
+        *,
+        num_rollout: int | None = None,
+        wandb_run_id: str | None = None,
+        mlflow_run_id: str | None = None,
+    ) -> None:
+        self.args.num_rollout = num_rollout
+        self.args.wandb_run_id = wandb_run_id
+        self.args.mlflow_run_id = mlflow_run_id
         args = self.args
         if not args.debug_train_only:
-            await resolve_router_addrs(args, router_providers=self._router_providers)
-            await wait_session_server_ready(args, provider=self._session_server_provider)
+            routers = await resolve_router_addrs(args, router_providers=self._router_providers)
+            self._runtime = await wait_session_server_ready(args, provider=self._session_server_provider)
+            primary_model = args.sglang.models[0]
+            primary = routers[primary_model.name]
+            self._runtime.sglang_router_ip = primary.host
+            self._runtime.sglang_router_port = primary.port
+            self._runtime.sglang_model_routers = {name: (addr.host, addr.port) for name, addr in routers.items()}
+        await self._refresh_runtime_topology()
+        args = compute_rollout_runtime_config(self.args, self._runtime)
+        self._rollout_args = args
 
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
-        object_store.init_instance(args, contribute_segment=False)
+        init_tracking(
+            self.args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+        )
+        object_store.init_instance(self.args, contribute_segment=False)
 
         init_http_client(args)
 
@@ -187,7 +209,7 @@ class RolloutExecutor:
 
         with SampleOwnershipRecorder.suppress_drop_logging() if replay is not None else nullcontext():
             train_data = convert_samples_to_train_data(
-                self.args,
+                self._rollout_args,
                 data,
                 metadata=metadata,
                 custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
@@ -207,6 +229,7 @@ class RolloutExecutor:
     async def _generate_rollout_data(
         self, *, rollout_id: int, trainer_model_id: str | None
     ) -> tuple[list[Group], dict[str, Any]] | None:
+        await self._refresh_runtime_topology()
         start_time = time.time()
         self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
         assert_weight_version_is_published(
@@ -234,7 +257,7 @@ class RolloutExecutor:
             trainer_model_id=trainer_model_id,
         )
         log_rollout_data(
-            rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
+            rollout_id, self._rollout_args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
         )
         return data, metadata
 
@@ -251,11 +274,12 @@ class RolloutExecutor:
         if self.args.eval_uses_snapshots:
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
+        await self._refresh_runtime_topology()
         with timer("eval_rollout"):
             if not self.use_legacy_rollout_v1:
                 result = await maybe_await(self.eval_generate_rollout(RolloutFnEvalInput(rollout_id=rollout_id)))
             else:
-                fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
+                fn_args = _compute_rollout_function_config(self._rollout_args, self.args.eval_function_path)
                 result = await asyncio.to_thread(
                     call_rollout_fn,
                     self.eval_generate_rollout,
@@ -266,7 +290,7 @@ class RolloutExecutor:
                 )
         data = result.data
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
-        metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
+        metrics = log_eval_rollout_data(rollout_id, self._rollout_args, data, result.metrics)
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
@@ -301,7 +325,7 @@ class RolloutExecutor:
             extra_metrics["eval/duration_seconds"] = time.time() - start_time
             if export_time_seconds is not None:
                 extra_metrics["eval/export_time_seconds"] = export_time_seconds
-            metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
+            metrics = log_eval_rollout_data(rollout_id, self._rollout_args, data, extra_metrics)
             if self._metric_checker is not None:
                 self._metric_checker.on_eval(metrics)
 
@@ -323,7 +347,7 @@ class RolloutExecutor:
                 )
                 data = await maybe_await(self.generate_rollout(input))
             else:
-                fn_args = _compute_rollout_function_config(self.args, self.args.rollout_function_path)
+                fn_args = _compute_rollout_function_config(self._rollout_args, self.args.rollout_function_path)
                 data = await asyncio.to_thread(
                     call_rollout_fn, self.generate_rollout, fn_args, rollout_id, self.data_source, evaluation=False
                 )
@@ -362,13 +386,13 @@ class RolloutExecutor:
             self._output_snapshotter.save(dir_temp / _EXECUTOR_DIRNAME)
 
     # async but never awaits, for the same reason as save
-    async def load(self, rollout_id: int) -> None:
-        if self.args.load is None:
+    async def load(self, rollout_id: int, *, load: str | None) -> None:
+        if load is None:
             logger.warning("no --load: the rollout side starts fresh")
             return
         assert rollout_id >= 0, f"rollout {rollout_id} is not a trained step"
 
-        directory = compute_rollout_checkpoint_dir(self.args.load, rollout_id=rollout_id)
+        directory = compute_rollout_checkpoint_dir(load, rollout_id=rollout_id)
         assert directory.is_dir(), (
             f"the trainer restored rollout {rollout_id}, but {directory} does not exist; a run saved before the "
             f"rollout-side state moved into one directory per rollout cannot resume that state"
@@ -383,6 +407,16 @@ class RolloutExecutor:
                 eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
 
     # -------------------------- misc APIs -----------------------------
+
+    async def _refresh_runtime_topology(self) -> None:
+        if not self.args.starts_inference_engines:
+            return
+        controller = self._inference_controller_provider.get_handle(inference_controller_worker_name())
+        topology = await controller.get_runtime_topology()
+        rollout_counts = [count for name, counts in topology.items() if name != "eval" for count in counts]
+        self._runtime.rollout_engine_count = len(rollout_counts)
+        self._runtime.rollout_gpu_count = sum(rollout_counts)
+        self._runtime.eval_engine_count = len(topology.get("eval", []))
 
     def get_num_rollout_per_epoch(self) -> int:
         assert self.args.rollout_global_dataset
@@ -408,7 +442,7 @@ class RolloutExecutor:
             self._eval_fleet = None
             return
 
-        fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
+        fn_args = _compute_rollout_function_config(self._rollout_args, self.args.eval_function_path)
         self._eval_fleet = RolloutExecutorEvalFleet(
             fn_args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
         )
@@ -421,7 +455,9 @@ def compute_rollout_checkpoint_dir(directory: str | Path, *, rollout_id: int) ->
 _T = TypeVar("_T")
 
 
-def _compute_rollout_function_config(args: BaseLeafConfig, function: CustomFunctionConfig) -> ImmutableNamespace:
+def _compute_rollout_function_config(
+    args: BaseLeafConfig | ImmutableNamespace, function: CustomFunctionConfig
+) -> ImmutableNamespace:
     return compute_custom_function_config(
         args,
         function,

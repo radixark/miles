@@ -8,6 +8,7 @@ from typing import Any
 from miles.ray.multi_lora.backend import MultiLoRABackend
 from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
 from miles.ray.rollout.router_manager import resolve_router_addrs
+from miles.ray.rollout.runtime_config import RolloutRuntimeState, compute_rollout_runtime_config
 from miles.ray.specs.multi_lora import create_multi_lora_controller_handle
 from miles.utils.adapter_config import AdapterRun
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
@@ -77,7 +78,14 @@ class MultiLoRAController:
     @init_once
     async def init(self) -> int:
         args = self.args
-        await resolve_router_addrs(args, router_providers=self._router_providers)
+        router_addrs = await resolve_router_addrs(args, router_providers=self._router_providers)
+        primary = next(iter(router_addrs.values()))
+        self._runtime = RolloutRuntimeState(
+            sglang_router_ip=primary.host,
+            sglang_router_port=primary.port,
+            sglang_model_routers={name: (addr.host, addr.port) for name, addr in router_addrs.items()},
+        )
+        args = compute_rollout_runtime_config(self.args, self._runtime)
         router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
 
         backend_cls = _load_subclass(args.multi_lora_backend_path, MultiLoRABackend)

@@ -29,7 +29,6 @@ from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, regi
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
 from miles.utils.workers.rpc.common.metadata import rpc
-from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.serving.worker_identity import read_worker_in_pod_index
 
 logger = logging.getLogger(__name__)
@@ -50,7 +49,7 @@ class TrainRayActor(NodeProbeMixin):
     def __init__(
         self,
         *,
-        args,
+        args: TrainerConfig,
         world_size: int,
         rank: int,
         role: Literal["actor", "critic"],
@@ -93,9 +92,13 @@ class TrainRayActor(NodeProbeMixin):
     @abc.abstractmethod
     def init(
         self,
-        args: Pickled,
         role: str,
         *,
+        load: str | None,
+        resume_from_ckpt: bool,
+        num_rollout: int,
+        wandb_run_id: str | None = None,
+        mlflow_run_id: str | None = None,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
@@ -169,7 +172,7 @@ class TrainRayActor(NodeProbeMixin):
     def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
 
-    def load_state(self) -> int:
+    def load_state(self, *, load: str | None, resume_from_ckpt: bool) -> int:
         raise NotImplementedError(f"{type(self).__name__} cannot reload its state without restarting")
 
     @rpc(concurrency_group="heartbeat_status")

@@ -16,6 +16,7 @@ from miles.ray.specs.train import (
     compute_trainer_ids,
     specs_trainer_controller,
 )
+from miles.utils.args.runtime import OrchestratorConfig
 from miles.utils.arguments import parse_args
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.external_utils.command_utils.base_backend import (
@@ -58,6 +59,7 @@ from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_utils import atomic_write_text
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
+from miles.utils.workers.connection_config import build_static_conn_config
 from miles.utils.workers.naming import DNS_LABEL_PATTERN
 from miles.utils.workers.serving.utils import override_argv, override_env
 from miles.utils.workers.types import ClusterBackend, DeployComponent
@@ -111,7 +113,18 @@ def execute_train(*, request: ExecuteTrainRequest, args: ExecuteTrainConfig) -> 
         _uninstall_leftover_ci_releases(namespace, keep_run_id=run_id)
     Helm.build_dependencies(chart)
 
-    orchestrator_command = ["python", request.train_script, *pod_argv] if deploys_orchestration_script else []
+    orchestrator_command = (
+        [
+            "python",
+            request.train_script,
+            "--config-json",
+            OrchestratorConfig.from_config(args)
+            .model_copy(update={"static_connections": build_static_conn_config(specs=specs)})
+            .model_dump_json(),
+        ]
+        if deploys_orchestration_script
+        else []
+    )
     hot_restart_plan = plan_hot_restart(
         components=args.parsed_hot_restart,
         deploy_component=deploy_component,

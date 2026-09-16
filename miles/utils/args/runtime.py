@@ -70,7 +70,8 @@ class OrchestratorConfig(
     DashboardConfig,
     SglangFieldsConfig,
 ):
-    pass
+    raw_megatron: MegatronConfig
+    raw_fsdp: FsdpArgsNamespace | None
 
 
 class TrainerConfig(
@@ -207,7 +208,8 @@ class RolloutConfig(
     DashboardConfig,
     SglangFieldsConfig,
 ):
-    pass
+    raw_megatron: MegatronConfig
+    raw_fsdp: FsdpArgsNamespace | None
 
 
 class MultiLoraConfig(

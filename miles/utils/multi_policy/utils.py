@@ -51,7 +51,7 @@ async def create_trainers(args: AllConfig, *, rollout_executor: BaseWorkerHandle
     leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
     if leader_rollout_id >= 0:
         _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
-        await rollout_executor.load(leader_rollout_id)
+        await rollout_executor.load(leader_rollout_id, load=args.load)
 
     return trainers
 

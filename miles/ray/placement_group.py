@@ -10,12 +10,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
-from miles.ray.specs.inference import (
-    SESSION_SERVER_POOL_ID,
-    compute_router_providers,
-    create_inference_controller_handle,
-)
+from miles.ray.specs.inference import create_inference_controller_handle
 from miles.ray.specs.rollout import create_rollout_executor_handle
 from miles.ray.specs.train import (
     ACTOR_ROLE,
@@ -255,7 +250,7 @@ async def create_training_models(
 
     await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
     if args.start_rollout_id > 0:
-        await rollout_executor.load(args.start_rollout_id - 1)
+        await rollout_executor.load(args.start_rollout_id - 1, load=args.load)
 
     return actor_info.handle, critic_info.handle if critic_info is not None else None
 
@@ -374,21 +369,15 @@ class RolloutComponents(NamedTuple):
 async def create_rollout_components(args) -> RolloutComponents:
     capability = get_backend_capability(args)
 
-    if not args.debug_train_only:
-        await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
-
-        session_server_provider = (
-            capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID) if args.use_session_server else None
-        )
-        await wait_session_server_ready(args, provider=session_server_provider)
-
     rollout_executor = create_rollout_executor_handle(capability=capability)
     await wait_until_worker_not_initialized(rollout_executor)
 
     inference_controller = create_inference_controller_handle(capability=capability)
     await init_or_reset_inference_controller(inference_controller, args=args)
 
-    await rollout_executor.init()
+    await rollout_executor.init(
+        num_rollout=args.num_rollout, wandb_run_id=args.wandb_run_id, mlflow_run_id=args.mlflow_run_id
+    )
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None

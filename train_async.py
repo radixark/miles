@@ -9,6 +9,7 @@ from miles.ray.placement_group import (
     update_weights,
 )
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
+from miles.utils.args.runtime import OrchestratorConfig
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.async_utils import Disposer, eager_create_task, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
@@ -24,6 +25,7 @@ async def train(args, *, disposer: Disposer):
     assert not args.colocate or args.fully_async, "Colocation is only supported for async training with --fully-async."
     validate_async_off_policy_correction(args)
     _worker_manager = init_orchestration_script(args, disposer=disposer)
+    args = OrchestratorConfig.from_config(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout

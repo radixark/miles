@@ -5,6 +5,10 @@ import logging
 from argparse import Namespace
 from typing import Any
 
+from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
+from miles.ray.rollout.runtime_config import compute_rollout_runtime_config
+from miles.ray.specs.train import compute_trainer_num_cells
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.init_once import InitState
 from miles.utils.misc import call_agent_abort_hook
 from miles.utils.retry_utils import retry_until_deadline
@@ -70,12 +74,23 @@ async def wait_trainers_idle(handles: dict[str, BaseWorkerHandle]) -> bool:
 
 
 async def trainer_init_or_load_state(
-    trainer: BaseWorkerHandle, model_args: Namespace, *, trainer_id: str, resumed: bool
+    trainer: BaseWorkerHandle, model_args: TrainerConfig, *, trainer_id: str, resumed: bool
 ) -> list[Any]:
+    resume_from_ckpt = read_checkpoint_tracker_iteration(model_args.requested_load) is not None
+    load = model_args.requested_load if resume_from_ckpt else model_args.backend.load
     if not resumed:
-        return await trainer.init(model_args)
+        return await trainer.init(
+            expected_num_cells=compute_trainer_num_cells(model_args, role=model_args.trainer_role),
+            load=load,
+            resume_from_ckpt=resume_from_ckpt,
+            num_rollout=model_args.num_rollout,
+            wandb_run_id=model_args.wandb_run_id,
+            mlflow_run_id=model_args.mlflow_run_id,
+        )
 
-    start_rollout_ids = await asyncio.wait_for(trainer.load_state(), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS)
+    start_rollout_ids = await asyncio.wait_for(
+        trainer.load_state(load=load, resume_from_ckpt=resume_from_ckpt), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS
+    )
     logger.info(f"Resumed the already-initialized trainer {trainer_id!r} at rollout ids {start_rollout_ids}")
     return start_rollout_ids
 
@@ -101,4 +116,6 @@ async def init_or_reset_inference_controller(inference_controller: BaseWorkerHan
     await asyncio.wait_for(inference_controller.abort_all(), timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
     logger.info("Asked every engine of the fleet to abort the generations it was still running")
 
-    await asyncio.wait_for(call_agent_abort_hook(args), timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
+    runtime = await inference_controller.get_router_runtime()
+    fn_args = compute_rollout_runtime_config(args, runtime)
+    await asyncio.wait_for(call_agent_abort_hook(fn_args), timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)

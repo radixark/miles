@@ -35,7 +35,6 @@ from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
-from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from . import checkpoint
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
@@ -60,16 +59,24 @@ class FSDPTrainRayActor(TrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
-        args: Pickled,
         role: str,
         *,
+        load: str | None,
+        resume_from_ckpt: bool,
+        num_rollout: int,
+        wandb_run_id: str | None = None,
+        mlflow_run_id: str | None = None,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
+        args = self.args
         assert isinstance(args.backend, FsdpArgsNamespace)
+        args.num_rollout = num_rollout
+        args.wandb_run_id = wandb_run_id
+        args.mlflow_run_id = mlflow_run_id
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
@@ -98,9 +105,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
-
-        if self.args.start_rollout_id is None:
-            self.args.start_rollout_id = 0
 
         self.prof = TrainProfiler(args)
 
@@ -191,7 +195,7 @@ class FSDPTrainRayActor(TrainRayActor):
         self.global_step = 0
         self.micro_step = 0
 
-        checkpoint_payload = checkpoint.load(self)
+        checkpoint_payload = checkpoint.load(self, load=load, resume_from_ckpt=resume_from_ckpt)
 
         # Create separate ref model if needed (kept in CPU until needed)
         self.ref_model = None
@@ -204,7 +208,7 @@ class FSDPTrainRayActor(TrainRayActor):
             else UpdateWeightFromDistributed(self.args, self.model)
         )
 
-        checkpoint.finalize_load(self, checkpoint_payload)
+        start_rollout_id = checkpoint.finalize_load(self, checkpoint_payload, resume_from_ckpt=resume_from_ckpt)
 
         self.max_tokens_per_gpu = args.max_tokens_per_gpu
 
@@ -213,7 +217,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.prof.on_init_end()
 
-        return int(self.args.start_rollout_id)
+        return start_rollout_id
 
     def _get_model_cls(self):
         if hasattr(

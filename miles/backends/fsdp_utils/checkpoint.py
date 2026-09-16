@@ -75,13 +75,13 @@ def _write_checkpoint_metadata(path: Path, metadata: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
-def load(actor: Any) -> dict[str, Any] | None:
+def load(actor: Any, *, load: str | None, resume_from_ckpt: bool) -> dict[str, Any] | None:
     """Load checkpoint from disk.
 
     Loads model weights and optionally optimizer state from separate directories.
     This allows loading weights without optimizer or deleting optimizer before loading.
     """
-    load_root = actor.args.backend.load
+    load_root = load
     if load_root is None:
         return None
 
@@ -120,8 +120,8 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load optimizer state (optional)
-    load_optimizer = not actor.args.backend.no_load_optim and hasattr(
-        actor, "optimizer"
+    load_optimizer = (
+        resume_from_ckpt and not actor.args.backend.no_load_optim and hasattr(actor, "optimizer")
     )  # config-access-exempt: optimizer is absent when the actor has no training state
     if load_optimizer and optimizer_dir.exists():
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
@@ -136,7 +136,7 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     # Load LR scheduler state (optional)
     load_lr_scheduler = (
-        hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+        resume_from_ckpt and hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
     )  # config-access-exempt: lr_scheduler is absent when the actor has no training state
     if load_lr_scheduler:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
@@ -165,12 +165,12 @@ def load(actor: Any) -> dict[str, Any] | None:
     }
 
 
-def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None:
+def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None, *, resume_from_ckpt: bool) -> int:
     if checkpoint_payload is None:
         dist.barrier()
-        return
+        return 0
 
-    if checkpoint_payload.get("rng") is not None and not actor.args.backend.no_load_rng:
+    if checkpoint_payload.get("rng") is not None and resume_from_ckpt and not actor.args.backend.no_load_rng:
         rng_state = checkpoint_payload["rng"]
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
@@ -179,18 +179,19 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
 
     metadata = checkpoint_payload.get("metadata") or {}
     iteration = checkpoint_payload.get("iteration")
-    if metadata:
+    start_rollout_id = 0
+    if metadata and resume_from_ckpt:
         actor.global_step = int(metadata.get("global_step", actor.global_step))
         actor.micro_step = int(metadata.get("micro_step", actor.micro_step))
         next_rollout = metadata.get("next_rollout_id")
         if next_rollout is not None:
-            actor.args.start_rollout_id = next_rollout
-    elif iteration is not None:
-        if actor.args.start_rollout_id is None:
-            actor.args.start_rollout_id = iteration
+            start_rollout_id = int(next_rollout)
+    elif iteration is not None and resume_from_ckpt:
+        start_rollout_id = int(iteration)
 
     torch.cuda.synchronize()
     dist.barrier()
+    return start_rollout_id
 
 
 def save(actor: Any, iteration: int) -> None:

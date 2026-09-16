@@ -12,6 +12,7 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
+from miles.ray.rollout.runtime_config import RolloutRuntimeState, compute_rollout_runtime_config
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
@@ -58,6 +59,8 @@ class InferenceController:
         self._router_providers = router_providers
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
+        self._pool_ids: set[str] = set()
+        self._runtime = RolloutRuntimeState()
         self._eval_fleet: InferenceControllerEvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
         self._ticker: SimpleTicker | None = None
@@ -78,13 +81,20 @@ class InferenceController:
             engine_provider=self._engine_provider,
             router_addrs=router_addrs,
         )
-        if self.args.eval_num_gpus > 0:
+        if "eval" in self.servers:
             self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
 
         self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
-        dashboard_hooks.register_router(self.args)
+        primary_model = self.args.sglang.models[0]
+        primary = router_addrs[primary_model.name]
+        self._runtime = RolloutRuntimeState(
+            sglang_router_ip=primary.host,
+            sglang_router_port=primary.port,
+            sglang_model_routers={name: (addr.host, addr.port) for name, addr in router_addrs.items()},
+        )
+        dashboard_hooks.register_router(compute_rollout_runtime_config(self.args, self._runtime))
 
         await self.wait_expected_num_cells()
 
@@ -329,6 +339,10 @@ class InferenceController:
 
     # -------------------------- misc APIs -----------------------------
 
+    @with_lock
+    async def get_runtime_topology(self) -> dict[str, list[int]]:
+        return {name: srv.engine_gpu_counts for name, srv in self.servers.items()}
+
     @lock_exempt
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {
@@ -336,6 +350,14 @@ class InferenceController:
             for srv in list(self.servers.values())
             for cell_id, cell in list(srv.server_cells.items())
         }
+
+    @lock_exempt
+    async def get_pool_ids(self) -> list[str]:
+        return sorted(self._pool_ids)
+
+    @lock_exempt
+    async def get_router_runtime(self) -> RolloutRuntimeState:
+        return self._runtime
 
     @with_lock
     async def check_weights(
@@ -371,6 +393,8 @@ class InferenceController:
 
     @with_lock
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
+        if observed is not None:
+            self._pool_ids.add(observed.pool_id)
         actual_srv: RolloutServer | None = None
         actual_cell: ServerCell | None = None
         for srv in self.servers.values():

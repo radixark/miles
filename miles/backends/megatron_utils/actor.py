@@ -4,7 +4,8 @@ import logging
 import os
 import random
 import shutil
-from contextlib import ExitStack, nullcontext
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager, nullcontext
 from functools import partial
 
 import torch
@@ -44,7 +45,6 @@ from miles.utils.tracking_utils.structured_log import with_logs
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.types import RolloutBatch
 from miles.utils.workers.naming import compute_cell_id
-from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
@@ -59,7 +59,6 @@ from ..training_utils.loss import (
 from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
-from .checkpoint_tracker import read_checkpoint_tracker_iteration
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
@@ -107,9 +106,13 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
-        args: Pickled,
         role: str,
         *,
+        load: str | None,
+        resume_from_ckpt: bool,
+        num_rollout: int,
+        wandb_run_id: str | None = None,
+        mlflow_run_id: str | None = None,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
@@ -117,6 +120,12 @@ class MegatronTrainRayActor(TrainRayActor):
         indep_dp_store_addr: str | None,
     ) -> int | None:
         monkey_patch_torch_dist()
+        args = self.args
+        args.num_rollout = num_rollout
+        args.wandb_run_id = wandb_run_id
+        args.mlflow_run_id = mlflow_run_id
+        self._load = load
+        self._resume_from_ckpt = resume_from_ckpt
 
         self._last_rollout_id: int | None = None
         self._cell_index = indep_dp_info.cell_index
@@ -203,7 +212,8 @@ class MegatronTrainRayActor(TrainRayActor):
         heal_load_overrides: dict[str, object] = (
             dict(no_load_optim=False, no_load_rng=False, finetune=False) if recv_ckpt_src_rank is not None else {}
         )
-        self.model, self.optimizer, self.opt_param_scheduler = build_model_and_optimizer(args, role=role)
+        with self._checkpoint_args(self._main_checkpoint_overrides(heal_load_overrides)):
+            self.model, self.optimizer, self.opt_param_scheduler = build_model_and_optimizer(args, role=role)
         self._post_init_random_state = RandomState.capture()
 
         parallel_state = get_parallel_state()
@@ -309,7 +319,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     module._fp8_workspaces.clear()
 
     @with_logs
-    def load_state(self) -> int:
+    def load_state(self, *, load: str | None, resume_from_ckpt: bool) -> int:
         assert self.is_initialized()
 
         # reloading does not support things like these
@@ -329,33 +339,29 @@ class MegatronTrainRayActor(TrainRayActor):
         assert not (
             self.with_ref and self.args.ref_update_interval is not None
         ), "--ref-update-interval keeps the reference in memory only, and no checkpoint holds it"
-        assert (requested_load := self.args.requested_load) is not None, "a hot restart needs --load"
+        assert load is not None, "a hot restart needs an explicit checkpoint path"
+        self._load = load
+        self._resume_from_ckpt = resume_from_ckpt
 
         self._finalize_pending_async_save()
 
-        resume_from_ckpt = read_checkpoint_tracker_iteration(requested_load) is not None
         if not resume_from_ckpt:
             assert not self.args.backend.fp16
             assert not self.args.backend.use_precision_aware_optimizer
             assert not self.args.backend.optimizer_cpu_offload
             assert not self.args.backend.offload_optimizer_states
             assert self.args.megatron_to_hf_mode != "bridge", "bridge mode unsupported"
-            assert self.args.backend.finetune
-            assert self.args.backend.no_load_optim
-            assert self.args.backend.no_load_rng
-            assert self.args.backend.ckpt_step == self.args.ref_ckpt_step
 
         if self.opt_param_scheduler is not None:
             self.opt_param_scheduler.num_steps = 0
 
         if resume_from_ckpt:
             overrider_for_loading: dict[str, object] = dict(
-                load=requested_load, ckpt_step=None, finetune=False, no_load_optim=False, no_load_rng=False
+                load=load, ckpt_step=None, finetune=False, no_load_optim=False, no_load_rng=False
             )
         else:
             logger.info(
-                f"load_state found no checkpoint under --load {requested_load!r}; loading the state the run "
-                f"started from"
+                f"load_state found no checkpoint under --load {load!r}; loading the state the run " f"started from"
             )
             overrider_for_loading = {}
             self._post_init_random_state.restore()
@@ -378,7 +384,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def _load_state_core(
         self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object]
     ) -> LoadCheckpointOutput:
-        with self.args.backend.mutable(), inplace_modify_args(self.args.backend, overrider_for_loading):
+        with self._checkpoint_args(self._main_checkpoint_overrides(overrider_for_loading)):
             load_output = load_model_state(
                 self.args,
                 model=self.model,
@@ -410,7 +416,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.keep_old_actor:
             # Load old_actor checkpoint
-            self.load_other_checkpoint("old_actor", self.args.backend.load)
+            self.load_other_checkpoint("old_actor", self._load)
             # Create rollout_actor as a copy of current actor
             if self.args.update_weights_interval == 1:
                 self.weights_backuper.backup("rollout_actor")
@@ -1052,28 +1058,16 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
-        with self.args.backend.mutable():
-            old_args = (
-                self.args.backend.load,
-                self.args.backend.no_load_optim,
-                self.args.backend.no_load_rng,
-                self.args.backend.finetune,
-            )
-            self.args.backend.load = path
-            self.args.backend.no_load_optim = True
-            self.args.backend.no_load_rng = True
-            self.args.backend.finetune = True
-
-            # load_checkpoint reads self.args.backend.ckpt_step to pick which iteration to load.
-            # Temporarily override it for ref/teacher loads, then restore after the load below.
-            if model_tag == "ref" and self.args.ref_ckpt_step is not None:
-                old_ckpt_step = self.args.backend.ckpt_step
-                self.args.backend.ckpt_step = self.args.ref_ckpt_step
-
-            if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
-                old_ckpt_step = self.args.backend.ckpt_step
-                self.args.backend.ckpt_step = self.args.opd_teacher_ckpt_step
-
+        # load_checkpoint reads self.args.backend.ckpt_step to pick which iteration to load.
+        # Temporarily override it for ref/teacher loads, then restore after the load below.
+        ckpt_step = self.args.ref_ckpt_step if model_tag == "ref" else None
+        if model_tag == "old_actor" and not self._resume_from_ckpt:
+            ckpt_step = self.args.ref_ckpt_step
+        if model_tag == "teacher":
+            ckpt_step = self.args.opd_teacher_ckpt_step
+        with self._checkpoint_args(
+            dict(load=path, no_load_optim=True, no_load_rng=True, finetune=True, ckpt_step=ckpt_step)
+        ):
             _, _ = load_checkpoint(
                 self.model,
                 None,
@@ -1082,21 +1076,26 @@ class MegatronTrainRayActor(TrainRayActor):
                 args=self.args,
                 skip_load_to_model_and_opt=False,
             )
-            (
-                self.args.backend.load,
-                self.args.backend.no_load_optim,
-                self.args.backend.no_load_rng,
-                self.args.backend.finetune,
-            ) = old_args
-
-            if model_tag == "ref" and self.args.ref_ckpt_step is not None:
-                self.args.backend.ckpt_step = old_ckpt_step
-
-            if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
-                self.args.backend.ckpt_step = old_ckpt_step
 
         self.weights_backuper.backup(model_tag)
         self._active_model_tag = model_tag
+
+    def _main_checkpoint_overrides(self, overrides: dict[str, object]) -> dict[str, object]:
+        return (
+            dict(
+                load=self._load,
+                ckpt_step=None if self._resume_from_ckpt else self.args.ref_ckpt_step,
+                finetune=not self._resume_from_ckpt,
+                no_load_optim=not self._resume_from_ckpt,
+                no_load_rng=not self._resume_from_ckpt,
+            )
+            | overrides
+        )
+
+    @contextmanager
+    def _checkpoint_args(self, overrides: dict[str, object]) -> Iterator[None]:
+        with self.args.backend.mutable(), inplace_modify_args(self.args.backend, overrides):
+            yield
 
     @with_logs
     def send_ckpt(self, dst_rank: int) -> None:

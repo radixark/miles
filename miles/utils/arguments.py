@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import re
@@ -49,7 +50,7 @@ from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
-from miles.utils.args.runtime import AllConfig
+from miles.utils.args.runtime import AllConfig, OrchestratorConfig
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
@@ -271,16 +272,27 @@ def get_miles_extra_args_provider(
 
 def parse_args(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
-) -> AllConfig:
+) -> AllConfig | OrchestratorConfig:
     args, _ = parse_args_and_get_parser(add_custom_arguments=add_custom_arguments)
     return args
 
 
 def parse_args_and_get_parser(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
-) -> tuple[AllConfig, argparse.ArgumentParser]:
+) -> tuple[AllConfig | OrchestratorConfig, argparse.ArgumentParser]:
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
+
+    transport_parser = argparse.ArgumentParser(add_help=False)
+    transport_parser.add_argument("--config-json")
+    transport, remaining = transport_parser.parse_known_args()
+    if transport.config_json is not None:
+        if remaining:
+            raise ValueError("Serialized orchestration config cannot be combined with CLI arguments")
+        payload = json.loads(transport.config_json)
+        if not isinstance(payload, dict):
+            raise ValueError("Serialized orchestration configuration must be a JSON object")
+        return OrchestratorConfig.model_validate(payload), transport_parser
 
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
     parser: argparse.ArgumentParser | None = None

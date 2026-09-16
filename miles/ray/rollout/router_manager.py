@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 
+from miles.ray.rollout.runtime_config import RolloutRuntimeState
 from miles.ray.specs.inference import (
     compute_router_worker_name,
     compute_session_server_instance_id,
@@ -21,37 +22,19 @@ _SESSION_SERVER_READY_TIMEOUT_SECONDS = 300.0
 
 
 async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerProvider]) -> dict[str, HostAndPort]:
-    """Wait for every model's router and record its address on ``args``, keyed by model name.
-
-    A second call in the same process answers from the record, so the driver and an
-    in-process controller may both resolve the same ``args``.
-    """
-    if args.sglang_router_ip is not None:
-        assert args.sglang_model_routers is not None, (
-            "external router mode was removed: miles always resolves its own routers "
-            "(a pre-set router address without the per-model map means a misconfigured run)"
-        )
-        return {name: HostAndPort(host=host, port=port) for name, (host, port) in args.sglang_model_routers.items()}
-
-    config = args.sglang  # TODO avoid resolve repeatedly
-    assert len(router_providers) == len(config.models), (
+    """Wait for every model's router and return its address keyed by model name."""
+    models = args.sglang.models
+    assert len(router_providers) == len(models), (
         f"every model is served by its own router, so it needs its own provider "
-        f"(got {len(router_providers)} for {len(config.models)} models)"
+        f"(got {len(router_providers)} for {len(models)} models)"
     )
     ready = await asyncio.gather(
         *[
             wait_router_ready(model_idx=model_idx, provider=router_providers[model_idx])
-            for model_idx in range(len(config.models))
+            for model_idx in range(len(models))
         ]
     )
-    router_addrs = {model_cfg.name: addr for model_cfg, addr in zip(config.models, ready, strict=True)}
-
-    primary = router_addrs[config.models[0].name]
-    args.sglang_router_ip = primary.host
-    args.sglang_router_port = primary.port
-    args.sglang_model_routers = {name: (addr.host, addr.port) for name, addr in router_addrs.items()}
-
-    return router_addrs
+    return {model.name: addr for model, addr in zip(models, ready, strict=True)}
 
 
 async def wait_router_ready(*, model_idx: int, provider: BaseWorkerProvider) -> HostAndPort:
@@ -63,7 +46,7 @@ async def wait_router_ready(*, model_idx: int, provider: BaseWorkerProvider) -> 
     return router_addr
 
 
-async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None):
+async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None) -> RolloutRuntimeState:
     """Wait for the standalone session servers when ``--use-session-server`` is set.
 
     One independent single-process server per resolved port; the rollout side
@@ -72,7 +55,7 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     active.
     """
     if not args.use_session_server:
-        return
+        return RolloutRuntimeState()
 
     hf_checkpoint = args.hf_checkpoint
     if not hf_checkpoint:
@@ -93,17 +76,18 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     ]
     # The canonical driver-side value; rollout code picks from this list. Instances may sit on
     # different hosts, so each one is addressed in full rather than by a port under a shared ip.
-    args.session_server_addrs = [f"{x.host}:{x.port}" for x in addrs]
+    state = RolloutRuntimeState(session_server_addrs=[f"{x.host}:{x.port}" for x in addrs])
 
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
     instance_ids: dict[str, str] = {}
-    for instance_index, addr in enumerate(args.session_server_addrs):
+    for instance_index, addr in enumerate(state.session_server_addrs):
         instance_ids[addr] = compute_session_server_instance_id(args, instance_index)
     # The per-address map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
-    args.session_server_instance_ids = instance_ids
+    state.session_server_instance_ids = instance_ids
     await asyncio.gather(
         *[wait_tcp_ready_async(addr.host, addr.port, timeout=_SESSION_SERVER_READY_TIMEOUT_SECONDS) for addr in addrs]
     )
-    logger.info(f"Session servers ready at {args.session_server_addrs} ({len(addrs)} instances)")
+    logger.info(f"Session servers ready at {state.session_server_addrs} ({len(addrs)} instances)")
+    return state

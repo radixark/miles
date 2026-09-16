@@ -10,6 +10,7 @@ from miles.ray.train.cell_state import (
     StateAllocatedErrored,
     StateAllocatedUninitialized,
 )
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -30,7 +31,9 @@ class TrainerCell:
     def __init__(
         self,
         *,
-        args,
+        args: TrainerConfig,
+        load: str | None,
+        resume_from_ckpt: bool,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
@@ -41,6 +44,8 @@ class TrainerCell:
         provider: BaseWorkerProvider,
     ) -> None:
         self.args = args
+        self._load = load
+        self._resume_from_ckpt = resume_from_ckpt
         self.cell_id = cell_id
         self.cell_index = cell_index
         self.workers_hash = workers_hash
@@ -73,7 +78,11 @@ class TrainerCell:
         )
         results = await self.execute(
             "init",
-            args=self.args,
+            load=self._load,
+            resume_from_ckpt=self._resume_from_ckpt,
+            num_rollout=self.args.num_rollout,
+            wandb_run_id=self.args.wandb_run_id,
+            mlflow_run_id=self.args.mlflow_run_id,
             role=self.role,
             with_ref=self.with_ref,
             with_opd_teacher=self.with_opd_teacher,
@@ -86,8 +95,10 @@ class TrainerCell:
         await asyncio.sleep(0)
         return results
 
-    async def load_state(self) -> list:
-        return await self.execute("load_state")
+    async def load_state(self, *, load: str | None, resume_from_ckpt: bool) -> list:
+        self._load = load
+        self._resume_from_ckpt = resume_from_ckpt
+        return await self.execute("load_state", load=load, resume_from_ckpt=resume_from_ckpt)
 
     async def train(
         self,

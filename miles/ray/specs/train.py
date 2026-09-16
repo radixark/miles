@@ -78,6 +78,7 @@ class TrainerControllerSpec(BaseServeSpec):
     def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
         args = ctx.args
         return dict(
+            args=args,
             deployment_identity=DeploymentIdentity(
                 run_uuid=args.run_uuid,
                 deploy_component=args.deploy_component,

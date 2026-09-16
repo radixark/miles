@@ -11,6 +11,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils import object_store
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -32,7 +33,6 @@ from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadli
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
-from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
@@ -54,6 +54,7 @@ class TrainerController:
     def __init__(
         self,
         *,
+        args: TrainerConfig,
         deployment_identity: DeploymentIdentity,
         expected_num_cells: int,
         cell_provider: BaseWorkerProvider,
@@ -64,6 +65,7 @@ class TrainerController:
         with_opd_teacher: bool = False,
     ) -> None:
         self._init_once = InitOnce(type(self).__name__)
+        self.args = args
         self._deployment_identity = deployment_identity
         self._expected_num_cells = expected_num_cells
         self._trainer_id = trainer_id
@@ -136,6 +138,8 @@ class TrainerController:
     def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> TrainerCell:
         cell = TrainerCell(
             args=self.args,
+            load=self._load,
+            resume_from_ckpt=self._resume_from_ckpt,
             role=self._role,
             with_ref=self._with_ref,
             with_opd_teacher=self._with_opd_teacher,
@@ -309,12 +313,27 @@ class TrainerController:
     # ------------------------ API :: others ------------------------
 
     @init_once
-    async def init(self, args: Pickled) -> list[Any]:
+    async def init(
+        self,
+        *,
+        expected_num_cells: int,
+        load: str | None,
+        resume_from_ckpt: bool,
+        num_rollout: int,
+        wandb_run_id: str | None = None,
+        mlflow_run_id: str | None = None,
+    ) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
-        self.args = args
+        args = self.args
+        self.args.num_rollout = num_rollout
+        self.args.wandb_run_id = wandb_run_id
+        self.args.mlflow_run_id = mlflow_run_id
+        self._expected_num_cells = expected_num_cells
+        self._load = load
+        self._resume_from_ckpt = resume_from_ckpt
         configure_logger(
             args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id, model_id=args.trainer_model_id)
         )
@@ -358,7 +377,7 @@ class TrainerController:
     async def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
 
-    async def load_state(self) -> list[Any]:
+    async def load_state(self, *, load: str | None, resume_from_ckpt: bool) -> list[Any]:
         assert self._init_once.is_initialized()
 
         await self._wait_expected_num_cells(timeout=_CELLS_READY_TIMEOUT_SECONDS)
@@ -366,7 +385,11 @@ class TrainerController:
         not_alive = [cell.cell_id for cell in self._cells if not cell.is_alive]
         assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
 
-        cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
+        self._load = load
+        self._resume_from_ckpt = resume_from_ckpt
+        cell_results = await gather_and_raise_first(
+            [cell.load_state(load=load, resume_from_ckpt=resume_from_ckpt) for cell in self._cells]
+        )
         return [item for sublist in cell_results for item in sublist]
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
