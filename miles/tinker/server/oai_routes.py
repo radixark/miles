@@ -39,7 +39,7 @@ async def _json_body(request: Request) -> dict:
     return payload
 
 
-def _install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None:
+def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None:
     """Mount the four /oai/sessions routes, the UnknownSessionError→404 handler and the SamplingBackendError→502 handler."""
 
     @app.exception_handler(UnknownSessionError)
@@ -81,5 +81,5 @@ def _install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> Non
 def build_app_with_collector(service: TinkerService, collector: TrajectoryCollector) -> FastAPI:
     """build_app plus the four session routes; the Tinker routes are untouched."""
     app = build_app(service)
-    _install_session_routes(app, collector)
+    install_session_routes(app, collector)
     return app

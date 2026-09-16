@@ -19,6 +19,12 @@ def add_tinker_arguments(parser):
         "checkpoint-root",
         help="Directory for tinker:// checkpoints (default: <save>/tinker)",
     )
+    add_argument(
+        "session-ttl-s",
+        type=float,
+        default=3600.0,
+        help="Idle seconds before a recorded /oai/sessions/{sid} is swept, the safety net for agent trials that die before DELETE (default: 3600)",
+    )
     add_argument("train-attn", action=argparse.BooleanOptionalAction, default=True)
     add_argument("train-mlp", action=argparse.BooleanOptionalAction, default=True)
     add_argument("train-unembed", action=argparse.BooleanOptionalAction, default=True)
