@@ -19,8 +19,9 @@ def fast_polling(monkeypatch):
 
 
 class _FakeCell:
-    def __init__(self, *, ready: bool = False, needs_offload: bool = True):
+    def __init__(self, *, ready: bool = False, needs_offload: bool = True, errored: bool = False):
         self.ready = ready
+        self.is_errored = errored
         self.meta = SimpleNamespace(needs_offload=needs_offload)
 
     @property
@@ -147,3 +148,46 @@ class TestWaitExpectedNumCellsEdges:
 
         with pytest.raises(Exception, match="Only 0/1 cells"):
             await srv.wait_init_expected_num_cells(timeout=0)
+
+
+class TestStartableCellsExcludeTheErroredOnes:
+    async def test_an_errored_cell_does_not_count_towards_the_barrier(self):
+        """Counting a cell that left service would let startup proceed on an engine nothing can address."""
+        srv = _make_server(
+            colocate=True,
+            init_expected_num_cells=2,
+            cells={"a": _FakeCell(ready=True), "b": _FakeCell(ready=True, errored=True)},
+        )
+
+        assert srv._count_startable_cells() == 1
+
+    async def test_an_errored_colocated_cell_is_not_counted_on_arrival_either(self):
+        """A deferred cell counts as soon as it appears, so the errored filter must apply to that branch too."""
+        srv = _make_server(colocate=True, init_expected_num_cells=1, cells={"a": _FakeCell(ready=False, errored=True)})
+
+        assert srv._count_startable_cells() == 0
+
+    async def test_the_barrier_keeps_waiting_while_the_only_cell_is_errored(self):
+        """Returning here would hand the first rollout a fleet with no usable engine in it."""
+        cell = _FakeCell(ready=True, errored=True)
+        srv = _make_server(colocate=True, init_expected_num_cells=1, cells={"a": cell})
+
+        task = asyncio.create_task(srv.wait_init_expected_num_cells())
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        cell.is_errored = False
+        await asyncio.wait_for(task, timeout=5)
+
+    async def test_counting_startable_cells_does_not_need_the_context_lock(self):
+        """The startup barrier runs outside the lock, so reading the lock-guarded view would assert here."""
+        srv = _make_server(colocate=True, init_expected_num_cells=1, cells={"a": _FakeCell(ready=True)})
+
+        assert not srv.context_lock.held_in_current_context
+        assert srv._count_startable_cells() == 1
+
+    async def test_the_startup_barrier_itself_runs_without_the_context_lock(self):
+        """It is awaited before the controller owns the lock, so any lock-guarded read inside it is fatal."""
+        srv = _make_server(colocate=True, init_expected_num_cells=1, cells={"a": _FakeCell(ready=True)})
+
+        await asyncio.wait_for(srv.wait_init_expected_num_cells(), timeout=1)

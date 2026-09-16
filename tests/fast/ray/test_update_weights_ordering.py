@@ -42,6 +42,7 @@ class _ColocatedCellStub:
     def __init__(self) -> None:
         self.init_count = 0
         self.ready = False
+        self.is_errored = False
 
     async def init(self) -> None:
         self.init_count += 1
@@ -60,6 +61,10 @@ class _ServerStub:
     def __init__(self, all_server_cells: dict[str, _ColocatedCellStub]) -> None:
         self.all_server_cells = all_server_cells
         self.health_checker_activeness = ActivenessTracker(active=True)
+
+    @property
+    def normal_server_cells(self) -> dict[str, _ColocatedCellStub]:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
 
 
 def _make_inference_controller(**arg_overrides: object) -> InferenceController:
