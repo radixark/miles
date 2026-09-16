@@ -133,6 +133,30 @@ class TestModelCompanion:
         assert witness.sample_consumptions.shape == (0, 5)
         assert witness.weight_version.item() == 0
 
+    def test_placeholder_companion_entries_load_as_an_empty_record(self) -> None:
+        """Megatron's empty uint8 placeholders for absent entries load like missing keys."""
+        witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        witness.weight_version.fill_(5)
+
+        witness.load_state_dict(
+            {
+                "sample_consumptions": torch.empty(0, dtype=torch.uint8),
+                "weight_version": torch.empty(0, dtype=torch.uint8),
+            }
+        )
+
+        assert witness.snapshot_sample_consumptions(is_skipped=False) == {}
+        assert witness.sample_consumptions.shape == (0, 5)
+        assert witness.weight_version.item() == 0
+
+    @pytest.mark.parametrize("value", [torch.tensor([[7, 0, 1, 2, 0]], dtype=torch.int32), None])
+    def test_invalid_existing_consumptions_are_not_replaced_with_empty_state(self, value) -> None:
+        """Malformed existing ownership records must fail instead of disappearing."""
+        witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+
+        with pytest.raises(AssertionError):
+            witness.load_state_dict({"sample_consumptions": value})
+
     def test_checkpoint_requires_the_outcome_column(self) -> None:
         """A truncated row cannot silently discard its outcome flag."""
         witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
