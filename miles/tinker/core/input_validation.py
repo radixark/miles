@@ -1,4 +1,3 @@
-import logging
 import math
 import re
 
@@ -10,8 +9,6 @@ from miles.tinker.core.types import (
     ModelRecord,
     UserInputError,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def validate_model_config(lora_config: dict, config: GatewayConfig) -> None:
@@ -133,10 +130,7 @@ def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: G
 
 def validate_save_options(payload: dict) -> None:
     if payload.get("ttl_seconds") is not None:
-        # tinker-cookbook's CheckpointManager sends Config.ttl_seconds (7 days by default) on every
-        # periodic save; checkpoints on this gateway never expire, so the TTL is accepted and ignored
-        # instead of failing the save.
-        logger.info("ttl_seconds=%s ignored: checkpoints on this gateway do not expire", payload["ttl_seconds"])
+        raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
     if payload.get("user_metadata") is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
@@ -160,3 +154,8 @@ def validate_checkpoint_metadata(meta, shown_path: str) -> None:
         raise UserInputError(f"checkpoint {shown_path!r} has invalid or unsupported metadata")
     if meta["lora_rank"] <= 0 or not math.isfinite(meta["lora_alpha"]):
         raise UserInputError(f"checkpoint {shown_path!r} has invalid LoRA metadata")
+
+
+def accept_cookbook_save_options(payload: dict) -> None:
+    """(Skeleton) Replace validate_save_options' ttl_seconds rejection with accept-and-ignore: tinker-cookbook's CheckpointManager sends Config.ttl_seconds (7 days by default) on every periodic save, and checkpoints on this gateway never expire."""
+    raise NotImplementedError
