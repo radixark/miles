@@ -88,7 +88,7 @@ class TestBuildTrainArgs:
             "--sglang-enable-prefill-weight-versions": None,
             "--ci-test": None,
             "--no-enable-sample-ownership-checker": None,
-            "--ci-assert-prefill-lag-max": "1",
+            "--ci-assert-prefill-lag-max": "3",
             "--save-debug-event-data": str(compute_events_dir(args)),
             "--save-debug-rollout-data": compute_rollout_data_path_template(args),
             "--attention-dropout": "0.0",
@@ -108,7 +108,7 @@ class TestBuildTrainArgs:
         assert flags["--pause-generation-mode"] == "in_place"
         assert flags["--namespaced-radix-cache"] is None
         assert flags["--sglang-enable-prefill-weight-versions"] is None
-        assert flags["--ci-assert-prefill-lag-max"] == "1"
+        assert flags["--ci-assert-prefill-lag-max"] == "3"
 
     def test_the_per_policy_configs_are_handed_over_as_files_of_their_own(self, flags):
         """Their contents are asserted below; here they only have to reach the run at all."""

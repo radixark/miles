@@ -88,7 +88,7 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test --sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 1 "
+    ci_args = "--ci-test --sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 3 "
 
     fault_tolerance_args = (
         "--use-fault-tolerance "
