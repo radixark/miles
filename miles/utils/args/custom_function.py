@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import ConfigDict, SerializeAsAny, create_model, model_validator
 
-from miles.utils.args.schema import BaseConfig
+from miles.utils.args.schema import BaseConfig, add_config_arguments, validate_complete_config
 from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 
@@ -24,7 +24,7 @@ class CustomFunctionConfig(BaseConfig):
         fn = load_function(values["path"])
         config_class = _compute_config_class(fn, path=values["path"])
         assert config_class is not None
-        return values | {"config": config_class.model_validate(values["config"])}
+        return values | {"config": validate_complete_config(config_class, values["config"])}
 
     def __reduce__(self) -> tuple[Any, tuple[dict[str, Any]]]:
         return _restore_custom_function_config, (self.model_dump(),)
@@ -50,7 +50,7 @@ def add_user_provided_function_arguments(
             continue
         registered_paths.add(info.path)
         if (config_class := info.config_class) is not None and config_class not in registered_config_classes:
-            config_class.add_arguments(parser=parser)
+            add_config_arguments(parser=parser, config_classes=[config_class])
             registered_config_classes.add(config_class)
     return parser
 

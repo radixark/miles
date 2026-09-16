@@ -51,6 +51,7 @@ from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
 from miles.utils.args.runtime import AllConfig, OrchestratorConfig
+from miles.utils.args.schema import add_config_arguments, validate_complete_config
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
@@ -191,15 +192,15 @@ def get_miles_extra_args_provider(
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
-        RunUuidConfig.add_arguments(parser=parser)
-        ClusterConfig.add_arguments(parser=parser)
-        TrainConfig.add_arguments(parser=parser)
-        RolloutRelatedConfig.add_arguments(parser=parser)
-        FaultToleranceConfig.add_arguments(parser=parser)
-        DataConfig.add_arguments(parser=parser)
-        EvalConfig.add_arguments(parser=parser)
-        AlgoConfig.add_arguments(parser=parser)
-        TrainerBackendTraitConfig.add_arguments(parser=parser)
+        add_config_arguments(parser=parser, config_classes=[RunUuidConfig])
+        add_config_arguments(parser=parser, config_classes=[ClusterConfig])
+        add_config_arguments(parser=parser, config_classes=[TrainConfig])
+        add_config_arguments(parser=parser, config_classes=[RolloutRelatedConfig])
+        add_config_arguments(parser=parser, config_classes=[FaultToleranceConfig])
+        add_config_arguments(parser=parser, config_classes=[DataConfig])
+        add_config_arguments(parser=parser, config_classes=[EvalConfig])
+        add_config_arguments(parser=parser, config_classes=[AlgoConfig])
+        add_config_arguments(parser=parser, config_classes=[TrainerBackendTraitConfig])
         reset_arg(parser=parser, name="--lr", type=float, default=1e-6)
         reset_arg(parser=parser, name="--clip-grad", type=float, default=1.0)
         reset_arg(parser=parser, name="--calculate-per-token-loss", action="store_true")
@@ -213,30 +214,30 @@ def get_miles_extra_args_provider(
                 "This reduces checkpoint size but disables training resumption from the saved checkpoint."
             ),
         )
-        OnPolicyDistillationConfig.add_arguments(parser=parser)
-        LoraConfig.add_arguments(parser=parser)
-        WandbConfig.add_arguments(parser=parser)
-        MlflowConfig.add_arguments(parser=parser)
-        TensorboardConfig.add_arguments(parser=parser)
-        PrometheusConfig.add_arguments(parser=parser)
-        DashboardConfig.add_arguments(parser=parser.add_argument_group("miles dashboard"))
-        RouterConfig.add_arguments(parser=parser)
-        DebugConfig.add_arguments(parser=parser)
+        add_config_arguments(parser=parser, config_classes=[OnPolicyDistillationConfig])
+        add_config_arguments(parser=parser, config_classes=[LoraConfig])
+        add_config_arguments(parser=parser, config_classes=[WandbConfig])
+        add_config_arguments(parser=parser, config_classes=[MlflowConfig])
+        add_config_arguments(parser=parser, config_classes=[TensorboardConfig])
+        add_config_arguments(parser=parser, config_classes=[PrometheusConfig])
+        add_config_arguments(parser=parser.add_argument_group("miles dashboard"), config_classes=[DashboardConfig])
+        add_config_arguments(parser=parser, config_classes=[RouterConfig])
+        add_config_arguments(parser=parser, config_classes=[DebugConfig])
         SglangConfig.add_arguments(parser)
         # required whenever expert projections are LoRA targets, inert otherwise
         # (sglang's own default is False)
         parser.set_defaults(sglang_lora_use_virtual_experts=True)
-        SessionConfig.add_arguments(parser=parser)
-        NetworkConfig.add_arguments(parser=parser)
-        RewardModelConfig.add_arguments(parser=parser)
-        RolloutBufferConfig.add_arguments(parser=parser)
-        MtpTrainingConfig.add_arguments(parser=parser)
+        add_config_arguments(parser=parser, config_classes=[SessionConfig])
+        add_config_arguments(parser=parser, config_classes=[NetworkConfig])
+        add_config_arguments(parser=parser, config_classes=[RewardModelConfig])
+        add_config_arguments(parser=parser, config_classes=[RolloutBufferConfig])
+        add_config_arguments(parser=parser, config_classes=[MtpTrainingConfig])
         reset_arg(parser=parser, name="--mtp-num-layers", type=int, default=None)
         reset_arg(parser=parser, name="--mtp-loss-scaling-factor", type=float, default=0.2)
-        PrefillDecodeDisaggregationConfig.add_arguments(parser=parser)
-        CiConfig.add_arguments(parser=parser)
-        CustomMegatronPluginsConfig.add_arguments(parser=parser)
-        Dsv4MegatronPluginsConfig.add_arguments(parser=parser)
+        add_config_arguments(parser=parser, config_classes=[PrefillDecodeDisaggregationConfig])
+        add_config_arguments(parser=parser, config_classes=[CiConfig])
+        add_config_arguments(parser=parser, config_classes=[CustomMegatronPluginsConfig])
+        add_config_arguments(parser=parser, config_classes=[Dsv4MegatronPluginsConfig])
         parser = add_user_provided_function_arguments(parser, modify_args=resolve_rollout_function_paths)
 
         reset_arg(
@@ -292,7 +293,7 @@ def parse_args_and_get_parser(
         payload = json.loads(transport.config_json)
         if not isinstance(payload, dict):
             raise ValueError("Serialized orchestration configuration must be a JSON object")
-        return OrchestratorConfig.model_validate(payload), transport_parser
+        return validate_complete_config(OrchestratorConfig, payload), transport_parser
 
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
     parser: argparse.ArgumentParser | None = None
