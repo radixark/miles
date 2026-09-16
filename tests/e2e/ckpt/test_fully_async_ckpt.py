@@ -13,7 +13,9 @@ from miles.utils.external_utils import command_utils
 
 logger = logging.getLogger(__name__)
 
-register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["ckpt", "fully-async"])
+register_cuda_ci(
+    est_time=1200, suite="stage-c-8-gpu-h100", labels=["ckpt", "fully-async"], hardware=["hopper", "blackwell"]
+)
 register_rocm_ci(est_time=1200, suite="nightly-stage-c-8-gpu-mi350", labels=["ckpt", "fully-async"])
 
 MODEL_NAME = "Qwen3-4B"
