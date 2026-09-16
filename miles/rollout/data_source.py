@@ -140,11 +140,20 @@ class RolloutDataSource(DataSource):
         if not self.args.rollout_global_dataset:
             return
 
-        if self.args.load is None:
+        rollout_data_load = getattr(self.args, "rollout_data_load", None)
+        load_root = rollout_data_load or self.args.load
+        require_checkpoint = rollout_data_load is not None and rollout_id is not None and rollout_id >= 0
+        if load_root is None:
+            if require_checkpoint:
+                raise FileNotFoundError(
+                    f"Cannot load data-source checkpoint for rollout {rollout_id}: no checkpoint root is configured."
+                )
             return
 
-        path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+        path = os.path.join(load_root, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         if not os.path.exists(path):
+            if require_checkpoint:
+                raise FileNotFoundError(f"Expected data-source checkpoint does not exist: {path}")
             logger.info(f"Checkpoint {path} does not exist.")
             return
 
