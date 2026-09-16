@@ -136,15 +136,18 @@ def to_sse(response: dict[str, Any]) -> bytes:
 class TrajectoryCollector:
     """Owns the sessions; binds each one to a sampler version, samples through the gateway backend, records turns."""
 
-    def __init__(self, backend, config, tokenizer) -> None:
-        """Keep the MilesBackend (sample), the GatewayConfig (base_model, checkpoint_root, chat_template_kwargs, session_ttl_s) and the HF tokenizer."""
+    def __init__(self, backend, config, tokenizer, sampler_lookup=None) -> None:
+        """Keep the MilesBackend (sample), the GatewayConfig (base_model, checkpoint_root, chat_template_kwargs, session_ttl_s), the HF tokenizer, and an optional (tenant, sampling_session_id) -> model_path lookup from TinkerService."""
         self.backend = backend
         self.config = config
         self.tokenizer = tokenizer
+        self.sampler_lookup = sampler_lookup
         self.sessions: dict[str, TrajectorySession] = {}
 
-    def bind(self, session_id: str, tenant: str, model: str | None) -> TrajectorySession:
-        """Create or re-bind a session: resolve tinker://… with resolve_sampler_checkpoint (ownership included); base model when model is None or the base name; a bound session rejects a different model."""
+    def bind(
+        self, session_id: str, tenant: str, model: str | None, sampling_session_id: str | None = None
+    ) -> TrajectorySession:
+        """Create or re-bind a session: a tinker://… model, or a Tinker sampling_session_id resolved through sampler_lookup, goes through resolve_sampler_checkpoint (ownership included); base model when neither is given; a bound session rejects a different version."""
         raise NotImplementedError
 
     def get(self, session_id: str, tenant: str | None) -> TrajectorySession:
