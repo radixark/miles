@@ -349,6 +349,24 @@ def _compute_topk_reverse_kl(
     return torch.tensor(reverse_kls, dtype=torch.float32)
 
 
+def extract_teacher_support(response: dict[str, Any], response_length: int, top_k: int) -> dict[str, list]:
+    """Extract response-aligned teacher top-k, padding missing entries with zero mass."""
+    if top_k <= 0:
+        raise ValueError("Forward KL requires positive teacher top-k.")
+    maps = _input_logprob_maps(response, "input_top_logprobs", response_length)
+    if len(maps) != response_length or any(not position for position in maps):
+        raise ValueError("Teacher top-k must cover every response position.")
+    ids, logprobs = [], []
+    for position in maps:
+        entries = sorted(position.items(), key=lambda item: item[1], reverse=True)[:top_k]
+        if any(token_id < 0 or not math.isfinite(logp) or logp > 0 for token_id, logp in entries):
+            raise ValueError("Invalid teacher top-k token ID or log probability.")
+        entries += [(0, -math.inf)] * (top_k - len(entries))
+        ids.append([token_id for token_id, _ in entries])
+        logprobs.append([logp for _, logp in entries])
+    return {"ids": ids, "logprobs": logprobs}
+
+
 async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[str, Any]:
     top_k = _get_opd_top_k(args)
     # Optional per-request timeout so a hung teacher/student scoring call cannot stall
@@ -359,6 +377,10 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
     teacher_url = _teacher_url_for_sample(args, sample)
     if top_k == 0:
         return await _post_json(teacher_url, _score_payload(sample.tokens), timeout_secs=request_timeout)
+
+    if getattr(args, "opd_divergence", "reverse_kl") == "forward_kl":
+        teacher_payload = _score_payload(sample.tokens, top_k=top_k)
+        return {"teacher": await _post_json(teacher_url, teacher_payload, timeout_secs=request_timeout)}
 
     strategy = _get_top_k_strategy(args)
     # Per-position scoring requires a patched teacher/student server that understands
@@ -412,6 +434,15 @@ def post_process_rewards(args: Namespace, samples: list[Sample], **kwargs: Any) 
     """
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     response_lengths = [sample.response_length for sample in samples]
+
+    if getattr(args, "opd_divergence", "reverse_kl") == "forward_kl":
+        for sample, reward in zip(samples, raw_rewards, strict=True):
+            sample.train_metadata = {
+                **(sample.train_metadata or {}),
+                "opd": extract_teacher_support(reward["teacher"], sample.response_length, _get_opd_top_k(args)),
+            }
+        scalar_rewards = [0.0] * len(samples)
+        return scalar_rewards, scalar_rewards
 
     if _get_opd_top_k(args) > 0:
         for sample, reward in zip(samples, raw_rewards, strict=True):

@@ -11,6 +11,7 @@ End-to-end training workflows — the place to start.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
 - **[multi_lora](./multi_lora)**: Fully-async multi-adapter LoRA training with a slot-keyed adapter page table.
 - **[on_policy_distillation](./on_policy_distillation)**: Teacher–student distillation on the student's own rollouts, run inside the on-policy training loop.
+  - **[qwen3_1_7b_opsd](./on_policy_distillation/qwen3_1_7b_opsd)**: Privileged-context self-distillation of Qwen3-1.7B with forward KL and example-only clipping.
   - **[qwen3_5_35b_selfdistill](./on_policy_distillation/qwen3_5_35b_selfdistill)**: Two-phase self-distillation of Qwen3.5-35B-A3B on one 8xH200 node, with an in-process Megatron teacher.
 - **[ppo](./ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.

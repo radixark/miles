@@ -18,6 +18,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_opsm_mask,
     compute_policy_loss,
 )
+from miles.backends.training_utils.loss_hub.opd import forward_kl_loss
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.function_registry import load_function
 from miles.utils.types import RolloutBatch
@@ -333,6 +334,11 @@ def policy_loss_function(
         if args.kl_loss_coef != 0:
             loss = loss + args.kl_loss_coef * kl_loss
 
+    opd_metrics = {}
+    if args.use_opd and getattr(args, "opd_divergence", "reverse_kl") == "forward_kl":
+        opd_loss, opd_metrics = forward_kl_loss(args, batch, logits, sum_of_sample_mean)
+        loss = loss + args.opd_kl_coef * opd_loss
+
     # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
     if log_probs.numel() == 0:
         loss += 0 * logits.sum(dtype=torch.float32)
@@ -392,6 +398,7 @@ def policy_loss_function(
     if batch.get("opd_reverse_kl") is not None:
         opd_reverse_kl = torch.cat(batch["opd_reverse_kl"], dim=0)
         reported_loss["opd_reverse_kl"] = sum_of_sample_mean(opd_reverse_kl).clone().detach()
+    reported_loss.update(opd_metrics)
 
     return loss, reported_loss
 

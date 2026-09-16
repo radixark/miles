@@ -28,6 +28,52 @@ from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
 
+
+class TestForwardKLOPD:
+    def _args(self, **overrides):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(REQUIRED_ARGS + ["--num-rollout", "1"])
+        vars(args).update(
+            use_opd=True,
+            opd_type="sglang",
+            opd_divergence="forward_kl",
+            opd_log_prob_top_k=3,
+            train_backend="megatron",
+            tensor_model_parallel_size=1,
+            context_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            world_size=1,
+        )
+        vars(args).update(overrides)
+        return args
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"opd_type": "megatron"},
+            {"opd_log_prob_top_k": 0},
+            {"tensor_model_parallel_size": 2},
+            {"context_parallel_size": 2},
+        ],
+    )
+    def test_rejects_unsupported_configurations(self, overrides):
+        with pytest.raises(ValueError, match="[Ff]orward KL|sglang"):
+            miles_validate_args(self._args(**overrides))
+
+    def test_selects_teacher_support(self):
+        args = self._args()
+        miles_validate_args(args)
+        assert args.opd_top_k_strategy == "only-teacher"
+
+    def test_clipping_is_not_a_core_argument(self):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        with pytest.raises(SystemExit):
+            parser.parse_args(REQUIRED_ARGS + ["--opd-kl-clip", "0.05"])
+
+
 _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
     "world_size": 8,
     "tensor_model_parallel_size": 2,

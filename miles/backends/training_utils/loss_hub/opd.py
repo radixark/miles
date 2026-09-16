@@ -1,7 +1,9 @@
 from argparse import Namespace
+from collections.abc import Callable, Iterator
 
 import torch
 
+from miles.backends.training_utils.loss_hub.logit_processors import get_responses
 from miles.utils.types import RolloutBatch
 
 
@@ -27,7 +29,7 @@ def apply_opd_kl_to_advantages(
         https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tinker_cookbook/distillation/train_on_policy.py
     """
 
-    if student_log_probs is None:
+    if student_log_probs is None or getattr(args, "opd_divergence", "reverse_kl") == "forward_kl":
         return
 
     precomputed_reverse_kls = rollout_data.get("opd_reverse_kl")
@@ -92,3 +94,54 @@ def apply_opd_kl_to_advantages(
 
     # Store reverse KL for logging.
     rollout_data["opd_reverse_kl"] = reverse_kls
+
+
+def iter_forward_kl_terms(
+    args: Namespace, batch: RolloutBatch, logits: torch.Tensor
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+    """Yield per-entry KL(teacher || student) contributions and teacher probabilities."""
+    metadata = batch.get("metadata")
+    if metadata is None or len(metadata) != len(batch["response_lengths"]):
+        raise ValueError("Forward KL requires teacher support in batch metadata.")
+    responses = get_responses(
+        logits,
+        args=args,
+        unconcat_tokens=batch["unconcat_tokens"],
+        total_lengths=batch["total_lengths"],
+        response_lengths=batch["response_lengths"],
+        max_seq_lens=batch.get("max_seq_lens"),
+    )
+    for (student_logits, _), entry, length in zip(responses, metadata, batch["response_lengths"], strict=True):
+        support = (entry or {}).get("opd")
+        if support is None:
+            raise ValueError("Forward KL requires metadata['opd'] for every sample.")
+        ids = torch.as_tensor(support["ids"], device=logits.device, dtype=torch.long)
+        teacher_logp = torch.as_tensor(support["logprobs"], device=logits.device, dtype=torch.float32).detach()
+        shape = (length, args.opd_log_prob_top_k)
+        if length == 0:
+            ids, teacher_logp = ids.reshape(shape), teacher_logp.reshape(shape)
+        if ids.shape != shape or teacher_logp.shape != shape:
+            raise ValueError(f"Teacher support must have shape {shape}, got {ids.shape} and {teacher_logp.shape}.")
+        student_logp = student_logits.float().log_softmax(dim=-1).gather(1, ids)
+        padding = teacher_logp.isneginf()
+        probabilities = teacher_logp.exp()
+        difference = teacher_logp.masked_fill(padding, 0) - student_logp.masked_fill(padding, 0)
+        yield probabilities * difference, probabilities
+
+
+def forward_kl_loss(
+    args: Namespace,
+    batch: RolloutBatch,
+    logits: torch.Tensor,
+    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Reduce unnormalized teacher top-k forward KL with the training loss mask."""
+    losses, coverage = [], []
+    for terms, probabilities in iter_forward_kl_terms(args, batch, logits):
+        losses.append(terms.sum(dim=-1))
+        coverage.append(probabilities.sum(dim=-1))
+    loss = sum_of_sample_mean(torch.cat(losses))
+    return loss, {
+        "opd_forward_kl": loss.detach(),
+        "opd_teacher_coverage": sum_of_sample_mean(torch.cat(coverage)).detach(),
+    }

@@ -1717,6 +1717,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--opd-divergence",
+                type=str,
+                default="reverse_kl",
+                choices=["reverse_kl", "forward_kl"],
+                help=(
+                    "reverse_kl applies an advantage penalty; forward_kl adds a differentiable "
+                    "KL(teacher || student) loss over teacher top-k support."
+                ),
+            )
+            parser.add_argument(
                 "--opd-teacher-urls",
                 type=str,
                 nargs="+",
@@ -3079,6 +3089,14 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
+        if args.opd_divergence == "forward_kl":
+            if args.train_backend != "megatron" or args.opd_type != "sglang":
+                raise ValueError("Forward KL requires --train-backend megatron and --opd-type sglang.")
+            if args.opd_log_prob_top_k <= 0:
+                raise ValueError("Forward KL requires --opd-log-prob-top-k > 0.")
+            if args.tensor_model_parallel_size != 1 or args.context_parallel_size != 1:
+                raise ValueError("Forward KL requires tensor- and context-parallel size 1.")
+            args.opd_top_k_strategy = "only-teacher"
         if args.opd_log_prob_top_k > 0 and args.opd_top_k_strategy != "only-teacher" and not use_legacy_rollout_v1():
             raise ValueError(
                 "--opd-log-prob-top-k with a student-side strategy needs opd_student_top_logprobs, "

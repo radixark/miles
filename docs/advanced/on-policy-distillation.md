@@ -1,8 +1,8 @@
 ---
 title: On-Policy Distillation
-description: Train a student on its own rollouts with a teacher's token-level probabilities as a reverse-KL signal, composable with GRPO, PPO, and other estimators.
+description: Train a student on its own rollouts with reverse-KL advantages or a forward-KL loss.
 ---
-On-policy distillation (OPD) trains a student model on its own rollouts while using a teacher model's token-level probabilities as the distillation signal. In Miles, the teacher signal is converted into a per-token reverse-KL penalty and applied after the selected RL advantage estimator has produced token advantages. This lets the same OPD recipe compose with GRPO, PPO, REINFORCE++, GSPO, and other estimators.
+On-policy distillation (OPD) trains a student model on its own rollouts using a teacher's token-level probabilities. By default, Miles applies a reverse-KL penalty to the RL advantages. Forward KL instead adds a differentiable loss to the policy objective.
 
 ## Key Arguments
 
@@ -10,7 +10,8 @@ On-policy distillation (OPD) trains a student model on its own rollouts while us
 |----------|-------------|
 | `--use-opd` | Enable on-policy distillation. Required flag to use OPD. |
 | `--opd-type` | Type of OPD: `sglang` or `megatron`. Required when `--use-opd` is set. |
-| `--opd-kl-coef` | OPD KL penalty coefficient (default: 1.0). Controls the weight of the distillation signal relative to the RL advantage. |
+| `--opd-divergence` | `reverse_kl` (default) applies an advantage penalty; `forward_kl` adds a teacher-weighted loss. |
+| `--opd-kl-coef` | Weight of the OPD advantage penalty or added forward-KL loss (default: 1.0). |
 | `--opd-log-prob-top-k` | Number of top-k tokens retained for the Rethinking OPD token reward. `0` uses sampled-token OPD; `16` matches the paper recipe default. |
 | `--opd-top-k-strategy` | Top-k token set strategy: `only-student`, `only-teacher`, `intersection`, `union`, or `xor`. |
 | `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
@@ -30,6 +31,29 @@ $$
 Where $A_t$ is the original advantage from the base estimator (e.g., GRPO), $\lambda_{\text{opd}}$ is `--opd-kl-coef`, and $D_{\text{KL}}$ is the token-level reverse KL divergence.
 
 The implementation follows the additive OPD training recipe described in the [Thinking Machines OPD blog](https://thinkingmachines.ai/blog/on-policy-distillation/), with an additional SGLang top-k reward mode from [Rethinking On-Policy Distillation](https://arxiv.org/abs/2604.13016).
+
+## Forward KL
+
+Set `--opd-divergence forward_kl` and `--opd-log-prob-top-k K` with `K > 0`.
+The teacher supplies its top-k probabilities at each response position; the training
+model supplies differentiable student probabilities at those same token IDs.
+Miles adds `--opd-kl-coef` times the masked mean of
+`sum_v p_teacher(v) * (log p_teacher(v) - log p_student(v))` to the policy loss.
+
+The support is not renormalized. `opd_teacher_coverage` reports its probability mass,
+and `opd_forward_kl` reports the truncated KL sum. Forward KL always uses teacher
+top-k support; reverse-KL strategy and reward-weight options do not apply.
+It currently requires the Megatron training backend, an SGLang teacher, and tensor-
+and context-parallel size 1. Both models must share a tokenizer.
+
+The existing reward and postprocessing hooks shown below handle both objectives.
+Custom reward functions can use `extract_teacher_support` from
+`miles.rollout.on_policy_distillation` and store the result in
+`sample.train_metadata["opd"]`. It contains `ids` and `logprobs` lists of shape
+`[response_length, K]`; missing support entries use ID 0 and log probability `-inf`.
+
+Core forward KL is unclipped. The [OPSD example](../../examples/on_policy_distillation/qwen3_1_7b_opsd/README.md)
+uses `iter_forward_kl_terms` from `loss_hub.opd` through a custom loss to apply per-entry clipping.
 
 ## Rethinking OPD Top-K Reward
 
