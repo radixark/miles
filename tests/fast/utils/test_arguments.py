@@ -31,6 +31,7 @@ from miles.utils.arguments import (
     get_miles_extra_args_provider,
     miles_validate_args,
     resolve_rollout_function_paths,
+    supports_partial_target_weight_update,
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
@@ -3320,3 +3321,22 @@ class TestWeightUpdateDeadlines:
 
         with pytest.raises(AssertionError, match=re.escape(flag)):
             miles_validate_args(args)
+
+
+class TestSupportsPartialTargetWeightUpdate:
+    @pytest.mark.parametrize(
+        "colocate, transfer_mode, expected",
+        [
+            (False, "p2p", True),
+            (False, "broadcast", False),
+            (True, "p2p", False),
+            (True, "broadcast", False),
+        ],
+    )
+    def test_only_a_disaggregated_p2p_run_can_split_the_targets(
+        self, colocate: bool, transfer_mode: str, expected: bool
+    ) -> None:
+        """A broadcast reaches every engine at once and cannot be cut per target, and a colocated run has one sender."""
+        args = SimpleNamespace(colocate=colocate, update_weight_transfer_mode=transfer_mode)
+
+        assert supports_partial_target_weight_update(args) is expected

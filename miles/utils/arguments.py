@@ -71,6 +71,10 @@ def driver_owns_generation_pause(args) -> bool:
     return args.fully_async and args.colocate
 
 
+def supports_partial_target_weight_update(args) -> bool:
+    return not args.colocate and args.update_weight_transfer_mode == "p2p"
+
+
 def _resolve_rollout_functions(args) -> None:
     if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
         # The selection --fully-async makes, so enable the mode: as a plugin path it would
