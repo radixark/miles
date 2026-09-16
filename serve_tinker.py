@@ -73,8 +73,9 @@ async def serve(args):
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
-    # TODO(thinker-session-agentic): load the HF tokenizer, build TrajectoryCollector(service.backend, config, tokenizer)
-    # and serve miles.tinker.server.oai_routes.build_app_with_collector(service, collector) so the /oai routes come up next to the Tinker API.
+    # TODO(thinker-session-agentic): tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path);
+    # collector = TrajectoryCollector(service, tokenizer, session_ttl_s=..., chat_template_kwargs=...);
+    # serve miles.tinker.server.oai_routes.build_app_with_collector(service, collector) and sweep the collector alongside service.run().
 
     server = uvicorn.Server(
         uvicorn.Config(

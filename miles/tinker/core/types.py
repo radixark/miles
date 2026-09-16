@@ -63,9 +63,6 @@ class GatewayConfig:
     trains_unembed: bool = False
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
     batch_token_budget: int = 262_144  # packing bound per BatchUnit
-    # OpenAI-compatible collector (tinker_session_server): default chat-template kwargs and recorded-session TTL
-    chat_template_kwargs: dict | None = None
-    session_ttl_s: float = 6 * 3600.0
 
 
 @dataclass
