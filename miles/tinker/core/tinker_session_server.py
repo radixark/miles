@@ -7,6 +7,8 @@ The stateless routes mirror Tinker's OpenAI-compatible API (``…/oai/api/v1/cha
 rendered with the base model's default HF chat template). Recorded sessions under
 ``/oai/sessions/{sid}/v1/…`` are the one extension: every turn keeps exactly the ids the engine consumed
 and produced, plus their logprobs, so the client can build Datums without any decode/re-encode.
+A ``Turn`` maps onto tinker-cookbook's ``Transition`` (``ob`` = input_ids, ``ac`` = output_ids + logprobs), so
+``tinker_cookbook.rl.data_processing.trajectory_to_data`` turns a session into Datums unchanged.
 Sampling reuses ``MilesBackend.sample`` (router ``/generate`` with ``lora_path`` + ``lora_backfill_paths``).
 """
 
