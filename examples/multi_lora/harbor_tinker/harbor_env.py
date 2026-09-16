@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -100,14 +102,19 @@ class HarborGroup(EnvGroupBuilder):
 class HarborDataset(RLDataset):
     """Batches of HarborGroups over the task directories (a Terminal-Bench-2 checkout works as-is); no cookbook equivalent."""
 
-    def __init__(self, task_ids: list[str], groups_per_batch: int, group_size: int, agent_name: str) -> None:
-        """Keep the task list and batch shape; batches are consecutive slices of the task list, wrapping around."""
+    def __init__(
+        self, task_ids: list[str], groups_per_batch: int, group_size: int, agent_name: str, epochs: int = 1
+    ) -> None:
+        """Keep the task list and batch shape; batches are consecutive slices of the task list, wrapping around for `epochs` passes."""
         if not task_ids:
             raise ValueError("HarborDataset needs at least one task")
+        if epochs < 1:
+            raise ValueError("epochs must be >= 1")
         self.task_ids = list(task_ids)
         self.groups_per_batch = groups_per_batch
         self.group_size = group_size
         self.agent_name = agent_name
+        self.epochs = epochs
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """groups_per_batch builders for batch `index`."""
@@ -118,8 +125,8 @@ class HarborDataset(RLDataset):
         ]
 
     def __len__(self) -> int:
-        """Number of batches before the task list wraps."""
-        return math.ceil(len(self.task_ids) / self.groups_per_batch)
+        """Number of batches in `epochs` passes over the task list (the cookbook loop runs exactly len(dataset) steps unless max_steps is lower)."""
+        return math.ceil(len(self.task_ids) * self.epochs / self.groups_per_batch)
 
 
 def list_task_ids(tasks_dir: str) -> list[str]:
@@ -138,13 +145,14 @@ class HarborDatasetBuilder(RLDatasetBuilder):
     groups_per_batch: int = 4
     group_size: int = 4
     agent_name: str = "terminus-2"
+    epochs: int = 1  # passes over the task list; the cookbook runs len(dataset) steps
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
-        """List the task directories under tasks_dir and wrap them in a HarborDataset; no test split."""
+        """List the task directories under tasks_dir (real directories: harbor_agent_function rejects symlinks that resolve outside HARBOR_TASKS_DIR) and wrap them in a HarborDataset; no test split."""
         task_ids = list_task_ids(self.tasks_dir)
         if not task_ids:
             raise ValueError(f"no task directory with a task.toml under {self.tasks_dir!r}")
-        return HarborDataset(task_ids, self.groups_per_batch, self.group_size, self.agent_name), None
+        return HarborDataset(task_ids, self.groups_per_batch, self.group_size, self.agent_name, self.epochs), None
 
 
 def turns_to_trajectory(turns: list[dict[str, Any]]) -> Trajectory:
@@ -205,6 +213,7 @@ class SessionRolloutStrategy(RolloutStrategy):
     max_tokens: int = 8192
     temperature: float = 1.0
     http_timeout_s: float = 60.0
+    record_path: str | None = None  # append one JSON line per trajectory (task, turns, token counts, reward) when set
     # test seams: the trial runner (default harbor_agent_function.run) and an httpx transport (default: the network)
     run_trial: RunTrial | None = field(default=None, compare=False, repr=False)
     transport: httpx.AsyncBaseTransport | None = field(default=None, compare=False, repr=False)
@@ -258,7 +267,29 @@ class SessionRolloutStrategy(RolloutStrategy):
                 await http.delete(f"/oai/sessions/{session_id}")
             except httpx.HTTPError as error:  # the gateway's TTL sweep is the fallback
                 logger.warning("could not delete session %s: %s", session_id, error)
-        return turns_to_trajectory(exported.json()["turns"])
+        turns = exported.json()["turns"]
+        self._record(env, session_id, turns)
+        return turns_to_trajectory(turns)
+
+    def _record(self, env: HarborEnv, session_id: str, turns: list[dict[str, Any]]) -> None:
+        """Experiment log: one JSON line per trajectory with the task, turn count, per-turn prompt/output token counts, final sequence length, reward and exit_status."""
+        if not self.record_path:
+            return
+        verdict = env.verdict or {}
+        line = {
+            "time": time.time(),
+            "task": env.task_id,
+            "session": session_id,
+            "turns": len(turns),
+            "prompt_tokens": [len(turn["input_ids"]) for turn in turns],
+            "output_tokens": [len(turn["output_ids"]) for turn in turns],
+            "final_len": (len(turns[-1]["input_ids"]) + len(turns[-1]["output_ids"])) if turns else 0,
+            "reward": verdict.get("reward"),
+            "exit_status": verdict.get("exit_status"),
+            "model_path": verdict.get("model_path"),
+        }
+        with open(self.record_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line) + "\n")
 
     def _client(self) -> httpx.AsyncClient:
         """One HTTP client per group: the gateway URL, the tenant's bearer, and the optional test transport."""
