@@ -30,13 +30,13 @@ class _RecordingCell:
 
 
 class _StubServer:
-    def __init__(self, server_cells: dict):
-        self.server_cells = server_cells
+    def __init__(self, all_server_cells: dict):
+        self.all_server_cells = all_server_cells
         self.dispose_count = 0
 
     async def dispose(self) -> None:
         self.dispose_count += 1
-        self.server_cells.clear()
+        self.all_server_cells.clear()
 
 
 def _make_controller(servers: dict) -> InferenceController:
@@ -94,7 +94,7 @@ class TestTickCells:
         _start_ticker(controller)
         await asyncio.sleep(0.01)
         late = _RecordingCell()
-        srv.server_cells["late"] = late
+        srv.all_server_cells["late"] = late
         await asyncio.sleep(0.02)
         await controller.dispose()
 

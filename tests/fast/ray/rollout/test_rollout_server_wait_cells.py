@@ -35,7 +35,7 @@ class _StubProvider:
 
 def _make_server(*, colocate: bool, init_expected_num_cells: int, cells: dict | None = None) -> RolloutServer:
     return RolloutServer(
-        server_cells=cells if cells is not None else {},
+        all_server_cells=cells if cells is not None else {},
         args=make_args(colocate=colocate),
         context_lock=ContextLock("InferenceController"),
         engine_provider=_StubProvider(),

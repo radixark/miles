@@ -15,7 +15,7 @@ class _StubProvider:
 
 def _make_server(context_lock: ContextLock | None = None, **overrides) -> RolloutServer:
     return RolloutServer(
-        server_cells={},
+        all_server_cells={},
         args=SimpleNamespace(colocate=True),
         context_lock=context_lock or ContextLock("InferenceController"),
         engine_provider=_StubProvider(),
@@ -83,6 +83,6 @@ class TestWaitExpectedNumCellsIsLockFree:
         await asyncio.sleep(0)
 
         async with srv.context_lock:
-            srv.server_cells["inference-engine-0-0-0"] = SimpleNamespace(meta=SimpleNamespace(needs_offload=True))
+            srv.all_server_cells["inference-engine-0-0-0"] = SimpleNamespace(meta=SimpleNamespace(needs_offload=True))
 
         await asyncio.wait_for(waiter, timeout=5)
