@@ -10,7 +10,8 @@ Usage (stage 1, internal AgentENV sandbox):
     HARBOR_ENV_TYPE=e2b HARBOR_TASKS_DIR=<terminal-bench-2 checkout> TINKER_API_KEY=tml-... \\
     python run_harbor_tinker.py --gateway http://<gateway>:10613 --base-model Qwen3-30B-A3B
 
-Stage 0 swaps the Harbor harness for ``toy_tool_agent.run`` with ``--agent toy``.
+Stage 0 needs no extra agent: Harbor's golden agent (``--agent-name oracle``, no model) proves the sandbox
+round trip, and one terminus-2 trial on an easy task (``fix-git``) exercises the collector's recording.
 """
 
 from __future__ import annotations
