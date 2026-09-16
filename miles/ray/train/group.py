@@ -92,6 +92,9 @@ class TrainerController:
     def _cells(self) -> list[TrainerCell]:
         return sorted(self._cells_by_id.values(), key=lambda cell: cell.cell_index)
 
+    def has_errored_cell(self) -> bool:
+        return any(cell.is_errored for cell in self._cells)
+
     @property
     def cell_ids(self) -> list[str]:
         return [cell.cell_id for cell in self._cells]

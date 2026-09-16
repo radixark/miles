@@ -289,49 +289,10 @@ stability evidence rather than a released benchmark.
 
 ## Multi-LoRA training
 
-The dataset-driven multi-LoRA v1 backend (fully-async driver, adapter
-controller, per-adapter data sources) has been removed. A Tinker-protocol
-backend replaces it: clients submit explicit forward_backward / optim_step
-operations against adapter slots instead of the server owning datasets and
-schedules. The retained slot mechanics live in
-`miles/backends/megatron_utils/lora/`.
-
-## Compatibility and limitations
-
-- **Training backend:** Megatron only; FSDP has no LoRA training path.
-- **Implementation path on `main`:** Bridge is the general path; native/raw LoRA
-  is model-specific to Inkling. General native coverage is pending PR #1792.
-- **Remote transport:** NCCL broadcast only, with PP1. P2P/RDMA and disk-delta
-  reject LoRA.
-- **PPO:** shared actor/critic PPO is incompatible with general Bridge LoRA.
-- **Resume:** miles adapter shards are resumable with the matching parallel
-  topology. Direct HF PEFT import into the Bridge model is not yet implemented;
-  native Inkling has a custom importer.
-- **Memory optimizations:** `--rematerialize-param-from-master-weight` and
-  streamed optimizer state on NVMe reject LoRA. Ordinary actor disk offload is a
-  different feature and is used by the draft agentic recipe.
-- **Multi-LoRA:** the current and proposed Tinker operation paths both require
-  Bridge; native multi-LoRA remains roadmap work. Evaluation, colocate, PP,
-  train offload, shared-outer experts, and FP8/FP4 MoE expert adapters are not
-  supported by the current multi-adapter path.
-- **Agentic sessions:** the current session integration selects the fixed
-  `miles_lora` adapter, not a multi-LoRA slot; `--lora-train-only` is also not a
-  supported combination for this path.
-
-## Internals
-
-- `miles/backends/megatron_utils/lora/bridge.py` builds and wraps the
-  general Bridge LoRA model.
-- `miles/backends/megatron_utils/lora/utils.py` resolves module names, creates
-  standard/canonical adapters, and implements adapter checkpoint helpers.
-- `miles_plugins/models/inkling/lora.py` implements the native/raw LoRA path
-  available on current `main`.
-- `miles/backends/megatron_utils/update_weight/update_weight_from_tensor.py`
-  handles colocated adapter export and IPC loading.
-- `miles/backends/megatron_utils/update_weight/update_weight_from_distributed/`
-  gathers and broadcasts adapters to remote SGLang engines.
-- `miles/rollout/session/core.py` attaches the single adapter to agentic session
-  requests.
-- `miles/backends/megatron_utils/lora/slots.py` and
-  `miles/backends/megatron_utils/lora/optimizer.py` implement the
-  multi-adapter slot mechanics and per-slot optimizers.
+Multi-LoRA training is served through the Tinker protocol: `serve_tinker.py`
+turns a miles deployment into a training service where each client drives its
+own adapter slot with explicit forward_backward / optim_step operations (the
+server owns no datasets or schedules). The gateway lives in `miles/tinker/`,
+the slot mechanics in `miles/backends/megatron_utils/lora/`. The dataset-driven
+multi-LoRA v1 backend (fully-async driver, adapter controller, per-adapter data
+sources) has been removed.
