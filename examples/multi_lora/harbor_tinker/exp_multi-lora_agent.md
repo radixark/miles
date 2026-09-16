@@ -100,7 +100,18 @@ Fix (PR files): `truncate_turns` in `harbor_env.py` keeps only the leading turns
 
 ## Run 4 — 12 steps × 16 trials with the datum cap
 
-`groups_per_batch=2 group_size=8 epochs=6 max_steps=12 max_tokens=1536 max_seq_len=16384 max_datum_tokens=32768 learning_rate=3e-4 HARBOR_AGENT_MAX_ITERATIONS=12` — in progress; results appended below when done.
+`groups_per_batch=2 group_size=8 epochs=6 max_steps=12 max_tokens=1536 max_seq_len=16384 max_datum_tokens=32768 learning_rate=3e-4 HARBOR_AGENT_MAX_ITERATIONS=12`
+
+Steps 0–6 trained (126 trajectories, 1,927 recorded chats, 0 non-200, 54 `forward_backward`, 15 `optim_step`). At step 7's
+`forward_backward` the **trainer went CUDA-OOM** (`MultiLoRATrainRayActor.forward_backward`: tried to allocate 3.8 GiB with 3.75 GiB
+free, 136 GiB in use on one of the four TP2/EP4 training GPUs) on a batch whose longest per-turn Datum was 26,865 tokens
+(`--max-tokens-per-gpu 8192` cannot split a sequence, and the example launcher runs without activation recompute). The Ray job
+died with the actor, taking the gateway down with it; the four SGLang schedulers survived the job and had to be killed by hand
+(they held ~104 GB each on node .9). Base-side finding, not PR code: a trainer OOM is fatal for every tenant of the gateway.
+
+Recovery: gateway relaunched with `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1` and the same
+`--run-id` (same checkpoint root), run4 resumed by the cookbook from `tinker://…/weights/000006` with `max_datum_tokens=20480`
+(turns longer than that are left out of training; the agent still runs them). Results of the resumed steps appended below.
 
 ## Reproduce
 
