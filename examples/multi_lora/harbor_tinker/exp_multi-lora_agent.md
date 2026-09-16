@@ -274,6 +274,42 @@ AgentError), 0 turns dropped by the datum cap, 16 training steps, all on the rel
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | prove-plus-comm | 0.38 (16) | 0.25 (16) | 0.50 (16) | 0.40 (15) | 0.44 (16) | 0.69 (16) | 0.44 (16) | 0.88 (16) | 0.81 (16) | 0.62 (16) | 0.69 (16) | 0.88 (16) | 0.88 (16) | 0.69 (16) | 0.81 (16) | 0.44 (16) |
 
+## Run 6 — 8 LoRAs at once: 8 tenants × (prove-plus-comm, 8 samples per step, 8 steps)
+
+Gateway relaunched with `--n-adapters 8` (recompute on); Ray put all 8 GPU bundles on node .7 this time. Eight independent
+cookbook clients, keys `tml-tenant-01…08`, each with its own adapter, its own sessions and its own trajectories, started 10 s
+apart from the same laptop; per tenant `groups_per_batch=1 group_size=8 epochs=8 max_steps=8 max_tokens=1536 max_seq_len=16384
+max_datum_tokens=20480 learning_rate=1e-4`, so 64 terminus-2 trials ran concurrently in AgentENV every step.
+
+**Everything held.** 8/8 `create_model` accepted, 496 trajectories, all `Submitted`, 0 turns dropped, 4,842 recorded chats with 0
+non-200, 0 × 429, 0 × 5xx, 92 `forward_backward`, 64 `optim_step`, 80 sampler exports, 8/8 clients finished all 8 steps; 42 minutes
+wall clock first to last trajectory. No cross-tenant error of any kind: each session bound to its owner's sampler version, foreign
+keys never seen (the harness uses the placeholder key on pre-bound sessions).
+
+| tenant | s0 | s1 | s2 | s3 | s4 | s5 | s6 | s7 | mean first 2 | mean last 2 | trajectories |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| t01 | 0.62 | 0.38 | 0.50 | 0.25 | 0.25 | 0.80 | 0.12 | 0.25 | 0.50 | 0.19 | 61 |
+| t02 | 0.25 | 0.75 | 0.50 | 0.12 | 0.62 | 0.25 | 0.50 | 0.62 | 0.50 | 0.56 | 64 |
+| t03 | 0.50 | 0.38 | 0.38 | 0.75 | 0.62 | 0.83 | 0.62 | 0.62 | 0.44 | 0.62 | 62 |
+| t04 | 0.12 | 0.50 | 0.38 | 0.38 | 0.88 | 0.17 | 0.71 | 0.12 | 0.31 | 0.42 | 61 |
+| t05 | 0.50 | 0.38 | 0.00 | 0.38 | 0.00 | 0.12 | 0.12 | 0.12 | 0.44 | 0.12 | 60 |
+| t06 | 0.50 | 0.38 | 0.88 | 0.57 | 0.38 | 0.57 | 0.50 | 0.62 | 0.44 | 0.56 | 62 |
+| t07 | 0.12 | 0.25 | 0.62 | 0.75 | 0.50 | 0.88 | 0.88 | 0.88 | 0.19 | 0.88 | 62 |
+| t08 | 0.25 | 0.75 | 0.38 | 0.50 | 0.62 | 0.62 | 0.62 | 0.62 | 0.50 | 0.62 | 64 |
+| **mean of tenants** | **0.36** | **0.47** | **0.45** | **0.46** | **0.48** | **0.53** | **0.51** | **0.48** | | | |
+
+- Per-tenant curves are noisy (8 samples per step, standard error ≈ 0.17): t07 climbs 0.12/0.25 → 0.88 for its last three steps,
+  t03 0.44 → 0.62, t08 → 0.62, while t05 falls to 0.12 and t01 to 0.19. The mean over tenants moves 0.36 → 0.53 (step 5) → 0.48.
+  With 8 samples GRPO's per-step estimate is too noisy for a clean curve; run 5 (16 samples, one tenant) is the cleaner
+  demonstration of learning. Entropy collapsed in two tenants (t02 0.24 → 0.06, t06 0.23 → 0.11) and stayed ~0.2–0.3 in the others.
+- Sequence lengths: 9.4 turns per episode, 280 output tokens per turn, final sequence mean 5,121 tokens (median 5,004, max 16,441).
+- GPU layout on the node (nvidia-smi during step 1): trainer GPUs 0–3 at ~68 GB / 78–80 % util each with 8 slots resident, engine
+  GPUs 4–7 at 103 GB / 100 % util (two TP2 engines decoding 64 concurrent conversations).
+- Timing: per tenant a step took 150–430 s wall; `train_step` 20–183 s. The spread is the trainer serialising eight tenants'
+  forward_backward / optim / export behind one lock (a tenant that arrives while another trains waits), the rollouts overlap.
+- Disk: the checkpoint root grew to 522 GB across all runs (sampler export + state per save, 8 tenants × 8 steps here); prune
+  old versions before a longer multi-tenant run.
+
 ## Reproduce
 
 ```bash
