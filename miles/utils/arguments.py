@@ -2284,6 +2284,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
             )
             parser.add_argument(
+                "--log-inference-engine-weight-checksums",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Ask every inference engine for a full weight checksum after each weight update and record it "
+                "in the event log. The engines materialize all weights to answer, which costs a large transient "
+                "allocation, so this defaults on only when an event directory was explicitly requested.",
+            )
+            parser.add_argument(
                 "--enable-sample-ownership-checker",
                 action=argparse.BooleanOptionalAction,
                 default=None,
@@ -3239,6 +3247,16 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def _resolve_event_logging(args: argparse.Namespace) -> None:
+    event_directory_was_requested = args.save_debug_event_data is not None
+
+    if not event_directory_was_requested and args.ci_test:
+        args.save_debug_event_data = os.path.join(tempfile.gettempdir(), "miles-ci", args.run_uuid, EVENTS_DIRNAME)
+
+    if args.log_inference_engine_weight_checksums is None:
+        args.log_inference_engine_weight_checksums = event_directory_was_requested or args.enable_event_analyzer
+
+
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
     if args.sample_ownership_grace_steps is None:
         args.sample_ownership_grace_steps = 2 if args.ci_test else 10
@@ -3965,9 +3983,7 @@ def miles_validate_args(args):
 
     args.run_uuid = _resolve_run_uuid(args)
 
-    if args.save_debug_event_data is None and args.ci_test:
-        args.save_debug_event_data = os.path.join(tempfile.gettempdir(), "miles-ci", args.run_uuid, EVENTS_DIRNAME)
-
+    _resolve_event_logging(args)
     _resolve_sample_ownership_check(args)
 
     if args.use_rollout_indexer_replay:
