@@ -14,7 +14,7 @@ decides whether a trajectory becomes one Datum (turns chain) or one Datum per tu
 |---|---|
 | gateway `miles/tinker/core/tinker_session_server.py` | `TrajectoryCollector`: recorded sessions, one per trajectory; TITO hooks empty (full re-render every turn) |
 | gateway `miles/tinker/server/oai_routes.py` | `POST /oai/sessions/{sid}` bind, `POST /oai/sessions/{sid}/v1/chat/completions`, `GET /oai/sessions/{sid}` turns, `DELETE` |
-| gateway `serve_tinker.py` | mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), renders with `--apply-chat-template-kwargs` |
+| gateway `serve_tinker.py`, `miles/tinker/arguments.py` | mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), renders with `--apply-chat-template-kwargs` / `--chat-template-path` |
 | client `harbor_env.py` | cookbook plug-ins: `HarborDatasetBuilder`, `HarborGroup` (rewards from Harbor verdicts), `SessionRolloutStrategy` (bind → Harbor trial → export → delete → `Trajectory`) |
 | client `run_harbor_tinker.py` | `HarborTinkerConfig` → cookbook `train.Config` → `train.main`, with a sandbox preflight |
 
@@ -24,7 +24,10 @@ Status codes on the session routes: 400 bad input or missing key, 403 another te
 ## Run
 
 1. **Gateway** (serving node): start it as in [`examples/multi_lora`](../README.md). The cookbook creates its model with
-   the SDK default `train_unembed=True`, so the adapter layout must include the output layer (`serve_qwen3_30b_a3b_tinker.py` does).
+   the SDK default `train_unembed=True`, so keep `--tinker-train-unembed` on (the launcher's default). The gateway refuses a
+   Datum longer than `min(model max_position_embeddings, --max-tokens-per-gpu)` and closes the model, and agent trajectories
+   run to 10–30k tokens, so pass e.g. `--extra-args "--max-tokens-per-gpu 32768 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --tinker-session-ttl-s 7200"`
+   and set the client's `max_datum_tokens` to the same cap.
 2. **Client host** (on the tailnet that reaches the gateway and AgentENV):
 
    ```bash
