@@ -336,7 +336,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     allowed_roles = list(fixed_template_append_roles(tito_model))
     _verify_tito_samples(samples, events_per_sample, allowed_roles=allowed_roles)
     if len(samples) != 1:
-        raise AssertionError(f"Anthropic per-model e2e: expected one linear sample, got {len(samples)}")
+        raise AssertionError(
+            f"Anthropic per-model e2e: expected one linear sample, got {len(samples)}; "
+            f"leaves={[sample.metadata.get('leaf') for sample in samples]!r}"
+        )
     include_system = samples[0].metadata.get("intermediate_system_used")
     if type(include_system) is not bool:
         raise AssertionError("Anthropic per-model e2e: missing intermediate-system capability result")
