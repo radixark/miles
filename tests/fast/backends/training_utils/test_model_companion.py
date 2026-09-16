@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -121,6 +122,22 @@ class TestModelCompanion:
 
         assert witness.sample_consumptions is parameter
         assert parameter.shape == (2, 5)
+
+    def test_record_survives_a_parameter_backed_by_non_resizable_storage(self) -> None:
+        """A companion restored from a checkpoint-borne storage can still grow."""
+        witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        with pytest.raises(RuntimeError, match="not resizable"):
+            torch.from_numpy(np.zeros((0, 5), dtype=np.int64)).resize_((1, 5))
+        witness.sample_consumptions.data = torch.from_numpy(np.zeros((0, 5), dtype=np.int64))
+
+        parameter = witness.sample_consumptions
+
+        witness.record_sample_consumptions([_identity(7, 0, 1), _identity(7, 0, 1)])
+
+        assert witness.snapshot_sample_consumptions(is_skipped=False) == {_identity(7, 0, 1): 2}
+        assert witness.sample_consumptions is parameter
+        assert witness.sample_consumptions.tolist() == [[7, 0, 1, 2, 0]]
+        assert witness.state_dict()["sample_consumptions"].tolist() == [[7, 0, 1, 2, 0]]
 
     def test_state_dict_without_companion_entries_loads_as_an_empty_record(self) -> None:
         """A base Megatron checkpoint predating the companion loads instead of raising KeyError."""
