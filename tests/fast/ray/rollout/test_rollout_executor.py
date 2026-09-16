@@ -24,7 +24,7 @@ from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import ExplicitlyDroppedSamplesEvent
+from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, ExplicitlyDroppedSamplesEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.types import Sample
@@ -228,6 +228,9 @@ def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExe
     executor.data_source = _FakeDataSource(tmp_path)
     executor._train_parallel_configs_of_model_id = {None: {}}
     executor._weight_versions_of_model_id = {}
+    executor.last_get_rollout_id_of_model_id = {}
+    executor.custom_convert_samples_to_train_data_func = None
+    executor.custom_reward_post_process_func = None
     executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
     return executor
 
@@ -399,6 +402,49 @@ class TestOutputSnapshotReplay:
         await executor.save(2)
         data, _metadata = _load_executor_state(tmp_path, rollout_id=2)[None, 3]
         assert [sample.index for sample in data] == [7]
+
+
+class TestSampleOwnershipRolloutId:
+    async def test_samples_issued_during_a_get_are_recorded_against_that_rollout_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The data source issues samples mid-get, so the recorder must stamp the rollout being served."""
+        event_dir = tmp_path / "events"
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.args = make_args(
+            load=str(tmp_path),
+            save=str(tmp_path),
+            save_debug_event_data=str(event_dir),
+            enable_sample_ownership_checker=True,
+        )
+        executor.last_get_rollout_id_of_model_id = {}
+        executor.data_source.get_samples = lambda _num_samples: [[make_sample(group_index=3, index=10)]]
+        SampleOwnershipRecorder.install(
+            args=executor.args,
+            data_source=executor.data_source,
+            current_rollout_id=lambda: rollout_executor_module._single_or_none(
+                executor.last_get_rollout_id_of_model_id.values()
+            ),
+        )
+
+        async def generate_rollout_data(*, rollout_id: int, trainer_model_id: str | None):
+            executor.data_source.get_samples(1)
+            return [Sample(index=10)], {}
+
+        monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
+        monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {})
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(
+            rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", lambda *, args: None
+        )
+        set_event_logger(EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="rollout_executor")))
+        try:
+            await executor.get(rollout_id=7)
+        finally:
+            set_event_logger(None)
+
+        [event] = [x for x in read_events(event_dir) if isinstance(x, DataSourceIssuedSamplesEvent)]
+        assert event.rollout_id == 7
 
 
 class _CustomDataSource:

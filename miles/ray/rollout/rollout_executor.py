@@ -103,7 +103,9 @@ class RolloutExecutor:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
         SampleOwnershipRecorder.install(
-            args=args, data_source=self.data_source, current_rollout_id=lambda: self.rollout_id
+            args=args,
+            data_source=self.data_source,
+            current_rollout_id=lambda: _single_or_none(self.last_get_rollout_id_of_model_id.values()),
         )
 
         self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
