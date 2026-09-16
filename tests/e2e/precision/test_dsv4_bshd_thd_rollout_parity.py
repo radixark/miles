@@ -161,7 +161,7 @@ def _run_rollout(*, debug_root: Path, hf_checkpoint: str, te_precision_config_pa
                 te_precision_config_path=te_precision_config_path,
                 micro_batch_size=_NUM_SAMPLES,
             )
-            + "--debug-rollout-only "
+            + "--debug-rollout-only --no-enable-sample-ownership-checker "
             + "--sglang-server-concurrency 1 "
             + f"--custom-rm-path {_CUSTOM_RM_PATH} "
         ),
