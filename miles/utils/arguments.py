@@ -2303,7 +2303,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--sample-ownership-grace-steps",
                 type=int,
                 default=None,
-                help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI).",
+                help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI). "
+                "The same grace applies at shutdown: recent unconsumed samples may remain unchecked. "
+                "Repeated consumption and repeated drops are still checked within the grace window.",
             )
             parser.add_argument(
                 "--enable-witness",

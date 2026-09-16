@@ -400,6 +400,18 @@ class TestMaturity:
 
 
 class TestPerSlotAccounting:
+    def test_repeated_drops_are_rejected_within_the_grace_window(self) -> None:
+        """Tail grace may defer loss detection but cannot excuse a repeated drop."""
+        issues = _check(
+            [_issued([(7, [10])], rollout_id=5), _dropped(10), _dropped(10)],
+            witnesses=[_witness([], rollout_id=5)],
+            grace_steps=2,
+        )
+
+        assert len(issues) == 1
+        assert issues[0].sample_index == 10
+        assert issues[0].drop_count == 2
+
     def test_each_grpo_slot_trained_once_is_complete(self) -> None:
         """Each sample slot resolves independently when every index is trained once."""
         consumptions = [_consumption(10), _consumption(11), _consumption(12)]
