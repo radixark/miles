@@ -4,7 +4,9 @@ from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "fully-async"])
+register_cuda_ci(
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "fully-async"], hardware=["hopper", "blackwell"]
+)
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
