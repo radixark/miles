@@ -278,13 +278,17 @@ class TestYamlShapeValidation:
 
 
 class TestPrefillNumServersPath:
-    def test_prefill_num_servers_counts_engines_not_gpus(self):
+    @pytest.mark.parametrize("multi_lora", [False, True])
+    def test_prefill_num_servers_counts_engines_not_gpus(self, multi_lora):
         """prefill_num_servers is a server count, so its GPU span scales with the engine width."""
         cfg = resolve_sglang_config(
-            _make_args(rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2)
+            _make_args(
+                rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2, multi_lora=multi_lora
+            )
         )
         groups = cfg.models[0].server_groups
         assert [(group.worker_type, group.num_gpus) for group in groups] == [("prefill", 6), ("decode", 10)]
+        assert cfg.models[0].update_weights is not multi_lora
 
     def test_prefill_consuming_all_gpus_is_rejected(self):
         """prefill_num_servers leaving no decode gpus fails loudly."""
@@ -384,16 +388,19 @@ class TestEngineOffset:
 
 
 class TestNeedsOffload:
-    def test_no_offload_flag_means_no_group_needs_offload(self, tmp_path):
+    @pytest.mark.parametrize("multi_lora", [False, True])
+    def test_no_offload_flag_means_no_group_needs_offload(self, tmp_path, multi_lora):
         """With offload_rollout off, no group offloads and no memory-saver override is injected."""
         cfg = _resolve_yaml(
             tmp_path,
             "sglang:\n  - name: actor\n    server_groups:\n      - worker_type: regular\n        num_gpus: 8\n",
             rollout_num_gpus=8,
+            multi_lora=multi_lora,
         )
         group = cfg.models[0].server_groups[0]
         assert group.needs_offload is False
         assert "enable_memory_saver" not in group.overrides
+        assert cfg.models[0].update_weights is not multi_lora
 
     def test_groups_overlapping_megatron_offload_and_the_rest_disable_memory_saver(self, tmp_path):
         """Only groups starting inside the megatron gpu range offload; later ones get enable_memory_saver=False."""

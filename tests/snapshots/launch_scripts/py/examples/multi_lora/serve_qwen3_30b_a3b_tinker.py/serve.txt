@@ -1,0 +1,78 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/serve_tinker.py
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 32
+  --num-query-groups 4
+  --kv-channels 128
+  --num-layers 48
+  --hidden-size 2048
+  --ffn-hidden-size 6144
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --rotary-percent 1.0
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 151936
+  --rotary-base 1000000
+  --moe-ffn-hidden-size 768
+  --moe-router-score-function softmax
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --num-experts 128
+  --moe-grouped-gemm
+  --moe-token-drop-policy probs
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --hf-checkpoint /root/models/Qwen3-30B-A3B
+  --megatron-to-hf-mode bridge 
+  --lora-rank 32
+  --lora-alpha 64
+  --lora-dropout 0.0
+  --target-modules "linear_qkv,linear_proj,linear_fc1,linear_fc2,output_layer"
+  --no-gradient-accumulation-fusion
+  --multi-lora-n-adapters 4 
+  --tinker-server-port 10613
+  --tinker-checkpoint-root /root/shared_data/checkpoints/260101-000000-000 
+  --optimizer adam
+  --lr 1e-4 
+  --tensor-model-parallel-size 2
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 4
+  --expert-tensor-parallel-size 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 8192 
+  --rollout-num-gpus-per-engine 2
+  --sglang-mem-fraction-static 0.7
+  --sglang-lora-backend triton 
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 4
+  --rollout-num-gpus 4 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash   
