@@ -34,7 +34,7 @@ echo "Teacher model server is up and running at $TEACHER_IP:$TEACHER_PORT."
 sleep 10
 
 
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -44,9 +44,9 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-source "/root/miles/scripts/models/qwen3-8B.sh"
-
-
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../../miles/utils/external_utils/model_args_utils.py" "qwen3-8B")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-8B
    --ref-load /root/Qwen3-8B_torch_dist
@@ -157,7 +157,8 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json='{
      "env_vars": {
         "PYTHONPATH": "/root/Megatron-LM/",
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1"
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        "MILES_USE_LEGACY_ROLLOUT_V1": "1"
      }
    }' \
    -- python3 train.py \

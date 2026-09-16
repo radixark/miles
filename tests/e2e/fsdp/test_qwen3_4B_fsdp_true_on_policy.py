@@ -8,6 +8,7 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-2-gpu-h200",
     labels=["fsdp"],
+    hardware=["hopper"],
 )
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
@@ -17,8 +18,8 @@ MODEL_NAME = "Qwen3-4B"
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
@@ -104,7 +105,6 @@ def execute():
         "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
         "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
     }
 
     U.execute_train(

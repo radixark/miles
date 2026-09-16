@@ -23,7 +23,7 @@ from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS, clear_proxy_env
 
 import miles.utils.external_utils.command_utils as U
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
-from miles.utils.misc import exec_command
+from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu
 
 app: typer.Typer = typer.Typer()
 
@@ -35,8 +35,8 @@ NUM_LAYERS: int = 5
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
-register_cuda_ci(est_time=200, suite="stage-c-8-gpu-h100", labels=["short"])
-register_rocm_ci(est_time=2000, suite="stage-c-8-gpu-mi350", labels=["short"])
+register_cuda_ci(est_time=200, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=2000, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
 
 
 @dataclasses.dataclass(frozen=True)
@@ -75,14 +75,14 @@ def _resolve_mode(mode: str) -> tuple[str, _ModeConfig]:
 
 def _prepare(dump_dir: Path, config: _ModeConfig) -> Path:
     """Download model, convert checkpoint, write source patcher config."""
-    exec_command("mkdir -p /root/models")
-    exec_command(f"hf download {HF_REPO} --local-dir /root/models/{MODEL_NAME}")
+    exec_command_cpu("mkdir -p /root/models")
+    exec_command_cpu(f"hf download {HF_REPO} --local-dir /root/models/{MODEL_NAME}")
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
         num_gpus_per_node=min(NUM_GPUS, NUM_LAYERS),
     )
-    exec_command(f"rm -rf {dump_dir}")
+    exec_command_cpu(f"rm -rf {dump_dir}")
 
     source_patcher_path: Path = _RUN_DIR / "megatron_source_patcher.yaml"
     yaml_content: str = (
@@ -129,7 +129,7 @@ def run(
         f"{target_extra_args_part}"
         f"--extra-args '{extra_args}'"
     )
-    exec_command(cmd)
+    exec_command_gpu(cmd)
 
 
 @app.command()
@@ -149,7 +149,7 @@ def compare(
         f"--baseline-dir {base / baseline_dir_name / 'standalone'} "
         f"--target-dir {base / target_dir_name / 'standalone'}"
     )
-    exec_command(cmd)
+    exec_command_cpu(cmd)
 
 
 if __name__ == "__main__":

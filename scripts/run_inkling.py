@@ -68,7 +68,7 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
-# model name -> scripts/models/<type>.sh; the 4-layer slices reuse the base
+# model name -> scripts/models/<type>.py; the 4-layer slices reuse the base
 # definition with MODEL_ARGS_NUM_LAYERS=4 (set in ScriptArgs.__post_init__)
 _MODEL_REGISTRY = {
     "Inkling": "inkling",
@@ -394,8 +394,6 @@ def _train(args: ScriptArgs):
         "NCCL_NVLS_ENABLE": "0",
         "NCCL_RAS_ENABLE": "0",
     }
-    if args.fully_async:
-        extra_env_vars["MILES_EXPERIMENTAL_ROLLOUT_REFACTOR"] = "1"
 
     train_args = (
         f"{ckpt_args} "

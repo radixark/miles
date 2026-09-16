@@ -13,7 +13,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
-    hardware: Literal["MI350X", "MI355X"] = "MI355X"
+    hardware: Literal["auto", "MI350X", "MI355X"] = "auto"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -27,17 +27,20 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.rollout_fp8:
-        U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8")
+        U.exec_command_cpu(
+            f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
+        )
 
     if not args.enable_megatron_bridge:
         U.convert_checkpoint(
@@ -201,7 +204,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
@@ -220,6 +223,7 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
+        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**misc_env_vars},

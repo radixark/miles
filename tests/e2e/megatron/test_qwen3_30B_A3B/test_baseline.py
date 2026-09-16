@@ -4,7 +4,12 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=1100, suite="stage-c-4-gpu-h200", labels=["megatron", "weight-update", "short", "mooncake"])
+register_cuda_ci(
+    est_time=1100,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "weight-update", "short", "mooncake"],
+    hardware=["hopper", "blackwell"],
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -12,7 +17,9 @@ register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
-register_rocm_ci(est_time=900, suite="stage-c-4-gpu-mi350", labels=["megatron", "weight-update", "short", "mooncake"])
+register_rocm_ci(
+    est_time=900, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "weight-update", "short", "mooncake"]
+)
 
 CASE = CaseConfig(
     use_deepep=False,

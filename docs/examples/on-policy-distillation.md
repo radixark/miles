@@ -1,0 +1,22 @@
+---
+title: "On-Policy Distillation Examples"
+description: "Teacher–student distillation on the student's own rollouts, run inside the on-policy training loop."
+# Generated from examples/on_policy_distillation/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
+---
+The canonical OPD documentation lives in
+[`docs/advanced/on-policy-distillation.md`](/advanced/on-policy-distillation).
+Keep the algorithm description, arguments, teacher-mode comparison, and
+Rethinking OPD top-k recipe there so we do not maintain two copies.
+
+This directory contains runnable examples:
+
+- `run-qwen3-8B-opd.sh`: SGLang teacher server OPD. This script enables
+  Rethinking OPD with `--opd-log-prob-top-k 16`, `--opd-top-k-strategy only-student`,
+  and `--opd-reward-weight-mode student_p`.
+- `run-qwen3-8B-opd-multi-teacher.sh`: Multi-teacher OPD with per-sample routing.
+  Math prompts are scored by a Qwen3-32B teacher and code prompts by a
+  Qwen3-Coder-30B-A3B teacher, selected via `--opd-teacher-urls` and a per-row
+  `{"metadata": {"opd_teacher": ...}}` tag in the dataset.
+- `run-qwen3-8B-opd-megatron.sh`: Megatron-loaded teacher OPD.
+
+Use `--opd-log-prob-top-k 0` to run the original sampled-token OPD path.

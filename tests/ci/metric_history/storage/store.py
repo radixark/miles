@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """Storage contract for the CI metric-history regression gate.
 
 * The gate compares a candidate run's metrics against a baseline assembled

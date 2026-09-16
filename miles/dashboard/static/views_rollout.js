@@ -1,16 +1,18 @@
 import { createAnatomy } from "./anatomy.js";
 import { api } from "./api.js";
-import { el, fmtNum } from "./app.js";
+import { el, fmtNum, statBox } from "./app.js";
 import { drawChart } from "./charts.js";
 
 const DEFAULT_COLUMNS = [
   "sample_index",
+  "sample_occurrence",
   "group_index",
   "raw_reward",
   "reward",
   "response_length",
   "truncated",
   "versions",
+  "staleness",
   "turns",
   "tool_calls",
   "mean_abs_lp_diff",
@@ -20,8 +22,15 @@ const DEFAULT_COLUMNS = [
   "non_generation_time",
 ];
 
-// staleness span rendered as one sortable-ish string column; mixed-version
-// samples are exactly what --use-tis corrects, so they must not blend in
+function sampleHash(rolloutId, row, evaluation) {
+  const params = new URLSearchParams();
+  if (row.sample_occurrence) params.set("occurrence", String(row.sample_occurrence));
+  if (evaluation) params.set("eval", "1");
+  const query = params.toString();
+  return `#/rollout/${rolloutId}/sample/${row.sample_index}${query ? `?${query}` : ""}`;
+}
+
+// one string column so mixed-version samples stay visibly distinct
 function versionSpan(row) {
   if (row.weight_version === null || row.weight_version === undefined) return null;
   const lo = row.weight_version_min;
@@ -60,12 +69,50 @@ function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
   return wrap;
 }
 
-function statBox(label, value) {
-  return el("div", { class: "stat" }, [el("div", { class: "v" }, [fmtNum(value)]), el("div", { class: "k" }, [label])]);
+// How far back the "latest" landing will look for a step it can actually show.
+// Anything deeper than this is not a fresh-dump race any more, so stopping lets
+// the real error surface instead of silently walking the reader into old data.
+const LANDING_LOOKBACK = 5;
+
+// The newest step is listed as soon as its dump file exists, which is earlier
+// than it can be read: the dump may still be mid-write (503), truncated, or
+// recorded with no samples at all. Land on the newest step that actually has
+// samples instead of on an error page.
+async function resolveLatest(ids, evaluation) {
+  for (const id of ids.slice(-LANDING_LOOKBACK).reverse()) {
+    try {
+      const summary = await api(`/api/rollout/${id}/summary`, { eval: evaluation }, { retry503: false });
+      if (summary.rows.length) return id;
+    } catch {
+      /* mid-write, truncated, or already rotated away: try the step before it */
+    }
+  }
+  // nothing readable nearby: go to the newest anyway so the reader sees the
+  // real error rather than a silent redirect into stale data
+  return ids.at(-1);
 }
 
 export async function renderRollout(view, meta, route) {
-  const { rolloutId, evaluation } = route;
+  const { evaluation } = route;
+  let { rolloutId } = route;
+  if (rolloutId === null) {
+    const candidates = evaluation ? meta.rollout_ids.eval : meta.rollout_ids.train;
+    if (!candidates.length) {
+      const kind = evaluation ? "eval" : "rollout";
+      view.replaceChildren(el("p", { class: "muted" }, [`No ${kind} steps have been dumped yet.`]));
+      return;
+    }
+    view.replaceChildren(el("p", { class: "muted" }, ["finding the newest step with data…"]));
+    const entryHash = location.hash;
+    rolloutId = await resolveLatest(candidates, evaluation);
+    // the resolve spans several requests; if the user navigated away in the
+    // meantime, rewriting the URL now would drag them back into this view
+    if (location.hash !== entryHash) return;
+    // rewrite the URL to the step actually shown, so reloads, Prev/Next and
+    // the breadcrumb all work off a real id
+    location.replace(`#/rollout/${rolloutId}${evaluation ? "?eval=1" : ""}`);
+    return;
+  }
   const [summary, groups] = await Promise.all([
     api(`/api/rollout/${rolloutId}/summary`, { eval: evaluation }),
     api(`/api/rollout/${rolloutId}/groups`, { eval: evaluation }),
@@ -121,22 +168,16 @@ export async function renderRollout(view, meta, route) {
     statBox("truncated frac", mean(rows.map((r) => (r.truncated ? 1 : 0)))),
     statBox("zero-std groups", `${zeroStdGroups}/${groups.rows.length}`),
     statBox("mixed-version frac", mean(rows.map((r) => (r.mixed_version === null ? null : +r.mixed_version)).filter((v) => v !== null))),
-    // staleness = trainer version at consume − generation version; the engine
-    // counter is 1 after the startup push and +1 per train step, so the
-    // trainer holds v(step+1) when consuming step N
     statBox(
       "avg staleness",
-      evaluation
-        ? null
-        : mean(rows.map((r) => (r.weight_version_min == null ? null : rolloutId + 1 - r.weight_version_min)).filter((v) => v !== null)),
+      evaluation ? null : mean(rows.map((r) => r.staleness).filter((v) => v !== null && v !== undefined)),
     ),
     statBox("mean |lp diff|", mean(rows.map((r) => r.mean_abs_lp_diff).filter((v) => v !== null))),
     statBox("mean entropy", mean(rows.map((r) => r.mean_entropy).filter((v) => v !== null))),
   ]);
 
   // -------- tabs --------
-  const openTokens = (row) =>
-    (location.hash = `#/rollout/${rolloutId}/sample/${row.sample_index}${evaluation ? "?eval=1" : ""}`);
+  const openTokens = (row) => (location.hash = sampleHash(rolloutId, row, evaluation));
 
   const samplesTab = () => {
     const scatter = el("canvas", { class: "chart", style: "height: 260px" });
@@ -149,7 +190,8 @@ export async function renderRollout(view, meta, route) {
             x: r.response_length,
             y: r[rewardKey],
             flag: Boolean(r.truncated),
-            label: `sample ${r.sample_index}\nreward=${fmtNum(r[rewardKey])} len=${r.response_length}` +
+            label: `sample ${r.sample_index}${r.sample_occurrence ? ` #${r.sample_occurrence + 1}` : ""}\n` +
+              `reward=${fmtNum(r[rewardKey])} len=${r.response_length}` +
               (r.mean_abs_lp_diff !== null ? `\n|lp diff|=${fmtNum(r.mean_abs_lp_diff)}` : ""),
             row: r,
           })),
@@ -178,8 +220,12 @@ export async function renderRollout(view, meta, route) {
         createAnatomy({
           lanes: trajectories.lanes,
           consumeTs: trajectories.consume_ts,
-          rowsByIndex: new Map(rows.map((r) => [r.sample_index, r])),
-          onClickSample: (index) => openTokens({ sample_index: index }),
+          // A TITO index can carry several leaves; the lifecycle lane is their
+          // shared execution, so the panel labels and opens the FIRST leaf
+          // (last-one-wins would label one leaf while clicking opened another).
+          // The samples table below reaches every (index, occurrence) row.
+          rowsByIndex: new Map(rows.filter((r) => (r.sample_occurrence ?? 0) === 0).map((r) => [r.sample_index, r])),
+          onClickSample: (index) => openTokens({ sample_index: index, sample_occurrence: 0 }),
         }),
       );
     }

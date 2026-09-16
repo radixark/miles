@@ -18,14 +18,13 @@ from miles.ray.rollout.train_data_conversion import (
     split_train_data_by_dp_scheduled_raw,
 )
 from miles.utils import object_store
-from miles.utils.types import Sample
+from miles.utils.sampling_mask import RolloutSamplingMask
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _ray_minicluster():
+def _ray_minicluster(ray_local_mode):
     """split_train_data_by_dp uses ray.put(...) so we need Ray."""
-    if not ray.is_initialized():
-        ray.init(ignore_reinit_error=True, include_dashboard=False, log_to_driver=False)
     yield
 
 
@@ -120,6 +119,43 @@ class TestConvertSamplesToTrainData:
         )
         assert out["rollout_log_probs"][0] == [-0.1, -0.2, -0.3, -0.4]
 
+    def test_sampling_mask_passed_through(self):
+        args = make_args(rewards_normalization=False)
+        s = make_sample()
+        s.rollout_sampling_mask = RolloutSamplingMask(
+            ids=[0, 7, 1, 8, 2, 9, 3, 10],
+            offsets=[0, 2, 4, 6, 8],
+        )
+        out = convert_samples_to_train_data(
+            args,
+            [s],
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert out["rollout_sampling_mask_ids"][0].tolist() == [0, 7, 1, 8, 2, 9, 3, 10]
+        assert out["rollout_sampling_mask_offsets"][0].tolist() == [0, 2, 4, 6, 8]
+
+    def test_sampling_mask_requires_complete_batch(self):
+        args = make_args(rewards_normalization=False)
+        captured = make_sample(index=8)
+        captured.rollout_sampling_mask = RolloutSamplingMask(
+            ids=[0, 7, 1, 8, 2, 9, 3, 10],
+            offsets=[0, 2, 4, 6, 8],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=r"must be present for every training sample.*sample_index=9",
+        ):
+            convert_samples_to_train_data(
+                args,
+                [captured, make_sample(index=9)],
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+
     def test_optional_field_round_number_from_metadata(self):
         args = make_args(rewards_normalization=False)
         s = make_sample()
@@ -171,6 +207,45 @@ class TestConvertSamplesToTrainData:
             custom_reward_post_process_func=None,
         )
         assert out["rollout_ids"] == [0, 1, 1, 3]
+
+    def test_weight_versions_are_converted_to_serializable_dicts(self):
+        """Weight version spans cross the object-store boundary as plain msgpack values."""
+        args = make_args(rewards_normalization=False)
+        sample = make_sample()
+        sample.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version="v1", abs_start=2, abs_end=4)])
+        ]
+
+        out = convert_samples_to_train_data(
+            args,
+            [sample],
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["weight_versions"] == [[[{"version": "v1", "abs_start": 2, "abs_end": 4}]]]
+
+    def test_weight_version_serialization_preserves_empty_samples_and_calls(self):
+        """A sample without calls and a call without spans keep their slots, so rows and turn counts stay aligned."""
+        args = make_args(rewards_normalization=False)
+        stamped = make_sample(index=0)
+        stamped.weight_versions = [
+            WeightVersionsPerCall(spans=[]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version="v1", abs_start=2, abs_end=4)]),
+        ]
+        unstamped = make_sample(index=1)
+        unstamped.weight_versions = []
+
+        out = convert_samples_to_train_data(
+            args,
+            [stamped, unstamped],
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["weight_versions"] == [[[], [{"version": "v1", "abs_start": 2, "abs_end": 4}]], []]
 
     def test_custom_convert_func_short_circuits(self):
         args = make_args()
@@ -280,9 +355,8 @@ class TestPostProcessRewards:
         expected_std = float(np.std([-1.5, -0.5, 0.5, 1.5]))
         assert abs(np.std(processed) - expected_std) < 1e-5
 
-    def test_irregular_group_size_takes_view_branch(self):
-        """When `rewards.shape[-1] != n_samples_per_prompt * rollout_batch_size`,
-        the code takes the ``rewards.view(-1, rewards.shape[-1])`` branch."""
+    def test_irregular_group_size_uses_explicit_group_index(self):
+        """Explicit group identity keeps an irregularly sized group together."""
         args = make_args(
             advantage_estimator="grpo",
             rewards_normalization=True,
@@ -295,6 +369,192 @@ class TestPostProcessRewards:
         _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
         # mean is 5.0, after centering: -3, -1, 1, 3
         assert abs(sum(processed)) < 1e-5
+
+    def test_grpo_normalizes_unique_rollouts_with_unequal_fanout(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=False,
+            n_samples_per_prompt=2,
+            rollout_batch_size=2,
+        )
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward=0.0),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=1.0),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=1.0),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=1.0),
+            make_sample(group_index=1, index=2, rollout_id=20, reward=2.0),
+            make_sample(group_index=1, index=2, rollout_id=20, reward=2.0),
+            make_sample(group_index=1, index=3, rollout_id=21, reward=4.0),
+        ]
+
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert raw == [0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 4.0]
+        assert processed == pytest.approx([-0.5, 0.5, 0.5, 0.5, -1.0, -1.0, 1.0])
+
+    def test_grpo_broadcasts_std_normalized_rollout_advantage(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=2,
+            rollout_batch_size=1,
+        )
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward=0.0),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=1.0),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=1.0),
+        ]
+
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert processed == pytest.approx([-(2**-0.5), 2**-0.5, 2**-0.5], abs=1e-5)
+
+    def test_grpo_rejects_different_sibling_rewards(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=False,
+            n_samples_per_prompt=2,
+            rollout_batch_size=1,
+        )
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward=0.0, loss_mask=[1, 1, 1, 1]),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=2.0, loss_mask=[1, 0, 0, 0]),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=6.0, loss_mask=[1, 1, 1, 0]),
+        ]
+
+        with pytest.raises(
+            ValueError,
+            match=r"all samples in rollout 11 must share one reward; rows \[1, 2\] have rewards \[2.0, 6.0\]",
+        ):
+            _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+    def test_grpo_shared_reward_ignores_final_training_mask(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=False,
+            n_samples_per_prompt=2,
+            rollout_batch_size=1,
+        )
+        samples = [
+            make_sample(
+                group_index=0,
+                index=0,
+                rollout_id=10,
+                reward=2.0,
+                response_length=8,
+                remove_sample=True,
+            ),
+            make_sample(group_index=0, index=0, rollout_id=10, reward=2.0, response_length=4),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=6.0, loss_mask=[1, 1, 0, 0]),
+        ]
+
+        train_data = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert train_data["raw_reward"] == [2.0, 2.0, 6.0]
+        assert train_data["rewards"] == pytest.approx([-2.0, -2.0, 2.0])
+        assert train_data["loss_masks"] == [[0] * 8, [1] * 4, [1, 1, 0, 0]]
+
+    def test_grpo_shared_reward_uses_selected_reward_key(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=False,
+            reward_key="score",
+            n_samples_per_prompt=2,
+            rollout_batch_size=1,
+        )
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward={"score": 2.0, "detail": "first"}),
+            make_sample(group_index=0, index=0, rollout_id=10, reward={"score": 2.0, "detail": "second"}),
+            make_sample(group_index=0, index=1, rollout_id=11, reward={"score": 6.0}),
+        ]
+
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert raw == [2.0, 2.0, 6.0]
+        assert processed == pytest.approx([-2.0, -2.0, 2.0])
+
+    def test_prompt_group_sizes_override_reused_group_index(self):
+        args = make_args(advantage_estimator="grpo", rewards_normalization=True)
+        samples = [
+            make_sample(group_index=0, rollout_id=10, reward=0.0),
+            make_sample(group_index=0, rollout_id=11, reward=2.0),
+            make_sample(group_index=0, rollout_id=20, reward=10.0),
+            make_sample(group_index=0, rollout_id=21, reward=14.0),
+        ]
+
+        _, processed = _post_process_rewards(
+            args,
+            samples,
+            custom_reward_post_process_func=None,
+            prompt_group_sizes=[2, 2],
+        )
+
+        assert processed == pytest.approx([-1.0, 1.0, -2.0, 2.0])
+
+    def test_noncontiguous_group_indices_share_reward_group(self):
+        args = make_args(advantage_estimator="grpo", rewards_normalization=True)
+        samples = [
+            make_sample(group_index=0, rollout_id=10, reward=0.0),
+            make_sample(group_index=1, rollout_id=20, reward=10.0),
+            make_sample(group_index=0, rollout_id=11, reward=2.0),
+            make_sample(group_index=1, rollout_id=21, reward=14.0),
+        ]
+
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert processed == pytest.approx([-1.0, -2.0, 1.0, 2.0])
+
+    @pytest.mark.parametrize(
+        ("rewards", "expected"),
+        [
+            ([0.0, 2.0, 10.0, 14.0], [-1.0, 1.0, -2.0, 2.0]),
+            ([0.0, 2.0, 4.0], [-2.0, 0.0, 2.0]),
+        ],
+    )
+    def test_missing_group_indices_use_legacy_boundaries(self, rewards, expected):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            n_samples_per_prompt=2,
+            rollout_batch_size=2,
+        )
+        samples = [
+            make_sample(group_index=None, rollout_id=rollout_id, reward=reward)
+            for rollout_id, reward in enumerate(rewards)
+        ]
+
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert processed == pytest.approx(expected)
+
+    def test_rows_without_rollout_identity_stay_distinct(self):
+        args = make_args(advantage_estimator="grpo", rewards_normalization=True)
+        samples = [
+            make_sample(group_index=0, index=None, rollout_id=None, reward=0.0),
+            make_sample(group_index=0, index=None, rollout_id=None, reward=2.0),
+        ]
+
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert processed == pytest.approx([-1.0, 1.0])
+
+    def test_empty_rewards_stay_empty(self):
+        args = make_args(advantage_estimator="grpo", rewards_normalization=True)
+
+        raw, processed = _post_process_rewards(args, [], custom_reward_post_process_func=None)
+
+        assert raw == processed == []
 
     def test_custom_reward_post_process_short_circuits(self):
         args = make_args(advantage_estimator="grpo", rewards_normalization=True)
@@ -700,3 +960,21 @@ class TestSplitTrainDataByDpScheduled:
         assert shards[0]["num_microbatches"] == [2, 2]
         assert shards[0]["dynamic_global_batch_size"] == 8
         assert shards[0]["num_rollouts"] == [8, 8]
+
+
+def test_delayed_dp_split_preserves_the_tinker_loss_vectors():
+    """The tinker losses zip loss_weights / advantages / rollout_log_probs per
+    datum; a key missing from the shard whitelist disappears silently and only
+    fails inside the trainer."""
+    from miles.ray.rollout.train_data_conversion import _package_shards
+
+    data = {
+        "tokens": [[1], [2], [3], [4]],
+        "loss_weights": [[1.0]] * 4,
+        "advantages": [[0.5]] * 4,
+        "rollout_log_probs": [[-0.1]] * 4,
+    }
+    shards = _package_shards(None, data, [[0, 2], [1, 3]])
+    for shard in shards:
+        assert shard["loss_weights"] and shard["advantages"] and shard["rollout_log_probs"]
+    assert shards[0]["advantages"] == [[0.5], [0.5]]

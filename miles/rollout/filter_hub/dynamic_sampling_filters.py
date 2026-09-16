@@ -1,31 +1,16 @@
-import torch
+from typing_extensions import deprecated
 
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.filter_hub.common_filters import apply_aborted_filter, apply_reward_nonzero_std_filter
 from miles.utils.types import Sample
 
 __all__ = ["check_reward_nonzero_std", "check_no_aborted"]
 
 
-def _flatten_samples(samples: list[Sample | list[Sample]]):
-    """Flatten a group whose elements are `Sample` or `list[Sample]` (generate-function dependent)."""
-    for s in samples:
-        if isinstance(s, list):
-            yield from s
-        else:
-            yield s
-
-
+@deprecated("Use miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter", category=None)
 def check_reward_nonzero_std(args, samples: list[Sample | list[Sample]], **kwargs):
-    rewards = [sample.get_reward_value(args) for sample in _flatten_samples(samples)]
-    keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
-    return DynamicFilterOutput(
-        keep=keep,
-        reason=None if keep else f"zero_std_{round(rewards[0], 1)}",
-    )
+    return apply_reward_nonzero_std_filter(args, samples, **kwargs)
 
 
+@deprecated("Use miles.rollout.filter_hub.common_filters.apply_aborted_filter", category=None)
 def check_no_aborted(args, samples: list[Sample | list[Sample]], **kwargs):
-    """Reject entire group if any sample was aborted (e.g. env timeout, Docker crash)."""
-    if any(s.status == Sample.Status.ABORTED for s in _flatten_samples(samples)):
-        return DynamicFilterOutput(keep=False, reason="group_has_aborted")
-    return DynamicFilterOutput(keep=True)
+    return apply_aborted_filter(args, samples, **kwargs)

@@ -20,7 +20,8 @@ def apply_opd_kl_to_advantages(
         args: Configuration containing `use_opd` and `opd_kl_coef`.
         rollout_data: Dict containing "teacher_log_probs".
         advantages: List of advantage tensors to modify in-place.
-        student_log_probs: List of student log-probability tensors.
+        student_log_probs: List of old-student log-probability tensors. OPD
+            treats these as fixed scoring inputs.
 
     References:
         https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tinker_cookbook/distillation/train_on_policy.py
@@ -42,7 +43,9 @@ def apply_opd_kl_to_advantages(
             reverse_kl = precomputed_reverse_kls[i]
             if not torch.is_tensor(reverse_kl):
                 reverse_kl = torch.tensor(reverse_kl, dtype=torch.float32)
-            reverse_kl = reverse_kl.to(device=adv.device)
+            # Defensive consumer boundary for direct callers that bypass
+            # compute_advantages_and_returns' persistent-data detach.
+            reverse_kl = reverse_kl.detach().to(device=adv.device)
             if adv.shape != reverse_kl.shape:
                 raise ValueError(
                     f"OPD shape mismatch at sample {i}: advantages={tuple(adv.shape)}, "
@@ -65,7 +68,9 @@ def apply_opd_kl_to_advantages(
         )
 
     device = student_log_probs[0].device
-    teacher_log_probs = [t.to(device=device) for t in teacher_log_probs]
+    detached_teacher_log_probs = [t.detach() for t in teacher_log_probs]
+    rollout_data["teacher_log_probs"] = detached_teacher_log_probs
+    teacher_log_probs = [t.to(device=device) for t in detached_teacher_log_probs]
 
     reverse_kls = []
     for i, adv in enumerate(advantages):
@@ -80,9 +85,10 @@ def apply_opd_kl_to_advantages(
                 f"student_log_probs={tuple(student_log_probs[i].shape)}. "
                 "OPD expects per-token advantages; broadcast scalar advantages must be expanded before this call."
             )
-        reverse_kl = student_log_probs[i] - teacher_log_probs[i]
+        old_student_log_prob = student_log_probs[i].detach()
+        reverse_kl = old_student_log_prob - teacher_log_probs[i]
         advantages[i] = adv - args.opd_kl_coef * reverse_kl
         reverse_kls.append(reverse_kl)
 
-    # Store reverse KL for logging
+    # Store reverse KL for logging.
     rollout_data["opd_reverse_kl"] = reverse_kls

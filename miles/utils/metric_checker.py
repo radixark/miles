@@ -12,7 +12,7 @@ class MetricChecker:
 
     def __init__(self, args):
         self.args = args
-        self._exists_check_success = False
+        self._check_results: list[bool] = []
 
     def on_eval(self, metrics: dict[str, float]):
         actual_value = metrics.get(self.args.ci_metric_checker_key)
@@ -21,8 +21,14 @@ class MetricChecker:
         check_success = actual_value >= self.args.ci_metric_checker_threshold
         logger.info(f"[MetricChecker] {check_success=} {actual_value=} {self.args.ci_metric_checker_threshold=}")
 
-        self._exists_check_success |= check_success
+        self._check_results.append(check_success)
 
     def dispose(self):
-        assert self._exists_check_success, "[MetricChecker] accuracy check failed"
+        assert self._check_results, "[MetricChecker] no metrics checked"
+        if (expected := self.args.ci_metric_checker_expect_num) is None:
+            assert any(self._check_results), f"[MetricChecker] accuracy check failed: {self._check_results=}"
+        else:
+            assert len(self._check_results) == expected and all(self._check_results), (
+                f"[MetricChecker] expected exactly {expected} checks and all to succeed: " f"{self._check_results=}"
+            )
         logger.info("[MetricChecker] pass dispose check")

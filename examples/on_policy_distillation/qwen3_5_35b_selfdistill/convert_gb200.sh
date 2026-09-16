@@ -9,7 +9,7 @@
 set -ex
 HF_IN=${1:?hf checkpoint dir}
 SAVE_OUT=${2:?torch_dist save dir}
-MILES_DIR=${MILES_DIR:-/workspace/miles}
+MILES_DIR=${MILES_DIR:-"$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"}
 MEGATRON_PATH=${MEGATRON_PATH:-/root/Megatron-LM}
 
 # Identical architecture spec to phase2_gb200.sh's MODEL_ARGS.

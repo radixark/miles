@@ -1,13 +1,139 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
 from miles.ray.rollout.metrics import (
+    _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
+    _compute_spec_metrics,
+    _compute_training_sample_metrics,
     _compute_zero_std_metrics,
+    log_rollout_data,
 )
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+
+class TestEpisodeResponseLengthMetrics:
+    def test_compacted_siblings_are_summed_before_computing_statistics(self):
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, response_length=5, loss_mask=[1, 1, 0, 0, 0]),
+            make_sample(group_index=0, index=0, rollout_id=10, response_length=7, loss_mask=[1, 1, 1, 0, 0, 0, 0]),
+            make_sample(group_index=0, index=1, rollout_id=11, response_length=4, loss_mask=[1, 1, 1, 1]),
+            make_sample(group_index=1, index=2, rollout_id=10, response_length=8, loss_mask=[1, 1, 1, 1, 1, 1, 0, 0]),
+        ]
+
+        out = _compute_episode_response_length_metrics(samples)
+
+        assert out == {
+            "episode_response_length/mean": pytest.approx(5.0),
+            "episode_response_length/median": pytest.approx(5.0),
+            "episode_response_length/max": pytest.approx(6.0),
+            "episode_response_length/min": pytest.approx(4.0),
+            "episode_total_response_length/mean": pytest.approx(8.0),
+        }
+
+    def test_single_sample_rollouts_match_sample_level_statistics(self):
+        samples = [
+            make_sample(index=0, rollout_id=10, response_length=5, loss_mask=[1, 1, 0, 0, 0]),
+            make_sample(index=1, rollout_id=11, response_length=7, loss_mask=[1, 1, 1, 0, 0, 0, 0]),
+            make_sample(index=2, rollout_id=12, response_length=4, loss_mask=[1, 1, 1, 1]),
+        ]
+
+        out = _compute_metrics_from_samples(make_args(advantage_estimator="ppo"), samples)
+
+        for statistic in ("mean", "median", "max", "min"):
+            assert out[f"episode_response_length/{statistic}"] == out[f"response_len/{statistic}"]
+
+    def test_empty_samples_emit_no_episode_length_metrics(self):
+        assert _compute_episode_response_length_metrics([]) == {}
+
+    def test_total_length_counts_masked_and_unmasked_tokens_in_every_sample(self):
+        samples = [
+            make_sample(index=0, rollout_id=10, response_length=5, loss_mask=[1, 1, 0, 0, 0]),
+            make_sample(index=0, rollout_id=10, response_length=7, loss_mask=[1, 1, 1, 0, 0, 0, 0]),
+            make_sample(index=1, rollout_id=11, response_length=4, loss_mask=[1, 1, 1, 1]),
+        ]
+
+        out = _compute_episode_response_length_metrics(samples)
+
+        assert out["episode_response_length/mean"] == pytest.approx(4.5)
+        assert out["episode_total_response_length/mean"] == pytest.approx(8.0)
+
+    def test_removed_sample_has_zero_effective_length_but_keeps_total_length(self):
+        sample = make_sample(
+            index=0,
+            rollout_id=10,
+            response_length=5,
+            loss_mask=[1, 1, 1, 1, 1],
+            remove_sample=True,
+        )
+
+        out = _compute_episode_response_length_metrics([sample])
+
+        assert out["episode_response_length/mean"] == pytest.approx(0.0)
+        assert out["episode_total_response_length/mean"] == pytest.approx(5.0)
+
+
+class TestTrainingSampleMetrics:
+    def test_compacted_rollouts_are_counted_as_samples_but_rewarded_as_episodes(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(index=0, rollout_id=10, reward=1.0),
+            make_sample(index=0, rollout_id=10, reward=1.0),
+            make_sample(index=0, rollout_id=10, reward=1.0),
+            make_sample(index=1, rollout_id=11, reward=0.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["num_training_samples"] == 4
+        assert out["episode_raw_reward"] == pytest.approx(0.5)
+
+    def test_different_sibling_rewards_are_averaged_within_rollout_first(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(index=0, rollout_id=10, reward=0.0),
+            make_sample(index=0, rollout_id=10, reward=1.0),
+            make_sample(index=1, rollout_id=11, reward=1.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["episode_raw_reward"] == pytest.approx(0.75)
+
+    def test_rollout_ids_are_scoped_by_prompt_group(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
+            make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
+            make_sample(group_index=1, index=1, rollout_id=10, reward=0.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["episode_raw_reward"] == pytest.approx(0.5)
+
+    def test_metadata_raw_reward_and_fallback_identities(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(index=5, reward=0.0),
+            make_sample(index=None, reward=0.0),
+        ]
+        samples[0].metadata = {"raw_reward": 1.0}
+        samples[1].metadata = {"raw_reward": 0.0}
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out == {"num_training_samples": 2, "episode_raw_reward": pytest.approx(0.5)}
+
+    def test_empty_samples(self):
+        assert _compute_training_sample_metrics(make_args(), []) == {
+            "num_training_samples": 0,
+            "episode_raw_reward": 0.0,
+        }
 
 
 class TestComputeZeroStdMetrics:
@@ -53,45 +179,190 @@ class TestComputeZeroStdMetrics:
         assert "zero_std/all_one_percentage" not in out
 
 
+class TestComputeSpecMetrics:
+    def test_aggregates_sglang_counters_before_computing_ratios(self):
+        args = make_args(sglang_speculative_algorithm="EAGLE")
+        samples = make_samples_grouped(1, 2)
+        samples[0].spec_info = Sample.SpecInfo(
+            spec_num_correct_drafts=1,
+            spec_num_proposed_drafts=2,
+            spec_verify_ct=1,
+            completion_tokens=2,
+        )
+        samples[1].spec_info = Sample.SpecInfo(
+            spec_num_correct_drafts=9,
+            spec_num_proposed_drafts=10,
+            spec_verify_ct=9,
+            completion_tokens=27,
+        )
+
+        out = _compute_spec_metrics(args, samples)
+
+        assert out == {
+            "spec_accept_rate": pytest.approx(10 / 12),
+            "spec_accept_length": pytest.approx(29 / 10),
+        }
+
+    @staticmethod
+    def _member(session_id, metrics, *, group_index=0, rollout_id=0):
+        sample = Sample(group_index=group_index, index=rollout_id, rollout_id=rollout_id)
+        sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
+            "session_id": session_id,
+            "metrics": metrics,
+        }
+        return sample
+
+    @staticmethod
+    def _spec_info(correct, proposed, verify, completion):
+        return {
+            "spec_info": {
+                "spec_num_correct_drafts": correct,
+                "spec_num_proposed_drafts": proposed,
+                "spec_verify_ct": verify,
+                "completion_tokens": completion,
+            }
+        }
+
+    def test_v2_deduplicates_session_carriers_and_includes_ordinary_samples(self):
+        args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
+        session_1_metrics = self._spec_info(2, 4, 2, 6)
+        ordinary_sample = Sample(
+            spec_info=Sample.SpecInfo(
+                spec_num_correct_drafts=3,
+                spec_num_proposed_drafts=5,
+                spec_verify_ct=2,
+                completion_tokens=5,
+            )
+        )
+        samples = [
+            self._member("sid-1", session_1_metrics, rollout_id=10),
+            self._member("sid-1", session_1_metrics, rollout_id=10),
+            ordinary_sample,
+        ]
+        for sample in samples[:2]:
+            sample.spec_info = Sample.SpecInfo(
+                spec_num_correct_drafts=100,
+                spec_num_proposed_drafts=100,
+                spec_verify_ct=1,
+                completion_tokens=100,
+            )
+
+        out = _compute_spec_metrics(args, samples)
+
+        assert out == {
+            "spec_accept_rate": pytest.approx(5 / 9),
+            "spec_accept_length": pytest.approx(11 / 4),
+        }
+        assert _compute_spec_metrics(args, [ordinary_sample]) == {
+            "spec_accept_rate": pytest.approx(3 / 5),
+            "spec_accept_length": pytest.approx(5 / 2),
+        }
+
+
 class TestTitoMismatchMetrics:
     def test_no_tito_metadata_emits_no_tito_keys(self):
         args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False)
         samples = make_samples_grouped(1, 4)
         out = _compute_metrics_from_samples(args, samples)
-        assert "tito_session_mismatch_rate" not in out
+        assert not any(key.startswith("tito_session_mismatch_rate") for key in out)
 
-    def test_clean_tito_metadata_yields_zero_rates_per_mismatch_type(self):
-        args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False)
+    @pytest.mark.parametrize(
+        ("configured_version", "metric_version"),
+        [(True, "v1"), ("v1", "v1"), ("v2", "v2")],
+    )
+    def test_clean_tito_metadata_yields_zero_rates_per_mismatch_type(self, configured_version, metric_version):
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=False,
+            log_passrate=False,
+            use_session_server=configured_version,
+        )
         samples = make_samples_grouped(1, 4)
         for s in samples:
             s.metadata = {"tito_session_mismatch": []}
         out = _compute_metrics_from_samples(args, samples)
-        assert out["tito_session_mismatch_rate"] == 0.0
-        for mtype in ("special_token_count", "special_token_type", "non_assistant_text", "assistant_text"):
-            assert out[f"tito_session_mismatch_rate/{mtype}"] == 0.0
+        metric_prefix = f"tito_session_mismatch_rate/{metric_version}"
+        tito_keys = {
+            metric_prefix,
+            f"{metric_prefix}/special_token_count",
+            f"{metric_prefix}/special_token_type",
+            f"{metric_prefix}/non_assistant_text",
+            f"{metric_prefix}/assistant_text",
+        }
+        assert {key for key in out if key.startswith("tito_session_mismatch_rate")} == tito_keys
+        assert all(out[key] == 0.0 for key in tito_keys)
 
     def test_strict_mismatch_raises_under_ci_test(self):
         """Under ci_test=True, a non-zero rate on the strict mismatch types
         (special_token_count / special_token_type / non_assistant_text) must
         hard-fail — these signal a TITO algorithm or chat-template bug."""
-        args = make_args(advantage_estimator="ppo", ci_test=True, log_passrate=False)
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=True,
+            log_passrate=False,
+            use_session_server="v1",
+        )
         samples = make_samples_grouped(1, 4)
         samples[0].metadata = {"tito_session_mismatch": [{"type": "special_token_count"}]}
         for s in samples[1:]:
             s.metadata = {"tito_session_mismatch": []}
-        with pytest.raises(AssertionError, match="special_token_count"):
+        with pytest.raises(
+            AssertionError,
+            match=r"tito_session_mismatch_rate/v1/special_token_count=0\.2500",
+        ):
             _compute_metrics_from_samples(args, samples)
 
     def test_assistant_text_mismatch_does_not_raise_under_ci_test(self):
         """assistant_text mismatch is non-critical (tokens inherited from the
         pretokenized prefix) — even under ci_test, must not raise."""
-        args = make_args(advantage_estimator="ppo", ci_test=True, log_passrate=False)
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=True,
+            log_passrate=False,
+            use_session_server="v2",
+        )
         samples = make_samples_grouped(1, 4)
         samples[0].metadata = {"tito_session_mismatch": [{"type": "assistant_text"}]}
         for s in samples[1:]:
             s.metadata = {"tito_session_mismatch": []}
         out = _compute_metrics_from_samples(args, samples)
-        assert out["tito_session_mismatch_rate/assistant_text"] > 0
+        assert out["tito_session_mismatch_rate/v2/assistant_text"] == 0.25
+        assert "tito_session_mismatch_rate/assistant_text" not in out
+
+    def test_tito_metadata_requires_session_server_version(self):
+        args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False)
+        samples = make_samples_grouped(1, 4)
+        for sample in samples:
+            sample.metadata = {"tito_session_mismatch": []}
+
+        with pytest.raises(AssertionError, match="session server v1 or v2"):
+            _compute_metrics_from_samples(args, samples)
+
+    def test_rollout_log_fans_out_versioned_tito_keys(self, monkeypatch):
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=False,
+            log_passrate=False,
+            use_session_server="v2",
+        )
+        samples = make_samples_grouped(1, 4)
+        samples[0].metadata = {"tito_session_mismatch": [{"type": "assistant_text"}]}
+        for sample in samples[1:]:
+            sample.metadata = {"tito_session_mismatch": []}
+        logged = {}
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, metrics, **_kwargs: logged.update(metrics),
+        )
+
+        log_rollout_data(0, args, samples, None, 1.0)
+
+        assert logged["rollout/num_training_samples"] == 4
+        assert logged["rollout/episode_raw_reward"] == pytest.approx(1.5)
+        assert logged["rollout/episode_response_length/mean"] == pytest.approx(4.0)
+        assert logged["rollout/episode_total_response_length/mean"] == pytest.approx(4.0)
+        assert logged["rollout/tito_session_mismatch_rate/v2/assistant_text"] == 0.25
+        assert "rollout/tito_session_mismatch_rate/assistant_text" not in logged
 
 
 class TestComputePassrateFromSamples:
@@ -135,3 +406,51 @@ class TestComputePassrateFromSamples:
             "pass@2": pytest.approx(1.0),
             "pass@4": pytest.approx(1.0),
         }
+
+
+class TestWeightVersionMetrics:
+    def test_reports_oldest_version_statistics_and_mixed_ratio(self):
+        """weight_version/* summarises each sample's oldest version; mixed counts samples spanning an update."""
+        samples = [
+            _make_versioned_sample(["4"], index=0),
+            _make_versioned_sample(["5", "6"], index=1),
+        ]
+
+        out = _compute_metrics_from_samples(make_args(), samples)
+
+        assert out["weight_version/min"] == 4
+        assert out["weight_version/max"] == 5
+        assert out["weight_version/mixed_version_ratio"] == 0.5
+
+    def test_a_call_spanning_no_update_is_not_mixed(self):
+        """Two calls that both saw the same version must not count as mixed."""
+        samples = [_make_versioned_sample(["7", "7"], index=0)]
+
+        out = _compute_metrics_from_samples(make_args(), samples)
+
+        assert out["weight_version/mixed_version_ratio"] == 0.0
+
+    def test_a_single_call_spanning_two_versions_counts_as_mixed(self):
+        """A weight update landing mid-call makes that single call mixed, just like two calls seeing two versions."""
+        sample = make_sample(index=0, group_index=0)
+        sample.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 2), WeightVersionSpan("4", 2, 4)])
+        ]
+
+        out = _compute_metrics_from_samples(make_args(), [sample])
+
+        assert out["weight_version/mixed_version_ratio"] == 1.0
+
+    def test_no_version_metrics_when_nothing_was_stamped(self):
+        """SFT-style batches carry no versions and must not synthesise the series."""
+        out = _compute_metrics_from_samples(make_args(), [make_sample(index=0, group_index=0)])
+
+        assert not any(key.startswith("weight_version/") for key in out)
+
+
+def _make_versioned_sample(versions: list[str], *, index: int) -> Sample:
+    sample = make_sample(index=index, group_index=0)
+    sample.weight_versions = [
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
+    ]
+    return sample

@@ -121,6 +121,52 @@ def get_rollout_data(
     return rollout_data, store_get_result
 
 
+def _prepare_loss_masks(
+    loss_masks: Sequence[torch.Tensor],
+    total_lengths: Sequence[int],
+    response_lengths: Sequence[int],
+    *,
+    qkv_format: str,
+    max_seqlen: int,
+    pad: int,
+    allgather_cp: bool,
+) -> torch.Tensor:
+    """Expand response masks to input-token alignment, then pack/slice them like ``tokens``.
+
+    Contract: ``mask[i]`` is 1 iff ``tokens[i]`` is a supervised response token.
+    Whoever derives labels owns the prediction shift. Megatron does so when
+    ``labels=None``: it rolls ``input_ids`` and this mask together to build the
+    MTP labels, and it does not read the mask at all when MTP is off. The
+    alignment is fixed before CP slicing because a local roll in Miles would
+    have no halo exchange across shard or packed-sequence boundaries.
+    """
+    parallel_state = get_parallel_state()
+    cp_size = parallel_state.cp.size
+    cp_rank = parallel_state.cp.rank
+    aligned_masks = []
+    for loss_mask, total_length, response_length in zip(loss_masks, total_lengths, response_lengths, strict=True):
+        prompt_length = total_length - response_length
+        loss_mask = F.pad(loss_mask, (prompt_length, 0), value=0)
+        if not allgather_cp:
+            loss_mask = slice_with_cp(loss_mask, 0, qkv_format, max_seqlen)
+        aligned_masks.append(loss_mask)
+
+    if qkv_format == "bshd":
+        if allgather_cp:
+            local_len = max_seqlen // cp_size
+            start = cp_rank * local_len
+            aligned_masks = [
+                F.pad(mask, (0, max_seqlen - mask.size(0)), value=0)[start : start + local_len]
+                for mask in aligned_masks
+            ]
+        return torch.stack(aligned_masks)
+
+    loss_mask = F.pad(torch.cat(aligned_masks), (0, pad), value=0)
+    if allgather_cp:
+        loss_mask = loss_mask.chunk(cp_size, dim=0)[cp_rank]
+    return loss_mask.unsqueeze(0)
+
+
 def get_batch(
     data_iterator: "DataIterator",
     keys: Sequence[str],
@@ -147,6 +193,8 @@ def get_batch(
     - "tokens": torch.LongTensor of shape [1, T_padded] on the current CUDA device
     - "unconcat_tokens": list[torch.LongTensor] for the micro-batch before CP slicing/concat
     - "packed_seq_params": PackedSeqParams with T-H-D settings (cu_seqlens on CUDA, dtype=int)
+    - "input_loss_masks": same shape as "tokens"; 1 where the token is a supervised response token.
+      Consumers that derive labels (Megatron with labels=None) shift it themselves.
     Plus any other requested keys forwarded from the iterator.
     """
 
@@ -162,6 +210,10 @@ def get_batch(
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
 
+    for unit_key in ("loss_fn", "loss_fn_config"):
+        if unit_key in data_iterator.rollout_data:
+            batch[unit_key] = data_iterator.rollout_data[unit_key]
+
     # No-op safety net if batches reach get_batch without rollout-level preprocessing.
     expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
 
@@ -169,6 +221,7 @@ def get_batch(
     # use 0 as the pad token id should be fine?
     pad_token_id = 0
     pad_size = parallel_state.tp.size * pad_multiplier
+    pad = 0
 
     # for cp, we need all tokens to calculate logprob
     batch["unconcat_tokens"] = tokens
@@ -287,43 +340,19 @@ def get_batch(
     if (witness_ids := batch.get("witness_ids")) is not None:
         batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
 
-    # loss masks
-    loss_masks = []
-    for loss_mask, total_length, response_length in zip(
+    input_loss_masks = _prepare_loss_masks(
         batch["loss_masks"],
         batch["total_lengths"],
         batch["response_lengths"],
-        strict=True,
-    ):
-        prompt_length = total_length - response_length
-        # Align mask to token stream positions (prompt_length-1 left pad, 1 right pad)
-        loss_mask = F.pad(loss_mask, (prompt_length - 1, 1), value=0)
-        if allgather_cp:
-            loss_masks.append(loss_mask)
-            continue
-        loss_mask = slice_with_cp(loss_mask, 0, qkv_format, max_seqlen)
-        loss_masks.append(loss_mask)
-
-    if qkv_format == "bshd":
-        if allgather_cp:
-            local_len = max_seqlen // cp_size
-            start = parallel_state.cp.rank * local_len
-            loss_masks = [
-                F.pad(lm, (0, max_seqlen - lm.size(0)), value=0)[start : start + local_len] for lm in loss_masks
-            ]
-        loss_masks = torch.stack(loss_masks)
-    elif qkv_format == "thd" and allgather_cp:
-        # DSA: concatenate first (same as tokens), pad globally (same pad as above), then slice once.
-        loss_masks = torch.cat(loss_masks, dim=0)
-        if pad != 0:
-            loss_masks = F.pad(loss_masks, (0, pad), value=0)
-        loss_masks = loss_masks.chunk(cp_size, dim=0)[cp_rank].unsqueeze(0)
-    elif qkv_format == "thd":
-        loss_masks = torch.cat(loss_masks)
-        loss_masks = F.pad(loss_masks, (0, pad), value=0).unsqueeze(0)
-
-    assert loss_masks.shape == tokens.shape, f"loss_masks.shape: {loss_masks.shape}, tokens.shape: {tokens.shape}"
-    batch["full_loss_masks"] = loss_masks
+        qkv_format=qkv_format,
+        max_seqlen=max_seqlen,
+        pad=pad,
+        allgather_cp=allgather_cp,
+    )
+    assert (
+        input_loss_masks.shape == tokens.shape
+    ), f"input_loss_masks.shape: {input_loss_masks.shape}, tokens.shape: {tokens.shape}"
+    batch["input_loss_masks"] = input_loss_masks
 
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)

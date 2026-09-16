@@ -47,7 +47,8 @@ hf download Qwen/Qwen3.6-35B-A3B --local-dir /root/models/Qwen3.6-35B-A3B
 
 ```bash
 cd /root/miles
-source scripts/models/qwen3.6-35B-A3B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3.6-35B-A3B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
@@ -136,7 +137,7 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 
 ### 5.5 Notable quirks
 
-From `scripts/models/qwen3.6-35B-A3B.sh` and `scripts/run_qwen3_6_35b_a3b_mtp.py`:
+From `scripts/models/qwen3.6-35B-A3B.py` and `scripts/run_qwen3_6_35b_a3b_mtp.py`:
 
 - `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — Qwen3.6 reuses the Qwen3.5 spec.
 - 256 experts, `--moe-router-topk 8`, `--moe-router-score-function softmax`.

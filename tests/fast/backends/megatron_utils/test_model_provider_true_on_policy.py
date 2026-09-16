@@ -1,6 +1,13 @@
 from argparse import Namespace
 from types import SimpleNamespace
 
+import pytest
+
+# TODO: add back after megatron bump
+pytestmark = pytest.mark.skip(
+    reason="true-on-policy megatron backend is not in miles-main-20260819 yet; re-enable in the true-on-policy follow-up PR."
+)
+
 
 def _make_args():
     return Namespace(

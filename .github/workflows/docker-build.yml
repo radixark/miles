@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'docker/install-kube-tools.sh'
       - 'docker/verify_transformer_engine.py'
       - 'requirements.txt'
 
@@ -24,9 +25,8 @@ on:
           - cu13-x86
           - cu13-aarch64
           - cu12-x86
-          - rocm700-mi35x
-          - rocm700-mi30x
           - rocm720-mi35x
+          - rocm10-mi35x
       image_tag:
         description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
         required: true
@@ -80,7 +80,8 @@ jobs:
             "https://api.github.com/repos/radixark/Megatron-LM/commits/miles-main")
 
           # Fingerprint the miles-wheels releases the images install from (sgl-router +
-          # the other prebuilt wheels). cu13 installs cu130-x86_64 / cu130-aarch64;
+          # the other prebuilt wheels). cu13 installs cu130-torch213-x86_64 /
+          # cu130-torch213-aarch64;
           # cu12-x86 installs cu129-x86_64 — both build automatically, so track all rolling
           # release tags they bake. Rolling tags stay fixed while assets may be replaced,
           # so fingerprint the asset list rather than a commit SHA.
@@ -88,8 +89,8 @@ jobs:
             curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
           }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-x86_64)
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-aarch64)
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64)
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64)
           WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64)
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
@@ -162,7 +163,10 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
-    runs-on: ["h200", "2gpu"]
+    # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
+    # nodes are CI machines carrying a second runner instance dedicated to builds, so
+    # image builds stop competing for GPU-suite runner slots.
+    runs-on: ["docker-build"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -176,8 +180,15 @@ jobs:
 
       - name: Install Python + dependencies
         run: |
-          apt-get update && apt-get install -y python3 python3-pip
-          pip3 install --break-system-packages typer
+          if ! command -v python3 >/dev/null || ! command -v pip3 >/dev/null; then
+            apt-get -o DPkg::Lock::Timeout=600 update
+            apt-get -o DPkg::Lock::Timeout=600 install -y python3 python3-pip
+          fi
+          # Older pip (<23) lacks --break-system-packages; newer PEP 668
+          # systems require it. Probe instead of assuming either.
+          PIP_BSP=""
+          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
+          pip3 install $PIP_BSP --ignore-installed typer
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3

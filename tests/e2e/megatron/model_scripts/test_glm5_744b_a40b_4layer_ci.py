@@ -16,7 +16,9 @@ import miles.utils.external_utils.command_utils as U
 # This CI test is an example smoke test for the DSA model code path used by DeepSeek V3.2 and GLM-5. It only verifies that the training script is functional, not model accuracy.
 
 
-register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["megatron", "model-scripts"])
+register_cuda_ci(
+    est_time=900, suite="stage-c-2-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper", "blackwell"]
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -27,22 +29,18 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
+        hardware="H200",
         model_name="GLM-5_4layer",
         num_nodes=1,
         num_gpus_per_node=2,
         num_rollout=2,
         enable_optimizer_offload=True,
-        extra_args=(
-            "--ci-test "
-            "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
-            "--tensor-model-parallel-size 2 "
-        ),
+        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--tensor-model-parallel-size 2 "),
     )
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.output_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)
     if args.fp8_rollout:

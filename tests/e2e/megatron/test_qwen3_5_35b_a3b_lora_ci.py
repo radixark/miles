@@ -12,7 +12,12 @@ import miles.utils.external_utils.command_utils as U
 # combination must pass. Functionality, not accuracy; 8 GPUs (TP2, EP=8).
 
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
+register_cuda_ci(
+    est_time=1300,
+    suite="stage-c-8-gpu-h100",
+    labels=["megatron", "model-scripts", "lora"],
+    hardware=["hopper", "blackwell"],
+)
 
 # (name, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
@@ -30,7 +35,7 @@ def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
         experts_shared_outer_loras=shared_outer,
         enable_wandb=False,
         extra_args=(
-            "--ci-test --ci-disable-logprobs-checker --disable-weights-backuper "
+            "--ci-test --ci-disable-logprobs-checker "
             + ("" if virtual_experts else "--no-sglang-lora-use-virtual-experts ")
         ),
     )
@@ -51,6 +56,6 @@ if __name__ == "__main__":
     for name, shared_outer, virtual_experts in _CONFIGS:
         print(f"[qwen3.5-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
         execute(_args(shared_outer, virtual_experts))
         print(f"[qwen3.5-lora-ci] ===== combo PASSED: {name} =====", flush=True)

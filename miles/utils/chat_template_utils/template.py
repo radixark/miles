@@ -28,6 +28,13 @@ from transformers.utils.chat_template_utils import render_jinja_template
 
 from miles.utils.chat_template_utils import deepseek, inkling
 
+# Message matching moved to message_matcher_hub; direct aliases keep the
+# established import surface working without a second implementation.
+from miles.utils.chat_template_utils.message_matcher_hub import (  # noqa: F401
+    assert_messages_append_only_with_allowed_role,
+    strict_message_matches,
+)
+
 
 def load_hf_chat_template(model_id: str) -> str:
     """Load an original chat template from HuggingFace (cached locally).
@@ -146,113 +153,6 @@ def apply_chat_template_from_str(
             except TemplateError as te:
                 raise ValueError(f"Chat template rendering failed (tool format fallback): {te}") from te
         raise ValueError(f"Chat template rendering failed: {e}") from e
-
-
-_TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
-
-# SGLang serializes `index` on non-streaming tool calls, while accumulated
-# streaming messages may omit or renumber it; no chat template reads it.
-_WIRE_ONLY_TOOL_CALL_KEYS = ("index",)
-
-
-def _normalize_value(value: Any) -> Any:
-    """Normalize falsy sentinels that produce identical Jinja2 output.
-
-    None, "" and [] are all falsy in Jinja2 and render the same way,
-    but client libraries may interchange them (e.g. content: null vs ""
-    for tool-call-only responses, or tool_calls: null vs []).
-
-    Only collapses falsy values — non-falsy content (including whitespace
-    like trailing newlines) is returned as-is.  Message boundary characters
-    must be preserved exactly so they tokenize identically across turns.
-    """
-    if value is None or value == "" or value == []:
-        return None
-    return value
-
-
-def _normalize_tool_calls(value: Any) -> Any:
-    """Project tool_calls down to template-relevant content for comparison.
-
-    Only keys in `_WIRE_ONLY_TOOL_CALL_KEYS` are removed; all other values remain part of history matching.
-
-    Deliberately a comparison-time projection, NOT a repair of the incoming
-    message from stored state.  Matching only decides whether a replay is
-    the same history: on a match the prefix tokens come from stored
-    checkpoints and records keep the raw backend response (``index``
-    intact), so nothing downstream reads the replayed keys.  Filling
-    missing keys from stored would also presuppose the per-call
-    correspondence this comparison is itself establishing, and cannot
-    handle a client that replays a different ``index`` value rather than
-    none.
-    """
-    if not isinstance(value, list):
-        return value
-    return [
-        ({k: v for k, v in call.items() if k not in _WIRE_ONLY_TOOL_CALL_KEYS} if isinstance(call, dict) else call)
-        for call in value
-    ]
-
-
-def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
-    """Compare only the fields that affect chat-template tokenization.
-
-    External client libraries (e.g. litellm) may inject extra keys like
-    ``provider_specific_fields`` into messages.  These have no effect on
-    the Jinja2 chat template output, so we only compare the keys that
-    templates actually read: role, content, reasoning_content, tool_calls.
-    Within tool_calls, wire-only keys such as `index` are ignored for the same reason.
-    """
-    for key in _TEMPLATE_RELEVANT_KEYS:
-        stored_value = _normalize_value(stored.get(key))
-        new_value = _normalize_value(new.get(key))
-        if key == "tool_calls":
-            stored_value = _normalize_tool_calls(stored_value)
-            new_value = _normalize_tool_calls(new_value)
-        if stored_value != new_value:
-            return False
-    return True
-
-
-def assert_messages_append_only_with_allowed_role(
-    stored_messages: list[dict[str, Any]],
-    new_messages: list[dict[str, Any]],
-    allowed_append_roles: Collection[str],
-) -> None:
-    """Assert *new_messages* is an append-only extension of *stored_messages*.
-
-    The stored prefix must match exactly (compared by template-relevant keys),
-    and any appended messages must have a role in *allowed_append_roles*.
-    """
-    if not stored_messages:
-        return
-
-    if len(new_messages) < len(stored_messages):
-        raise ValueError(
-            f"new messages ({len(new_messages)}) are fewer than stored messages ({len(stored_messages)})",
-            new_messages,
-            stored_messages,
-        )
-
-    for i, stored_msg in enumerate(stored_messages):
-        if not message_matches(stored_msg, new_messages[i]):
-            diffs = {
-                key: {"stored": repr(stored_msg.get(key))[:200], "new": repr(new_messages[i].get(key))[:200]}
-                for key in _TEMPLATE_RELEVANT_KEYS
-                if stored_msg.get(key) != new_messages[i].get(key)
-            }
-            raise ValueError(
-                f"message mismatch at index {i} "
-                f"(role: stored={stored_msg.get('role')}, new={new_messages[i].get('role')}). "
-                f"Diffs: {diffs}"
-            )
-
-    for j, msg in enumerate(new_messages[len(stored_messages) :]):
-        if msg.get("role") not in allowed_append_roles:
-            raise ValueError(
-                f"appended message at index {len(stored_messages) + j} "
-                f"has role={msg.get('role')!r}, allowed={allowed_append_roles}"
-            )
 
 
 def apply_chat_template(

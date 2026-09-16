@@ -21,6 +21,7 @@ register_cuda_ci(
     est_time=1400,
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "replay"],
+    hardware=["hopper", "blackwell"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -32,17 +33,17 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
+        hardware="H200",
         model_name="GLM-5_4layer",
         num_nodes=1,
         num_gpus_per_node=2,
         num_rollout=2,
         enable_optimizer_offload=True,
-        extra_env_vars="MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1",
         extra_args=(
             "--ci-test "
             "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
             "--use-rollout-indexer-replay "
+            "--skip-actor-forward-only "
             "--rollout-max-response-len 4096 "
             # preserve to avoid CPU OOM
             "--sglang-max-total-tokens 1900000 "
@@ -55,7 +56,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.output_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)
     _prepare_megatron_ckpt(args)

@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,7 +8,7 @@ from tests.fast.dashboard.dummy_telemetry import dump_dummy_telemetry
 
 from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.server import make_app
-from miles.dashboard.store import GpuSample, Meta, MetricStore, PhaseEvent, Role, Stream, _hour_key
+from miles.dashboard.store import GpuSample, Meta, MetricStore, PhaseEvent, Role, Stream, _hour_key, _PartitionReader
 
 # hour-aligned base so partition boundaries land where the test says they do
 BASE = ((1_000_000 // 3600) + 1) * 3600.0
@@ -195,3 +197,56 @@ def test_open_marker_partitions_by_start_hour_and_is_found(tmp_path):
     # windowed query two hours later still sees the growing band (backward slack)
     phases = [p for p in store.phases_by_lane(t0=BASE + 2 * HOUR - 10, t1=BASE + 2 * HOUR) if p["name"] == "rollout"]
     assert phases and phases[0]["t1"] == BASE + 2 * HOUR  # clipped to the data edge
+
+
+def _counting_reader(tmp_path, *, parse_delay: float):
+    """A reader over one partition whose parse is slow enough to hold the
+    critical section open across a thread switch."""
+
+    def parse(raw, path, offset):
+        time.sleep(parse_delay)
+        return [int(line) for line in raw.splitlines()]
+
+    (tmp_path / "part").mkdir()
+    (tmp_path / "part" / "20260814_19.jsonl").write_text("".join(f"{i}\n" for i in range(100)))
+    return _PartitionReader(
+        tmp_path / "part",
+        tmp_path / "absent.jsonl",
+        parse=parse,
+        concat=lambda blocks: [row for block in blocks for row in block],
+        length=len,
+        line_stamps=lambda row: (row, row),
+        max_blocks=4,
+    )
+
+
+def test_concurrent_fill_does_not_duplicate_records(tmp_path):
+    """The follow thread and a request handler both enter `_block` at the same
+    stale offset; unserialized, each appends the same byte range and every
+    downstream aggregate double-counts."""
+    reader = _counting_reader(tmp_path, parse_delay=0.05)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(reader.window(None, None))) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert [len(rows) for rows in results] == [100, 100]
+    assert reader.window(None, None) == list(range(100))
+
+
+def test_concurrent_refresh_does_not_duplicate_records(tmp_path):
+    """Same race through the follow tick's entry point, on an already-cached
+    block — the shape the live `--follow` server hits."""
+    reader = _counting_reader(tmp_path, parse_delay=0.05)
+    reader.window(None, None)
+    (tmp_path / "part" / "20260814_19.jsonl").open("a").write("".join(f"{i}\n" for i in range(100, 150)))
+    threads = [
+        threading.Thread(target=reader.refresh_cached),
+        threading.Thread(target=lambda: reader.window(None, None)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert reader.window(None, None) == list(range(150))

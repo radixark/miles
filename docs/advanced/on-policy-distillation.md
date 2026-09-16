@@ -1,5 +1,7 @@
-# On-Policy Distillation
-
+---
+title: On-Policy Distillation
+description: Train a student on its own rollouts with a teacher's token-level probabilities as a reverse-KL signal, composable with GRPO, PPO, and other estimators.
+---
 On-policy distillation (OPD) trains a student model on its own rollouts while using a teacher model's token-level probabilities as the distillation signal. In Miles, the teacher signal is converted into a per-token reverse-KL penalty and applied after the selected RL advantage estimator has produced token advantages. This lets the same OPD recipe compose with GRPO, PPO, REINFORCE++, GSPO, and other estimators.
 
 ## Key Arguments
@@ -144,7 +146,8 @@ hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-ma
 
 # 2. Convert student model
 cd /root/miles
-source scripts/models/qwen3-8B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-8B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
     --hf-checkpoint /root/Qwen3-8B \

@@ -282,7 +282,7 @@ body, .md-typeset {
   color: var(--md-default-fg-color);
 
   border-bottom: 1px solid var(--miles-line);
-  background-image: url("../images/miles_square.png");
+  background-image: url("../images/brand/miles_square.png");
   background-repeat: no-repeat;
   background-position: 1.05rem top;
   background-size: 22px 22px;

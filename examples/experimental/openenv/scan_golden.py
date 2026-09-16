@@ -27,18 +27,14 @@ import tomllib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import openenv_agent_function as oaf
 
-# The sandbox leg to replay through — resolved by the same registry the
+# The sandbox backend to replay through — resolved by the same registry the
 # launcher uses, so a missing or unknown provider is an error here too.
 import openenv_sandbox_common as sandbox_common
 
 try:
-    _BACKEND = sandbox_common.resolve_backend(os.getenv("OPENENV_SANDBOX_BACKEND"))
+    _backend = sandbox_common.load_backend(os.getenv("OPENENV_SANDBOX_BACKEND"))
 except ValueError as e:
     sys.exit(str(e))
-if _BACKEND == "e2b":
-    import openenv_e2b_agent_function as sandbox_leg
-else:
-    import openenv_daytona_agent_function as sandbox_leg
 
 CAP_S = float(os.getenv("GOLDEN_TASK_CAP_S", "1800"))
 
@@ -69,13 +65,13 @@ def _solution_push_commands(task_id: str) -> list[str]:
 
 
 async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, float | None, dict]:
-    classes = oaf._load_tbench2()
+    classes = oaf.load_tbench2()
     action = classes["action"]
     t0 = time.monotonic()
     try:
 
         async def run() -> dict:
-            async with sandbox_leg._episode_env(classes["env"], {"task_id": task_id}) as env:
+            async with _backend.episode_env(classes["env"], {"task_id": task_id}) as env:
                 await env.reset(task_id=task_id)
                 t = time.monotonic()
                 # Official oracle convention (harbor OracleAgent): solution dir
@@ -152,7 +148,8 @@ async def main() -> None:
     if not os.getenv("OPENENV_TB2_TASKS_DIR", "").strip():
         sys.exit(
             "scan_golden requires the per-episode sandbox mode: set OPENENV_TB2_TASKS_DIR "
-            "and OPENENV_SANDBOX_BACKEND (daytona/e2b/agentenv), plus that provider's credentials"
+            f"and OPENENV_SANDBOX_BACKEND ({sandbox_common.backend_names()}), "
+            "plus that provider's credentials"
         )
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
     print(f"golden sweep | {len(tasks)} tasks | concurrency={args.concurrency}", flush=True)

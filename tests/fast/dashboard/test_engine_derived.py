@@ -1,8 +1,12 @@
 """Derived engine series: counter rates and histogram means."""
 
+import threading
+import time
 from pathlib import Path
 
-from miles.dashboard.store import EngineSample, Meta, MetricStore
+import pytest
+
+from miles.dashboard.store import EngineSample, Meta, MetricStore, Stream
 
 
 def make_store(tmp_path: Path, samples: list[EngineSample]) -> MetricStore:
@@ -54,3 +58,43 @@ def test_mean_requires_both_families(tmp_path):
     )
     assert "sglang_ttft_mean_s" not in store.engine_metric_names()
     assert store.engine_series("sglang_ttft_mean_s") == []
+
+
+def test_full_window_cache_survives_concurrent_cold_readers(tmp_path):
+    store = make_store(tmp_path, counter("http://e:1", [(0.0, 0.0), (2.0, 100.0)]))
+    reader = store._readers[Stream.ENGINE_SERIES]
+    real_window = reader.window
+    reader.window = lambda t0, t1: (time.sleep(0.2), real_window(t0, t1))[1]
+
+    results, errors = [], []
+    threads = [threading.Thread(target=lambda: _collect(store, results, errors), name=f"reader-{i}") for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert all(r == results[0] and r[0]["value"] == [50.0] for r in results)
+
+
+def _collect(store, results, errors):
+    try:
+        results.append(store.engine_series("sglang_generation_tokens_per_s"))
+    except Exception as e:  # noqa: BLE001
+        errors.append(e)
+
+
+def test_failed_rebuild_does_not_look_cached(tmp_path):
+    store = make_store(tmp_path, counter("http://e:1", [(0.0, 0.0), (2.0, 100.0)]))
+    reader = store._readers[Stream.ENGINE_SERIES]
+    real_window = reader.window
+    reader.window = _raise
+
+    with pytest.raises(OSError):
+        store.engine_series("sglang_generation_tokens_per_s")
+    reader.window = real_window
+    (series,) = store.engine_series("sglang_generation_tokens_per_s")
+    assert series["value"] == [50.0]
+
+
+def _raise(t0, t1):
+    raise OSError("partition read failed")

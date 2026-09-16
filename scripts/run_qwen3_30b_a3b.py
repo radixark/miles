@@ -17,7 +17,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_gpus_per_node: int | None = None
     rollout_num_gpus: int | None = None
     no_colocate: bool = False
-    hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
+    hardware: Literal["auto", "H100", "B200", "B300", "GB200", "GB300"] = "auto"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -37,6 +37,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         self.no_colocate = self.no_colocate or self.rollout_nvfp4
         if self.no_colocate:
@@ -57,16 +58,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.rollout_fp8:
-        U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8")
+        U.exec_command_cpu(
+            f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
+        )
 
     if args.rollout_mxfp8:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
             f"{args.extra_args} "
@@ -84,7 +87,7 @@ def prepare(args: ScriptArgs):
             },
         }
         nvfp4_env_prefix = " ".join(f"{key}={value}" for key, value in nvfp4_env_vars.items()) + " "
-        U.exec_command(
+        U.exec_command_gpu(
             f"{nvfp4_env_prefix}"
             f"python tools/convert_hf_to_nvfp4.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-NVFP4 "
@@ -92,7 +95,7 @@ def prepare(args: ScriptArgs):
         )
 
     if args.rollout_int4:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_int4_direct.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-INT4"
         )
 
@@ -217,6 +220,10 @@ def execute(args: ScriptArgs):
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
             "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
         }
+        # Fake QAT swaps in straight-through weight tensors, while TE's fused wgrad
+        # accumulation writes main_grad onto the original ones, so the two together
+        # would drop the quantized weights' gradients.
+        misc_args += "--no-gradient-accumulation-fusion "
 
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
@@ -283,7 +290,7 @@ matchers:
         pattern: "*"
         config: "bf16"
 """.strip()
-        misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
+        misc_args += f"--te-precision-config-file {U.encode_pseudo_file(te_precision_config_text)} "
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
@@ -392,7 +399,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
@@ -411,6 +418,7 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
+        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**misc_env_vars},

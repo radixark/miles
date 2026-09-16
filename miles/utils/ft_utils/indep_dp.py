@@ -1,4 +1,8 @@
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass(frozen=True)
@@ -24,3 +28,18 @@ class IndepDPInfo:
     def __post_init__(self):
         assert self.alive_rank == self.alive_cell_indices.index(self.cell_index)
         assert self.alive_size == len(self.alive_cell_indices)
+
+
+def create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:
+    import ray
+    import torch.distributed
+
+    store = torch.distributed.TCPStore(
+        host_name="0.0.0.0",
+        port=0,
+        is_master=True,
+        wait_for_workers=False,
+    )
+    host = ray.util.get_node_ip_address()
+    port = store.port
+    return store, f"{host}:{port}"

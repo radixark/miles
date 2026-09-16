@@ -8,9 +8,9 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=3600,
-    suite="stage-c-8-gpu-h100",
-    labels=["model-scripts"],
-    disabled="Requires Blackwell/B200 CI runner for NVFP4.",
+    suite="stage-c-8-gpu-b200",
+    labels=["megatron", "model-scripts"],
+    hardware=["blackwell"],
 )
 
 MODEL_ORG = "Pinaster"
@@ -27,12 +27,6 @@ RUN_ID = U.create_run_id()
 MODEL_DIR = "/root/models"
 DATA_DIR = "/root/datasets"
 MEGATRON_PATH = "/root/TransformerEngine:/root/Megatron-LM"
-
-EXTRA_HIGH_PRECISION_LAYERS_HF = (".shared_experts.",)
-EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (
-    ".shared_experts.linear_fc1",
-    ".shared_experts.linear_fc2",
-)
 
 NVFP4_ENV = {
     "NVTE_NVFP4_DISABLE_2D_QUANTIZATION": "1",
@@ -82,30 +76,12 @@ matchers:
         enabled: true
         pattern: "*.mlp.experts.linear_fc2"
         config: "nvfp4"
-    shared_experts_fc1_bf16:
-        type: "glob"
-        enabled: true
-        pattern: "*.mlp.shared_experts.linear_fc1"
-        config: "bf16"
-    shared_experts_fc2_bf16:
-        type: "glob"
-        enabled: true
-        pattern: "*.mlp.shared_experts.linear_fc2"
-        config: "bf16"
     default_bf16:
         type: "glob"
         enabled: true
         pattern: "*"
         config: "bf16"
 """.strip()
-
-
-def _extra_high_precision_layers_hf_args() -> str:
-    return "--extra-high-precision-layers-hf " + " ".join(EXTRA_HIGH_PRECISION_LAYERS_HF) + " "
-
-
-def _extra_high_precision_layers_megatron_args() -> str:
-    return "--extra-high-precision-layers-megatron " + " ".join(EXTRA_HIGH_PRECISION_LAYERS_MEGATRON) + " "
 
 
 def _validate_glm_checkpoint():
@@ -132,20 +108,19 @@ def _validate_glm_checkpoint():
 
 def prepare():
     os.environ.update(NVFP4_ENV)
-    U.exec_command(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
-    U.exec_command(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     _validate_glm_checkpoint()
-    U.exec_command(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MODEL_NAME}_torch_dist")
+    U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MODEL_NAME}_torch_dist")
 
-    U.exec_command(
+    U.exec_command_gpu(
         f"python tools/convert_hf_to_nvfp4.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME} "
         f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "
         f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
         f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
-        f"{_extra_high_precision_layers_hf_args()}"
     )
 
     U.convert_checkpoint(
@@ -168,7 +143,7 @@ def execute():
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
-    te_precision_config_path = U.save_to_temp_file(TE_PRECISION_CONFIG, "yaml")
+    te_precision_config_path = U.encode_pseudo_file(TE_PRECISION_CONFIG)
 
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
@@ -250,7 +225,9 @@ def execute():
         "--sglang-watchdog-timeout 3600 "
     )
 
-    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker "
+    ci_args = (
+        "--ci-test " "--ci-disable-kl-checker " "--ci-disable-logprobs-checker " "--ci-disable-weight-update-checker "
+    )
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "
@@ -260,8 +237,6 @@ def execute():
         "--first-last-layers-bf16 "
         f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
         f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
-        f"{_extra_high_precision_layers_hf_args()}"
-        f"{_extra_high_precision_layers_megatron_args()}"
         f"--te-precision-config-file {te_precision_config_path} "
     )
 

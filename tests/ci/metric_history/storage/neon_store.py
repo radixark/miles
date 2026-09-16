@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """Neon (hosted Postgres) backend for the metric-history store.
 
 * The production backend: the CI regression gate writes runs here and reads its

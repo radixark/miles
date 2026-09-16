@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { el, fmtNum, setViewCleanup } from "./app.js";
+import { el, fmtNum, setViewCleanup, statBox } from "./app.js";
 import { createCarpet } from "./carpet.js";
 import { createFleet } from "./fleet.js";
 import { hideTooltip, showTooltip } from "./charts.js";
@@ -35,6 +35,7 @@ const OVERLAY_METRICS = [
 const OVERLAY_COLOR = "#b84a12";
 const MEM_COLOR = "#1baf7a";
 const UTIL_STROKE = "rgba(42, 120, 214, 0.9)";
+
 const UTIL_FILL = "rgba(42, 120, 214, 0.14)";
 const TEXT = "#231f1c";
 const MUTED = "#7a7168";
@@ -82,6 +83,7 @@ export async function renderTimeline(view, meta, route) {
   let phasesByLane = new Map();
   let processesByLane = new Map();
   let advisories = [];
+  let mfu = null;
   let bubbles = [];
   let gpu = {};
   let engineSeries = [];
@@ -190,7 +192,9 @@ export async function renderTimeline(view, meta, route) {
   // ticks rather than on every pan/zoom like loadData()
   async function loadAdvisories() {
     try {
-      advisories = (await api("/api/advisory")).advisories;
+      const res = await api("/api/advisory");
+      advisories = res.advisories;
+      mfu = res.mfu;
     } catch {
       /* transient fetch failure: keep the last-known list */
     }
@@ -575,6 +579,7 @@ export async function renderTimeline(view, meta, route) {
     renderSelection();
     renderBubbles();
     renderLegend();
+    renderMfu();
     renderAdvisories();
     draw();
   }
@@ -675,8 +680,35 @@ export async function renderTimeline(view, meta, route) {
           });
           return el("span", { style: "display: inline-flex; gap: 4px; align-items: center" }, [swatch, name]);
         }),
-        el("span", { style: `color: ${OVERLAY_COLOR}` }, ["— engine overlay"]),
+        ...(overlayMetric
+          ? [el("span", { style: `color: ${OVERLAY_COLOR}` }, [`— ${overlayMetric.replace("sglang_", "")}`])]
+          : []),
         el("span", { style: `color: ${UTIL_STROKE}` }, ["— gpu util"]),
+      ]),
+    );
+  };
+
+  // --------------------------------- MFU tile --------------------------------
+  const mfuPanel = el("div", {});
+  const renderMfu = () => {
+    if (!mfu) {
+      mfuPanel.replaceChildren();
+      return;
+    }
+    const pct = (v) => `${(v * 100).toFixed(1)}%`;
+    mfuPanel.replaceChildren(
+      el("div", { class: "panel" }, [
+        el("h3", {}, ["Model FLOPs utilization"]),
+        el("div", { class: "statgrid" }, [
+          statBox("latest", pct(mfu.latest)),
+          statBox(`mean over ${mfu.steps} step${mfu.steps === 1 ? "" : "s"}`, pct(mfu.mean)),
+          statBox("device peak (dense bf16)", `${fmtNum(mfu.peak)} TFLOP/s`),
+        ]),
+        el("p", { class: "muted" }, [
+          "3x forward FLOPs of the model, per GPU, over the whole actor train step. Activation recompute, ",
+          "optimizer work and a CPU-offloaded optimizer all add time without adding model FLOPs, so they ",
+          "lower this legitimately. Extra heads the FLOPs model does not cover (e.g. MTP) understate it.",
+        ]),
       ]),
     );
   };
@@ -690,8 +722,17 @@ export async function renderTimeline(view, meta, route) {
     }
     advisoryPanel.replaceChildren(
       el("div", { class: "panel" }, [
-        el("h3", {}, ["Config advisory"]),
-        ...advisories.map((a) => el("p", { class: a.level === "warning" ? "error" : "muted" }, [a.message])),
+        el("h3", {}, ["Run advisory"]),
+        ...advisories.map((a) =>
+          el(
+            "p",
+            {
+              class: a.level === "info" ? "muted" : "error",
+              ...(a.level === "critical" ? { style: "font-weight: 600" } : {}),
+            },
+            [a.message],
+          ),
+        ),
       ]),
     );
   };
@@ -699,6 +740,7 @@ export async function renderTimeline(view, meta, route) {
   view.replaceChildren(
     toolbar,
     selRow,
+    mfuPanel,
     advisoryPanel,
     carpet.root,
     fleet.root,

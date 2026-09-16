@@ -200,8 +200,10 @@ def test_reasoning_effort_high_accepted_and_matches_direct():
 
 
 def test_reasoning_effort_invalid_value_raises():
-    # Value-level validation is delegated to sglang (asserts the allowed set).
-    with pytest.raises(AssertionError):
+    # Value-level validation is delegated to sglang; depending on the sglang
+    # version it asserts the allowed set or raises ValueError. Both carry the
+    # same "Invalid reasoning effort" message.
+    with pytest.raises((AssertionError, ValueError), match="Invalid reasoning effort"):
         deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode="thinking", reasoning_effort="ultra")
 
 

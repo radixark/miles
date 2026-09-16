@@ -3,8 +3,8 @@
 from pathlib import Path
 
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig
-from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_model_script
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
+from miles.utils.external_utils.model_args_utils import load_model_args
 
 
 def build_torchrun_cmd(
@@ -15,16 +15,14 @@ def build_torchrun_cmd(
     worker_args: str,
 ) -> str:
     """Build the full shell command to launch the worker via torchrun."""
-    model_script: Path = resolve_model_script(model_type)
     worker_module: str = "miles.utils.debug_utils.run_megatron.worker.main"
 
     cmd: str = (
-        f'source "{model_script}" && '
         f"PYTHONPATH={megatron_path}:$PYTHONPATH "
         f"CUDA_DEVICE_MAX_CONNECTIONS=1 "
         f"torchrun --nproc-per-node {nproc} "
         f"-m {worker_module} "
-        f"${{MODEL_ARGS[@]}} "
+        f"{load_model_args(model_type)} "
         f"--hidden-dropout 0 --attention-dropout 0 "
         f"{worker_args}"
     )

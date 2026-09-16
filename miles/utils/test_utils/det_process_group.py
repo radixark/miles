@@ -128,10 +128,14 @@ class DetProcessGroup(BaseProcessGroup):
     def allgather_into_tensor_coalesced(
         self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object = None
     ) -> Work:
-        # The coalescing manager's flush passes no opts; inner lacks the coalesced form.
+        # The coalescing manager's flush lands here with its region still open,
+        # so the inner calls are batched and hand back None; it waits on the
+        # aggregate itself.
         effective_opts = opts if opts is not None else AllgatherOptions()
         for output, input in zip(output_tensors, input_tensors, strict=True):
-            self._inner._allgather_base(output, input, effective_opts).wait()
+            work = self._inner._allgather_base(output, input, effective_opts)
+            if work is not None:
+                work.wait()
         return _CompletedWork()
 
     def _allgather_base(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
@@ -156,6 +160,17 @@ class DetProcessGroup(BaseProcessGroup):
             self._reduce_scatter_base(output, input, opts)
         return _CompletedWork()
 
+    # torch 2.13 routes dist.reduce_scatter_tensor through these names; without
+    # them it reaches the C++ base, which dispatches to the NCCL backend
+    # registered above and silently drops the fixed-order fold.
+    def reduce_scatter_single(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
+        return self._reduce_scatter_base(output, input, opts)
+
+    def reduce_scatter_single_coalesced(
+        self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object
+    ) -> Work:
+        return self.reduce_scatter_tensor_coalesced(output_tensors, input_tensors, opts)
+
     def alltoall_base(
         self,
         output_tensor: torch.Tensor,
@@ -165,6 +180,19 @@ class DetProcessGroup(BaseProcessGroup):
         opts: object,
     ) -> Work:
         return self._inner.alltoall_base(output_tensor, input_tensor, output_split_sizes, input_split_sizes, opts)
+
+    def all_to_all_single(
+        self,
+        output_tensor: torch.Tensor,
+        input_tensor: torch.Tensor,
+        output_split_sizes: list[int],
+        input_split_sizes: list[int],
+        opts: object,
+    ) -> Work:
+        # torch 2.13's entry point for dist.all_to_all_single. No reduction is
+        # involved, but the C++ base's alltoall faults in NCCL on a wrapper
+        # group, so forward it the way alltoall_base does.
+        return self.alltoall_base(output_tensor, input_tensor, output_split_sizes, input_split_sizes, opts)
 
     def send(self, tensors: list[torch.Tensor], dst_rank: int, tag: int) -> Work:
         return self._inner.send(tensors, dst_rank, tag)

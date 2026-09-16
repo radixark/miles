@@ -1,7 +1,6 @@
 import sys
 import types
 from argparse import Namespace
-from types import SimpleNamespace
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -72,9 +71,8 @@ def direct_module(monkeypatch):
         "miles.backends.megatron_utils.megatron_to_hf.processors",
         "miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_fp8",
         "miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_mxfp8",
-        "miles.backends.megatron_utils.update_weight.common",
+        "miles.backends.megatron_utils.named_weights",
         "miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct",
-        "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin",
     ]
     saved_modules = {name: sys.modules.get(name) for name in module_names}
     for name in module_names:
@@ -104,163 +102,15 @@ def _param(name: str, size: int) -> ParamInfo:
     )
 
 
-def test_atomic_group_is_single_update_unit_and_packed_together(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
-
-    params = [_param("layer.a", 4), _param("layer.b", 4), _param("layer.c", 4)]
+def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
+    # Atomicity is the base template's job; gather batches are pure size packing.
+    params = [_param("layer.a", 4), _param("layer.b", 2), _param("layer.c", 4)]
     monkeypatch.setattr(direct_module, "_get_param_full_size", lambda info: info.size)
 
-    update_units = direct_module.get_named_update_units(
-        [param.name for param in params], [AtomicUpdateGroup("pair", (".b", ".c"))]
+    batches = direct_module._pack_param_infos_by_size(Namespace(update_weight_buffer_size=6), params)
+    assert [[param.name for param in batch] for batch in batches] == [["layer.a", "layer.b"], ["layer.c"]]
+
+    batches = direct_module._pack_param_infos_by_size(
+        Namespace(update_weight_buffer_size=6), params, size_multiplier=2
     )
-    assert [unit.names for unit in update_units] == [("layer.a",), ("layer.b", "layer.c")]
-
-    buckets = direct_module._pack_update_units(Namespace(update_weight_buffer_size=6), params, update_units)
-    assert [[param.name for param in bucket] for bucket in buckets] == [["layer.a"], ["layer.b", "layer.c"]]
-
-
-def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
-    from miles.backends.megatron_utils.update_weight.common import get_atomic_update_groups
-
-    param_names = [
-        "module.module.decoder.layers.0.input_layernorm.weight",
-        "module.module.decoder.layers.0.self_attention.wq_a.weight",
-        "module.module.decoder.layers.0.self_attention.wkv.weight",
-        "module.module.decoder.layers.0.self_attention.compressor.wkv.weight",
-        "module.module.decoder.layers.0.self_attention.compressor.wgate.weight",
-        "module.module.decoder.layers.0.self_attention.indexer.compressor.wkv.weight",
-        "module.module.decoder.layers.0.self_attention.indexer.compressor.wgate.weight",
-    ]
-
-    update_units = direct_module.get_named_update_units(
-        param_names, get_atomic_update_groups(Namespace(q_lora_rank=1024), "deepseekv4")
-    )
-
-    assert [unit.names for unit in update_units] == [
-        ("module.module.decoder.layers.0.input_layernorm.weight",),
-        (
-            "module.module.decoder.layers.0.self_attention.wq_a.weight",
-            "module.module.decoder.layers.0.self_attention.wkv.weight",
-        ),
-        (
-            "module.module.decoder.layers.0.self_attention.compressor.wkv.weight",
-            "module.module.decoder.layers.0.self_attention.compressor.wgate.weight",
-        ),
-        (
-            "module.module.decoder.layers.0.self_attention.indexer.compressor.wkv.weight",
-            "module.module.decoder.layers.0.self_attention.indexer.compressor.wgate.weight",
-        ),
-    ]
-
-
-def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
-
-    params = [_param("layer.a", 4), _param("layer.b", 4)]
-
-    invalid_groups = [
-        ([AtomicUpdateGroup("empty", ())], "Atomic update group empty has no suffixes"),
-        ([AtomicUpdateGroup("missing", (".c",))], "Atomic update group missing references no params"),
-        (
-            [AtomicUpdateGroup("left", (".a",)), AtomicUpdateGroup("right", (".a",))],
-            "Param layer.a matches multiple atomic update groups",
-        ),
-        (
-            [AtomicUpdateGroup("duplicate", (".a",)), AtomicUpdateGroup("duplicate", (".b",))],
-            "Duplicate atomic update group: duplicate",
-        ),
-    ]
-
-    for groups, error in invalid_groups:
-        with pytest.raises(AssertionError, match=error):
-            direct_module.get_named_update_units([param.name for param in params], groups)
-
-
-def _tensor(size: int) -> torch.Tensor:
-    return torch.empty(size, dtype=torch.uint8)
-
-
-def _distributed_updater(mixin_module):
-    updater = mixin_module.DistBucketedWeightUpdateMixin()
-    updater.args = Namespace(update_weight_buffer_size=6)
-    updater.model = []
-    updater.model_name = "test-model"
-    updater.quantization_config = None
-    updater._is_source = True
-    return updater
-
-
-def test_distributed_non_expert_update_units_are_packed_together(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
-    from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import mixin
-
-    updater = _distributed_updater(mixin)
-    named_tensors = [("a", _tensor(4)), ("b", _tensor(4)), ("c", _tensor(4))]
-    monkeypatch.setattr(mixin.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(
-        mixin, "collect_named_tensors_for_weight_transfer", lambda *args, **kwargs: iter(named_tensors)
-    )
-    monkeypatch.setattr(
-        mixin, "get_atomic_update_groups", lambda args, model_name: [AtomicUpdateGroup("pair", ("b", "c"))]
-    )
-    monkeypatch.setattr(mixin, "all_gather_param", lambda args, name, param: param)
-    monkeypatch.setattr(
-        mixin, "convert_to_hf", lambda args, model_name, name, param, quantization_config: [(name, param)]
-    )
-
-    buckets = []
-    updater._gather_and_update_non_expert_weights(lambda tensors, pbar: buckets.append([name for name, _ in tensors]))
-
-    assert buckets == [["a"], ["b", "c"]]
-
-
-def test_distributed_expert_update_units_are_packed_together(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
-    from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import mixin
-
-    updater = _distributed_updater(mixin)
-    named_tensors = [
-        ("module.experts.a", _tensor(4)),
-        ("module.experts.b", _tensor(4)),
-        ("module.experts.c", _tensor(4)),
-    ]
-    monkeypatch.setattr(mixin.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(
-        mixin, "collect_named_tensors_for_weight_transfer", lambda *args, **kwargs: iter(named_tensors)
-    )
-    monkeypatch.setattr(
-        mixin,
-        "get_atomic_update_groups",
-        lambda args, model_name: [AtomicUpdateGroup("pair", (".b", ".c"))],
-    )
-    monkeypatch.setattr(mixin, "all_gather_param", lambda args, name, param: param)
-    monkeypatch.setattr(mixin, "get_parallel_state", lambda: SimpleNamespace(ep=SimpleNamespace(size=1)))
-
-    buckets = []
-    updater._update_expert_bucket_weights = lambda tensors, update_func, pbar: buckets.append(
-        [name for name, _ in tensors]
-    )
-
-    updater._gather_and_update_expert_weights(lambda tensors, pbar: None)
-
-    assert buckets == [["module.experts.a"], ["module.experts.b", "module.experts.c"]]
-
-
-def test_distributed_atomic_group_cannot_span_expert_and_non_expert(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
-    from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import mixin
-
-    updater = _distributed_updater(mixin)
-    named_tensors = [("module.a", _tensor(4)), ("module.experts.b", _tensor(4))]
-    monkeypatch.setattr(mixin.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(
-        mixin, "collect_named_tensors_for_weight_transfer", lambda *args, **kwargs: iter(named_tensors)
-    )
-    monkeypatch.setattr(
-        mixin,
-        "get_atomic_update_groups",
-        lambda args, model_name: [AtomicUpdateGroup("mixed", (".a", ".experts.b"))],
-    )
-
-    with pytest.raises(AssertionError, match="module.a"):
-        updater._get_weight_transfer_update_units(is_expert=False)
+    assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b"], ["layer.c"]]

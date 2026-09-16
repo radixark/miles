@@ -8,7 +8,7 @@ end by the per-model weight-export (lp_diff) runs; here we pin the non-DTensor c
 import pytest
 import torch
 
-from miles.backends.experimental.fsdp_utils.dtensor import gather_full_param
+from miles.backends.fsdp_utils.dtensor import gather_full_param
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="gather_full_param moves to CUDA")

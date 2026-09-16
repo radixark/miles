@@ -1,5 +1,6 @@
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -11,15 +12,24 @@ logger = logging.getLogger(__name__)
 
 def trajectory_rows(samples: list[Sample]) -> list[dict]:
     """One row per sample that recorded a raw conversation
-    (``metadata["messages"]``, attached by the session / multi_turn paths)."""
+    (``metadata["messages"]``, attached by the session / multi_turn paths).
+
+    ``sample_occurrence`` counts over the FULL sample list -- the numbering the
+    dashboard uses everywhere -- not over the recorded subset, so a sample
+    stays addressable even when an earlier leaf of the same index recorded no
+    conversation."""
     rows = []
+    occurrences: defaultdict[int, int] = defaultdict(int)
     for sample in samples:
+        occurrence = occurrences[sample.index]
+        occurrences[sample.index] += 1
         messages = sample.metadata.get("messages") if sample.metadata else None
         if messages is None:
             continue
         rows.append(
             dict(
                 sample_index=sample.index,
+                sample_occurrence=occurrence,
                 group_index=sample.group_index,
                 status=sample.status.value,
                 reward=sample.reward if isinstance(sample.reward, (int, float)) else None,

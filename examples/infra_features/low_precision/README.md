@@ -10,38 +10,38 @@ This is an example of FP8 training and FP8 inference. Under FP8 training and inf
 
 ## Quick Start
 
-1. Check if your training script is properly configured. 
+1. Check if your training script is properly configured.
 
-For training tasks, we need to add these flags:
-```bash
---fp8-format e4m3
---fp8-recipe blockwise
-# --fp8-param-gather # [optional] Currently incompatible with CPU Adam
-```
-Then ensure the `NVTE_FP8_BLOCK_SCALING_FP32_SCALES` environment variable is enabled.
+   For training tasks, we need to add these flags:
+   ```bash
+   --fp8-format e4m3
+   --fp8-recipe blockwise
+   # --fp8-param-gather # [optional] Currently incompatible with CPU Adam
+   ```
+   Then ensure the `NVTE_FP8_BLOCK_SCALING_FP32_SCALES` environment variable is enabled.
 
-Note that only `Linear` and `GroupLinear` layers in TransformerEngine use fp8 format. `embedding` and `lm_head` remain in their original precision. If `--fp8-param-gather` is not enabled, weights in TransformerEngine remain in bf16 format, only being cast to fp8 format during `GEMM` or `GroupGEMM` operations.
+   Note that only `Linear` and `GroupLinear` layers in TransformerEngine use fp8 format. `embedding` and `lm_head` remain in their original precision. If `--fp8-param-gather` is not enabled, weights in TransformerEngine remain in bf16 format, only being cast to fp8 format during `GEMM` or `GroupGEMM` operations.
 
-2. Convert your HuggingFace model weights to FP8 format. 
+2. Convert your HuggingFace model weights to FP8 format.
 
-You can use `tools/convert_hf_to_fp8.py` to convert bf16 weights to fp8 format. Ensure that the `--hf-checkpoint` parameter points to a directory where the `config.json` contains the correct `quantization_config`. miles will automatically use FP8 quantization during weight updates. 
+   You can use `tools/convert_hf_to_fp8.py` to convert bf16 weights to fp8 format. Ensure that the `--hf-checkpoint` parameter points to a directory where the `config.json` contains the correct `quantization_config`. miles will automatically use FP8 quantization during weight updates.
 
 3. Start FP8 training.
 
-```
-cd miles
+   ```bash
+   cd miles
 
-# Qwen3‑4B FP8 training (single node)
-bash examples/infra_features/low_precision/run-qwen3-4b-fp8.sh
+   # Qwen3‑4B FP8 training (single node)
+   bash examples/infra_features/low_precision/run-qwen3-4b-fp8.sh
 
-# Qwen3‑30B‑A3B FP8 training (two nodes)
-bash examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh
-```
-Following the above command will launch FP8 training. 
+   # Qwen3‑30B‑A3B FP8 training (two nodes)
+   bash examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh
+   ```
+   Following the above command will launch FP8 training.
 
-4. Use the saved checkpoint for evaluation. 
+4. Use the saved checkpoint for evaluation.
 
-Note that TransformerEngine does not specifically save FP8 quantized weights; the saved torch dist remains in original precision (usually bf16). If you want to evaluate under FP8, you need to convert the checkpoint from `torch_dist` to HuggingFace format, then convert to FP8 HuggingFace format.
+   Note that TransformerEngine does not specifically save FP8 quantized weights; the saved torch dist remains in original precision (usually bf16). If you want to evaluate under FP8, you need to convert the checkpoint from `torch_dist` to HuggingFace format, then convert to FP8 HuggingFace format.
 
 
 ## Quick Explanation
@@ -73,7 +73,6 @@ This guide provides examples for INT4 STE (Straight-Through Estimator) training 
 
 ### Files
 
-*   `run-moonlight-16B-A3B-int4.sh`: Launch script for **Moonlight-16B-A3B** (INT4) on 4x H200 GPUs.
 *   `run-qwen3‑30B‑A3B-int4.sh`: Launch script for **Qwen3‑30B‑A3B** (INT4) on 8x H200 GPUs.
 *   `run-qwen3-235B-A22B-int4.sh`: Launch script for **Qwen3-235B-A22B** (INT4) on 64x H200 GPUs.
 *   `run-kimi-k2-Thinking-int4.sh`: Launch script for **Kimi-k2-Thinking** (INT4) on 256x H200 GPUs.
@@ -101,7 +100,7 @@ You need to configure the specific environment variables for quantization settin
 
 *   **`OPEN_TRAINING_INT4_FAKE_QAT_FLAG`**: Enables fake quantization operations for INT4 training.
 *   **`OPEN_TRAINING_INT4_GROUP_SIZE`**: Specifies the block size (group size) for model quantization.
-    *   Set to **128** for `moonlight-16B-A3B` 、 `qwen3-30B-A3B`and `qwen3-235B-A22B-int4`.
+    *   Set to **128** for `qwen3-30B-A3B` and `qwen3-235B-A22B-int4`.
     *   Set to **32** for `kimi-k2-Thinking-int4`.
 
 **Configuration Example:**
@@ -119,9 +118,6 @@ RUNTIME_ENV_JSON="{
 **Launch Commands:**
 
 ```bash
-# Moonlight-16B-A3B Int4 training
-bash examples/infra_features/low_precision/run-moonlight-16B-A3B-int4.sh
-
 # Qwen3‑30B‑A3B Int4 training
 bash examples/infra_features/low_precision/run-qwen3‑30B‑A3B-int4.sh
 

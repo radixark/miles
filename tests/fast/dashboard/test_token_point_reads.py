@@ -63,8 +63,9 @@ def test_train_row_values_match_joined(dumped):
     reader = DumpReader(dumped)
     joined = reader.joined(0)
     sample_index = joined.samples[0].index
-    lazy = reader._train_row_lazy(0, sample_index)
-    full = joined.train_rows[sample_index]
+    rollout_columns = reader._rollout_columns(0, sample_index, sample_occurrence=0, evaluation=False)
+    lazy = reader._train_row_lazy(0, sample_index, rollout_columns)
+    full = joined.train_rows[(sample_index, 0)]
     for field in ("log_probs", "ref_log_probs", "advantages"):
         lazy_v, full_v = getattr(lazy, field), getattr(full, field)
         assert (lazy_v is None) == (full_v is None)

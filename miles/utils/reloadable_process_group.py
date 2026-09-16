@@ -261,6 +261,39 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         self.group.bound_device_id = dev
 
 
+def _forward_remaining_collectives():
+    """Forward every ProcessGroup collective this class does not define itself.
+
+    Callers that resolved a collective before the monkey patch went on --
+    Megatron binds `dist_reduce_scatter_func` at import time -- hand the wrapper
+    straight to torch, which invokes the method on the group object. Anything
+    not overridden here reaches the C++ base, whose own backend map is empty,
+    and dies as "No backend type associated with device type cuda". A
+    hand-written forward list silently regrows that hole whenever torch renames
+    or adds a collective, which is how torch 2.13's *_single family got through.
+    """
+    skip = {"rank", "size", "name", "abort", "shutdown", "bound_device_id"}
+    for name in dir(dist.ProcessGroup):
+        if name.startswith("__") or name in skip:
+            continue
+        if name in vars(ReloadableProcessGroup):
+            continue
+        if not callable(getattr(dist.ProcessGroup, name, None)):
+            continue
+
+        def make(method):
+            def forward(self, *args, **kwargs):
+                return self._fwd(method, *args, **kwargs)
+
+            forward.__name__ = method
+            return forward
+
+        setattr(ReloadableProcessGroup, name, make(name))
+
+
+_forward_remaining_collectives()
+
+
 def destroy_process_groups():
     """Destroy all reloadable process groups."""
     ReloadableProcessGroup.destroy_process_groups()

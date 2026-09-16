@@ -51,10 +51,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "jdopensource"
     model_name: str = "JoyAI-LLM-Flash"
     megatron_model_type: str = "joyai-llm-flash"
-    num_gpus_per_node: int | None = 8
+    num_gpus_per_node: int | None = None
     actor_num_gpus_per_node: int | None = 4
     rollout_num_gpus: int | None = 4
-    hardware: Literal["B200", "B300", "GB200", "GB300"] = "B200"
+    hardware: Literal["auto", "B200", "B300", "GB200", "GB300"] = "auto"
     enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -74,18 +74,22 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mxfp8_num_layers_at_end_in_bf16: int = 6
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.train_mxfp8:
             assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8"
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.rollout_mxfp8:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
             f"--num-layers-at-start-in-bf16 {args.mxfp8_num_layers_at_start_in_bf16} "
@@ -248,7 +252,7 @@ def execute(args: ScriptArgs, *, wandb_file: str = __file__):
                 optimizer_args += (
                     "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
                 )
-                misc_args += f"--te-precision-config-file {U.save_to_temp_file(MXFP8_TE_PRECISION_CONFIG, 'yaml')} "
+                misc_args += f"--te-precision-config-file {U.encode_pseudo_file(MXFP8_TE_PRECISION_CONFIG)} "
             else:
                 sglang_args += "--rollout-num-gpus-per-engine 1 " "--sglang-cuda-graph-max-bs 256 "
         case _:
@@ -269,7 +273,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

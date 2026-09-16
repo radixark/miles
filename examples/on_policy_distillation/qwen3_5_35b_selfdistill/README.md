@@ -88,7 +88,7 @@ is the GB200 variant of `phase2_opd_selfdistill.sh`; the deltas (all validated o
 - **Tiling** — `--actor-num-nodes 2 --num-gpus-per-node 4` (override via
   `ACTOR_NUM_NODES` / `GPUS_PER_NODE`). Pin both nodes to one NVLink (MNNVL) domain
   so the EP8 all-to-all stays on the NVLink fabric.
-- **sglang backends** (cf. `scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py`) —
+- **sglang backends** (cf. `scripts/run_qwen3_5_35b_a3b_mtp.py`) —
   `--sglang-moe-runner-backend flashinfer_cutlass`, `--sglang-attention-backend
   trtllm_mha`, and `--moe-token-dispatcher-type flex`. The default triton fused-MoE
   mis-shards routed experts on the megatron→sglang weight sync

@@ -39,7 +39,7 @@ python scripts/run_inkling.py train \
    --sglang-context-length 4096 --rollout-max-response-len 2048
 ```
 
-The model definition lives in `scripts/models/inkling-small.sh` (`MODEL_ARGS_NUM_LAYERS` overrides the layer count for sliced smoke/parity checkpoints). HF → `torch_dist` conversion uses the same tool as Inkling with this recipe file — a single 8-GPU node (TP8 EP8) converts it in one pass.
+The model definition lives in `scripts/models/inkling-small.py` (`MODEL_ARGS_NUM_LAYERS` overrides the layer count for sliced smoke/parity checkpoints). HF → `torch_dist` conversion uses the same tool as Inkling with this recipe file — a single 8-GPU node (TP8 EP8) converts it in one pass.
 
 ## 4. Validated parallelism
 

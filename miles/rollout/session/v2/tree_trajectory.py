@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.types import SessionRecord
-from miles.utils.chat_template_utils import message_matches
+from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
 MAX_NODES = 1024
 
@@ -101,13 +101,20 @@ class SessionTree:
             parent.children.append(node)
         return node
 
-    def find_attach_point(self, request_messages: list[dict[str, Any]]) -> AttachPoint:
+    def find_attach_point(
+        self,
+        request_messages: list[dict[str, Any]],
+        *,
+        message_matcher: SessionMessageMatcher | None = None,
+    ) -> AttachPoint:
         """Deepest node whose full path messages are a prefix of the request.
 
-        A node is only entered after its parent's delta is fully consumed;
-        ties on depth (twins whose deltas both match) go to the latest ``seq``.
-        Pure judgment — never mutates the forest.
+        Message equivalence is decided by *message_matcher* (defaults to the
+        strict matcher).  A node is only entered after its parent's delta is
+        fully consumed; ties on depth (twins whose deltas both match) go to
+        the latest ``seq``.  Pure judgment — never mutates the forest.
         """
+        matcher = message_matcher if message_matcher is not None else strict_message_matches
         best: TrajectoryNode | None = None
         best_matched = -1
         best_overlap = 0
@@ -120,7 +127,7 @@ class SessionTree:
             while (
                 i < len(delta)
                 and offset + i < len(request_messages)
-                and message_matches(delta[i], request_messages[offset + i])
+                and matcher(delta[i], request_messages[offset + i])
             ):
                 i += 1
             best_overlap = max(best_overlap, offset + i)

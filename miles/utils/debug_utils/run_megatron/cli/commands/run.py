@@ -7,7 +7,7 @@ import typer
 
 from miles.utils.debug_utils.run_megatron.cli.commands.args import RunArgs
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig
-from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_megatron_path, resolve_model_script
+from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_megatron_path
 from miles.utils.debug_utils.run_megatron.cli.prompt_utils import (
     PromptConfig,
     generate_token_ids,
@@ -19,7 +19,8 @@ from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     build_worker_args,
 )
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
-from miles.utils.misc import exec_command
+from miles.utils.external_utils.exec_command import exec_command_gpu
+from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.typer_utils import dataclass_cli
 
 
@@ -83,7 +84,7 @@ def run_impl(args: RunArgs) -> None:
         nproc=parallel.nproc,
         worker_args=worker_args_str,
     )
-    exec_command(f"{env_exports} && {cmd}")
+    exec_command_gpu(f"{env_exports} && {cmd}")
     print(f"[cli] Run completed. Output: {args.output_dir}", flush=True)
 
 
@@ -94,12 +95,7 @@ def run(args: RunArgs) -> None:
 
 
 def show_model_args(
-    model_type: Annotated[str, typer.Option(help="Model type matching scripts/models/{model_type}.sh")],
+    model_type: Annotated[str, typer.Option(help="Model type matching scripts/models/{model_type}.py")],
 ) -> None:
     """Show the MODEL_ARGS for a given model type (debug helper)."""
-    output: str | None = exec_command(
-        f'source "{resolve_model_script(model_type)}" && echo "${{MODEL_ARGS[@]}}"',
-        capture_output=True,
-    )
-    if output:
-        print(output.strip())
+    print(load_model_args(model_type))

@@ -5,8 +5,8 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"])
-register_rocm_ci(est_time=600, suite="stage-c-8-gpu-mi350", labels=["short"])
+register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=600, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -15,7 +15,7 @@ NUM_GPUS = 8
 # Inline sglang config: same model, 2 engine groups with different sizes.
 # Group 1: 4 GPUs, 1 GPU/engine (tp=1) -> 4 engines
 # Group 2: 4 GPUs, 1 GPU/engine (tp=1) -> 4 engines
-# Tests that ServerGroup/RolloutServer correctly manages multiple groups
+# Tests that RolloutServer correctly manages multiple engine groups
 # behind a single router, with separate port cursors per group.
 SGLANG_CONFIG_YAML = """\
 sglang:
@@ -31,8 +31,8 @@ sglang:
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
@@ -138,7 +138,6 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

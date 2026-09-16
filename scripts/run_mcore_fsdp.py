@@ -13,7 +13,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     colocate: bool = True
     model_name: str = "Qwen3-4B-Instruct-2507"
     num_gpus_per_node: int | None = None
-    hardware: Literal["H100", "GB300"] = "H100"
+    hardware: Literal["auto", "H100", "GB300"] = "auto"
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
     multi_eval: bool = False
@@ -27,6 +27,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.train_backend == "megatron":
             self.megatron_model_type = {
                 "Qwen3-4B": "qwen3-4B",
@@ -34,12 +36,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 "Qwen3-4B-Base": "qwen3-4B",
             }[self.model_name]
 
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
-
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download Qwen/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"hf download Qwen/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
     U.hf_download_dataset("zyzshishui0627/gpqa_diamond", data_dir=args.data_dir)
@@ -121,7 +121,7 @@ eval:
       rm_type: ifbench
       n_samples_per_eval_prompt: 1
 """.strip()
-            eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text, 'yaml')} "
+            eval_args += f"--eval-config {U.encode_pseudo_file(eval_config_text)} "
         else:
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "

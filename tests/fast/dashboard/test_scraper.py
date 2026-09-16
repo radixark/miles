@@ -127,3 +127,18 @@ def test_mode_prerequisites():
 def test_default_whitelist_covers_design_set():
     assert "sglang_num_running_reqs" in DEFAULT_METRIC_WHITELIST
     assert "sglang_kv_transfer_speed_gb_s" in DEFAULT_METRIC_WHITELIST  # PD set present
+
+
+def test_dp_rank_label_survives():
+    records: list[EngineSample] = []
+    text = (
+        "# TYPE sglang:num_running_reqs gauge\n"
+        'sglang:num_running_reqs{model_name="q",engine_type="unified",dp_rank="0",tp_rank="0"} 11.0\n'
+        'sglang:num_running_reqs{model_name="q",engine_type="unified",dp_rank="1",tp_rank="1"} 1.0\n'
+    )
+    scraper = SglangScraper(
+        records.append, mode=ScrapeMode.DIRECT, engine_addrs=lambda: [ENGINE_A], http_get=lambda url, timeout: text
+    )
+    assert scraper.scrape_once(now=1.0) == 2
+    assert {(r.labels["dp_rank"], r.value) for r in records} == {("0", 11.0), ("1", 1.0)}
+    assert all("tp_rank" not in r.labels and "model_name" not in r.labels for r in records)

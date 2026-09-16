@@ -138,7 +138,8 @@ You need to convert the HF model to the format required by Megatron-LM. Ensure y
 
 ```bash
 # Source model arguments
-source scripts/models/qwen3-4B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-4B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 
 # Convert model
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \

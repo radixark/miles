@@ -6,12 +6,12 @@ import torch
 from transformers.models.qwen3 import modeling_qwen3
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from miles.backends.experimental.fsdp_utils.adaptations.class_patches import (
+from miles.backends.fsdp_utils.adaptations.class_patches import (
     _MODEL_INSTANCE_PATCH_HOOKS,
     apply_model_instance_patches,
 )
-from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
-from miles.backends.experimental.fsdp_utils.models.qwen3 import (
+from miles.backends.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
+from miles.backends.fsdp_utils.models.qwen3 import (
     Qwen3FinalRMSNorm,
     apply_qwen3_dense_true_on_policy_patch,
     resolve_qwen3_dense_sync_dtype,
@@ -53,7 +53,7 @@ def _tiny_config():
 
 
 def test_qwen3_instance_patch_registry_is_contract_gated(monkeypatch):
-    from miles.backends.experimental.fsdp_utils.models import qwen3 as qwen3_model
+    from miles.backends.fsdp_utils.models import qwen3 as qwen3_model
 
     hook = {hook.name: hook for hook in _MODEL_INSTANCE_PATCH_HOOKS}["qwen3_dense_true_on_policy"]
     calls = []
@@ -165,7 +165,7 @@ def test_qwen3_formal_sync_preserves_post_update_fp32_values():
 
 
 def test_qwen3_ref_model_uses_fp32_master_storage(monkeypatch):
-    from miles.backends.experimental.fsdp_utils import actor as actor_module
+    from miles.backends.fsdp_utils import actor as actor_module
 
     config = _tiny_config()
     args = SimpleNamespace(

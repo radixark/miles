@@ -1,0 +1,50 @@
+### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download Qwen/Qwen3-30B-A3B
+  --local-dir /root/models/Qwen3-30B-A3B
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/datasets/aime-2024
+
+### 4
+PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 8 <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 32
+  --num-query-groups 4
+  --kv-channels 128
+  --num-layers 48
+  --hidden-size 2048
+  --ffn-hidden-size 6144
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --rotary-percent 1.0
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 151936
+  --rotary-base 1000000
+  --moe-ffn-hidden-size 768
+  --moe-router-score-function softmax
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --num-experts 128
+  --moe-grouped-gemm
+  --moe-token-drop-policy probs
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --hf-checkpoint /root/models/Qwen3-30B-A3B
+  --save /root/models/Qwen3-30B-A3B_torch_dist 

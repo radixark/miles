@@ -10,7 +10,12 @@ import miles.utils.external_utils.command_utils as U
 # every combination must pass. Functionality, not accuracy; 4 GPUs (TP=4, EP=1).
 
 
-register_cuda_ci(est_time=1600, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts", "lora"])
+register_cuda_ci(
+    est_time=1600,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "model-scripts", "lora"],
+    hardware=["hopper", "blackwell"],
+)
 
 MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
@@ -24,9 +29,11 @@ _CONFIGS = [
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download lmsys/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.exec_command("hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download lmsys/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu(
+        "hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k"
+    )
 
 
 def execute(shared_outer: bool, virtual_experts: bool):
@@ -102,7 +109,6 @@ def execute(shared_outer: bool, virtual_experts: bool):
         "--colocate "
         "--ci-test "
         "--ci-disable-logprobs-checker "
-        "--disable-weights-backuper "
     )
 
     train_args = (
@@ -113,7 +119,6 @@ def execute(shared_outer: bool, virtual_experts: bool):
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 
@@ -124,6 +129,6 @@ if __name__ == "__main__":
     for name, shared_outer, virtual_experts in _CONFIGS:
         print(f"[gpt-oss-moe-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
         execute(shared_outer, virtual_experts)
         print(f"[gpt-oss-moe-lora-ci] ===== combo PASSED: {name} =====", flush=True)

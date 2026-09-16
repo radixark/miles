@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 """Build and push Miles Docker images.
 
 Usage:
@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
+import image_inputs
 import typer
 
 CACHE_DIR = "/tmp/miles-docker-cache"
@@ -45,31 +46,8 @@ VARIANTS = {
         "tag_postfix": "-cu12",
         "build_args": {
             "ENABLE_CUDA_13": "0",
-            "SGLANG_IMAGE_TAG": "v0.5.16-cu129",
+            "SGLANG_IMAGE_TAG": "v0.5.19-cu129",
             "WHEELS_TAG_X86": "cu129-x86_64",
-        },
-    },
-    "rocm700-mi35x": {
-        "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm700-mi35x",
-        "tag_prefix": "miles",
-        "dockerfile": "docker/Dockerfile.rocm",
-        "build_args": {
-            "GPU_ARCH": "gfx950",
-            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
-            "SGLANG_IMAGE_TAG": "v0.5.14-rocm700-mi35x-20260627",
-            "SGLANG_USE_ROCM700A": "1",
-        },
-    },
-    "rocm700-mi30x": {
-        "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm700-mi30x",
-        "tag_prefix": "miles",
-        "dockerfile": "docker/Dockerfile.rocm",
-        "build_args": {
-            "GPU_ARCH": "gfx942",
-            "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
-            "SGLANG_USE_ROCM700A": "1",
         },
     },
     "rocm720-mi35x": {
@@ -81,7 +59,23 @@ VARIANTS = {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
             "SGLANG_IMAGE_TAG": "v0.5.16-rocm720-mi35x-20260730",
+            "WHEELS_TAG_ROCM": "rocm720-gfx950-v0.5.16",
             "APPLY_ROCR_VMMFIX": "1",
+            "TE_USE_WHEEL": "1",
+        },
+    },
+    "rocm10-mi35x": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm10-mi35x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx950",
+            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
+            "SGLANG_IMAGE_TAG": "v0.5.18-rocm10-mi35x-20260831",
+            "WHEELS_TAG_ROCM": "rocm10-gfx950-v0.5.18",
+            "APEX_USE_PREBUILT": "1",
+            "NVRX_INSTALL": "1",
             "TE_USE_WHEEL": "1",
         },
     },
@@ -96,8 +90,17 @@ def run(cmd: list[str], dry_run: bool) -> None:
 
 
 def build_and_push(
-    variant: str, image_tag: str, dry_run: bool, dockerfile: str, push: bool = False, custom_tag: str = ""
+    variant: str,
+    image_tag: str,
+    dry_run: bool,
+    dockerfile: str,
+    push: bool = False,
+    custom_tag: str = "",
+    extra_build_args: list[str] | None = None,
+    context: Path = REPO_ROOT,
+    output: str = "",
 ) -> None:
+    extra_build_args = extra_build_args or []
     config = VARIANTS[variant]
     # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
     dockerfile = config.get("dockerfile", dockerfile)
@@ -123,7 +126,7 @@ def build_and_push(
         "buildx",
         "build",
         "-f",
-        dockerfile,
+        str(context / dockerfile),
     ]
 
     if platforms:
@@ -131,6 +134,8 @@ def build_and_push(
 
     if push:
         cmd += ["--push"]
+    if output:
+        cmd += ["--output", output]
 
     # Proxy args (pass through if set in environment, check both cases)
     for arg_name in ["HTTP_PROXY", "HTTPS_PROXY"]:
@@ -144,11 +149,20 @@ def build_and_push(
     for key, value in config.get("build_args", {}).items():
         cmd += ["--build-arg", f"{key}={value}"]
 
+    # Caller overrides (e.g. release builds pinning SGLANG_COMMIT / MILES_COMMIT
+    # from release-lock.json) come last so they win over variant defaults.
+    for spec in extra_build_args:
+        assert "=" in spec, f"--build-arg expects KEY=VALUE, got {spec!r}"
+        cmd += ["--build-arg", spec]
+
+    # CI reads this back off the published tag to skip rebuilds whose inputs are unchanged.
+    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context)}"]
+
     for tag in tags:
         cmd += ["-t", tag]
 
     # Context is repo root
-    cmd += ["."]
+    cmd += [str(context)]
 
     print(f"\n=== Building {' '.join(tags)} ===", flush=True)
     run(cmd, dry_run)
@@ -159,9 +173,8 @@ class Variant(str, Enum):
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
     cu12_x86 = "cu12-x86"
-    rocm700_mi35x = "rocm700-mi35x"
-    rocm700_mi30x = "rocm700-mi30x"
     rocm720_mi35x = "rocm720-mi35x"
+    rocm10_mi35x = "rocm10-mi35x"
 
 
 class ImageTag(str, Enum):
@@ -177,8 +190,21 @@ def main(
     dry_run: bool = typer.Option(False, help="Print commands without executing them."),  # noqa: B008
     push: bool = typer.Option(False, help="Push images to registry after building."),  # noqa: B008
     custom_tag: str = typer.Option("", help="Custom tag name (required when --image-tag is custom)."),  # noqa: B008
+    build_arg: list[str] = typer.Option([], help="Extra KEY=VALUE build-arg (repeatable)."),  # noqa: B008
+    context: Path = typer.Option(REPO_ROOT, help="Repository build context, separate from this driver."),  # noqa: B008
+    output: str = typer.Option("", help="Buildx exporter, e.g. type=oci,dest=/tmp/image,tar=false."),  # noqa: B008
 ) -> None:
-    build_and_push(variant.value, image_tag.value, dry_run, dockerfile, push=push, custom_tag=custom_tag)
+    build_and_push(
+        variant.value,
+        image_tag.value,
+        dry_run,
+        dockerfile,
+        push=push,
+        custom_tag=custom_tag,
+        extra_build_args=build_arg,
+        context=context.resolve(),
+        output=output,
+    )
 
 
 if __name__ == "__main__":

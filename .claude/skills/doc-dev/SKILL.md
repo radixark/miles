@@ -75,6 +75,8 @@ A strictly behavior-preserving change, such as a rename, extraction, or reflow, 
 - Limit a document edit to the specification or description delta, and limit a code edit to the behavior in scope. A real conformance change must implement that behavior directly; do not add fallbacks, guards, or silent skips solely to appear compliant.
 - Do not use co-evolution to avoid writing down a requirement that is already known; use `--docfirst` instead.
 
+Before delivery, automatically run one subtractive simplify pass over the documentation diff against the pre-change base. For every changed hunk, name the exact in-scope behavior or responsibility delta it documents; remove the hunk if deleting it would leave the code, header, central documents, and verification consistent. Preserve untouched wording, structure, and formatting; do not expand neighboring sections, repeat a fact within the same governed surface, or retain wording introduced only for an abandoned draft.
+
 ## Outside this workflow
 
 - If neither the code nor the document is authoritative, reconcile each divergence with the user before editing.

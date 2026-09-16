@@ -1,0 +1,16 @@
+### 0
+mkdir -p /root/models
+
+### 1
+hf download Qwen/Qwen3-0.6B
+  --local-dir /root/models/Qwen3-0.6B
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/dapo-math-17k
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/aime-2024

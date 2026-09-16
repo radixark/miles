@@ -64,6 +64,13 @@ DDP's bucket sizes, which reach tens of GB at DP=1. Native-fp32 model params (a 
 `expert_bias`, a GDN/Mamba `A_log`) stay GPU-resident under a small separate Adam: they
 are tiny, and unlike the bf16 path their optimizer shards alias the model params directly.
 
+For the Adam/DistributedOptimizer path, streaming also bounds initialization: Megatron releases
+each fp32 main shard's storage after creating its tensor handle, then Miles fills one existing
+runtime bucket at a time directly in the final files. There is no temporary state file. Peak
+initialization HBM is the largest individual shard during construction and one main-only bucket
+afterward (normally at most about 200M fp32 elements, except for an oversized entry). Each
+initialized range is synchronized and evicted from page cache before continuing.
+
 `fp32` storage is bit-identical to keeping the state on GPU, so turning this on does not
 change results — it trades step time for memory. The step is I/O bound and the moments
 tolerate less precision than the master copy, so they can be stored narrower:
@@ -104,10 +111,11 @@ training GPUs, which is the point when you are sizing engines against a fixed cl
   cannot help with: add `--stream-optimizer-state-to-disk`, and consider
   `--stream-optimizer-state-moment-dtype bf16` to claw back some of the I/O cost.
 
-Streaming requires `--offload-train-target=disk`; miles asserts it. The two answer the same
-pressure and are only deployed as a pair, so that is the only combination covered.
-Streaming on its own does run — it is the one case where offload has nothing to do, because
-nothing else wants the training GPUs during rollout — but nothing validates it.
+Streaming on its own is the disaggregated case: nothing else wants the training GPUs during
+rollout, so there is no actor to park and `--offload-train-target` is never read. Pass
+`--stream-optimizer-state-to-disk` alone there. Under `--offload-train`, though, the two go
+together — a run that cannot hold the optimizer state on the GPU for the step will not hold
+a pinned host copy of the whole actor either — and miles asserts that pairing.
 
 Both mechanisms share `--offload-train-disk-dir` and `--offload-train-disk-chunk-mb`. Point the
 directory at real node-local NVMe: a tmpfs mount, which `/tmp` is on many systems, keeps

@@ -3,11 +3,12 @@ import subprocess
 import time
 import urllib.request
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"])
+register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=300, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
 
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
@@ -21,8 +22,8 @@ TEACHER_PORT = 13141
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
@@ -201,12 +202,14 @@ def execute():
             num_gpus_per_node=NUM_TRAIN_GPUS,
             megatron_model_type=MODEL_TYPE,
             before_ray_job_submit=launch_teacher,
+            # student-side top-k OPD needs opd_student_top_logprobs, produced only by v1
+            extra_env_vars={"MILES_USE_LEGACY_ROLLOUT_V1": "1"},
         )
     finally:
         if teacher_process:
             teacher_process.kill()
             teacher_process.wait()
-        U.exec_command("pkill -9 sglang; true")
+        U.exec_command_cpu("pkill -9 sglang; true")
 
 
 if __name__ == "__main__":

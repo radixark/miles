@@ -18,6 +18,7 @@ Examples:
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -34,7 +35,7 @@ class PrepareConfig:
     """Configuration for the `prepare` subcommand."""
 
     hf_repo: str
-    model_type: str  # megatron model type (maps to scripts/models/<type>.sh)
+    model_type: str  # megatron model type (maps to scripts/models/<type>.py)
     datasets: list[str] = field(default_factory=lambda: ["zhuzilin/dapo-math-17k"])
     convert_gpus_per_node: int = 8
     convert_multinode: bool = False
@@ -143,14 +144,6 @@ PREPARE_CONFIGS: dict[str, PrepareConfig] = {
         hf_repo="Qwen/Qwen3-4B",
         model_type="qwen3-4B",
     ),
-    "GLM-Z1-9B-0414": PrepareConfig(
-        hf_repo="zai-org/GLM-Z1-9B-0414",
-        model_type="glm4-9B",
-    ),
-    "Moonlight-16B-A3B-Instruct": PrepareConfig(
-        hf_repo="moonshotai/Moonlight-16B-A3B-Instruct",
-        model_type="moonlight",
-    ),
     "GLM-4.7-Flash": PrepareConfig(
         hf_repo="zai-org/GLM-4.7-Flash",
         model_type="glm4.7-flash",
@@ -243,36 +236,6 @@ RUN_CONFIGS: dict[str, RunConfig] = {
         global_batch_size=32,
         sglang_gpus_per_engine=2,
         sglang_mem_fraction=0.8,
-    ),
-    "GLM-Z1-9B-0414": RunConfig(
-        model_type="glm4-9B",
-        nnodes=1,
-        num_train_gpus=4,
-        num_rollout_gpus=4,
-        tp=2,
-        cp=2,
-        ep=1,
-        use_kl_loss=True,
-        rollout_batch_size=8,
-        n_samples_per_prompt=8,
-        global_batch_size=32,
-        sglang_gpus_per_engine=2,
-        sglang_mem_fraction=0.8,
-    ),
-    "Moonlight-16B-A3B-Instruct": RunConfig(
-        model_type="moonlight",
-        nnodes=2,
-        num_train_gpus=8,
-        num_rollout_gpus=8,
-        tp=2,
-        ep=8,
-        use_kl_loss=True,
-        sglang_gpus_per_engine=8,
-        sglang_mem_fraction=0.7,
-        sglang_ep_size=8,
-        sglang_cuda_graph_bs="1 2 4 8 16",
-        sglang_enable_dp_attention=True,
-        sglang_enable_dp_lm_head=True,
     ),
     "GLM-4.7-Flash": RunConfig(
         model_type="glm4.7-flash",
@@ -778,7 +741,8 @@ def cmd_run(
     run_cmd("pkill -9 redis || true", check=False)
 
     # --- Source model args ---
-    model_args_source = f'source "{MILES_ROOT}/scripts/models/{cfg.model_type}.sh"'
+    model_args_env = build_model_args_env(cfg)
+    model_args_source = build_model_args_command(cfg)
 
     # --- Worker sleep ---
     if not is_single_node and node_rank > 0:
@@ -829,6 +793,7 @@ def cmd_run(
     # --- Build runtime env JSON ---
     nccl_nvls_val = "1" if cfg.enable_nccl_nvls else "0"
     env_vars = {
+        "PYTHONUNBUFFERED": "1",
         "RAY_DEBUG": "1",
         "PYTHONPATH": "/root/Megatron-LM/",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
@@ -837,8 +802,7 @@ def cmd_run(
     }
     if not is_single_node:
         env_vars["MC_TRANSFER_TIMEOUT"] = str(cfg.mc_transfer_timeout)
-    if cfg.rotary_base is not None:
-        env_vars["MODEL_ARGS_ROTARY_BASE"] = str(cfg.rotary_base)
+    env_vars.update(model_args_env)
     env_vars.update(cfg.extra_env_vars)
     runtime_env_json = json.dumps({"env_vars": env_vars})
 
@@ -1066,8 +1030,6 @@ def cmd_run(
 
     # --- Submit Ray job (head node only, or single-node) ---
     if is_single_node or node_rank == 0:
-        import shlex
-
         args_str = " ".join(shlex.quote(a) for a in args)
         run_cmd(
             f"{model_args_source} && "
@@ -1096,6 +1058,23 @@ def cmd_run(
         print(f"Worker node {node_rank}: head finished, exiting.")
 
     print("Done.")
+
+
+def build_model_args_command(cfg: RunConfig) -> str:
+    """A shell snippet leaving MODEL_ARGS set; the knobs must reach it, not only ray's runtime env."""
+    prefix = "".join(f"{name}={shlex.quote(value)} " for name, value in build_model_args_env(cfg).items())
+    return (
+        f'MODEL_ARGS_LINE="$({prefix}python3 "{MILES_ROOT}/miles/utils/external_utils/model_args_utils.py"'
+        f' {cfg.model_type})" || exit 1; '
+        'read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"'
+    )
+
+
+def build_model_args_env(cfg: RunConfig) -> dict[str, str]:
+    """The MODEL_ARGS_* knobs the model definitions read, as declared by the profile."""
+    if cfg.rotary_base is None:
+        return {}
+    return {"MODEL_ARGS_ROTARY_BASE": str(cfg.rotary_base)}
 
 
 # ---------------------------------------------------------------------------

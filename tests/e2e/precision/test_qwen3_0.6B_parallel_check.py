@@ -9,6 +9,7 @@ register_cuda_ci(
     est_time=2400,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "precision"],
+    hardware=["hopper", "blackwell"],
     disabled="Disabled due to bugs.",
 )
 
@@ -20,8 +21,8 @@ NUM_GPUS = 8
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
     U.convert_checkpoint(
@@ -103,7 +104,6 @@ def execute():
             ),
             num_gpus_per_node=NUM_GPUS,
             megatron_model_type=MODEL_TYPE,
-            extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
         )
         # 8 GPU CPU 1
         for num_gpus in [8, 4, 2]:
@@ -133,7 +133,6 @@ def execute():
                             train_args=args,
                             num_gpus_per_node=num_gpus,
                             megatron_model_type=MODEL_TYPE,
-                            extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
                         )
         train_args += "--calculate-per-token-loss "
 

@@ -12,9 +12,10 @@ import miles.utils.external_utils.command_utils as U
 
 
 register_cuda_ci(
-    est_time=1800,
+    est_time=800,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
+    hardware=["hopper", "blackwell"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -43,15 +44,14 @@ def _args() -> ScriptArgs:
             # frozen towers and the engine-derived adapter buffers never match the snapshot
             "--check-weight-update-skip-list visual. audio. ._w1_delta ._a_cat "
             "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
             "--check-lora-weight-equal "
         ),
     )
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {_MODEL_ORG}/{args.model_name} --local-dir {args.hf_checkpoint}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"hf download {_MODEL_ORG}/{args.model_name} --local-dir {args.hf_checkpoint}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.convert_checkpoint(
         model_name=args.model_name,

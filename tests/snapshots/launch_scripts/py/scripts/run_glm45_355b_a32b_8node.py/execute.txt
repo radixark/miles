@@ -1,0 +1,139 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+for worker_ip in $(awk '{print $1}' /root/mpi_rack_hostfile); do if [ "$worker_ip" = 127.0.0.1 ]; then continue; fi; echo "Starting Ray worker on $worker_ip"; ssh root@"$worker_ip" "pkill -9 sglang ; ray stop
+  --force ; pkill -9 miles ; ray start
+  --address=127.0.0.1:6379
+  --num-gpus 8
+  --node-ip-address $worker_ip
+  --disable-usage-stats" & done; wait
+
+### 3
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 4
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "localhost,127.0.0.1,0.0.0.0,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "NCCL_CUMEM_ENABLE": "0", "NVTE_BWD_LAYERNORM_SM_MARGIN": "20", "NCCL_IB_TC": "160", "NCCL_PXN_DISABLE": "0", "NCCL_IB_GID_INDEX": "3", "NCCL_NET_GDR_LEVEL": "4", "NCCL_IB_RETRY_CNT": "7", "NCCL_IB_TIMEOUT": "32", "NCCL_IB_QPS_PER_CONNECTION": "8", "NCCL_P2P_LEVEL": "NVL", "TORCH_NCCL_AVOID_RECORD_STREAMS": "1", "NCCL_MIN_CTAS": "4", "OMPI_MCA_pml": "ob1", "OMPI_MCA_btl": "^openib", "OMPI_MCA_routed": "direct", "OMPI_MCA_routed_radix": "1024", "OMPI_MCA_plm_rsh_no_tree_spawn": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 96
+  --num-query-groups 8
+  --kv-channels 128
+  --num-layers 92
+  --hidden-size 5120
+  --ffn-hidden-size 12288
+  --add-qkv-bias
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --rotary-percent 0.5
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 151552
+  --rotary-base 1000000
+  --moe-ffn-hidden-size 1536
+  --moe-shared-expert-intermediate-size 1536
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-router-topk-scaling-factor 2.5
+  --moe-layer-freq '[0]*3+[1]*89'
+  --num-experts 160
+  --moe-grouped-gemm
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --hf-checkpoint /root/models/GLM-4.5-355B-A32B
+  --ref-load /root/models/GLM-4.5-355B-A32B_torch_dist 
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type deepscaler
+  --num-rollout 3000
+  --rollout-batch-size 128
+  --n-samples-per-prompt 8
+  --rollout-max-response-len 32768
+  --rollout-temperature 1
+  --over-sampling-batch-size 256
+  --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+  --num-steps-per-rollout 4
+  --balance-data
+  --rollout-stop-token-ids 151329 151336 151338 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --optimizer-cpu-offload
+  --overlap-cpu-optimizer-d2h-h2d
+  --use-precision-aware-optimizer 
+  --advantage-estimator gspo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --kl-coef 0.00
+  --entropy-coef 0.00
+  --eps-clip 1e-4
+  --eps-clip-high 2e-4
+  --use-tis 
+  --use-wandb
+  --wandb-project miles-run_glm45_355b_a32b_8node
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 8
+  --sequence-parallel
+  --pipeline-model-parallel-size 4
+  --context-parallel-size 2
+  --expert-model-parallel-size 16
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 16384 
+  --eval-interval 20
+  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
+  --n-samples-per-eval-prompt 8
+  --eval-max-response-len 32768
+  --eval-top-p 1 
+  --rollout-num-gpus-per-engine 32
+  --sglang-mem-fraction-static 0.7
+  --sglang-enable-dp-attention
+  --sglang-dp-size 4
+  --sglang-ep-size 32
+  --sglang-enable-dp-lm-head
+  --sglang-moe-dense-tp-size 1
+  --sglang-speculative-algorithm EAGLE
+  --sglang-speculative-num-steps 1
+  --sglang-speculative-eagle-topk 1
+  --sglang-speculative-num-draft-tokens 2
+  --sglang-enable-draft-weights-cpu-backup 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --moe-token-dispatcher-type flex
+  --moe-enable-deepep
+  --actor-num-nodes 8
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --colocate   

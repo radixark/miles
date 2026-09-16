@@ -21,6 +21,7 @@ from miles.rollout.session.errors import MessageValidationError, TokenizationErr
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
+from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 logger = logging.getLogger(__name__)
@@ -54,9 +55,14 @@ class SessionStateV2:
         return self.active_leaf.token_ids if self.active_leaf is not None else []
 
 
-def position_for_request(state: SessionStateV2, request_messages: list[dict[str, Any]]) -> None:
+def position_for_request(
+    state: SessionStateV2,
+    request_messages: list[dict[str, Any]],
+    *,
+    message_matcher: SessionMessageMatcher | None = None,
+) -> None:
     """Move the view (``active_leaf``) to the attach point for *request_messages*."""
-    attach = state.tree.find_attach_point(request_messages)
+    attach = state.tree.find_attach_point(request_messages, message_matcher=message_matcher)
 
     if attach.node is not None and attach.node.truncated:
         raise TruncatedGenerationError(
@@ -102,9 +108,10 @@ def prepare_pretokenized(
 
     stored = state.active_messages()
     _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
+    effective_messages = stored + request_messages[len(stored) :]
     return tito_tokenizer.merge_tokens(
         old_messages=stored,
-        new_messages=request_messages,
+        new_messages=effective_messages,
         pretokenized_token_ids=parent.token_ids,
         tools=tools,
     )

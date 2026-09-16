@@ -13,10 +13,11 @@ pkill -9 python
 set -ex
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/../../../scripts/models/qwen2.5-0.5B.sh"
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../../../miles/utils/external_utils/model_args_utils.py" "qwen2.5-0.5B")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen2.5-0.5B-Instruct/

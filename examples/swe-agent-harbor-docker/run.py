@@ -174,6 +174,7 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
+        "--session-server-workers 32 "
     )
 
     misc_args = (
@@ -232,7 +233,6 @@ def execute(args: ScriptArgs):
 
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
-        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "AGENT_SERVER_URL": args.agent_server_url,
         "AGENT_MODEL_NAME": args.agent_model_name,
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,

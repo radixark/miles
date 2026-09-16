@@ -19,7 +19,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_policy_loss,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.types import RolloutBatch
 
 
@@ -90,8 +90,22 @@ def policy_loss_function(
         are enabled.
     """
     parallel_state = get_parallel_state()
-    advantages = torch.cat(batch["advantages"], dim=0)
-    old_log_probs = batch["rollout_log_probs"] if args.use_rollout_logprobs else batch["log_probs"]
+    advantages_list = [advantage.detach() for advantage in batch["advantages"]]
+    advantages = torch.cat(advantages_list, dim=0)
+    rollout_old_log_probs = (
+        [log_prob.detach() for log_prob in batch["rollout_log_probs"]]
+        if batch.get("rollout_log_probs") is not None
+        else None
+    )
+    reference_log_probs = (
+        [log_prob.detach() for log_prob in batch["ref_log_probs"]] if batch.get("ref_log_probs") is not None else None
+    )
+    if args.use_rollout_logprobs:
+        assert (
+            rollout_old_log_probs is not None
+        ), "rollout_log_probs must be provided when --use-rollout-logprobs is set"
+    elif not args.skip_actor_forward_only and batch.get("log_probs") is None:
+        raise ValueError("policy loss requires old-policy log-probs")
 
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
@@ -110,6 +124,16 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    if args.skip_actor_forward_only:
+        trainer_scored_log_probs = [log_prob.detach() for log_prob in log_probs]
+    else:
+        trainer_scored_log_probs = (
+            [log_prob.detach() for log_prob in batch["log_probs"]] if batch.get("log_probs") is not None else None
+        )
+    if args.use_rollout_logprobs:
+        old_log_probs = rollout_old_log_probs
+    else:
+        old_log_probs = trainer_scored_log_probs
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 
@@ -125,12 +149,15 @@ def policy_loss_function(
                 log_probs, total_lengths, response_lengths, strict=False
             )
         ]
-        full_old_log_probs = [
-            all_gather_with_cp(old_log_prob, total_length, response_length)
-            for old_log_prob, total_length, response_length in zip(
-                old_log_probs, total_lengths, response_lengths, strict=False
-            )
-        ]
+        if args.skip_actor_forward_only and not args.use_rollout_logprobs:
+            full_old_log_probs = [full_log_prob.detach() for full_log_prob in full_log_probs]
+        else:
+            full_old_log_probs = [
+                all_gather_with_cp(old_log_prob, total_length, response_length)
+                for old_log_prob, total_length, response_length in zip(
+                    old_log_probs, total_lengths, response_lengths, strict=False
+                )
+            ]
 
     # Compute OPSM mask if enabled
     if args.use_opsm:
@@ -138,7 +165,7 @@ def policy_loss_function(
             args=args,
             full_log_probs=full_log_probs,
             full_old_log_probs=full_old_log_probs,
-            advantages=batch["advantages"],
+            advantages=advantages_list,
             loss_masks=batch["loss_masks"],
         )
 
@@ -189,8 +216,8 @@ def policy_loss_function(
             batch=batch,
             train_log_probs=train_log_probs_list,
             old_log_probs=old_log_probs_list,
-            rollout_log_probs=batch.get("rollout_log_probs"),
-            advantages=batch["advantages"],
+            rollout_log_probs=rollout_old_log_probs,
+            advantages=advantages_list,
             local_loss_masks=local_loss_mask_list,
             ppo_kl=ppo_kl,
             pg_loss=pg_loss,
@@ -211,14 +238,19 @@ def policy_loss_function(
         # Keep a copy of the original reducer (based on `batch["loss_masks"]`) for metric aggregation.
         sum_of_sample_mean_for_mismatch_metrics = sum_of_sample_mean
 
-        assert "rollout_log_probs" in batch, "rollout_log_probs must be provided for TIS"
+        if args.custom_tis_function_path is not None:
+            tis_func = load_function(args.custom_tis_function_path)
+        else:
+            assert trainer_scored_log_probs is not None, "log_probs must be provided for built-in TIS"
+            assert rollout_old_log_probs is not None, "rollout_log_probs must be provided for built-in TIS"
+            tis_func = vanilla_tis_function
 
         ois = (-ppo_kl).exp()
         tis_kwargs = {
             "args": args,
             "pg_loss": pg_loss,
-            "train_log_probs": batch["log_probs"],
-            "rollout_log_probs": batch["rollout_log_probs"],
+            "train_log_probs": trainer_scored_log_probs,
+            "rollout_log_probs": rollout_old_log_probs,
             "loss_masks": batch["loss_masks"],
             "total_lengths": total_lengths,
             "response_lengths": response_lengths,
@@ -226,10 +258,6 @@ def policy_loss_function(
             "max_seq_lens": max_seq_lens,
         }
 
-        if args.custom_tis_function_path is not None:
-            tis_func = load_function(args.custom_tis_function_path)
-        else:
-            tis_func = vanilla_tis_function
         pg_loss, modified_response_masks, tis_metrics = tis_func(**tis_kwargs)
 
         # [decouple IS and rejection] modified masks correct the numerator only;
@@ -284,8 +312,8 @@ def policy_loss_function(
             entropy_loss = entropy_loss.detach()
 
     if args.use_kl_loss:
-        ref_log_probs = batch["ref_log_probs"]
-        ref_log_probs = torch.cat(ref_log_probs, dim=0)
+        assert reference_log_probs is not None, "ref_log_probs must be provided when --use-kl-loss is set"
+        ref_log_probs = torch.cat(reference_log_probs, dim=0)
         importance_ratio = None
         if args.use_unbiased_kl:
             importance_ratio = torch.exp(log_probs - old_log_probs)
@@ -305,15 +333,15 @@ def policy_loss_function(
         if args.kl_loss_coef != 0:
             loss = loss + args.kl_loss_coef * kl_loss
 
-    # make sure the gradient could backprop correctly.
+    # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
     if log_probs.numel() == 0:
-        loss += 0 * logits.sum()
+        loss += 0 * logits.sum(dtype=torch.float32)
 
     train_scored_log_probs = old_log_probs
     train_rollout_logprob_abs_diff = None
     train_rollout_kl = None
-    if "rollout_log_probs" in batch and batch["rollout_log_probs"]:
-        rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
+    if rollout_old_log_probs:
+        rollout_log_probs = torch.cat(rollout_old_log_probs, dim=0)
         abs_diff = (train_scored_log_probs - rollout_log_probs).abs()
         abs_diff = torch.where(
             active_tokens,
@@ -465,9 +493,9 @@ def sft_loss_function(
     log_probs = torch.cat(log_probs, dim=0)
     loss = -sum_of_sample_mean(log_probs)
 
-    # make sure the gradient could backprop correctly.
+    # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
     if log_probs.numel() == 0:
-        loss += 0 * logits.sum()
+        loss += 0 * logits.sum(dtype=torch.float32)
 
     return (
         loss,
@@ -477,7 +505,11 @@ def sft_loss_function(
     )
 
 
-def get_loss_function(args: Namespace) -> LossFunction:
+def get_loss_function(args: Namespace, loss_fn: str | None = None) -> LossFunction:
+    if loss_fn is not None:
+        from miles.backends.training_utils.loss_hub.tinker_losses import TINKER_LOSS_FUNCTIONS
+
+        return TINKER_LOSS_FUNCTIONS[loss_fn]
     match args.loss_type:
         case "policy_loss":
             return policy_loss_function

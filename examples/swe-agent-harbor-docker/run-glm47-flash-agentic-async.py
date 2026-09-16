@@ -280,6 +280,7 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
+        "--session-server-workers 32 "
     )
 
     misc_args = (
@@ -346,7 +347,6 @@ def execute(args: ScriptArgs):
 
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
-        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "NCCL_NVLS_ENABLE": os.environ.get("HAS_NVLINK", "0"),
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "true",
         "AGENT_SERVER_URL": args.agent_server_url,

@@ -159,10 +159,10 @@ def _download_dataset(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.data_dir} {args.model_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
     repo = _HF_REPO.get(args.model_name)
     if repo is not None:
-        U.exec_command(f"hf download {repo} --local-dir {args.model_dir}/{args.model_name}")
+        U.exec_command_cpu(f"hf download {repo} --local-dir {args.model_dir}/{args.model_name}")
     _download_dataset(args)
 
 
@@ -278,7 +278,6 @@ def _train(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             # GLM-5 DSA indexer uses interleaved RoPE; a mismatch garbles long sequences
             "INDEXER_ROPE_NEOX_STYLE": "0",
             "SGLANG_NSA_FORCE_MLA": "1",

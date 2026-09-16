@@ -13,8 +13,9 @@ class EvalDispatcher:
     """Dispatches eval points without holding up the training loop.
 
     Exports a snapshot per point, fires the eval, and reclaims the snapshot once the
-    point settles. Failures degrade to a skipped point, never a crash. Shared-engine
-    eval takes the plain blocking call instead.
+    point settles. Failures degrade to a skipped point outside CI; under ``--ci-test``,
+    every skipped point fails the run. Shared-engine eval takes the plain blocking call
+    instead.
     """
 
     def __init__(self, args, actor_model, rollout_manager):
@@ -65,7 +66,13 @@ class EvalDispatcher:
 
     async def _export(self, rollout_id: int, hf_dir: str) -> float:
         start = time.time()
-        await self.actor_model.export_hf(rollout_id, hf_dir)
+        if self.args.offload_train:
+            await self.actor_model.onload()
+        try:
+            await self.actor_model.export_hf(rollout_id, hf_dir)
+        finally:
+            if self.args.offload_train:
+                await self.actor_model.offload()
         return time.time() - start
 
     async def _reap_finished(self) -> None:

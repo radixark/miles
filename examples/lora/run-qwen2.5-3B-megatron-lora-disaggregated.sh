@@ -1,7 +1,7 @@
 #!/bin/bash
 export FLASHINFER_DISABLE_VERSION_CHECK=1
 export GPUS_PER_NODE=1
-export PYTHONBUFFERED=1
+export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 
 # for rerun the task
@@ -18,8 +18,8 @@ set -ex
 
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/../../scripts/models/qwen2.5-3B.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../../miles/utils/external_utils/model_args_utils.py" "qwen2.5-3B")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen2.5-3B-Instruct/
    --megatron-to-hf-mode bridge

@@ -15,8 +15,22 @@ def dump_dir(tmp_path):
     dump_dummy_run(tmp_path, steps=2, with_eval=True)
     writer = MetricStore(tmp_path / "dashboard")
     writer.write_meta(Meta(run_name="dummy-run", start_ts=100.0, args={}))
-    writer.append(MetricsRecord(ts=101.0, step_key="rollout/step", step=0, metrics={"rollout/rewards_mean": 0.5}))
-    writer.append(MetricsRecord(ts=102.0, step_key="rollout/step", step=1, metrics={"rollout/rewards_mean": 0.6}))
+    writer.append(
+        MetricsRecord(
+            ts=101.0,
+            step_key="rollout/step",
+            step=0,
+            metrics={"rollout/rewards_mean": 0.5, "perf/actor_train_mfu": 0.4, "perf/mfu_peak_tflops": 989.0},
+        )
+    )
+    writer.append(
+        MetricsRecord(
+            ts=102.0,
+            step_key="rollout/step",
+            step=1,
+            metrics={"rollout/rewards_mean": 0.6, "perf/actor_train_mfu": 0.3, "perf/mfu_peak_tflops": 989.0},
+        )
+    )
     writer.append(MetricsRecord(ts=103.0, step_key="train/step", step=7, metrics={"train/loss": 1.5}))
     writer.flush()
     return tmp_path
@@ -60,7 +74,11 @@ def test_meta_reports_latest_data_buffer_length(dump_dir):
 def test_advisory_endpoint(client):
     resp = client.get("/api/advisory")
     assert resp.status_code == 200
-    assert resp.json()["advisories"] == []  # dump_dir fixture has no engine series
+    # no engine series in the fixture, but the reader-side rules see the
+    # dummy dump's newest rollout, where a quarter of the samples truncate
+    [advisory] = resp.json()["advisories"]
+    assert advisory["level"] == "warning"
+    assert "truncated" in advisory["message"]
     assert client.get("/api/advisory", params={"t0": 5, "t1": 1}).status_code == 400
 
 
@@ -86,6 +104,16 @@ def test_metrics_from_store(client):
     assert series["no/such_key"] == {"x": [], "y": [], "ts": []}
 
 
+def test_mfu_and_its_denominator_are_served_together(client):
+    meta = client.get("/api/meta").json()
+    assert "perf/actor_train_mfu" in meta["metric_keys"]
+    assert "perf/mfu_peak_tflops" in meta["metric_keys"]
+
+    series = client.get("/api/metrics", params={"keys": "perf/actor_train_mfu,perf/mfu_peak_tflops"}).json()
+    assert series["perf/actor_train_mfu"]["y"] == [0.4, 0.3]
+    assert series["perf/mfu_peak_tflops"]["y"] == [989.0, 989.0]
+
+
 def test_metrics_dump_derived(client, dump_dir):
     series = client.get("/api/metrics", params={"keys": "dump/reward_mean,rollout/rewards_mean"}).json()
     aggregates = DumpReader(dump_dir).step_aggregates()
@@ -101,7 +129,8 @@ def test_summary_and_groups_endpoints(client):
     body = client.get("/api/rollout/0/summary").json()
     assert body["rollout_id"] == 0 and body["evaluation"] is False
     assert len(body["rows"]) == 8
-    assert "sample_index" in body["columns"] and "mean_abs_lp_diff" in body["columns"]
+    assert "sample_index" in body["columns"] and "sample_occurrence" in body["columns"]
+    assert "mean_abs_lp_diff" in body["columns"]
 
     eval_body = client.get("/api/rollout/0/summary", params={"eval": "true"}).json()
     assert eval_body["evaluation"] is True
@@ -129,6 +158,24 @@ def test_tokens_endpoint(client):
     assert client.get("/api/rollout/0/sample/999999/tokens").status_code == 404
     assert client.get("/api/rollout/0/sample/0/tokens", params={"start": 5, "end": 5}).status_code == 400
     assert client.get("/api/rollout/42/sample/0/tokens").status_code == 404
+
+
+def test_duplicate_tito_leaves_are_independently_viewable(tmp_path):
+    dump_dummy_run(tmp_path, steps=1, duplicate_first_sample_index=True)
+    client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+
+    response = client.get("/api/rollout/0/summary")
+    assert response.status_code == 200
+    rows = [row for row in response.json()["rows"] if row["sample_index"] == 0]
+    assert [row["sample_occurrence"] for row in rows] == [0, 1]
+
+    for row in rows:
+        payload = client.get("/api/rollout/0/sample/0/tokens", params={"occurrence": row["sample_occurrence"]}).json()
+        assert payload["sample_occurrence"] == row["sample_occurrence"]
+        assert payload["total_len"] == row["total_length"]
+
+    assert client.get("/api/rollout/0/sample/0/messages", params={"occurrence": 1}).status_code == 200
+    assert client.get("/api/rollout/0/sample/0/tokens", params={"occurrence": 2}).status_code == 404
 
 
 def test_still_writing_maps_to_503(client, dump_dir):
@@ -207,3 +254,8 @@ def test_make_demo_dir(tmp_path):
     meta = client.get("/api/meta").json()
     assert meta["capabilities"]["has_timeline"] is True
     assert meta["rollout_ids"]["train"] == [0, 1, 2]
+
+
+def test_advisory_endpoint_serves_the_mfu_summary_the_rule_used(client):
+    body = client.get("/api/advisory").json()
+    assert body["mfu"] == {"latest": 0.3, "mean": 0.3, "steps": 1, "peak": 989.0}

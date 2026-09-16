@@ -7,7 +7,7 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
 # Limited by host memory
-register_cuda_ci(est_time=800, suite="stage-c-8-gpu-h100", labels=["megatron"])
+register_cuda_ci(est_time=800, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=800, suite="stage-c-8-gpu-mi350", labels=["megatron", "amd"])
 
 register_ci_gate(metric_key="train/grad_norm")

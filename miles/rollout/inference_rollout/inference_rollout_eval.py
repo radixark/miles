@@ -82,6 +82,7 @@ async def eval_rollout_single_dataset(
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
+            sample.generate_function_path = dataset_cfg.custom_generate_function_path
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
@@ -24,7 +25,11 @@ from miles.rollout.session.errors import (
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import encode_samples
-from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
+from miles.rollout.session.samples.merge import (
+    compute_samples_from_openai_records,
+    merge_samples_with_addition_r3,
+    truncate_samples_by_total_tokens,
+)
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
@@ -51,6 +56,15 @@ class ProxyRequest:
 def _render_json(payload) -> bytes:
     """Encode like Starlette's JSONResponse (compact, non-ASCII preserved)."""
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+
+
+def _lcp_len(a: list[int], b: list[int]) -> int:
+    """Length of the longest common prefix of two token-ID lists."""
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
 
 
 def _samples_response(payload: bytes) -> Response:
@@ -231,11 +245,41 @@ def extract_completion(result: dict) -> tuple:
 class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
-    def __init__(self, backend, registry: SessionRegistry, args, session_server_instance_id=None):
+    def __init__(
+        self,
+        backend,
+        registry: SessionRegistry,
+        config: SessionServerConfig,
+        session_server_instance_id=None,
+        *,
+        use_addition_r3=False,
+    ):
         self.backend = backend
         self.registry = registry
-        self.args = args
+        self.config = config
         self.instance_id = session_server_instance_id
+        # Derived from pause_generation_mode at server bootstrap; session code
+        # must depend on this capability, never on the weight-update mode.
+        self.use_addition_r3 = use_addition_r3
+
+    def _maybe_request_addition_r3(
+        self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
+    ) -> None:
+        """Ask SGLang to return only the R3 rows the session has not retained.
+
+        ``checkpoint_token_ids`` is the stored snapshot this request builds on
+        (v1: the post-rollback checkpoint; v2: the positioned attach node). The
+        checkpoint's N - 1 rows must remain a causal prefix of the new prompt,
+        so every persisted patch starts exactly where the previous one ended.
+        """
+        if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
+            return
+        previous_rows = max(0, len(checkpoint_token_ids) - 1)
+        stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
+        assert (
+            stable_prefix_tokens >= previous_rows
+        ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
+        request_body["routed_experts_start_len"] = previous_rows
 
     async def health(self) -> Response:
         body = {"status": "ok"}
@@ -283,17 +327,21 @@ class SessionCore:
             return _samples_response(encode_samples([], metadata, empty_reason="no_records"))
         try:
             samples = compute_samples_from_openai_records(
-                self.args,
+                self.config,
                 session.records,
                 tokenizer,
                 accumulated_token_ids=metadata.get("accumulated_token_ids"),
                 max_trim_tokens=metadata.get("max_trim_tokens", 0),
+                use_addition_r3=self.use_addition_r3,
             )
             if max_seq_len is not None:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
             if not samples:
                 return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
-            samples = [merge_samples(samples, tokenizer)]
+            if self.use_addition_r3:
+                samples = [merge_samples_with_addition_r3(self.config, samples, session.records, tokenizer)]
+            else:
+                samples = [merge_samples(samples, tokenizer)]
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
         return _samples_response(encode_samples(samples, metadata))
@@ -332,7 +380,7 @@ class SessionCore:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.args, self.registry.tito_tokenizer
+                body, self.config, self.registry.tito_tokenizer
             )
 
             request_messages = request_body.get("messages", [])
@@ -340,9 +388,14 @@ class SessionCore:
                 request_messages,
                 tools=request_body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
+                message_matcher=self.registry.message_matcher,
             )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
+
+            # prepare_pretokenized applied any retry rollback, so token_ids is
+            # the checkpoint this request builds on.
+            self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
 
             proxy_body = json.dumps(request_body).encode()
             expected_num_assistant = session.num_assistant
@@ -359,7 +412,12 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, _, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        assistant_message = tito_tokenizer.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=completion_token_ids,
+        )
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
@@ -375,8 +433,12 @@ class SessionCore:
                 )
                 return _chat_client_response(result, response, client_stream)
 
-            session.update_pretokenized_state(
+            stored_request_messages = tito_tokenizer.preserve_server_message_state(
+                session.messages,
                 request_messages,
+            )
+            session.update_pretokenized_state(
+                stored_request_messages,
                 assistant_message,
                 prompt_token_ids=prompt_token_ids,
                 completion_token_ids=completion_token_ids,

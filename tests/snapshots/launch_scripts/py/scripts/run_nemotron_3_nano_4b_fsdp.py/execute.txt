@@ -1,0 +1,70 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 4
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py 
+  --hf-checkpoint <SANDBOX>/models/NVIDIA-Nemotron-3-Nano-4B-BF16
+  --ref-load <SANDBOX>/models/NVIDIA-Nemotron-3-Nano-4B-BF16 
+  --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --balance-data
+  --rm-type deepscaler
+  --num-rollout 100
+  --rollout-batch-size 32
+  --n-samples-per-prompt 8
+  --rollout-max-response-len 4096
+  --rollout-temperature 1
+  --global-batch-size 256 
+  --eval-interval 10
+  --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
+  --n-samples-per-eval-prompt 16
+  --eval-max-response-len 4096
+  --eval-top-p 1 
+  --use-kl-loss
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --kl-coef 0.00
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98 
+  --use-wandb
+  --wandb-project miles-fsdp-curve
+  --wandb-group nemotron-3-nano-4B-fsdp-dapo4k 
+  --rollout-num-gpus-per-engine 1
+  --sglang-decode-log-interval 1000
+  --sglang-mem-fraction-static 0.7 
+  --train-backend fsdp
+  --update-weight-buffer-size 536870912
+  --gradient-checkpointing
+  --attn-implementation flash_attention_2
+  --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' 
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 9216 
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 4
+  --colocate
+  --use-fault-tolerance   

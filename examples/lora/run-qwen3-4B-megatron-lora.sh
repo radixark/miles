@@ -18,7 +18,7 @@ set -ex
 SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"miles-openai-model"}
 
 export GPUS_PER_NODE=4
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -29,12 +29,13 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
-source "${REPO_ROOT}/miles/scripts/models/qwen3-4B.sh"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
+MODEL_ARGS_LINE="$(python3 "${REPO_ROOT}/miles/utils/external_utils/model_args_utils.py" "qwen3-4B")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 
 # Store eval/delegate settings in a YAML config similar to examples/experimental/eval_multi_task.
 # EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/experimental/eval/scripts/multi_tasks.yaml"}
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/miles/examples/experimental/eval/scripts/multi_tasks.yaml"}
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/experimental/eval/scripts/multi_tasks.yaml"}
 
 
 CKPT_ARGS=(

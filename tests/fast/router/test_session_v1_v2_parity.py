@@ -64,8 +64,14 @@ def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise():
     assert len(v1_runs) == len(v2_runs) == _BATCH_SIZE
     for index, (v1, v2) in enumerate(zip(v1_runs, v2_runs, strict=True)):
         assert v1.samples[0].index == v2.samples[0].index == index
-        assert v1.samples[0].weight_versions == _SELECTED_WEIGHT_VERSIONS
-        assert v2.samples[0].weight_versions == _SELECTED_WEIGHT_VERSIONS
+        assert v1.samples[0].rollout_id == v2.samples[0].rollout_id == index
+        expected_weight_versions = [[version] for version in _SELECTED_WEIGHT_VERSIONS]
+        assert [[span.version for span in call.spans] for call in v1.samples[0].weight_versions] == (
+            expected_weight_versions
+        )
+        assert [[span.version for span in call.spans] for call in v2.samples[0].weight_versions] == (
+            expected_weight_versions
+        )
         assert_agentic_retry_trajectory_parity(v1, v2)
 
 
@@ -78,6 +84,7 @@ def _run_scripted_agents(version: str):
     input_samples = [
         Sample(
             index=index,
+            rollout_id=index,
             prompt=build_initial_messages(),
             reward=0.25,
             metadata={"source": "parity"},

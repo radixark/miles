@@ -10,7 +10,7 @@ logs the result at the snapshot's step, and reclaims the directory afterwards. R
 ``EvalSkip(reason)`` to skip a point with attribution instead of counting as a crash.
 
 Requires ``train_async.py`` and a snapshot source (``--eval-hf-dir`` or ``--save-hf``).
-``examples/fully_async/external_eval_fn.py`` is a working implementation.
+``examples/infra_features/fully_async/external_eval_fn.py`` is a working implementation.
 """
 
 import abc
@@ -19,8 +19,8 @@ import inspect
 import logging
 from argparse import Namespace
 
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnInput
-from miles.utils.misc import load_function
+from miles.rollout.base_types import BaseRolloutFn, RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnInput
+from miles.utils.function_registry import load_function
 
 __all__ = [
     "retarget_args",
@@ -56,7 +56,7 @@ class EvalSkip(Exception):
         self.reason = reason
 
 
-class CheckpointEvalFn(abc.ABC):
+class CheckpointEvalFn(BaseRolloutFn, abc.ABC):
     """Contract for eval backends that consume HF checkpoint snapshots.
 
     ``__init__`` takes a ``RolloutFnConstructorInput`` and prepares the backend —

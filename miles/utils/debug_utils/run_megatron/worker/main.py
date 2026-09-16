@@ -39,6 +39,7 @@ from miles.utils.debug_utils.run_megatron.worker.replay import (
 )
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_k
+from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 
 
 def main() -> None:
@@ -106,8 +107,15 @@ def main() -> None:
     dist.destroy_process_group()
 
 
+def _register_worker_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Worker arguments plus the plugin arguments the model scripts pass through."""
+    WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
+    add_dsv4_arguments(parser)
+    return parser
+
+
 def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
-    args: argparse.Namespace = parse_args(extra_args_provider=WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser)
+    args: argparse.Namespace = parse_args(extra_args_provider=_register_worker_arguments)
     script_args: WorkerScriptArgs = WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args)
 
     if script_args.ref_load is not None:
@@ -133,7 +141,9 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
     model_provider: Callable[..., Any] = get_model_provider_func(args, role=script.role)
-    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
+    # Forward-only runs skip DDP wrapping so the distributed-optimizer grad buffer
+    # (tens-to-hundreds of GB for large MoE models) is never allocated -> avoids OOM.
+    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=script.run_backward)
 
     if args.load is not None:
         load_checkpoint(

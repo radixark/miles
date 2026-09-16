@@ -15,7 +15,7 @@ def _field(
 
 @dataclasses.dataclass
 class CommonRunArgs:
-    model_type: str = _field(help="Model type matching scripts/models/{model_type}.sh")
+    model_type: str = _field(help="Model type matching scripts/models/{model_type}.py")
     hf_checkpoint: Path = _field(help="HuggingFace checkpoint path")
     ref_load: Path | None = _field(default=None, help="Megatron checkpoint path")
     sp: bool = _field(default=False, help="Enable sequence parallelism")

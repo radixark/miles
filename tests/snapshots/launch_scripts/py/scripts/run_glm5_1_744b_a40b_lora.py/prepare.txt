@@ -1,0 +1,11 @@
+### 0
+mkdir -p /root/datasets /root/models
+
+### 1
+hf download jybsuper/GLM-5.1-6layer
+  --local-dir /root/models/GLM-5.1-6layer
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/gsm8k
+  --local-dir /root/datasets/gsm8k

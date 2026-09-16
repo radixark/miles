@@ -24,9 +24,16 @@ _SNAPSHOT_KEYS = (
     "rollout_num_gpus_per_engine",
     "rollout_batch_size",
     "n_samples_per_prompt",
+    "rollout_max_response_len",
     "hf_checkpoint",
     "sglang_max_running_requests",
     "sglang_mem_fraction_static",
+    "sglang_load_balance_method",
+    "use_miles_router",
+    "router_dp_aware",
+    "router_policy",
+    "sglang_router_policy",
+    "router_assignment_mode",
 )
 
 
@@ -47,7 +54,7 @@ def add_dashboard_arguments(parser) -> None:
         type=str,
         choices=["auto", "router", "direct"],
         default="auto",
-        help="auto scrapes {router}/engine_metrics, or each engine's /metrics under --use-miles-router",
+        help="auto scrapes each engine's /metrics; router scrapes {router}/engine_metrics",
     )
     group.add_argument(
         "--dashboard-sglang-metrics",

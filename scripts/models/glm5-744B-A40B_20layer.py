@@ -1,0 +1,6 @@
+from model_args_utils import load_sibling_model_args
+
+
+def model_args() -> str:
+    # Override for 20-layer pruned model (first 20 layers: 3 dense + 17 MoE)
+    return load_sibling_model_args(__file__, "glm5-744B-A40B", n_moe_layers=17)

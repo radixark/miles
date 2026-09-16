@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from miles.backends.experimental.fsdp_utils import actor as actor_module
+from miles.backends.fsdp_utils import actor as actor_module
 
 
 def test_save_model_delegates_to_checkpoint(monkeypatch):

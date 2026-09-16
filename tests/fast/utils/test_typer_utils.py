@@ -730,6 +730,23 @@ class TestEnvVarNaming:
         assert result.exit_code == 0
         assert "val=from_env" in result.stdout
 
+    def test_a_field_with_a_default_factory_is_usable_from_the_command_line(self) -> None:
+        """Click type-casts the declared default, so dataclasses' factory sentinel must never reach it."""
+
+        @dataclasses.dataclass
+        class _FactoryArgs:
+            count: int = dataclasses.field(default_factory=lambda: 7)
+
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli
+        def cmd(args: _FactoryArgs) -> None:
+            print(f"count={args.count}")
+
+        assert "count=7" in runner.invoke(app, []).stdout
+        assert "count=9" in runner.invoke(app, ["--count", "9"]).stdout
+
 
 # ---------------------------------------------------------------------------
 # import needed for signature inspection

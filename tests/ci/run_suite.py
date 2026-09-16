@@ -4,14 +4,23 @@ import subprocess
 import sys
 import tempfile
 
-from tests.ci.ci_policy import CI_CADENCES, NIGHTLY_CADENCE, REGULAR_CADENCE, RunPolicy, resolve_policy
+from tests.ci.ci_policy import (
+    CI_CADENCES,
+    NIGHTLY_CADENCE,
+    REGULAR_CADENCE,
+    RunPolicy,
+    registration_matches_selection,
+    resolve_policy,
+)
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.ci_utils import (
     CI_GATE_RECORD_DIR_ENV,
     build_store_from_env,
     gate_provenance_from_env,
+    reaping_is_isolated,
     run_unittest_files,
 )
+from tests.ci.hardware import CUDA_STAGES, dispatch_targets
 from tests.ci.labels import KNOWN_LABELS
 
 HW_MAPPING = {
@@ -23,58 +32,88 @@ HW_MAPPING = {
 # CI suites by hardware backend. Cadence is an eligibility filter within a
 # suite, not a second suite inventory.
 #
-# CUDA suites: each is served by a matching workflow job in
-# .github/workflows/pr-test.yml. `stage-c-8-gpu-h100` and `stage-c-8-gpu-h200`
-# run on full-node 8-GPU hosts; the split H200 fleet is one 8-GPU node divided
-# into 2+2+4 workers via per-runner CUDA_VISIBLE_DEVICES (see pr-test.yml
-# stage-c-4-gpu-h200 / stage-b-2-gpu-h200 / stage-c-2-gpu-h200 job comments).
+# CUDA suites derive from `hardware.CUDA_STAGES`, which also carries each
+# stage's arch, GPU count and runner labels; each has a matching workflow job in
+# .github/workflows/pr-test.yml.
 CI_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
         "stage-b-cpu",
     ],
-    HWBackend.CUDA: [
-        "stage-b-2-gpu-h200",
-        "stage-c-8-gpu-h100",
-        "stage-c-8-gpu-h200",
-        "stage-c-4-gpu-h200",
-        "stage-c-2-gpu-h200",
-    ],
+    HWBackend.CUDA: list(CUDA_STAGES),
     HWBackend.ROCM: [
-        "stage-c-8-gpu-mi350",
-        "stage-c-4-gpu-mi300x",
+        # Consumed by pr-test-rocm.yml.
         "stage-c-4-gpu-mi350",
-        "stage-c-2-gpu-mi350",
+        # Consumed by the external sgl-project/sglang MI350 nightly.
+        "nightly-stage-c-8-gpu-mi350",
+        "nightly-stage-c-4-gpu-mi350",
+        "nightly-stage-c-2-gpu-mi350",
     ],
 }
+
+
+def runs_in_stage(
+    registration: CIRegistry,
+    suite: str,
+    *,
+    dispatch_arches: frozenset[str] = frozenset(),
+    absorb: bool = False,
+) -> bool:
+    """Whether `registration` executes in `suite`, ignoring label selection.
+
+    CPU and ROCm registrations have no arch, so their home suite is the only
+    answer. A CUDA registration's home stage is where AUTO sends it; an explicit
+    `run-on-*` can send it to another arch's stage instead. Shared with
+    `stage_selection` so runner allocation and test collection cannot disagree.
+    """
+    if registration.backend is not HWBackend.CUDA:
+        return registration.suite == suite
+    return suite in dispatch_targets(
+        registration.suite,
+        registration.hardware,
+        dispatch_arches=dispatch_arches,
+        absorb=absorb,
+    )
 
 
 def filter_tests(
     ci_tests: list[CIRegistry],
     hw: HWBackend,
     suite: str,
-    nightly: bool = False,
+    admit_nightly_tests: bool = False,
     labels: set[str] | None = None,
+    dispatch_arches: frozenset[str] = frozenset(),
+    absorb: bool = False,
 ) -> tuple[list[CIRegistry], list[CIRegistry]]:
     """Filter registered tests down to the set that should run.
 
     The base predicate (hw / suite / cadence eligibility / disabled) is applied first.
-    Label selection then keeps a test iff it declares no labels (always-run)
-    or any of its labels is in `labels` -- the effective include set from
-    `resolve_policy` (the requested domain labels for a plain PR, near-total
-    registry sets for broad scopes). There is no separate exclusion pass: a
-    label a scope subtracted simply grants no inclusion, so a test whose
-    only labels were subtracted drops out (including from the skip report),
-    while a test that also carries an included label still runs.
+    Label selection then keeps a test iff it declares no labels (the CPU
+    always-on case) or any of its labels is in `labels` -- the effective
+    include set from `resolve_policy` (the requested domain labels for a plain
+    PR, near-total registry sets for broad scopes). GPU registrations require
+    at least one label. There is no separate exclusion pass: a label a scope
+    subtracted simply grants no inclusion, so a test whose only labels were
+    subtracted drops out (including from the skip report), while a test that
+    also carries an included label still runs.
     """
     valid_suites = CI_SUITES.get(hw, [])
     if suite not in valid_suites:
         raise ValueError(f"Unknown suite {suite} for backend {hw.name}")
 
-    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and (not t.nightly or nightly)]
-
     label_set: set[str] = labels or set()
-    ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
+    ci_tests = [
+        t
+        for t in ci_tests
+        if t.backend == hw
+        and runs_in_stage(t, suite, dispatch_arches=dispatch_arches, absorb=absorb)
+        and registration_matches_selection(
+            t.labels,
+            t.nightly,
+            admit_nightly_tests=admit_nightly_tests,
+            include_labels=label_set,
+        )
+    ]
 
     enabled_tests = [t for t in ci_tests if t.disabled is None]
     skipped_tests = [t for t in ci_tests if t.disabled is not None]
@@ -188,8 +227,10 @@ def run_a_suite(args):
         all_tests,
         hw,
         suite,
-        policy.is_nightly,
+        policy.admit_nightly_tests,
         labels=include_labels,
+        dispatch_arches=policy.dispatch_arches,
+        absorb=policy.absorb,
     )
 
     if auto_partition_size:
@@ -217,9 +258,8 @@ def run_a_suite(args):
 
     # Regression-gate wiring: the store exists only when NEON_DATABASE_URL is
     # set (CI), so the gate hook is a no-op locally. The resolved cadence is
-    # also the baseline-writing signal. Provenance comes from the GitHub env.
+    # also supplies the baseline-writing signal. Provenance comes from the GitHub env.
     gate_store = build_store_from_env()
-    gate_nightly = policy.is_nightly
     gate_provenance = gate_provenance_from_env()
 
     # The gate collects only when a record directory exists. CI does not set
@@ -237,8 +277,10 @@ def run_a_suite(args):
         max_attempts=args.max_attempts,
         retry_wait_seconds=args.retry_wait_seconds,
         gate_store=gate_store,
-        gate_nightly=gate_nightly,
+        gate_executing_suite=suite,
+        gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
+        reap_leftovers=reaping_is_isolated(),
     )
 
 
@@ -326,8 +368,8 @@ def main():
             "Raw PR-side labels (e.g. `run-ci-megatron run-ci-fsdp`). The "
             "`run-ci-` prefix is stripped on the Python side; the resulting "
             "domain-label set is intersected with each test's `labels` to "
-            "decide what runs. An empty list keeps only registrations with "
-            "no domain labels."
+            "decide what runs. An empty list keeps only CPU registrations "
+            "with no domain labels; it selects no GPU tests."
         ),
     )
     parser.add_argument(

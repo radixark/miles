@@ -75,7 +75,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "zai-org"
     model_name: str = "GLM-5.2"
     megatron_model_type: str = "glm5.2-744B-A40B"
-    num_gpus_per_node: int = 8
+    num_gpus_per_node: int | None = None
     fp8_rollout: bool = False
     use_deepep: bool = True
     megatron_use_deepep: bool = True
@@ -93,9 +93,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
-    hardware: Literal["H200", "B200", "GB300"] = "H200"
+    hardware: Literal["auto", "H200", "B200", "GB300"] = "auto"
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.hardware == "GB300":
             assert not self.megatron_use_deepep, (
                 "Known issue: Megatron's DeepEP fail on GB300. " "Please specify --no-megatron-use-deepep."
@@ -162,7 +164,7 @@ def _convert_to_fp8(args: ScriptArgs):
     if sentinel.exists():
         print(f"_convert_to_fp8 skip {dst} since {sentinel} exists")
         return
-    U.exec_command(
+    U.exec_command_gpu(
         f"python tools/convert_hf_to_fp8.py "
         f"--model-dir {src} --save-dir {dst} "
         f"--strategy block --block-size 128 128 "
@@ -171,8 +173,10 @@ def _convert_to_fp8(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 
@@ -438,6 +442,7 @@ def _execute_train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
+        "--rematerialize-param-from-master-weight "
     )
 
     if args.megatron_use_deepep:

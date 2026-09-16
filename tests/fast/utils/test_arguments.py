@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,16 +12,33 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
+    _resolve_mini_ft_controller_enable,
+    _resolve_rollout_functions,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
+    validate_skip_actor_forward_only,
 )
-from miles.utils.misc import function_registry
+from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
+from miles.utils.function_registry import function_registry
+from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+
+_MEGATRON_PARALLEL_SIZES: dict[str, int] = {
+    "world_size": 8,
+    "tensor_model_parallel_size": 2,
+    "pipeline_model_parallel_size": 1,
+    "context_parallel_size": 1,
+}
+
+
+def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
+    for name, size in _MEGATRON_PARALLEL_SIZES.items():
+        setattr(args, name, size)
 
 
 def make_class_with_add_arguments():
@@ -76,8 +94,12 @@ class TestMaybeApplyDumperOverrides:
         *,
         dumper_enable: bool = False,
         use_fault_tolerance: bool = False,
+        ft_components: list[str] | None = None,
         router_disable_health_check: bool = False,
         rollout_health_check_interval: float = 30.0,
+        miles_router_health_check_failure_threshold: int = 3,
+        miles_router_max_connections: int | None = 64,
+        miles_router_timeout: float | None = None,
         start_rollout_id: int | None = None,
         num_rollout: int = 10,
         eval_interval: int | None = 5,
@@ -88,8 +110,13 @@ class TestMaybeApplyDumperOverrides:
         return SimpleNamespace(
             dumper_enable=dumper_enable,
             use_fault_tolerance=use_fault_tolerance,
+            ft_components=ft_components if ft_components is not None else [],
+            mini_ft_controller_enable=None,
             router_disable_health_check=router_disable_health_check,
             rollout_health_check_interval=rollout_health_check_interval,
+            miles_router_health_check_failure_threshold=miles_router_health_check_failure_threshold,
+            miles_router_max_connections=miles_router_max_connections,
+            miles_router_timeout=miles_router_timeout,
             start_rollout_id=start_rollout_id,
             num_rollout=num_rollout,
             eval_interval=eval_interval,
@@ -102,30 +129,45 @@ class TestMaybeApplyDumperOverrides:
         args = self._make_args(
             dumper_enable=False,
             use_fault_tolerance=True,
-            rollout_health_check_interval=30.0,
         )
         _maybe_apply_dumper_overrides(args)
 
         assert args.use_fault_tolerance is True
         assert args.router_disable_health_check is False
-        assert args.rollout_health_check_interval == 30.0
         assert args.num_rollout == 10
         assert args.eval_interval == 5
         assert args.save == "/tmp/checkpoint"
         assert args.save_interval == 5
         assert args.save_retain_interval == 10
 
-    def test_disables_all_heartbeats(self) -> None:
+    def test_disables_fault_tolerance_and_sglang_router_heartbeats(self) -> None:
+        """Dumper mode turns off fault tolerance and the SGLang router health check."""
         args = self._make_args(
             dumper_enable=True,
             use_fault_tolerance=True,
-            rollout_health_check_interval=30.0,
         )
         _maybe_apply_dumper_overrides(args)
 
         assert args.use_fault_tolerance is False
         assert args.router_disable_health_check is True
-        assert args.rollout_health_check_interval == 1e18
+
+    def test_no_healing_loop_survives_dumper_mode(self) -> None:
+        """It is resolved from ft_components, which dumper mode clears, so resolving it first
+        would leave the loop polling a registry with nothing in it for the whole run."""
+        args = self._make_args(dumper_enable=True, use_fault_tolerance=True, ft_components=["rollout"])
+
+        _maybe_apply_dumper_overrides(args)
+
+        assert _resolve_mini_ft_controller_enable(args) is False
+
+    def test_the_selected_ft_components_go_with_the_flag(self) -> None:
+        """ft_components is resolved from the flag long before this runs, so clearing the flag
+        alone would leave every component selected and its probes still firing."""
+        args = self._make_args(dumper_enable=True, use_fault_tolerance=True, ft_components=["rollout", "train"])
+
+        _maybe_apply_dumper_overrides(args)
+
+        assert args.ft_components == []
 
     def test_forces_single_rollout(self) -> None:
         args = self._make_args(dumper_enable=True, num_rollout=100)
@@ -154,6 +196,28 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
 
     override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
     assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
+
+
+def test_fully_async_rejects_abort_pause_mode():
+    """Generation is always in flight, so aborting on every weight update would kill it."""
+    args = SimpleNamespace(
+        fully_async=True,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=False,
+        partial_rollout=False,
+        pause_generation_mode="abort",
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+    )
+
+    with pytest.raises(AssertionError, match="pause-generation-mode abort"):
+        _resolve_rollout_functions(args)
+
+    args.pause_generation_mode = "retract"
+    _resolve_rollout_functions(args)
 
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
@@ -262,6 +326,139 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+def test_shared_actor_critic_ppo_rejects_indep_dp():
+    """Multi-cell PPO used to pass validation and fail only at the first training step's external-data assert."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--advantage-estimator", "ppo", "--indep-dp", "--num-rollout", "1"] + REQUIRED_ARGS)
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match="does not support --indep-dp"):
+        miles_validate_args(args)
+
+
+def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
+    """The eval fleet pins engine addresses once, so a healed eval cell would be skipped silently."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--use-fault-tolerance", "--ft-components", "rollout", "--eval-num-gpus", "8", "--num-rollout", "1"]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="dedicated eval fleet"):
+        miles_validate_args(args)
+
+
+class TestFaultToleranceResolutionOrder:
+    def _validate(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
+        config_path = tmp_path / "custom.yaml"
+        config_path.write_text(yaml_body)
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    def test_the_config_file_can_turn_fault_tolerance_off(self, tmp_path):
+        """Resolving ft_components before the file override left implicit healing on for a run that asked for none."""
+        args = self._validate(tmp_path, ["--use-fault-tolerance"], "use_fault_tolerance: false\n")
+
+        assert (args.ft_components, args.mini_ft_controller_enable, args.api_server_port) == ([], False, 0)
+
+    def test_the_config_file_can_turn_fault_tolerance_on(self, tmp_path):
+        """A file-only opt-in must reach the same defaults the flag would have produced."""
+        args = self._validate(tmp_path, [], "use_fault_tolerance: true\n")
+
+        assert (args.ft_components, args.mini_ft_controller_enable) == (["rollout"], True)
+
+    def test_the_config_file_can_select_the_train_component(self, tmp_path):
+        """Picking the component list after the derivations left a train-side run without the state it needs."""
+        args = self._validate(tmp_path, ["--use-fault-tolerance"], "ft_components: [train]\n")
+
+        assert args.ft_components == ["train"]
+        assert (args.indep_dp, args.enable_witness, args.non_persistent_ckpt_type) == (True, True, "local")
+        assert args.world_size == 2
+
+    def test_the_config_file_can_cancel_the_train_component(self, tmp_path):
+        """A file that switches fault tolerance off must also undo the per-cell world the train component implies."""
+        args = self._validate(
+            tmp_path, ["--use-fault-tolerance", "--ft-components", "train"], "use_fault_tolerance: false\n"
+        )
+
+        assert (args.ft_components, args.indep_dp, args.enable_witness) == ([], False, False)
+        assert args.world_size == 8
+
+    def test_the_config_file_keeps_an_explicit_api_server_port(self, tmp_path):
+        """The implicit healing defaults must follow the port the file asks for, not the one the flag implied."""
+        args = self._validate(tmp_path, [], "use_fault_tolerance: true\napi_server_port: 0\n")
+
+        assert (args.ft_components, args.api_server_port, args.mini_ft_controller_enable) == (["rollout"], 0, False)
+
+
+class TestCustomConfigAppliedBeforeDerivedArgs:
+    def _parse(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
+        config_path = tmp_path / "custom.yaml"
+        config_path.write_text(yaml_body)
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(
+            extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+
+    def test_a_dashboard_switched_on_by_the_config_file_is_still_checked(self, tmp_path):
+        """Checking the dashboard before the file override let a file-only opt-in start without a dump directory."""
+        args = self._parse(tmp_path, [], "use_miles_dashboard: true\n")
+
+        with pytest.raises(AssertionError, match="--dump-details is required"):
+            miles_validate_args(args)
+
+    def test_a_dashboard_switched_off_by_the_config_file_drops_its_requirement(self, tmp_path):
+        """A run whose file turns the dashboard off must not be rejected for telemetry it will never write."""
+        args = self._parse(tmp_path, ["--use-miles-dashboard"], "use_miles_dashboard: false\n")
+        miles_validate_args(args)
+
+        assert args.use_miles_dashboard is False
+
+    def test_eval_prompt_data_from_the_config_file_is_expanded_into_datasets(self, tmp_path):
+        """Building the dataset list before the file override left the file's paths as an unparsed raw list."""
+        args = self._parse(tmp_path, [], "eval_prompt_data: [/data/aime.jsonl]\n")
+        miles_validate_args(args)
+
+        assert [(dataset.name, dataset.path) for dataset in args.eval_datasets] == [("aime", "/data/aime.jsonl")]
+        assert args.eval_prompt_data == ["aime", "/data/aime.jsonl"]
+
+
+def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
+    """Deriving indep_dp after the disk-stream asserts would have let an unsupported pair through."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--stream-optimizer-state-to-disk",
+            "--use-fault-tolerance",
+            "--ft-components",
+            "train",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    args.optimizer = "adam"
+    args.use_distributed_optimizer = True
+    args.multi_lora = False
+    args.optimizer_cpu_offload = False
+    args.offload_optimizer_states = False
+    args.use_precision_aware_optimizer = False
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match="does not support --indep-dp"):
+        miles_validate_args(args)
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()
@@ -299,7 +496,6 @@ class TestSessionServerV2Validation:
         ("extra", "flag"),
         [
             (["--group-rm"], "--group-rm"),
-            (["--partial-rollout"], "--partial-rollout"),
             (
                 ["--true-on-policy-mode", "--recompute-logprobs-via-prefill"],
                 "--recompute-logprobs-via-prefill",
@@ -313,6 +509,166 @@ class TestSessionServerV2Validation:
             miles_validate_args(args)
 
         assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
+
+
+class TestSessionServerScalingArguments:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_defaults_to_32_instances_and_an_auto_port(self):
+        args = self._parse([])
+
+        assert args.session_server_port is None
+        assert args.session_server_workers == 32
+
+    def test_parses_starting_port_and_instance_count(self):
+        args = self._parse(["--session-server-port", "30000", "--session-server-workers", "4"])
+
+        assert args.session_server_port == 30000
+        assert args.session_server_workers == 4
+
+    def test_rejects_the_removed_end_port_form(self):
+        with pytest.raises(SystemExit):
+            self._parse(["--session-server-port", "30000", "30004"])
+
+
+class TestSessionMessageMatcherArgument:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_defaults_to_strict(self):
+        assert self._parse([]).session_message_matcher == "strict"
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            "strict",
+            "loose_tool_call",
+            "role_content_only",
+            "not_installed.matchers.same_message",
+        ],
+    )
+    def test_preserves_selector_without_importing(self, selector):
+        args = self._parse(["--session-message-matcher", selector])
+
+        assert args.session_message_matcher == selector
+
+
+class TestSessionServerPauseGenerationMode:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    @pytest.mark.parametrize("colocate", [False, True])
+    def test_session_server_accepts_abort(self, colocate):
+        extra = ["--use-session-server", "--pause-generation-mode", "abort"]
+        if colocate:
+            extra.append("--colocate")
+        args = self._parse(extra)
+
+        miles_validate_args(args)
+
+    def test_abort_without_session_server_passes(self):
+        miles_validate_args(self._parse(["--pause-generation-mode", "abort"]))
+
+    @pytest.mark.parametrize("mode", ["retract", "in_place"])
+    def test_session_server_accepts_non_abort_modes(self, mode):
+        miles_validate_args(self._parse(["--use-session-server", "--pause-generation-mode", mode]))
+
+    @pytest.mark.parametrize(
+        "session_server_args",
+        [["--use-session-server"], ["--use-session-server", "v1"], ["--use-session-server", "v2"]],
+    )
+    def test_session_server_rejects_partial_rollout(self, session_server_args):
+        args = self._parse([*session_server_args, "--partial-rollout"])
+
+        with pytest.raises(AssertionError, match="does not support --partial-rollout"):
+            miles_validate_args(args)
+
+    @pytest.mark.parametrize(
+        ("extra", "expect_warning"),
+        [
+            (
+                ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "retract"],
+                True,
+            ),
+            (["--use-session-server", "--pause-generation-mode", "retract"], False),
+            (["--use-rollout-routing-replay", "--pause-generation-mode", "retract"], False),
+            (
+                [
+                    "--use-session-server",
+                    "--use-rollout-routing-replay",
+                    "--colocate",
+                    "--pause-generation-mode",
+                    "abort",
+                ],
+                False,
+            ),
+            (
+                ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "in_place"],
+                False,
+            ),
+        ],
+    )
+    def test_retract_r3_warning(self, caplog, extra, expect_warning):
+        args = self._parse(extra)
+
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        warned = any("R3 payloads can become very large" in record.message for record in caplog.records)
+        assert warned is expect_warning
+
+
+class TestSnapshotEvalValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def _snapshot_eval_args(self, tmp_path, *extra):
+        prompts = tmp_path / "eval.jsonl"
+        prompts.write_text("{}\n")
+        return self._parse(
+            [
+                "--eval-num-gpus",
+                "1",
+                "--eval-interval",
+                "5",
+                "--eval-hf-dir",
+                str(tmp_path / "snapshots"),
+                "--eval-prompt-data",
+                "dummy",
+                str(prompts),
+                *extra,
+            ]
+        )
+
+    def test_snapshot_eval_rejects_load_debug_rollout_data(self, tmp_path):
+        """The replay path loads no rollout functions, so there is nothing to run the eval with."""
+        args = self._snapshot_eval_args(tmp_path, "--load-debug-rollout-data", "/tmp/rollout_{rollout_id}.pt")
+        with pytest.raises(AssertionError, match="load-debug-rollout-data"):
+            miles_validate_args(args)
+
+    def test_train_only_snapshot_eval_needs_its_own_eval_function(self, tmp_path):
+        args = self._snapshot_eval_args(tmp_path, "--debug-train-only")
+        with pytest.raises(AssertionError, match="eval-function-path"):
+            miles_validate_args(args)
+
+    def test_train_only_leaves_no_rollout_gpus_even_under_colocate(self):
+        """The colocate normalization puts the actor's GPU count on rollout_num_gpus, which
+        would claim rollout engines for a job that starts none."""
+        args = self._parse(["--debug-train-only", "--colocate"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_num_gpus == 0
+        assert args.starts_inference_engines is False
 
 
 class TestTitoFixedTemplateConfiguration:
@@ -357,6 +713,45 @@ class TestTitoFixedTemplateConfiguration:
         assert args.chat_template_path.endswith("/qwen3_fixed.jinja")
         assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
+    @pytest.mark.parametrize(
+        ("family", "template"),
+        [("qwen35", "qwen3.5_fixed.jinja"), ("qwen36", "qwen3.6_fixed.jinja")],
+    )
+    def test_qwen35_and_qwen36_resolve_family_template(self, family, template):
+        args = self._parse(["--use-session-server", "--tito-model", family])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith(f"/{template}")
+        assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
+
+    @pytest.mark.parametrize("family", ["qwen38small", "qwen4exp"])
+    def test_qwen38_families_resolve_default_template(self, family):
+        args = self._parse(["--use-session-server", "--tito-model", family])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith("/qwen3.8_small_and_flash_next_fixed.jinja")
+        assert args.apply_chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "xhigh"}
+
+    def test_glm53_uses_native_template(self):
+        args = self._parse(["--use-session-server", "--tito-model", "glm53"])
+        miles_validate_args(args)
+        assert args.chat_template_path is None
+        assert args.apply_chat_template_kwargs == {
+            "clear_thinking": False,
+            "enable_thinking": True,
+        }
+
+    def test_glm53_rejects_disabling_thinking(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "--tito-model",
+                "glm53",
+                "--apply-chat-template-kwargs",
+                '{"enable_thinking": false}',
+            ]
+        )
+        with pytest.raises(ValueError, match="enable_thinking=False conflicts"):
+            miles_validate_args(args)
+
     def test_named_family_rejects_custom_template(self):
         args = self._parse(
             [
@@ -400,7 +795,7 @@ class TestTitoFixedTemplateConfiguration:
         }
 
 
-def test_bridge_mode_rejects_critic(tmp_path):
+def test_bridge_mode_accepts_critic(tmp_path):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
@@ -417,23 +812,21 @@ def test_bridge_mode_rejects_critic(tmp_path):
         + REQUIRED_ARGS
     )
 
-    with pytest.raises(
-        AssertionError,
-        match="Critic models are not supported with --megatron-to-hf-mode bridge",
-    ):
-        miles_validate_args(args)
+    miles_validate_args(args)
+    assert args.use_critic is True
 
 
-def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
-    monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+def test_critic_is_accepted_on_the_only_trainer(tmp_path):
+    """Shared actor/critic PPO used to be rejected on the cell based trainer, which is now the only one."""
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
         ["--advantage-estimator", "ppo", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"] + REQUIRED_ARGS
     )
 
-    with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
-        miles_validate_args(args)
+    miles_validate_args(args)
+
+    assert args.use_critic is True
 
 
 def test_critic_rejects_reward_level_kl(tmp_path):
@@ -493,29 +886,6 @@ class TestMultiLoRAValidation:
 
         assert args.multi_lora is True
 
-    def test_defaults_rollout_fn_and_data_source_to_multi_lora(self):
-        args = self._parse([])
-
-        miles_validate_args(args)
-
-        assert args.rollout_function_path == "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-        assert args.data_source_path == "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
-        assert args.rollout_global_dataset is True
-
-    def test_keeps_user_supplied_rollout_fn_and_data_source(self):
-        args = self._parse(
-            ["--rollout-function-path", "my.custom.rollout_fn", "--data-source-path", "my.custom.DataSource"]
-        )
-
-        miles_validate_args(args)
-
-        assert args.rollout_function_path == "my.custom.rollout_fn"
-        assert args.data_source_path == "my.custom.DataSource"
-
-    def test_empty_wait_is_a_registered_argument(self):
-        assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
-        assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
-
     def test_rejects_non_adam_optimizer(self):
         # Per-slot optimizer isolation (state init, retirement cleanup, step
         # clocks) only implements Adam semantics. Muon has its own dedicated
@@ -530,13 +900,11 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="requires --optimizer adam"):
             miles_validate_args(args)
 
-    def test_rejects_experimental_ft_trainer(self, monkeypatch):
-        # The v2 train group has no reconcile_adapters.
-        monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+    def test_is_accepted_on_the_only_trainer(self):
+        """Multi-LoRA used to be rejected on the cell based trainer, which is now the only one."""
         args = self._parse([])
 
-        with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
-            miles_validate_args(args)
+        miles_validate_args(args)
 
     def test_rejects_pipeline_parallelism(self):
         # Adapter routing is not recompute-safe under a pipelined schedule.
@@ -711,7 +1079,6 @@ class TestValidateRematerializeParamFromMasterWeight:
             offload_train=True,
             offload_train_target="cpu",
             use_distributed_optimizer=True,
-            enable_weights_backuper=True,
             keep_old_actor=False,
             kl_coef=0,
             use_kl_loss=False,
@@ -777,7 +1144,6 @@ class TestValidateRematerializeParamFromMasterWeight:
             {"offload_train": False},
             {"offload_train_target": "disk"},
             {"use_distributed_optimizer": False},
-            {"enable_weights_backuper": False},
             {"keep_old_actor": True},
             {"use_precision_aware_optimizer": True},
             {"overlap_param_gather": True},
@@ -798,3 +1164,332 @@ class TestValidateRematerializeParamFromMasterWeight:
         )
         with pytest.raises(AssertionError, match="Megatron"):
             _validate_rematerialize_param_from_master_weight(args)
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected"),
+    [
+        ([], False),
+        (["--skip-actor-forward-only"], True),
+    ],
+)
+def test_skip_actor_forward_only_flag_is_parsed(extra_args, expected):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(extra_args + REQUIRED_ARGS)
+
+    assert args.skip_actor_forward_only is expected
+
+
+def test_skip_actor_forward_only_is_gated_during_miles_validation():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--skip-actor-forward-only", "--global-batch-size", "32", "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+    vars(args).update(
+        hidden_dropout=0.0,
+        attention_dropout=0.0,
+        lora_dropout=0.0,
+        moe_input_jitter_eps=None,
+        moe_router_force_biased=None,
+        moe_router_force_load_balancing=False,
+        moe_router_load_balancing_type="aux_loss",
+    )
+
+    with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
+        miles_validate_args(args)
+
+
+def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        compute_advantages_and_returns=True,
+        custom_megatron_before_log_prob_hook_path=None,
+        custom_megatron_before_train_step_hook_path=None,
+        custom_model_provider_path=None,
+        dumper_enable=False,
+        dumper_fwd_only=None,
+        dumper_source_patcher_config_train=None,
+        dump_details=None,
+        get_mismatch_metrics=False,
+        global_batch_size=64,
+        hidden_dropout=0.0,
+        attention_dropout=0.0,
+        keep_old_actor=False,
+        kl_coef=0.0,
+        lora_dropout=0.0,
+        log_correct_samples=False,
+        loss_type="policy_loss",
+        moe_input_jitter_eps=None,
+        moe_router_force_biased=None,
+        moe_router_force_load_balancing=False,
+        moe_router_load_balancing_type="aux_loss",
+        multi_lora=False,
+        n_samples_per_prompt=8,
+        num_steps_per_rollout=None,
+        rollout_batch_size=8,
+        rollout_data_postprocess_path=None,
+        save_debug_train_data=None,
+        train_backend="megatron",
+        true_on_policy_mode=False,
+        use_dynamic_global_batch_size=False,
+        use_indexer_replay=False,
+        use_opd=False,
+        use_rollout_entropy=False,
+        use_rollout_indexer_replay=False,
+        use_rollout_logprobs=False,
+        use_rollout_routing_replay=False,
+        use_routing_replay=False,
+        use_tis=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestValidateSkipActorForwardOnly:
+    def test_valid_single_step_configuration_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args())
+
+    def test_zero_moe_input_jitter_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(moe_input_jitter_eps=0.0))
+
+    def test_tis_configuration_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_tis=True))
+
+    def test_rollout_logprobs_configuration_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_rollout_logprobs=True))
+
+    def test_rollout_logprobs_with_mismatch_metrics_passes(self):
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
+                get_mismatch_metrics=True,
+                use_rollout_logprobs=True,
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"dumper_enable": True},
+            {"dumper_fwd_only": ["enable=true"]},
+            {"dumper_enable": True, "dumper_fwd_only": ["enable=false"]},
+            {"dump_details": "/tmp/details"},
+            {
+                "dump_details": "/tmp/details",
+                "save_debug_train_data": "/tmp/details/train_data/{rollout_id}_{rank}.pt",
+            },
+        ],
+    )
+    def test_dumper_configuration_passes(self, overrides):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"loss_type": "custom_loss"},
+            {"compute_advantages_and_returns": False},
+            {"keep_old_actor": True},
+            {"kl_coef": 0.1},
+            {"use_opd": True},
+            {"hidden_dropout": 0.1},
+            {"attention_dropout": 0.1},
+            {"lora_dropout": 0.1},
+            {"moe_input_jitter_eps": 0.1},
+            {"moe_router_force_load_balancing": True},
+            {"moe_router_force_biased": 0.0},
+            {"moe_router_load_balancing_type": ["sinkhorn"]},
+            {"use_rollout_entropy": True},
+            {"true_on_policy_mode": True},
+            {"log_correct_samples": True},
+            {"rollout_data_postprocess_path": "pkg.hook"},
+            {"custom_megatron_before_log_prob_hook_path": "pkg.hook"},
+            {"custom_megatron_before_train_step_hook_path": "pkg.hook"},
+            {"custom_model_provider_path": "pkg.model_provider"},
+            {"dumper_source_patcher_config_train": "patcher.yaml"},
+            {"save_debug_train_data": "train-{rollout_id}.pt"},
+            {"use_routing_replay": True},
+            {"use_indexer_replay": True},
+            {"num_steps_per_rollout": 2},
+            {"global_batch_size": 32},
+        ],
+    )
+    def test_incompatible_configuration_is_rejected(self, overrides):
+        with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
+            validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
+
+    @pytest.mark.parametrize(
+        ("base_flag", "rollout_flag"),
+        [
+            ("use_routing_replay", "use_rollout_routing_replay"),
+            ("use_indexer_replay", "use_rollout_indexer_replay"),
+        ],
+    )
+    def test_rollout_replay_is_compatible(self, base_flag, rollout_flag):
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
+                **{
+                    base_flag: True,
+                    rollout_flag: True,
+                }
+            )
+        )
+
+    def test_dynamic_global_batch_size_defers_step_count_to_runtime(self):
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
+                global_batch_size=32,
+                use_dynamic_global_batch_size=True,
+            )
+        )
+
+
+class TestRunUuidResolution:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    def test_unset_run_uuid_is_generated(self):
+        """Every launch gets an identifier, so nothing has to cope with it being absent."""
+        args = self._parse([])
+        miles_validate_args(args)
+
+        assert validate_run_uuid(args.run_uuid)
+
+    def test_two_launches_do_not_share_a_run_uuid(self):
+        """A colliding identifier would attribute one run's artifacts to another."""
+        first, second = self._parse([]), self._parse([])
+        miles_validate_args(first)
+        miles_validate_args(second)
+
+        assert first.run_uuid != second.run_uuid
+
+    def test_an_explicit_run_uuid_is_kept(self):
+        """Reproducing a run means being able to pin its identifier."""
+        pinned = ("ab12cd34ef5678ab" * 4)[:RUN_UUID_LENGTH]
+        args = self._parse(["--run-uuid", pinned])
+        miles_validate_args(args)
+
+        assert args.run_uuid == pinned
+
+    def test_a_run_uuid_from_the_custom_config_file_is_validated_too(self, tmp_path):
+        """The config file overwrites args after the flags are parsed, so it must not skip the check."""
+        config = tmp_path / "override.yaml"
+        config.write_text("run_uuid: my-experiment\n")
+        args = self._parse(["--custom-config-path", str(config)])
+
+        with pytest.raises(ValueError, match="invalid run uuid"):
+            miles_validate_args(args)
+
+    def test_a_run_uuid_blanked_by_the_custom_config_file_is_regenerated(self, tmp_path):
+        """A null in the config file must not leave the identifier unset for the whole run."""
+        config = tmp_path / "override.yaml"
+        config.write_text("run_uuid: null\n")
+        args = self._parse(["--custom-config-path", str(config)])
+        miles_validate_args(args)
+
+        assert validate_run_uuid(args.run_uuid)
+
+    def test_a_malformed_explicit_run_uuid_fails_at_launch(self):
+        """Rejecting it here beats corrupting every string that embeds it hours into a run."""
+        args = self._parse(["--run-uuid", "my-experiment"])
+
+        with pytest.raises(ValueError, match="invalid run uuid"):
+            miles_validate_args(args)
+
+
+class TestRolloutHealthCheckArguments:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_the_rollout_defaults_survive_the_move_onto_the_shared_config(self):
+        """The shared config carries the trainer's defaults, which are not the rollout ones."""
+        args = self._parse([])
+
+        assert args.rollout_health_check_interval == 30.0
+        assert args.rollout_health_check_timeout == 30.0
+        assert args.rollout_health_check_first_wait == 0.0
+
+    def test_the_first_wait_grace_period_is_still_tunable(self):
+        """A first launch compiling deepgemm kernels needs a grace period, or it is killed while warming up."""
+        assert self._parse(["--rollout-health-check-first-wait", "600"]).rollout_health_check_first_wait == 600.0
+
+    def test_the_resolved_rollout_config_matches_the_parsed_arguments(self):
+        """The config is what the checker actually runs on, so it must not diverge from the flags."""
+        config = SimpleHealthCheckerConfig.from_args(
+            self._parse(["--rollout-health-check-first-wait", "600"]), prefix="rollout_health_check"
+        )
+
+        assert (config.interval, config.timeout, config.first_wait) == (30.0, 30.0, 600.0)
+
+    def test_a_rollout_cell_is_reported_unhealthy_on_the_very_first_failed_probe(self):
+        """At a 30s interval the shared three-failure debounce would hide a dead engine for 90s."""
+        assert self._parse([]).rollout_health_check_failure_threshold == 1
+
+    def test_a_tuned_rollout_debounce_reaches_the_shared_config(self):
+        """The failure threshold is what debounces transient blips, so the flag must reach the checker's config."""
+        config = SimpleHealthCheckerConfig.from_args(
+            self._parse(["--rollout-health-check-failure-threshold", "7"]), prefix="rollout_health_check"
+        )
+
+        assert config.failure_threshold == 7
+
+    def test_the_trainer_heartbeat_keeps_its_own_debounce(self):
+        """The rollout default must not be pushed down into the shared config: a trainer heartbeat
+        shares an RPC channel with the train step, so one slow reply is a blip, not a dead cell."""
+        assert self._parse([]).trainer_heartbeat_checker_failure_threshold == 3
+
+
+class TestMiniFtControllerArguments:
+    def _validate(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_fault_tolerance_alone_turns_the_healing_loop_on(self):
+        """Asking for fault tolerance heals on its own, so the loop must come up without a second flag."""
+        assert self._validate(["--use-fault-tolerance"]).mini_ft_controller_enable is True
+
+    def test_the_negative_flag_turns_the_healing_loop_back_off(self):
+        """A run that drives healing from outside needs a way to keep the health reporting without the loop."""
+        args = self._validate(["--use-fault-tolerance", "--no-mini-ft-controller-enable"])
+
+        assert args.mini_ft_controller_enable is False
+
+    def test_asking_for_the_loop_without_a_port_is_rejected_at_launch(self):
+        """The loop drives cells over the api server port, so a disabled port would fail every poll instead."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            ["--mini-ft-controller-enable", "--api-server-port", "0", "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+
+        with pytest.raises(ValueError, match="requires --api-server-port to be set"):
+            miles_validate_args(args)
+
+
+class TestSessionServerArguments:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_the_instance_count_and_base_port_come_from_the_flags(self):
+        """A network policy whitelists a known range, so the base port is one scalar the instances offset from."""
+        args = self._parse(["--session-server-workers", "3", "--session-server-port", "41000"])
+
+        assert args.session_server_workers == 3
+        assert args.session_server_port == 41000
+
+    def test_an_unset_base_port_leaves_the_default_instances_dynamically_placed(self):
+        """Without the flag the port stays unset so the placement allocates one, and the instance count is the default."""
+        args = self._parse([])
+
+        assert args.session_server_workers == 32
+        assert args.session_server_port is None

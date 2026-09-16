@@ -26,13 +26,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir}")
-    U.exec_command(
+    U.exec_command_cpu(f"mkdir -p {args.model_dir}")
+    U.exec_command_cpu(
         f'test "$(cat {args.model_dir}/{args.model_name}_torch_dist/latest_checkpointed_iteration.txt 2>/dev/null)" = release || '
         f"test -e {args.model_dir}/{args.model_name} || "
         f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
-    U.exec_command(
+    U.exec_command_cpu(
         f"test -e {args.model_dir}/{args.model_name}-FP8 || "
         f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
     )

@@ -5,11 +5,12 @@ with per-rollout loss weighting."""
 
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"])
+register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=400, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -17,8 +18,8 @@ NUM_GPUS = 8
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
@@ -110,7 +111,6 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

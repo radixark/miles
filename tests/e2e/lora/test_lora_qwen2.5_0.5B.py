@@ -17,8 +17,8 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["lora"])
-register_rocm_ci(est_time=300, suite="stage-c-4-gpu-mi350", labels=["lora"])
+register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["lora"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=300, suite="nightly-stage-c-4-gpu-mi350", labels=["lora"])
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
@@ -29,9 +29,9 @@ NUM_GPUS = 4
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.exec_command("hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k")
 
 
 def execute():
@@ -130,7 +130,6 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

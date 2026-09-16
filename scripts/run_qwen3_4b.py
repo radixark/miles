@@ -18,7 +18,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-4B"
     megatron_model_type: str | None = None
     num_gpus_per_node: int | None = None
-    hardware: Literal["H100", "GB200", "GB300"] = "H100"
+    hardware: Literal["auto", "H100", "GB200", "GB300"] = "auto"
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -38,10 +38,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.train_backend == "megatron":
             self.megatron_model_type = get_megatron_model_type(self.model_name)
-
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
         # Derived parallelism defaults for Qwen3 dense models
         self.tensor_model_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 2
@@ -62,8 +62,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
@@ -72,7 +72,9 @@ def prepare(args: ScriptArgs):
         U.hf_download_dataset("zyzshishui0627/IFBench", data_dir=args.data_dir)
 
     if args.rollout_fp8:
-        U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8")
+        U.exec_command_cpu(
+            f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
+        )
 
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(
@@ -164,7 +166,7 @@ eval:
       rm_type: ifbench
       n_samples_per_eval_prompt: 1
 """.strip()
-            eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text, 'yaml')} "
+            eval_args += f"--eval-config {U.encode_pseudo_file(eval_config_text)} "
         else:
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
@@ -281,7 +283,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

@@ -3,8 +3,6 @@ title: Inkling
 description: Launch recipe for Inkling (975 B), Thinking Machines' multimodal MoE with short convolution, relative attention, and a shared-expert sink.
 ---
 
-The complete Inkling RL implementation is open at the Miles pull request: [`radixark/miles#1683`](https://github.com/radixark/miles/pull/1683).
-
 ## 1. Model Introduction
 
 [Inkling](https://huggingface.co/thinkingmachines/Inkling) is a mixture-of-experts transformer released by Thinking Machines Lab, with 975 B total parameters and 41 B active, a context window of up to 1 M tokens, and pretraining on 45 trillion tokens of text, images, audio and video. Its architecture introduces short convolution, attention with relative positional embedding, and a novel MoE design with a shared-expert sink. Miles implements Inkling as a native Megatron model: local and global relative attention, the residual ShortConv, the shared-sink router and experts, and the image and audio encoders, and the same backend drives both full-parameter and LoRA RL.
@@ -72,11 +70,12 @@ Pass `--hf-checkpoint <path>` to the launcher when the weights are already on a 
 
 ### 4.2 HF → Megatron `torch_dist` conversion
 
-Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard (no precision cast). The model definition comes from `scripts/models/inkling.sh`:
+Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard (no precision cast). The model definition comes from `scripts/models/inkling.py`:
 
 ```bash
 cd /root/miles
-source scripts/models/inkling.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py inkling)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CONVERT_KEEP_PP1=1 PYTHONPATH=/root/Megatron-LM torchrun \
    --nproc-per-node 4 --nnodes 4 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \
@@ -167,15 +166,18 @@ Weight updates stream Megatron shards into SGLang's tensor layout in bounded buc
 ```bash
 --optimizer adam
 --lr 1e-6 --lr-decay-style constant
---accumulate-allreduce-grads-in-fp32
 --attention-softmax-in-fp32
 
+# gradient reduction: bf16 under --fully-async, fp32 otherwise
+--grad-reduce-in-bf16  # --fully-async
+--accumulate-allreduce-grads-in-fp32  # colocated
+
 # full-parameter only, set by the launcher
---optimizer-state-nvme-dir /tmp/opt_offload
---optimizer-state-nvme-chunk-mb 256
---offload-train-target disk
---offload-train-disk-dir /tmp/train_offload
 --micro-batch-size 1
+--offload-train-disk-dir /tmp/train_offload
+--offload-train-target disk  # colocated: back the paused actor with node-local NVMe
+--stream-optimizer-state-to-disk  # --fully-async: stream the optimizer state instead
+--offload-train-disk-chunk-mb 256  # --fully-async
 ```
 
 Within a single GB300 rack the 975 B policy, gradients, and FP32 optimizer state exceed GPU memory, so Miles streams Megatron `DistributedOptimizer` state between a bounded GPU working set and node-local NVMe. The offload changes storage placement, not the update math. The paused training actor's weights are additionally disk-backed through `torch_memory_saver`. LoRA training skips both offloads and uses dynamic batching (`--use-dynamic-batch-size --max-tokens-per-gpu 4096`) instead of the fixed micro-batch.

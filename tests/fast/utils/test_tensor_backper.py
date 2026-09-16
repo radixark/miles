@@ -74,7 +74,6 @@ class _Setup:
         )
         self.backuper = TensorBackuper.create(
             source_getter=lambda: iter({**self.params, **self.extras}.items()),
-            single_tag=None,
             main_cast_ctx=ctx,
         )
 

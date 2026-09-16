@@ -1,6 +1,6 @@
 import os
 
-import miles.utils.misc as U
+import miles.utils.external_utils.exec_command as U
 from miles.utils.external_utils.command_utils import execute_train_npu
 
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-4B-Instruct-2507")
@@ -10,9 +10,9 @@ EXTERNAL_RAY = int(os.environ.get("MILES_SCRIPT_EXTERNAL_RAY", "0"))
 TRAIN_BACKEND = os.environ.get("MILES_SCRIPT_TRAIN_BACKEND", "fsdp").lower()
 assert TRAIN_BACKEND in {"fsdp", "megatron"}
 
-DATASET_NAME = "VeraIsHere/geo3k_imgurl_processed"
-DATA_ROOT = "/root/dataset/geo3k_imgurl_processed"
-TRAIN_DATA_PATH = os.path.join(DATA_ROOT, "train.parquet")
+DATASET_NAME = "zhuzilin/dapo-math-17k"
+DATA_ROOT = "/root/datasets/dapo-math-17k"
+TRAIN_DATA_PATH = os.path.join(DATA_ROOT, "dapo-math-17k.jsonl")
 
 
 def get_megatron_model_type(model_name: str) -> str:
@@ -25,31 +25,26 @@ def get_megatron_model_type(model_name: str) -> str:
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     data_missing = not os.path.exists(TRAIN_DATA_PATH)
     if data_missing:
-        U.exec_command(f"hf download --repo-type dataset {DATASET_NAME} --local-dir {DATA_ROOT}")
+        U.exec_command_cpu(f"hf download --repo-type dataset {DATASET_NAME} --local-dir {DATA_ROOT}")
     if not os.path.exists(TRAIN_DATA_PATH):
         raise FileNotFoundError(f"Dataset not found. Expected local dataset at {TRAIN_DATA_PATH}; ")
 
 
 def execute():
-    ckpt_args = "--hf-checkpoint /root/model/Qwen3-4B-Instruct-2507/ "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
 
     wandb_args = (
-        (
-            "--use-wandb "
-            "--wandb-project miles-dev "
-            "--wandb-group geo3k_vlm_multi_turn "
-            f"--wandb-key '{wandb_api_key}' "
-        )
+        ("--use-wandb " "--wandb-project miles-dev " "--wandb-group qwen3-4b-npu " f"--wandb-key '{wandb_api_key}' ")
         if (wandb_api_key := os.environ.get("WANDB_API_KEY"))
         else ""
     )
 
     rollout_args = (
-        "--prompt-data /root/dataset/dapo-math-17k/dapo-math-17k.jsonl "
+        f"--prompt-data {TRAIN_DATA_PATH} "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
@@ -68,7 +63,7 @@ def execute():
 
     # eval_args = (
     #     "--eval-interval 20 "
-    #     f"--eval-prompt-data geo3k_eval {TRAIN_DATA_PATH}@[0:64] "
+    #     f"--eval-prompt-data dapo_eval {TRAIN_DATA_PATH}@[0:64] "
     #     "--n-samples-per-eval-prompt 1 "
     #     "--eval-max-response-len 4096 "
     #     "--eval-top-k 1 "
@@ -107,7 +102,7 @@ def execute():
 
     megatron_args = (
         "--train-backend megatron "
-        "--load /root/model/Qwen3-4B-Instruct-2507/ "
+        f"--load /root/models/{MODEL_NAME}/ "
         "--tensor-model-parallel-size 4 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "

@@ -50,6 +50,13 @@ def dataclass_cli(
     return _wrap(func, env_var_prefix=env_var_prefix)
 
 
+def _resolve_default(field: dataclasses.Field, param: inspect.Parameter) -> object:
+    """Call a default_factory now; click would otherwise type-cast dataclasses' sentinel."""
+    if field.default_factory is not dataclasses.MISSING:
+        return field.default_factory()
+    return param.default
+
+
 def _wrap(func: _F, *, env_var_prefix: str) -> _F:
     hints: dict[str, type] = typing.get_type_hints(func)
     first_param_name: str = next(iter(inspect.signature(func).parameters))
@@ -79,7 +86,7 @@ def _wrap(func: _F, *, env_var_prefix: str) -> _F:
         resolved_type: type = resolved_hints.get(param.name, param.annotation)
         new_annotation = Annotated[resolved_type, typer.Option(**typer_kwargs)]
 
-        new_parameters.append(param.replace(annotation=new_annotation))
+        new_parameters.append(param.replace(annotation=new_annotation, default=_resolve_default(field, param)))
 
     def wrapped(**kwargs: object) -> object:
         data: object = dataclass_cls(**kwargs)

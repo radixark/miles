@@ -1,6 +1,6 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
@@ -8,6 +8,12 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(
     est_time=1500,
     suite="stage-c-4-gpu-h200",
+    labels=["megatron"],
+    hardware=["hopper", "blackwell"],
+)
+register_rocm_ci(
+    est_time=800,
+    suite="nightly-stage-c-4-gpu-mi350",
     labels=["megatron"],
 )
 
@@ -19,8 +25,8 @@ NUM_GPUS = 4
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command("hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu("hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
@@ -127,7 +133,6 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

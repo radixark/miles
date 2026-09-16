@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from tests.ci.ci_register import register_cpu_ci
-from tests.ci.ci_utils import TestFile, _attempt_record_dir, run_unittest_files
+from tests.ci.ci_utils import TestFile, _attempt_record_dir, _merge_attempt_records, run_unittest_files
 
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV, TARGET_METRIC_KEYS, CiHistoryBackend
 
@@ -44,7 +44,14 @@ def test_record_has_target_keys_and_is_parseable(tmp_path, monkeypatch):
 
     backend.log({"train/grad_norm": 1.5, "train/ppo_kl": 0.0, "train/step": 0}, step=0)
     backend.log({"train/grad_norm": 2.5, "train/ppo_kl": 0.1, "train/step": 1}, step=1)
-    backend.log({"rollout/raw_reward": 0.3, "rollout/step": 0}, step=0)
+    backend.log(
+        {
+            "rollout/raw_reward": 0.3,
+            "rollout/tito_session_mismatch_rate/v2/assistant_text": 0.125,
+            "rollout/step": 0,
+        },
+        step=0,
+    )
     backend.finish()
 
     files = [f for f in os.listdir(tmp_path) if f.endswith(".jsonl")]
@@ -53,11 +60,36 @@ def test_record_has_target_keys_and_is_parseable(tmp_path, monkeypatch):
     records = _read_jsonl(os.path.join(tmp_path, files[0]))
     by_metric = {r["metric"]: r["series"] for r in records}
 
-    assert set(by_metric) == {"train/grad_norm", "train/ppo_kl", "rollout/raw_reward"}
+    assert set(by_metric) == {
+        "train/grad_norm",
+        "train/ppo_kl",
+        "rollout/raw_reward",
+        "rollout/tito_session_mismatch_rate/v2/assistant_text",
+    }
     # Raw series are preserved unreduced: both grad_norm points are present.
     assert by_metric["train/grad_norm"] == [[0, 1.5], [1, 2.5]]
     assert by_metric["train/ppo_kl"] == [[0, 0.0], [1, 0.1]]
     assert by_metric["rollout/raw_reward"] == [[0, 0.3]]
+    assert by_metric["rollout/tito_session_mismatch_rate/v2/assistant_text"] == [[0, 0.125]]
+
+
+def test_v1_v2_tito_metrics_remain_separate_after_attempt_merge(tmp_path, monkeypatch):
+    monkeypatch.setenv(RECORD_DIR_ENV, str(tmp_path))
+    metric_prefix = "rollout/tito_session_mismatch_rate"
+    for version, value in (("v1", 0.125), ("v2", 0.25)):
+        backend = CiHistoryBackend()
+        backend.init(object(), primary=False)
+        metric_key = f"{metric_prefix}/{version}/assistant_text"
+        backend.log({metric_key: value}, step=0)
+
+    merged_path = tmp_path.with_suffix(".merged.jsonl")
+    _merge_attempt_records(str(tmp_path), str(merged_path))
+
+    by_metric = {record["metric"]: record["series"] for record in _read_jsonl(merged_path)}
+    assert by_metric == {
+        f"{metric_prefix}/v1/assistant_text": [[0, 0.125]],
+        f"{metric_prefix}/v2/assistant_text": [[0, 0.25]],
+    }
 
 
 def test_only_target_keys_captured(tmp_path, monkeypatch):
@@ -65,7 +97,15 @@ def test_only_target_keys_captured(tmp_path, monkeypatch):
     backend = CiHistoryBackend()
     backend.init(object(), primary=False)
 
-    backend.log({"train/grad_norm": 1.0, "train/pg_loss": 9.0, "train/step": 0}, step=0)
+    backend.log(
+        {
+            "train/grad_norm": 1.0,
+            "train/pg_loss": 9.0,
+            "rollout/tito_session_mismatch_rate/assistant_text": 0.125,
+            "train/step": 0,
+        },
+        step=0,
+    )
     backend.finish()
 
     records = _read_jsonl(os.path.join(tmp_path, os.listdir(tmp_path)[0]))

@@ -16,13 +16,13 @@ last, overrides the agent's).
 
 import json
 import uuid
-from types import SimpleNamespace
 
 import numpy as np
 import pybase64
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.rollout.session.test_samples import _make_record
 
 from miles.rollout.session.core import SessionCore
@@ -31,23 +31,28 @@ from miles.rollout.session.samples.codec import decode_samples_and_merge_input_s
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 NUM_LAYERS = 3
 TOPK = 2
 
-_ARGS = SimpleNamespace(
-    miles_router_timeout=30,
-    hf_checkpoint="Qwen/Qwen3-0.6B",
-    chat_template_path=None,
-    apply_chat_template_kwargs={"enable_thinking": False},
-    tito_model="default",
-    session_server_instance_id=uuid.uuid4().hex,
-    num_layers=NUM_LAYERS,
-    moe_router_topk=TOPK,
-    save_debug_trajectory_data=None,
-    sglang_speculative_algorithm=None,
-)
+
+def _make_config(**overrides):
+    return make_session_server_config(
+        timeout=30,
+        hf_checkpoint="Qwen/Qwen3-0.6B",
+        chat_template_path=None,
+        apply_chat_template_kwargs={"enable_thinking": False},
+        tito_model="default",
+        instance_id=uuid.uuid4().hex,
+        num_layers=NUM_LAYERS,
+        moe_router_topk=TOPK,
+        sglang_speculative_algorithm=None,
+        **overrides,
+    )
+
+
+_CONFIG = _make_config()
 
 
 class _UnusedBackend:
@@ -57,23 +62,34 @@ class _UnusedBackend:
         raise AssertionError("collect_samples must not touch the proxy backend")
 
 
-def _build_core() -> SessionCore:
+def _build_core(config=None, use_addition_r3: bool = False) -> SessionCore:
     # Mirrors setup_session_routes (sessions.py): tokenizer + registry + core.
+    config = config if config is not None else _CONFIG
     tokenizer = load_tokenizer(
-        _ARGS.hf_checkpoint, chat_template_path=_ARGS.chat_template_path, trust_remote_code=True
+        config.hf_checkpoint, chat_template_path=config.chat_template_path, trust_remote_code=True
     )
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
-        tokenizer_type=_ARGS.tito_model,
-        chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
+        tokenizer_type=config.tito_model,
+        chat_template_kwargs=config.apply_chat_template_kwargs,
     )
-    registry = SessionRegistry(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCore(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
+    registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer)
+    return SessionCore(_UnusedBackend(), registry, config, config.instance_id, use_addition_r3=use_addition_r3)
 
 
 @pytest.fixture(scope="module")
 def core():
     return _build_core()
+
+
+@pytest.fixture(scope="module")
+def addition_core():
+    return _build_core(use_addition_r3=True)
+
+
+@pytest.fixture(scope="module")
+def spec_core():
+    return _build_core(_CONFIG.model_copy(update={"sglang_speculative_algorithm": "EAGLE"}))
 
 
 # ── fixtures: a two-turn trajectory with R3 / cache stats / weight versions ──
@@ -182,7 +198,10 @@ async def test_assembled_sample_golden(core):
     assert m.loss_mask == [1, 1, 0, 0, 1, 1]
     assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
-    assert m.weight_versions == ["w1", "w2"]
+    assert m.weight_versions == [
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)]),
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)]),
+    ]
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
     assert m.prefix_cache_info.to_dict() == {"cached_tokens": 5, "total_prompt_tokens": 10}
     assert m.prompt == [{"role": "user", "content": "hi"}]
@@ -198,6 +217,26 @@ async def test_assembled_sample_golden(core):
         {"t0": None, "t1": 0.0, "turn": 2, "prev_t1": 0.0},
     ]
     assert reply.empty_reason is None
+
+
+async def test_spec_info_crosses_samples_wire(spec_core):
+    output_token_ids = [10, 11, 12, 13, 14, 15, 16]
+    record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=output_token_ids)
+    record.response["choices"][0]["meta_info"].update(
+        {"spec_num_correct_drafts": 3, "spec_num_proposed_drafts": 5, "spec_verify_ct": 2}
+    )
+    sid = await _make_session(spec_core, [record], [1, 2, 3, *output_token_ids])
+
+    status, payload = await _collect_via_op(spec_core, sid)
+    assert status == 200
+    (sample,), _ = _new_pipeline(payload, _input_sample())
+
+    assert sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 3,
+        "spec_num_proposed_drafts": 5,
+        "spec_verify_ct": 2,
+        "completion_tokens": 7,
+    }
 
 
 async def test_truncation_golden(core):
@@ -218,8 +257,8 @@ async def test_truncation_golden(core):
     assert [segment["turn"] for segment in last.metadata["lifecycle"]] == [1, 2]
 
 
-async def test_debug_messages_cross_samples_wire(core, monkeypatch):
-    monkeypatch.setattr(core.args, "save_debug_trajectory_data", "/unused/{rollout_id}.jsonl")
+async def test_debug_messages_cross_samples_wire():
+    core = _build_core(_make_config(save_debug_trajectory_data="/unused/{rollout_id}.jsonl"))
     records = _two_turn_records()
     sid = await _make_session(core, records, _ACCUMULATED)
     _, payload = await _collect_via_op(core, sid)
@@ -241,6 +280,93 @@ async def test_session_metadata_matches_get_session(core):
     assert response.status_code == 200
     assert reply.session_metadata == json.loads(response.body)["metadata"]
     assert reply.session_metadata["accumulated_token_ids"] == _ACCUMULATED
+
+
+# ── additional R3 (in-place weight updates): patches rebuild the full tensor ──
+
+
+def _r3_slice_b64(seed: int, start_row: int, end_row: int) -> str:
+    """Rows [start_row, end_row) of the same arange stream `_r3_b64(seed=...)`
+    encodes in full, so addition patches rebuild exactly `_expected_r3`."""
+    arr = np.arange(seed + start_row * NUM_LAYERS * TOPK, seed + end_row * NUM_LAYERS * TOPK, dtype=np.int32)
+    return pybase64.b64encode(arr.tobytes()).decode("ascii")
+
+
+def _two_turn_addition_records(turn2_start_len: int = 4):
+    # The _two_turn_records trajectory with addition-R3 payloads: each record
+    # carries only rows [start, len(prompt)+len(output)-1) plus the request
+    # offset that produced them (turn 1: rows [0,4); turn 2: rows [4,8)).
+    return [
+        _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            output_log_probs=[-0.125, -0.25],
+            routed_experts=_r3_slice_b64(100, 0, 4),
+            routed_experts_start_len=0,
+        ),
+        _make_record(
+            prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+            output_token_ids=[30, 31],
+            output_log_probs=[-0.5, -1.0],
+            routed_experts=_r3_slice_b64(100, turn2_start_len, 8),
+            routed_experts_start_len=turn2_start_len,
+        ),
+    ]
+
+
+async def test_addition_assembled_sample_matches_full_reference(addition_core):
+    """Addition patches must reconstruct byte-for-byte the tensor the full-R3
+    fixture assembles for the same tokens (test_assembled_sample_golden)."""
+    sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+    (m,) = samples
+
+    assert m.tokens == _ACCUMULATED
+    assert m.loss_mask == [1, 1, 0, 0, 1, 1]
+    assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
+    assert m.status == Sample.Status.COMPLETED
+    assert m.rollout_routed_experts.dtype == np.int32
+    assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
+
+
+async def test_addition_truncation_golden(addition_core):
+    """max_seq_len=8 strips one token off the merged sample; R3 is materialized
+    for exactly len(tokens) - 1 rows."""
+    sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid, max_seq_len=8)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+
+    last = samples[-1]
+    assert last.status == Sample.Status.TRUNCATED
+    assert last.tokens == _ACCUMULATED[:8]
+    assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 8)[:-1])
+
+
+async def test_addition_turn_boundary_truncation_uses_required_prefix(addition_core):
+    """A max_seq_len boundary may drop the original last turn entirely."""
+    sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid, max_seq_len=5)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+
+    last = samples[-1]
+    assert last.tokens == _ACCUMULATED[:5]
+    assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 4))
+
+
+async def test_addition_gap_returns_422(addition_core):
+    # Turn 2 starts at row 5 while turn 1 retained only 4 rows: the assembler
+    # rejects the gap as a 422 instead of assembling a corrupt tensor.
+    sid = await _make_session(addition_core, _two_turn_addition_records(turn2_start_len=5), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid)
+    assert status == 422
+    assert "additional R3" in payload.decode()
+
+    health = await addition_core.health()
+    assert health.status_code == 200
 
 
 # ── empty_reason discriminator ──
@@ -288,7 +414,7 @@ async def test_broken_chain_returns_422_and_server_survives(core):
 @pytest.fixture(scope="module")
 def app_client():
     app = FastAPI()
-    setup_session_routes(app, _UnusedBackend(), _ARGS)
+    setup_session_routes(app, _UnusedBackend(), _CONFIG)
     with TestClient(app) as client:
         yield client
 

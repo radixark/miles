@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Metric keys captured for the history gate, plus the step key carried alongside
 # each. The training keys are logged from the Ray training actor with step_key
-# "train/step"; rollout/raw_reward is logged with step_key "rollout/step". Keys
+# "train/step"; rollout metrics use step_key "rollout/step". Keys
 # are the actor (role="actor") form with no role prefix.
 TARGET_METRIC_KEYS: tuple[str, ...] = (
     "train/grad_norm",
@@ -51,6 +51,8 @@ TARGET_METRIC_KEYS: tuple[str, ...] = (
     "train/train_rollout_logprob_abs_diff",
     "train/train_rollout_kl",
     "rollout/raw_reward",
+    "rollout/tito_session_mismatch_rate/v1/assistant_text",
+    "rollout/tito_session_mismatch_rate/v2/assistant_text",
 )
 
 # Env var naming the directory the harness assigns for this run's records.

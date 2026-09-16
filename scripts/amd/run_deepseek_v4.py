@@ -159,12 +159,12 @@ def _ensure_4layer_model_type(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     """Download HF checkpoint + task dataset. Idempotent: hf skips existing blobs."""
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
     if args.hf_checkpoint is None:
         dest = f"{args.model_dir}/{args.model_name}"
-        U.exec_command(f"hf download {args.model_org}/{args.model_name} " f"--local-dir {dest}")
+        U.exec_command_cpu(f"hf download {args.model_org}/{args.model_name} " f"--local-dir {dest}")
     _ensure_4layer_model_type(args)
     _download_dataset(args)
 
@@ -197,7 +197,7 @@ def _prepare_spmd(args: ScriptArgs):
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
-    extra_args = "--expert-tensor-parallel-size 1 --context-parallel-size 1 "
+    extra_args = "--dsv4-impl miles --expert-tensor-parallel-size 1 --context-parallel-size 1 "
     if actor_num_nodes == 1 and is_4layer:
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
@@ -285,6 +285,9 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--decoder-first-pipeline-num-layers 11 "
                 "--decoder-last-pipeline-num-layers 10 "
                 "--context-parallel-size 1 "
+                # Raising context parallelism also needs --allgather-cp: DeepSeek V4 has no
+                # zigzag CP path, and arguments.py asserts on the flag rather than setting it.
+                # "--allgather-cp "
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
@@ -434,8 +437,9 @@ def _train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.5 "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
+        "--dsv4-impl miles "  # ROCm has no cudnn/flash_mla path for the megatron impl
         "--model-name deepseekv4 "  # for mbridge load
-        "--qkv-format bshd "
+        "--qkv-format thd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "
@@ -483,8 +487,7 @@ def _train(args: ScriptArgs):
 
     if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        # gfx950 uses blockwise FP8 with fp32 scales.
-        misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"1"}' """
+        misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}' """
         # ROCm TE MoE FP8 lacks fused wgrad accumulation; disable the fusion.
         misc_args += "--no-gradient-accumulation-fusion "
 

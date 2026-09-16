@@ -155,9 +155,9 @@ def convert_qwen3_next_to_hf(args, name, param):
         elif rest == "final_layernorm.weight":
             return [("mtp.norm.weight", param)]
 
-        # transformer_layer components → reuse decoder conversion with mtp prefix
-        if rest.startswith("transformer_layer."):
-            transformer_rest = rest[len("transformer_layer.") :]
+        # transformer_layer components: reuse decoder conversion with mtp prefix.
+        if rest.startswith(("transformer_layer.", "mtp_model_layer.")):
+            transformer_rest = rest.split(".", 1)[1]
             proxy_name = f"module.module.decoder.layers.{layer_idx}.{transformer_rest}"
             results = convert_qwen3_next_to_hf(args, proxy_name, param)
             return [

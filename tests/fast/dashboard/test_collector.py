@@ -1,7 +1,9 @@
 import logging
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from tests.fast.dashboard.dummy_telemetry import BASE_TS, dump_dummy_telemetry
 
 from miles.dashboard.collector import CollectorConfig, DashboardCollector
@@ -26,7 +28,7 @@ def make_collector(tmp_path, **kwargs) -> DashboardCollector:
     config = kwargs.pop("config", None) or CollectorConfig(
         dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0
     )
-    return DashboardCollector(config, **kwargs)
+    return DashboardCollector(config=config, **kwargs)
 
 
 def test_collector_satisfies_dummy_telemetry_contract(tmp_path):
@@ -114,7 +116,7 @@ def test_flush_thread_persists_periodically(tmp_path):
     config = CollectorConfig(
         dashboard_dir=str(tmp_path / "dashboard"), run_name="r", start_ts=0.0, flush_interval_seconds=0.05
     )
-    collector = DashboardCollector(config)
+    collector = DashboardCollector(config=config)
     collector.start()
     collector.push_metrics(MetricsRecord(ts=1.0, step_key="rollout/step", step=0, metrics={"a": 1}))
     time.sleep(0.2)
@@ -126,7 +128,7 @@ def test_flush_thread_persists_periodically(tmp_path):
 
 def test_shutdown_flushes_and_stops_scraper(tmp_path):
     collector = make_collector(tmp_path, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-    collector.set_router("http://router:3000", use_miles_router=False)
+    collector.set_router("http://router:3000")
     assert collector._scraper is not None
     collector.push_metrics(MetricsRecord(ts=1.0, step_key="rollout/step", step=0, metrics={"a": 1}))
     collector.shutdown()
@@ -136,20 +138,39 @@ def test_shutdown_flushes_and_stops_scraper(tmp_path):
     assert len(loaded.records[Stream.METRICS]) == 1
 
 
-def test_scraper_mode_resolution_and_repoint(tmp_path):
+def _router_mode_collector(tmp_path):
+    config = CollectorConfig(
+        dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0, scrape_mode="router"
+    )
+    return make_collector(tmp_path, config=config, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
+
+
+def test_auto_scrape_mode_is_direct(tmp_path):
     collector = make_collector(tmp_path, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-    collector.set_router("http://router:3000", use_miles_router=False)
+    collector.set_router("http://router:3000")
+    assert collector._scraper.mode == ScrapeMode.DIRECT
+    collector.shutdown()
+
+
+def test_explicit_router_scrape_mode_is_honoured(tmp_path):
+    collector = _router_mode_collector(tmp_path)
+    collector.set_router("http://router:3000")
     assert collector._scraper.mode == ScrapeMode.ROUTER
+    collector.shutdown()
+
+
+def test_scraper_repoint(tmp_path):
+    collector = _router_mode_collector(tmp_path)
+    collector.set_router("http://router:3000")
     first = collector._scraper
 
-    collector.set_router("http://router:3000", use_miles_router=False)  # no-op
+    collector.set_router("http://router:3000")  # no-op
     assert collector._scraper is first
 
     collector.update_topology(TopologySnapshot(ts=1.0, engines=[_engine("http://e:1")]))
-    collector.set_router("http://router2:3000", use_miles_router=True)  # router restarted, miles router now
+    collector.set_router("http://router2:3000")  # router restarted
     assert collector._scraper is not first
     assert first._stop_event.is_set()
-    assert collector._scraper.mode == ScrapeMode.DIRECT
     # actor-registered engine first, then the externals remembered from the
     # first router's scrapes (never actor-known -> kept as scrape targets)
     assert collector._scraper.engine_addrs() == [
@@ -189,7 +210,7 @@ def test_prometheus_forwarding_snapshot(tmp_path):
     config = CollectorConfig(
         dashboard_dir=str(tmp_path / "dashboard"), run_name="r", start_ts=0.0, forward_prometheus=True
     )
-    collector = DashboardCollector(config, prometheus_handle_factory=lambda: FakeHandle())
+    collector = DashboardCollector(config=config, prometheus_handle_factory=lambda: FakeHandle())
     collector.push_gpu_samples(
         "10.0.0.1", [GpuSample(ts=1.0, node="10.0.0.1", gpu=0, util=87, mem_mb=1000, power_w=600)]
     )
@@ -294,3 +315,71 @@ def test_external_engines_synthesized_from_scrapes(tmp_path):
         "http://10.1.0.5:15000": "regular",
         "http://10.1.0.6:15000": "external",
     }
+
+
+class TestConstructorContract:
+    def test_a_positional_config_is_rejected(self, tmp_path):
+        """The collector is built as a ray actor, so config must be bound by keyword only."""
+        config = CollectorConfig(dashboard_dir=str(tmp_path / "dashboard"), run_name="r", start_ts=1.0)
+
+        with pytest.raises(TypeError):
+            DashboardCollector(config)
+
+
+class _FakeSamplerStart:
+    def remote(self):
+        return True
+
+
+class _FakeSamplerHandle:
+    def __init__(self, sampler):
+        self.sampler = sampler
+        self.start = _FakeSamplerStart()
+
+
+class _FakeRayActorClass:
+    def __init__(self, cls):
+        self._cls = cls
+        self.options_kwargs = None
+        self.positional_args = None
+        self.keyword_args = None
+
+    def options(self, **kwargs):
+        self.options_kwargs = kwargs
+        return self
+
+    def remote(self, *args, **kwargs):
+        self.positional_args = args
+        self.keyword_args = kwargs
+        return _FakeSamplerHandle(self._cls(*args, **kwargs))
+
+
+class TestDefaultSpawnSampler:
+    def test_builds_the_gpu_sampler_through_keyword_arguments_only(self, monkeypatch):
+        """The sampler actor is constructed with keywords its keyword-only signature accepts."""
+        import ray
+
+        from miles.dashboard import collector as collector_mod
+        from miles.dashboard.gpu_sampler import GpuSampler
+
+        actor_classes: list[_FakeRayActorClass] = []
+
+        def fake_ray_remote(cls):
+            actor_class = _FakeRayActorClass(cls)
+            actor_classes.append(actor_class)
+            return actor_class
+
+        monkeypatch.setattr(ray, "remote", fake_ray_remote)
+        monkeypatch.setattr(ray, "get", lambda value: value)
+        monkeypatch.setattr(ray, "kill", lambda handle: None)
+        monkeypatch.setattr(ray, "get_runtime_context", lambda: SimpleNamespace(current_actor="collector-handle"))
+
+        handle = collector_mod._default_spawn_sampler("a" * 56, "10.0.0.7", 0.25)
+
+        [actor_class] = actor_classes
+        assert actor_class.positional_args == ()
+        assert set(actor_class.keyword_args) == {"push", "node", "interval", "push_processes"}
+        sampler = handle.sampler
+        assert isinstance(sampler, GpuSampler)
+        assert (sampler.node, sampler.interval) == ("10.0.0.7", 0.25)
+        assert isinstance(sampler._push, collector_mod._SelfGpuPush)

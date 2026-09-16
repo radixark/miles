@@ -98,7 +98,7 @@ def _default_spawn_sampler(node_id: str, node_ip: str, interval: float):
             scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node_id, soft=False),
         )
         .remote(
-            _SelfGpuPush(ray.get_runtime_context().current_actor),
+            push=_SelfGpuPush(ray.get_runtime_context().current_actor),
             node=node_ip,
             interval=interval,
             push_processes=_SelfGpuProcessPush(ray.get_runtime_context().current_actor),
@@ -143,8 +143,8 @@ class DashboardCollector:
 
     def __init__(
         self,
-        config: CollectorConfig,
         *,
+        config: CollectorConfig,
         prometheus_handle_factory=None,  # () -> handle with .update.remote(dict), or None
         scraper_http_get=None,  # test hook, forwarded to SglangScraper
     ):
@@ -160,7 +160,7 @@ class DashboardCollector:
         # latest-value caches for the Prometheus forwarding snapshot; kept
         # separately because store buffers empty out on every flush
         self._latest_gpu: dict[tuple[str, int], GpuSample] = {}
-        self._latest_running_reqs: dict[str, float] = {}
+        self._latest_running_reqs: dict[str, tuple[float, float]] = {}
         self._latest_phase_seconds: dict[str, float] = {}
         self._scraped_engine_addrs: set[str] = set()
         self._actor_engine_addrs: set[str] = set()
@@ -257,12 +257,9 @@ class DashboardCollector:
         if missing:
             self.update_topology(TopologySnapshot(ts=time.time(), engines=base))
 
-    def set_router(self, router_addr: str, *, use_miles_router: bool) -> None:
+    def set_router(self, router_addr: str) -> None:
         """Register the sglang router and start (or re-point) the scraper."""
-        if self.config.scrape_mode == "auto":
-            mode = ScrapeMode.DIRECT if use_miles_router else ScrapeMode.ROUTER
-        else:
-            mode = ScrapeMode(self.config.scrape_mode)
+        mode = ScrapeMode.DIRECT if self.config.scrape_mode == "auto" else ScrapeMode(self.config.scrape_mode)
         # never hold the lock while stopping a scraper: its thread may be
         # blocked on the same lock inside the _append sink (deadlock)
         with self._lock:
@@ -306,7 +303,11 @@ class DashboardCollector:
         elif isinstance(record, EngineSample):
             self._scraped_engine_addrs.add(record.addr)
             if record.metric == "sglang_num_running_reqs":
-                self._latest_running_reqs[record.addr] = record.value
+                ts, total = self._latest_running_reqs.get(record.addr, (None, 0.0))
+                self._latest_running_reqs[record.addr] = (
+                    record.ts,
+                    (total if ts == record.ts else 0.0) + record.value,
+                )
         elif isinstance(record, PhaseEvent):
             self._latest_phase_seconds[record.name] = record.t1 - record.t0
 
@@ -378,7 +379,7 @@ class DashboardCollector:
             }
             snapshot |= {
                 f"dashboard/engine_{safe(addr)}_running_reqs": value
-                for addr, value in self._latest_running_reqs.items()
+                for addr, (_, value) in self._latest_running_reqs.items()
             }
             snapshot |= {
                 f"dashboard/phase_{name}_seconds": seconds for name, seconds in self._latest_phase_seconds.items()

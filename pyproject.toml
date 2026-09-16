@@ -44,6 +44,7 @@ testpaths = ["./tests"]  # must be an explicit path to avoid importing another "
 # directories to ignore when discovering tests
 norecursedirs = [
     "external",
+    "snapshots",
     "examples",
     "docs",
     "scripts",

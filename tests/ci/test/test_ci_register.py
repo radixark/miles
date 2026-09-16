@@ -3,8 +3,9 @@
 Covers the AST-collection behavior of the suite-as-runner-class refactor:
 `labels` is optional (default None ≡ []); a non-empty list of canonical
 domain labels gates the test on the resolved domain scope, while None / [] /
-omitted means always-on within an eligible cadence; `nightly=True` makes a
-registration nightly-only; `num_gpus` is gone; `labels` must be passed by
+omitted means always-on within an eligible cadence; `nightly=True` excludes a
+registration from regular cadence while nightly and weekly admit it;
+`num_gpus` is gone; `labels` must be passed by
 keyword (not as a positional third argument).
 """
 
@@ -56,7 +57,7 @@ class TestRegisterPositive:
         path = _make_fixture(
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])
+            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=['hopper'])
             """,
             tmp_path,
         )
@@ -83,30 +84,6 @@ class TestRegisterPositive:
         assert r.suite == "stage-a-cpu"
         assert r.labels == []
 
-    def test_labels_none_is_always_run(self, tmp_path):
-        # Explicit `labels=None` is equivalent to omitting / `labels=[]`.
-        path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=None)
-            """,
-            tmp_path,
-        )
-        r = ut_parse_one_file(path)[0]
-        assert r.labels == []
-
-    def test_labels_empty_list_is_always_run(self, tmp_path):
-        # `labels=[]` is also legal and means always-run; no never-run rule.
-        path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
-            """,
-            tmp_path,
-        )
-        r = ut_parse_one_file(path)[0]
-        assert r.labels == []
-
     def test_cuda_multiple_labels(self, tmp_path):
         path = _make_fixture(
             """
@@ -115,6 +92,7 @@ class TestRegisterPositive:
                 est_time=600,
                 suite="stage-c-8-gpu-h100",
                 labels=["megatron", "sglang"],
+                hardware=["hopper"],
             )
             """,
             tmp_path,
@@ -129,6 +107,7 @@ class TestRegisterPositive:
                 est_time=600,
                 suite="stage-c-8-gpu-h100",
                 labels=["megatron"],
+                hardware=["hopper"],
                 disabled="known regression in megatron 0.12",
             )
             """,
@@ -145,6 +124,7 @@ class TestRegisterPositive:
                 est_time=600,
                 suite="stage-c-8-gpu-h100",
                 labels=["megatron"],
+                hardware=["hopper"],
                 nightly=True,
             )
             """,
@@ -157,15 +137,123 @@ class TestRegisterPositive:
 
 
 class TestRegisterNegative:
+    @pytest.mark.parametrize("func_name", ["register_cuda_ci", "register_rocm_ci"])
+    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]"])
+    def test_gpu_labels_must_be_non_empty(self, tmp_path, func_name, labels_arg):
+        path = _make_fixture(
+            f"""
+            from tests.ci.ci_register import {func_name}
+            {func_name}(est_time=60, suite="stage-b-2-gpu-h200"{labels_arg})
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"labels.*must contain at least one domain label"):
+            ut_parse_one_file(path)
+
     def test_unknown_label_rejected(self, tmp_path):
         path = _make_fixture(
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatorn"])
+            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatorn"], hardware=['hopper'])
             """,
             tmp_path,
         )
         with pytest.raises(ValueError, match=r"unknown labels.*megatorn"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize("hardware_arg", ["", ", hardware=None", ", hardware=[]"])
+    def test_cuda_hardware_must_be_non_empty(self, tmp_path, hardware_arg):
+        path = _make_fixture(
+            f"""
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"]{hardware_arg}
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"hardware.*must list at least one arch"):
+            ut_parse_one_file(path)
+
+    def test_unknown_arch_rejected(self, tmp_path):
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["ampere"]
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"unknown arches.*ampere"):
+            ut_parse_one_file(path)
+
+    def test_duplicated_arch_rejected(self, tmp_path):
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60,
+                suite="stage-b-2-gpu-h200",
+                labels=["precision"],
+                hardware=["hopper", "hopper"],
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"duplicated arch"):
+            ut_parse_one_file(path)
+
+    def test_unknown_cuda_suite_rejected(self, tmp_path):
+        # A suite with no workflow job used to run zero tests in silence.
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60, suite="stage-c-8-gpu-b300", labels=["precision"], hardware=["blackwell"]
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"unknown CUDA suite 'stage-c-8-gpu-b300'"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize(
+        ("suite", "hardware"),
+        [
+            # Blackwell home, but Hopper is where it would run by default.
+            ("stage-c-8-gpu-b200", '["hopper", "blackwell"]'),
+            ("stage-c-8-gpu-b200", '["hopper"]'),
+            # Hopper home for a test that only runs on Blackwell.
+            ("stage-c-8-gpu-h100", '["blackwell"]'),
+        ],
+    )
+    def test_home_stage_must_match_default_arch(self, tmp_path, suite, hardware):
+        path = _make_fixture(
+            f"""
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60, suite="{suite}", labels=["precision"], hardware={hardware}
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"home stage must be on its first supported arch"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize("func_name", ["register_cpu_ci", "register_rocm_ci"])
+    def test_hardware_rejected_outside_cuda(self, tmp_path, func_name):
+        suite = "stage-a-cpu" if func_name == "register_cpu_ci" else "stage-c-4-gpu-mi350"
+        path = _make_fixture(
+            f"""
+            from tests.ci.ci_register import {func_name}
+            {func_name}(
+                est_time=60, suite="{suite}", labels=["precision"], hardware=["hopper"]
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"hardware.*is CUDA-only"):
             ut_parse_one_file(path)
 
     def test_num_gpus_kwarg_rejected(self, tmp_path):
@@ -278,7 +366,7 @@ class TestSelectionHelpers:
         assert _extract_list_constant(node) == []
 
     def test_extract_list_constant_none_is_empty(self):
-        # Treat literal `None` as equivalent to `[]` (always-run intent).
+        # Literal `None` remains the CPU always-run spelling.
         node = ast.parse("None", mode="eval").body
         assert _extract_list_constant(node) == []
 
@@ -355,7 +443,7 @@ class TestFileTextMentionsRegister:
     def test_file_with_cuda_call_matches(self, tmp_path):
         p = tmp_path / "f.py"
         p.write_text(
-            "from tests.ci.ci_register import register_cuda_ci\nregister_cuda_ci(est_time=60, suite='stage-b-2-gpu-h200', labels=[])\n"
+            "from tests.ci.ci_register import register_cuda_ci\nregister_cuda_ci(est_time=60, suite='stage-b-2-gpu-h200', labels=['precision'], hardware=['hopper'])\n"
         )
         assert _file_text_mentions_register(str(p))
 
@@ -478,7 +566,7 @@ class TestCollectTestsFastGpuStrict:
             "test_gpu_thing.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=['hopper'])
             """,
         )
         registries = collect_tests([path], sanity_check=True)
@@ -494,7 +582,7 @@ class TestCollectTestsFastGpuStrict:
             """
             from tests.ci.ci_register import register_cuda_ci
             register_cuda_ci(
-                est_time=120, suite="stage-c-8-gpu-h100", labels=["megatron"]
+                est_time=120, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper"]
             )
             """,
         )
@@ -522,7 +610,7 @@ class TestCollectTestsCudaBanInFast:
             "test_misplaced.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=['hopper'])
             """,
         )
         with pytest.raises(ValueError, match=r"register_cuda_ci is forbidden in tests/fast/"):
@@ -535,7 +623,7 @@ class TestCollectTestsCudaBanInFast:
             "test_ok.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=['hopper'])
             """,
         )
         registries = collect_tests([path], sanity_check=True)

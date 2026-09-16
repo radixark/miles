@@ -68,8 +68,10 @@ DEFAULT_METRIC_WHITELIST = (
     "sglang_e2e_request_latency_seconds_count",
 )
 
-# label subset passed through to EngineSample.labels (e.g. PD prefill/decode)
-KEPT_LABELS = ("engine_type",)
+# label subset passed through to EngineSample.labels: engine_type (PD
+# prefill/decode) and dp_rank (dp-attention engines export one sample per
+# dp rank; dropping the label would fold the ranks into one series)
+KEPT_LABELS = ("engine_type", "dp_rank")
 
 
 class ScrapeMode(StrEnum):

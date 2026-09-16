@@ -25,7 +25,7 @@
 # teacher == student -> opd_reverse_kl ~= 0 (inert).
 # =============================================================================
 set -ex
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 MODE=${MODE:-pure}
 MODEL_DIR=${MODEL_DIR:-/cluster_public/miles_data/models}
@@ -33,7 +33,7 @@ DATA_DIR=${DATA_DIR:-/node_public/maocheng-qwen35/data}
 OUTPUT_DIR=${OUTPUT_DIR:-/node_public/maocheng-qwen35/ckpt-opd-${MODE}}
 TEACHER_LOAD=${TEACHER_LOAD:-/node_public/maocheng-qwen35/ckpt-teacher}   # parent dir!
 EXAMPLE_DIR=${EXAMPLE_DIR:-$(cd "$(dirname "$0")" && pwd)}
-MILES_DIR=${MILES_DIR:-/root/miles}
+MILES_DIR=${MILES_DIR:-"$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"}
 RAY_ADDRESS=${RAY_ADDRESS:-http://127.0.0.1:8265}
 OPD_KL_COEF=${OPD_KL_COEF:-0.2}
 mkdir -p "${OUTPUT_DIR}"
@@ -112,7 +112,7 @@ RUNTIME_ENV_JSON="{\"env_vars\": {\"PYTHONPATH\": \"${MILES_DIR}:/root/Megatron-
 cd "${MILES_DIR}"
 ray job submit --address="${RAY_ADDRESS}" --submission-id qwen3.5-opd-${MODE} --no-wait \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 ${MILES_DIR}/train.py \
+   -- python3 "${MILES_DIR}/train.py" \
    --actor-num-nodes 1 --actor-num-gpus-per-node 8 --num-gpus-per-node 8 --colocate \
    ${MODEL_ARGS[@]} ${CKPT_ARGS[@]} ${OPD_ARGS[@]} ${ROLLOUT_ARGS[@]} ${OPTIMIZER_ARGS[@]} ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} ${PERF_ARGS[@]} ${EVAL_ARGS[@]} ${SGLANG_ARGS[@]} ${MISC_ARGS[@]} ${RM_ARGS[@]}
