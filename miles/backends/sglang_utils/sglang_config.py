@@ -9,6 +9,7 @@ import pydantic
 import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -226,7 +227,11 @@ class ModelConfig(FrozenStrictBaseModel):
             effective_model_path = default_model_path
 
         update_weights = raw.update_weights
-        if update_weights is None:
+        if is_multi_lora_enabled(args):
+            assert update_weights is not True, "Tinker loads a frozen base; update_weights must be false"
+            assert effective_model_path == args.hf_checkpoint, "Tinker engines must load the trainer's base checkpoint"
+            update_weights = False
+        elif update_weights is None:
             if effective_model_path != args.hf_checkpoint:
                 logger.warning(
                     f"Model '{raw.name}' uses model_path='{effective_model_path}' which differs "
@@ -286,14 +291,15 @@ def resolve_sglang_config(args) -> SglangConfig:
 
 
 def _compute_raw_sglang_config(args) -> _RawSglangConfig:
-    if args.debug_train_only:
+    if not args.starts_inference_engines:
         return _RawSglangConfig(models=[])
 
     eval_num_gpus = args.eval_num_gpus
+    rollout_num_gpus = args.rollout_num_gpus or 0
 
     if getattr(args, "sglang_config", None) is not None:
         config = _RawSglangConfig.from_yaml(args.sglang_config)
-        expected = args.rollout_num_gpus + eval_num_gpus
+        expected = rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
         assert (
             actual == expected
@@ -309,7 +315,9 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
             models=[_compute_eval_raw_model(m, args) if m.name == "eval" else m for m in config.models]
         )
 
-    if args.prefill_num_servers is not None:
+    if rollout_num_gpus == 0:
+        config = _RawSglangConfig(models=[])
+    elif args.prefill_num_servers is not None:
         config = _RawSglangConfig.from_prefill_num_servers(args)
     else:
         config = _RawSglangConfig(
@@ -374,7 +382,7 @@ def _compute_eval_raw_model(raw: _RawModelConfig, args) -> _RawModelConfig:
 
 def _compute_rollout_offset(args) -> int:
     """Offset (in PG bundle slots) where rollout GPUs start."""
-    if args.debug_train_only or args.debug_rollout_only or args.colocate:
+    if args.debug_rollout_only or args.colocate or not args.starts_inference_engines:
         return 0
     if getattr(args, "critic_train_only", False):
         return args.critic_num_nodes * args.critic_num_gpus_per_node

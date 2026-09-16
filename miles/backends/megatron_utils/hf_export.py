@@ -18,7 +18,7 @@ import safetensors.torch
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
-from miles.backends.megatron_utils.lora_utils import is_lora_model, save_lora_checkpoint
+from miles.backends.megatron_utils.lora.utils import is_lora_model, save_lora_checkpoint
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 from miles.backends.training_utils.parallel import get_parallel_state

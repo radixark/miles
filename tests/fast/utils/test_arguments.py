@@ -625,6 +625,52 @@ class TestSessionServerPauseGenerationMode:
         assert warned is expect_warning
 
 
+class TestSnapshotEvalValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def _snapshot_eval_args(self, tmp_path, *extra):
+        prompts = tmp_path / "eval.jsonl"
+        prompts.write_text("{}\n")
+        return self._parse(
+            [
+                "--eval-num-gpus",
+                "1",
+                "--eval-interval",
+                "5",
+                "--eval-hf-dir",
+                str(tmp_path / "snapshots"),
+                "--eval-prompt-data",
+                "dummy",
+                str(prompts),
+                *extra,
+            ]
+        )
+
+    def test_snapshot_eval_rejects_load_debug_rollout_data(self, tmp_path):
+        """The replay path loads no rollout functions, so there is nothing to run the eval with."""
+        args = self._snapshot_eval_args(tmp_path, "--load-debug-rollout-data", "/tmp/rollout_{rollout_id}.pt")
+        with pytest.raises(AssertionError, match="load-debug-rollout-data"):
+            miles_validate_args(args)
+
+    def test_train_only_snapshot_eval_needs_its_own_eval_function(self, tmp_path):
+        args = self._snapshot_eval_args(tmp_path, "--debug-train-only")
+        with pytest.raises(AssertionError, match="eval-function-path"):
+            miles_validate_args(args)
+
+    def test_train_only_leaves_no_rollout_gpus_even_under_colocate(self):
+        """The colocate normalization puts the actor's GPU count on rollout_num_gpus, which
+        would claim rollout engines for a job that starts none."""
+        args = self._parse(["--debug-train-only", "--colocate"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_num_gpus == 0
+        assert args.starts_inference_engines is False
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
@@ -839,29 +885,6 @@ class TestMultiLoRAValidation:
         miles_validate_args(args)
 
         assert args.multi_lora is True
-
-    def test_defaults_rollout_fn_and_data_source_to_multi_lora(self):
-        args = self._parse([])
-
-        miles_validate_args(args)
-
-        assert args.rollout_function_path == "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-        assert args.data_source_path == "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
-        assert args.rollout_global_dataset is True
-
-    def test_keeps_user_supplied_rollout_fn_and_data_source(self):
-        args = self._parse(
-            ["--rollout-function-path", "my.custom.rollout_fn", "--data-source-path", "my.custom.DataSource"]
-        )
-
-        miles_validate_args(args)
-
-        assert args.rollout_function_path == "my.custom.rollout_fn"
-        assert args.data_source_path == "my.custom.DataSource"
-
-    def test_empty_wait_is_a_registered_argument(self):
-        assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
-        assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
 
     def test_rejects_non_adam_optimizer(self):
         # Per-slot optimizer isolation (state init, retirement cleanup, step

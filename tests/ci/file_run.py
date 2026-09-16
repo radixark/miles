@@ -5,6 +5,7 @@ which runs on a bare hosted runner before any dependency install; this module
 may import only the stdlib and the dependency-free registry modules.
 """
 
+import ast
 import json
 import os
 import re
@@ -104,6 +105,31 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
     }
 
 
+def _read_snapshot_labels() -> dict[str, str]:
+    path = Path("tests/ci/labels.py")
+    if path.is_symlink():
+        raise FileRunError(f"CI label registry must not be a symlink: {path}")
+    try:
+        tree = ast.parse(path.read_text(), filename=str(path))
+        definitions = [
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "KNOWN_LABELS"
+        ]
+        if len(definitions) != 1:
+            raise FileRunError(f"{path} must define KNOWN_LABELS once as a literal dictionary")
+        labels = ast.literal_eval(definitions[0])
+    except (OSError, SyntaxError, ValueError, TypeError) as error:
+        raise FileRunError(f"cannot read CI label registry {path}: {error}") from error
+    if not isinstance(labels, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in labels.items()
+    ):
+        raise FileRunError(f"{path}: KNOWN_LABELS must be a literal string-to-string dictionary")
+    return labels
+
+
 def collect_snapshot_tests(source_root: str | Path):
     """Parse a source snapshot as data, without importing its Python modules."""
     try:
@@ -116,7 +142,8 @@ def collect_snapshot_tests(source_root: str | Path):
     previous_directory = Path.cwd()
     try:
         os.chdir(root)
-        return collect_tests(_discover_regular_ci_files(), sanity_check=True)
+        files = _discover_regular_ci_files()
+        return collect_tests(files, sanity_check=True, known_labels=_read_snapshot_labels())
     finally:
         os.chdir(previous_directory)
 

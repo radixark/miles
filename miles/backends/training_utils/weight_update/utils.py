@@ -20,7 +20,7 @@ def get_data_replica_rank_and_size(parallel_state: ParallelState, placement: Wei
 
 
 def record_lora_checksums(bucket, checksums) -> None:
-    """Accumulate the sha256 manifest the engines verify at end_weight_update."""
+    """Accumulate the sha256 checksums the engines verify at end_weight_update."""
     for name, tensor in bucket:
         if ":" not in name:
             continue
