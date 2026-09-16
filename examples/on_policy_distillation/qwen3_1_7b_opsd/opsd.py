@@ -99,6 +99,7 @@ async def reward_func(args, sample, **kwargs):
 def convert_samples(args, samples):
     _validate(args)
     data = convert_samples_to_train_data(args, samples, {}, None, None)
+    # Existing target fields carry flattened [response, top-k] IDs and probabilities.
     for key in ("target_tokens", "loss_weights"):
         data[key] = [sample.train_metadata[key] for sample in samples]
     data.pop("metadata", None)
@@ -124,6 +125,7 @@ def loss_function(args, batch, logits, sum_of_sample_mean):
         teacher = torch.as_tensor(weights, device=logits.device, dtype=torch.float32).detach().reshape(shape)
         student_logp = student_logits.float().log_softmax(-1).gather(1, ids)
         terms = torch.special.xlogy(teacher, teacher) - teacher * student_logp
+        # Clip vocabulary contributions before summing, not the per-token KL.
         clip = args.opsd_kl_clip
         losses.append((terms if clip is None else terms.clamp(max=clip)).sum(-1))
         coverage.append(teacher.sum(-1))
