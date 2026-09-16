@@ -1,10 +1,4 @@
-"""The four recorded-session routes the Harbor × cookbook example needs, mounted next to the Tinker API.
-
-Dependency decision: the gateway stays Tinker-wire only plus these four routes. No OpenAI-parity surface
-(stateless ``/oai/api/v1/*``, ``/completions``, streaming) in stage 1; the agent harness only needs a recorded
-chat endpoint. Reused, not reimplemented: ``build_app`` (all Tinker routes and the UserInputError→400 /
-OwnershipError→403 handlers) and ``_tenant`` from ``miles.tinker.server.app``.
-"""
+"""The four recorded-session routes (POST bind, POST chat/completions, GET turns, DELETE) mounted next to the Tinker API; no OpenAI-parity surface in stage 1; reuses build_app / _tenant and adds the 404 / 429 / 502 handlers."""
 
 import json
 

@@ -1,22 +1,4 @@
-"""Harbor × Tinker RL on the multi-LoRA gateway: cookbook's training loop with the Harbor plug-ins from harbor_env.py.
-
-This is the minimal example from PR #3286's description, parameterised.
-
-Reused, not reimplemented: ``tinker_cookbook.rl.train.Config`` / ``train.main`` (rollouts, advantages, Datums,
-forward_backward / optim_step, checkpoints, metrics, wandb via ml_log), ``chz.nested_entrypoint`` for the CLI (the
-same wiring as ``tinker_cookbook/recipes/rl_loop.py``), and ``miles.rollout.agentic.credentials``
-(``PROVIDER_CREDENTIALS``, ``credential_available``, ``preflight_sdk``, ``resolve_provider_api_key``) for the sandbox
-preflight. Requires ``pip install tinker-cookbook``.
-
-Usage (stage 1, internal AgentENV sandbox; the gateway must be started with lm_head in --target-modules, see the PR's
-compatibility note):
-    HARBOR_ENV_TYPE=e2b E2B_API_URL=https://<agentenv> TINKER_API_KEY=tml-... \\
-    python examples/multi_lora/harbor_tinker/run_harbor_tinker.py gateway=http://<gateway>:10613 \\
-        model_name=Qwen/Qwen3-30B-A3B tasks_dir=<terminal-bench-2 checkout>
-
-Stage 0 needs no extra agent: Harbor's golden agent (``agent_name=oracle``, no model) proves the sandbox
-round trip, and one terminus-2 trial on an easy task (``fix-git``) exercises the collector's recording.
-"""
+"""Harbor × Tinker RL on the multi-LoRA gateway: HarborTinkerConfig → cookbook train.Config (HarborDatasetBuilder + SessionRolloutStrategy) → train.main, with a sandbox preflight; usage and run order in README.md."""
 
 from __future__ import annotations
 

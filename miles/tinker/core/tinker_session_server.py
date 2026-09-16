@@ -1,28 +1,4 @@
-"""Token trajectory collector behind the gateway's four recorded-session routes.
-
-Dependency decision: the gateway stays Tinker-wire only plus the session routes. The client side is
-tinker-cookbook plus a thin plug-in layer (``examples/multi_lora/harbor_tinker``), which is why a ``Turn`` is
-shaped as cookbook's ``Transition`` (``ob`` = input_ids, ``ac`` = output_ids + logprobs): the client hands
-``trajectory_to_data`` the turns and the cookbook decides whether they chain into one Datum or split per turn.
-No merge logic, no OpenAI-parity surface, no streaming here.
-
-Reused, not reimplemented:
-- sampling: ``TinkerService.submit_sample(tenant, payload)`` — validates prompt ids against the vocab
-  (``validate_sample_payload``), resolves ``model_path`` through ``resolve_sampler_checkpoint`` (ownership),
-  runs ``MilesBackend.sample`` (router ``/generate`` with ``lora_path`` + ``lora_backfill_paths``), and
-  settles a ``RequestFuture`` (``TinkerService.retrieve_future`` + ``RequestFuture.settled``).
-- sampling-session binding: ``TinkerService.get_sampler(tenant, sampling_session_id)["model_path"]``.
-- rendering: the HF tokenizer's ``apply_chat_template`` / ``decode``, injected by ``serve_tinker.py``.
-
-Tenancy rules (one gateway, many tenants): a session belongs to the key that bound it; a request on a bound session
-may carry no key or the harness placeholder ``dummy`` (Harbor hands agents ``api_key="dummy"``), but a *different*
-real key is refused (403) so one tenant cannot record into or sample on another tenant's adapter; placeholders can
-neither bind nor auto-register (404). Each tenant has a cap on open sessions and each session a cap on turns (429),
-token ids are stored as compact arrays, prompts are rendered off the event loop, and the TTL sweep never drops a
-session with a sample in flight.
-
-Core layer: stdlib plus ``miles.tinker.core`` only.
-"""
+"""Token trajectory collector behind the four recorded-session routes: renders OpenAI messages with the base model's chat template, samples via TinkerService.submit_sample (adapter M@V, ownership, vocab checks), records each turn's exact ids + logprobs in tenant-owned sessions; TITO hooks empty; core layer."""
 
 from __future__ import annotations
 
