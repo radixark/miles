@@ -27,7 +27,6 @@ from miles.tinker.core.types import OwnershipError, UserInputError
 
 BASE = "base"
 HI = {"sequences": [{"tokens": [104, 105], "logprobs": [-0.1, -0.2], "stop_reason": "stop"}]}
-SKELETON = pytest.mark.skip(reason="skeleton: lands with the client plug-ins (action 3)")
 
 
 @pytest.fixture
@@ -215,6 +214,17 @@ def test_sweep_expires_idle_sessions(collector):
     assert set(collector.sessions) == {"young"}
 
 
-@SKELETON
-def test_turns_round_trip_through_cookbook():
-    """Two chained turns exported by GET /oai/sessions/{sid} become one Datum through turns_to_trajectory + trajectory_to_data; a broken prefix becomes two."""
+async def test_exported_turns_round_trip_through_cookbook(collector):
+    """GET /oai/sessions/{sid} turns feed turns_to_trajectory + trajectory_to_data unchanged (the client-side test file covers merge vs split)."""
+    pytest.importorskip("tinker_cookbook")
+    from examples.multi_lora.harbor_tinker.harbor_env import turns_to_trajectory
+    from tinker_cookbook.rl.data_processing import trajectory_to_data
+
+    collector.bind("s1", TENANT, SAMPLER)
+    await _chat(collector, "s1")
+    await _chat(collector, "s1", messages=[{"role": "user", "content": "hi"}, {"role": "user", "content": "more"}])
+    trajectory = turns_to_trajectory(collector.trajectory("s1", TENANT)["turns"])
+    assert [transition.ac.tokens for transition in trajectory.transitions] == [[1, 2], [1, 2]]  # FakeBackend's output
+    datums = trajectory_to_data(trajectory, traj_advantage=1.0)
+    assert len(datums) == 2  # the character template re-renders history without the previous output: split per turn
+    assert datums[1].loss_fn_inputs["target_tokens"].tolist()[-2:] == [1, 2]  # the engine's ids become the targets
