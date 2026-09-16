@@ -54,7 +54,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
         self.rollout_engines = rollout_engines
-        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.rollout_engines, engine_cell_ids)
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self._selector = selector
         self._engine_gpu_counts = engine_gpu_counts
 

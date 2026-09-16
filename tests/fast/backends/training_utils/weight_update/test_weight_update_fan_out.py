@@ -18,6 +18,7 @@ def _make_args(
     *, fully_async: bool = False, colocate: bool = False, pause_generation_mode: str = "abort"
 ) -> Namespace:
     return Namespace(
+        update_weight_engine_request_timeout=10.0,
         fully_async=fully_async,
         colocate=colocate,
         pause_generation_mode=pause_generation_mode,
@@ -62,7 +63,7 @@ class _FailingClient:
 
 def _make_updaters(clients: list[Any]) -> list[Any]:
     cell_ids = [f"cell-{index}" for index in range(len(clients))]
-    return list(create_rollout_cell_updaters(clients, cell_ids).values())
+    return list(create_rollout_cell_updaters(_make_args(), clients, cell_ids).values())
 
 
 class TestWeightUpdateSessionFanOut:

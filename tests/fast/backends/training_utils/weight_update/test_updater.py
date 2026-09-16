@@ -1,3 +1,4 @@
+from argparse import Namespace
 from typing import Any
 
 import pytest
@@ -32,7 +33,12 @@ def _install_fake_gloo(monkeypatch: pytest.MonkeyPatch, gathered: _GatheredVerdi
 
 
 def _make_updaters(cell_ids: list[str]) -> list[_RolloutCellUpdater]:
-    return [_RolloutCellUpdater(cell_id=cell_id, api_client=object()) for cell_id in cell_ids]
+    return [
+        _RolloutCellUpdater(
+            args=Namespace(update_weight_engine_request_timeout=10.0), cell_id=cell_id, api_client=object()
+        )
+        for cell_id in cell_ids
+    ]
 
 
 class TestMarkCellsErroredOnAnyRank:

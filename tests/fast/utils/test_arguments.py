@@ -3305,14 +3305,18 @@ class TestWeightUpdateDeadlines:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
 
-    def test_a_trainer_cells_update_has_a_finite_deadline_by_default(self):
-        """An unbounded default would let one hung trainer cell stall the whole run forever."""
-        assert self._parse([]).update_weights_timeout == 600.0
+    def test_every_weight_update_deadline_defaults_to_a_finite_value(self):
+        """An unbounded default would let one hung engine or trainer cell stall the run forever."""
+        args = self._parse([])
 
+        assert args.update_weights_timeout == 600.0
+        assert args.update_weight_engine_request_timeout == 300.0
+
+    @pytest.mark.parametrize("flag", ["--update-weights-timeout", "--update-weight-engine-request-timeout"])
     @pytest.mark.parametrize("value", ["0", "-1"])
-    def test_a_non_positive_trainer_deadline_is_refused(self, value: str):
+    def test_a_non_positive_deadline_is_refused(self, flag: str, value: str):
         """A zero or negative deadline would give up on every update before it even started."""
-        args = self._parse(["--update-weights-timeout", value])
+        args = self._parse([flag, value])
 
-        with pytest.raises(AssertionError, match=re.escape("--update-weights-timeout")):
+        with pytest.raises(AssertionError, match=re.escape(flag)):
             miles_validate_args(args)
