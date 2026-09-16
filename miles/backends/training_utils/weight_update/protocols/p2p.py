@@ -41,8 +41,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
     """P2P weight transfer over the updater's bucketed all-gather + HF conversion,
     and a single set of shared CPU pinned buffers for P2P writes.
 
-    Compute transfer_ready_params once (same for all engine ranks)
-    For each engine rank:
+    Compute transfer_ready_params once (same for all rollout engine ranks)
+    For each rollout engine rank:
         load_weights(shared buffer) → P2P write
         where the last rank's write is submitted to a background thread
     wait_transfers() at finish to collect all background writes
@@ -77,10 +77,10 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
         """Stage incoming tensors; when all shards for a param are collected,
-        load into shared buffer and P2P-write per engine rank.
+        load into shared buffer and P2P-write per rollout engine rank.
 
         Only calls load_weights() with complete accumulated tensors, preventing
-        partial writes that would corrupt the shared buffer when different engine
+        partial writes that would corrupt the shared buffer when different rollout engine
         ranks have different EP expert-to-local mappings.
         """
         if not self.is_sender or not converted_named_tensors:
@@ -97,7 +97,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for i, meta in enumerate(self._transfer_engine_meta_list):
                 meta.model_replica.load_weights(ready_hf_tensors)
 
-                # Last engine rank: fire-and-forget all sessions to background,
+                # Last rollout engine rank: fire-and-forget all sessions to background,
                 # as the weight will no longer be overwritten
                 futures = [
                     self.transfer_manager.submit(
@@ -111,7 +111,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 ]
 
                 if i != last_idx:
-                    # Non-last engine rank needs to be fully written to target before next update can happen.
+                    # Non-last rollout engine rank needs to be fully written to target before next update can happen.
                     for f in futures:
                         f.result()
 
@@ -149,11 +149,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self.session_id_to_server_args,
             ) = query_remote_weight_infos(rollout_engines, targets)
 
-            targets_grouped_by_engine_rank: dict[int, list] = {}
+            targets_grouped_by_rollout_engine_rank: dict[int, list] = {}
             for target in targets:
-                targets_grouped_by_engine_rank.setdefault(target.engine_rank, []).append(target)
+                targets_grouped_by_rollout_engine_rank.setdefault(target.rollout_engine_rank, []).append(target)
 
-            # Create ONE transfer engine for all engine ranks
+            # Create ONE transfer engine for all rollout engine ranks
             self._transfer_engine = create_transfer_engine()
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
@@ -161,10 +161,10 @@ class UpdateWeightP2P(WeightTransferProtocol):
             # - single CPU replica shared among all sessions
             # - related remote weight info
             self._transfer_engine_meta_list: list[TransferEngineMeta] = []
-            first_engine_rank = True
-            for rank_targets in targets_grouped_by_engine_rank.values():
+            first_rollout_engine_rank = True
+            for rank_targets in targets_grouped_by_rollout_engine_rank.values():
                 first_target = rank_targets[0]
-                session_id = targets_to_session_id[(first_target.engine_ind, first_target.engine_rank)]
+                session_id = targets_to_session_id[(first_target.rollout_engine_ind, first_target.rollout_engine_rank)]
                 parallelism_config = RankParallelismConfig.from_dict(
                     self.remote_weight_infos_by_session_id[session_id][1]
                 )
@@ -175,19 +175,19 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     self.args.hf_checkpoint,
                     server_args,
                     shared_params_dict=self._shared_params_dict,
-                    first_engine_rank=first_engine_rank,
+                    first_rollout_engine_rank=first_rollout_engine_rank,
                 )
-                if first_engine_rank:
+                if first_rollout_engine_rank:
                     self._shared_params_dict = dict(model_replica.named_parameters())
                     self._shared_param_mapper = ParameterMapper.from_model(model_replica)
-                    first_engine_rank = False
+                    first_rollout_engine_rank = False
 
                 remote_infos = [
                     RemoteWeightInfo(
-                        targets_to_session_id[(t.engine_ind, t.engine_rank)],
-                        self.remote_weight_infos_by_session_id[targets_to_session_id[(t.engine_ind, t.engine_rank)]][
-                            0
-                        ],
+                        targets_to_session_id[(t.rollout_engine_ind, t.rollout_engine_rank)],
+                        self.remote_weight_infos_by_session_id[
+                            targets_to_session_id[(t.rollout_engine_ind, t.rollout_engine_rank)]
+                        ][0],
                     )
                     for t in rank_targets
                 ]
@@ -202,7 +202,7 @@ def _create_cpu_replica(
     model_path: str,
     server_args: ServerArgs,
     shared_params_dict: dict[str, torch.Tensor],
-    first_engine_rank: bool = False,
+    first_rollout_engine_rank: bool = False,
 ) -> torch.nn.Module:
     """Create a CPU model replica that loads the right shard and skips post_load_weights."""
     load_config = LoadConfig(
@@ -239,7 +239,7 @@ def _create_cpu_replica(
     if hasattr(model, "post_load_weights"):
         model.post_load_weights = lambda *args, **kwargs: None
 
-    if first_engine_rank:
+    if first_rollout_engine_rank:
         for param in model.parameters():
             param.data = param.data.pin_memory()
     else:
