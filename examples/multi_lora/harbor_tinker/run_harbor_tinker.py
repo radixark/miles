@@ -33,6 +33,7 @@ class HarborTinkerConfig:
     lora_rank: int = 16
     groups_per_batch: int = 4
     group_size: int = 4
+    epochs: int = 1  # passes over the task list; steps = ceil(tasks * epochs / groups_per_batch), capped by max_steps
     concurrency: int = 16
     max_seq_len: int = 65536
     max_tokens: int = 8192
@@ -42,6 +43,7 @@ class HarborTinkerConfig:
     max_steps: int | None = None
     save_every: int = 5
     wandb_project: str | None = None
+    record_path: str | None = None  # per-trajectory JSONL (task, turns, token counts, reward) for experiment notes
 
 
 def preflight_sandbox() -> None:
@@ -98,6 +100,7 @@ def build_config(config: HarborTinkerConfig) -> train.Config:
             groups_per_batch=config.groups_per_batch,
             group_size=config.group_size,
             agent_name=config.agent_name,
+            epochs=config.epochs,
         ),
         rollout_error_tolerance=SessionRolloutStrategy(
             gateway_url=config.gateway,
@@ -106,6 +109,7 @@ def build_config(config: HarborTinkerConfig) -> train.Config:
             max_seq_len=config.max_seq_len,
             max_tokens=config.max_tokens,
             temperature=config.temperature,
+            record_path=config.record_path,
         ),
         learning_rate=config.learning_rate,
         lora_rank=config.lora_rank,
