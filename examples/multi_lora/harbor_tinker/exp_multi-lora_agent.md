@@ -98,7 +98,7 @@ Fix (PR files): `truncate_turns` in `harbor_env.py` keeps only the leading turns
 (default 32768, the gateway default) before building the `Trajectory`; the drop is logged and recorded per trajectory
 (`dropped_turns`). Exposed as `max_datum_tokens=` on the entry point. Run 4 re-runs the configuration with it.
 
-## Run 4 — 12 steps × 16 trials with the datum cap
+## Run 4 — 12 steps × 16 trials with the datum cap (completed after one gateway restart)
 
 `groups_per_batch=2 group_size=8 epochs=6 max_steps=12 max_tokens=1536 max_seq_len=16384 max_datum_tokens=32768 learning_rate=3e-4 HARBOR_AGENT_MAX_ITERATIONS=12`
 
@@ -111,7 +111,85 @@ died with the actor, taking the gateway down with it; the four SGLang schedulers
 
 Recovery: gateway relaunched with `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1` and the same
 `--run-id` (same checkpoint root), run4 resumed by the cookbook from `tinker://…/weights/000006` with `max_datum_tokens=20480`
-(turns longer than that are left out of training; the agent still runs them). Results of the resumed steps appended below.
+(turns longer than that are left out of training; the agent still runs them).
+
+### Run 4 results (both halves)
+
+Steps 0–7 are the first gateway process (sampler versions `1`…`6`/`000006`), steps 8–13 the resumed run on the relaunched gateway
+(new model id, sampler versions restart at `1`; the cookbook re-sampled batch 6 after resuming, hence 13 metric rows for 12
+batches). 222 trajectories, 217 Submitted / 5 SequenceLengthLimitExceeded, 25 turns dropped by the 20,480-token datum cap after
+the resume, 2,761 recorded chats across both gateway processes with 0 non-200, 72 `forward_backward`, 21 `optim_step`.
+
+## Per step (sampler version the trials sampled from)
+
+| step | sampler | trials | tasks | reward mean | per-task reward | turns mean (max) | output tok / turn | final seq len mean (max) | aborted / failed |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | `1` | 16 | cobol-modernization, fix-git | 0.00 | cobol-modernization 0.00, fix-git 0.00 | 11.6 (max 12.0) | 321 (max 1207) | 10949 (max 20372) | 0 |
+| 1 | `2` | 16 | overfull-hbox, prove-plus-comm | 0.19 | overfull-hbox 0.00, prove-plus-comm 0.38 | 9.7 (max 12.0) | 312 (max 1536) | 9249 (max 20071) | 1 |
+| 2 | `3` | 15 | cobol-modernization, fix-git | 0.00 | cobol-modernization 0.00, fix-git 0.00 | 9.9 (max 12.0) | 313 (max 1536) | 9339 (max 22194) | 1 |
+| 3 | `000003` | 15 | overfull-hbox, prove-plus-comm | 0.13 | overfull-hbox 0.00, prove-plus-comm 0.29 | 9.3 (max 12.0) | 280 (max 1092) | 9766 (max 21118) | 0 |
+| 4 | `4` | 16 | cobol-modernization, fix-git | 0.00 | cobol-modernization 0.00, fix-git 0.00 | 11.4 (max 12.0) | 278 (max 1536) | 8942 (max 15178) | 1 |
+| 5 | `5` | 16 | overfull-hbox, prove-plus-comm | 0.06 | overfull-hbox 0.00, prove-plus-comm 0.12 | 8.1 (max 12.0) | 279 (max 668) | 7499 (max 19990) | 0 |
+| 6 | `000006` | 16 | cobol-modernization, fix-git | 0.06 | cobol-modernization 0.00, fix-git 0.12 | 10.3 (max 12.0) | 286 (max 1038) | 8716 (max 22069) | 0 |
+| 7 | `6` | 16 | overfull-hbox, prove-plus-comm | 0.00 | overfull-hbox 0.00, prove-plus-comm 0.00 | 10.6 (max 13.0) | 313 (max 1176) | 12459 (max 26865) | 0 |
+| 8 | `1` | 16 | cobol-modernization, fix-git | 0.00 | cobol-modernization 0.00, fix-git 0.00 | 11.7 (max 12.0) | 280 (max 1106) | 8057 (max 15348) | 0 |
+| 9 | `2` | 16 | overfull-hbox, prove-plus-comm | 0.12 | overfull-hbox 0.00, prove-plus-comm 0.25 | 10.2 (max 12.0) | 289 (max 666) | 11122 (max 31739) | 0 |
+| 10 | `3` | 16 | cobol-modernization, fix-git | 0.00 | cobol-modernization 0.00, fix-git 0.00 | 11.1 (max 12.0) | 279 (max 505) | 8475 (max 24154) | 0 |
+| 11 | `000009` | 16 | overfull-hbox, prove-plus-comm | 0.00 | overfull-hbox 0.00, prove-plus-comm 0.00 | 8.4 (max 12.0) | 369 (max 1536) | 10858 (max 33078) | 1 |
+| 12 | `4` | 16 | cobol-modernization, fix-git | 0.00 | cobol-modernization 0.00, fix-git 0.00 | 7.4 (max 12.0) | 310 (max 904) | 5196 (max 8538) | 0 |
+| 13 | `5` | 16 | overfull-hbox, prove-plus-comm | 0.00 | overfull-hbox 0.00, prove-plus-comm 0.00 | 3.2 (max 9.0) | 384 (max 1536) | 4572 (max 22382) | 1 |
+
+## Cookbook step metrics
+
+| batch | reward/total | turns/episode | ob tok/turn | ac tok/turn | KL sample-train (v1) | entropy | rollout s |
+|---|---|---|---|---|---|---|---|
+| 0 | 0.00 | 11.625 | 5739 | 321 | 0.0029 | 0.287 | 340 |
+| 1 | 0.19 | 9.6875 | 5422 | 312 | 0.0033 | 0.267 | 104 |
+| 2 | 0.00 | 9.933333333333334 | 5288 | 313 | 0.0029 | 0.297 | 91 |
+| 3 | 0.13 | 9.333333333333334 | 6438 | 280 | 0.0025 | 0.280 | 100 |
+| 4 | 0.00 | 11.4375 | 5070 | 278 | 0.0027 | 0.229 | 93 |
+| 5 | 0.06 | 8.0625 | 5257 | 279 | 0.0034 | 0.108 | 100 |
+| 6 | 0.06 | 10.3125 | 4729 | 286 | 0.0030 | 0.112 | 70 |
+| 6 | 0.00 | 11.6875 | 4388 | 280 | 0.0021 | 0.127 | 87 |
+| 7 | 0.12 | 9.75 | 5791 | 282 | 0.0026 | 0.099 | 126 |
+| 8 | 0.00 | 10.875 | 4583 | 279 | 0.0029 | 0.198 | 74 |
+| 9 | 0.00 | 7.625 | 5174 | 362 | 0.0023 | 0.196 | 124 |
+| 10 | 0.00 | 7.4375 | 3126 | 310 | 0.0025 | 0.279 | 65 |
+| 11 | 0.00 | 3.1875 | 3811 | 381 | 0.0021 | 0.294 | 85 |
+
+## Per-task reward by visit
+
+| task | visit 0 | visit 1 | visit 2 | visit 3 | visit 4 | visit 5 | visit 6 | visit 7 | visit 8 | visit 9 | visit 10 | visit 11 | visit 12 | visit 13 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cobol-modernization | 0.00 (8) |  | 0.00 (7) |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  |
+| fix-git | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  | 0.12 (8) |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  |
+| overfull-hbox |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |  | 0.00 (8) |
+| prove-plus-comm |  | 0.38 (8) |  | 0.29 (7) |  | 0.12 (8) |  | 0.00 (8) |  | 0.25 (8) |  | 0.00 (8) |  | 0.00 (8) |
+
+
+### Sequence lengths
+
+- Output per turn: mean 302 tokens, median 261; 5 of 2,111 turns hit the 1,536 cap (vs 11 of 408 at 1,024 in run 2).
+- Final sequence: mean 8,937 tokens, median 6,938, max 33,078 — the tail is what overran the trainer before recompute was on.
+- Turns per episode fell from ~10–11 to 7.4 and 3.2 in the last two steps: the agent started declaring the task done early.
+
+### Reward
+
+- No growth. `prove-plus-comm` 0.38 → 0.29 → 0.12 → 0.00 → 0.25 → 0.00 → 0.00 across its seven visits; `fix-git` one success in 56
+  trials (visit 6); `cobol-modernization` and `overfull-hbox` 0 in every trial. Entropy fell 0.29 → 0.10 over the first seven steps
+  (the policy sharpening on a near-constant reward) and recovered to ~0.2–0.29 after the resume from the step-6 checkpoint.
+- Reading: with one solvable task out of four, 8 trials per task per step and lr 3e-4, GRPO gets a non-zero advantage only from the
+  `prove-plus-comm` groups, and the signal it gets there (success ratio 0.12–0.38 on 8 samples) is noise-dominated; the later
+  short episodes look like the start of collapse rather than learning. Sample-vs-train logprob KL stayed at 0.002–0.003 per step
+  throughout, so the token path itself is exact; what is missing is reward signal, not fidelity.
+- What a real reward curve needs (not run here): tasks the base model solves 20–60% of the time (so groups have variance), ≥16
+  samples per task per step, lr ≤ 1e-4 for rank 16, and per-turn budgets that keep the longest datum under the trainer's memory
+  (recompute on, or `max_datum_tokens` ≈ 16k).
+
+### Timing
+
+- Rollout per step 65–340 s wall with 16 concurrent trials (the 340 s first step includes template builds); train step 47–103 s
+  (forward_backward over ~90–150 per-turn Datums totalling 0.6–1.3 M tokens, optim, sampler export).
 
 ## Reproduce
 
