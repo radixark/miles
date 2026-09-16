@@ -9,6 +9,7 @@ import pydantic
 import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -226,7 +227,11 @@ class ModelConfig(FrozenStrictBaseModel):
             effective_model_path = default_model_path
 
         update_weights = raw.update_weights
-        if update_weights is None:
+        if is_multi_lora_enabled(args):
+            assert update_weights is not True, "Tinker loads a frozen base; update_weights must be false"
+            assert effective_model_path == args.hf_checkpoint, "Tinker engines must load the trainer's base checkpoint"
+            update_weights = False
+        elif update_weights is None:
             if effective_model_path != args.hf_checkpoint:
                 logger.warning(
                     f"Model '{raw.name}' uses model_path='{effective_model_path}' which differs "
