@@ -106,8 +106,7 @@ def validate_multi_lora_args(args: Any) -> None:
         "depend on batch contents. Drop --calculate-per-token-loss."
     )
     assert (getattr(args, "optimizer", "adam") or "adam").lower() == "adam", (
-        "Multi-LoRA requires --optimizer adam: the per-slot optimizer isolation "
-        "(build_multi_lora_optimizer, slot retirement state cleanup) only implements "
-        f"Adam semantics; got --optimizer {args.optimizer}"
+        "Multi-LoRA requires --optimizer adam: the per-slot SlotOptimizer only "
+        f"implements Adam semantics; got --optimizer {args.optimizer}"
     )
     args.megatron_to_hf_mode = "bridge"
