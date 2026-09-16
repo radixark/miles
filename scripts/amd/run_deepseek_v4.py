@@ -54,6 +54,11 @@ _MEGATRON_MODEL_TYPE = {
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
+    # Context parallelism for the training actor. 1 keeps the historical layout untouched.
+    # Above 1 it is what makes long sequences fit, because it is the only axis that divides
+    # the indexer's [seqlen, seqlen_kv] score matrix -- pipeline parallelism shrinks how many
+    # layers a rank owns but every one of them still allocates the matrix in full.
+    context_parallel_size: int = 1
     run_id: str = U.create_run_id()
     model_org: str = ""
     model_name: Literal[
@@ -67,6 +72,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ray_port: int = 6379
     enable_eval: bool = True
     enable_mtp: bool = False
+    colocate_memory_profile: Literal["auto", "192gb", "288gb"] = "auto"
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -259,6 +265,52 @@ def _prepare_cp(args: ScriptArgs):
     )
 
 
+def _resolve_colocate_memory_profile(args: ScriptArgs) -> str:
+    """Pick the colocate memory split from the card, not from the node count."""
+    if args.colocate_memory_profile != "auto":
+        return args.colocate_memory_profile
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return "288gb"
+        gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    except Exception:
+        return "288gb"
+    return "288gb" if gib >= 256 else "192gb"
+
+
+def _cp_derived_layout(
+    total_gpus: int, *, pipeline_size: int, first_layers: int, last_layers: int, cp_size: int
+) -> str:
+    """Spend the tensor-parallel budget on context parallelism, keeping the pipeline split fixed.
+
+    TP = total_gpus / (PP * CP), so DP collapses to 1. EP stays at 8 either way: Megatron builds
+    the expert group from world_size % (etp * ep * pp), a quantity CP does not enter.
+    """
+    if total_gpus % (pipeline_size * cp_size):
+        raise NotImplementedError(
+            f"--context-parallel-size {cp_size} does not divide {total_gpus} GPUs "
+            f"over {pipeline_size} pipeline stages."
+        )
+    tensor_size = total_gpus // (pipeline_size * cp_size)
+    config = f"--tensor-model-parallel-size {tensor_size} "
+    if tensor_size > 1:
+        # Megatron rejects sequence parallelism at TP=1 rather than ignoring it.
+        config += "--sequence-parallel "
+    config += (
+        f"--pipeline-model-parallel-size {pipeline_size} "
+        f"--decoder-first-pipeline-num-layers {first_layers} "
+        f"--decoder-last-pipeline-num-layers {last_layers} "
+        f"--context-parallel-size {cp_size} "
+    )
+    if cp_size > 1:
+        # Mandatory above CP=1: DeepSeek V4 has no zigzag CP path, and arguments.py asserts on
+        # the flag rather than setting it for you.
+        config += "--allgather-cp "
+    return config + "--expert-model-parallel-size 8 " "--expert-tensor-parallel-size 1 "
+
+
 def _get_parallel_config(args: ScriptArgs) -> str:
     """Return parallel config args for tested GPU configurations.
 
@@ -281,20 +333,24 @@ def _get_parallel_config(args: ScriptArgs) -> str:
         )
 
     if actor_num_gpus_per_node == 8:
-        if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash): TP4/PP4/EP8, 43 layers = 11+11+11+10
-            return (
-                "--tensor-model-parallel-size 4 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 4 "
-                "--decoder-first-pipeline-num-layers 11 "
-                "--decoder-last-pipeline-num-layers 10 "
-                "--context-parallel-size 1 "
-                # Raising context parallelism also needs --allgather-cp: DeepSeek V4 has no
-                # zigzag CP path, and arguments.py asserts on the flag rather than setting it.
-                # "--allgather-cp "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
+        cp_size = args.context_parallel_size
+        if total_gpus == 32:  # 4 nodes x 8 GPUs: PP4/EP8, 43 layers = 11+11+11+10
+            if cp_size == 1:
+                # The original layout, kept verbatim: TP4/PP4/CP1/EP8, DP2.
+                return (
+                    "--tensor-model-parallel-size 4 "
+                    "--sequence-parallel "
+                    "--pipeline-model-parallel-size 4 "
+                    "--decoder-first-pipeline-num-layers 11 "
+                    "--decoder-last-pipeline-num-layers 10 "
+                    "--context-parallel-size 1 "
+                    "--expert-model-parallel-size 8 "
+                    "--expert-tensor-parallel-size 1 "
+                )
+            return _cp_derived_layout(total_gpus, pipeline_size=4, first_layers=11, last_layers=10, cp_size=cp_size)
+
+        if total_gpus == 16:  # 2 nodes x 8 GPUs: PP2/EP8, 43 layers = 22+21
+            return _cp_derived_layout(total_gpus, pipeline_size=2, first_layers=22, last_layers=21, cp_size=cp_size)
 
     raise NotImplementedError(
         f"No pre-set parallel config for {total_gpus} GPUs. "
@@ -398,9 +454,12 @@ def _train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
         if args.actor_num_nodes == 4:
-            # 4-node PP4 memory balance: partial optimizer offload (keep ~25% on GPU) + keep train
-            # weights on GPU; pair with --sglang-mem-fraction-static 0.5.
-            optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
+            if _resolve_colocate_memory_profile(args) == "288gb":
+                # 288 GB card: partial optimizer offload (keep ~25% on GPU) + keep train
+                # weights on GPU; pair with --sglang-mem-fraction-static 0.5.
+                optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
+            else:
+                optimizer_args += "--optimizer-offload-fraction 1.0 " "--offload-train "
 
     sglang_world_size = 4
     sglang_tp_size = 4
@@ -437,8 +496,8 @@ def _train(args: ScriptArgs):
         f"--actor-num-nodes {args.actor_num_nodes} "
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.5 "
+        f"--train-memory-margin-bytes {'3221225472' if _resolve_colocate_memory_profile(args) == '288gb' else '1073741824'} "
+        f"--sglang-mem-fraction-static {'0.5' if _resolve_colocate_memory_profile(args) == '288gb' else '0.85'} "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--dsv4-impl miles "  # ROCm has no cudnn/flash_mla path for the megatron impl
