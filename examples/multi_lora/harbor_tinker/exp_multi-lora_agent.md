@@ -191,6 +191,89 @@ the resume, 2,761 recorded chats across both gateway processes with 0 non-200, 7
 - Rollout per step 65–340 s wall with 16 concurrent trials (the 340 s first step includes template builds); train step 47–103 s
   (forward_backward over ~90–150 per-turn Datums totalling 0.6–1.3 M tokens, optim, sampler export).
 
+## Run 5 — one task with real base success, 16 samples per step, 16 steps: **reward rises 0.38 → ~0.8**
+
+`tasks = prove-plus-comm only, groups_per_batch=1 group_size=16 epochs=16 max_steps=16 max_tokens=1536 max_seq_len=16384 max_datum_tokens=20480 learning_rate=1e-4 loss_fn=ppo HARBOR_AGENT_MAX_ITERATIONS=12`
+
+Designed from the run-4 reading: pick the task the base policy solves ~30% of the time so every group has reward variance, give
+GRPO 16 samples of it per step, and lower the learning rate. 255 trajectories (251 Submitted, 3 SequenceLengthLimitExceeded, 1
+AgentError), 0 turns dropped by the datum cap, 16 training steps, all on the relaunched gateway (recompute on), no errors.
+
+| step | reward (16 trials) | turns/episode | output tok/turn | entropy | KL sample-train | train step s |
+|---|---|---|---|---|---|---|
+| 0 | 0.38 | 10.1 | 268 | 0.255 | 0.0042 | 66 |
+| 1 | 0.25 | 9.2 | 284 | 0.237 | 0.0026 | 58 |
+| 2 | 0.50 | 9.8 | 263 | 0.253 | 0.0023 | 58 |
+| 3 | 0.40 | 10.5 | 254 | 0.192 | 0.0027 | 62 |
+| 4 | 0.44 | 9.7 | 275 | 0.143 | 0.0030 | 54 |
+| 5 | 0.69 | 9.9 | 255 | 0.117 | 0.0036 | 56 |
+| 6 | 0.44 | 10.8 | 276 | 0.122 | 0.0034 | 65 |
+| 7 | 0.88 | 8.9 | 258 | 0.100 | 0.0046 | 46 |
+| 8 | 0.81 | 10.1 | 310 | 0.091 | 0.0040 | 62 |
+| 9 | 0.62 | 10.3 | 301 | 0.090 | 0.0044 | 62 |
+| 10 | 0.69 | 10.1 | 315 | 0.085 | 0.0034 | 61 |
+| 11 | 0.88 | 9.5 | 311 | 0.083 | 0.0044 | 59 |
+| 12 | 0.88 | 8.4 | 321 | 0.085 | 0.0044 | 50 |
+| 13 | 0.73 | 9.3 | 316 | 0.079 | 0.0043 | 52 |
+| 14 | 0.81 | 9.4 | 316 | 0.073 | 0.0038 | 55 |
+| 15 | 0.44 | 10.5 | 354 | 0.079 | 0.0027 | 75 |
+
+- Mean reward over steps 0–3: 0.38; over steps 7–14: 0.79. Steps 7, 11 and 12 reached 0.88 (14/16). The last step dipped to
+  0.44, single-step noise on 16 samples (the per-step standard error is ≈ 0.1).
+- Entropy fell 0.26 → 0.07 as the policy sharpened; sample-vs-train logprob KL stayed 0.002–0.005 throughout (exact token path).
+- Sequence lengths stayed short and stable: 9.7 turns per episode, 292 output tokens per turn, final sequence mean 5,468 tokens
+  (median 5,311, max 11,079); no turn hit the datum cap. Train step 46–75 s, rollout (16 concurrent trials) about 2 minutes.
+- This is one task learned in isolation, i.e. a demonstration that the whole loop (recorded turns → Datums → LoRA update → new
+  sampler version → next rollouts) moves the policy in the right direction, not a claim about generalisation.
+
+## Per step (sampler version the trials sampled from)
+
+| step | sampler | trials | tasks | reward mean | per-task reward | turns mean (max) | output tok / turn | final seq len mean (max) | aborted / failed |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | `1` | 16 | prove-plus-comm | 0.38 | prove-plus-comm 0.38 | 10.1 (max 12.0) | 268 (max 506) | 5013 (max 6926) | 0 |
+| 1 | `2` | 16 | prove-plus-comm | 0.25 | prove-plus-comm 0.25 | 9.2 (max 12.0) | 284 (max 533) | 5198 (max 10466) | 0 |
+| 2 | `3` | 16 | prove-plus-comm | 0.50 | prove-plus-comm 0.50 | 9.8 (max 12.0) | 263 (max 476) | 5046 (max 7119) | 0 |
+| 3 | `4` | 15 | prove-plus-comm | 0.40 | prove-plus-comm 0.40 | 10.5 (max 12.0) | 254 (max 565) | 5515 (max 9293) | 0 |
+| 4 | `000004` | 16 | prove-plus-comm | 0.44 | prove-plus-comm 0.44 | 9.7 (max 12.0) | 275 (max 1536) | 5339 (max 7695) | 1 |
+| 5 | `5` | 16 | prove-plus-comm | 0.69 | prove-plus-comm 0.69 | 9.9 (max 12.0) | 255 (max 409) | 5247 (max 7288) | 0 |
+| 6 | `6` | 16 | prove-plus-comm | 0.44 | prove-plus-comm 0.44 | 10.8 (max 12.0) | 276 (max 642) | 5564 (max 7194) | 0 |
+| 7 | `7` | 16 | prove-plus-comm | 0.88 | prove-plus-comm 0.88 | 8.9 (max 12.0) | 258 (max 451) | 4667 (max 6503) | 0 |
+| 8 | `000008` | 16 | prove-plus-comm | 0.81 | prove-plus-comm 0.81 | 10.1 (max 12.0) | 310 (max 575) | 5879 (max 7703) | 0 |
+| 9 | `8` | 16 | prove-plus-comm | 0.62 | prove-plus-comm 0.62 | 10.3 (max 12.0) | 301 (max 597) | 5765 (max 8496) | 0 |
+| 10 | `9` | 16 | prove-plus-comm | 0.69 | prove-plus-comm 0.69 | 10.1 (max 12.0) | 315 (max 509) | 5815 (max 8101) | 0 |
+| 11 | `10` | 16 | prove-plus-comm | 0.88 | prove-plus-comm 0.88 | 9.5 (max 12.0) | 311 (max 525) | 5614 (max 8506) | 0 |
+| 12 | `000012` | 16 | prove-plus-comm | 0.88 | prove-plus-comm 0.88 | 8.4 (max 12.0) | 321 (max 1536) | 4970 (max 7199) | 1 |
+| 13 | `11` | 16 | prove-plus-comm | 0.69 | prove-plus-comm 0.69 | 9.3 (max 12.0) | 316 (max 524) | 5583 (max 8028) | 1 |
+| 14 | `12` | 16 | prove-plus-comm | 0.81 | prove-plus-comm 0.81 | 9.4 (max 12.0) | 316 (max 714) | 5695 (max 11079) | 0 |
+| 15 | `13` | 16 | prove-plus-comm | 0.44 | prove-plus-comm 0.44 | 10.5 (max 12.0) | 354 (max 1536) | 6594 (max 9624) | 1 |
+
+## Cookbook step metrics
+
+| batch | reward/total | turns/episode | ob tok/turn | ac tok/turn | KL sample-train (v1) | entropy | rollout s |
+|---|---|---|---|---|---|---|---|
+| 0 | 0.38 | 10.125 | 3028 | 268 | 0.0042 | 0.255 | None |
+| 1 | 0.25 | 9.25 | 3337 | 284 | 0.0026 | 0.237 | None |
+| 2 | 0.50 | 9.75 | 3064 | 263 | 0.0023 | 0.253 | None |
+| 3 | 0.40 | 10.533333333333333 | 3267 | 254 | 0.0027 | 0.192 | None |
+| 4 | 0.44 | 9.6875 | 3058 | 275 | 0.0030 | 0.143 | None |
+| 5 | 0.69 | 9.9375 | 2991 | 255 | 0.0036 | 0.117 | None |
+| 6 | 0.44 | 10.75 | 3190 | 276 | 0.0034 | 0.122 | None |
+| 7 | 0.88 | 8.875 | 2719 | 258 | 0.0046 | 0.100 | None |
+| 8 | 0.81 | 10.125 | 3274 | 310 | 0.0040 | 0.091 | None |
+| 9 | 0.62 | 10.3125 | 3201 | 301 | 0.0044 | 0.090 | None |
+| 10 | 0.69 | 10.0625 | 3271 | 315 | 0.0034 | 0.085 | None |
+| 11 | 0.88 | 9.5 | 3145 | 311 | 0.0044 | 0.083 | None |
+| 12 | 0.88 | 8.375 | 2874 | 321 | 0.0044 | 0.085 | None |
+| 13 | 0.73 | 9.333333333333334 | 3177 | 316 | 0.0043 | 0.079 | None |
+| 14 | 0.81 | 9.4375 | 3116 | 316 | 0.0038 | 0.073 | None |
+| 15 | 0.44 | 10.5 | 3614 | 354 | 0.0027 | 0.079 | None |
+
+## Per-task reward by visit
+
+| task | visit 0 | visit 1 | visit 2 | visit 3 | visit 4 | visit 5 | visit 6 | visit 7 | visit 8 | visit 9 | visit 10 | visit 11 | visit 12 | visit 13 | visit 14 | visit 15 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| prove-plus-comm | 0.38 (16) | 0.25 (16) | 0.50 (16) | 0.40 (15) | 0.44 (16) | 0.69 (16) | 0.44 (16) | 0.88 (16) | 0.81 (16) | 0.62 (16) | 0.69 (16) | 0.88 (16) | 0.88 (16) | 0.69 (16) | 0.81 (16) | 0.44 (16) |
+
 ## Reproduce
 
 ```bash
