@@ -1839,24 +1839,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "PR #21466's experts_shared_outer_loras=True serving contract.",
             )
             parser.add_argument(
-                "--tinker-server-port",
-                type=int,
-                default=10613,
-                help="Port for the Tinker gateway HTTP server (default: 10613)",
-            )
-            parser.add_argument(
-                "--tinker-base-model",
-                type=str,
-                default=None,
-                help="Model name the gateway advertises and validates against (default: --hf-checkpoint)",
-            )
-            parser.add_argument(
-                "--tinker-checkpoint-root",
-                type=str,
-                default=None,
-                help="Directory for tinker:// checkpoints (default: <save>/tinker)",
-            )
-            parser.add_argument(
                 "--multi-lora-n-adapters",
                 type=int,
                 default=0,
@@ -2671,7 +2653,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
     return add_miles_arguments
 
 
-def parse_args(add_custom_arguments=None, entry="train"):
+def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
     assert entry in ("train", "serve"), f"unknown entry {entry!r}"
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
@@ -2717,6 +2699,8 @@ def parse_args(add_custom_arguments=None, entry="train"):
     args.ci_enable_metrics_capture = bool(os.environ.get(RECORD_DIR_ENV))
 
     args.entry = entry
+    if preprocess_args is not None:
+        preprocess_args(args)
     miles_validate_args(args)
 
     if backend == "megatron":

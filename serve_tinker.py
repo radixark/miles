@@ -4,10 +4,10 @@ from contextlib import suppress
 
 import uvicorn
 
-from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
+from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
@@ -55,7 +55,6 @@ async def serve(args):
     )
     await trainer.init()
 
-    target_modules = set(convert_target_modules_to_hf(args.target_modules))
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
@@ -64,9 +63,9 @@ async def serve(args):
         max_tokens_per_datum=max_tokens_per_datum,
         lora_alpha=args.lora_alpha,
         max_lora_rank=args.lora_rank,
-        trains_attn=bool(target_modules & {"q_proj", "k_proj", "v_proj", "o_proj"}),
-        trains_mlp=bool(target_modules & {"gate_proj", "up_proj", "down_proj"}),
-        trains_unembed="lm_head" in target_modules,
+        trains_attn=args.tinker_train_attn,
+        trains_mlp=args.tinker_train_mlp,
+        trains_unembed=args.tinker_train_unembed,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -76,7 +75,9 @@ async def serve(args):
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
 
     server = uvicorn.Server(
-        uvicorn.Config(build_app(service), host="0.0.0.0", port=args.tinker_server_port, log_level="info")
+        uvicorn.Config(
+            build_app(service), host=args.tinker_server_host, port=args.tinker_server_port, log_level="info"
+        )
     )
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
@@ -98,7 +99,7 @@ async def serve(args):
 
 
 if __name__ == "__main__":
-    args = parse_args(entry="serve")
+    args = parse_args(add_tinker_arguments, entry="serve", preprocess_args=configure_tinker_args)
     # commands ship one work unit at a time; its size is the batch size
     args.use_dynamic_global_batch_size = True
     args.delay_split_train_data_by_dp = True

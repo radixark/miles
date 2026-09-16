@@ -124,7 +124,7 @@ class TinkerService:
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
         session = self._session_for(tenant, payload["session_id"])
-        model_seq_id = validate_seq_id(payload["model_seq_id"], "model_seq_id")
+        model_seq_id = validate_seq_id(payload["model_seq_id"], "model_seq_id", minimum=0)
         if (previous := session.models_by_seq.get(model_seq_id)) is not None:
             request_id, model_id = previous
             request_id = self.futures.request_id_for_retry(request_id, model_id, tenant)
@@ -418,7 +418,7 @@ class TinkerService:
         base_model = payload.get("base_model")
         if base_model is not None and base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
-        seq_id = validate_seq_id(payload["sampling_session_seq_id"], "sampling_session_seq_id")
+        seq_id = validate_seq_id(payload["sampling_session_seq_id"], "sampling_session_seq_id", minimum=0)
         if (previous := session.sampling_sessions_by_seq.get(seq_id)) is not None:
             return previous
         sampling_session_id = self._new_sampling_session(tenant, payload["session_id"], payload.get("model_path"))
@@ -462,7 +462,7 @@ class TinkerService:
             if sampling_session.tenant != tenant:
                 raise OwnershipError("sampling session does not belong to this tenant")
             model_path = model_path or sampling_session.model_path
-            seq_id = validate_seq_id(payload["seq_id"], "seq_id")
+            seq_id = validate_seq_id(payload["seq_id"], "seq_id", minimum=0)
             if (previous := sampling_session.samples_by_seq.get(seq_id)) is not None:
                 request_id, sequence_ids = previous
                 request_id = self.futures.request_id_for_retry(request_id, model_path or "base", tenant)

@@ -25,7 +25,7 @@ def validate_model_config(lora_config: dict, config: GatewayConfig) -> None:
         if requested is not None and requested != layout_trains:
             raise UserInputError(
                 f"lora_config.{field}={requested} conflicts with this gateway's adapter layout "
-                f"({field}={layout_trains}); the layout is fixed by --target-modules at server start"
+                f"({field}={layout_trains}); the layout is fixed by --tinker-train-attn/mlp/unembed at server start"
             )
     rank = lora_config.get("rank", 32)
     if type(rank) is not int or not 1 <= rank <= config.max_lora_rank:
