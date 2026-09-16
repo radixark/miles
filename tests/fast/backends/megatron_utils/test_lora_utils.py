@@ -4,11 +4,9 @@ Tests cover module name conversion, LoRA detection helpers, parameter identifica
 exclude-module parsing, and LoRA sync config building — all without GPU.
 """
 
-import sys
-import types
 from argparse import Namespace
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -392,12 +390,7 @@ class TestSaveLoraCheckpointTrainingState:
         monkeypatch.setattr(
             lora_utils, "get_parallel_state", lambda: SimpleNamespace(effective_dp=rank0, cp=rank0, tp=rank0, pp=rank0)
         )
-        # the HF PEFT export is best-effort and needs a real bridge; fail it fast
-        bridge = types.ModuleType("megatron.bridge")
-        bridge.AutoBridge = SimpleNamespace(
-            from_hf_pretrained=Mock(side_effect=RuntimeError("no bridge in this test"))
-        )
-        monkeypatch.setitem(sys.modules, "megatron.bridge", bridge)
+        monkeypatch.setattr(lora_utils, "write_lora_weights", lambda *_: None)
 
         adapter = torch.nn.Parameter(torch.ones(2))
         model = [SimpleNamespace(named_parameters=lambda: [("layers.0.self_attention.lora_A.weight", adapter)])]
@@ -411,13 +404,13 @@ class TestSaveLoraCheckpointTrainingState:
         )
         optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
         save_lora_checkpoint(
-            model, args, str(tmp_path), optimizer=optimizer, opt_param_scheduler=scheduler, iteration=3
+            model, args, str(tmp_path / "checkpoint"), optimizer=optimizer, opt_param_scheduler=scheduler, iteration=3
         )
-        return sorted(path.name for path in tmp_path.iterdir())
+        return sorted(path.name for path in (tmp_path / "checkpoint").iterdir())
 
     @staticmethod
     def _state(tmp_path):
-        return torch.load(tmp_path / "training_state_rank0.pt", weights_only=False)
+        return torch.load(tmp_path / "checkpoint" / "training_state_rank0.pt", weights_only=False)
 
     def test_training_state_is_written_by_default(self, tmp_path, monkeypatch):
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})

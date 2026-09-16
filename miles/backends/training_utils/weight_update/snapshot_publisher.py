@@ -16,20 +16,26 @@ class WeightPublisher:
         self._iterator = iterator
         self._adapter_config = adapter_config
 
+    def publish_adapter(self, adapter: AdapterSpec | None, path: str, metadata: dict | None = None) -> None:
+        write_checkpoint_dir(
+            path, lambda tmp_dir: self.write_adapter(adapter, tmp_dir), metadata=metadata, overwrite=False
+        )
+
     @torch.no_grad()
-    def publish_adapter(self, adapter: AdapterSpec, path: str, metadata: dict | None = None) -> None:
+    def write_adapter(self, adapter: AdapterSpec | None, path: str | Path) -> None:
+        """Write adapter files inside a caller-owned checkpoint directory transaction."""
+        path = Path(path)
         is_writer = dist.get_rank() == 0
+        tensors = {
+            name: tensor.detach().contiguous().cpu()
+            for name, tensor in self._iterator.materialize_adapter(adapter, materialize=is_writer).items()
+        }
+        adapter_bytes = safetensors.torch.save(tensors) if is_writer else None
+        config = self._adapter_config
+        if adapter is not None:
+            config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
 
-        def write_shards(tmp_dir: Path):
-            tensors = {
-                name: tensor.detach().contiguous().cpu()
-                for name, tensor in self._iterator.materialize_adapter(adapter, materialize=is_writer).items()
-            }
-            data = safetensors.torch.save(tensors) if is_writer else None
-
-            if is_writer:
-                config = self._adapter_config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-                (tmp_dir / "adapter_config.json").write_text(json.dumps(config))
-                (tmp_dir / "adapter_model.safetensors").write_bytes(data)
-
-        write_checkpoint_dir(path, write_shards, metadata=metadata, overwrite=False)
+        if is_writer:
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "adapter_config.json").write_text(json.dumps(config))
+            (path / "adapter_model.safetensors").write_bytes(adapter_bytes)
