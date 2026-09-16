@@ -419,14 +419,28 @@ class TrainerController:
             (c, s) for c, s in zip(alive_cells, splitted_infos, strict=True) if s.engine_cell_ids
         ]
 
-        outputs_per_cell = await asyncio.gather(
+        outcomes = await asyncio.gather(
             *[
                 c.execute("update_weights", timeout=self.args.update_weights_timeout, info=s)
                 for c, s in cells_and_splitted_infos
-            ]
+            ],
+            return_exceptions=True,
         )
+        if cells_and_splitted_infos and not any(c.is_alive for c in alive_cells):
+            raise outcomes[0]
 
-        return WeightUpdateOutput.merge([_unique(outputs) for outputs in outputs_per_cell])
+        outputs = [
+            (
+                WeightUpdateOutput(weight_version=None, failed_cell_ids=tuple(s.engine_cell_ids))
+                if isinstance(outcome, BaseException)
+                else _unique(outcome)
+            )
+            for (_, s), outcome in zip(cells_and_splitted_infos, outcomes, strict=True)
+        ]
+        output = WeightUpdateOutput.merge(outputs)
+        if info.engine_cell_ids and set(output.failed_cell_ids) == set(info.engine_cell_ids):
+            raise NonRetryableError("No inference cell received the weights")
+        return output
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
         return self._deployment_identity
