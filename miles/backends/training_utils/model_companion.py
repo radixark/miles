@@ -26,17 +26,17 @@ class ModelCompanion(torch.nn.Module):
         self.weight_version = torch.nn.Parameter(torch.zeros((), dtype=torch.int64, device="cpu"), requires_grad=False)
 
     def record_sample_consumptions(self, samples: Iterable[SampleLineage], *, is_skipped: bool = False) -> None:
-        counts = _RowCodec.read(self.sample_consumptions)
+        counts = _RowCodec.decode(self.sample_consumptions)
         counts.update(_Row(identity=sample, is_skipped=is_skipped) for sample in samples)
-        _RowCodec.write(target=self.sample_consumptions, counts=counts)
+        self._replace_sample_consumptions(counts)
 
     def clear_sample_consumptions(self) -> None:
-        _RowCodec.write(target=self.sample_consumptions, counts=Counter())
+        self._replace_sample_consumptions(Counter())
 
     def snapshot_sample_consumptions(self, *, is_skipped: bool) -> dict[SampleLineage, int]:
         return {
             row.identity: count
-            for row, count in _RowCodec.read(self.sample_consumptions).items()
+            for row, count in _RowCodec.decode(self.sample_consumptions).items()
             if row.is_skipped == is_skipped
         }
 
@@ -70,10 +70,13 @@ class ModelCompanion(torch.nn.Module):
         error_msgs: list[str],
     ) -> None:
         _default_missing_entries_when_load_from_state_dict(self, state_dict, prefix=prefix)
-        _resize_when_load_from_state_dict(self, state_dict, "sample_consumptions", prefix=prefix)
+        _reallocate_when_load_from_state_dict(self, state_dict, "sample_consumptions", prefix=prefix)
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )
+
+    def _replace_sample_consumptions(self, counts: Counter["_Row"]) -> None:
+        self.sample_consumptions.data = _RowCodec.encode(counts=counts)
 
 
 class ModelCompanionInstallationUtils:
@@ -210,7 +213,7 @@ def _is_megatron_missing_tensor_placeholder(value: Any) -> bool:
     return isinstance(value, torch.Tensor) and value.dtype == torch.uint8 and value.shape == (0,)
 
 
-def _resize_when_load_from_state_dict(
+def _reallocate_when_load_from_state_dict(
     module: torch.nn.Module, state_dict: dict[str, torch.Tensor], name: str, *, prefix: str
 ) -> None:
     key = f"{prefix}{name}"
@@ -225,7 +228,8 @@ def _resize_when_load_from_state_dict(
         f"type={type(incoming).__name__} dtype={getattr(incoming, 'dtype', None)} "
         f"shape={getattr(incoming, 'shape', None)}"
     )
-    module.get_parameter(name).resize_(incoming.shape)
+    parameter = module.get_parameter(name)
+    parameter.data = torch.empty(tuple(incoming.shape), dtype=parameter.dtype, device=parameter.device)
 
 
 def _get_companions_of_model(model: Sequence[torch.nn.Module]) -> list[ModelCompanion]:
@@ -240,7 +244,7 @@ class _Row:
 
 class _RowCodec:
     @staticmethod
-    def read(sample_consumptions: torch.Tensor) -> Counter[_Row]:
+    def decode(sample_consumptions: torch.Tensor) -> Counter[_Row]:
         return Counter(
             {
                 _Row(
@@ -252,7 +256,7 @@ class _RowCodec:
         )
 
     @staticmethod
-    def write(*, target: torch.Tensor, counts: Counter[_Row]) -> None:
+    def encode(*, counts: Counter[_Row]) -> torch.Tensor:
         values = [
             [
                 row.identity.source_sample_index,
@@ -263,6 +267,4 @@ class _RowCodec:
             ]
             for row, count in counts.items()
         ]
-        source = torch.tensor(values, dtype=torch.int64, device="cpu").reshape((-1, _ROW_WIDTH))
-        target.resize_(source.shape)
-        target.copy_(source)
+        return torch.tensor(values, dtype=torch.int64, device="cpu").reshape((-1, _ROW_WIDTH))
