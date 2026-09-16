@@ -227,7 +227,7 @@ class TestConnectReusesOneShotResources:
             restarted.session_id(0),
             restarted.session_id(1),
         ]
-        assert list(protocol._cell_updaters_of_cell_id) == ["cell-a"]
+        assert list(protocol.cell_updaters_of_cell_id) == ["cell-a"]
 
     def test_a_round_without_reachable_peers_cuts_off_the_old_peers_and_keeps_the_resources(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
