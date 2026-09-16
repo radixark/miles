@@ -500,7 +500,7 @@ class TestSampleOwnershipCheckArguments:
             debug_rollout_only=False,
             debug_disable_optimizer=False,
             enable_witness=False,
-            save_debug_event_data=None,
+            save_debug_event_data="/audit/events",
             run_uuid="0123456789abcdef",
         )
         values.update(overrides)
@@ -525,7 +525,32 @@ class TestSampleOwnershipCheckArguments:
         with pytest.raises(ValueError, match=reason):
             _resolve_sample_ownership_check(args)
 
-    def test_multi_policy_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"lora_rank": 8},
+            {"multi_lora": True},
+            {"debug_train_only": True},
+            {"debug_rollout_only": True},
+            {"debug_disable_optimizer": True},
+            {"num_critic_only_steps": 1},
+        ],
+    )
+    @pytest.mark.parametrize("enabled", [None, False])
+    def test_unsupported_ci_modes_require_an_explicit_opt_out(self, overrides: dict, enabled: bool | None) -> None:
+        """Unsupported CI modes must opt out rather than silently lose ownership coverage."""
+        args = self._checker_args(enable_sample_ownership_checker=enabled, ci_test=True, **overrides)
+
+        if enabled is None:
+            with pytest.raises(ValueError, match="not supported here"):
+                _resolve_sample_ownership_check(args)
+        else:
+            _resolve_sample_ownership_check(args)
+            assert args.enable_sample_ownership_checker is False
+
+    @pytest.mark.parametrize("enabled", [None, True])
+    def test_multi_policy_is_rejected(self, monkeypatch: pytest.MonkeyPatch, enabled: bool | None) -> None:
         """Several actor lineages cannot share the single-policy current-witness checker."""
         monkeypatch.setattr(
             "miles.utils.arguments.resolve_megatron_config",
@@ -536,7 +561,7 @@ class TestSampleOwnershipCheckArguments:
                 ]
             ),
         )
-        args = self._checker_args(megatron_config="config")
+        args = self._checker_args(megatron_config="config", ci_test=True, enable_sample_ownership_checker=enabled)
 
         with pytest.raises(ValueError, match="multi-policy training has separate model companion lineages"):
             _resolve_sample_ownership_check(args)

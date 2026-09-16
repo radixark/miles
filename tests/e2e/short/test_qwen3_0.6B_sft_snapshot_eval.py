@@ -115,7 +115,7 @@ def execute():
     )
 
     ci_args = (
-        "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.3 "
+        "--ci-test --no-enable-sample-ownership-checker --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.3 "
         "--ci-metric-checker-expect-num 3 "
     )
 
