@@ -14,6 +14,7 @@ End-to-end training workflows — the place to start.
   - **[multi_turn](/examples/geo3k-vlm/multi-turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
 - **[lora](https://github.com/radixark/miles/tree/main/examples/lora)**: LoRA fine-tuning with the Megatron backend.
 - **[multi_lora](/examples/multi-lora)**: Serve concurrent LoRA fine-tuning clients on one shared base model through the Tinker protocol.
+- **[multi_lora/harbor_tinker](/examples/multi-lora/harbor-tinker)**: Harbor agents (terminus-2 on the AgentENV sandbox) trained through the multi-LoRA Tinker gateway with the unmodified tinker-cookbook RL loop.
 - **[on_policy_distillation](/examples/on-policy-distillation)**: Teacher–student distillation on the student's own rollouts, run inside the on-policy training loop.
   - **[qwen3_5_35b_selfdistill](/examples/on-policy-distillation/qwen3-5-35b-selfdistill)**: Two-phase self-distillation of Qwen3.5-35B-A3B on one 8xH200 node, with an in-process Megatron teacher.
 - **[ppo](/examples/ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
