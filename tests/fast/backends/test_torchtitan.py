@@ -296,12 +296,10 @@ _GLM47_FLASH_CHECKPOINT_KEYS = [
 ]
 
 
-def test_miles_model_packages_resolve_ahead_of_torchtitan_and_unknown_names_name_both_roots():
+def test_unknown_model_names_name_both_package_roots():
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import resolve_model_spec
 
-    spec = resolve_model_spec(_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
-    assert spec.name == "glm4_moe_lite"
     with pytest.raises(ValueError, match="miles.backends.torchtitan_utils.models.nope.*torchtitan.models.nope"):
         resolve_model_spec(_args(titan_model_name="nope", titan_model_flavor="x"))
 

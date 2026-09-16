@@ -574,11 +574,7 @@ builds the layer list with torchtitan's DeepSeek-V3 helpers, sets the GLM sizes,
 When the architecture genuinely differs, the package grows in this order: a `model.py` with
 the new block (subclassing torchtitan's `TransformerBlock` / `BaseAttention`), then a
 `state_dict_adapter.py` if the HF names differ, and only then a `parallelize.py` if the
-existing sharding plans do not apply. Two checks belong with every package: a fast test that
-the flavor's dimensions match the model's `config.json` and that the adapter's map covers every
-key pattern in the checkpoint's `model.safetensors.index.json`, and an e2e case under
-`tests/e2e/torchtitan/` — SGLang has to implement the architecture too, since it is what
-consumes the streamed weights.
+existing sharding plans do not apply. Two checks belong with every package: a fast test that pins the flavor's dimensions to the values recorded from the model's `config.json` and checks the adapter's map covers every key pattern recorded from `model.safetensors.index.json`, and an e2e case under `tests/e2e/torchtitan/` — SGLang has to implement the architecture too, since it is what consumes the streamed weights.
 
 ### Try it
 

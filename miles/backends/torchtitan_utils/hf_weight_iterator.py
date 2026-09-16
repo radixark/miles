@@ -3,6 +3,7 @@ import glob
 import json
 import os
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import safetensors
 import torch
@@ -23,6 +24,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._engine_dtypes = _checkpoint_dtypes(self.args.hf_checkpoint)
+        self._q_lora_rank = getattr(load_hf_config(self.args.hf_checkpoint), "q_lora_rank", None) or None
 
     def _iter_hf_param_units(self, weights, *, materialize):
         for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
@@ -37,8 +39,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         return tensor.to(target)
 
     def _hf_atomic_update_groups(self):
-        q_lora_rank = getattr(load_hf_config(self.args.hf_checkpoint), "q_lora_rank", None) or None
-        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=q_lora_rank)
+        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self._q_lora_rank)
 
     def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
         raise NotImplementedError("the torchtitan backend has no LoRA")
@@ -71,7 +72,7 @@ def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tupl
     if sd_adapter is None:
         sd_adapter = trainer.config.model_spec.state_dict_adapter(trainer.model_config, trainer.config.hf_assets_path)
     state = {k: v for part in trainer.model_parts for k, v in part.state_dict().items()}
-    layout = _StageLayout.gather(trainer, complete_across_pp=complete_across_pp)
+    layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
 
     dense = {k: v for k, v in state.items() if _GROUPED_EXPERTS not in k}
     yield from layout.stream(sd_adapter.to_hf(dense))
@@ -80,20 +81,19 @@ def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tupl
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
     for key in sorted(set().union(*everyone)):
-        local = sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {}
-        yield from layout.stream(local)
+        yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
 
 
+@dataclass(frozen=True)
 class _StageLayout:
-    def __init__(self, *, world: int, my_rank: int, device, audience: list[int], broadcast_group):
-        self.world = world
-        self.my_rank = my_rank
-        self.device = device
-        self.audience = set(audience)
-        self.broadcast_group = broadcast_group
+    world: int
+    my_rank: int
+    device: torch.device
+    audience: frozenset[int]
+    broadcast_group: dist.ProcessGroup | None
 
     @classmethod
-    def gather(cls, trainer, *, complete_across_pp: bool) -> "_StageLayout":
+    def from_trainer(cls, trainer, *, complete_across_pp: bool) -> "_StageLayout":
         world = dist.get_world_size()
         my_rank = dist.get_rank()
         stage_of: list = [None] * world
@@ -110,7 +110,11 @@ class _StageLayout:
             groups = _stage_process_groups(tuple(tuple(ranks) for _, ranks in sorted(stage_groups.items())))
             audience, broadcast_group = stage_groups[my_stage], groups[sorted(stage_groups).index(my_stage)]
         return cls(
-            world=world, my_rank=my_rank, device=trainer.device, audience=audience, broadcast_group=broadcast_group
+            world=world,
+            my_rank=my_rank,
+            device=trainer.device,
+            audience=frozenset(audience),
+            broadcast_group=broadcast_group,
         )
 
     def stream(self, local: dict[str, torch.Tensor]) -> Iterator[tuple[str, torch.Tensor]]:

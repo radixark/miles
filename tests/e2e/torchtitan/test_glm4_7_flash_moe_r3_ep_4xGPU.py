@@ -9,8 +9,9 @@ register_cuda_ci(est_time=2400, suite="stage-c-4-gpu-h200", labels=["torchtitan"
 # expert), so this case covers the miles-side registry end to end -- HF load
 # through the DeepSeek adapter, expert parallelism, routing replay, and the
 # weight stream back into SGLang's own glm4_moe_lite implementation. SGLang runs
-# attention on triton: flashinfer's SM100 prefill kernel has no head_dim 256
-# instantiation, which is what MLA's 192 + 64 query head pads to.
+# attention on triton so the case is the same on Hopper and Blackwell: flashinfer's
+# SM100 prefill kernel has no head_dim 256 instantiation, which is what MLA's
+# 192 + 64 query head pads to.
 CASE = CaseConfig(
     model_repo="zai-org/GLM-4.7-Flash",
     titan_model_name="glm4_moe_lite",
