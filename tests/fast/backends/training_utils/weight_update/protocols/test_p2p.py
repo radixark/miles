@@ -147,6 +147,51 @@ class TestGetOrCreateReplica:
         assert created == [True, False]
 
 
+class TestAssertOneShardLayout:
+    """The guard protecting the CPU replica shared by the targets of one rollout engine rank."""
+
+    def test_targets_holding_the_same_shard_agree(self, p2p_protocol: ModuleType) -> None:
+        """Two engines whose rank 0 holds the same slice can be written from one replica."""
+        p2p_protocol._assert_one_shard_layout(
+            rollout_engine_rank=0,
+            session_ids=["session-a", "session-b"],
+            remote_weight_infos_by_session_id={
+                "session-a": ({}, {"tp_rank": 0, "global_rank": 0}),
+                "session-b": ({}, {"tp_rank": 0, "global_rank": 8}),
+            },
+            session_id_to_server_args={"session-a": _server_args(), "session-b": _server_args()},
+        )
+
+    def test_targets_holding_different_shards_are_rejected(self, p2p_protocol: ModuleType) -> None:
+        """One replica can only hold one slice, so a mismatch would send the wrong weights."""
+        with pytest.raises(AssertionError, match="rollout engine rank 1 hold different shard layouts"):
+            p2p_protocol._assert_one_shard_layout(
+                rollout_engine_rank=1,
+                session_ids=["session-a", "session-b"],
+                remote_weight_infos_by_session_id={
+                    "session-a": ({}, {"tp_rank": 1}),
+                    "session-b": ({}, {"tp_rank": 2}),
+                },
+                session_id_to_server_args={"session-a": _server_args(), "session-b": _server_args()},
+            )
+
+    def test_targets_quantized_differently_are_rejected(self, p2p_protocol: ModuleType) -> None:
+        """The same slice in another quantization profile still needs its own replica."""
+        with pytest.raises(AssertionError, match="cannot share one CPU replica"):
+            p2p_protocol._assert_one_shard_layout(
+                rollout_engine_rank=0,
+                session_ids=["session-a", "session-b"],
+                remote_weight_infos_by_session_id={
+                    "session-a": ({}, {"tp_rank": 0}),
+                    "session-b": ({}, {"tp_rank": 0}),
+                },
+                session_id_to_server_args={
+                    "session-a": _server_args(),
+                    "session-b": _server_args(rl_quant_profile="fp8"),
+                },
+            )
+
+
 class TestConnectReusesOneShotResources:
     def test_a_reconnect_with_the_same_layout_reuses_the_transfer_engine_replicas_and_registration(
         self, p2p_sender: Any, make_rollout_api: Any
@@ -417,6 +462,24 @@ class TestCreateCPUReplica:
         del shared_buffers["b"]
 
         with pytest.raises(AssertionError, match="Parameter b not found in shared buffers"):
+            p2p_protocol._create_cpu_replica(
+                {"tp_rank": 1}, "/model", _server_args(), shared_params_dict=shared_buffers
+            )
+
+    @pytest.mark.parametrize(
+        "mismatched", [torch.zeros(4), torch.zeros(3, dtype=torch.bfloat16)], ids=["shape", "dtype"]
+    )
+    def test_a_shared_buffer_of_another_shape_or_dtype_cannot_be_aliased(
+        self,
+        p2p_protocol: ModuleType,
+        model_loader_sdk: Any,
+        shared_buffers: dict[str, torch.Tensor],
+        mismatched: torch.Tensor,
+    ) -> None:
+        """Aliasing a differently laid out buffer would write this shard's bytes over the wrong elements."""
+        shared_buffers["b"] = mismatched
+
+        with pytest.raises(AssertionError, match="Parameter b cannot alias the shared buffer"):
             p2p_protocol._create_cpu_replica(
                 {"tp_rank": 1}, "/model", _server_args(), shared_params_dict=shared_buffers
             )
