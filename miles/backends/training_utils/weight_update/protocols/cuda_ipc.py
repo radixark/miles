@@ -51,13 +51,9 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         # Overwritten with "miles" when connect finds a distributed engine tail.
         self.group_name = "miles-colocate"
 
-        for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
-            end_rank = min(start_rank + self.args.rollout_num_gpus_per_engine, dist.get_world_size())
-            group_ranks = list(range(start_rank, end_rank))
-            new_group = dist.new_group(ranks=group_ranks, backend="gloo")
-            if dist.get_rank() in group_ranks:
-                self._ipc_gather_group = new_group
-                self._ipc_gather_src = start_rank
+        self._ipc_gather_group = None
+        self._ipc_gather_src = None
+        self._ipc_layout: tuple[tuple[int, int], ...] = ()
 
     def connect(
         self,
@@ -75,18 +71,14 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         self.rollout_engines = rollout_engines
         self._selector = selector
 
-        if engine_gpu_counts is None:
-            engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
+        if engine_gpu_counts is None or len(engine_gpu_counts) != len(rollout_engines):
+            raise ValueError("Weight transfer requires runtime GPU counts for every engine")
         if engine_gpu_offsets is None:
             # Fallback: assume engines are densely packed (no placeholder gaps).
-            engine_gpu_offsets = []
-            offset = 0
-            for c in engine_gpu_counts:
-                engine_gpu_offsets.append(offset)
-                offset += c
+            raise ValueError("Colocated weight transfer requires runtime GPU offsets for every engine")
 
         # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
-        total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+        total_actor_gpus = dist.get_world_size()
         colocate_engine_nums = 0
         for gpu_offset, gpu_count in zip(engine_gpu_offsets, engine_gpu_counts, strict=True):
             if gpu_offset + gpu_count > total_actor_gpus:
@@ -108,13 +100,14 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             if self._is_distributed_src_rank:
                 if (g := self._model_update_groups) is not None:
                     disconnect_rollout_engines_from_distributed(
-                        self.args, self.group_name, g, self.distributed_rollout_engines
+                        group_name=self.group_name,
+                        model_update_groups=g,
+                        rollout_engines=self.distributed_rollout_engines,
                     )
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
-                    self.args,
-                    self.group_name,
-                    self.distributed_rollout_engines,
+                    group_name=self.group_name,
+                    rollout_engines=self.distributed_rollout_engines,
                     engine_gpu_counts=distributed_gpu_counts,
                 )
 
@@ -130,17 +123,20 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         # Create IPC Gloo gather groups matching actual engine layout.
         # Re-create on first call or when engine layout changes (placeholder ranks
         # that had a group from __init__ but no actual engine need to be reset).
-        if rank_has_engine:
-            if self._ipc_gather_group is None:
-                for i in range(colocate_engine_nums):
-                    group_ranks = list(
-                        range(colocate_gpu_offsets[i], colocate_gpu_offsets[i] + colocate_gpu_counts[i])
-                    )
-                    new_group = dist.new_group(ranks=group_ranks, backend="gloo")
-                    if dist.get_rank() in group_ranks:
-                        self._ipc_gather_group = new_group
-                        self._ipc_gather_src = colocate_gpu_offsets[i]
-        else:
+        layout = tuple(zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True))
+        if layout != self._ipc_layout:
+            if self._ipc_gather_group is not None:
+                dist.destroy_process_group(self._ipc_gather_group)
+            self._ipc_gather_group = None
+            self._ipc_gather_src = None
+            for offset, count in layout:
+                group_ranks = list(range(offset, offset + count))
+                new_group = dist.new_group(ranks=group_ranks, backend="gloo")
+                if dist.get_rank() in group_ranks:
+                    self._ipc_gather_group = new_group
+                    self._ipc_gather_src = offset
+            self._ipc_layout = layout
+        if not rank_has_engine:
             # Ranks not covered by any engine (e.g. placeholder GPU slots)
             self._ipc_gather_group = None
             self._ipc_gather_src = None

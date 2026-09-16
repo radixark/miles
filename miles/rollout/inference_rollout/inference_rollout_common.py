@@ -6,6 +6,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
+from miles.ray.rollout.runtime_config import GenerationConcurrencyLimiter
 from miles.rollout.base_types import (
     BaseRolloutFn,
     GenerateFnInput,
@@ -38,8 +39,8 @@ class GenerateState:
         )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
-        self.generate_fn_semaphore = asyncio.Semaphore(
-            args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        self.generate_fn_semaphore = GenerationConcurrencyLimiter(
+            lambda: args.sglang_server_concurrency * max(args.runtime.rollout_engine_count, 1)
         )
         self.sampling_params: dict[str, Any] = compute_sampling_params(
             args,

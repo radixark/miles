@@ -289,13 +289,11 @@ async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> byt
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _http_client, _client_concurrency, _distributed_post_enabled
-    rollout_num_gpus = args.rollout_num_gpus or 0
-    if rollout_num_gpus == 0 and not args.eval_uses_snapshots:
+    if args.runtime.rollout_engine_count == 0 and not args.eval_uses_snapshots:
         return
 
-    _client_concurrency = args.sglang_server_concurrency * rollout_num_gpus // args.rollout_num_gpus_per_engine
-    if args.eval_num_gpus > 0:
-        _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
+    initial_engine_count = args.runtime.rollout_engine_count + args.runtime.eval_engine_count
+    _client_concurrency = args.sglang_server_concurrency * initial_engine_count
     _client_concurrency = max(_client_concurrency, args.sglang_server_concurrency)
     if _http_client is None:
         _http_client = httpx.AsyncClient(

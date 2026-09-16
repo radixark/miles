@@ -1,6 +1,5 @@
 import dataclasses
 import logging
-from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -36,10 +35,11 @@ class RemoteTransferPlan:
     assuming static training and rollout placements.
     """
 
-    def __init__(self, args: Namespace) -> None:
-        self._get_parallelism(args)
+    def __init__(self, *, engine_gpu_counts: Sequence[int]) -> None:
+        self._engine_gpu_counts = tuple(engine_gpu_counts)
+        self._get_parallelism()
 
-    def _get_parallelism(self, args: Namespace) -> None:
+    def _get_parallelism(self) -> None:
         """
         Collect parallelism information for source (trainer) and target (rollout engines).
 
@@ -54,12 +54,7 @@ class RemoteTransferPlan:
             get_parallel_state(), WeightUpdatePlacement(gather_pp=False)
         )
 
-        self._rollout_pp_size = args.sglang.common_value("pp_size")
-        if self._rollout_pp_size != 1:
-            raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
-        self._rollout_num_gpu_per_engine = args.rollout_num_gpus_per_engine
-        self._rollout_engine_count = args.rollout_num_gpus // self._rollout_num_gpu_per_engine
-        self._rollout_num_gpus = args.rollout_num_gpus
+        self._rollout_num_gpus = sum(self._engine_gpu_counts)
 
     def plan_p2p(self) -> list[TransferTaskP2PMeta]:
         """
@@ -85,8 +80,8 @@ class RemoteTransferPlan:
         """
         all_targets = [
             (engine_idx, engine_rank)
-            for engine_idx in range(self._rollout_engine_count)
-            for engine_rank in range(self._rollout_num_gpu_per_engine)
+            for engine_idx, gpu_count in enumerate(self._engine_gpu_counts)
+            for engine_rank in range(gpu_count)
         ]
         assignments = defaultdict(lambda: defaultdict(list))
 

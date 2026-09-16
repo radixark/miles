@@ -13,6 +13,8 @@ from miles.utils.workers.worker_provider.base import CellInfo
 class _CellStatusSource(Protocol):
     async def get_cell_statuses(self) -> dict[str, CellStatus]: ...
 
+    async def get_pool_ids(self) -> list[str]: ...
+
 
 class _CellHandler:
     def __init__(
@@ -21,7 +23,7 @@ class _CellHandler:
         cell_type: str,
         operations: BaseCellOperations,
         controllers: list[_CellStatusSource],
-        pool_ids: list[str],
+        pool_ids: list[str] | None,
     ) -> None:
         self._cell_type = cell_type
         self._operations = operations
@@ -83,7 +85,16 @@ class _CellHandler:
         }
 
     async def _get_cell_infos(self) -> dict[str, CellInfo]:
-        return await self._operations.cell_infos(pool_ids=self._pool_ids)
+        pool_ids = self._pool_ids
+        if pool_ids is None:
+            pool_ids = sorted(
+                {
+                    pool_id
+                    for controller_pools in await asyncio.gather(*(c.get_pool_ids() for c in self._controllers))
+                    for pool_id in controller_pools
+                }
+            )
+        return await self._operations.cell_infos(pool_ids=pool_ids)
 
     async def suspend(self, cell_id: str) -> None:
         await self._operations.suspend(cell_id=cell_id)

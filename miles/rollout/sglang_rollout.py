@@ -13,6 +13,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
+from miles.ray.rollout.runtime_config import GenerationConcurrencyLimiter
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
@@ -84,8 +85,8 @@ class GenerateState(metaclass=SingletonMeta):
         )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
-        self.semaphore = asyncio.Semaphore(
-            args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        self.semaphore = GenerationConcurrencyLimiter(
+            lambda: args.sglang_server_concurrency * max(args.runtime.rollout_engine_count, 1)
         )
         self.sampling_params: dict[str, Any] = dict(
             temperature=args.rollout_temperature,

@@ -283,8 +283,10 @@ def _compute_perf_metrics_from_samples(args, samples, rollout_time):
 
     def token_perf(response_lengths, non_generation_time, key=""):
         max_response_length = max(response_lengths)
-        if args.rollout_num_gpus:
-            log_dict[f"{key}tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
+        if args.runtime.rollout_gpu_count:
+            log_dict[f"{key}tokens_per_gpu_per_sec"] = (
+                sum(response_lengths) / rollout_time / args.runtime.rollout_gpu_count
+            )
         log_dict[f"longest_{key}sample_tokens_per_sec"] = max_response_length / rollout_time
 
         if max(non_generation_time) == 0:

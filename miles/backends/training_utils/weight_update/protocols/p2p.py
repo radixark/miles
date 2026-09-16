@@ -49,7 +49,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
-        self.transfer_plan = RemoteTransferPlan(args)
+        self.transfer_plan: RemoteTransferPlan | None = None
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
@@ -134,7 +134,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
-
+        if engine_gpu_counts is None or len(engine_gpu_counts) != len(rollout_engines):
+            raise ValueError("Weight transfer requires runtime GPU counts for every engine")
+        self.transfer_plan = RemoteTransferPlan(engine_gpu_counts=engine_gpu_counts)
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
 
         if self.is_sender:
@@ -166,6 +168,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     self.remote_weight_infos_by_session_id[session_id][1]
                 )
                 server_args = self.session_id_to_server_args[session_id]
+                if server_args.pp_size != 1:
+                    raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
 
                 model_replica = _create_cpu_replica(
                     parallelism_config,
