@@ -6,14 +6,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import IO, Any, Literal
 
-import torch
-
 
 def atomic_write_text(path: str | Path, text: str) -> None:
     _atomic_write(Path(path), mode="w", write=lambda file: file.write(text))
 
 
 def atomic_torch_save(path: str | Path, obj: Any) -> None:
+    import torch
+
     _atomic_write(Path(path), mode="wb", write=lambda file: torch.save(obj, file))
 
 
