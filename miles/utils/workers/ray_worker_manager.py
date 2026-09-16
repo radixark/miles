@@ -293,7 +293,7 @@ class _CellManager(Generic[SpecT]):
             alive=self.alive and self._all_workers_have_addrs,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
-            meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
+            meta=self.spec.meta(WorkerMetaContext(cell_index=self.cell_index)),
         )
 
     @property
@@ -360,6 +360,7 @@ class _BaseActorManager(Generic[SpecT]):
     @property
     def launch_context(self) -> WorkerLaunchContext:
         return WorkerLaunchContext(
+            args=self.spec.args,
             cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
             gpu_ids=self.gpu_ids,
@@ -555,6 +556,7 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
 
 def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
     return WorkerCtorContext(
+        args=launch_context.args,
         cell_index=launch_context.cell_index,
         worker_in_cell_index=launch_context.worker_in_cell_index,
         gpu_ids=launch_context.gpu_ids,
