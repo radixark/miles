@@ -1,11 +1,12 @@
-"""Harbor × Tinker RL on the multi-LoRA gateway: cookbook's training loop with our Harbor plug-ins.
+"""Harbor × Tinker RL on the multi-LoRA gateway: cookbook's training loop with the Harbor plug-ins from harbor_env.py.
 
-Skeleton: functions document what they will do; bodies land in follow-up commits.
+Skeleton: functions document what they will do; bodies land in follow-up commits. This is the minimal example from
+PR #3286's description, parameterised.
 
 Reused, not reimplemented: ``tinker_cookbook.rl.train.Config`` / ``train.main`` (rollouts, advantages, Datums,
 forward_backward / optim_step, checkpoints, metrics, wandb via ml_log), ``chz.nested_entrypoint`` for the CLI (the
 same wiring as ``tinker_cookbook/recipes/rl_loop.py``), and ``miles.rollout.agentic.credentials`` (``preflight_sdk``,
-``PROVIDER_CREDENTIALS``, ``credential_available``) for the sandbox preflight. This file only builds the Config.
+``PROVIDER_CREDENTIALS``, ``credential_available``) for the sandbox preflight. Requires ``pip install tinker-cookbook``.
 
 Usage (stage 1, internal AgentENV sandbox):
     HARBOR_ENV_TYPE=e2b HARBOR_TASKS_DIR=<terminal-bench-2 checkout> TINKER_API_KEY=tml-... \\
@@ -23,7 +24,7 @@ from tinker_cookbook.rl import train
 
 @chz.chz
 class HarborTinkerConfig:
-    """CLI knobs on top of cookbook's train.Config: gateway URL, tasks dir, harness, batch shape, concurrency, max_seq_len."""
+    """CLI knobs on top of cookbook's train.Config: gateway URL, tasks dir, harness, batch shape, concurrency, lengths."""
 
     gateway: str
     model_name: str
@@ -47,7 +48,7 @@ def preflight_sandbox() -> None:
 
 
 def build_config(config: HarborTinkerConfig) -> train.Config:
-    """train.Config with base_url=gateway, dataset_builder=HarborDatasetBuilder, rollout_error_tolerance=SessionRolloutStrategy, loss_fn/lora_rank/learning_rate/max_tokens from the CLI; everything else cookbook defaults."""
+    """train.Config(model_name, base_url=gateway, recipe_name="harbor-tinker", log_path, dataset_builder=HarborDatasetBuilder(...), rollout_error_tolerance=SessionRolloutStrategy(...), learning_rate, lora_rank, max_tokens, loss_fn, ttl_seconds=None until the gateway accepts the cookbook default)."""
     raise NotImplementedError
 
 

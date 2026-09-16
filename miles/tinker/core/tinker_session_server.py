@@ -1,14 +1,12 @@
-"""Token trajectory collector behind the gateway's OpenAI-compatible chat routes.
+"""Token trajectory collector behind the gateway's four recorded-session routes.
 
 Skeleton: only what has no existing implementation is declared here; each docstring names what is reused.
 
-The stateless routes mirror Tinker's OpenAI-compatible API (``…/oai/api/v1/chat/completions`` and
-``…/oai/api/v1/completions``, ``model=tinker://M/sampler_weights/V``, bearer = Tinker API key, prompts
-rendered with the base model's default HF chat template). Recorded sessions under
-``/oai/sessions/{sid}/v1/…`` are the one extension: every turn keeps exactly the ids the engine consumed
-and produced, plus their logprobs. A ``Turn`` is tinker-cookbook's ``Transition`` (``ob`` = input_ids,
-``ac`` = output_ids + logprobs), so ``tinker_cookbook.rl.data_processing.trajectory_to_data`` decides on the
-client whether turns chain into one Datum or split per turn; no merge logic lives here.
+Dependency decision: the gateway stays Tinker-wire only plus the session routes. The client side is
+tinker-cookbook plus a thin plug-in layer (``examples/multi_lora/harbor_tinker``), which is why a ``Turn`` is
+shaped as cookbook's ``Transition`` (``ob`` = input_ids, ``ac`` = output_ids + logprobs): the client hands
+``trajectory_to_data`` the turns and the cookbook decides whether they chain into one Datum or split per turn.
+No merge logic, no OpenAI-parity surface, no streaming here.
 
 Reused, not reimplemented:
 - sampling: ``TinkerService.submit_sample(tenant, payload)`` — validates prompt ids against the vocab
@@ -16,7 +14,7 @@ Reused, not reimplemented:
   runs ``MilesBackend.sample`` (router ``/generate`` with ``lora_path`` + ``lora_backfill_paths``), and
   settles a ``RequestFuture`` (``TinkerService.retrieve_future`` + ``RequestFuture.settled``).
 - sampling-session binding: ``TinkerService.get_sampler(tenant, sampling_session_id)["model_path"]``.
-- rendering: the HF tokenizer's ``apply_chat_template`` / ``encode`` / ``decode``, injected by ``serve_tinker.py``.
+- rendering: the HF tokenizer's ``apply_chat_template`` / ``decode``, injected by ``serve_tinker.py``.
 
 Core layer: stdlib plus ``miles.tinker.core`` only.
 """
@@ -90,24 +88,14 @@ def render_prompt(
 
 
 def to_sample_payload(prompt_ids: list[int], request: dict[str, Any], model_path: str | None) -> dict[str, Any]:
-    """OpenAI request → the internal payload TinkerService.submit_sample takes (prompt_tokens, num_samples, sampling_params{max_tokens (required, like Tinker sample), temperature, top_p, stop, seed}, model_path); an empty stop list is dropped because Tinker reads it as "ignore EOS"."""
+    """OpenAI request → the internal payload TinkerService.submit_sample takes (prompt_tokens, num_samples=1, sampling_params{max_tokens (required, like Tinker sample), temperature, top_p, stop, seed}, model_path); an empty stop list is dropped because Tinker reads it as "ignore EOS"."""
     raise NotImplementedError
 
 
-def build_chat_response(request: dict[str, Any], choices: list[dict[str, Any]], prompt_len: int) -> dict[str, Any]:
-    """Assemble an OpenAI ChatCompletion JSON (id, created, model echoed, choices[].message, finish_reason, usage); the gateway's render_result renders Tinker JSON, not this shape."""
-    raise NotImplementedError
-
-
-def build_completion_response(
-    request: dict[str, Any], choices: list[dict[str, Any]], prompt_len: int
+def build_chat_response(
+    request: dict[str, Any], output_ids: list[int], text: str, finish_reason: str, prompt_len: int
 ) -> dict[str, Any]:
-    """Assemble an OpenAI Completion JSON with choices[].text and usage."""
-    raise NotImplementedError
-
-
-def to_sse(response: dict[str, Any]) -> bytes:
-    """Fake streaming: one SSE chunk carrying the whole message, then data: [DONE] (same trick as the miles session server)."""
+    """Assemble an OpenAI ChatCompletion JSON (id, created, model echoed, one choice with message/finish_reason, usage); the gateway's render_result renders Tinker JSON, not this shape."""
     raise NotImplementedError
 
 
@@ -146,21 +134,13 @@ class TrajectoryCollector:
         raise NotImplementedError
 
     def sweep(self, now: float | None = None) -> int:
-        """Drop sessions idle longer than session_ttl_s; returns how many (TinkerService's lease sweeper does not know these sessions)."""
+        """Safety net for trials that died before DELETE: drop sessions idle longer than session_ttl_s; returns how many."""
         raise NotImplementedError
 
-    async def chat(
-        self, request: dict[str, Any], *, session_id: str | None = None, tenant: str | None = None
-    ) -> dict[str, Any] | bytes:
-        """/chat/completions: session lookup or auto-register, tito_render_prompt then render_prompt, _sample, record a Turn, build_chat_response (to_sse when stream=true)."""
+    async def chat(self, request: dict[str, Any], *, session_id: str, tenant: str | None = None) -> dict[str, Any]:
+        """The recorded chat completion: session lookup or auto-register, tito_render_prompt then render_prompt, _sample, record a Turn, build_chat_response."""
         raise NotImplementedError
 
-    async def completions(
-        self, request: dict[str, Any], *, session_id: str | None = None, tenant: str | None = None
-    ) -> dict[str, Any] | bytes:
-        """/completions: tokenizer.encode(prompt) (or token ids as-is), then the same _sample / record / build_completion_response path."""
-        raise NotImplementedError
-
-    async def _sample(self, tenant: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        """Reuse the gateway's sampling pipeline end to end: service.submit_sample(tenant, payload) → service.retrieve_future(tenant, request_id) → await future.settled.wait() → future.result["sequences"] (tokens, logprobs, stop_reason) or raise on future.error."""
+    async def _sample(self, tenant: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Reuse the gateway's sampling pipeline end to end: service.submit_sample(tenant, payload) → service.retrieve_future(tenant, request_id) → await future.settled.wait() → future.result["sequences"][0] (tokens, logprobs, stop_reason) or raise on future.error."""
         raise NotImplementedError

@@ -50,11 +50,6 @@ def test_unknown_sampler_path_is_user_error():
 
 
 @SKELETON
-def test_fake_stream_emits_single_chunk_and_done():
-    """stream=true yields one SSE chunk with the whole message followed by data: [DONE]."""
-
-
-@SKELETON
 def test_backend_failure_records_no_turn():
     """A failed sampling future surfaces as an error and leaves the session without a half turn."""
 
@@ -62,3 +57,8 @@ def test_backend_failure_records_no_turn():
 @SKELETON
 def test_sweep_expires_idle_sessions():
     """sweep() drops sessions idle longer than session_ttl_s and keeps the others."""
+
+
+@SKELETON
+def test_turns_round_trip_through_cookbook():
+    """Two chained turns exported by GET /oai/sessions/{sid} become one Datum through turns_to_trajectory + trajectory_to_data; a broken prefix becomes two."""
