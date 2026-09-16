@@ -8,6 +8,7 @@ import pytest
 
 _P2P_TRANSFER_UTILS_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils"
 _P2P_ROLLOUT_CELL_UPDATER_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_rollout_cell_updater"
+_P2P_PROTOCOL_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p"
 
 
 @contextmanager
@@ -69,3 +70,26 @@ def p2p_rollout_cell_updater() -> ModuleType:
         }
     ):
         return importlib.import_module(_P2P_ROLLOUT_CELL_UPDATER_MODULE)
+
+
+@pytest.fixture(scope="module")
+def p2p_protocol() -> ModuleType:
+    with stubbed_missing_external_sdks(
+        {
+            "mooncake.engine": {"TransferEngine": object},
+            "sglang.srt.server_args": {"ServerArgs": object},
+            "sglang.srt.configs.device_config": {"DeviceConfig": object},
+            "sglang.srt.configs.load_config": {"LoadConfig": object},
+            "sglang.srt.configs.model_config": {"ModelConfig": object},
+            "sglang.srt.distributed.parallel_state": {
+                "ParallelismContext": object,
+                "RankParallelismConfig": object,
+            },
+            "sglang.srt.layers.moe": {"initialize_moe_config": lambda *args, **kwargs: None},
+            "sglang.srt.layers.quantization.fp4_utils": {"initialize_fp4_gemm_config": lambda *args, **kwargs: None},
+            "sglang.srt.layers.quantization.fp8_utils": {"initialize_fp8_gemm_config": lambda *args, **kwargs: None},
+            "sglang.srt.model_loader": {"get_model": lambda *args, **kwargs: None},
+            "sglang.srt.model_loader.parameter_mapper": {"ParameterMapper": object},
+        }
+    ):
+        return importlib.import_module(_P2P_PROTOCOL_MODULE)
