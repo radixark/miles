@@ -135,9 +135,19 @@ def convert_samples_to_train_data(
 
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
+    elif getattr(args, "use_rollout_routing_replay", False):
+        raise ValueError(
+            "--use-rollout-routing-replay is set but the rollout samples carry no "
+            "rollout_routed_experts: the engine response meta_info lacked 'routed_experts'."
+        )
 
     if samples[0].rollout_indexer_topk is not None:
         train_data["rollout_indexer_topk"] = [sample.rollout_indexer_topk for sample in samples]
+    elif getattr(args, "use_rollout_indexer_replay", False):
+        raise ValueError(
+            "--use-rollout-indexer-replay is set but the rollout samples carry no "
+            "rollout_indexer_topk: the engine response meta_info lacked 'indexer_topk'."
+        )
 
     if samples[0].train_metadata is not None:
         train_data["metadata"] = [sample.train_metadata for sample in samples]
