@@ -155,6 +155,18 @@ class HarborDatasetBuilder(RLDatasetBuilder):
         return HarborDataset(task_ids, self.groups_per_batch, self.group_size, self.agent_name, self.epochs), None
 
 
+def truncate_turns(turns: list[dict[str, Any]], max_tokens: int | None) -> list[dict[str, Any]]:
+    """Keep the leading turns whose prompt + output fit the gateway's per-datum cap (--tinker-max-tokens-per-datum, 32768 by default); prompts grow every turn, so the first over-long turn ends the trainable part of the trajectory (the Harbor agent's own max_seq_len check counts tokens approximately)."""
+    if max_tokens is None:
+        return turns
+    kept = []
+    for turn in turns:
+        if len(turn["input_ids"]) + len(turn["output_ids"]) > max_tokens:
+            break
+        kept.append(turn)
+    return kept
+
+
 def turns_to_trajectory(turns: list[dict[str, Any]]) -> Trajectory:
     """GET /oai/sessions/{sid} turns → Trajectory: each turn is Transition(ob=ModelInput.from_ints(input_ids), ac=TokensWithLogprobs(output_ids, logprobs, finish_reason), reward=0.0, episode_done on the last); final_ob = last input_ids + output_ids; stop_reason from the last finish_reason. The only data shaping of ours; the cookbook's only Trajectory producer is its own run_rollout."""
     if not turns:
@@ -213,6 +225,9 @@ class SessionRolloutStrategy(RolloutStrategy):
     max_tokens: int = 8192
     temperature: float = 1.0
     http_timeout_s: float = 60.0
+    max_datum_tokens: int | None = (
+        32768  # the gateway's --tinker-max-tokens-per-datum; longer turns are cut off the trajectory
+    )
     record_path: str | None = None  # append one JSON line per trajectory (task, turns, token counts, reward) when set
     # test seams: the trial runner (default harbor_agent_function.run) and an httpx transport (default: the network)
     run_trial: RunTrial | None = field(default=None, compare=False, repr=False)
@@ -268,11 +283,20 @@ class SessionRolloutStrategy(RolloutStrategy):
             except httpx.HTTPError as error:  # the gateway's TTL sweep is the fallback
                 logger.warning("could not delete session %s: %s", session_id, error)
         turns = exported.json()["turns"]
-        self._record(env, session_id, turns)
-        return turns_to_trajectory(turns)
+        kept = truncate_turns(turns, self.max_datum_tokens)
+        if len(kept) < len(turns):
+            logger.warning(
+                "%s: %d of %d turns exceed %d tokens and are left out of the trajectory",
+                env.task_id,
+                len(turns) - len(kept),
+                len(turns),
+                self.max_datum_tokens,
+            )
+        self._record(env, session_id, turns, len(turns) - len(kept))
+        return turns_to_trajectory(kept)
 
-    def _record(self, env: HarborEnv, session_id: str, turns: list[dict[str, Any]]) -> None:
-        """Experiment log: one JSON line per trajectory with the task, turn count, per-turn prompt/output token counts, final sequence length, reward and exit_status."""
+    def _record(self, env: HarborEnv, session_id: str, turns: list[dict[str, Any]], dropped: int = 0) -> None:
+        """Experiment log: one JSON line per trajectory with the task, turn count, per-turn prompt/output token counts, final sequence length, turns dropped by the datum cap, reward and exit_status."""
         if not self.record_path:
             return
         verdict = env.verdict or {}
@@ -284,6 +308,7 @@ class SessionRolloutStrategy(RolloutStrategy):
             "prompt_tokens": [len(turn["input_ids"]) for turn in turns],
             "output_tokens": [len(turn["output_ids"]) for turn in turns],
             "final_len": (len(turns[-1]["input_ids"]) + len(turns[-1]["output_ids"])) if turns else 0,
+            "dropped_turns": dropped,
             "reward": verdict.get("reward"),
             "exit_status": verdict.get("exit_status"),
             "model_path": verdict.get("model_path"),
