@@ -38,6 +38,7 @@ class CaseConfig:
     with_ref: bool = False
     colocate: bool = True
     rollout_num_gpus: int | None = None
+    rollout_num_gpus_per_engine: int | None = None
     fully_async: bool = False
     mem_fraction_static: float = 0.7
     transfer_mode: str | None = None
@@ -68,6 +69,8 @@ class CaseConfig:
 
     @property
     def engine_size(self) -> int:
+        if self.rollout_num_gpus_per_engine is not None:
+            return self.rollout_num_gpus_per_engine
         return self.num_gpus if self.colocate else self.rollout_num_gpus
 
     @property
