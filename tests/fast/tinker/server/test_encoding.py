@@ -78,6 +78,22 @@ def test_an_off_model_key_is_rejected():
     assert "bogus" in decoded["validation_error"]
 
 
+def test_ttl_seconds_is_accepted_and_ignored():
+    """tinker-cookbook's CheckpointManager sends Config.ttl_seconds (7 days by default) on every periodic save;
+    the gateway keeps checkpoints forever and must not fail the save over it."""
+    op, decoded = decode_command(
+        "save_weights_for_sampler", {"model_id": "m", "seq_id": 1, "path": "000020", "ttl_seconds": 604800}
+    )
+    assert op == "save_weights_for_sampler"
+    assert "validation_error" not in decoded
+    assert decoded["sampler_path"] == "000020"
+
+    op, decoded = decode_command("save_state", {"model_id": "m", "seq_id": 2, "path": "000020", "ttl_seconds": 7200})
+    assert op == "save_state"
+    assert "validation_error" not in decoded
+    assert decoded["name"] == "000020"
+
+
 class TestTensorData:
     def test_dense_tensor_data(self):
         assert tensor_data_to_list({"data": [1.0, 2.0], "shape": [2]}) == [1.0, 2.0]
