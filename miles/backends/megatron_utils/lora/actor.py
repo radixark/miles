@@ -1,6 +1,7 @@
 from contextlib import ExitStack
 
 from miles.backends.megatron_utils.actor import MegatronTrainRayActor
+from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.training_utils.data import get_rollout_data
@@ -36,9 +37,19 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
 
     @with_logs
-    def load_slot(self, slot: int, rank: int, alpha: float) -> None:
+    def load_slot(
+        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+    ) -> None:
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
+        if ckpt_path is not None:
+            lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
 
     @with_logs
-    def unload_slot(self, slot: int) -> None:
-        lora_model.unload_slot(self.model, self.slot_optimizers.pop(slot))
+    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> None:
+        lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
+
+    @with_logs
+    def unload_slot(self, slot: int) -> dict | None:
+        slot_optimizer = self.slot_optimizers.pop(slot)
+        lora_model.unload_slot(self.model, slot_optimizer)
+        return None
