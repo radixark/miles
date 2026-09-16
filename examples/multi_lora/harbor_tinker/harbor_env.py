@@ -1,24 +1,4 @@
-"""tinker-cookbook plug-ins for Harbor tasks sampled through the gateway's recorded sessions.
-
-Dependency decision: the client side is tinker-cookbook plus this plug-in layer (``pip install tinker-cookbook``,
-PyPI 0.5.7 verified against the APIs below). The gateway stays Tinker-wire only plus four session routes.
-
-Reused, not reimplemented:
-- cookbook ``rl/``: ``Env`` / ``EnvGroupBuilder`` / ``RLDataset`` / ``RLDatasetBuilder`` (types.py), ``RolloutStrategy`` /
-  ``RolloutResult`` / ``RolloutError`` (rollout_strategy.py, types.py), ``do_group_rollout`` which calls the strategy and
-  ``compute_group_rewards``, ``trajectory_to_data`` (merge-or-split), ``compute_advantages``, and ``train.py`` for the loop.
-  There is no generic list-of-tasks RLDataset in the cookbook (problem_env.py only has ProblemEnv/ProblemGroupBuilder for
-  single-turn Q&A), so HarborDataset is ours.
-- miles: ``examples/experimental/harbor/harbor_agent_function.run`` (Harbor TrialConfig, sandbox provider from
-  HARBOR_ENV_TYPE / E2B_* env vars, verdict → {reward, exit_status, eval_report, agent_metrics}); it appends ``/v1`` to
-  the base_url it is given and hands the agent ``api_key="dummy"``, which is why a session is pre-bound first.
-- gateway: ``POST/GET/DELETE /oai/sessions/{sid}`` (bind by the policy's Tinker ``sampling_session_id``, export turns).
-
-The one twist versus a cookbook env: the Harbor agent samples through the gateway's session endpoint, not through the
-runner's ``policy(ob)`` call, so ``SessionRolloutStrategy`` runs the trial and rebuilds the ``Trajectory`` from the
-recorded turns instead of stepping the env. Stage 1 renders the full history every turn (no TITO inheritance), so
-``trajectory_to_data`` decides per trajectory whether the turns chain into one Datum or split into one Datum per turn.
-"""
+"""tinker-cookbook plug-ins for Harbor tasks sampled through recorded gateway sessions: dataset / group / env types, turns → Trajectory, and SessionRolloutStrategy (bind by the policy's Tinker sampler → harbor_agent_function.run → export → delete); needs pip install tinker-cookbook."""
 
 from __future__ import annotations
 

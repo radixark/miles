@@ -63,8 +63,8 @@ keeps turns chaining; the `tito_render_prompt` hook is where token inheritance g
 
 ## Gates
 
-- `tests/fast/tinker/test_local_loop.py`: the real SDK and the real cookbook loop against the gateway app served over
-  HTTP with a fake trainer, fake trials chatting through the session route. One step: 8 recorded turns → 8 Datums →
-  `forward_backward` → checkpoints. No GPU.
+- Local loop (no GPU): serve the gateway app with the fast suite's `FakeBackend` under uvicorn, point the real cookbook
+  `train.main` at it with `SessionRolloutStrategy(run_trial=<fake trial that chats through the session route>)`; one step
+  records 8 turns → 8 Datums → `forward_backward` → checkpoints.
 - GPU: start the gateway, `curl` one session for three turns and read `GET /oai/sessions/{sid}`; run Harbor's `oracle`
   agent through AgentENV; one terminus-2 `fix-git` trial; one training step with a moving loss.
