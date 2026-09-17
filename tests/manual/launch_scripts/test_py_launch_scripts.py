@@ -96,6 +96,16 @@ def recorded(request, monkeypatch, tmp_path):
     freeze_environment(monkeypatch, hardware=_HARDWARE_A_RECORDING_REPRESENTS.get(rel, FROZEN_HARDWARE))
     recording = install_command_recorder(monkeypatch)
     module = import_launch_script(REPO_ROOT / rel)
+    if rel == "scripts/amd/run_deepseek_v4.py":
+        # Preserve the original gfx950/blockwise recording independently of the
+        # CI host's GPU and optional TE installation. Capability selection has
+        # separate unit and GPU tests.
+        monkeypatch.setattr(
+            module,
+            "_probe_fp8_capabilities",
+            lambda: module._FP8Capabilities("gfx950", "verified", (True, ""), (True, "")),
+        )
+        monkeypatch.setattr(module, "_resolve_colocate_memory_profile", lambda args: "288gb")
     call_entrypoint(
         module,
         entrypoint,

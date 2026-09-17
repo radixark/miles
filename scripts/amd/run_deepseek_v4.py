@@ -9,6 +9,13 @@ Supports:
                                   smoke testing. **Cannot generate meaningful output -
                                   pipeline-only sanity check.**
 
+Args:
+  --fp8-recipe auto|blockwise|tensorwise: TE training recipe (default: auto).
+      Auto preserves blockwise when TE supports it; on gfx942 it can select
+      tensorwise E4M3 (Float8CurrentScaling). Unsupported explicit recipes fail
+      before Ray submission. This does not change the rollout checkpoint format.
+  --no-fp8-training: explicitly disable FP8 training; never an automatic fallback.
+
 Usage patterns:
 
   1. One-shot full pipeline (download + convert + train):
@@ -29,6 +36,7 @@ Usage patterns:
 """
 
 import os
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -103,9 +111,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    # Megatron-side training precision: blockwise FP8 128x128 GEMMs (fp32 scales) when True,
-    # BF16 when False. Rollout always serves the source FP8 checkpoint either way.
+    # TE FP8 GEMMs when True, BF16 only when explicitly disabled. Independent of rollout.
     fp8_training: bool = True
+    fp8_recipe: Literal["auto", "blockwise", "tensorwise"] = "auto"
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -358,8 +366,76 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     )
 
 
-def _train(args: ScriptArgs):
+@dataclass(frozen=True)
+class _FP8Capabilities:
+    device: str
+    te_version: str
+    blockwise: tuple[bool, str]
+    tensorwise: tuple[bool, str]
+
+
+def _probe_fp8_capabilities() -> _FP8Capabilities:
+    # TE is optional for download/conversion and importing launchers on CPU CI.
+    # Probe only when training is requested, before any Ray jobs are submitted.
+    try:
+        import torch
+        import transformer_engine
+        from transformer_engine.common import recipe
+        from transformer_engine.pytorch import fp8
+    except ImportError as exc:
+        raise RuntimeError("FP8 training requires Transformer Engine with FP8 recipe support.") from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError("FP8 recipe preflight requires a visible training GPU; cannot verify TE capabilities.")
+
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
+    device = f"{props.name} ({getattr(props, 'gcnArchName', 'CUDA')})"
+
+    def support(class_name, check_name):
+        check = getattr(fp8, check_name, None)
+        if not hasattr(recipe, class_name) or check is None:
+            return False, f"TE lacks {class_name} / {check_name}"
+        return check()
+
+    return _FP8Capabilities(
+        device=device,
+        te_version=transformer_engine.__version__,
+        blockwise=support("Float8BlockScaling", "check_fp8_block_scaling_support"),
+        tensorwise=support("Float8CurrentScaling", "check_fp8_support"),
+    )
+
+
+def _resolve_fp8_recipe(requested: str) -> str:
+    if requested not in ("auto", "blockwise", "tensorwise"):
+        raise ValueError(f"Unknown FP8 recipe: {requested}")
+    caps = _probe_fp8_capabilities()
+    candidates = ("blockwise", "tensorwise") if requested == "auto" else (requested,)
+    for candidate in candidates:
+        if getattr(caps, candidate)[0]:
+            print(
+                f"[precision] FP8 E4M3 requested={requested} selected={candidate}; "
+                f"TE={caps.te_version}; device={caps.device}; blockwise_support={caps.blockwise}"
+            )
+            return candidate
+    raise RuntimeError(
+        f"FP8 recipe '{requested}' is unsupported on {caps.device} (TE {caps.te_version}). "
+        f"blockwise: {caps.blockwise[1]}; tensorwise: {caps.tensorwise[1]}. "
+        "Use --fp8-recipe auto or --fp8-recipe tensorwise on a supported TE build. "
+        "No BF16 fallback was applied."
+    )
+
+
+def _get_fp8_training_recipe(args: ScriptArgs) -> str | None:
+    if not args.fp8_training:
+        return None
+    if any(token.split("=", 1)[0] == "--fp8-recipe" for token in shlex.split(args.extra_args)):
+        raise ValueError("Set the launcher's --fp8-recipe, not --extra-args, so TE support is checked.")
+    return _resolve_fp8_recipe(args.fp8_recipe)
+
+
+def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
     print(f"[precision] fp8_training={args.fp8_training}")
+    if fp8_recipe is None:
+        fp8_recipe = _get_fp8_training_recipe(args)
     print(
         f"running on {args.num_nodes} nodes "
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
@@ -549,8 +625,11 @@ def _train(args: ScriptArgs):
         }
 
     if args.fp8_training:
-        misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}' """
+        misc_args += (
+            "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " f"--fp8-recipe {fp8_recipe} "
+        )
+        if fp8_recipe == "blockwise":
+            misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}' """
         # ROCm TE MoE FP8 lacks fused wgrad accumulation; disable the fusion.
         misc_args += "--no-gradient-accumulation-fusion "
 
@@ -609,6 +688,7 @@ def train(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def full_train(args: ScriptArgs):
+    fp8_recipe = _get_fp8_training_recipe(args)
     _prepare_download(args)
 
     bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
@@ -633,7 +713,7 @@ def full_train(args: ScriptArgs):
     if args.hf_checkpoint is None:
         args.hf_checkpoint = f"{args.model_local_dir}/{args.model_name}"
 
-    _train(args)
+    _train(args, fp8_recipe=fp8_recipe)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 """Block-wise FP8 activation quantization for DeepSeek-V4.
 
-Ported verbatim from deepseek-ai/DeepSeek-V4-Pro/inference/kernel.py to keep
-bit-exact parity with the upstream inference kernel. Keep this file in sync
-when DeepSeek updates the reference implementation.
+Based on deepseek-ai/DeepSeek-V4-Pro/inference/kernel.py. On gfx942, use
+PyTorch's explicit E4M3FN conversion: the TileLang HIP cast emits FNUZ bytes
+(and saturates at 240) into a tensor advertised as FN (maximum 448).
 
 Source: https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/inference/kernel.py
 """
@@ -107,6 +107,32 @@ def act_quant_kernel(
     return act_quant_kernel_
 
 
+def _needs_portable_fp8(x: torch.Tensor) -> bool:
+    """Keep the tested TileLang path unchanged outside gfx942."""
+    return bool(
+        torch.version.hip
+        and x.is_cuda
+        and torch.cuda.get_device_properties(x.device).gcnArchName.split(":")[0] == "gfx942"
+    )
+
+
+def _act_quant_torch(x, block_size, scale_fmt, scale_dtype, inplace):
+    """Quantize to actual E4M3FN bytes, not the native gfx942 FNUZ encoding.
+
+    No GEMM is performed here; TE still owns the FP8 training GEMMs. Keep the
+    reference's 448 range, 1e-4 amax floor and optional power-of-two scales.
+    """
+    blocks = x.contiguous().float().reshape(*x.shape[:-1], x.shape[-1] // block_size, block_size)
+    scales = blocks.abs().amax(dim=-1).clamp_min(1e-4) * (1.0 / 448.0)
+    if scale_fmt is not None:
+        scales = torch.exp2(torch.ceil(torch.log2(scales)))
+    quantized = (blocks / scales.unsqueeze(-1)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
+    if inplace:
+        x.copy_((quantized.float() * scales.unsqueeze(-1)).reshape_as(x).to(x.dtype))
+        return x
+    return quantized.reshape_as(x), scales.to(scale_dtype)
+
+
 def act_quant(
     x: torch.Tensor,
     block_size: int = 128,
@@ -118,7 +144,9 @@ def act_quant(
     When scale_fmt is set, scales are rounded to power-of-2 (MXFP).
     """
     N = x.size(-1)
-    assert N % block_size == 0
+    assert block_size > 0 and N % block_size == 0
+    if _needs_portable_fp8(x):
+        return _act_quant_torch(x, block_size, scale_fmt, scale_dtype, inplace)
     tl_dtype = FE8M0 if scale_dtype == torch.float8_e8m0fnu else FP32
     z = x.contiguous()
     y = torch.empty_like(z) if inplace else torch.empty_like(z, dtype=torch.float8_e4m3fn)
