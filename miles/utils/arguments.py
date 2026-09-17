@@ -23,6 +23,7 @@ from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.args.configs.algo import AlgoConfig
+from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
 from miles.utils.args.configs.ci import CiConfig
 from miles.utils.args.configs.cluster import ClusterConfig
 from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig
@@ -225,6 +226,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         DataConfig.add_arguments(parser=parser)
         EvalConfig.add_arguments(parser=parser)
         AlgoConfig.add_arguments(parser=parser)
+        TrainerBackendTraitConfig.add_arguments(parser=parser)
         reset_arg(parser=parser, name="--lr", type=float, default=1e-6)
         reset_arg(parser=parser, name="--clip-grad", type=float, default=1.0)
         reset_arg(parser=parser, name="--calculate-per-token-loss", action="store_true")
