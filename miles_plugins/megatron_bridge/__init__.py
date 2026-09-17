@@ -35,7 +35,9 @@ def _install_bridge_pp_group_unwrap() -> None:
 
     from miles.utils.reloadable_process_group import ReloadableProcessGroup
 
-    if getattr(MegatronParamMapping, "_miles_pp_group_unwrap_installed", False):
+    if getattr(
+        MegatronParamMapping, "_miles_pp_group_unwrap_installed", False
+    ):  # config-access-exempt: the unwrap marker exists only after patch installation
         return
 
     _orig = MegatronParamMapping.broadcast_obj_from_pp_rank

@@ -10,7 +10,9 @@ register_param_transform("glm4_moe_lite", _batched_experts_matches, _hf_unfuse_e
 
 
 def _is_glm4_moe_lite(hf_config) -> bool:
-    return str(getattr(hf_config, "model_type", "") or "") == "glm4_moe_lite"
+    return (
+        str(getattr(hf_config, "model_type", "") or "") == "glm4_moe_lite"
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
 
 
 register_routing_replay_adapter(

@@ -354,7 +354,7 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
     ans.trainer_model_id = trainer.model_id
 
     for key, value in trainer.overrides.items():
-        assert hasattr(ans, key), (
+        assert hasattr(ans, key), (  # config-access-exempt: attribute selected at runtime from key
             f"--megatron-config trainer {trainer.trainer_id!r} overrides {key!r}, which this run's argument "
             f"parser does not know"
         )

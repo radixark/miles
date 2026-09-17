@@ -359,7 +359,7 @@ def _create_cpu_replica(
 
     # Also patch the instance method for subsequent load_weights() calls
     # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
-    if hasattr(model, "post_load_weights"):
+    if hasattr(model, "post_load_weights"):  # config-access-exempt: optional inference-model post-load callback
         model.post_load_weights = lambda *args, **kwargs: None
 
     if first_rollout_engine_rank:

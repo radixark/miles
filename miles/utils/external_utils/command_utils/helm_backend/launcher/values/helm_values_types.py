@@ -173,7 +173,9 @@ class Image(ValuesModel):
 
 
 def _assert_one_source(volume: ValuesModel, sources: tuple[str, ...]) -> None:
-    declared = [source for source in sources if getattr(volume, to_snake(source)) is not None]
+    declared = [
+        source for source in sources if getattr(volume, to_snake(source)) is not None
+    ]  # config-access-exempt: attribute selected at runtime from to_snake(source)
     assert len(declared) == 1, (
         f"a volume declares exactly one of {list(sources)}, but this one declares {declared}: a volume with none "
         f"is a mount kubernetes cannot satisfy, and one with several is a values file whose reader has to guess"

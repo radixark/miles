@@ -120,7 +120,9 @@ def _disk_backed_like(tensor: torch.Tensor, directory: str) -> torch.Tensor:
 
 
 def _is_disk_backed(tensor: torch.Tensor) -> bool:
-    return getattr(tensor, "_miles_disk_backed", False)
+    return getattr(
+        tensor, "_miles_disk_backed", False
+    )  # config-access-exempt: the disk-backed marker is attached only to mapped tensors
 
 
 _MS_SYNC = 4

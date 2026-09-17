@@ -217,7 +217,9 @@ def _send_to_colocated_engine(
     is_gather_src = dist.get_rank() == ipc_gather_src
     long_live_tensors = []
 
-    if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+    if getattr(
+        FlattenedTensorBucket, "supports_multi_dtypes", False
+    ):  # config-access-exempt: bucket implementations differ in multi-dtype support
         converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
     else:
         converted_named_tensors_by_dtypes = {}

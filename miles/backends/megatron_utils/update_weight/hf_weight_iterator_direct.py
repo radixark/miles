@@ -216,10 +216,18 @@ def _get_megatron_local_param_infos(
             dtype=param.dtype,
             shape=param.shape,
             attrs={
-                "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
-                "partition_dim": getattr(param, "partition_dim", -1),
-                "partition_stride": getattr(param, "partition_stride", 1),
-                "parallel_mode": getattr(param, "parallel_mode", None),
+                "tensor_model_parallel": getattr(
+                    param, "tensor_model_parallel", False
+                ),  # config-access-exempt: tensor_model_parallel is optional backend-attached tensor metadata
+                "partition_dim": getattr(
+                    param, "partition_dim", -1
+                ),  # config-access-exempt: partition_dim is optional backend-attached tensor metadata
+                "partition_stride": getattr(
+                    param, "partition_stride", 1
+                ),  # config-access-exempt: partition_stride is optional backend-attached tensor metadata
+                "parallel_mode": getattr(
+                    param, "parallel_mode", None
+                ),  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             },
             size=param.numel() * param.element_size(),
             src_rank=rank,
@@ -340,7 +348,9 @@ def all_gather_params_async(
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
-        elif getattr(param, "parallel_mode", None) == "duplicated" or (
+        elif getattr(
+            param, "parallel_mode", None
+        ) == "duplicated" or (  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
         ):
             gather_tasks.append((info, param.data, None, None, None, None))

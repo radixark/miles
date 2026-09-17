@@ -80,23 +80,31 @@ def _get_model_config_from_wrapped(model):
 def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     """Reject MoE configs the multi-slot grouped-expert adapter cannot serve (checked
     post-finalize because they depend on the resolved provider, not the CLI)."""
-    if not getattr(provider, "num_moe_experts", None):
+    if not getattr(
+        provider, "num_moe_experts", None
+    ):  # config-access-exempt: third-party providers differ in num_moe_experts support
         return
     if not targets_expert_leaves(args.target_modules):
         logger.info("[multilora] MoE model with no expert leaves in --target-modules; experts stay frozen")
         return
 
     # Checked on the provider: --expert-tensor-parallel-size stays None until Megatron resolves it.
-    expert_tp = getattr(provider, "expert_tensor_parallel_size", 1) or 1
+    expert_tp = (
+        getattr(provider, "expert_tensor_parallel_size", 1) or 1
+    )  # config-access-exempt: third-party providers differ in expert_tensor_parallel_size support
     assert expert_tp == 1, (
         f"Multi-LoRA on MoE experts requires expert_tensor_parallel_size=1 (resolved to "
         f"{expert_tp}); set --expert-tensor-parallel-size 1."
     )
-    assert getattr(provider, "moe_grouped_gemm", False), (
+    assert getattr(
+        provider, "moe_grouped_gemm", False
+    ), (  # config-access-exempt: third-party providers differ in moe_grouped_gemm support
         "Multi-LoRA on MoE experts requires moe_grouped_gemm=True (SequentialMLP expert "
         "linears are skipped, so the experts would train no adapter)."
     )
-    assert not getattr(provider, "fp8", None) and not getattr(provider, "fp4", None), (
+    assert not getattr(provider, "fp8", None) and not getattr(
+        provider, "fp4", None
+    ), (  # config-access-exempt: third-party providers differ in fp8 support; third-party providers differ in fp4 support
         "Multi-LoRA on MoE experts does not support fp8/fp4 experts (quantization padding "
         "desynchronizes the dispatched token order)."
     )
@@ -109,10 +117,12 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
             f"--target-modules (got {sorted(served & expert_pair)}); a one-sided expert "
             f"target is dropped at rollout time."
         )
-    assert not getattr(
-        provider, "moe_pad_expert_input_to_capacity", False
-    ), "Multi-LoRA on MoE experts does not support --moe-pad-expert-input-to-capacity."
-    assert not getattr(
+    assert (
+        not getattr(  # config-access-exempt: third-party providers differ in moe_pad_expert_input_to_capacity support
+            provider, "moe_pad_expert_input_to_capacity", False
+        )
+    ), ("Multi-LoRA on MoE experts does not support --moe-pad-expert-input-to-capacity.")
+    assert not getattr(  # config-access-exempt: third-party providers differ in moe_permute_fusion support
         provider, "moe_permute_fusion", False
     ), "Multi-LoRA on MoE experts requires moe_permute_fusion=False."
 
@@ -159,7 +169,9 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if is_multi_lora_enabled(args) and targets_expert_leaves(args.target_modules):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
-        if getattr(provider, "moe_permute_fusion", False):
+        if getattr(
+            provider, "moe_permute_fusion", False
+        ):  # config-access-exempt: third-party providers differ in moe_permute_fusion support
             logger.info(
                 "[multilora] disabling moe_permute_fusion: expert adapters replay the "
                 "dispatcher's permutation, which the fused kernel does not expose"
@@ -169,7 +181,9 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if args.decoder_last_pipeline_num_layers is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
-    if hasattr(provider, "dsa_attention_backend"):
+    if hasattr(
+        provider, "dsa_attention_backend"
+    ):  # config-access-exempt: third-party providers differ in dsa_attention_backend support
         provider.dsa_attention_backend = args.dsa_attention_backend
     provider.finalize()
 
@@ -197,7 +211,9 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         or "ForSequenceClassification" in hf_config.architectures[0]
     )
     if is_value_model:
-        hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
+        hidden_size = (
+            hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
+        )  # config-access-exempt: model-family schemas differ in optional text_config metadata
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size))
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()

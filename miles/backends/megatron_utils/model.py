@@ -176,8 +176,8 @@ def setup_model_and_optimizer(
     # Optimizer
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
-        if hasattr(args, f.name):
-            kwargs[f.name] = getattr(args, f.name)
+        if hasattr(args, f.name):  # config-access-exempt: attribute selected at runtime from f.name
+            kwargs[f.name] = getattr(args, f.name)  # config-access-exempt: attribute selected at runtime from f.name
     config = OptimizerConfig(**kwargs)
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
         config.defer_main_param_initialization = True
@@ -816,7 +816,9 @@ def train(
         # per train step log.
         if (train_step_outcome == TrainStepOutcome.NORMAL) and is_first_replica_megatron_main_rank():
             accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
-            role = getattr(model[0], "role", "actor")
+            role = getattr(
+                model[0], "role", "actor"
+            )  # config-access-exempt: upstream model wrappers do not carry Miles actor/critic roles
             role_tag = "" if role == "actor" else f"{role}-"
 
             extra_metrics = {}
