@@ -8,6 +8,7 @@ from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
 from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
+from miles.tinker.core.prompt_renderer import PromptRenderer
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.tinker_session_server import TrajectoryCollector
 from miles.tinker.core.types import GatewayConfig
@@ -29,20 +30,15 @@ _SWEEP_INTERVAL_S = 60.0
 
 
 def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
-    """The collector over the running service: loads the HF tokenizer, TTL from the flag, optional TITOTokenizer."""
+    """The collector over the running service: HF tokenizer + optional TITOTokenizer in a PromptRenderer, TTL flag."""
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path)
     tito_tokenizer = None
     if args.tinker_tito_model is not None:
         tito_tokenizer = get_tito_tokenizer(
             tokenizer, args.tinker_tito_model, chat_template_kwargs=args.apply_chat_template_kwargs
         )
-    return TrajectoryCollector(
-        service,
-        tokenizer,
-        session_ttl_s=args.tinker_session_ttl_s,
-        chat_template_kwargs=args.apply_chat_template_kwargs,
-        tito_tokenizer=tito_tokenizer,
-    )
+    renderer = PromptRenderer(tokenizer, args.apply_chat_template_kwargs, tito_tokenizer=tito_tokenizer)
+    return TrajectoryCollector(service, renderer, session_ttl_s=args.tinker_session_ttl_s)
 
 
 async def _sweep_collector(collector: TrajectoryCollector, interval_s: float) -> None:
