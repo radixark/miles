@@ -17,7 +17,7 @@ def _is_qwen3_moe(hf_config) -> bool:
 def _apply_moe_patch(hf_config, args) -> None:
     """Patch the MoE block before construction in true-on-policy mode. The import stays lazy because it
     pulls sglang fused-MoE kernels that don't exist for every sglang build."""
-    if not getattr(args, "true_on_policy_mode", False):
+    if not args.true_on_policy_mode:
         return
     from ...models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
 

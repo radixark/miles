@@ -179,9 +179,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
-    opd_top_k = getattr(args, "opd_log_prob_top_k", 0) or 0
-    opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
-    if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
+    opd_top_k = args.opd_log_prob_top_k or 0
+    opd_top_k_strategy = args.opd_top_k_strategy
+    if args.use_opd and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
 
     if (extra_key := sample.kv_cache_namespace) is not None:
@@ -191,7 +191,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
-    if getattr(args, "use_rollout_indexer_replay", False):
+    if args.use_rollout_indexer_replay:
         payload["return_indexer_topk"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
@@ -216,7 +216,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     headers = compute_routing_headers(args, sample)
 
     output = await post(url, payload, headers=headers)
-    if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
+    if args.use_opd and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:
             sample.metadata.setdefault("opd_student_top_logprobs", [])
@@ -306,7 +306,7 @@ async def generate_and_rm(
 
         with state.dp_rank_context() as _:
             # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
-            custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
+            custom_func_path = sample.generate_function_path or args.custom_generate_function_path
 
             generate_fn = load_generate_function(custom_func_path) if custom_func_path else None
             if generate_fn is not None:
@@ -558,7 +558,7 @@ async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
-    for dataset_cfg in getattr(args, "eval_datasets", []) or []:
+    for dataset_cfg in args.eval_datasets or []:
         coros.append(eval_rollout_single_dataset(args, rollout_id, dataset_cfg))
     results_list = await asyncio.gather(*coros)
     results = {}
@@ -623,8 +623,8 @@ async def eval_rollout_single_dataset(
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
             sample_index += 1
-            sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
-            sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
+            sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
+            sample.generate_function_path = dataset_cfg.custom_generate_function_path
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params

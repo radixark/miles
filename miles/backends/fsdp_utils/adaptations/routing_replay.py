@@ -62,7 +62,7 @@ def resolve_routing_replay_adapter(hf_config) -> RoutingReplayAdapter | None:
 
 def uses_rollout_replay(args) -> bool:
     """True when routing comes from the rollout rather than from a recording pass."""
-    return bool(getattr(args, "use_rollout_routing_replay", False))
+    return bool(args.use_rollout_routing_replay)
 
 
 def enable(args) -> bool:
@@ -71,7 +71,7 @@ def enable(args) -> bool:
     ``--use-rollout-routing-replay`` sets ``use_routing_replay`` during arg validation;
     ``--use-routing-replay`` alone selects the record-then-replay variant.
     """
-    routing_replay_manager.enabled = bool(getattr(args, "use_routing_replay", False))
+    routing_replay_manager.enabled = bool(args.use_routing_replay)
     routing_replay_manager.enable_check_replay_result = routing_replay_manager.enabled and args.ci_test
     routing_replay_manager.register_replay_list_func = register_replay_list_sequential
     return routing_replay_manager.enabled

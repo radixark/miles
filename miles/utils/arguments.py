@@ -376,7 +376,7 @@ def parse_args_and_get_parser(
 
         # always use varlen
         args.variable_seq_lengths = True
-        if getattr(args, "moe_token_dispatcher_type", None) == "allgather":
+        if args.moe_token_dispatcher_type == "allgather":
             logger.info(
                 "--moe-token-dispatcher-type allgather does not support variable sequence length, "
                 "please use alltoall dispatcher instead."
@@ -824,7 +824,7 @@ def miles_validate_args(args):
         args.enable_event_analyzer = True
         args.enable_witness = True
         args.non_persistent_ckpt_type = "local"
-        if getattr(args, "non_persistent_local_ckpt_dir", None) is None:
+        if args.non_persistent_local_ckpt_dir is None:
             args.non_persistent_local_ckpt_dir = "/tmp/miles_local_ckpt"
         # atomic: each rank saves independently, no collective communication.
         # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
@@ -1122,7 +1122,7 @@ def miles_validate_args(args):
             "is data-dependent; this configuration is not supported."
         )
 
-    if getattr(args, "balance_by_flops", False):
+    if args.balance_by_flops:
         assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
 
     if args.eps_clip_high is None:
@@ -1223,9 +1223,7 @@ def miles_validate_args(args):
             "P2P weight transfer mode is not compatible with --colocate. "
             "Please use broadcast mode or disable colocate."
         )
-        assert (
-            getattr(args, "prefill_num_servers", None) is None
-        ), "P2P weight transfer mode has not been tested when PD is enabled."
+        assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
         assert (
             args.megatron_to_hf_mode != "bridge"
@@ -1238,7 +1236,7 @@ def miles_validate_args(args):
             "(snapshot + diff + encode) is pure overhead."
         )
         assert (
-            getattr(args, "prefill_num_servers", None) is None
+            args.prefill_num_servers is None
         ), "Disk-delta weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for disk-delta weight transfer."
         assert args.update_weight_disk_dir, (
@@ -1555,7 +1553,7 @@ def miles_validate_args(args):
     ), "--rollout-external-router-pd only applies to external rollout engines; internally launched engines infer PD from the sglang config."
 
     assert not (
-        getattr(args, "sglang_config", None) is not None and getattr(args, "prefill_num_servers", None) is not None
+        args.sglang_config is not None and args.prefill_num_servers is not None
     ), "sglang_config and prefill_num_servers are mutually exclusive. Use server_groups in the YAML config instead."
 
     if args.qkv_format == "bshd":

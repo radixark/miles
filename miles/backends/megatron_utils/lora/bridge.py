@@ -165,12 +165,12 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
                 "dispatcher's permutation, which the fused kernel does not expose"
             )
         provider.moe_permute_fusion = False
-    if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
+    if args.decoder_first_pipeline_num_layers is not None:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
-    if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
+    if args.decoder_last_pipeline_num_layers is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
     if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
+        provider.dsa_attention_backend = args.dsa_attention_backend
     provider.finalize()
 
     if is_multi_lora_enabled(args):

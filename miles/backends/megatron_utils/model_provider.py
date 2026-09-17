@@ -51,7 +51,7 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.variable_seq_lengths = args.variable_seq_lengths
 
     # Match the non-bridge path: MTP must only train its own draft parameters.
-    if getattr(args, "enable_mtp_training", False):
+    if args.enable_mtp_training:
         provider.mtp_detach_heads = True
 
     # numerics (training infra, not model-defining)
@@ -87,19 +87,19 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
 
     # arg name != provider field; arg default None, so propagate only when the user set it
-    if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
+    if args.decoder_first_pipeline_num_layers is not None:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
-    if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
+    if args.decoder_last_pipeline_num_layers is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
 
     # MoE training knobs: override only when explicitly set, else keep the provider's value
-    if getattr(args, "moe_router_bias_update_rate", None) is not None:
+    if args.moe_router_bias_update_rate is not None:
         provider.moe_router_bias_update_rate = args.moe_router_bias_update_rate
-    if getattr(args, "moe_aux_loss_coeff", None) is not None:
+    if args.moe_aux_loss_coeff is not None:
         provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
 
     if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
+        provider.dsa_attention_backend = args.dsa_attention_backend
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
@@ -139,7 +139,7 @@ def get_model_provider_func(
     role: Literal["actor", "critic"] = "actor",
 ):
     # Support custom model provider path (similar to --custom-rm-path for reward models)
-    if getattr(args, "custom_model_provider_path", None):
+    if args.custom_model_provider_path:
 
         def wrapped_model_provider(
             pre_process: bool = True,
@@ -194,7 +194,7 @@ def get_model_provider_func(
                 model.output_layer = LinearForLastLayer(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
-            assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
+            assert not args.enable_witness, "Witness is not supported yet in this mode"
             ModelCompanionInstallationUtils.install(model=model, chunk_index=vp_stage or 0)
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward
@@ -235,7 +235,7 @@ def get_model_provider_func(
 
         # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
         # (e.g. the run_megatron debug worker) won't have it, so default to False.
-        if getattr(args, "enable_mtp_training", False):
+        if args.enable_mtp_training:
             # Detach the MTP heads so RL MTP gradients do not flow into the shared
             # output layer / embedding.
             config.mtp_detach_heads = True
@@ -322,7 +322,7 @@ def get_model_provider_func(
 
             # hard code here to skip r3 registration for mtp layers
             # getattr is required to avoid ckpt conversion errors
-            if getattr(args, "use_rollout_routing_replay", False):
+            if args.use_rollout_routing_replay:
                 prev_routing_replay_enabled = routing_replay_manager.enabled
                 routing_replay_manager.enabled = False
                 logger.warning(
@@ -330,7 +330,7 @@ def get_model_provider_func(
                 )
             mtp_block_spec = get_gpt_mtp_block_spec(config, transformer_layer_spec, **mtp_kwargs)
             kwargs["mtp_block_spec"] = mtp_block_spec
-            if getattr(args, "use_rollout_routing_replay", False):
+            if args.use_rollout_routing_replay:
                 # restore instead of forcing True: the critic role keeps the manager disabled
                 routing_replay_manager.enabled = prev_routing_replay_enabled
 
@@ -354,7 +354,7 @@ def _maybe_install_witness(
     vp_stage: int | None,
 ) -> None:
     ModelCompanionInstallationUtils.install(model=model, chunk_index=vp_stage or 0)
-    if getattr(args, "enable_witness", False):
+    if args.enable_witness:
         install_witness(
             model,
             buffer_size=args.witness_buffer_size,

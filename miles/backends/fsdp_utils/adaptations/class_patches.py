@@ -50,7 +50,7 @@ VERIFIED_MODEL_TYPES = frozenset({"glm4_moe_lite", "nemotron_h", "qwen3", "qwen3
 def check_model_type_verified(hf_config, args=None) -> None:
     """Warn from rank 0 when the arch has no recorded FSDP validation."""
     model_type = str(getattr(hf_config, "model_type", "") or "")
-    if model_type not in VERIFIED_MODEL_TYPES and getattr(args, "rank", 0) == 0:
+    if model_type not in VERIFIED_MODEL_TYPES and args.rank == 0:
         logger.warning(
             "[fsdp class_patches] model_type=%r has no recorded FSDP validation; "
             "it will load via the generic HF path — correctness is not guaranteed.",
