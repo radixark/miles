@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import driver as driver_module
+from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.fast.e2e.deploy.hot_restart.cluster_facts import NAMESPACE, RELEASE
 from tests.utils.soak.deploy.driver import (
     HotRestartDriver,
     ScheduledFreeze,
@@ -15,8 +17,6 @@ from tests.utils.soak.deploy.driver import (
 )
 from tests.utils.soak.deploy.evidence import HotRestartRecord, RunProgress
 from tests.utils.soak.deploy.utils import HOT_RESTART_ARG
-from tests.e2e.ft.conftest_ft.modes import FTTestMode
-from tests.fast.e2e.deploy.hot_restart.cluster_facts import NAMESPACE, RELEASE
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError

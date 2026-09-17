@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from tests.fast.e2e.deploy.hot_restart.cluster_facts import RELEASE, TRAINER, cluster_snapshot, pod_fact, workload_fact
 from tests.utils.soak.deploy.evidence import (
     CHECKPOINT_TRACKER_FILENAME,
     HotRestartEvidence,
@@ -10,7 +11,6 @@ from tests.utils.soak.deploy.evidence import (
     read_last_saved_iteration,
     read_run_progress,
 )
-from tests.fast.e2e.deploy.hot_restart.cluster_facts import RELEASE, TRAINER, cluster_snapshot, pod_fact, workload_fact
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent

@@ -3,11 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tests.utils.soak.deploy.driver import ScheduledFreeze
-from tests.utils.soak.deploy.evidence import (
-    HotRestartRecord,
-    read_discarded_event_dirs,
-    read_step_events,
-)
+from tests.utils.soak.deploy.evidence import HotRestartRecord, read_discarded_event_dirs, read_step_events
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 

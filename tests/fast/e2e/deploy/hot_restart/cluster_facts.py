@@ -1,9 +1,4 @@
-from tests.utils.soak.deploy.cluster_observer import (
-    STATEFUL_SET_KIND,
-    ClusterSnapshot,
-    PodFact,
-    WorkloadFact,
-)
+from tests.utils.soak.deploy.cluster_observer import STATEFUL_SET_KIND, ClusterSnapshot, PodFact, WorkloadFact
 
 NAMESPACE: str = "rl"
 RELEASE: str = "miles-run-demo-all"

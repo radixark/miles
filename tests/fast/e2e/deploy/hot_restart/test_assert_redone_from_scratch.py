@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import compute_checkpoint_dir
 from tests.utils.soak.deploy.assert_redone_from_scratch import (
     RedoneFromScratch,
     assert_unsaved_run_redone_from_scratch,
 )
 from tests.utils.soak.deploy.driver import ScheduledFreeze
 from tests.utils.soak.deploy.evidence import HotRestartRecord
-from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import compute_checkpoint_dir
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir

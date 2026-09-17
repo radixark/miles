@@ -3,6 +3,16 @@ import time
 
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import cluster_observer as cluster_module
+from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
+    ENGINE_POOL,
+    NAMESPACE,
+    ORCHESTRATOR,
+    RELEASE,
+    TRAINER,
+    cluster_snapshot,
+    pod_fact,
+    workload_fact,
+)
 from tests.utils.soak.deploy.cluster_observer import (
     LEADER_WORKER_SET_KIND,
     POD_KIND,
@@ -13,16 +23,6 @@ from tests.utils.soak.deploy.cluster_observer import (
     compute_trainer_rpc_url,
     parse_pod_facts,
     parse_workload_facts,
-)
-from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
-    ENGINE_POOL,
-    NAMESPACE,
-    ORCHESTRATOR,
-    RELEASE,
-    TRAINER,
-    cluster_snapshot,
-    pod_fact,
-    workload_fact,
 )
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION

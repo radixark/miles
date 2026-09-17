@@ -1,8 +1,8 @@
 import asyncio
 import json
 
-from tests.utils.soak.deploy.cluster_observer import WORKLOAD_KINDS, parse_workload_facts
 from tests.utils.soak.action import run_command
+from tests.utils.soak.deploy.cluster_observer import WORKLOAD_KINDS, parse_workload_facts
 from tests.utils.soak.state import SoakDeploymentTarget
 
 from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS, compute_release_selector

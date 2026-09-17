@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.deploy.cluster_observer import compute_hot_restart_workloads
 from tests.utils.soak.deploy.deployment_target import validate_deployment_target
 from tests.utils.soak.deploy.evidence import HotRestartRecord
@@ -12,7 +13,6 @@ from tests.utils.soak.deploy.fault_form import (
 )
 from tests.utils.soak.deploy.guarded_launcher import HotRestartLaunchSpec
 from tests.utils.soak.deploy.utils import REPLACED_LAUNCH_EXIT_CODE, compute_hot_restart_config
-from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
 from tests.utils.soak.state import (
     EventLog,

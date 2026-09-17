@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from tests.utils.soak.action import run_command
 from tests.utils.soak.deploy.cluster_observer import (
     BOOT_UUID_TIMEOUT_SECONDS,
     POD_KIND,
@@ -17,7 +18,6 @@ from tests.utils.soak.deploy.cluster_observer import (
     parse_workload_facts,
 )
 from tests.utils.soak.deploy.progress import observe_run_progress
-from tests.utils.soak.action import run_command
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.state import SoakDeploymentTarget, SoakObservation
 

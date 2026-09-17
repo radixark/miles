@@ -7,6 +7,8 @@ from typing import Annotated
 import typer
 from examples.infra_features.split_deployment.address_book import DEFAULT_TRAINER_ID
 from tests.e2e.deploy.conftest_deploy.common.utils import assert_cluster_can_deploy_runs
+from tests.utils.soak.checks.weights import assert_published_weight_checksums, assert_weight_checksum_history
+from tests.utils.soak.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.utils.soak.deploy.assert_workloads import assert_take_overs_replaced_only_script
 from tests.utils.soak.deploy.cluster_observer import ClusterObserver, ClusterSnapshot
 from tests.utils.soak.deploy.evidence import (
@@ -20,8 +22,6 @@ from tests.utils.soak.deploy.soak_form import SoakActionFormHotRestart
 from tests.utils.soak.deploy.soak_observer import HotRestartSoakObserver
 from tests.utils.soak.deploy.soak_session import execute_hot_restart_session
 from tests.utils.soak.deploy.utils import compute_checkpoint_dir, compute_release_of_config
-from tests.utils.soak.checks.weights import assert_published_weight_checksums, assert_weight_checksum_history
-from tests.utils.soak.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.recipes.gsm8k import (
     DEFAULT_METRIC_THRESHOLD,

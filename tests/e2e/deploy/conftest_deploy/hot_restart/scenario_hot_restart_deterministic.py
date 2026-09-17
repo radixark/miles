@@ -20,12 +20,11 @@ from tests.e2e.deploy.conftest_deploy.common.example_args import (
     without_weight_decay,
 )
 from tests.e2e.deploy.conftest_deploy.common.utils import run_on_cluster
-from tests.utils.soak.deploy.assert_redone_from_checkpoint import (
-    assert_only_post_checkpoint_steps_redone,
-)
-from tests.utils.soak.deploy.assert_redone_from_scratch import (
-    assert_unsaved_run_redone_from_scratch,
-)
+from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
+from tests.e2e.ft.conftest_ft.modes import DENSE_MODEL_HF_REPO, DENSE_MODEL_NAME, DENSE_MODEL_TYPE, FTTestMode
+from tests.utils.soak.deploy.assert_redone_from_checkpoint import assert_only_post_checkpoint_steps_redone
+from tests.utils.soak.deploy.assert_redone_from_scratch import assert_unsaved_run_redone_from_scratch
 from tests.utils.soak.deploy.assert_workloads import assert_take_overs_replaced_only_script
 from tests.utils.soak.deploy.driver import (
     HotRestartDriver,
@@ -34,15 +33,8 @@ from tests.utils.soak.deploy.driver import (
     relaunch_with_hot_restart,
 )
 from tests.utils.soak.deploy.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
-from tests.utils.soak.deploy.freeze_plan import (
-    arm_first_freeze,
-    compute_freeze_plan_path,
-    write_freeze_plan,
-)
+from tests.utils.soak.deploy.freeze_plan import arm_first_freeze, compute_freeze_plan_path, write_freeze_plan
 from tests.utils.soak.deploy.utils import compute_checkpoint_dir, compute_release_of_config
-from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
-from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
-from tests.e2e.ft.conftest_ft.modes import DENSE_MODEL_HF_REPO, DENSE_MODEL_NAME, DENSE_MODEL_TYPE, FTTestMode
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils

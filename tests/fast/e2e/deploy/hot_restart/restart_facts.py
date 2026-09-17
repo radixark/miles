@@ -1,10 +1,3 @@
-from tests.utils.soak.deploy.cluster_observer import (
-    STATEFUL_SET_KIND,
-    ClusterSnapshot,
-    PodFact,
-    WorkloadFact,
-)
-from tests.utils.soak.deploy.evidence import HotRestartEvidence, HotRestartRecord
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ENGINE_POOL,
     ORCHESTRATOR,
@@ -12,6 +5,8 @@ from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ROLLOUT_EXECUTOR,
     TRAINER,
 )
+from tests.utils.soak.deploy.cluster_observer import STATEFUL_SET_KIND, ClusterSnapshot, PodFact, WorkloadFact
+from tests.utils.soak.deploy.evidence import HotRestartEvidence, HotRestartRecord
 
 ENGINE_POOL_POD: str = f"{ENGINE_POOL}-0-1"
 

@@ -3,8 +3,8 @@ from pathlib import Path
 
 import typer
 from pydantic import TypeAdapter
-from tests.utils.soak.deploy.evidence import RunProgress, read_run_progress
 from tests.utils.soak.action import run_command
+from tests.utils.soak.deploy.evidence import RunProgress, read_run_progress
 
 _adapter = TypeAdapter(RunProgress)
 app = typer.Typer()

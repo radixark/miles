@@ -5,12 +5,8 @@ from tests.utils.soak.deploy.assert_process import (
     assert_run_watched_closely,
     assert_trainer_not_rebooted,
 )
-from tests.utils.soak.deploy.cluster_observer import (
-    ClusterSnapshot,
-    compute_hot_restart_workloads,
-)
+from tests.utils.soak.deploy.cluster_observer import ClusterSnapshot, compute_hot_restart_workloads
 from tests.utils.soak.deploy.evidence import HotRestartEvidence
-
 
 # ============================ what a take-over rolls ==========================
 

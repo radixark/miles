@@ -1,16 +1,4 @@
 import pytest
-from tests.utils.soak.deploy.assert_workloads import (
-    _compute_restart_stamps_of_workload,
-    _compute_unattributed_pod_names,
-    _compute_workload_of_pod,
-    _compute_workloads_with_changed_template,
-    _compute_workloads_with_replaced_pods,
-    assert_only_orchestration_restarted,
-)
-from tests.utils.soak.deploy.cluster_observer import (
-    LEADER_WORKER_SET_KIND,
-    compute_hot_restart_workloads,
-)
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ENGINE_POOL,
     ORCHESTRATOR,
@@ -29,6 +17,15 @@ from tests.fast.e2e.deploy.hot_restart.restart_facts import (
     restarted_snapshot,
     two_restarts,
 )
+from tests.utils.soak.deploy.assert_workloads import (
+    _compute_restart_stamps_of_workload,
+    _compute_unattributed_pod_names,
+    _compute_workload_of_pod,
+    _compute_workloads_with_changed_template,
+    _compute_workloads_with_replaced_pods,
+    assert_only_orchestration_restarted,
+)
+from tests.utils.soak.deploy.cluster_observer import LEADER_WORKER_SET_KIND, compute_hot_restart_workloads
 
 
 class TestAssertOnlyTheOrchestrationSideRestarted:
