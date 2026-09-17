@@ -280,8 +280,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 if args.use_rollout_routing_replay:
                     # lop diff w/ w/o r3 is very big
                     abs_tol = 5e-3
-                elif getattr(args, "sglang_config", None) is not None:
-                    abs_tol = 1e-8
                 else:
                     abs_tol = 1e-8
                 assert isclose(

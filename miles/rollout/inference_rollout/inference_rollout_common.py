@@ -83,7 +83,7 @@ async def generate_and_rm(
         sink.attempt_start(sample)
 
     # generate
-    log_prefix = f"[sample={getattr(sample, 'index', '?')}]"
+    log_prefix = f"[sample={sample.index}]"
     logger.debug(f"{log_prefix} Waiting for semaphore...")
     try:
         async with state.generate_fn_semaphore:
@@ -156,7 +156,7 @@ async def generate_and_rm_group(
             if sample.routing_key is None:
                 sample.routing_key = str(uuid.uuid4())
 
-    log_prefix = f"[group indices={[getattr(s, 'index', '?') for s in group]}]"
+    log_prefix = f"[group indices={[s.index for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")
     tasks = []
     for idx, sample in enumerate(group):

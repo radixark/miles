@@ -23,7 +23,7 @@ def configure_logger(args, *, source: ProcessIdentity, report_env: bool = True) 
     ConfigSnapshotDumper.configure(args=args, source=source)
     ConfigSnapshotDumper.dump(stage="process_config", config={"args": args})
 
-    if (event_dir := getattr(args, "save_debug_event_data", None)) is not None:
+    if (event_dir := args.save_debug_event_data) is not None:
         if not is_event_logger_initialized():
             set_event_logger(EventLogger(log_dir=event_dir, file_name=f"{name}.jsonl", source=source))
 

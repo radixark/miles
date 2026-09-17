@@ -384,8 +384,8 @@ def apply_inkling_lora(model, args):
     rank = int(args.lora_rank)
     assert rank > 0, "apply_inkling_lora requires --lora-rank > 0"
     scale = float(args.lora_alpha) / float(rank)
-    dropout = float(getattr(args, "lora_dropout", 0.0) or 0.0)
-    a_init = getattr(args, "lora_A_init_method", "xavier") or "xavier"
+    dropout = float(args.lora_dropout or 0.0)
+    a_init = args.lora_A_init_method or "xavier"
     lora_kwargs = dict(scale=scale, dropout=dropout, a_init=a_init)
 
     for param in model.parameters():

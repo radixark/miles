@@ -37,7 +37,7 @@ def create_megatron_parallel_state(
             size=mpu.get_context_parallel_world_size(),
             group=mpu.get_context_parallel_group(),
         ),
-        cp_comm_type=getattr(args, "cp_comm_type", None),
+        cp_comm_type=args.cp_comm_type,
         tp=GroupInfo(
             rank=mpu.get_tensor_model_parallel_rank(),
             size=mpu.get_tensor_model_parallel_world_size(),

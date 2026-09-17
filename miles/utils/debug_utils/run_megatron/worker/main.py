@@ -59,7 +59,7 @@ def main() -> None:
     for m in model:
         dumper.register_non_intrusive_dumper(m)
 
-    load_replay_data(script, rank=rank, sequence_parallel=getattr(args, "sequence_parallel", False))
+    load_replay_data(script, rank=rank, sequence_parallel=args.sequence_parallel)
 
     token_ids: list[int] = json.loads(script.token_ids_file.read_text())
     batch: dict[str, torch.Tensor] = prepare_batch(

@@ -117,7 +117,7 @@ def init(
     set_parallel_state(create_megatron_parallel_state(indep_dp=indep_dp))
 
     # sanity check
-    if getattr(args, "indep_dp", False):
+    if args.indep_dp:
         assert args.data_parallel_size == 1
 
     # Random seeds for reproducibility.
@@ -149,7 +149,7 @@ def init(
 
         _initialize_tp_communicators()
 
-    if getattr(args, "custom_megatron_init_path", None):
+    if args.custom_megatron_init_path:
         from miles.utils.function_registry import load_function
 
         custom_init = load_function(args.custom_megatron_init_path)
