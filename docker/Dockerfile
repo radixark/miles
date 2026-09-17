@@ -86,10 +86,15 @@ RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f
 
 RUN pip install flash-linear-attention==0.5.2
 # required for DeepSeek V4
-RUN pip install tilelang==0.1.9 -f https://tile-ai.github.io/whl/nightly/cu128/
+RUN pip install tilelang==0.1.14 apache-tvm-ffi==0.1.11
+# Backport the FP16 packing fix from tile-ai/tilelang#3158 for Blackwell FlashQLA.
+RUN --mount=type=bind,source=docker/patch/tilelang_fp16_pack.patch,target=/tmp/tilelang_fp16_pack.patch \
+    TILELANG_DIR=$(python3 -c "import importlib.util, pathlib; print(pathlib.Path(importlib.util.find_spec('tilelang').origin).parent)") && \
+    patch -d "$TILELANG_DIR" -p1 < /tmp/tilelang_fp16_pack.patch
 RUN pip install --no-deps tile_kernels==1.0.0
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
-RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
+# Its dependency pins would downgrade TileLang and TVM-FFI; use the versions above.
+RUN pip install -v --no-deps --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@7c7dfe16416ad21b1d03258189fc8d3b8460ae06"
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
 # builds are the expensive path this avoids).
