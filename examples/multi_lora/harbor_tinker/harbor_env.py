@@ -266,9 +266,7 @@ class SessionRolloutStrategy(RolloutStrategy):
         session_id = f"harbor-{uuid.uuid4().hex}"
         bind_body: dict[str, Any] = {"sampling_session_id": sampling_session_id}
         if self.max_datum_tokens is not None:
-            bind_body["max_datum_tokens"] = (
-                self.max_datum_tokens
-            )  # the TITO chain budget, same cap truncate_turns enforces
+            bind_body["max_datum_tokens"] = self.max_datum_tokens  # TITO chain budget (see truncate_turns)
         bound = await http.post(f"/oai/sessions/{session_id}", json=bind_body)
         bound.raise_for_status()
         try:
