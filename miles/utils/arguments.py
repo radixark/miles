@@ -402,7 +402,8 @@ def parse_args_and_get_parser(
     sglang_validate_args(args)
 
     assert parser is not None
-    values = vars(args) | {
+    backend_only_fields = training_backend_arg_names - AllConfig.model_fields.keys()
+    values = {name: value for name, value in vars(args).items() if name not in backend_only_fields} | {
         "raw_megatron": resolve_megatron_config(
             args,
             base_args={name: value for name, value in vars(args).items() if name in training_backend_arg_names},
