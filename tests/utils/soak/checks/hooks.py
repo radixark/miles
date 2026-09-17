@@ -9,12 +9,10 @@ from tests.utils.soak.state import (
     SoakEvent,
     SoakObservation,
     cell_is_alive,
-    cell_type_of,
 )
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import FaultHookEvent, TrainGroupStepEndEvent, WeightUpdateResultEvent
-from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.test_utils.fault_hooks import FaultHookRecord, FaultHookRequest
 from miles.utils.workers.cell_operations.base import FaultTarget
 from miles.utils.workers.naming import parse_cell_id

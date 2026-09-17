@@ -10,7 +10,6 @@ import typer
 import yaml
 from tests.utils.soak.deploy.deployment_target import validate_deployment_target
 from tests.utils.soak.deploy.guard_manifest import GUARDED_WORKLOAD_KINDS
-from tests.utils.soak.deploy.uninstall_lock import uninstall_lock
 from tests.utils.soak.recipes.gsm8k import launch_gsm8k
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
 from tests.utils.soak.state import SoakDeploymentTarget
@@ -46,11 +45,10 @@ def launch_guarded(spec: HotRestartLaunchSpec) -> None:
     def defuse(release: str, *, namespace: str, superseded_state_file: Path | None, state_file: Path | None) -> None:
         if (release, namespace, superseded_state_file) != (target.release, target.namespace, target.state_file):
             raise StaleFaultTargetError("The launcher no longer carries the observed orchestrator generation")
-        with uninstall_lock(target.state_file):
-            asyncio.run(validate_deployment_target(target))
-            original_defuse(
-                release, namespace=namespace, superseded_state_file=superseded_state_file, state_file=state_file
-            )
+        asyncio.run(validate_deployment_target(target))
+        original_defuse(
+            release, namespace=namespace, superseded_state_file=superseded_state_file, state_file=state_file
+        )
 
     def delete_job(name: str, *, namespace: str, check: bool = False) -> None:
         if name == RunNames.uninstall_job(release=target.release) and namespace == target.namespace:

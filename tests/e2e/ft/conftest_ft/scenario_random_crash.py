@@ -28,11 +28,7 @@ from tests.e2e.ft.conftest_ft.execution import (
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.e2e.ft.conftest_ft.training_launcher import TrainingLaunchSpec, execute_session
 from tests.utils.soak.checks.ft import assert_healing
-from tests.utils.soak.checks.hooks import (
-    assert_hook_effects,
-    assert_hook_survivors,
-    assert_remote_p2p_failures,
-)
+from tests.utils.soak.checks.hooks import assert_hook_effects, assert_hook_survivors, assert_remote_p2p_failures
 from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.checks.weights import assert_published_weight_checksums
 from tests.utils.soak.cli_options import SeedOption
