@@ -1,8 +1,9 @@
-from collections.abc import Callable
-from typing import Any, Literal
+from abc import ABC, abstractmethod
+from typing import Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, model_validator
 
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.math_utils import exact_div
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -11,10 +12,6 @@ from miles.utils.workers.types import DeployComponent, PlatformAccess
 RPC_PORT_NAME = "rpc"
 MASTER_PORT_NAME = "master"
 DEFAULT_RPC_PORT = 8000
-
-
-def _port_info_name(port_info: "PortInfo | dict") -> str:
-    return port_info["name"] if isinstance(port_info, dict) else port_info.name
 
 
 class PortInfo(FrozenStrictBaseModel):
@@ -88,6 +85,7 @@ class WorkerMetaContext(FrozenStrictBaseModel):
 
 
 class WorkerLaunchContext(FrozenStrictBaseModel):
+    args: Any
     cell_index: int
     worker_in_cell_index: int
     gpu_ids: list[int]
@@ -99,25 +97,30 @@ class WorkerCtorContext(WorkerLaunchContext):
     capability: BackendCapability
 
 
-SpecMetaFn = Callable[[WorkerMetaContext], dict[str, Any]]
+class BaseSpec(FrozenStrictBaseModel, ABC):
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
-
-class BaseSpec(FrozenStrictBaseModel):
+    args: Any
     name: str
     category: str | None = None
     port_infos: list[PortInfo]
-    env_var: Callable[[WorkerLaunchContext], dict[str, str]]
     scheduling: SchedulingSpec
-    meta: SpecMetaFn | None = None
     deploy_component: DeployComponent = DeployComponent.PRIMARY
     platform_access: PlatformAccess = PlatformAccess.NONE
 
-    @model_validator(mode="after")
-    def _reject_selector_component(self) -> "BaseSpec":
-        assert (
-            self.deploy_component is not DeployComponent.ALL
-        ), f"pool {self.name} must name the one component it is deployed with, not the selector for all of them"
-        return self
+    @classmethod
+    @abstractmethod
+    def slice_configs(cls, args: Any) -> list[Any]: ...
+
+    @classmethod
+    @abstractmethod
+    def create(cls, config: Any) -> Self | list[Self]: ...
+
+    def meta(self, ctx: WorkerMetaContext) -> dict[str, Any]:
+        return {}
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        return {}
 
 
 class HostAndPort(FrozenStrictBaseModel):
@@ -140,21 +143,20 @@ class LaunchCommandContext(WorkerLaunchContext):
 
 
 class BaseCommandSpec(BaseSpec):
-    launch_command: Callable[[LaunchCommandContext], str]
+    @abstractmethod
+    def launch_command(self, ctx: LaunchCommandContext) -> str: ...
 
 
 class BaseServeSpec(BaseSpec):
+    worker_type: ClassVar[str]
+    config_class: ClassVar[type[BaseLeafConfig]]
     worker_class: str
-    ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]]
+    port_infos: list[PortInfo] = [DEFAULT_RPC_PORT_INFO]
     concurrency_groups: dict[str, int] | None = None
 
-    @model_validator(mode="before")
     @classmethod
-    def _inject_rpc_port(cls, values: dict) -> dict:
-        if "port_infos" not in values:
-            return values
+    @abstractmethod
+    def create(cls, config: Any) -> Self: ...
 
-        port_infos = list(values["port_infos"])
-        if all(_port_info_name(port_info) != RPC_PORT_NAME for port_info in port_infos):
-            port_infos.append(DEFAULT_RPC_PORT_INFO)
-        return {**values, "port_infos": port_infos}
+    @abstractmethod
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]: ...
