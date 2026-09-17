@@ -112,7 +112,7 @@ async def serve(args):
             build_app(service), host=args.tinker_server_host, port=args.tinker_server_port, log_level="info"
         )
     )
-    if collector is not None:
+    if args.tinker_session_server:
         # the four /oai/sessions routes ride on the app uvicorn holds; the Tinker routes are untouched
         install_session_routes(server.config.app, collector, max_body_bytes=args.tinker_session_max_body_bytes)
         logger.info("recorded-session routes mounted at /oai/sessions/{sid} (--tinker-session-server)")
@@ -120,7 +120,7 @@ async def serve(args):
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
     # not keep answering /healthz while every training future pends forever
     service_task = asyncio.create_task(service.run())
-    if collector is not None:
+    if args.tinker_session_server:
         # the sweep lives exactly as long as the dispatcher; nothing else needs to know about it
         sweep_task = asyncio.create_task(_sweep_collector(collector, _SWEEP_INTERVAL_S))
         service_task.add_done_callback(lambda _: sweep_task.cancel())
