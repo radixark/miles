@@ -262,9 +262,14 @@ class SessionRolloutStrategy(RolloutStrategy):
         return RolloutResult(trajectories=trajectories, envs=survivors, errors=errors)
 
     async def run_one(self, env: HarborEnv, sampling_session_id: str, http: httpx.AsyncClient) -> Trajectory:
-        """POST /oai/sessions/{sid} {sampling_session_id} → harbor_agent_function.run(base_url=…/oai/sessions/{sid}, metadata={instance_id, agent_name, max_seq_len}, request_kwargs={max_tokens, temperature}) → env.verdict → GET turns → DELETE → turns_to_trajectory."""
+        """POST /oai/sessions/{sid} {sampling_session_id, max_datum_tokens} → harbor_agent_function.run(base_url=…/oai/sessions/{sid}, metadata={instance_id, agent_name, max_seq_len}, request_kwargs={max_tokens, temperature}) → env.verdict → GET turns → DELETE → turns_to_trajectory."""
         session_id = f"harbor-{uuid.uuid4().hex}"
-        bound = await http.post(f"/oai/sessions/{session_id}", json={"sampling_session_id": sampling_session_id})
+        bind_body: dict[str, Any] = {"sampling_session_id": sampling_session_id}
+        if self.max_datum_tokens is not None:
+            bind_body["max_datum_tokens"] = (
+                self.max_datum_tokens
+            )  # the gateway keeps a TITO chain under the same cap truncate_turns enforces
+        bound = await http.post(f"/oai/sessions/{session_id}", json=bind_body)
         bound.raise_for_status()
         try:
             run_trial = self.run_trial or _default_run_trial()

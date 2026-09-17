@@ -8,16 +8,17 @@ Training is the unmodified tinker-cookbook `rl/train.py` loop. Agents are Harbor
 running their tasks on the internal AgentENV sandbox; they send plain OpenAI chat messages to a **native tinker
 session server** on the gateway, a small token-trajectory collector that renders with the base model's chat
 template, samples through the gateway's own token path (adapter `M@V`), and records every turn's `input_ids`,
-`output_ids` and `logprobs`. The client turns those turns into cookbook `Transition`s; `trajectory_to_data`
-decides whether a trajectory becomes one Datum (turns chain) or one Datum per turn (they do not).
+`output_ids` and `logprobs`. With `--tinker-tito-model` every turn's prompt inherits the previous turn's tokens
+(TITO), so the whole trajectory is one token stream. The client turns the recorded turns into cookbook `Transition`s;
+`trajectory_to_data` merges chained turns into one Datum and starts a new one where a chain breaks.
 
 ## Pieces
 
 | Where | What |
 |---|---|
-| gateway `miles/tinker/core/tinker_session_server.py` | `TrajectoryCollector`: recorded sessions, one per trajectory; TITO hooks empty (full re-render every turn) |
-| gateway `miles/tinker/server/oai_routes.py` | `POST /oai/sessions/{sid}` bind, `POST /oai/sessions/{sid}/v1/chat/completions`, `GET /oai/sessions/{sid}` turns, `DELETE` |
-| gateway `serve_tinker.py`, `miles/tinker/arguments.py` | mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), renders with `--apply-chat-template-kwargs` / `--chat-template-path` |
+| gateway `miles/tinker/core/tinker_session_server.py` | `TrajectoryCollector`: recorded sessions, one per trajectory; `tito_render_prompt` / `on_turn_committed` inherit tokens turn to turn through an injected miles `TITOTokenizer` (full re-render when off or when a chain breaks) |
+| gateway `miles/tinker/server/oai_routes.py` | `POST /oai/sessions/{sid}` bind (`sampling_session_id`, optional `max_datum_tokens`), `POST /oai/sessions/{sid}/v1/chat/completions`, `GET /oai/sessions/{sid}` turns, `DELETE` |
+| gateway `serve_tinker.py`, `miles/tinker/arguments.py` | mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), `--tinker-tito-model` (a `TITOTokenizerType`, its fixed template replaces `--chat-template-path`), renders with `--apply-chat-template-kwargs` |
 | client `harbor_env.py` | cookbook plug-ins: `HarborDatasetBuilder`, `HarborGroup` (rewards from Harbor verdicts), `SessionRolloutStrategy` (bind → Harbor trial → export → delete → `Trajectory`) |
 | client `run_harbor_tinker.py` | `HarborTinkerConfig` → cookbook `train.Config` → `train.main`, with a sandbox preflight |
 
@@ -62,10 +63,29 @@ cookbook train.main ── Tinker SDK ──▶ gateway: create_model / forward_
  └ trajectory_to_data → Datums → forward_backward
 ```
 
-Stage 1 renders the full history every turn. On Qwen3 with thinking on and terminal output fed back as user
-messages (what terminus-2 does), the template strips earlier thinking, so consecutive turns do not chain and each
-turn is its own Datum: exact on-policy, but O(T²) tokens per trajectory. `--apply-chat-template-kwargs '{"enable_thinking": false}'`
-keeps turns chaining; the `tito_render_prompt` hook is where token inheritance goes later.
+## TITO (token inheritance across turns)
+
+Without `--tinker-tito-model` the collector renders the full history every turn. On Qwen3 the native template strips
+earlier thinking and the no-think generation prompt carries an empty `<think>` block the history omits, so a re-render
+never equals the previous turn's tokens: consecutive turns do not chain and each turn is its own Datum, exact
+on-policy but O(T²) tokens per trajectory.
+
+With `--tinker-tito-model qwen3` (any `TITOTokenizerType`) the gateway reuses miles' full-model TITO machinery:
+
+- `resolve_fixed_chat_template` installs the family's fixed template (`qwen3_fixed.jinja`, `clear_thinking=false`) as
+  the chat template and merges its kwargs into `--apply-chat-template-kwargs`; the first turn and every fallback still
+  go through the same HF `apply_chat_template`.
+- `tito_render_prompt` (mirrors `LinearTrajectory.prepare_pretokenized`) asks `TITOTokenizer.merge_tokens` for the
+  previous turn's `input_ids + output_ids` plus only the tokens of the appended messages (append-only history check,
+  allowed roles, the missing `\n` after `<|im_end|>`); the sandbox's new text is tokenized once and never again.
+- `on_turn_committed` (mirrors `update_pretokenized_state`) keeps the history plus reply and the token checkpoint on
+  the session; the export marks each turn `inherits`.
+- A chain breaks (full re-render, new Datum) when the harness edits, reorders or summarizes history, appends a role
+  the family does not allow, or the prompt plus `max_tokens` would exceed the datum budget: the gateway cap lowered to
+  the client's `max_datum_tokens` sent at bind.
+
+Sessions live per trajectory under their tenant: freed by the client's `DELETE`, by the idle TTL, or as soon as the
+tenant's Tinker lease is gone (`sweep` checks `service.sessions`), so token state never outlives its LoRA.
 
 ## Gates
 
