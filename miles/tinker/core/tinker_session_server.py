@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-import uuid
 from array import array
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -61,6 +60,25 @@ class Turn:
             "created_at": self.created_at,
             "inherits": self.inherits,
         }
+
+
+@dataclass(frozen=True)
+class TurnRequest:
+    """One turn to record, independent of the wire protocol; the server's OpenAI adapter builds it."""
+
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None
+    sampling_params: dict[str, Any]  # max_tokens (required), temperature, top_p, optional top_k / seed / stop
+    chat_template_kwargs: dict[str, Any] | None = None  # per-request override of the gateway's template kwargs
+    model: str | None = None  # the tinker:// spelling the client sent, checked against the bound version
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """The recorded Turn plus its decoded text; the server shapes this into the wire response."""
+
+    turn: Turn
+    text: str
 
 
 @dataclass
@@ -119,7 +137,7 @@ def on_turn_committed(
     session.tito_token_ids = array("i", [*turn.input_ids, *turn.output_ids])
 
 
-# --- request / response shaping (no existing implementation for the OpenAI shapes) -----------
+# --- prompt rendering ---------------------------------------------------------------------
 
 
 def _token_list(rendered) -> list[int]:
@@ -156,69 +174,12 @@ def render_prompt(
     return ids
 
 
-def _number(request: dict[str, Any], key: str, default: float) -> float:
-    value = request.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise UserInputError(f"{key} must be a number")
-    return value
-
-
-def max_new_tokens_of(request: dict[str, Any]) -> int:
-    """The request's max_tokens (or max_completion_tokens): a positive int, required as for Tinker sample."""
-    max_tokens = request.get("max_tokens", request.get("max_completion_tokens"))
+def max_new_tokens_of(sampling_params: dict[str, Any]) -> int:
+    """The turn's max_tokens: a positive int, required as for Tinker sample."""
+    max_tokens = sampling_params.get("max_tokens")
     if type(max_tokens) is not int or max_tokens < 1:
-        raise UserInputError("max_tokens must be a positive integer (required, as for Tinker sample)")
+        raise UserInputError("sampling_params.max_tokens must be a positive integer")
     return max_tokens
-
-
-def to_sample_payload(prompt_ids: list[int], request: dict[str, Any], model_path: str | None) -> dict[str, Any]:
-    """OpenAI request → TinkerService.submit_sample payload (n=1, max_tokens required; empty stop list dropped)."""
-    max_tokens = max_new_tokens_of(request)
-    if request.get("n", 1) != 1:
-        raise UserInputError("a recorded session samples one completion per turn; use n=1")
-    if request.get("stream"):
-        raise UserInputError("stream=true is not supported on the recorded session route")
-    sampling_params: dict[str, Any] = {
-        "max_tokens": max_tokens,
-        "temperature": _number(request, "temperature", 1.0),
-        "top_p": _number(request, "top_p", 1.0),
-    }
-    for key in ("top_k", "seed"):
-        if request.get(key) is not None:
-            sampling_params[key] = request[key]
-    stop = request.get("stop")
-    if isinstance(stop, str):
-        stop = [stop]
-    if stop:
-        if not isinstance(stop, list) or not all(isinstance(item, str) for item in stop):
-            raise UserInputError("stop must be a string or a list of strings")
-        sampling_params["stop"] = list(stop)
-    return {
-        "model_path": model_path,
-        "num_samples": 1,
-        "prompt_tokens": list(prompt_ids),
-        "sampling_params": sampling_params,
-        "prompt_logprobs": False,
-        "topk_prompt_logprobs": 0,
-    }
-
-
-def build_chat_response(
-    request: dict[str, Any], output_ids: list[int], text: str, finish_reason: str, prompt_len: int
-) -> dict[str, Any]:
-    """Assemble an OpenAI ChatCompletion JSON: one choice with message/finish_reason plus usage."""
-    return {
-        "id": f"chatcmpl-{uuid.uuid4().hex}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": request.get("model") or "",
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": finish_reason}],
-        "usage": {
-            "prompt_tokens": prompt_len,
-            "completion_tokens": len(output_ids),
-            "total_tokens": prompt_len + len(output_ids),
-        },
-    }
 
 
 # --- collector -------------------------------------------------------------------
@@ -339,9 +300,8 @@ class TrajectoryCollector:
         cap = self.service.config.max_tokens_per_datum
         return cap if session.max_datum_tokens is None else min(cap, session.max_datum_tokens)
 
-    def _tito_tokenizer_for(self, request: dict[str, Any]):
-        """The injected TITOTokenizer, re-scoped with the request's chat_template_kwargs when present."""
-        override = request.get("chat_template_kwargs")
+    def _tito_tokenizer_for(self, override: dict[str, Any] | None):
+        """The injected TITOTokenizer, re-scoped with the turn's chat_template_kwargs override when present."""
         if not override:
             return self.tito_tokenizer
         if not isinstance(override, dict):
@@ -351,17 +311,16 @@ class TrajectoryCollector:
         except ValueError as error:
             raise UserInputError(f"chat_template_kwargs conflict with the TITO template: {error}") from error
 
-    async def chat(self, request: dict[str, Any], *, session_id: str, tenant: str | None = None) -> dict[str, Any]:
-        """Recorded chat completion: TITO prompt else full render (off the loop), sample, record the Turn, respond."""
-        session = self._session_for_request(session_id, tenant, request.get("model"))
+    async def complete(self, session_id: str, tenant: str | None, request: TurnRequest) -> TurnResult:
+        """Record one turn: TITO prompt else full render (off the loop), sample via the service, append the Turn."""
+        session = self._session_for_request(session_id, tenant, request.model)
         if len(session.turns) >= self.max_turns_per_session:
             raise SessionLimitError(
                 f"session {session_id!r} already holds {len(session.turns)} turns (cap {self.max_turns_per_session})"
             )
-        messages = request.get("messages")
-        tools = request.get("tools") or None
-        template_kwargs = self._template_kwargs(request)
-        max_new_tokens = max_new_tokens_of(request)
+        messages = request.messages
+        template_kwargs = self._template_kwargs(request.chat_template_kwargs)
+        max_new_tokens = max_new_tokens_of(request.sampling_params)
         prompt_ids = None
         if self.tito_tokenizer is not None:
             # tokenizing is CPU work; keep it off the loop that serves every tenant's Tinker traffic
@@ -369,15 +328,24 @@ class TrajectoryCollector:
                 tito_render_prompt,
                 session,
                 messages,
-                tools,
-                self._tito_tokenizer_for(request),
+                request.tools,
+                self._tito_tokenizer_for(request.chat_template_kwargs),
                 max_new_tokens=max_new_tokens,
                 budget=self._tito_budget(session),
             )
         inherits = prompt_ids is not None
         if prompt_ids is None:
-            prompt_ids = await asyncio.to_thread(render_prompt, messages, tools, template_kwargs, self.tokenizer)
-        payload = to_sample_payload(prompt_ids, request, session.model_path)
+            prompt_ids = await asyncio.to_thread(
+                render_prompt, messages, request.tools, template_kwargs, self.tokenizer
+            )
+        payload = {
+            "model_path": session.model_path,
+            "num_samples": 1,
+            "prompt_tokens": list(prompt_ids),
+            "sampling_params": dict(request.sampling_params),
+            "prompt_logprobs": False,
+            "topk_prompt_logprobs": 0,
+        }
         session.in_flight += 1
         try:
             sequence = await self._sample(session.tenant, payload)
@@ -393,11 +361,10 @@ class TrajectoryCollector:
         )
         session.turns.append(turn)
         session.last_seen = turn.created_at
-        output_ids = list(turn.output_ids)
-        text = self.tokenizer.decode(output_ids, skip_special_tokens=True)
+        text = self.tokenizer.decode(list(turn.output_ids), skip_special_tokens=True)
         if self.tito_tokenizer is not None:
             on_turn_committed(session, turn, messages, {"role": "assistant", "content": text})
-        return build_chat_response(request, output_ids, text, turn.finish_reason, len(prompt_ids))
+        return TurnResult(turn=turn, text=text)
 
     async def _sample(self, tenant: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Sample through the gateway: submit_sample → retrieve_future → settled → sequences[0], or raise."""
@@ -429,10 +396,9 @@ class TrajectoryCollector:
         session.last_seen = self.clock()
         return session
 
-    def _template_kwargs(self, request: dict[str, Any]) -> dict[str, Any]:
-        """The gateway's chat_template_kwargs, overridden by the request's chat_template_kwargs object."""
+    def _template_kwargs(self, override: dict[str, Any] | None) -> dict[str, Any]:
+        """The gateway's chat_template_kwargs, overridden by the turn's chat_template_kwargs object."""
         kwargs = dict(self.chat_template_kwargs)
-        override = request.get("chat_template_kwargs")
         if override is not None:
             if not isinstance(override, dict):
                 raise UserInputError("chat_template_kwargs must be an object")

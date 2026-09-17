@@ -14,7 +14,7 @@ turn's prompt inherits the previous turn's tokens (TITO), so a trajectory trains
 | Where | What |
 |---|---|
 | gateway `miles/tinker/core/tinker_session_server.py` | `TrajectoryCollector`: recorded sessions, one per trajectory; `tito_render_prompt` / `on_turn_committed` inherit tokens turn to turn through an injected miles `TITOTokenizer` (full re-render when off or when a chain breaks) |
-| gateway `miles/tinker/server/oai_routes.py` | `POST /oai/sessions/{sid}` bind (`sampling_session_id`, optional `max_datum_tokens`), `POST /oai/sessions/{sid}/v1/chat/completions`, `GET /oai/sessions/{sid}` turns, `DELETE` |
+| gateway `miles/tinker/server/oai_routes.py`, `oai_shapes.py` | `POST /oai/sessions/{sid}` bind (`sampling_session_id`, optional `max_datum_tokens`), `POST /oai/sessions/{sid}/v1/chat/completions`, `GET /oai/sessions/{sid}` turns, `DELETE`; `oai_shapes.py` maps the OpenAI body to a `TurnRequest` and the recorded `TurnResult` back to ChatCompletion JSON |
 | gateway `serve_tinker.py`, `miles/tinker/arguments.py` | `--tinker-session-server` (default off) mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), `--tinker-session-max-body-bytes` (default 16 MiB), `--tinker-tito-model` (a `TITOTokenizerType`, its fixed template replaces `--chat-template-path`), renders with `--apply-chat-template-kwargs` |
 | client `harbor_env.py` | cookbook plug-ins: `HarborDatasetBuilder`, `HarborGroup` (rewards from Harbor verdicts), `SessionRolloutStrategy` (bind → Harbor trial → export → delete → `Trajectory`) |
 | client `run_harbor_tinker.py` | `HarborTinkerConfig` → cookbook `train.Config` → `train.main`, with a sandbox preflight |
