@@ -27,6 +27,12 @@ def add_tinker_arguments(parser):
         help="Idle seconds before a recorded /oai/sessions/{sid} is swept, the safety net for agent trials that die before DELETE (default: 3600)",
     )
     add_argument(
+        "session-server",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Mount the recorded-session routes /oai/sessions/* for agent harnesses; off = the plain Tinker gateway (default: off)",
+    )
+    add_argument(
         "tito-model",
         choices=[t.value for t in TITOTokenizerType],
         default=None,
@@ -58,6 +64,10 @@ def _configure_tito(args):
     """--tinker-tito-model: install the family's fixed chat template and merge its kwargs so both renders agree."""
     if args.tinker_tito_model is None:
         return
+    if not args.tinker_session_server:
+        raise ValueError(
+            "--tinker-tito-model requires --tinker-session-server; TITO only applies to recorded sessions"
+        )
     if args.chat_template_path is not None:
         raise ValueError(
             f"--chat-template-path cannot override the template registered for --tinker-tito-model={args.tinker_tito_model}"

@@ -12,7 +12,7 @@ turn's prompt inherits the previous turn's tokens (TITO), so a trajectory trains
 |---|---|
 | gateway `miles/tinker/core/tinker_session_server.py` | `TrajectoryCollector`: recorded sessions, one per trajectory; `tito_render_prompt` / `on_turn_committed` inherit tokens turn to turn through an injected miles `TITOTokenizer` (full re-render when off or when a chain breaks) |
 | gateway `miles/tinker/server/oai_routes.py` | `POST /oai/sessions/{sid}` bind (`sampling_session_id`, optional `max_datum_tokens`), `POST /oai/sessions/{sid}/v1/chat/completions`, `GET /oai/sessions/{sid}` turns, `DELETE` |
-| gateway `serve_tinker.py`, `miles/tinker/arguments.py` | mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), `--tinker-tito-model` (a `TITOTokenizerType`, its fixed template replaces `--chat-template-path`), renders with `--apply-chat-template-kwargs` |
+| gateway `serve_tinker.py`, `miles/tinker/arguments.py` | `--tinker-session-server` (default off) mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), `--tinker-tito-model` (a `TITOTokenizerType`, its fixed template replaces `--chat-template-path`), renders with `--apply-chat-template-kwargs` |
 | client `harbor_env.py` | cookbook plug-ins: `HarborDatasetBuilder`, `HarborGroup` (rewards from Harbor verdicts), `SessionRolloutStrategy` (bind → Harbor trial → export → delete → `Trajectory`) |
 | client `run_harbor_tinker.py` | `HarborTinkerConfig` → cookbook `train.Config` → `train.main`, with a sandbox preflight |
 
@@ -27,11 +27,13 @@ Status codes on the session routes: 400 bad input or missing key, 403 another te
    python3 examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve \
        --model-dir /models --save-dir <ckpt-dir> --output-dir <out-dir> --n-adapters 8 --lora-rank 16 --lora-alpha 32 \
        --extra-args "--use-miles-router --tinker-base-model Qwen/Qwen3-30B-A3B \
-                     --tinker-tito-model qwen3 --apply-chat-template-kwargs '{\"enable_thinking\": false}' \
+                     --tinker-session-server --tinker-tito-model qwen3 --apply-chat-template-kwargs '{\"enable_thinking\": false}' \
                      --max-tokens-per-gpu 32768 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 \
                      --tinker-session-ttl-s 7200"
    ```
 
+   - `--tinker-session-server` mounts the `/oai/sessions/*` routes (off by default: without it `serve_tinker.py` is the
+     plain Tinker gateway, no tokenizer load, no extra routes, no sweep task).
    - `--tinker-tito-model qwen3` selects the Qwen3 fixed chat template; leave `--chat-template-path` unset with it. Drop the
      flag to re-render the full history every turn (one Datum per turn).
    - Keep `--tinker-train-unembed` on (the launcher's default): the cookbook creates its model with the SDK default
