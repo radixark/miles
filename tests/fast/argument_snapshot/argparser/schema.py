@@ -16,7 +16,6 @@ def snapshot_parser(parser: argparse.ArgumentParser) -> dict[str, Any]:
         "effective_defaults": {dest: parser.get_default(dest) for dest in destinations},
     }
 
-
 def dump_snapshot(value: Any) -> str:
     return yaml.dump(value, Dumper=_SnapshotDumper, sort_keys=True, allow_unicode=True, width=120)
 

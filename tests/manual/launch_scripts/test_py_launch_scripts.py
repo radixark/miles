@@ -17,7 +17,8 @@ from tests.fast.launch_scripts.py_harness import (
     iter_py_launch_scripts,
     launcher_hardware_literals,
 )
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
+from miles.utils.test_utils.snapshot import assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
 _SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "py"
 
