@@ -148,6 +148,10 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    # router GEMM precision; dtype is guarded because bridge MoE providers default it to fp32
+    provider.moe_router_use_torch_mm = args.moe_router_use_torch_mm
+    if args.moe_router_dtype is not None:
+        provider.moe_router_dtype = args.moe_router_dtype
     if is_multi_lora_enabled(args) and targets_expert_leaves(args.target_modules):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.

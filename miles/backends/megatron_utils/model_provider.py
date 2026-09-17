@@ -85,6 +85,11 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     # MoE token dispatcher (same-name, always present)
     provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
 
+    # router GEMM precision; dtype is guarded because bridge MoE providers default it to fp32
+    provider.moe_router_use_torch_mm = args.moe_router_use_torch_mm
+    if args.moe_router_dtype is not None:
+        provider.moe_router_dtype = args.moe_router_dtype
+
     # arg name != provider field; arg default None, so propagate only when the user set it
     if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
