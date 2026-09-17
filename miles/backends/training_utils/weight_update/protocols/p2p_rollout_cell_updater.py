@@ -47,11 +47,14 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
         if self.is_errored:
             return
         pending, self._pending_writes = self._pending_writes, []
-        for future in pending:
+        for i, future in enumerate(pending):
             try:
                 future.result(timeout=timeout)
             except Exception as error:
                 self.mark_errored(error)
+                for remaining in pending[i + 1 :]:
+                    remaining.cancel()
+                return
 
     def _write_if_active(
         self,
