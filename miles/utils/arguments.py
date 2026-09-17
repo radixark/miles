@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
@@ -421,12 +422,11 @@ def parse_args_and_get_parser(
     vars(args).setdefault("custom_agent_function_path", None)
 
     assert parser is not None
+    backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     backend_only_fields = training_backend_arg_names - AllConfig.model_fields.keys()
     values = {name: value for name, value in vars(args).items() if name not in backend_only_fields} | {
-        "raw_megatron": resolve_megatron_config(
-            args,
-            base_args={name: value for name, value in vars(args).items() if name in training_backend_arg_names},
-        ),
+        "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
+        "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
         "sglang": SglangConfig.parse_args(args),
         "sglang_model_routers": None,
     }
