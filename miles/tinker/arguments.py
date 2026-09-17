@@ -33,12 +33,6 @@ def add_tinker_arguments(parser):
         help="Mount the recorded-session routes /oai/sessions/* for agent harnesses; off = the plain Tinker gateway (default: off)",
     )
     add_argument(
-        "session-sweep-interval-s",
-        type=float,
-        default=60.0,
-        help="Seconds between sweeps of recorded sessions (idle past --tinker-session-ttl-s or lease gone) (default: 60)",
-    )
-    add_argument(
         "session-max-body-bytes",
         type=int,
         default=16 * 1024 * 1024,
