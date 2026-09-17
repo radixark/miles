@@ -115,9 +115,8 @@ async def serve(args):
     if collector is not None:
         # the four /oai/sessions routes ride on the app uvicorn holds; the Tinker routes are untouched
         install_session_routes(server.config.app, collector)
-    logger.info(
-        f"tinker gateway serving {config.base_model} on :{args.tinker_server_port} (session server {'on' if collector else 'off'})"
-    )
+        logger.info("recorded-session routes mounted at /oai/sessions/{sid} (--tinker-session-server)")
+    logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
     # not keep answering /healthz while every training future pends forever
     service_task = asyncio.create_task(service.run())
