@@ -1,4 +1,4 @@
-"""tinker-cookbook plug-ins for Harbor tasks sampled through recorded gateway sessions: dataset / group / env types, turns → Trajectory, and SessionRolloutStrategy (bind by the policy's Tinker sampler → harbor_agent_function.run → export → delete); needs pip install tinker-cookbook."""
+"""tinker-cookbook plug-ins for Harbor tasks on recorded gateway sessions (dataset, env, Trajectory, rollout)."""
 
 from __future__ import annotations
 
@@ -49,14 +49,14 @@ RunTrial = Callable[..., Awaitable[dict[str, Any]]]
 
 @dataclass
 class HarborEnv(Env):
-    """One Harbor task instance for one trajectory: task_id, harness name, and the Harbor verdict once the trial ran."""
+    """One Harbor task instance for one trajectory: task_id, harness name, and the verdict once the trial ran."""
 
     task_id: str
     agent_name: str = "terminus-2"
     verdict: dict[str, Any] | None = None  # harbor_agent_function.run's return value
 
     async def initial_observation(self) -> tuple[Observation, StopCondition] | InitialObservationOverflow:
-        """Never driven by the runner: the Harbor agent samples through the gateway session, so this raises if called."""
+        """Never driven by the runner: the Harbor agent samples through the gateway session; raises if called."""
         raise NotImplementedError("HarborEnv is driven by SessionRolloutStrategy, not by the cookbook rollout loop")
 
     async def step(self, action: Action, *, extra: ActionExtra | None = None) -> StepResult:
@@ -65,7 +65,7 @@ class HarborEnv(Env):
 
 
 def verdict_reward(verdict: dict[str, Any] | None) -> tuple[float, Metrics]:
-    """(reward, metrics) from a Harbor verdict: the verifier's reward, a one-hot exit_status, and the numeric agent_metrics."""
+    """(reward, metrics) from a Harbor verdict: verifier reward, one-hot exit_status, numeric agent_metrics."""
     if not verdict:
         return 0.0, {"exit_status/NoVerdict": 1}
     metrics: Metrics = {f"exit_status/{verdict.get('exit_status', 'AgentError')}": 1}
@@ -76,7 +76,7 @@ def verdict_reward(verdict: dict[str, Any] | None) -> tuple[float, Metrics]:
 
 
 class HarborGroup(EnvGroupBuilder):
-    """group_size HarborEnvs for one task; compute_group_rewards reads each env's Harbor verdict (cookbook's do_group_rollout calls it)."""
+    """group_size HarborEnvs for one task; compute_group_rewards reads each env's Harbor verdict."""
 
     def __init__(self, task_id: str, group_size: int, agent_name: str = "terminus-2") -> None:
         """Remember the task id, how many trajectories to sample for it, and which harness runs it."""
@@ -100,12 +100,12 @@ class HarborGroup(EnvGroupBuilder):
 
 
 class HarborDataset(RLDataset):
-    """Batches of HarborGroups over the task directories (a Terminal-Bench-2 checkout works as-is); no cookbook equivalent."""
+    """Batches of HarborGroups over the task directories (a Terminal-Bench checkout works as-is)."""
 
     def __init__(
         self, task_ids: list[str], groups_per_batch: int, group_size: int, agent_name: str, epochs: int = 1
     ) -> None:
-        """Keep the task list and batch shape; batches are consecutive slices of the task list, wrapping around for `epochs` passes."""
+        """Keep the task list and batch shape; batches are consecutive slices, wrapping for `epochs` passes."""
         if not task_ids:
             raise ValueError("HarborDataset needs at least one task")
         if epochs < 1:
@@ -125,12 +125,12 @@ class HarborDataset(RLDataset):
         ]
 
     def __len__(self) -> int:
-        """Number of batches in `epochs` passes over the task list (the cookbook loop runs exactly len(dataset) steps unless max_steps is lower)."""
+        """Number of batches in `epochs` passes over the task list (the cookbook runs len(dataset) steps)."""
         return math.ceil(len(self.task_ids) * self.epochs / self.groups_per_batch)
 
 
 def list_task_ids(tasks_dir: str) -> list[str]:
-    """Task ids are the directories under tasks_dir holding a task.toml (Harbor's task layout), sorted for a stable order."""
+    """Task ids are the directories under tasks_dir holding a task.toml, sorted for a stable order."""
     root = Path(tasks_dir)
     if not root.is_dir():
         raise FileNotFoundError(f"tasks_dir {tasks_dir!r} is not a directory")
@@ -139,7 +139,7 @@ def list_task_ids(tasks_dir: str) -> list[str]:
 
 @chz.chz
 class HarborDatasetBuilder(RLDatasetBuilder):
-    """Config-side builder: tasks_dir → (HarborDataset, None); task ids are the directories holding a task.toml. Set HARBOR_TASKS_DIR to the same directory for harbor_agent_function."""
+    """Config-side builder: tasks_dir → (HarborDataset, None); set HARBOR_TASKS_DIR to the same directory."""
 
     tasks_dir: str
     groups_per_batch: int = 4
@@ -148,7 +148,7 @@ class HarborDatasetBuilder(RLDatasetBuilder):
     epochs: int = 1  # passes over the task list; the cookbook runs len(dataset) steps
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
-        """List the task directories under tasks_dir (real directories: harbor_agent_function rejects symlinks that resolve outside HARBOR_TASKS_DIR) and wrap them in a HarborDataset; no test split."""
+        """Wrap the task directories under tasks_dir (real dirs, no symlinks) in a HarborDataset; no test split."""
         task_ids = list_task_ids(self.tasks_dir)
         if not task_ids:
             raise ValueError(f"no task directory with a task.toml under {self.tasks_dir!r}")
@@ -156,7 +156,7 @@ class HarborDatasetBuilder(RLDatasetBuilder):
 
 
 def truncate_turns(turns: list[dict[str, Any]], max_tokens: int | None) -> list[dict[str, Any]]:
-    """Keep the leading turns whose prompt + output fit the gateway's per-datum cap (serve_tinker.py: min(model max_position_embeddings, --max-tokens-per-gpu rounded to the pad size); 8192 with the example launcher's defaults, so raise --max-tokens-per-gpu for agent contexts); prompts grow every turn, so the first over-long turn ends the trainable part of the trajectory (the Harbor agent's own max_seq_len check counts tokens approximately)."""
+    """Keep the leading turns whose prompt + output fit the per-datum cap; the first over-long turn ends the list."""
     if max_tokens is None:
         return turns
     kept = []
@@ -168,7 +168,7 @@ def truncate_turns(turns: list[dict[str, Any]], max_tokens: int | None) -> list[
 
 
 def turns_to_trajectory(turns: list[dict[str, Any]]) -> Trajectory:
-    """GET /oai/sessions/{sid} turns → Trajectory: each turn is Transition(ob=ModelInput.from_ints(input_ids), ac=TokensWithLogprobs(output_ids, logprobs, finish_reason), reward=0.0, episode_done on the last); final_ob = last input_ids + output_ids; stop_reason from the last finish_reason. The only data shaping of ours; the cookbook's only Trajectory producer is its own run_rollout."""
+    """Recorded turns → Trajectory: one Transition per turn (ob=input_ids, ac=output_ids+logprobs)."""
     if not turns:
         raise ValueError("the session recorded no turns; nothing to train on")
     last_index = len(turns) - 1
@@ -197,7 +197,7 @@ def turns_to_trajectory(turns: list[dict[str, Any]]) -> Trajectory:
 
 
 def sampling_session_id_of(policy: TokenCompleter) -> str:
-    """The Tinker sampling session behind the cookbook's TinkerTokenCompleter (the SDK keeps it as SamplingClient._sampling_session_id); the gateway resolves it to the sampler path with get_sampler."""
+    """The Tinker sampling session behind the cookbook's TinkerTokenCompleter; the gateway resolves it to a path."""
     sampling_client = getattr(policy, "sampling_client", None)
     sampling_session_id = getattr(sampling_client, "_sampling_session_id", None) or getattr(
         sampling_client, "sampling_session_id", None
@@ -208,7 +208,7 @@ def sampling_session_id_of(policy: TokenCompleter) -> str:
 
 
 def _default_run_trial() -> RunTrial:
-    """harbor_agent_function.run, imported when a trial actually runs: it pulls in Harbor and the sandbox SDK, which the data path does not need."""
+    """harbor_agent_function.run, imported only when a trial runs (it pulls in Harbor and the sandbox SDK)."""
     from examples.experimental.harbor.harbor_agent_function import run
 
     return run
@@ -216,7 +216,7 @@ def _default_run_trial() -> RunTrial:
 
 @dataclass(frozen=True)
 class SessionRolloutStrategy(RolloutStrategy):
-    """Drop-in for cookbook's FailFast via Config.rollout_error_tolerance: per HarborEnv, bind a recorded gateway session to the policy's sampler version, run the Harbor agent against it, rebuild the Trajectory from the recorded turns."""
+    """Cookbook RolloutStrategy: per HarborEnv bind a gateway session, run the Harbor agent, rebuild the Trajectory."""
 
     gateway_url: str
     api_key: str
@@ -225,16 +225,14 @@ class SessionRolloutStrategy(RolloutStrategy):
     max_tokens: int = 8192
     temperature: float = 1.0
     http_timeout_s: float = 60.0
-    max_datum_tokens: int | None = (
-        32768  # must not exceed the gateway's per-datum cap (see truncate_turns); longer turns are cut off the trajectory
-    )
+    max_datum_tokens: int | None = 32768  # gateway per-datum cap; longer turns are cut off (see truncate_turns)
     record_path: str | None = None  # append one JSON line per trajectory (task, turns, token counts, reward) when set
     # test seams: the trial runner (default harbor_agent_function.run) and an httpx transport (default: the network)
     run_trial: RunTrial | None = field(default=None, compare=False, repr=False)
     transport: httpx.AsyncBaseTransport | None = field(default=None, compare=False, repr=False)
 
     async def execute(self, env_group_builder: EnvGroupBuilder, policy: TokenCompleter) -> RolloutResult:
-        """make_envs, bind every env's session to sampling_session_id_of(policy), run the trials under a semaphore, return RolloutResult(trajectories, envs, errors); a failed trial becomes a cookbook RolloutError, not an exception."""
+        """Bind each env's session to the policy's sampler, run trials under a semaphore, return RolloutResult."""
         envs = await env_group_builder.make_envs()
         sampling_session_id = sampling_session_id_of(policy)
         semaphore = asyncio.Semaphore(self.concurrency)
@@ -262,7 +260,7 @@ class SessionRolloutStrategy(RolloutStrategy):
         return RolloutResult(trajectories=trajectories, envs=survivors, errors=errors)
 
     async def run_one(self, env: HarborEnv, sampling_session_id: str, http: httpx.AsyncClient) -> Trajectory:
-        """POST /oai/sessions/{sid} {sampling_session_id, max_datum_tokens} → harbor_agent_function.run(base_url=…/oai/sessions/{sid}, metadata={instance_id, agent_name, max_seq_len}, request_kwargs={max_tokens, temperature}) → env.verdict → GET turns → DELETE → turns_to_trajectory."""
+        """Bind → harbor_agent_function.run on the session → verdict → GET turns → DELETE → turns_to_trajectory."""
         session_id = f"harbor-{uuid.uuid4().hex}"
         bind_body: dict[str, Any] = {"sampling_session_id": sampling_session_id}
         if self.max_datum_tokens is not None:
@@ -299,7 +297,7 @@ class SessionRolloutStrategy(RolloutStrategy):
         return turns_to_trajectory(kept)
 
     def _record(self, env: HarborEnv, session_id: str, turns: list[dict[str, Any]], dropped: int = 0) -> None:
-        """Experiment log: one JSON line per trajectory with the task, turn count, per-turn prompt/output token counts, final sequence length, turns dropped by the datum cap, reward and exit_status."""
+        """Experiment log: one JSON line per trajectory (task, turns, token counts, drops, reward, exit_status)."""
         if not self.record_path:
             return
         verdict = env.verdict or {}

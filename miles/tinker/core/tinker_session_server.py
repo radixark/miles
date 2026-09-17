@@ -1,4 +1,4 @@
-"""Token trajectory collector behind the four recorded-session routes: renders OpenAI messages with the base model's chat template, samples via TinkerService.submit_sample (adapter M@V, ownership, vocab checks), records each turn's exact ids + logprobs in tenant-owned sessions; with an injected TITOTokenizer each turn's prompt inherits the previous turn's tokens (TITO) instead of re-rendering the history; core layer."""
+"""Recorded-session collector: render messages, sample via TinkerService, record exact ids; optional TITO; core."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def validate_session_id(session_id: str) -> None:
 
 @dataclass
 class Turn:
-    """One recorded generation: exactly the ids the engine consumed and produced, plus their logprobs (= a cookbook Transition); stored as arrays (4 bytes a token) because every turn keeps its full prompt."""
+    """One recorded generation: the ids the engine consumed and produced plus logprobs (a cookbook Transition)."""
 
     input_ids: Sequence[int]
     output_ids: Sequence[int]
@@ -65,7 +65,7 @@ class Turn:
 
 @dataclass
 class TrajectorySession:
-    """Per-trajectory state: the owning tenant (whose key resolves the adapter on every turn), the pinned sampler path, and the turns."""
+    """Per-trajectory state: owning tenant, pinned sampler path, recorded turns, and the TITO prefix state."""
 
     session_id: str
     tenant: str
@@ -91,7 +91,7 @@ def tito_render_prompt(
     max_new_tokens: int,
     budget: int | None,
 ) -> list[int] | None:
-    """TITO (mirrors LinearTrajectory.prepare_pretokenized): prompt = the previous turn's input_ids + output_ids + tokens for only the appended messages (TITOTokenizer.merge_tokens, which also checks the history is an append-only extension with allowed roles); None means re-render from scratch and start a new segment: first turn, edited history, nothing appended, or a chain that would outgrow the datum budget."""
+    """TITO: previous turn's ids + tokens of the appended messages (merge_tokens); None = full render, new segment."""
     if session.tito_messages is None or session.tito_token_ids is None:
         return None
     if not isinstance(messages, list) or len(messages) <= len(session.tito_messages):
@@ -114,7 +114,7 @@ def tito_render_prompt(
 def on_turn_committed(
     session: TrajectorySession, turn: Turn, messages: list[dict[str, Any]], reply: dict[str, Any]
 ) -> None:
-    """TITO (mirrors LinearTrajectory.update_pretokenized_state): the history this turn answered plus its reply, and its input_ids + output_ids, become the prefix the next turn inherits."""
+    """TITO: remember the answered history + reply and this turn's ids as the prefix the next turn inherits."""
     session.tito_messages = [*messages, reply]
     session.tito_token_ids = array("i", [*turn.input_ids, *turn.output_ids])
 
@@ -123,7 +123,7 @@ def on_turn_committed(
 
 
 def _token_list(rendered) -> list[int]:
-    """Flatten what apply_chat_template(tokenize=True) returns (a list, a BatchEncoding, or a batch of one) into ids."""
+    """Flatten apply_chat_template(tokenize=True) output (list, BatchEncoding, or batch of one) into ids."""
     if hasattr(rendered, "input_ids"):
         rendered = rendered["input_ids"]
     if rendered and isinstance(rendered[0], list):
@@ -137,7 +137,7 @@ def render_prompt(
     chat_template_kwargs: dict[str, Any],
     tokenizer,
 ) -> list[int]:
-    """Validate the messages list and call tokenizer.apply_chat_template(messages, tools=..., add_generation_prompt=True, tokenize=True, **kwargs); nothing else."""
+    """Validate the messages and render them with apply_chat_template(add_generation_prompt=True, tokenize=True)."""
     if not isinstance(messages, list) or not messages:
         raise UserInputError("messages must be a non-empty list")
     for index, message in enumerate(messages):
@@ -172,7 +172,7 @@ def max_new_tokens_of(request: dict[str, Any]) -> int:
 
 
 def to_sample_payload(prompt_ids: list[int], request: dict[str, Any], model_path: str | None) -> dict[str, Any]:
-    """OpenAI request → the internal payload TinkerService.submit_sample takes (prompt_tokens, num_samples=1, sampling_params{max_tokens (required, like Tinker sample), temperature, top_p, top_k, seed, stop}, model_path); an empty stop list is dropped because Tinker reads it as "ignore EOS"."""
+    """OpenAI request → TinkerService.submit_sample payload (n=1, max_tokens required; empty stop list dropped)."""
     max_tokens = max_new_tokens_of(request)
     if request.get("n", 1) != 1:
         raise UserInputError("a recorded session samples one completion per turn; use n=1")
@@ -206,7 +206,7 @@ def to_sample_payload(prompt_ids: list[int], request: dict[str, Any], model_path
 def build_chat_response(
     request: dict[str, Any], output_ids: list[int], text: str, finish_reason: str, prompt_len: int
 ) -> dict[str, Any]:
-    """Assemble an OpenAI ChatCompletion JSON (id, created, model echoed, one choice with message/finish_reason, usage); the gateway's render_result renders Tinker JSON, not this shape."""
+    """Assemble an OpenAI ChatCompletion JSON: one choice with message/finish_reason plus usage."""
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
@@ -238,7 +238,7 @@ class TrajectoryCollector:
         max_turns_per_session: int = 1024,
         tito_tokenizer=None,
     ) -> None:
-        """Keep the TinkerService (submit_sample / retrieve_future / get_sampler), the injected HF tokenizer, the collector's settings, the two per-tenant caps and the optional injected miles TITOTokenizer (serve_tinker builds it from --tinker-tito-model; None re-renders the full history every turn)."""
+        """Keep the service, HF tokenizer, collector settings, caps and the optional injected TITOTokenizer."""
         self.service = service
         self.tokenizer = tokenizer
         self.session_ttl_s = session_ttl_s
@@ -257,7 +257,7 @@ class TrajectoryCollector:
         sampling_session_id: str | None = None,
         max_datum_tokens: int | None = None,
     ) -> TrajectorySession:
-        """Create or re-bind a session: model is a tinker:// path (checked eagerly with resolve_sampler_checkpoint) or a Tinker sampling_session_id (resolved with service.get_sampler); base model when neither is given; a different tinker:// path on a bound session is a UserInputError; a placeholder key cannot bind; the tenant's open-session cap is enforced; max_datum_tokens (optional positive int) lowers the TITO chain budget to the client's per-datum cap."""
+        """Create or re-bind a session pinned to a tinker:// path or sampling_session_id; caps and ownership apply."""
         validate_session_id(session_id)
         if not tenant or tenant in PLACEHOLDER_KEYS:
             raise UserInputError("binding a session needs the tenant's API key")
@@ -291,7 +291,7 @@ class TrajectoryCollector:
         return session
 
     def get(self, session_id: str, tenant: str | None = None) -> TrajectorySession:
-        """Return the session; with a tenant given it must be the owner (OwnershipError), unknown ids raise UnknownSessionError."""
+        """Return the session; the tenant, when given, must own it; unknown ids raise UnknownSessionError."""
         session = self.sessions.get(session_id)
         if session is None:
             raise UnknownSessionError(f"unknown session {session_id!r}")
@@ -305,7 +305,7 @@ class TrajectoryCollector:
         del self.sessions[session_id]
 
     def trajectory(self, session_id: str, tenant: str) -> dict[str, Any]:
-        """Export {session_id, model_path, turns: [turn.as_json()]} for the client's turns_to_trajectory; owner only."""
+        """Export {session_id, model_path, turns} for the client's turns_to_trajectory; owner only."""
         session = self.get(session_id, tenant)
         return {
             "session_id": session.session_id,
@@ -314,7 +314,7 @@ class TrajectoryCollector:
         }
 
     def sweep(self, now: float | None = None) -> int:
-        """Safety net for trials that died before DELETE: drop sessions idle longer than session_ttl_s, and sessions idle longer than the Tinker lease timeout whose tenant no longer holds a lease (the gateway already closed that tenant's models; nobody is left to GET these turns); a sample in flight always protects a session; returns how many."""
+        """Drop idle sessions past the TTL, and idle sessions whose tenant lost its Tinker lease; returns how many."""
         now = self.clock() if now is None else now
         lease_grace = self.service.config.lease_timeout_s
         expired = [
@@ -331,16 +331,16 @@ class TrajectoryCollector:
         return len(expired)
 
     def _tenant_alive(self, tenant: str) -> bool:
-        """True while the tenant still holds a Tinker session lease (service.sessions is keyed by lease; each record knows its tenant)."""
+        """True while the tenant still holds a Tinker session lease (service.sessions records know their tenant)."""
         return any(record.tenant == tenant for record in self.service.sessions.values())
 
     def _tito_budget(self, session: TrajectorySession) -> int:
-        """The token budget a TITO chain must stay under: the gateway's per-datum cap, lowered to the client's bind-time max_datum_tokens when given."""
+        """TITO chain budget: the gateway per-datum cap, lowered to the client's bind-time max_datum_tokens."""
         cap = self.service.config.max_tokens_per_datum
         return cap if session.max_datum_tokens is None else min(cap, session.max_datum_tokens)
 
     def _tito_tokenizer_for(self, request: dict[str, Any]):
-        """The injected TITOTokenizer, re-scoped with the request's chat_template_kwargs override when it carries one (TITOTokenizer.clone_with_chat_template_kwargs); a conflict with the family's fixed kwargs is a UserInputError."""
+        """The injected TITOTokenizer, re-scoped with the request's chat_template_kwargs when present."""
         override = request.get("chat_template_kwargs")
         if not override:
             return self.tito_tokenizer
@@ -352,7 +352,7 @@ class TrajectoryCollector:
             raise UserInputError(f"chat_template_kwargs conflict with the TITO template: {error}") from error
 
     async def chat(self, request: dict[str, Any], *, session_id: str, tenant: str | None = None) -> dict[str, Any]:
-        """The recorded chat completion: session lookup or auto-register, turn cap, tito_render_prompt (inherit the previous turn's tokens) else render_prompt (full history), both off the event loop, _sample, record a Turn, remember the TITO prefix, build_chat_response."""
+        """Recorded chat completion: TITO prompt else full render (off the loop), sample, record the Turn, respond."""
         session = self._session_for_request(session_id, tenant, request.get("model"))
         if len(session.turns) >= self.max_turns_per_session:
             raise SessionLimitError(
@@ -400,7 +400,7 @@ class TrajectoryCollector:
         return build_chat_response(request, output_ids, text, turn.finish_reason, len(prompt_ids))
 
     async def _sample(self, tenant: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Reuse the gateway's sampling pipeline end to end: service.submit_sample(tenant, payload) → service.retrieve_future(tenant, request_id) → await future.settled.wait() → future.result["sequences"][0] (tokens, logprobs, stop_reason) or raise on future.error."""
+        """Sample through the gateway: submit_sample → retrieve_future → settled → sequences[0], or raise."""
         request_id, _ = self.service.submit_sample(tenant, payload)
         future = self.service.retrieve_future(tenant, request_id)
         assert future is not None, f"sampling future {request_id} vanished before it settled"
@@ -412,7 +412,7 @@ class TrajectoryCollector:
         return future.result["sequences"][0]
 
     def _session_for_request(self, session_id: str, tenant: str | None, model: str | None) -> TrajectorySession:
-        """The recorded session this request samples in: a known id (same version; no key, the placeholder key or the owner's key) or a new id auto-registered under a real bearer; another tenant's key is refused."""
+        """The session for this request: a known id (owner or placeholder key) or a new id under a real bearer."""
         validate_session_id(session_id)
         placeholder = not tenant or tenant in PLACEHOLDER_KEYS
         session = self.sessions.get(session_id)
@@ -430,7 +430,7 @@ class TrajectoryCollector:
         return session
 
     def _template_kwargs(self, request: dict[str, Any]) -> dict[str, Any]:
-        """The gateway's chat_template_kwargs, overridden by the request's chat_template_kwargs object (e.g. enable_thinking)."""
+        """The gateway's chat_template_kwargs, overridden by the request's chat_template_kwargs object."""
         kwargs = dict(self.chat_template_kwargs)
         override = request.get("chat_template_kwargs")
         if override is not None:
@@ -440,7 +440,7 @@ class TrajectoryCollector:
         return kwargs
 
     def _resolve_model_path(self, tenant: str, model: str | None, sampling_session_id: str | None) -> str | None:
-        """None for the frozen base, else the tinker:// sampler path after resolve_sampler_checkpoint proved it exists and belongs to the tenant."""
+        """None for the frozen base, else the tinker:// sampler path once resolve_sampler_checkpoint accepted it."""
         if sampling_session_id is not None:
             model = self.service.get_sampler(tenant, sampling_session_id)["model_path"]
         if model is None or model == self.service.config.base_model:
@@ -454,7 +454,7 @@ class TrajectoryCollector:
 
     @staticmethod
     def _check_same_version(session: TrajectorySession, model: str | None) -> None:
-        """A bound session serves one sampler version; only tinker:// spellings are compared (harness model names are ignored)."""
+        """A bound session serves one sampler version; only tinker:// spellings are compared."""
         if model and model.startswith(TINKER_PATH_PREFIX) and model != session.model_path:
             raise UserInputError(
                 f"session {session.session_id!r} is bound to {session.model_path!r}; start a new session for {model!r}"

@@ -29,7 +29,7 @@ _SWEEP_INTERVAL_S = 60.0
 
 
 def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
-    """The recorded-session collector over the running service: the HF tokenizer is loaded here and only here (core never imports it); the TTL comes from --tinker-session-ttl-s, the template kwargs from --apply-chat-template-kwargs, and --tinker-tito-model wraps the same tokenizer in miles' TITOTokenizer so turns inherit tokens instead of re-rendering."""
+    """The collector over the running service: loads the HF tokenizer, TTL from the flag, optional TITOTokenizer."""
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path)
     tito_tokenizer = None
     if args.tinker_tito_model is not None:
@@ -46,7 +46,7 @@ def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
 
 
 async def _sweep_collector(collector: TrajectoryCollector, interval_s: float) -> None:
-    """Every interval_s drop the recorded sessions idle past their TTL (trials that died before DELETE); lives and dies with service.run()."""
+    """Every interval_s drop recorded sessions idle past their TTL; lives and dies with service.run()."""
     while True:
         await asyncio.sleep(interval_s)
         if dropped := collector.sweep():
@@ -111,7 +111,7 @@ async def serve(args):
             build_app(service), host=args.tinker_server_host, port=args.tinker_server_port, log_level="info"
         )
     )
-    # the four /oai/sessions routes ride on the same app (uvicorn keeps it on server.config.app); Tinker routes untouched
+    # the four /oai/sessions routes ride on the app uvicorn holds; the Tinker routes are untouched
     install_session_routes(server.config.app, collector)
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
