@@ -1,6 +1,5 @@
-from miles.utils.test_utils.snapshot import assert_scenario_snapshots
+from miles.utils.test_utils.snapshot import assert_scenario_snapshots, dump_snapshot
 from tests.fast.argument_snapshot.argparser.scenarios import capture_scenarios
-from tests.fast.argument_snapshot.schema import dump_snapshot
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
 _SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "argument_snapshot"
