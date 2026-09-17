@@ -19,9 +19,6 @@ class EvalConfig(BaseConfig):
         ),
     ] = None
 
-    # change the default value of eval_interval from Megatron to None
-    eval_interval: A[int | None, Arg(reset=True)] = None
-
     eval_prompt_data: A[
         list[str] | None,
         Arg(

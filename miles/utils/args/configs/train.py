@@ -5,7 +5,6 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 class TrainConfig(BaseConfig):
-    num_layers: int | None
     trainer_id: str
     trainer_model_id: str | None
 

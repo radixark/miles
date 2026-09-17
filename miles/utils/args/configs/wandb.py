@@ -24,7 +24,6 @@ class WandbConfig(BaseConfig):
     wandb_host: A[str | None, Arg()] = None
     wandb_team: A[str | None, Arg()] = None
     wandb_group: A[str | None, Arg()] = None
-    wandb_project: A[str | None, Arg(reset=True)] = None
     wandb_random_suffix: A[
         bool,
         Arg(
