@@ -3,7 +3,6 @@
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.state import (
     SoakActionAppliedEvent,
     SoakActionRequest,
@@ -92,7 +91,6 @@ def compute_forms_drawn_without_success(events: list[SoakEvent]) -> list[tuple[s
 def _compute_action_outcomes(
     events: list[SoakEvent],
 ) -> list[tuple[SoakActionRequest, SoakActionAppliedEvent | SoakActionResultEvent]]:
-    events = expand_fault_batches(events)
     actions = project_actions(events)
     applied: set[str] = set()
     outcomes: list[tuple[SoakActionRequest, SoakActionAppliedEvent | SoakActionResultEvent]] = []

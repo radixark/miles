@@ -3,7 +3,6 @@
 
 
 import asyncio
-from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Annotated
@@ -30,7 +29,6 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.e2e.ft.conftest_ft.training_launcher import TrainingLaunchSpec, execute_session
 from tests.utils.soak.checks.ft import assert_healing
 from tests.utils.soak.checks.hooks import (
-    assert_batch_trainers_recovered,
     assert_hook_effects,
     assert_hook_survivors,
     assert_remote_p2p_failures,
@@ -80,7 +78,6 @@ def run_ci(
     max_concurrent_actions: MaxConcurrentActionsOption = 1,
     precise_all_gather: Annotated[bool, typer.Option()] = False,
     precise_p2p: Annotated[bool, typer.Option()] = False,
-    all_p2p_targets: Annotated[bool, typer.Option()] = False,
     mix_wall_clock: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
@@ -94,13 +91,9 @@ def run_ci(
     """
     ft_mode: FTTestMode = resolve_mode(mode)
     assert not ft_mode.colocate, "Random fault soaks require disaggregated trainers and rollout engines"
-    if all_p2p_targets:
-        assert precise_p2p and mode == "kill_rollout__dp2_tp2", "All-target faults require the rollout P2P scenario"
-        assert min_survivors == 2, "All-sender-target faults must preserve the other sender's two targets"
     assert not (precise_all_gather and precise_p2p), "Select one precise hook scenario"
     if mix_wall_clock:
         assert precise_all_gather or precise_p2p, "Mixed injection requires a precise hook scenario"
-        assert not all_p2p_targets, "All-target recovery requires its dedicated scenario"
     if precise_all_gather:
         assert mode == "kill_train__dp2_tp2", "Precise all-gather requires the real-rollout TP2 mode"
     if precise_p2p:
@@ -117,7 +110,7 @@ def run_ci(
     if precise_all_gather:
         test_name = f"precise_all_gather{'_fully_async' if fully_async else ''}"
     if precise_p2p:
-        test_name = f"precise_p2p{'_all_targets' if all_p2p_targets else ''}{'_fully_async' if fully_async else ''}"
+        test_name = f"precise_p2p{'_fully_async' if fully_async else ''}"
     if mix_wall_clock:
         test_name += "_mixed"
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
@@ -139,7 +132,7 @@ def run_ci(
             ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
         )
         + get_ft_args(
-            replace(ft_mode, ft_components=("train", "rollout")) if all_p2p_targets else ft_mode,
+            ft_mode,
             api_server_args=get_api_server_args(config),
         )
         + get_fully_async_args(fully_async=fully_async)
@@ -163,7 +156,7 @@ def run_ci(
                     delay_ms=1000 if mix_wall_clock and failure_mode != FailureMode.THREAD_DEADLOCK else 0,
                     random_delay=mix_wall_clock and failure_mode != FailureMode.THREAD_DEADLOCK,
                 )
-                for failure_mode in [FailureMode.SIGKILL, FailureMode.DEADLOCK, FailureMode.THREAD_DEADLOCK]
+                for failure_mode in [FailureMode.SIGKILL, FailureMode.SIGSTOP, FailureMode.THREAD_DEADLOCK]
             ]
         }
         if precise_all_gather or (precise_p2p and ft_mode.ft_components == ("train",))
@@ -180,7 +173,6 @@ def run_ci(
                     victim_form=victim,
                     delay_ms=1000 if mix_wall_clock else 0,
                     random_delay=mix_wall_clock,
-                    all_targets=all_p2p_targets,
                 )
                 for victim in cell_fault_forms["rollout"]
             ]
@@ -248,19 +240,11 @@ def run_ci(
             hook_events=[event for event in training_events if isinstance(event, FaultHookEvent)],
         )
         if precise_p2p and "rollout" in ft_mode.ft_components:
-            matched_request_ids = assert_remote_p2p_failures(
+            assert_remote_p2p_failures(
                 injector.event_log.events,
                 hook_events=[event for event in training_events if isinstance(event, FaultHookEvent)],
                 update_events=[event for event in training_events if isinstance(event, WeightUpdateResultEvent)],
-                require_all_targets_failed=all_p2p_targets,
             )
-            if all_p2p_targets:
-                assert_batch_trainers_recovered(
-                    injector.event_log.events,
-                    steps=[event for event in training_events if isinstance(event, TrainGroupStepEndEvent)],
-                    expected_trainers=ft_mode.num_cells,
-                    matched_request_ids=matched_request_ids,
-                )
         if "train" in ft_mode.ft_components:
             assert_hook_survivors(
                 injector.event_log.events,

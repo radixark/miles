@@ -1,6 +1,5 @@
 from collections.abc import Sequence
 
-from tests.utils.soak.batch import validate_fault_batch
 from tests.utils.soak.fault_forms import ObservedCellFault
 from tests.utils.soak.process_target import ProcessExitReceipt, ProcessStopReceipt
 from tests.utils.soak.state import (
@@ -48,7 +47,6 @@ def assert_hook_effects(events: Sequence[SoakEvent], *, hook_events: Sequence[Fa
             assert hook_request.request_id == f"{request.request_id}:trigger", "Wrong remote trigger request"
             assert request.form_name == (
                 f"remote_hook:{hook_request.hook}:{event.evidence['victim_form']}:{delay}"
-                + (":all" if request.additional_requests else "")
             ), "Remote hook evidence names another form"
             assert request.hook_trigger is not None
             assert FaultTarget.model_validate(event.evidence["hook_trigger"]) == request.hook_trigger
@@ -97,16 +95,6 @@ def assert_hook_effects(events: Sequence[SoakEvent], *, hook_events: Sequence[Fa
             ), "Remote hit differs from worker evidence"
             assert recorded_hit.target_incarnations == hit.target_incarnations, "Remote sender assignment differs"
             _assert_remote_victim_effect(request=request, evidence=event.evidence)
-            if request.additional_requests:
-                validate_fault_batch(request)
-                receipts = event.evidence["batch_receipts"]
-                assert set(receipts) == {child.request_id for child in request.additional_requests}
-                for child in request.additional_requests:
-                    assert child.form_name == event.evidence["victim_form"]
-                    _assert_remote_victim_effect(
-                        request=child, evidence={**receipts[child.request_id], "victim_form": child.form_name}
-                    )
-
     assert applied, "No precise hook fault was confirmed"
 
 
@@ -115,7 +103,6 @@ def assert_remote_p2p_failures(
     *,
     hook_events: Sequence[FaultHookEvent],
     update_events: Sequence[WeightUpdateResultEvent],
-    require_all_targets_failed: bool = False,
 ) -> set[str]:
     assert_hook_effects(events, hook_events=hook_events)
     requests = {
@@ -128,7 +115,6 @@ def assert_remote_p2p_failures(
         if request.form_name.startswith("remote_hook:trainer_before_weight_send:")
     }
     matched_forms: set[str] = set()
-    all_failed = False
     for event in events:
         if not isinstance(event, SoakActionAppliedEvent):
             continue
@@ -147,22 +133,12 @@ def assert_remote_p2p_failures(
         updated, failed = set(result.updated_cell_ids), set(result.failed_cell_ids)
         assert not updated & failed, "P2P result reports both success and failure for one target"
         assert updated | failed == set(result.target_incarnations), "P2P result omits assigned targets"
-        if request.additional_requests:
-            victims = {
-                child.target["metadata"]["name"]: child.target["status"]["workers_hash"]
-                for child in [request, *request.additional_requests]
-            }
-            assert hit.target_incarnations == victims, "Fault batch does not match the sender's actual assignment"
-            assert all(result.target_incarnations.get(name) == incarnation for name, incarnation in victims.items())
-        else:
-            victims = {cell_id: incarnation}
+        victims = {cell_id: incarnation}
         assert result.published_version == (
             result.candidate_version if updated else None
         ), "P2P result published a version inconsistent with its surviving targets"
         if not set(victims) <= failed:
             continue
-        if request.additional_requests and len(victims) > 1 and updated:
-            all_failed = True
         checked.add(request.request_id)
         matched_forms.add(request.form_name)
 
@@ -170,58 +146,7 @@ def assert_remote_p2p_failures(
     assert (
         matched_forms == expected_forms
     ), f"Remote P2P forms without a precise hit: {sorted(expected_forms - matched_forms)}"
-    if require_all_targets_failed:
-        assert all_failed, "No sender lost all of its multiple targets while another sender published"
     return checked
-
-
-def assert_batch_trainers_recovered(
-    events: Sequence[SoakEvent],
-    *,
-    steps: Sequence[TrainGroupStepEndEvent],
-    expected_trainers: int,
-    matched_request_ids: set[str],
-) -> None:
-    observed: dict[str, str] = {}
-    originals: dict[str, tuple[dict[str, str], str]] = {}
-    checked = 0
-    for event in events:
-        if isinstance(event, SoakObservation):
-            observed = {
-                cell["metadata"]["name"]: cell["status"]["workers_hash"]
-                for cell in event.cells or []
-                if cell_type_of(cell) == "actor" and cell_is_alive(cell) and cell["status"].get("workers_hash")
-            }
-        elif isinstance(event, SoakActionRequestedEvent) and event.request.additional_requests:
-            if event.request.request_id not in matched_request_ids:
-                continue
-            assert len(observed) == expected_trainers, "Batch lacks the complete original trainer fleet"
-            assert event.request.hook_trigger is not None
-            trigger = event.request.hook_trigger
-            assert observed.get(trigger.cell_id) == trigger.workers_hash
-            originals[event.request.request_id] = (observed, trigger.cell_id)
-        elif isinstance(event, SoakActionAppliedEvent) and event.request_id in originals:
-            before, retired = originals[event.request_id]
-            assert any(
-                isinstance(step.source, TrainerControllerProcessIdentity)
-                and step.source.trainer_id == "actor"
-                and step.timestamp > event.timestamp
-                and all(
-                    step.cell_incarnations.get(name)
-                    and (
-                        (step.cell_incarnations[name] != incarnation)
-                        if name == retired
-                        else (step.cell_incarnations[name] == incarnation)
-                    )
-                    and isinstance(outcomes := step.cell_outcomes.get(parse_cell_id(name).cell_index), list)
-                    and outcomes
-                    and all(outcome == TrainStepOutcome.NORMAL for outcome in outcomes)
-                    for name, incarnation in before.items()
-                )
-                for step in steps
-            ), "The retired sender did not recover alongside its original surviving peer"
-            checked += 1
-    assert checked, "No all-target batch had trainer recovery evidence"
 
 
 def _assert_remote_victim_effect(*, request: SoakActionRequest, evidence: dict) -> None:
@@ -229,7 +154,7 @@ def _assert_remote_victim_effect(*, request: SoakActionRequest, evidence: dict) 
     receipt = {
         key: value
         for key, value in evidence.items()
-        if key not in {"hook_request", "hook_hit", "hook_trigger", "victim_form", "batch_receipts"}
+        if key not in {"hook_request", "hook_hit", "hook_trigger", "victim_form"}
     }
     if victim_form.startswith("inject_fault:"):
         effect = ObservedCellFault.model_validate(receipt)

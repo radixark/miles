@@ -6,12 +6,10 @@ import time
 from copy import deepcopy
 
 from tests.utils.soak.action import SoakActionForm
-from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.config import SoakCellPolicy, SoakPolicy
 from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
 from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.policy import eligible_cells, pending_actions
-from tests.utils.soak.sender_assignment import choose_sender_batch
 from tests.utils.soak.state import (
     SoakActionAppliedEvent,
     SoakActionRequest,
@@ -198,18 +196,6 @@ class SoakActionScheduler:
                 ]
         if not targets:
             return None
-        if isinstance(form, HookFaultForm) and form.all_targets:
-            policy = self.policy.cell_policies.get(cell_type, SoakCellPolicy())
-            if policy.min_survivors < 1 or policy.expected_cells is None:
-                raise ValueError("All-sender-target hooks require surviving targets and an explicit fleet size")
-            targets = eligible_cells(
-                cells=targets,
-                events=events,
-                policy=policy.model_copy(update={"require_ready_target": True}),
-                harms_cell=True,
-            )
-            if len(targets) != policy.expected_cells or len(targets) < 2:
-                return None
         target = self._rng.choice(targets)
         if not form.is_eligible(events=events, target=target):
             return None
@@ -219,7 +205,7 @@ class SoakActionScheduler:
             target_form = form.victim_form
             reserved_victims = {
                 (event.request.target["metadata"]["name"], event.request.target["status"].get("workers_hash"))
-                for event in expand_fault_batches(events)
+                for event in events
                 if isinstance(event, SoakActionRequestedEvent)
                 and event.request.harms_cell
                 and isinstance(event.request.target, dict)
@@ -235,27 +221,11 @@ class SoakActionScheduler:
             if not triggers:
                 return None
             hook_trigger = self._rng.choice(triggers)
-        selected = [target]
-        if isinstance(form, HookFaultForm) and form.all_targets:
-            batch = choose_sender_batch(
-                observation=observation,
-                targets=targets,
-                triggers=triggers,
-                min_survivors=policy.min_survivors,
-                rng=self._rng,
-            )
-            if batch is None:
-                return None
-            hook_trigger, selected = batch.trigger, batch.targets
-        requests = [
-            _build_observed_request(
-                target=cell, form=target_form, harms_cell=form.harms_cell, observation=observation, rng=self._rng
-            )
-            for cell in selected
-        ]
-        if any(request is None for request in requests):
+        request = _build_observed_request(
+            target=target, form=target_form, harms_cell=form.harms_cell, observation=observation, rng=self._rng
+        )
+        if request is None:
             return None
-        request = requests[0]
         next_due_at = now + self._rng.expovariate(1.0 / self._mean_intervals[cell_type])
         return request.model_copy(
             update={
@@ -263,7 +233,6 @@ class SoakActionScheduler:
                 "next_due_at": next_due_at,
                 "hook_trigger": hook_trigger,
                 "hook_delay_ms": form.sample_delay(self._rng) if isinstance(form, HookFaultForm) else None,
-                "additional_requests": requests[1:],
             }
         )
 

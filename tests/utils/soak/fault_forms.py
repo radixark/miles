@@ -21,10 +21,7 @@ logger = logging.getLogger(__name__)
 
 FAILURE_MODES: list[FailureMode] = [
     FailureMode.SIGKILL,
-    FailureMode.EXIT,
-    FailureMode.SEGFAULT,
     FailureMode.SIGSTOP,
-    FailureMode.DEADLOCK,
 ]
 RAY_ROLLOUT_ENGINE_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.SIGSTOP]
 

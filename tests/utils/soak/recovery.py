@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.state import SoakActionRequestedEvent, SoakEvent, SoakObservation, cell_is_alive, cell_type_of
 from tests.utils.soak.views import project_actions
 
@@ -26,7 +25,6 @@ def compute_recovery_episodes(
     *,
     reconfigurations: list[CellReconfigureEvent] | None = None,
 ) -> list[RecoveryEpisode]:
-    events = expand_fault_batches(events)
     actions = project_actions(events)
     for request_id, action in actions.items():
         if action.applied is not None and action.applied.timestamp < action.requested.timestamp:
