@@ -118,7 +118,7 @@ def sglang_lora_target_all_sentinel(args) -> bool:
     """Hand SGLang the ``"all"`` shorthand so it auto-detects module names (required for Inkling)."""
     from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
 
-    return is_inkling_checkpoint(getattr(args, "hf_checkpoint", None) or "")
+    return is_inkling_checkpoint(args.hf_checkpoint or "")
 
 
 _marked_lora_grad_params_cache: dict[int, list] = {}
@@ -342,7 +342,7 @@ def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
 def parse_exclude_modules(args: Namespace, lora_type=None) -> list[str]:
     """Parse and convert exclude_modules argument."""
     exclude_modules: list[str] = []
-    raw = getattr(args, "exclude_modules", None)
+    raw = args.exclude_modules
     if raw:
         if isinstance(raw, str):
             exclude_modules = [m.strip() for m in raw.split(",")]
@@ -361,7 +361,7 @@ def create_lora_instance(args: Namespace):
     from megatron.bridge.peft.canonical_lora import CanonicalLoRA
     from megatron.bridge.peft.lora import LoRA
 
-    lora_type_name = getattr(args, "lora_type", "lora").lower()
+    lora_type_name = args.lora_type.lower()
 
     if lora_type_name == "canonical_lora":
         lora_cls = CanonicalLoRA
@@ -377,11 +377,11 @@ def create_lora_instance(args: Namespace):
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=args.lora_dropout,
-        lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
-        lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
+        lora_A_init_method=args.lora_A_init_method,
+        lora_B_init_method=args.lora_B_init_method,
     )
     # shared-outer grouped-expert LoRA (SGLang PR #21466); per-expert is the default
-    if getattr(args, "experts_shared_outer_loras", False):
+    if args.experts_shared_outer_loras:
         assert lora_cls is LoRA, "--experts-shared-outer-loras requires the standard LoRA adapter type"
         lora_kwargs["experts_shared_outer_loras"] = True
 
@@ -499,7 +499,7 @@ def save_lora_checkpoint(
 
     # ---- Training state (iteration + scheduler, and the optimizer unless opted out) ----
     if optimizer is not None:
-        save_optimizer = not getattr(args, "no_save_optim", False)
+        save_optimizer = not args.no_save_optim
         rank = dist.get_rank() if dist.is_initialized() else 0
         torch.save(
             {

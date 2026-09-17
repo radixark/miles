@@ -142,7 +142,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
 
     # Load LoRA adapter weights if available
     if is_lora_enabled(args):
-        adapter_path = getattr(args, "lora_adapter_path", None)
+        adapter_path = args.lora_adapter_path
         if adapter_path is not None:
             loaded, iteration = load_lora_adapter(
                 ddp_model,

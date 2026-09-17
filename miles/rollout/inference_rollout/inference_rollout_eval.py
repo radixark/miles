@@ -90,7 +90,7 @@ async def eval_rollout_single_dataset(
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
             sample_index += 1
-            sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
+            sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
             sample.generate_function_path = dataset_cfg.custom_generate_function_path
             stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
             if policy_uses_routing_key(args):

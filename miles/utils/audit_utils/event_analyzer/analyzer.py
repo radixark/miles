@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 def run_analysis_from_args(args: Namespace) -> None:
-    if not getattr(args, "enable_event_analyzer", False):
+    if not args.enable_event_analyzer:
         return
 
-    event_dir = getattr(args, "save_debug_event_data", None)
+    event_dir = args.save_debug_event_data
     if event_dir is None:
         return
 

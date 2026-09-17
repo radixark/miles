@@ -54,7 +54,7 @@ def _qkv_tp_size(args):
 
         return get_parallel_state().tp.size
     except Exception:
-        return getattr(args, "tensor_model_parallel_size", 1) or 1
+        return args.tensor_model_parallel_size or 1
 
 
 def _qkv_blocks_from_gathered(args, layer_idx: int, param: torch.Tensor):
