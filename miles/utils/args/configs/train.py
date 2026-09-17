@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, Literal
 
 from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
@@ -8,6 +8,7 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 class TrainConfig(BaseConfig):
     trainer_id: str
     trainer_model_id: str | None
+    entry: Literal["train", "serve"] = "train"
 
     train_backend: A[str, Arg(choices=["megatron", "fsdp"], help="The backend for training.")] = "megatron"
     qkv_format: A[str, Arg(choices=["thd", "bshd"], help="The qkv layout.")] = "thd"

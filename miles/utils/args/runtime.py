@@ -1,6 +1,6 @@
 from typing import Self
 
-from pydantic import ConfigDict, model_validator
+from pydantic import model_validator
 
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
@@ -280,9 +280,6 @@ class AllConfig(
     InferenceControllerOnlyConfig,
     MultiLoraOnlyConfig,
 ):
-    # TODO: Remove extra="allow" after backend, custom, and derived fields have explicit config owners.
-    model_config = ConfigDict(extra="allow")
-
     # TODO: Unify trainer descriptions after zhichen's training backend refactor; FSDP also uses these descriptions.
     raw_megatron: MegatronConfig
     raw_fsdp: FsdpArgsNamespace | None
