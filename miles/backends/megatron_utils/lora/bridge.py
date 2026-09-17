@@ -206,4 +206,14 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         patch_param_grad_buffer_for_colocate_mode_lora()
 
     model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
+    # Match the non-LoRA bridge provider: some models return (logits, loss_mask),
+    # whereas Miles loss functions expect only the logits tensor.
+    for chunk in _ensure_model_list(model):
+        bridge_forward = chunk.forward
+
+        def logits_only_forward(*args, _forward=bridge_forward, **kwargs):
+            output = _forward(*args, **kwargs)
+            return output[0] if isinstance(output, tuple) else output
+
+        chunk.forward = logits_only_forward
     return model
