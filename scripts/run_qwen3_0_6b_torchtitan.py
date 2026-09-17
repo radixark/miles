@@ -106,18 +106,17 @@ def execute(args: ScriptArgs):
         "--rollout-num-gpus-per-engine 1 " "--sglang-decode-log-interval 1000 " "--sglang-mem-fraction-static 0.75 "
     )
 
-    # These are torchtitan's own parallelism field names; the FSDP shard degree
-    # is deliberately absent, since torchtitan infers it from what the others
-    # leave over. Note that qwen3-0.6B is weight-tied, so torchtitan refuses to
-    # pipeline it -- --pp-size needs one of the untied flavors (8B and up).
+    # The FSDP shard degree is deliberately absent: torchtitan infers it from
+    # what the other degrees leave over. qwen3-0.6B is weight-tied, so torchtitan
+    # refuses to pipeline it -- --pp-size needs one of the untied flavors (8B and up).
     train_backend_args = (
         "--train-backend torchtitan "
         "--titan-model-name qwen3 "
         "--titan-model-flavor 0.6B "
-        f"--titan-seq-len {SEQ_LEN} "
-        f"--titan-tensor-parallel-degree {args.tp_size} "
-        f"--titan-pipeline-parallel-degree {args.pp_size} "
-        f"--titan-context-parallel-degree {args.cp_size} "
+        f"--seq-length {SEQ_LEN} "
+        f"--tensor-model-parallel-size {args.tp_size} "
+        f"--pipeline-model-parallel-size {args.pp_size} "
+        f"--context-parallel-size {args.cp_size} "
         "--micro-batch-size 1 "
         "--gradient-checkpointing "
         "--update-weight-buffer-size 536870912 "

@@ -468,14 +468,14 @@ the config a torchtitan user would write by hand.
 --titan-model-name qwen3 \
 --titan-model-flavor 30B-A3B \
 --hf-checkpoint /root/models/Qwen3-30B-A3B \
---titan-seq-len 16384
+--seq-length 16384
 ```
 
 `--titan-model-name` is a package under `torchtitan/models/`, and `--titan-model-flavor` one
 of the sizes that package registers. `--hf-checkpoint` supplies the weights and tokenizer;
 torchtitan's own state-dict adapter converts them, so there is no offline conversion step.
 
-`--titan-seq-len` sizes the rotary tables and the buffers pipeline stages exchange, so it has
+`--seq-length` sizes the rotary tables and the buffers pipeline stages exchange, so it has
 to be at least as long as the longest sequence you will train on — prompt plus response.
 Miles rejects a value that leaves no room for a prompt rather than letting it fail inside a
 kernel later.
@@ -483,16 +483,19 @@ kernel later.
 ### 2. Choosing the parallelism
 
 ```bash
---titan-tensor-parallel-degree 2 \
---titan-pipeline-parallel-degree 2 \
---titan-context-parallel-degree 2 \
---titan-expert-parallel-degree 2 \
---titan-data-parallel-replicate-degree 1
+--tensor-model-parallel-size 2 \
+--pipeline-model-parallel-size 2 \
+--context-parallel-size 2 \
+--expert-model-parallel-size 2 \
+--dp-replicate-size 1
 ```
 
-The FSDP shard degree is not a flag: torchtitan infers it from what the other degrees leave
-over, so these five settings plus the GPU count fully determine the layout. All of them
-compose — tensor, pipeline, context, expert and FSDP have been run together on one job.
+These are the same flags Megatron takes, so a recipe moves between the two backends without
+renaming its parallelism. The FSDP shard degree is not a flag: torchtitan infers it from what
+the other degrees leave over, so these five settings plus the GPU count fully determine the
+layout. All of them compose — tensor, pipeline, context, expert and FSDP have been run together
+on one job. `--recompute-granularity full` and `--bf16` are accepted with Megatron's meaning as
+well (`--gradient-checkpointing` stays as the FSDP-side spelling).
 
 Two notes on how they behave here:
 
@@ -500,7 +503,7 @@ Two notes on how they behave here:
   gathers the logits back before the loss sees them, so the RL loss and its metrics behave
   exactly as at `cp=1` and cost the same memory.
 - **Pipeline parallelism needs one shape for the whole run**, so every microbatch is padded
-  to `--titan-seq-len`. Weight-tied flavors (qwen3 0.6B / 1.7B / 4B) cannot be pipelined —
+  to `--seq-length`. Weight-tied flavors (qwen3 0.6B / 1.7B / 4B) cannot be pipelined —
   torchtitan refuses, by design.
 
 ### 3. Fitting it in memory
