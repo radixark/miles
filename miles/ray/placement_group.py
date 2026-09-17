@@ -8,7 +8,7 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
-from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
+from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
@@ -27,6 +27,7 @@ from miles.ray.specs.train import (
 )
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.ray.wiring import get_backend_capability
+from miles.utils.args.trainer_utils import compute_trainer_config
 from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot, merge_inference_engine_ranks
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -224,7 +225,7 @@ async def create_training_models(
 
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     actor_info = await create_training_model(
-        compute_trainer_args(args, actor_config),
+        compute_trainer_config(args, actor_config),
         handle=handles[actor_config.trainer_id],
         trainer_id=actor_config.trainer_id,
         resumed=resumed,
@@ -235,7 +236,7 @@ async def create_training_models(
     if args.use_critic:
         [critic_config] = critic_configs
         critic_info = await create_training_model(
-            compute_trainer_args(args, critic_config),
+            compute_trainer_config(args, critic_config),
             handle=handles[critic_config.trainer_id],
             trainer_id=critic_config.trainer_id,
             resumed=resumed,

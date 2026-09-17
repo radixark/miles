@@ -4,7 +4,6 @@ from contextlib import suppress
 
 import uvicorn
 
-from miles.backends.megatron_utils.megatron_config import compute_trainer_args
 from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
@@ -15,6 +14,7 @@ from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
+from miles.utils.args.trainer_utils import compute_trainer_config
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.hf_config import load_hf_config
@@ -34,7 +34,7 @@ async def serve(args, *, disposer: Disposer):
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
         # The trainer pads each packed microbatch to this multiple.
-        pad_size = args.tensor_model_parallel_size * args.data_pad_size_multiplier
+        pad_size = args.raw_megatron.base_args["tensor_model_parallel_size"] * args.data_pad_size_multiplier
         trainer_token_limit = args.max_tokens_per_gpu // pad_size * pad_size
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
@@ -52,7 +52,7 @@ async def serve(args, *, disposer: Disposer):
     resumed = await take_over_trainers(args, handles=handles)
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     actor_info = await create_training_model(
-        compute_trainer_args(args, actor_config),
+        compute_trainer_config(args, actor_config),
         handle=handles[actor_config.trainer_id],
         trainer_id=actor_config.trainer_id,
         resumed=resumed,
@@ -75,7 +75,9 @@ async def serve(args, *, disposer: Disposer):
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     dp_size = actor_world_size // (
-        args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
+        args.raw_megatron.base_args["tensor_model_parallel_size"]
+        * args.raw_megatron.base_args["pipeline_model_parallel_size"]
+        * args.raw_megatron.base_args["context_parallel_size"]
     )
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
 
@@ -102,7 +104,4 @@ async def serve(args, *, disposer: Disposer):
 
 if __name__ == "__main__":
     args = parse_args(add_tinker_arguments, entry="serve", preprocess_args=configure_tinker_args)
-    # commands ship one work unit at a time; its size is the batch size
-    args.use_dynamic_global_batch_size = True
-    args.delay_split_train_data_by_dp = True
     asyncio.run(with_disposer(serve, args))
