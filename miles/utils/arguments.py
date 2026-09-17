@@ -44,6 +44,7 @@ from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
+from miles.utils.args.runtime import AllConfig
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
@@ -300,7 +301,7 @@ def parse_args(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
     entry: str = "train",
     preprocess_args: Callable[[argparse.Namespace], None] | None = None,
-) -> argparse.Namespace:
+) -> AllConfig:
     args, _ = parse_args_and_get_parser(
         add_custom_arguments=add_custom_arguments, entry=entry, preprocess_args=preprocess_args
     )
@@ -311,7 +312,7 @@ def parse_args_and_get_parser(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
     entry: str = "train",
     preprocess_args: Callable[[argparse.Namespace], None] | None = None,
-) -> tuple[argparse.Namespace, argparse.ArgumentParser]:
+) -> tuple[AllConfig, argparse.ArgumentParser]:
     assert entry in ("train", "serve"), f"unknown entry {entry!r}"
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
@@ -392,7 +393,7 @@ def parse_args_and_get_parser(
     sglang_validate_args(args)
 
     assert parser is not None
-    return args, parser
+    return AllConfig.model_validate(vars(args)), parser
 
 
 def parse_args_train_backend():
