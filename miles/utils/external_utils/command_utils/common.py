@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from miles.utils.external_utils.model_args_utils import load_model_args
+from miles.utils.test_utils.snapshot import SNAPSHOT_UPDATE_ENV_VAR
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.object_store_config import (
     MOONCAKE_MASTER_ADDRESS_KEY,
@@ -53,6 +54,7 @@ def train_env_vars(
     return {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
+        SNAPSHOT_UPDATE_ENV_VAR: os.environ.get(SNAPSHOT_UPDATE_ENV_VAR, ""),
         # If setting this in FSDP, the computation communication overlapping may have issues
         **(
             {}

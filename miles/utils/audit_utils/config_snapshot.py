@@ -23,12 +23,13 @@ class _SnapshotState:
 
 
 _snapshot_state: _SnapshotState | None = None
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def configure_config_snapshots(*, args: Namespace, source: ProcessIdentity) -> None:
     global _snapshot_state
     _snapshot_state = None
-    if args.config_snapshot_dir is None:
+    if args.ci_disable_config_snapshot or not (args.ci_test or args.config_snapshot_dir is not None):
         return
 
     if not args.config_snapshot_name:
@@ -41,8 +42,13 @@ def configure_config_snapshots(*, args: Namespace, source: ProcessIdentity) -> N
         if args.config_snapshot_normalize is None
         else TypeAdapter(dict[str, dict[str, Any]]).validate_json(Path(args.config_snapshot_normalize).read_text())
     )
+    directory = (
+        Path(args.config_snapshot_dir)
+        if args.config_snapshot_dir is not None
+        else _REPO_ROOT / "tests/snapshots/runtime_config"
+    )
     _snapshot_state = _SnapshotState(
-        directory=Path(args.config_snapshot_dir) / name / args.deploy_component / (args.deploy_instance_id or "default"),
+        directory=directory / name / args.deploy_component / (args.deploy_instance_id or "default"),
         run_uuid=args.run_uuid,
         source=source.to_name(),
         replacements=replacements,

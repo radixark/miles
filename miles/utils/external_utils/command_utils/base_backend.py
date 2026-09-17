@@ -4,6 +4,7 @@ import fcntl
 import logging
 import os
 import shlex
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -27,6 +28,7 @@ from miles.utils.typer_utils import dataclass_from_env
 from miles.utils.workers.types import ClusterBackend, DeployComponent, HotRestartComponent, parse_hot_restart
 
 logger = logging.getLogger(__name__)
+_CONFIG_SNAPSHOT_LAUNCH_COUNTS: dict[str, int] = {}
 
 
 @dataclass
@@ -165,6 +167,7 @@ class BaseCommandBackend(ABC):
             _assert_train_args_name_no_other_run_uuid(train_argv, run_uuid=config.run_uuid)
             train_args = f"{train_args} {_RUN_UUID_FLAG} {config.run_uuid}"
 
+        train_args = _add_config_snapshot_name(train_args)
         self._execute_train_inner(
             request=ExecuteTrainRequest(
                 train_args=train_args,
@@ -357,6 +360,23 @@ def _assert_train_args_name_no_other_run_uuid(train_argv: list[str], *, run_uuid
     assert (
         not conflicting
     ), f"the train arguments already say {_RUN_UUID_FLAG} {conflicting}, but this launch drives run {run_uuid}"
+
+
+def _add_config_snapshot_name(train_args: str) -> str:
+    argv = shlex.split(train_args)
+    if not ArgvManipulator.is_defined(argv=argv, flag="--ci-test"):
+        return train_args
+    if ArgvManipulator.is_defined(argv=argv, flag="--ci-disable-config-snapshot"):
+        return train_args
+    if ArgvManipulator.is_defined(argv=argv, flag="--config-snapshot-name"):
+        return train_args
+
+    script = Path(sys.argv[0]).resolve()
+    relative = script.relative_to(repo_base_dir) if script.is_relative_to(repo_base_dir) else Path(script.name)
+    name = relative.with_suffix("").as_posix()
+    index = _CONFIG_SNAPSHOT_LAUNCH_COUNTS.get(name, 0)
+    _CONFIG_SNAPSHOT_LAUNCH_COUNTS[name] = index + 1
+    return f"{train_args} --config-snapshot-name {shlex.quote(f'{name}/run-{index:04d}')}"
 
 
 def _declared_cluster_backends(train_argv: list[str]) -> list[str]:
