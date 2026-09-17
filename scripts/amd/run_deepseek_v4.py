@@ -560,11 +560,14 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
+        # Small GRPO batches share prefixes; cache-aware routing's default
+        # imbalance threshold (64) can queue the whole batch on one engine.
+        "--sglang-router-policy round_robin"
     )
     if _is_gfx942():
         # gfx942: AITER's BF16 atomic reductions perturb router/expert results
         # between identical forwards. Triton still executes FP8 expert GEMMs.
-        sglang_args += "--sglang-moe-runner-backend triton --sglang-disable-custom-all-reduce "
+        sglang_args += " --sglang-moe-runner-backend triton --sglang-disable-custom-all-reduce "
     extra_env_vars = {
         "TORCHINDUCTOR_MAX_AUTOTUNE": "0",
         "TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE": "0",
@@ -580,6 +583,10 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "AITER_BF16_FP8_MOE_BOUND": "0",
     }
+    if _is_gfx942():
+        # Bound per-process hardware queues in colocated training/serving.
+        # Keep all overrides in the Ray runtime env, never host configuration.
+        extra_env_vars |= {"GPU_MAX_HW_QUEUES": "1", "SGLANG_SET_CPU_AFFINITY": "0"}
 
     misc_args = (
         "--attention-dropout 0.0 "

@@ -151,6 +151,8 @@ def test_amd_train_emits_real_fp8_recipe(monkeypatch, amd_launcher, tmp_path, re
     assert "--transformer-impl transformer_engine" in command
     assert "--no-gradient-accumulation-fusion" in command
     assert ("NVTE_FP8_BLOCK_SCALING_FP32_SCALES" in command) == (selected == "blockwise")
+    assert "--sglang-router-policy round_robin" in command
+    assert '"GPU_MAX_HW_QUEUES": "1"' in command
     assert "--sglang-moe-runner-backend triton" in command
     assert "--sglang-disable-custom-all-reduce" in command
     assert "--hf-checkpoint None" not in command
