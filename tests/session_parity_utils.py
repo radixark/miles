@@ -198,7 +198,11 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
     assert v1.samples[0].metadata["max_trim_tokens"] == v2.session_metadata["max_trim_tokens"]
 
     v2_linear_metadata = {key: value for key, value in v2.session_metadata.items() if key not in ("agent", "tree")}
-    _assert_bits_equal(v1.session_metadata, v2_linear_metadata, path="session_metadata")
+    _assert_bits_equal(
+        _session_metadata_projection(v1.session_metadata),
+        _session_metadata_projection(v2_linear_metadata),
+        path="session_metadata",
+    )
     assert_sample_bitwise_equal(
         v1.samples[0],
         v2.samples[0],
@@ -278,8 +282,27 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         server.stop()
 
 
-def _training_metadata_projection(metadata: dict[str, Any]) -> dict[str, Any]:
+def _session_metadata_projection(metadata: dict[str, Any]) -> dict[str, Any]:
     projected = deepcopy(metadata)
+    # Independent backend runs assign different tool-call IDs. Compare their
+    # call/result relationships while retaining every other request field.
+    tool_call_ids = {}
+    for message_index, message in enumerate(projected.get("turn_args", {}).get("messages", [])):
+        declared_ids = set()
+        for call_index, call in enumerate(message.get("tool_calls") or []):
+            assert call["id"] not in declared_ids, f"duplicate tool-call ID {call['id']!r}"
+            declared_ids.add(call["id"])
+            tool_call_ids[call["id"]] = f"call_{message_index}_{call_index}"
+            call["id"] = tool_call_ids[call["id"]]
+        if message.get("role") == "tool":
+            tool_call_id = message["tool_call_id"]
+            assert tool_call_id in tool_call_ids, f"tool result references unknown call {tool_call_id!r}"
+            message["tool_call_id"] = tool_call_ids[tool_call_id]
+    return projected
+
+
+def _training_metadata_projection(metadata: dict[str, Any]) -> dict[str, Any]:
+    projected = _session_metadata_projection(metadata)
     projected.pop("leaf", None)
     projected.pop("max_trim_tokens", None)
     lifecycle = projected.get("lifecycle")
