@@ -17,6 +17,7 @@ from miles.tinker.server.oai_routes import install_session_routes
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.hf_config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
@@ -28,13 +29,19 @@ _SWEEP_INTERVAL_S = 60.0
 
 
 def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
-    """The recorded-session collector over the running service: the HF tokenizer is loaded here and only here (core never imports it); the TTL comes from --tinker-session-ttl-s and the template kwargs from --apply-chat-template-kwargs."""
+    """The recorded-session collector over the running service: the HF tokenizer is loaded here and only here (core never imports it); the TTL comes from --tinker-session-ttl-s, the template kwargs from --apply-chat-template-kwargs, and --tinker-tito-model wraps the same tokenizer in miles' TITOTokenizer so turns inherit tokens instead of re-rendering."""
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path)
+    tito_tokenizer = None
+    if args.tinker_tito_model is not None:
+        tito_tokenizer = get_tito_tokenizer(
+            tokenizer, args.tinker_tito_model, chat_template_kwargs=args.apply_chat_template_kwargs
+        )
     return TrajectoryCollector(
         service,
         tokenizer,
         session_ttl_s=args.tinker_session_ttl_s,
         chat_template_kwargs=args.apply_chat_template_kwargs,
+        tito_tokenizer=tito_tokenizer,
     )
 
 

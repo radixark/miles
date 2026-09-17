@@ -60,11 +60,15 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None
 
     @app.post("/oai/sessions/{session_id}")
     async def bind_session(session_id: str, request: Request):
-        """Pin the session to {model: tinker://M/sampler_weights/V} (or {sampling_session_id}); bearer required; the example's step 1."""
+        """Pin the session to {model: tinker://M/sampler_weights/V} (or {sampling_session_id}), optionally with the client's {max_datum_tokens} as the TITO chain budget; bearer required; the example's step 1."""
         tenant = _tenant(request)
         payload = await _json_body(request)
         session = collector.bind(
-            session_id, tenant, model=payload.get("model"), sampling_session_id=payload.get("sampling_session_id")
+            session_id,
+            tenant,
+            model=payload.get("model"),
+            sampling_session_id=payload.get("sampling_session_id"),
+            max_datum_tokens=payload.get("max_datum_tokens"),
         )
         return {"session_id": session.session_id, "model_path": session.model_path}
 
@@ -76,7 +80,7 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
-        """Export {session_id, model_path, turns: [{input_ids, output_ids, logprobs, finish_reason}]}; bearer must match the owner; the example's step 3."""
+        """Export {session_id, model_path, turns: [{input_ids, output_ids, logprobs, finish_reason, inherits}]}; bearer must match the owner; the example's step 3."""
         return collector.trajectory(session_id, _tenant(request))
 
     @app.delete("/oai/sessions/{session_id}")
