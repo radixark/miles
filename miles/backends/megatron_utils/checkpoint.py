@@ -10,7 +10,9 @@ from megatron.core.utils import unwrap_model
 # TODO: may need to copy those 2 functions and do refactoring.
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
+from torch.serialization import safe_globals
 
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils
 from miles.utils import megatron_bridge_utils
 from miles.utils.args.runtime import TrainerConfig
@@ -132,7 +134,7 @@ def load_checkpoint(
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
-        with args.backend.mutable():
+        with safe_globals([MegatronArgsNamespace]), args.backend.mutable():
             result = _load_checkpoint_megatron(
                 ddp_model=ddp_model,
                 optimizer=optimizer,
