@@ -55,6 +55,10 @@ class RouterConfig(BaseConfig):
             }
         }
 
+    @classmethod
+    def arg_names(cls) -> set[str]:
+        return {action.dest for action in _make_prefixed_cli_parser()._actions}
+
 
 def _make_prefixed_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)

@@ -1,28 +1,4 @@
-import argparse
-
 from miles.utils.hf_config import load_hf_config
-
-
-def add_tinker_arguments(parser):
-    group = parser.add_argument_group("Tinker")
-
-    def add_argument(name, **kwargs):
-        return group.add_argument(f"--tinker-{name}", **kwargs)
-
-    add_argument("server-host", default="0.0.0.0")
-    add_argument("server-port", type=int, default=10613)
-    add_argument(
-        "base-model",
-        help="Model name advertised by the gateway (default: --hf-checkpoint)",
-    )
-    add_argument(
-        "checkpoint-root",
-        help="Directory for tinker:// checkpoints (default: <save>/tinker)",
-    )
-    add_argument("train-attn", action=argparse.BooleanOptionalAction, default=True)
-    add_argument("train-mlp", action=argparse.BooleanOptionalAction, default=True)
-    add_argument("train-unembed", action=argparse.BooleanOptionalAction, default=True)
-    return parser
 
 
 def configure_tinker_args(args):
