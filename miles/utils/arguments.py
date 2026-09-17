@@ -186,33 +186,34 @@ def _assert_reset_arg_compatible(
         assert actual == value, f"Cannot reset {name}: {key}={actual!r} does not match {value!r}"
 
 
+def add_user_provided_function_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    try:
+        with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
+            args_partial, _ = parser.parse_known_args()
+    except SystemExit:
+        return parser
+    paths = [args_partial.custom_inference_engine_provider_path]
+    if not use_legacy_rollout_v1():
+        paths = [
+            resolve_rollout_function_paths(args_partial)[0],
+            args_partial.custom_generate_function_path,
+            *paths,
+        ]
+    for path in paths:
+        try:
+            fn = load_function(path)
+        except (ModuleNotFoundError, ValueError):
+            continue
+        if fn is not None and callable(
+            getattr(fn, "add_arguments", None)
+        ):  # config-access-exempt: custom hooks may optionally register CLI arguments
+            fn.add_arguments(parser)
+    return parser
+
+
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
         parser.set_defaults(entry="train")
-
-        def add_user_provided_function_arguments(parser):
-            try:
-                with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
-                    args_partial, _ = parser.parse_known_args()
-            except SystemExit:
-                return parser
-            paths = [args_partial.custom_inference_engine_provider_path]
-            if not use_legacy_rollout_v1():
-                paths = [
-                    resolve_rollout_function_paths(args_partial)[0],
-                    args_partial.custom_generate_function_path,
-                    *paths,
-                ]
-            for path in paths:
-                try:
-                    fn = load_function(path)
-                except (ModuleNotFoundError, ValueError):
-                    continue
-                if fn is not None and callable(
-                    getattr(fn, "add_arguments", None)
-                ):  # config-access-exempt: custom hooks may optionally register CLI arguments
-                    fn.add_arguments(parser)
-            return parser
 
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
