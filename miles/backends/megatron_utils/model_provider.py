@@ -155,11 +155,15 @@ def get_model_provider_func(
             assert config is None, "miles builds the config from args, so it expects config to be None"
             custom_model_provider = load_function(args.custom_model_provider_path)
             # Check if the custom provider supports vp_stage parameter
-            has_vp_stage = "vp_stage" in inspect.signature(custom_model_provider).parameters
+            parameters = inspect.signature(custom_model_provider).parameters
+            provider_kwargs = {"args": args} if "args" in parameters else {}
+            has_vp_stage = "vp_stage" in parameters
             if has_vp_stage:
-                model = custom_model_provider(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+                model = custom_model_provider(
+                    pre_process=pre_process, post_process=post_process, vp_stage=vp_stage, **provider_kwargs
+                )
             else:
-                model = custom_model_provider(pre_process=pre_process, post_process=post_process)
+                model = custom_model_provider(pre_process=pre_process, post_process=post_process, **provider_kwargs)
             # Apply critic output layer if needed
             if post_process and role == "critic":
                 model.output_layer = LinearForLastLayer(
