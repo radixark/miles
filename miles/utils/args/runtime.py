@@ -1,5 +1,7 @@
 from pydantic import ConfigDict
 
+from miles.backends.sglang_utils.sglang_config import SglangConfig
+
 from miles.utils.args.configs.algo import AlgoConfig
 from miles.utils.args.configs.ci import CiConfig
 from miles.utils.args.configs.cluster import ClusterConfig
@@ -54,6 +56,8 @@ class AllConfig(
 ):
     # TODO: Remove extra="allow" after backend, custom, and derived fields have explicit config owners.
     model_config = ConfigDict(extra="allow")
+
+    sglang: SglangConfig
 
     # TODO: Remove this temporary override after separating CLI input types from normalized config types.
     target_modules: str | list[str] | None = None

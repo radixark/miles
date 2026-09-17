@@ -2,7 +2,6 @@ import asyncio
 import logging
 from collections.abc import Sequence
 
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.specs.inference import (
     compute_router_worker_name,
     compute_session_server_instance_id,
@@ -34,7 +33,7 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
         )
         return {name: HostAndPort(host=host, port=port) for name, (host, port) in args.sglang_model_routers.items()}
 
-    config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    config = args.sglang  # TODO avoid resolve repeatedly
     assert len(router_providers) == len(config.models), (
         f"every model is served by its own router, so it needs its own provider "
         f"(got {len(router_providers)} for {len(config.models)} models)"
