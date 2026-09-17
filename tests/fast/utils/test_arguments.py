@@ -590,39 +590,17 @@ class TestSessionServerPauseGenerationMode:
         with pytest.raises(AssertionError, match="does not support --partial-rollout"):
             miles_validate_args(args)
 
-    @pytest.mark.parametrize(
-        ("extra", "expect_warning"),
-        [
-            (
-                ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "retract"],
-                True,
-            ),
-            (["--use-session-server", "--pause-generation-mode", "retract"], False),
-            (["--use-rollout-routing-replay", "--pause-generation-mode", "retract"], False),
-            (
-                [
-                    "--use-session-server",
-                    "--use-rollout-routing-replay",
-                    "--colocate",
-                    "--pause-generation-mode",
-                    "abort",
-                ],
-                False,
-            ),
-            (
-                ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "in_place"],
-                False,
-            ),
-        ],
-    )
-    def test_retract_r3_warning(self, caplog, extra, expect_warning):
-        args = self._parse(extra)
+    @pytest.mark.parametrize("version", ["v1", "v2"])
+    @pytest.mark.parametrize("mode", ["abort", "in_place", "retract"])
+    def test_r3_does_not_warn_about_full_payloads(self, caplog, version, mode):
+        args = self._parse(
+            ["--use-session-server", version, "--use-rollout-routing-replay", "--pause-generation-mode", mode]
+        )
 
         with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
             miles_validate_args(args)
 
-        warned = any("R3 payloads can become very large" in record.message for record in caplog.records)
-        assert warned is expect_warning
+        assert not any("R3" in record.message for record in caplog.records)
 
 
 class TestSnapshotEvalValidation:

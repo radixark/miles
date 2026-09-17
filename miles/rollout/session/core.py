@@ -258,8 +258,6 @@ class SessionCore:
         self.registry = registry
         self.config = config
         self.instance_id = session_server_instance_id
-        # Derived from pause_generation_mode at server bootstrap; session code
-        # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
 
     def _maybe_request_addition_r3(

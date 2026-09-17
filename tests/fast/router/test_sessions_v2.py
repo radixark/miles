@@ -534,7 +534,7 @@ class TestTruncationAndCompaction:
         assert nodes[1]["parent"] == nodes[0]["id"]
 
 
-# ── additional R3 (non-retract pause modes): request offsets on the tree ──
+# ── additional R3: request offsets on the tree ──
 
 
 class TestAdditionR3RequestOffsetV2:
@@ -544,7 +544,7 @@ class TestAdditionR3RequestOffsetV2:
         data = requests.get(f"{url}/sessions/{session_id}", timeout=5.0).json()
         return data["metadata"]["accumulated_token_ids"]
 
-    @pytest.mark.parametrize("mode", ["abort", "in_place"])
+    @pytest.mark.parametrize("mode", ["abort", "in_place", "retract"])
     def test_incremental_offsets_across_turns_and_branches(self, mode):
         with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": mode}) as env:
             session_id = _create_session(env.url)
@@ -584,11 +584,3 @@ class TestAdditionR3RequestOffsetV2:
             branch_body = env.backend.request_log[-1]
             assert branch_body["routed_experts_start_len"] == len(checkpoint1) - 1
             assert len(checkpoint1) - 1 < len(checkpoint2) - 1
-
-    def test_retract_request_has_no_start_len(self):
-        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "retract"}) as env:
-            session_id = _create_session(env.url)
-            assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 200
-            body = env.backend.request_log[-1]
-            assert body["return_routed_experts"] is True
-            assert "routed_experts_start_len" not in body

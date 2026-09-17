@@ -145,11 +145,7 @@ Whether a replayed message counts as "the same" as the stored one is decided by
 `--session-message-matcher` (default `strict`); see
 [Choose replay matching](#choose-replay-matching).
 
-The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
-for each selected tree leaf. Both versions reject `--partial-rollout`. With R3
-replay, every pause mode except `retract` requests only additional R3 rows.
-`retract` returns full R3 data on every turn and emits a warning because the
-payloads can become very large.
+The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one for each selected tree leaf. Both versions reject `--partial-rollout`. With R3 replay, all pause modes, including `retract`, request only additional R3 rows. Samples retain the decode-time routing recorded for earlier turns instead of overwriting it with routing recomputed by a later prefill.
 
 Set `--max-seq-len` to cap the context length. Miles also includes this value in the
 metadata passed to your agent so an external environment can stop early.

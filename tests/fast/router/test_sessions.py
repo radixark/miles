@@ -1,6 +1,7 @@
 """Integration tests for session HTTP routes (create / get / delete / proxy)."""
 
 import asyncio
+import base64
 import json
 import socket
 import uuid
@@ -9,11 +10,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+import numpy as np
 import pytest
 import requests
 from fastapi.responses import JSONResponse
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
+from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import strict_message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
@@ -21,7 +24,7 @@ from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
-
+from miles.utils.types import Sample
 
 _INSTANCE_ID = "0123456789abcdef-0"
 
@@ -607,7 +610,7 @@ class TestChatFakeStreaming:
         assert finish_reason == "stop"
 
 
-# ── additional R3 (non-retract pause modes): derivation and request offsets ──
+# ── additional R3: request offsets and retained routing ──
 
 
 @contextmanager
@@ -638,14 +641,11 @@ def _serve_router(extra_args: dict | None = None):
             server.stop()
 
 
-class TestUseAdditionR3Derivation:
-    """use_addition_r3 is derived once at server bootstrap from
-    pause_generation_mode; it is not independently configurable."""
-
-    @pytest.mark.parametrize(("mode", "expected"), [("abort", True), ("in_place", True), ("retract", False)])
-    def test_mode_mapping(self, mode, expected):
+class TestUseAdditionR3:
+    @pytest.mark.parametrize("mode", ["abort", "in_place", "retract"])
+    def test_all_pause_modes_use_addition_r3(self, mode):
         config = make_session_server_config(hf_checkpoint=None, pause_generation_mode=mode)
-        assert SessionServer(config).use_addition_r3 is expected
+        assert SessionServer(config).use_addition_r3 is True
 
 
 class TestAdditionR3RequestOffset:
@@ -662,7 +662,7 @@ class TestAdditionR3RequestOffset:
             {"role": "tool", "content": tool_content, "tool_call_id": "t0"},
         ]
 
-    @pytest.mark.parametrize("mode", ["abort", "in_place"])
+    @pytest.mark.parametrize("mode", ["abort", "in_place", "retract"])
     def test_incremental_offsets_across_turns_and_rollback(self, mode):
         with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": mode}) as env:
             session_id = _create_session(env.url)
@@ -693,18 +693,63 @@ class TestAdditionR3RequestOffset:
             records = requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
             assert [r["request"]["routed_experts_start_len"] for r in records] == [0, len(checkpoint1) - 1]
 
-    def test_retract_request_has_no_start_len(self):
-        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "retract"}) as env:
-            session_id = _create_session(env.url)
-            assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 200
-            body = env.backend.request_log[-1]
-            assert body["return_routed_experts"] is True
-            assert "routed_experts_start_len" not in body
-
-    def test_in_place_without_replay_sends_neither_field(self):
-        with _serve_router({"pause_generation_mode": "in_place"}) as env:
+    @pytest.mark.parametrize("mode", ["abort", "in_place", "retract"])
+    def test_without_replay_sends_neither_field(self, mode):
+        with _serve_router({"pause_generation_mode": mode}) as env:
             session_id = _create_session(env.url)
             assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 200
             body = env.backend.request_log[-1]
             assert "return_routed_experts" not in body
             assert "routed_experts_start_len" not in body
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_retract_samples_preserve_decode_time_routing(version, monkeypatch):
+    original_response = MockSGLangServer._compute_chat_completions_response
+    turn = 0
+
+    def response_with_routing(self, payload):
+        nonlocal turn
+        turn += 1
+        response = original_response(self, payload)
+        meta = response["choices"][0]["meta_info"]
+        rows = len(payload["input_ids"]) + len(meta["output_token_logprobs"]) - 1
+        # Later prefills route the same prefix differently; retained decode rows must win.
+        routing = np.full((rows, 2, 2), turn, dtype=np.int32)
+        patch_rows = routing[payload.get("routed_experts_start_len", 0) :]
+        meta["routed_experts"] = base64.b64encode(patch_rows.tobytes()).decode("ascii")
+        return response
+
+    monkeypatch.setattr(MockSGLangServer, "_compute_chat_completions_response", response_with_routing)
+    with _serve_router(
+        {
+            "use_session_server": version,
+            "use_rollout_routing_replay": True,
+            "pause_generation_mode": "retract",
+            "num_layers": 2,
+            "moe_router_topk": 2,
+            "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries",
+            "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+        }
+    ) as env:
+        env.backend.process_fn = lambda prompt: ProcessResult(text="one two three", finish_reason="stop")
+        session_id = _create_session(env.url)
+        endpoint = f"{env.url}/sessions/{session_id}"
+        messages = [{"role": "user", "content": "hi"}]
+        first = _post_chat(env.url, session_id, {"messages": messages})
+        assert first.status_code == 200, first.text
+        checkpoint = requests.get(endpoint, timeout=5.0).json()["metadata"]["accumulated_token_ids"]
+        first_rows = len(checkpoint) - 1
+
+        messages.extend([first.json()["choices"][0]["message"], {"role": "user", "content": "continue"}])
+        second = _post_chat(env.url, session_id, {"messages": messages})
+        assert second.status_code == 200, second.text
+        final_tokens = requests.get(endpoint, timeout=5.0).json()["metadata"]["accumulated_token_ids"]
+        response = requests.post(f"{endpoint}/samples", json={"max_seq_len": None}, timeout=5.0)
+        assert response.status_code == 200, response.text
+        (sample,) = decode_samples_and_merge_input_sample(response.content, Sample()).samples
+
+        expected = np.full((len(final_tokens) - 1, 2, 2), 2, dtype=np.int32)
+        expected[:first_rows] = 1
+        assert sample.tokens == final_tokens
+        np.testing.assert_array_equal(sample.rollout_routed_experts, expected)
