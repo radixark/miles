@@ -29,7 +29,7 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
-        if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
+        if self.args.sglang.common_value("speculative_algorithm") and not trainer_has_mtp:
             self.weight_update_selector = "target"
 
     def _hf_atomic_update_groups(self):
