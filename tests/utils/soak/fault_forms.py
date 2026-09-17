@@ -57,8 +57,12 @@ class InjectFaultForm(SoakActionForm):
         return {kind}
 
     def prepare_request(
-        self, *, target: dict | SoakDeploymentTarget, observation: SoakObservation,
-        events: list[SoakEvent], rng: random.Random,
+        self,
+        *,
+        target: dict | SoakDeploymentTarget,
+        observation: SoakObservation,
+        events: list[SoakEvent],
+        rng: random.Random,
     ) -> SoakActionRequest | None:
         assert isinstance(target, dict)
         identity = observation.fault_targets.get(target["metadata"]["name"])
@@ -150,8 +154,12 @@ class DeletePodFaultForm(SoakActionForm):
         return DELETE_POD_FORM_NAME
 
     def prepare_request(
-        self, *, target: dict | SoakDeploymentTarget, observation: SoakObservation,
-        events: list[SoakEvent], rng: random.Random,
+        self,
+        *,
+        target: dict | SoakDeploymentTarget,
+        observation: SoakObservation,
+        events: list[SoakEvent],
+        rng: random.Random,
     ) -> SoakActionRequest | None:
         return _prepare_pod_request(form=self, target=target, observation=observation, rng=rng)
 
@@ -183,8 +191,12 @@ class ExecSigkillFaultForm(SoakActionForm):
         return {self._container: self._process_pattern}
 
     def prepare_request(
-        self, *, target: dict | SoakDeploymentTarget, observation: SoakObservation,
-        events: list[SoakEvent], rng: random.Random,
+        self,
+        *,
+        target: dict | SoakDeploymentTarget,
+        observation: SoakObservation,
+        events: list[SoakEvent],
+        rng: random.Random,
     ) -> SoakActionRequest | None:
         return _prepare_pod_request(form=self, target=target, observation=observation, rng=rng)
 
@@ -242,12 +254,16 @@ class ExecSigstopFaultForm(ExecSigkillFaultForm):
 
 
 def _prepare_pod_request(
-    *, form: SoakActionForm, target: dict | SoakDeploymentTarget,
-    observation: SoakObservation, rng: random.Random,
+    *,
+    form: SoakActionForm,
+    target: dict | SoakDeploymentTarget,
+    observation: SoakObservation,
+    rng: random.Random,
 ) -> SoakActionRequest | None:
     assert isinstance(target, dict)
     candidates = [
-        pod for pod in observation.pods_of_cell.get(target["metadata"]["name"], [])
+        pod
+        for pod in observation.pods_of_cell.get(target["metadata"]["name"], [])
         if all(
             container in pod.process_targets and pod.process_targets[container].pattern == pattern
             for container, pattern in form.process_patterns.items()
@@ -255,7 +271,9 @@ def _prepare_pod_request(
     ]
     if not candidates:
         return None
-    return SoakActionRequest(target=target, form_name=form.name, harms_cell=form.harms_cell, pod=rng.choice(candidates))
+    return SoakActionRequest(
+        target=target, form_name=form.name, harms_cell=form.harms_cell, pod=rng.choice(candidates)
+    )
 
 
 def _validate_pod_request(

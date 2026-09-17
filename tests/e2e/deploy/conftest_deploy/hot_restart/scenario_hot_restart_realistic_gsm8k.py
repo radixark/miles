@@ -23,12 +23,7 @@ from tests.utils.soak.deploy.soak_observer import HotRestartSoakObserver
 from tests.utils.soak.deploy.soak_session import execute_hot_restart_session
 from tests.utils.soak.deploy.utils import compute_checkpoint_dir, compute_release_of_config
 from tests.utils.soak.fault_forms import CellFaultForms
-from tests.utils.soak.recipes.gsm8k import (
-    DEFAULT_NUM_ROLLOUT,
-    DEFAULT_SEED,
-    Gsm8kRun,
-    run_realistic_gsm8k,
-)
+from tests.utils.soak.recipes.gsm8k import DEFAULT_NUM_ROLLOUT, DEFAULT_SEED, Gsm8kRun, run_realistic_gsm8k
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
 from tests.utils.soak.state import (
     SoakActionAppliedEvent,

@@ -237,10 +237,7 @@ def get_gsm8k_train_args(
             "--use-fault-tolerance " f"--ft-components {' '.join(FT_COMPONENTS)} " "--mini-ft-controller-enable "
         )
 
-    ci_args = (
-        "--ci-test "
-        "--ci-disable-kl-checker "
-    )
+    ci_args = "--ci-test " "--ci-disable-kl-checker "
 
     misc_args = (
         # default dropout in megatron is 0.1

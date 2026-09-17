@@ -7,10 +7,7 @@ import typer
 from pydantic import Field, TypeAdapter
 from tests.utils.soak.action import run_command
 
-from miles.utils.audit_utils.event_logger.models import (
-    CellReconfigureEvent,
-    TrainGroupStepEndEvent,
-)
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
 
 TrainingEvent = Annotated[
     CellReconfigureEvent | TrainGroupStepEndEvent,

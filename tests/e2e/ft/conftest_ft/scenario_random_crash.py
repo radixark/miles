@@ -34,11 +34,7 @@ from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_t
 from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.state import event_source
 from tests.utils.soak.teardown import teardown_run
-from tests.utils.soak.utils import (
-    create_soak_config,
-    evidence_directory,
-    get_api_server_args,
-)
+from tests.utils.soak.utils import create_soak_config, evidence_directory, get_api_server_args
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import FaultHookEvent, TrainGroupStepEndEvent, WeightUpdateResultEvent

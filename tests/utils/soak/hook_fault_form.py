@@ -5,7 +5,15 @@ import random
 import httpx
 from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.fault_forms import InjectFaultForm
-from tests.utils.soak.state import SoakActionRequest, SoakActionRequestedEvent, SoakDeploymentTarget, SoakEvent, SoakObservation, cell_is_alive, cell_type_of
+from tests.utils.soak.state import (
+    SoakActionRequest,
+    SoakActionRequestedEvent,
+    SoakDeploymentTarget,
+    SoakEvent,
+    SoakObservation,
+    cell_is_alive,
+    cell_type_of,
+)
 
 from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookName, FaultHookRecord, FaultHookRequest
 from miles.utils.test_utils.fault_injector import FailureMode
@@ -62,8 +70,12 @@ class HookFaultForm(InjectFaultForm):
         return {} if self._victim_form is None else self._victim_form.process_patterns
 
     def prepare_request(
-        self, *, target: dict | SoakDeploymentTarget, observation: SoakObservation,
-        events: list[SoakEvent], rng: random.Random,
+        self,
+        *,
+        target: dict | SoakDeploymentTarget,
+        observation: SoakObservation,
+        events: list[SoakEvent],
+        rng: random.Random,
     ) -> SoakActionRequest | None:
         assert isinstance(target, dict)
         prepare = super().prepare_request if self._victim_form is None else self._victim_form.prepare_request
@@ -74,12 +86,16 @@ class HookFaultForm(InjectFaultForm):
         if self._victim_form is not None:
             reserved = {
                 (event.request.target["metadata"]["name"], event.request.target["status"].get("workers_hash"))
-                for event in events if isinstance(event, SoakActionRequestedEvent)
-                and event.request.harms_cell and isinstance(event.request.target, dict)
+                for event in events
+                if isinstance(event, SoakActionRequestedEvent)
+                and event.request.harms_cell
+                and isinstance(event.request.target, dict)
             }
             triggers = [
-                identity for cell in observation.cells or []
-                if cell_type_of(cell) == "actor" and cell_is_alive(cell)
+                identity
+                for cell in observation.cells or []
+                if cell_type_of(cell) == "actor"
+                and cell_is_alive(cell)
                 and cell["metadata"]["name"] != target["metadata"]["name"]
                 if (identity := observation.fault_targets.get(cell["metadata"]["name"])) is not None
                 and identity.workers_hash == cell["status"].get("workers_hash")
@@ -88,9 +104,13 @@ class HookFaultForm(InjectFaultForm):
             if not triggers:
                 return None
             trigger = rng.choice(triggers)
-        return request.model_copy(update={
-            "form_name": self.name, "hook_trigger": trigger, "hook_delay_ms": self.sample_delay(rng),
-        })
+        return request.model_copy(
+            update={
+                "form_name": self.name,
+                "hook_trigger": trigger,
+                "hook_delay_ms": self.sample_delay(rng),
+            }
+        )
 
     async def execute(self, request: SoakActionRequest) -> dict:
         assert request.form_name == self.name

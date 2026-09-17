@@ -183,9 +183,9 @@ class SoakActionScheduler:
         request = form.prepare_request(target=target, observation=observation, events=events, rng=self._rng)
         if request is None:
             return None
-        return request.model_copy(update={
-            "next_due_at": now + self._rng.expovariate(1.0 / self._mean_intervals[cell_type])
-        })
+        return request.model_copy(
+            update={"next_due_at": now + self._rng.expovariate(1.0 / self._mean_intervals[cell_type])}
+        )
 
 
 def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bool:

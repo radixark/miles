@@ -58,7 +58,11 @@ class SoakSession:
             for target_kind in form.fault_target_types(kind)
         }
         process_patterns = {
-            kind: {container: pattern for form in cell_fault_forms[kind] for container, pattern in form.process_patterns.items()}
+            kind: {
+                container: pattern
+                for form in cell_fault_forms[kind]
+                for container, pattern in form.process_patterns.items()
+            }
             for kind in self._cell_types
         }
         self._runner = SoakRunner(

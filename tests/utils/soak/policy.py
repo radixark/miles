@@ -1,14 +1,5 @@
 from tests.utils.soak.config import SoakCellPolicy
-from tests.utils.soak.state import (
-    SoakActionAppliedEvent,
-    SoakActionRequest,
-    SoakActionRequestedEvent,
-    SoakActionResultEvent,
-    SoakDeploymentTarget,
-    SoakEvent,
-    cell_is_alive,
-    cell_type_of,
-)
+from tests.utils.soak.state import SoakActionRequestedEvent, SoakEvent, cell_is_alive, cell_type_of
 
 
 def eligible_cells(
