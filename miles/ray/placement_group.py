@@ -27,6 +27,7 @@ from miles.ray.specs.train import (
 )
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.ray.wiring import get_backend_capability
+from miles.utils.args.runtime import AllConfig, TrainerConfig
 from miles.utils.args.trainer_utils import compute_trainer_config
 from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot, merge_inference_engine_ranks
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -197,7 +198,9 @@ def _trainer_has_checkpoint(args) -> bool:
 
 
 # TODO: move (when reorganizing files)
-async def create_training_model(args, *, handle: BaseWorkerHandle, trainer_id: str, resumed: bool) -> TrainerInfo:
+async def create_training_model(
+    args: TrainerConfig, *, handle: BaseWorkerHandle, trainer_id: str, resumed: bool
+) -> TrainerInfo:
     restored_rollout_ids = await trainer_init_or_load_state(handle, args, trainer_id=trainer_id, resumed=resumed)
     assert len(set(restored_rollout_ids)) == 1, f"trainer {trainer_id!r} restored {restored_rollout_ids}"
     [restored_rollout_id] = set(restored_rollout_ids)
@@ -217,7 +220,7 @@ async def create_training_model(args, *, handle: BaseWorkerHandle, trainer_id: s
 
 # TODO: move (when reorganizing files)
 async def create_training_models(
-    args, rollout_executor: BaseWorkerHandle
+    args: AllConfig, rollout_executor: BaseWorkerHandle
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
     trainer_configs = compute_trainer_configs(args)
     handles = create_trainer_handles(args, trainer_configs=trainer_configs)
