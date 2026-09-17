@@ -23,7 +23,7 @@ MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
 ROLLOUT_BATCH_SIZE = 4
 N_SAMPLES_PER_PROMPT = 2
-SAMPLE_OWNERSHIP_GRACE_STEPS = 2
+SAMPLE_OWNERSHIP_GRACE_STEPS = 4
 
 
 def _get_latest_checkpointed_iteration() -> int:
