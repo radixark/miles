@@ -86,7 +86,7 @@ RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f
 
 RUN pip install flash-linear-attention==0.5.2
 # required for DeepSeek V4
-RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
+RUN pip install tilelang==0.1.9 -f https://tile-ai.github.io/whl/nightly/cu128/
 RUN pip install --no-deps tile_kernels==1.0.0
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
