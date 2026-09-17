@@ -23,7 +23,7 @@ from tests.utils.soak.state import (
     cell_type_of,
     target_type_of,
 )
-from tests.utils.soak.views import compute_successful_form_names
+from tests.utils.soak.views import compute_successful_form_names, project_actions
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import TrainGroupStepEndEvent
@@ -83,8 +83,13 @@ class SoakActionScheduler:
             for step in observation.training_events
         ):
             return None
-        if len(pending_actions(events)) >= self.policy.max_concurrent_actions:
-            return None
+        for action in project_actions(events).values():
+            request = action.requested.request
+            form = next(form for form in self._forms[target_type_of(request.target)] if form.name == request.form_name)
+            if action.result is not None and not action.result.returned:
+                raise RuntimeError(f"Soak action failed: {request.request_id}: {action.result.error}")
+            if not form.is_recovered(action=action, events=events):
+                return None
         due_of_type: dict[str, float] = {}
         # Quiescence is derived, not remembered: the largest replica count a kind ever showed, and
         # how many consecutive polls it has looked settled since its last injection attempt.
@@ -129,7 +134,7 @@ class SoakActionScheduler:
                             quiescent_polls_of_type["deployment"] = 0
                     else:
                         quiescent_polls_of_type["deployment"] = 0
-        if observation is None:
+        if observation is None or observation.errors:
             return None
         cells_of_type: dict[str, list[dict | SoakDeploymentTarget]] = {
             cell_type: [] for cell_type in self._mean_intervals
@@ -155,13 +160,7 @@ class SoakActionScheduler:
             kind
             for kind in due_types
             if cells_of_type[kind]
-            and (
-                kind in quiescent_types
-                or (
-                    kind != "deployment"
-                    and self.policy.cell_policies.get(kind, SoakCellPolicy()).allow_during_recovery
-                )
-            )
+            and kind in quiescent_types
         ]
         if not ready_types:
             logger.info(

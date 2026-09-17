@@ -367,7 +367,6 @@ Assertions:
 - **Why this recipe disables batch-variant MM fallback**: a rollout worker loss changes co-batching while the pool is healing; permitting an `einsum` fallback would make the same seeded request depend on that temporary batch shape. The scenario injects the environment override without changing the production default.
 - **Why `--rollout-health-check-interval 1`**: healthy generation can finish between two five-second polls; the short scenario needs at least one fresh Serving observation for its rollout witness.
 - **Why this scenario polls the fault window every 0.2 seconds**: colocated generation windows are only a few seconds long, so the generic two-second scheduler cadence can miss every Serving observation in an eight-rollout run.
-- **Quiescence policy**: this scenario uses the default `allow_during_recovery=True`, so cell faults bypass the fleet-wide quiescence gate on both backends. The configured one-poll Ray and 60-poll Kubernetes thresholds apply only when that policy is disabled; incarnation reservations and `min_survivors` always constrain harmful faults.
 - **Why the final three rollouts accept no new fault**: the scheduler keeps observing recovery but closes admission after rollout 4, so teardown cannot race a newly accepted replacement.
 - **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.
 - **Why the weights-moved gate**: bitwise equality is also satisfied by two runs that trained on nothing.
@@ -393,8 +392,8 @@ Architecture (external fault injection, not inside the training loop):
   1. Launch training with its own control endpoint and --mini-ft-controller-enable
   2. SoakSession owns training and SoakRunner on one asyncio loop
   3. SoakActionScheduler derives eligibility and deadlines from events and policy:
-     default allow_during_recovery=True bypasses fleet-wide quiescence for cell faults;
-     incarnation reservations and min_survivors constrain targets
+     one action at a time, including recovery and subsequent normal training progress;
+     healthy topology and an unreserved surviving replica constrain cell targets
   4. Record the incarnation-bound request before starting its async action
   5. Record effect evidence separately from command return; keep observing concurrently
   6. Close admission, observe the recovery tail, collect tasks and take a final observation
@@ -415,16 +414,15 @@ membership is asserted.
 - **Why per-kind schedules and counting**: each kind's cadence stays what it would be in a single-kind soak, and the trainer assertion reads only `actor` injections while the rollout one reads only `rollout` — a mixed soak cannot let one kind's crashes pay for the other's missing heal.
 - **Why rollout gets the longer interval**: the replacement pays a full sglang launch plus a weight sync before it can serve again.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
-- **Faults during recovery**: the default `allow_during_recovery=True` permits another cell fault without waiting for every replica to recover. A harmful request reserves its target incarnation immediately, so stale Healthy observations cannot make that incarnation a survivor or another victim; the remaining ready, unreserved cells must satisfy `min_survivors`.
-- **Optional quiescence gate**: `allow_during_recovery=False` also requires the expected fleet to be ready and the configured healthy streak, normally 60 polls (~120s). Deployment takeovers retain their quiescence gate independently of cell policy.
+- **Sequential recovery**: each form supplies its recovery predicate; the scheduler admits no new action until every prior action has recovered. FT requires replacement plus normal training; deployment takeover requires new checkpoint and training progress. Unknown outcomes and failed observations never release this gate.
+- **Mixed observation**: deployment observers retain the shared cell, pod and process-identity observations when FT kinds are scheduled.
 - **A form that leaves its cell running**: `SoakActionForm.harms_cell=False` creates no victim reservation or recovery obligation. Per-kind deadlines and action limits still apply; quiescence gates apply only where the policy requires them.
 - **Quiescence fleet size**: when enabled, the streak counts replicas against the most ever seen, so a deleted pod cannot disappear from the listing and leave a smaller fleet looking complete.
 - **Why every enabled form has to land**: the floors count injections, not forms, so `inject_fault:sigkill` alone could clear them while `delete_pod` is never tried. This witness makes the draw's preference for an untried form binding.
 - **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
-- **Why the step budget is 60**: the run needs time for multiple faults drawn with a mean-240s rollout interval, replacement and recovery, and a completed fault-free tail. The default policy adds no fixed 60-poll wait before cell faults; this budget has not been calibrated by a run.
+- **Why the step budget is 60**: the run needs time for multiple faults drawn with a mean-240s rollout interval, replacement and recovery, and a completed fault-free tail. The quiescence and recovery gates can extend the wait between faults; this budget has not been calibrated by a run.
 - **Why the rollout witness is one-sided**: sampled polls may miss the down transition. Recovery instead requires a different incarnation observed Serving after the request; elapsed time or a stale Healthy reading of the victim cannot satisfy it.
 - **Recovery identity**: the same cell name or a long delay cannot prove replacement. Recovery uses the requested incarnation, a new incarnation, and the corresponding Serving or trainer reconfiguration evidence.
-- **Policy**: minimum survivors, actions in flight and faults during recovery are explicit scenario settings. Unknown action outcomes reserve the affected incarnation; an observation failure is not a disappearance.
 - **Session ownership**: `SoakSession.run` owns training and observation tasks; failures propagate through their task group. Training completion stops the runner explicitly. Cancellation still collects action tasks before final observation, teardown and evidence collection; cleanup failures do not erase the original failure.
 - **Fresh random-run evidence**: the random-crash entry requires an empty dump directory before starting observation. Reusing a nonempty directory fails with its path instead of reading stale progress or deleting previous evidence; select a fresh run ID.
 - **Action projection**: `project_actions(events)` associates Requested, Applied and Result by request ID without caching derived state. Missing Applied or Result represents an incomplete action; each action binds one victim; launcher and tail checks retain that action boundary.

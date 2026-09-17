@@ -13,9 +13,6 @@ DumpDirOption = Annotated[str | None, typer.Option(help="Dump base directory")]
 EnableDumperOption = Annotated[bool, typer.Option(help="Enable dumper output")]
 NumStepsOption = Annotated[int, typer.Option(help="Number of train() calls")]
 FullyAsyncOption = Annotated[bool, typer.Option(help="Train through train_async.py with --fully-async")]
-AllowDuringRecoveryOption = Annotated[bool, typer.Option(help="Allow faults before every configured cell recovers")]
-MinSurvivorsOption = Annotated[int, typer.Option(min=0, help="Minimum healthy cells left after a harmful action")]
-MaxConcurrentActionsOption = Annotated[int, typer.Option(min=1, help="Maximum concurrently executing fault actions")]
 TrainerCrashIntervalSecondsOption = Annotated[float, typer.Option(help="Mean seconds between trainer cell injections")]
 RolloutCrashIntervalSecondsOption = Annotated[
     float, typer.Option(help="Mean seconds between rollout engine injections")

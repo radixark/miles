@@ -9,7 +9,13 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import TypeVar
 
-from tests.utils.soak.state import SoakActionRequest, SoakDeploymentTarget, SoakEvent
+from tests.utils.soak.recovery import compute_recovery_episodes
+from tests.utils.soak.state import SoakActionRequest, SoakDeploymentTarget, SoakEvent, SoakObservation
+from tests.utils.soak.views import SoakActionRecord
+
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
+from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -32,6 +38,38 @@ class SoakActionForm(abc.ABC):
 
     def is_eligible(self, *, events: list[SoakEvent], target: dict | SoakDeploymentTarget) -> bool:
         return True
+
+    def is_recovered(self, *, action: SoakActionRecord, events: list[SoakEvent]) -> bool:
+        if action.applied is None or action.result is None or not action.result.returned:
+            return False
+        if not action.requested.request.harms_cell:
+            return True
+        training_events = [
+            step
+            for observation in events
+            if isinstance(observation, SoakObservation)
+            for step in observation.training_events
+        ]
+        episodes = compute_recovery_episodes(
+            events,
+            reconfigurations=[step for step in training_events if isinstance(step, CellReconfigureEvent)],
+        )
+        episode = next(
+            (one for one in episodes if action.requested.request.request_id in one.request_ids), None
+        )
+        if episode is None or episode.recovered_at is None:
+            return False
+        return any(
+            isinstance(step, TrainGroupStepEndEvent)
+            and isinstance(step.source, TrainerControllerProcessIdentity)
+            and step.source.trainer_id == "actor"
+            and step.timestamp > episode.recovered_at
+            and any(
+                isinstance(outcomes, list) and TrainStepOutcome.NORMAL in outcomes
+                for outcomes in step.cell_outcomes.values()
+            )
+            for step in training_events
+        )
 
     @abc.abstractmethod
     async def execute(self, request: SoakActionRequest) -> dict | None: ...

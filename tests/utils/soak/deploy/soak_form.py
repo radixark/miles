@@ -23,7 +23,7 @@ from tests.utils.soak.state import (
     SoakLauncherExitedEvent,
     SoakObservation,
 )
-from tests.utils.soak.views import project_actions
+from tests.utils.soak.views import SoakActionRecord, project_actions
 
 SESSION_TIMEOUT_SECONDS: float = 6 * 3600
 
@@ -53,6 +53,33 @@ class SoakActionFormHotRestart(SoakActionForm):
     @property
     def harms_cell(self) -> bool:
         return False
+
+    def is_recovered(self, *, action: SoakActionRecord, events: list[SoakEvent]) -> bool:
+        if action.applied is None:
+            return False
+        before = action.requested.request.target
+        assert isinstance(before, SoakDeploymentTarget)
+        after = SoakDeploymentTarget.model_validate(action.applied.evidence["after"])
+        saved = max(
+            before.saved_iteration if before.saved_iteration is not None else -1,
+            after.saved_iteration if after.saved_iteration is not None else -1,
+        )
+        finished = before.finished_rollout_id if before.finished_rollout_id is not None else -1
+        return any(
+            observation.timestamp > action.applied.timestamp
+            and not observation.errors
+            and target.namespace == before.namespace
+            and target.release == before.release
+            and target.workload_uids == after.workload_uids
+            and target.workload_stamps == after.workload_stamps
+            and target.saved_iteration is not None
+            and target.saved_iteration > saved
+            and target.finished_rollout_id is not None
+            and target.finished_rollout_id > finished
+            for observation in events
+            if isinstance(observation, SoakObservation)
+            for target in observation.deployments
+        )
 
     def is_eligible(self, *, events: list[SoakEvent], target: dict | SoakDeploymentTarget) -> bool:
         if not isinstance(target, SoakDeploymentTarget):

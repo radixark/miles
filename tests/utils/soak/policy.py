@@ -36,17 +36,15 @@ def eligible_cells(
         and isinstance(event.request.target, dict)
     }
     ready = {_identity(cell) for cell in cells if _is_ready(cell) and _identity(cell) not in reserved}
-    if not policy.allow_during_recovery and (
-        len(cells) != policy.expected_cells or len(ready) != policy.expected_cells
-    ):
+    if len(ready) != len(cells) or (policy.expected_cells is not None and len(cells) != policy.expected_cells):
         return []
     return [
         cell
         for cell in cells
-        if (not policy.require_ready_target or _identity(cell) in ready)
+        if _identity(cell) in ready
         and (
             not harms_cell
-            or (_identity(cell) not in reserved and len(ready - {_identity(cell)}) >= policy.min_survivors)
+            or (_identity(cell) not in reserved and len(ready - {_identity(cell)}) >= 1)
         )
     ]
 

@@ -10,10 +10,7 @@ from typing import Annotated
 import typer
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import (
-    AllowDuringRecoveryOption,
     FullyAsyncOption,
-    MaxConcurrentActionsOption,
-    MinSurvivorsOption,
     ModeOption,
     NumStepsOption,
     RolloutCrashIntervalSecondsOption,
@@ -69,9 +66,6 @@ def run_ci(
     trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
     rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
     fully_async: FullyAsyncOption = False,
-    allow_during_recovery: AllowDuringRecoveryOption = True,
-    min_survivors: MinSurvivorsOption = 1,
-    max_concurrent_actions: MaxConcurrentActionsOption = 1,
     precise_all_gather: Annotated[bool, typer.Option()] = False,
     precise_p2p: Annotated[bool, typer.Option()] = False,
     mix_wall_clock: Annotated[bool, typer.Option()] = False,
@@ -187,9 +181,6 @@ def run_ci(
                 for kind, count in {"actor": ft_mode.num_cells, "rollout": ft_mode.rollout_num_engines}.items()
                 if kind in mean_interval_seconds_of_cell_type
             },
-            allow_during_recovery=allow_during_recovery,
-            min_survivors=min_survivors,
-            max_concurrent_actions=max_concurrent_actions,
         ),
         evidence_path=evidence_dir / "events.jsonl",
         sources={"training_events": Path(dump_dir) / EVENTS_DIRNAME},

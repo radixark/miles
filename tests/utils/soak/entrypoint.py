@@ -4,7 +4,7 @@ import asyncio
 import builtins
 import random
 from collections.abc import Awaitable, Callable, Coroutine
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +72,20 @@ class SoakSession:
             fault_target_types.add("actor")
         self._runner = SoakRunner(
             observer=(
-                observer
+                replace(
+                    observer,
+                    cell_types=(self._cell_types | fault_target_types) - {"deployment"},
+                    fault_target_cell_types=frozenset(fault_target_types),
+                    process_patterns_of_type={
+                        kind: {
+                            container: pattern
+                            for form in target_forms[kind]
+                            if isinstance(form, ExecSigkillFaultForm)
+                            for container, pattern in form.process_patterns.items()
+                        }
+                        for kind in self._cell_types
+                    },
+                )
                 if observer is not None
                 else SoakObserver(
                     base_url=base_url,

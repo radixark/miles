@@ -36,6 +36,18 @@ class HotRestartSoakObserver(SoakObserver):
     events_dir: Path
 
     async def observe(self) -> SoakObservation:
+        if not self.cell_types:
+            return await self._observe_deployment()
+        cells, deployment = await asyncio.gather(super().observe(), self._observe_deployment())
+        return cells.model_copy(
+            update={
+                "deployments": deployment.deployments,
+                "details": {**cells.details, **deployment.details},
+                "errors": {**cells.errors, **{f"deployment:{key}": value for key, value in deployment.errors.items()}},
+            }
+        )
+
+    async def _observe_deployment(self) -> SoakObservation:
         assert self.release is not None and self.namespace is not None
         observed_at = datetime.now(timezone.utc)
         kinds = (POD_KIND, *WORKLOAD_KINDS)
