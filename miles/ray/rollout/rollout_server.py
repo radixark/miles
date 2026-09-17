@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
@@ -33,7 +32,7 @@ async def create_rollout_servers(
     router_addrs: dict[str, HostAndPort],
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
-    config = resolve_sglang_config(args)
+    config = args.sglang
 
     servers: dict[str, RolloutServer] = {}
 
