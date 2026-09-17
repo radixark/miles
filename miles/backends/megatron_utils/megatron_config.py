@@ -362,6 +362,14 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
 
     _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
 
+    if trainer.role == CRITIC_ROLE:
+        ans.loss_type = "value_loss"
+
+    if ans.debug_deterministic_collective:
+        from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME
+
+        ans.distributed_backend = DET_NCCL_BACKEND_NAME
+
     if trainer.model_id is not None:
         ans.save = compute_trainer_checkpoint_dir(base_dir=ans.save, trainer_id=trainer.trainer_id)
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
