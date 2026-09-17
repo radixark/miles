@@ -311,6 +311,8 @@ class _RecordingRolloutFn(BaseRolloutFn):
 
 
 class _RecordingEventLoggerCheckpoint:
+    SNAPSHOT_DIRNAME = "debug_events"
+
     def __init__(self) -> None:
         self.restored: list = []
         self.snapshots: list[tuple] = []
@@ -834,7 +836,15 @@ class TestLifecycle:
         import miles.ray.rollout.rollout_executor as rexec
 
         analyzed: list = []
-        monkeypatch.setattr(rexec, "event_analyzer", SimpleNamespace(run_analysis_from_args=analyzed.append))
+        ownership_analyzed: list = []
+        monkeypatch.setattr(
+            rexec,
+            "event_analyzer",
+            SimpleNamespace(
+                run_analysis_from_args=analyzed.append,
+                run_sample_ownership_analysis=lambda args: ownership_analyzed.append(args),
+            ),
+        )
         args = _make_test_args()
 
         executor = await _make_executor(args)
@@ -852,6 +862,7 @@ class TestLifecycle:
 
         assert closed == ["closed"]
         assert analyzed == [args]
+        assert ownership_analyzed == [args]
         assert checker.disposed
         assert eval_fn.disposed
         assert train_fn.disposed

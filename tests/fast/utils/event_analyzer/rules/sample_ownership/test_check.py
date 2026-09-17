@@ -691,12 +691,12 @@ class TestExplicitDrops:
         issues = _check([_issued([(7, [10, 11])]), _dropped(11)], witnesses=[_witness([])])
         assert [(issue.sample_index, issue.drop_count) for issue in issues] == [(10, 0)]
 
-    def test_repeated_drops_of_an_immature_unconsumed_source_wait_for_maturity(self) -> None:
-        """A drop does not make a source eligible, so repeated drops surface only once it matures."""
+    @pytest.mark.parametrize("rollout_id", [1, 2])
+    def test_repeated_drops_are_reported_before_and_after_source_maturity(self, rollout_id: int) -> None:
+        """Repeated drops are already contradictory even while the source is immature."""
         events = [_issued([(7, [10])], rollout_id=1), _dropped(10), _dropped(10)]
-        assert _check(events, witnesses=[_witness([], rollout_id=1)], grace_steps=1) == []
 
-        issues = _check(events, witnesses=[_witness([], rollout_id=2)], grace_steps=1)
+        issues = _check(events, witnesses=[_witness([], rollout_id=rollout_id)], grace_steps=1)
 
         assert [(issue.sample_index, issue.drop_count) for issue in issues] == [(10, 2)]
 
@@ -747,9 +747,16 @@ class TestCurrentTrainerWitnesses:
         restored = _witness([_consumption(10)], cell_index=0, rollout_id=4)
         assert _check([_issued([(7, [10])]), old, old_step], witnesses=[restored]) == []
 
-    def test_mature_work_waits_while_no_cell_record_was_collected(self) -> None:
-        """A step whose cells published nothing yet defers the verdict instead of blaming the samples."""
-        assert _check([_issued([(7, [10])])], witnesses=[], cell_indices=[0]) == []
+    def test_a_mature_step_whose_cells_published_nothing_is_reported(self) -> None:
+        """A step whose cells published no model companion record is reported once the step is mature."""
+        assert _check([_issued([(7, [10])])], witnesses=[], cell_indices=[0]) == [
+            MissingModelCompanionRecordIssue(
+                description="cell published no model companion record for a mature actor step",
+                cell_index=0,
+                rollout_id=1,
+                attempt=0,
+            )
+        ]
 
     def test_a_consumption_recorded_under_an_earlier_rollout_does_not_carry_over(self) -> None:
         """Only the current step's record decides; a consumption seen in an earlier rollout is gone."""
@@ -873,20 +880,20 @@ class TestOwnershipCoverage:
         """A step end naming no cells is not a completed step, so it resolves nothing either way."""
         assert _check([_issued([(7, [10])])], witnesses=[]) == []
 
-    def test_an_incomplete_restored_step_does_not_fall_back_to_historic_success(self) -> None:
-        """A step one of whose cells never published waits instead of borrowing an older step's success."""
+    def test_an_incomplete_restored_step_reports_the_cell_that_never_published(self) -> None:
+        """A step one of whose cells never published reports that cell instead of borrowing an older step's success."""
         old = _witness([_consumption(10)], cell_index=9, rollout_id=9)
         old_step = _step(rollout_id=9, cell_indices=[9], timestamp=_NOW - timedelta(minutes=1))
         restored = _witness([_consumption(10)], cell_index=0, rollout_id=4)
 
-        assert (
-            _check(
-                [_issued([(7, [10])]), old, old_step],
-                witnesses=[restored],
-                cell_indices=[0, 1],
-            )
-            == []
+        issues = _check(
+            [_issued([(7, [10])]), old, old_step],
+            witnesses=[restored],
+            cell_indices=[0, 1],
         )
+
+        assert _missing_records(issues) == [(1, 4, 0)]
+        assert [issue for issue in issues if isinstance(issue, SampleResolutionIssue)] == []
 
 
 class TestIssueReports:

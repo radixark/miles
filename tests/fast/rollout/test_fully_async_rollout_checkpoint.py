@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.rollout.test_fully_async_rollout import FakeDataSource, make_args, make_fn, make_group, train_input
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
@@ -41,29 +42,28 @@ class TestCheckpointSampleOwnership:
         fn = make_fn(monkeypatch, args, source)
         [group] = source.get_samples(1)
         await fn._output.put(DataBufferInput(prompt_group=group, group=group))
-        taking = asyncio.create_task(fn._output.get(num_groups=1, current_version=1, trainer_model_id=None))
-        await asyncio.sleep(0)
-        assert taking.done()
         fn.save(tmp_path)
-        await taking
 
         restored = make_fn(monkeypatch, args, source)
         restored.load(tmp_path)
         restored._worker = asyncio.create_task(asyncio.Event().wait())
         checker_args = SimpleNamespace(
-            ci_test=True,
-            enable_sample_ownership_checker=None,
-            sample_ownership_grace_steps=None,
-            custom_convert_samples_to_train_data_path=None,
-            save_debug_event_data=str(event_logger.log_dir),
-            train_backend="megatron",
-            megatron_config=None,
-            lora_rank=0,
-            lora_adapter_path=None,
-            multi_lora=False,
-            debug_train_only=False,
-            debug_rollout_only=False,
-            num_critic_only_steps=0,
+            **parser_defaults()
+            | dict(
+                ci_test=True,
+                enable_sample_ownership_checker=None,
+                sample_ownership_grace_steps=None,
+                custom_convert_samples_to_train_data_path=None,
+                save_debug_event_data=str(event_logger.log_dir),
+                train_backend="megatron",
+                megatron_config=None,
+                lora_rank=0,
+                lora_adapter_path=None,
+                multi_lora=False,
+                debug_train_only=False,
+                debug_rollout_only=False,
+                num_critic_only_steps=0,
+            )
         )
         _resolve_sample_ownership_check(checker_args)
         assert checker_args.enable_sample_ownership_checker
@@ -131,6 +131,13 @@ def _checkpoint_args(path: Path, **overrides: object) -> Namespace:
     return make_args(save=str(path), load=str(path), rollout_batch_size=1, **overrides)
 
 
+async def _generate_and_reward(_state, group: list[Sample], **_kwargs: Any) -> list[Sample]:
+    for sample in group:
+        sample.status = Sample.Status.COMPLETED
+        sample.reward = 1
+    return group
+
+
 async def test_running_generation_is_restored_as_a_clean_retry(monkeypatch, tmp_path: Path) -> None:
     """A half-written generation is replayed from an untouched prompt after restore."""
     fn = make_fn(monkeypatch, _checkpoint_args(tmp_path), FakeDataSource())
@@ -184,6 +191,9 @@ async def test_an_incomplete_batch_stays_in_the_checkpoint(monkeypatch, tmp_path
     assert restored._output.state_dict() == []
 
 
+_DRAIN_WAKEUP_YIELDS = 100
+
+
 async def test_a_save_taken_as_the_drain_wakes_cannot_lose_the_batch(monkeypatch, tmp_path: Path) -> None:
     """A batch that has left the buffer has already reached the drain, so no save sees it nowhere."""
     args = _checkpoint_args(tmp_path)
@@ -195,8 +205,15 @@ async def test_a_save_taken_as_the_drain_wakes_cannot_lose_the_batch(monkeypatch
         assert not draining.done()
         group = make_group(5)
         await fn._output.put(DataBufferInput(prompt_group=group, group=group))
-        await asyncio.sleep(0)
-        fn.save(tmp_path)
+
+        for _ in range(_DRAIN_WAKEUP_YIELDS):
+            fn.save(tmp_path)
+            state = torch.load(tmp_path / "state.pt", weights_only=False)
+            assert state.running == []
+            assert bool(state.output) != draining.done()
+            if draining.done():
+                break
+            await asyncio.sleep(0)
 
         assert draining.done()
         output = await draining
@@ -205,8 +222,6 @@ async def test_a_save_taken_as_the_drain_wakes_cannot_lose_the_batch(monkeypatch
         fn._worker.cancel()
         await asyncio.gather(draining, fn._worker, return_exceptions=True)
 
-    state = torch.load(tmp_path / "state.pt", weights_only=False)
-    assert state.output == [] and state.running == []
     assert [sample.index for sample in output.samples[0]] == [50, 51]
 
 
@@ -230,7 +245,7 @@ async def test_aborted_group_in_retry_queue_survives_checkpoint(monkeypatch, tmp
 async def test_a_group_blocked_in_put_is_restored_as_a_clean_retry(monkeypatch, tmp_path: Path) -> None:
     """A group saved while its put waits for buffer capacity is regenerated from its prompt after restore."""
     args = _checkpoint_args(tmp_path, async_data_buffer_capacity_factor=1)
-    fn = make_fn(monkeypatch, args, FakeDataSource())
+    fn = make_fn(monkeypatch, args, FakeDataSource(), generate=_generate_and_reward)
     first, second = make_group(1), make_group(2)
     await fn._output.put(DataBufferInput(prompt_group=first, group=first))
     blocked = asyncio.create_task(fn._output.put(DataBufferInput(prompt_group=second, group=second)))
@@ -241,7 +256,7 @@ async def test_a_group_blocked_in_put_is_restored_as_a_clean_retry(monkeypatch, 
     blocked.cancel()
     await asyncio.gather(blocked, return_exceptions=True)
 
-    restored = make_fn(monkeypatch, args, FakeDataSource())
+    restored = make_fn(monkeypatch, args, FakeDataSource(), generate=_generate_and_reward)
     restored.load(tmp_path)
 
     [pending] = restored._retry_buffer
