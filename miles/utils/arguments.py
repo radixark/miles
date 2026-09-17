@@ -320,8 +320,7 @@ def parse_args_and_get_parser(
 
     def add_miles_arguments_and_capture_parser(value: argparse.ArgumentParser) -> argparse.ArgumentParser:
         nonlocal parser
-        if backend == "megatron":
-            training_backend_arg_names.update(action.dest for action in value._actions)
+        training_backend_arg_names.update(action.dest for action in value._actions)
         parser = add_miles_arguments(value)
         return parser
 
@@ -399,6 +398,17 @@ def parse_args_and_get_parser(
         from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args
 
         validate_hybrid_shard_args(args)
+        training_backend_arg_names.update(
+            {
+                "bf16",
+                "calculate_per_token_loss",
+                "ckpt_step",
+                "clip_grad",
+                "load",
+                "rank",
+                "world_size",
+            }
+        )
 
     sglang_validate_args(args)
 
