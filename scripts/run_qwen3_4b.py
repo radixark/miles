@@ -277,21 +277,16 @@ eval:
         misc_args += "--megatron-to-hf-mode bridge "
 
     if args.enable_mis:
-        config_text = f"""
-use_tis: true
-use_rs: {"true" if args.tis_use_rs else "false"}
-tis_level: "token"
-rs_level: "token"
-tis_mode: "truncate"
-tis_lower_bound: 0.5
-tis_upper_bound: 2.0
-rs_lower_bound: null
-rs_upper_bound: null
-rs_veto_threshold: 1.0e-4
-tis_batch_normalize: true
-""".strip()
         misc_args += (
-            f"--custom-config-path {command_utils.encode_pseudo_file(config_text)} "
+            "--use-tis "
+            f"{'--use-rs ' if args.tis_use_rs else ''}"
+            "--tis-level token "
+            "--rs-level token "
+            "--tis-mode truncate "
+            "--tis-lower-bound 0.5 "
+            "--tis-upper-bound 2.0 "
+            "--rs-veto-threshold 1.0e-4 "
+            "--tis-batch-normalize "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

@@ -28,7 +28,7 @@ trainer requires it). Text-only HUD tasks are therefore out of scope here.
 Wire with:
   --custom-generate-function-path examples.experimental.hud.rollout.generate
   --custom-rm-path examples.experimental.hud.rollout.reward_func
-  --custom-config-path examples/experimental/hud/hud2048_config.yaml
+  --hud-env-dir /root/v6browser
 """
 
 from __future__ import annotations
