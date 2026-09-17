@@ -13,7 +13,6 @@ from typing import Any
 from miles.tinker.core.future import FAILED
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import OwnershipError, UserInputError
-from miles.tinker.core.utils import resolve_sampler_checkpoint
 
 TINKER_PATH_PREFIX = "tinker://"
 # what Harbor's harness bindings hand the agent as its OpenAI key (harbor_agent_function.build_trial_config)
@@ -243,7 +242,7 @@ class TrajectoryCollector:
         session = TrajectorySession(
             session_id=session_id,
             tenant=tenant,
-            model_path=self._resolve_model_path(tenant, model, sampling_session_id),
+            model_path=self.service.resolve_sampler_path(tenant, model, sampling_session_id),
             created_at=now,
             last_seen=now,
             max_datum_tokens=max_datum_tokens,
@@ -292,8 +291,8 @@ class TrajectoryCollector:
         return len(expired)
 
     def _tenant_alive(self, tenant: str) -> bool:
-        """True while the tenant still holds a Tinker session lease (service.sessions records know their tenant)."""
-        return any(record.tenant == tenant for record in self.service.sessions.values())
+        """True while the tenant still holds a Tinker session lease; asked of the service, not read off its state."""
+        return self.service.tenant_alive(tenant)
 
     def _tito_budget(self, session: TrajectorySession) -> int:
         """TITO chain budget: the gateway per-datum cap, lowered to the client's bind-time max_datum_tokens."""
@@ -404,19 +403,6 @@ class TrajectoryCollector:
                 raise UserInputError("chat_template_kwargs must be an object")
             kwargs.update(override)
         return kwargs
-
-    def _resolve_model_path(self, tenant: str, model: str | None, sampling_session_id: str | None) -> str | None:
-        """None for the frozen base, else the tinker:// sampler path once resolve_sampler_checkpoint accepted it."""
-        if sampling_session_id is not None:
-            model = self.service.get_sampler(tenant, sampling_session_id)["model_path"]
-        if model is None or model == self.service.config.base_model:
-            return None
-        if not model.startswith(TINKER_PATH_PREFIX):
-            raise UserInputError(
-                f"model must be {self.service.config.base_model!r} or a tinker://…/sampler_weights/… path, got {model!r}"
-            )
-        resolve_sampler_checkpoint(self.service.config.checkpoint_root, tenant, model, self.service.config.base_model)
-        return model
 
     @staticmethod
     def _check_same_version(session: TrajectorySession, model: str | None) -> None:
