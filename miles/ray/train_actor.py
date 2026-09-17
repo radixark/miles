@@ -142,7 +142,7 @@ class TrainRayActor(NodeProbeMixin):
 
         if args.debug_deterministic_collective:
             register_det_nccl_backend()
-            args.distributed_backend = DET_NCCL_BACKEND_NAME
+            assert args.distributed_backend == DET_NCCL_BACKEND_NAME
             logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
         # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
