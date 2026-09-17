@@ -1,59 +1,11 @@
 """Server-owned request fields and input validation."""
 
-import logging
-
 import pytest
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError
-from miles.rollout.session.request_args import resolve_request_args_by_config, server_first, server_strict
+from miles.rollout.session.request_args import resolve_request_args_by_config
 from miles.utils.lora import LORA_ADAPTER_NAME
-
-ARGS_LOGGER = "miles.rollout.session.request_args"
-
-
-class TestServerFirst:
-    def test_replaces_a_different_value_and_logs_why(self, caplog):
-        wire = {"logprobs": False}
-        with caplog.at_level(logging.WARNING, logger=ARGS_LOGGER):
-            server_first(wire, "logprobs", True, why="TITO reads logprobs")
-        assert wire == {"logprobs": True}
-        assert "logprobs=False from the client replaced by True: TITO reads logprobs" in caplog.text
-
-    def test_is_silent_when_the_client_agrees_or_says_nothing(self, caplog):
-        with caplog.at_level(logging.WARNING, logger=ARGS_LOGGER):
-            for wire in ({"logprobs": True}, {}, {"logprobs": None}):
-                server_first(wire, "logprobs", True, why="tito")
-                assert wire == {"logprobs": True}
-        assert caplog.text == ""
-
-    def test_a_none_server_value_takes_the_field_off_the_wire(self, caplog):
-        wire = {"flag": True}
-        with caplog.at_level(logging.WARNING, logger=ARGS_LOGGER):
-            server_first(wire, "flag", None, why="unset")
-        assert wire == {}
-        assert "flag=True from the client replaced by None: unset" in caplog.text
-
-
-class TestServerStrict:
-    def test_rejects_a_different_value_with_why(self):
-        with pytest.raises(MessageValidationError) as excinfo:
-            server_strict({"input_ids": [1, 2]}, "input_ids", None, why="rendered by the session server")
-        assert str(excinfo.value) == "input_ids=[1, 2] is not accepted: rendered by the session server"
-        assert excinfo.value.status_code == 400
-
-    def test_accepts_the_same_value_or_silence(self):
-        wire = {"lora_path": "adapter"}
-        server_strict(wire, "lora_path", "adapter", why="training picks it")
-        assert wire == {"lora_path": "adapter"}
-        wire = {}
-        server_strict(wire, "lora_path", "adapter", why="training picks it")
-        assert wire == {"lora_path": "adapter"}
-
-    def test_a_none_server_value_keeps_the_field_off_the_wire(self):
-        wire = {"lora_path": None, "model": "m"}
-        server_strict(wire, "lora_path", None, why="no lora")
-        assert wire == {"model": "m"}
 
 
 class TestResolveRequestArgsByConfig:
@@ -110,8 +62,19 @@ class TestResolveRequestArgsByConfig:
         with pytest.raises(MessageValidationError, match="tools belongs at the top level"):
             resolve_request_args_by_config({"chat_template_kwargs": {"tools": []}}, make_session_server_config())
 
-    def test_server_strict_errors_still_precede_template_shape_errors(self):
+    def test_control_field_errors_precede_template_shape_errors(self):
         with pytest.raises(MessageValidationError, match="input_ids="):
             resolve_request_args_by_config(
                 {"input_ids": [1], "chat_template_kwargs": "oops"}, make_session_server_config()
             )
+
+    @pytest.mark.parametrize("field", ["input_ids", "routed_experts_start_len", "logprob_start_len", "lora_path"])
+    def test_null_control_fields_are_removed(self, field):
+        wire, _ = resolve_request_args_by_config({field: None}, make_session_server_config())
+        assert field not in wire
+
+    def test_selected_lora_path_is_accepted(self):
+        wire, _ = resolve_request_args_by_config(
+            {"lora_path": LORA_ADAPTER_NAME}, make_session_server_config(lora_rank=8)
+        )
+        assert wire["lora_path"] == LORA_ADAPTER_NAME
