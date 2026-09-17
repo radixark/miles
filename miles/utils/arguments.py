@@ -402,6 +402,9 @@ def parse_args_and_get_parser(
 
     sglang_validate_args(args)
 
+    if backend == "fsdp" and args.fsdp_cpu_offload:
+        args.offload_train = False
+
     vars(args).setdefault("ckpt_step", None)
     vars(args).setdefault("lora_A_init_method", "xavier")
     vars(args).setdefault("lora_B_init_method", "zero")

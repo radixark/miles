@@ -93,8 +93,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.fsdp_cpu_offload = self.args.fsdp_cpu_offload
         # Offload train and fsdp cpu offload cannot be used together, fsdp_cpu_offload is more aggressive
-        if self.args.offload_train and self.fsdp_cpu_offload:
-            self.args.offload_train = False
+        assert not (self.args.offload_train and self.fsdp_cpu_offload)
 
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
