@@ -7,7 +7,6 @@ ranks; witness params are skipped.
 
 import inspect
 import re
-from argparse import Namespace
 from collections.abc import Iterator, Sequence
 
 import torch
@@ -16,10 +15,11 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.args.runtime import TrainerConfig
 
 
 def named_params_and_buffers(
-    args: Namespace,
+    args: TrainerConfig,
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
     translate_gpu_to_cpu: bool = False,
@@ -71,7 +71,7 @@ def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Itera
 
 
 def _named_params_and_buffers_global(
-    args: Namespace, model: Sequence[torch.nn.Module]
+    args: TrainerConfig, model: Sequence[torch.nn.Module]
 ) -> Iterator[tuple[str, torch.Tensor]]:
     """
     Yield (global_name, param/buffer) with consistent names across PP/EP. Adjusts indices for

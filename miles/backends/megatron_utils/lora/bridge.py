@@ -7,7 +7,6 @@ forward / backward / optimizer logic.
 from __future__ import annotations
 
 import logging
-from argparse import Namespace
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -15,6 +14,7 @@ import torch
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_config import load_hf_config
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
@@ -77,7 +77,7 @@ def _get_model_config_from_wrapped(model):
     return get_attr_wrapped_model(model, "config", allow_none=False)
 
 
-def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
+def _validate_multi_lora_moe_support(args: TrainerConfig, provider) -> None:
     """Reject MoE configs the multi-slot grouped-expert adapter cannot serve (checked
     post-finalize because they depend on the resolved provider, not the CLI)."""
     if not getattr(
@@ -127,7 +127,7 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     ), "Multi-LoRA on MoE experts requires moe_permute_fusion=False."
 
 
-def _setup_lora_model_via_bridge(args: Namespace) -> list:
+def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     """Build Megatron model with LoRA using Megatron-Bridge.
 
     This handles:

@@ -2,16 +2,20 @@ import logging
 import time
 import traceback
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 
 from miles.utils.memory_utils import print_memory
 
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import TrainerConfig
+
 logger = logging.getLogger(__name__)
 
 
 class TrainProfiler:
-    def __init__(self, args):
+    def __init__(self, args: "TrainerConfig") -> None:
         self.args = args
         self._torch_profiler_overall = None
         self._memory_profiler_overall = None
@@ -45,7 +49,7 @@ class TrainProfiler:
         return _profile_simple_loop(iterator, self.args, name="train_log_probs")
 
 
-def _profile_simple_loop(iterator, args, name):
+def _profile_simple_loop(iterator, args: "TrainerConfig", name: str):
     if not (args.use_pytorch_profiler and (name in args.profile_target)):
         yield from iterator
         return
@@ -57,7 +61,7 @@ def _profile_simple_loop(iterator, args, name):
         torch_profiler.step()
 
 
-def _create_torch_profiler(args, name):
+def _create_torch_profiler(args: "TrainerConfig", name: str) -> torch.profiler.profile:
     return torch.profiler.profile(
         schedule=torch.profiler.schedule(
             # TODO the train_actor and train_log_probs ones may need to have different args to control step
@@ -87,7 +91,7 @@ class _BaseMemoryProfiler:
         }[args.memory_recorder]
         return c(args)
 
-    def __init__(self, args):
+    def __init__(self, args: "TrainerConfig") -> None:
         self._path_dump = (
             Path(args.memory_snapshot_dir)
             / f"memory_snapshot_time{time.time()}_rank{torch.distributed.get_rank()}_{args.memory_snapshot_path}"

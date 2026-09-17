@@ -3,6 +3,7 @@ from pathlib import Path
 
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE, MegatronTrainerConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.utils.args.runtime import AllConfig, TrainerConfig
 from miles.utils.args.trainer_utils import compute_trainer_config
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -42,7 +43,7 @@ _TRAINER_ACTOR_CLASSES = {
 _NUM_GPUS_PER_TRAINER_WORKER = 0.4
 
 
-def specs_trainer_controller(args) -> list[ServeWorkerSpec]:
+def specs_trainer_controller(args: AllConfig) -> list[ServeWorkerSpec]:
     specs = []
     for config in compute_trainer_configs(args):
         trainer_args = compute_trainer_config(args, config)
@@ -59,7 +60,7 @@ def specs_trainer_controller(args) -> list[ServeWorkerSpec]:
     return specs
 
 
-def compute_trainer_configs(args) -> list[MegatronTrainerConfig]:
+def compute_trainer_configs(args: AllConfig) -> list[MegatronTrainerConfig]:
     return args.raw_megatron.trainers
 
 
@@ -107,7 +108,7 @@ def trainer_controller_cell_id(trainer_id: str) -> str:
 
 
 def _compute_spec_trainer_controller(
-    args,
+    args: AllConfig,
     *,
     config: MegatronTrainerConfig,
     with_ref: bool,
@@ -144,7 +145,7 @@ def _compute_spec_trainer_controller(
     )
 
 
-def specs_trainer(args) -> list[ServeWorkerSpec]:
+def specs_trainer(args: AllConfig) -> list[ServeWorkerSpec]:
     # TODO: support different sizes after the args refactor
     actor_gpus_per_instance = args.actor_num_nodes * args.actor_num_gpus_per_node
     specs = []
@@ -183,7 +184,7 @@ def compute_trainer_num_cells(args, *, role: str) -> int:
 
 
 def _compute_spec_trainer(
-    args,
+    args: TrainerConfig,
     *,
     config: MegatronTrainerConfig,
     num_nodes: int,
