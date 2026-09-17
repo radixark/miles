@@ -946,14 +946,6 @@ def miles_validate_args(args):
                 f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
             )
 
-    if args.use_session_server and args.use_rollout_routing_replay and args.pause_generation_mode == "retract":
-        logger.warning(
-            "--use-session-server with --use-rollout-routing-replay and "
-            "--pause-generation-mode=retract returns full R3 data on every turn; "
-            "R3 payloads can become very large. TODO: Retract-mode weight updates R3 "
-            "have known issues in SGLang and need to be fixed."
-        )
-
     if not 0.0 < args.rollout_top_p <= 1.0:
         raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
     if args.rollout_top_k != -1 and args.rollout_top_k < 1:
