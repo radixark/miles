@@ -644,7 +644,7 @@ class _GatherBatch:
 _UNPADDED_VOCAB_CACHE: list = []
 
 
-def _hf_unpadded_vocab_size():
+def _hf_unpadded_vocab_size(hf_checkpoint: str):
     """True (unpadded) vocab size from the HF config, or None if absent."""
     if not _UNPADDED_VOCAB_CACHE:
         value = None
@@ -663,7 +663,7 @@ def _hf_unpadded_vocab_size():
 _ExportPlan = list[tuple[str, torch.Tensor | Callable[[], torch.Tensor]]]
 
 
-def _export_attention(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_attention(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     plans: _ExportPlan = []
     for hf_proj, param_a, param_b in (
@@ -679,7 +679,7 @@ def _export_attention(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _Expo
     return plans
 
 
-def _export_dense_mlp(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_dense_mlp(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     i_loc = adapter.load_meta["i_loc"]
     gate_token = batch.add("tp", adapter.fc1_B[:i_loc], 0)
@@ -692,7 +692,7 @@ def _export_dense_mlp(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _Expo
     ]
 
 
-def _export_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     return [
         (f"{prefix}w1.lora_A.weight", adapter.w1_A.unsqueeze(0)),
@@ -704,7 +704,7 @@ def _export_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _Export
     ]
 
 
-def _export_shared_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_shared_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     num_shared = adapter.load_meta["ns"]
     b1_tokens = [batch.add("tp", adapter.w1_B[idx], 0) for idx in range(num_shared)]
@@ -720,13 +720,13 @@ def _export_shared_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> 
     ]
 
 
-def _export_lm_head(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_lm_head(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     head_b_token = batch.add("tp", adapter.head_B, 0)
 
     def head_b() -> torch.Tensor:
         full = head_b_token.get()
-        unpadded = _hf_unpadded_vocab_size()
+        unpadded = _hf_unpadded_vocab_size(hf_checkpoint)
         if unpadded and unpadded < full.shape[0]:
             full = full[:unpadded]
         return full
@@ -746,13 +746,13 @@ _ADAPTER_EXPORTERS = {
 }
 
 
-def export_inkling_lora_hf_named(model_chunks):
+def export_inkling_lora_hf_named(model_chunks, *, hf_checkpoint: str):
     """Return (hf_name, full_tensor) for every applied lora param, gathered to full HF layout."""
     start = time.perf_counter()
     batch = _GatherBatch()
     plans: _ExportPlan = []
     for adapter in _iter_adapters(model_chunks):
-        plans.extend(_ADAPTER_EXPORTERS[adapter.kind](adapter, batch))
+        plans.extend(_ADAPTER_EXPORTERS[adapter.kind](adapter, batch, hf_checkpoint=hf_checkpoint))
 
     n_requests = batch.num_requests()
     n_calls = batch.flush()
