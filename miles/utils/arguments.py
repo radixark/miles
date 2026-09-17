@@ -18,13 +18,14 @@ from miles.backends.megatron_utils.megatron_config import (
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.backends.sglang_utils.sglang_config import SglangConfig
-from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
+from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.args.configs.algo import AlgoConfig
 from miles.utils.args.configs.ci import CiConfig
 from miles.utils.args.configs.cluster import ClusterConfig
 from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig
+from miles.utils.args.configs.dashboard import DashboardConfig
 from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.debug import DebugConfig
 from miles.utils.args.configs.eval import EvalConfig
@@ -240,20 +241,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         MlflowConfig.add_arguments(parser=parser)
         TensorboardConfig.add_arguments(parser=parser)
         PrometheusConfig.add_arguments(parser=parser)
-        add_dashboard_arguments(parser)
+        DashboardConfig.add_arguments(parser=parser.add_argument_group("miles dashboard"))
         RouterConfig.add_arguments(parser=parser)
         DebugConfig.add_arguments(parser=parser)
         SglangConfig.add_arguments(parser)
         # required whenever expert projections are LoRA targets, inert otherwise
         # (sglang's own default is False)
         parser.set_defaults(sglang_lora_use_virtual_experts=True)
-        parser.add_argument(
-            "--no-sglang-lora-use-virtual-experts",
-            dest="sglang_lora_use_virtual_experts",
-            action="store_false",
-            help="Serve MoE-expert LoRA through sglang's fused_moe_lora alignment path instead "
-            "of the virtual-experts path.",
-        )
         SessionConfig.add_arguments(parser=parser)
         NetworkConfig.add_arguments(parser=parser)
         RewardModelConfig.add_arguments(parser=parser)
@@ -291,7 +285,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             ),
         )
         parser.set_defaults(trainer_id=ACTOR_ROLE, trainer_model_id=None)
-        reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
         return parser
 
