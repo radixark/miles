@@ -34,7 +34,7 @@ def build_main_cast_context(args: TrainerConfig, *, model: Sequence[torch.nn.Mod
     )
     return MainCastContext(
         cast_main_to_params=_build_cast_main_to_params_fn(
-            optimizer, precision_aware=args.use_precision_aware_optimizer
+            optimizer, precision_aware=args.backend.use_precision_aware_optimizer
         ),
         model_chunks=model,
         extras_getter=lambda: _named_restore_extras(model),

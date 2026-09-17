@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     if args.true_on_policy_mode:
-        if args.bf16:
+        if args.backend.bf16:
             return torch.bfloat16
-        if args.fp16:
+        if args.backend.fp16:
             return torch.float16
     return torch.float32
 
@@ -84,7 +84,7 @@ def get_rollout_data(
 
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
-        max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
+        max_compress_ratio = max(args.backend.compress_ratios) if args.backend.compress_ratios else 0
         if max_compress_ratio:
             local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
             pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
@@ -450,7 +450,7 @@ def get_num_rollouts(args: Namespace, rollout_data: RolloutBatch, num_steps: int
     """Per-step rollout counts (total across DP); one entry per training step."""
     if "num_rollouts" in rollout_data:
         return rollout_data["num_rollouts"]
-    return [rollout_data.get("dynamic_global_batch_size", args.global_batch_size)] * num_steps
+    return [rollout_data.get("dynamic_global_batch_size", args.backend.global_batch_size)] * num_steps
 
 
 def get_data_iterator(
@@ -493,16 +493,16 @@ def get_data_iterator(
 
     num_local_samples = len(rollout_data["total_lengths"])
     assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
-    global_batch_size = rollout_data.get("dynamic_global_batch_size", args.global_batch_size)
+    global_batch_size = rollout_data.get("dynamic_global_batch_size", args.backend.global_batch_size)
     assert (
         global_batch_size % dp_size == 0
     ), f"global_batch_size ({global_batch_size}) must be divisible by dp_size ({dp_size}) for the training-side schedule"
     num_local_gbs = global_batch_size // dp_size
     num_steps_per_rollout = num_local_samples // num_local_gbs
 
-    if global_batch_size != args.global_batch_size:
+    if global_batch_size != args.backend.global_batch_size:
         logger.info(
-            f"Using dynamic global_batch_size={global_batch_size} (original={args.global_batch_size}), "
+            f"Using dynamic global_batch_size={global_batch_size} (original={args.backend.global_batch_size}), "
             f"num_local_samples={num_local_samples}, num_steps_per_rollout={num_steps_per_rollout}"
         )
 
@@ -513,14 +513,14 @@ def get_data_iterator(
         return data_iterator
 
     if not args.use_dynamic_batch_size:
-        if "adapter_slots" in rollout_data and num_local_gbs % args.micro_batch_size != 0:
+        if "adapter_slots" in rollout_data and num_local_gbs % args.backend.micro_batch_size != 0:
             raise ValueError(
                 "A multi-LoRA local batch must be divisible by --micro-batch-size; "
-                f"got local_batch_size={num_local_gbs}, micro_batch_size={args.micro_batch_size}. "
+                f"got local_batch_size={num_local_gbs}, micro_batch_size={args.backend.micro_batch_size}. "
                 "Use --use-dynamic-batch-size or choose compatible adapter batch shapes."
             )
-        num_microbatches = [num_local_gbs // args.micro_batch_size for _ in range(num_steps_per_rollout)]
-        data_iterator = _generate_data_iterator(rollout_data, args.micro_batch_size)
+        num_microbatches = [num_local_gbs // args.backend.micro_batch_size for _ in range(num_steps_per_rollout)]
+        data_iterator = _generate_data_iterator(rollout_data, args.backend.micro_batch_size)
     else:
         assert args.max_tokens_per_gpu is not None
         # calculate the number of mirobatches for each step

@@ -155,7 +155,7 @@ def loss_function(
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:
         - `scaled_loss` is the loss tensor (scalar) rescaled for Megatron.
         - `normalizer` is `num_tokens` (scalar tensor) if
-          `args.calculate_per_token_loss` is True, else `1` (int).
+          `args.backend.calculate_per_token_loss` is True, else `1` (int).
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
           Tinker losses may also return "per_datum" outputs.
@@ -168,7 +168,7 @@ def loss_function(
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
+        args.backend.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens", None),
         denominators=batch.get("rollout_mask_sums", None),
@@ -197,10 +197,10 @@ def loss_function(
         global_batch_size = num_rollouts
     else:
         assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
-        global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
+        global_batch_size = batch.get("dynamic_global_batch_size", args.backend.global_batch_size)
     # Tinker losses already carry the client's normalization
     loss_normalizer = 1 if is_multi_lora_enabled(args) else global_batch_size
-    if not args.calculate_per_token_loss:
+    if not args.backend.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
             loss_parallel_size = (
                 parallel_state.intra_dp.size
@@ -217,12 +217,12 @@ def loss_function(
     per_datum = log.pop("per_datum", None) if batch.get("loss_fn") is not None else None
     return (
         loss,
-        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
+        torch.tensor(num_tokens if args.backend.calculate_per_token_loss else 1, device=logits.device),
         {
             **({"per_datum": per_datum} if per_datum is not None else {}),
             "keys": list(log.keys()),
             "values": torch.tensor(
-                [num_samples if not args.calculate_per_token_loss else num_tokens] + list(log.values()),
+                [num_samples if not args.backend.calculate_per_token_loss else num_tokens] + list(log.values()),
                 device=logits.device,
             ),
         },

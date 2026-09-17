@@ -53,15 +53,15 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     meshes = build_fsdp_meshes(
         device_type="cuda",
         world_size=world_size,
-        dp_replicate_size=args.dp_replicate_size,
+        dp_replicate_size=args.backend.dp_replicate_size,
     )
     dp_mesh = meshes["dp"]
     fsdp_mesh = meshes["fsdp"]
 
     logger.info(
         f"[Rank {rank}] FSDP mesh shape={fsdp_mesh.shape}, "
-        f"dp_replicate_size={args.dp_replicate_size}, "
-        f"dp_shard_size={world_size // args.dp_replicate_size}, "
+        f"dp_replicate_size={args.backend.dp_replicate_size}, "
+        f"dp_shard_size={world_size // args.backend.dp_replicate_size}, "
         f"dp_rank={rank}"
     )
 

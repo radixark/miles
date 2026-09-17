@@ -229,7 +229,7 @@ class Attention(HuggingfaceAttention):
 
 def get_qwen3_5_spec(args, config, vp_stage):
     # always use the moe path for MoE models
-    if not args.num_experts:
+    if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
     # Define the decoder block spec

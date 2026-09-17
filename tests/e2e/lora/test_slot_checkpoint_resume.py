@@ -98,7 +98,9 @@ def run_worker(checkpoint_dir):
             CheckpointModel(config).cuda(),
         )
     ]
-    args = Namespace(optimizer="adam", bf16=True, use_gloo_process_groups=True, lr=ADAM["learning_rate"])
+    args = Namespace(
+        backend=Namespace(optimizer="adam", bf16=True, use_gloo_process_groups=True, lr=ADAM["learning_rate"])
+    )
     for slot in (0, 1):
         init_adapter_slot(model, slot, rank=4, alpha=8)
     source = SlotOptimizer(args, model, slot=0)
