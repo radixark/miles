@@ -54,7 +54,9 @@ class RpcWorkerHandle(BaseWorkerHandle):
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._specs = collect_rpc_method_specs(worker_cls)
-        shadowed = sorted(name for name in self._specs if hasattr(type(self), name))
+        shadowed = sorted(
+            name for name in self._specs if hasattr(type(self), name)
+        )  # config-access-exempt: attribute selected at runtime from name
         if shadowed:
             raise TypeError(f"{worker_cls.__name__} rpc methods shadow handle attributes: {shadowed}")
 

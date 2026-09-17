@@ -45,8 +45,12 @@ def witness_dump_and_clear_stale(
     for chunk_index, chunk in enumerate(model):
         inner = _unwrap_to_witness_owner(chunk)
         for attr in _WITNESS_ATTRS:
-            assert hasattr(inner, attr), f"chunk {chunk_index} missing {attr}"
-            witness: _DataWitness = getattr(inner, attr)
+            assert hasattr(
+                inner, attr
+            ), f"chunk {chunk_index} missing {attr}"  # config-access-exempt: attribute selected at runtime from attr
+            witness: _DataWitness = getattr(
+                inner, attr
+            )  # config-access-exempt: attribute selected at runtime from attr
             _record_and_log_witness_param(
                 witness=witness,
                 instance_id=f"pp{pp_rank}_chunk{chunk_index}." + attr.replace("_witness", ""),
@@ -146,13 +150,17 @@ _WITNESS_ATTRS = ("local_head_witness", "local_tail_witness")
 
 
 def _has_any_witness(module: nn.Module) -> bool:
-    return any(hasattr(module, attr) for attr in _WITNESS_ATTRS)
+    return any(
+        hasattr(module, attr) for attr in _WITNESS_ATTRS
+    )  # config-access-exempt: attribute selected at runtime from attr
 
 
 def _unwrap_to_witness_owner(chunk: nn.Module) -> nn.Module:
     """Navigate through wrapping layers (DDP → Float16Module → GPTModel) to find the module with witness attrs."""
     inner = chunk.module
-    while not _has_any_witness(inner) and hasattr(inner, "module"):
+    while not _has_any_witness(inner) and hasattr(
+        inner, "module"
+    ):  # config-access-exempt: witness metadata is attached only to instrumented modules
         inner = inner.module
     return inner
 
@@ -177,8 +185,10 @@ def _get_all_witnesses_in_model(model_chunks: Sequence[nn.Module]) -> list[_Data
     for chunk in model_chunks:
         inner = _unwrap_to_witness_owner(chunk)
         for attr in _WITNESS_ATTRS:
-            assert hasattr(inner, attr), f"model chunk missing {attr}"
-            witnesses.append(getattr(inner, attr))
+            assert hasattr(
+                inner, attr
+            ), f"model chunk missing {attr}"  # config-access-exempt: attribute selected at runtime from attr
+            witnesses.append(getattr(inner, attr))  # config-access-exempt: attribute selected at runtime from attr
     return witnesses
 
 
@@ -241,7 +251,9 @@ def _record_and_log_witness_param(
     stale_ids: list[int],
 ) -> None:
     model_weight = witness.witness.weight
-    main_param = getattr(model_weight, "main_param", None)
+    main_param = getattr(
+        model_weight, "main_param", None
+    )  # config-access-exempt: witness metadata is attached only to instrumented modules
     check_weight = main_param.data if main_param is not None else model_weight.data
     nonzero_witness_ids: list[int] = check_weight.squeeze(-1).nonzero(as_tuple=True)[0].tolist()
 

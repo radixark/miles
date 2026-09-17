@@ -238,14 +238,16 @@ class TrueOnPolicyConfig:
 
 
 def _get_required_int(args: Any, name: str) -> int:
-    value = getattr(args, name)
+    value = getattr(args, name)  # config-access-exempt: attribute selected at runtime from name
     if value is None:
         raise ValueError(f"{name} must be initialized before deriving true-on-policy config")
     return int(value)
 
 
 def build_true_on_policy_config(args: Any) -> TrueOnPolicyConfig | None:
-    if not getattr(args, "true_on_policy", False):
+    if not getattr(
+        args, "true_on_policy", False
+    ):  # config-access-exempt: launcher namespaces may not register true-on-policy options
         return None
 
     profile = get_true_on_policy_model_profile(args.model_name)
@@ -257,7 +259,9 @@ def build_true_on_policy_config(args: Any) -> TrueOnPolicyConfig | None:
         context_parallel_size=_get_required_int(args, "context_parallel_size"),
         pipeline_model_parallel_size=_get_required_int(args, "pipeline_model_parallel_size"),
         rollout_num_gpus_per_engine=_get_required_int(args, "rollout_num_gpus_per_engine"),
-        contract_override=getattr(args, "true_on_policy_contract", None),
+        contract_override=getattr(
+            args, "true_on_policy_contract", None
+        ),  # config-access-exempt: the launcher contract override is an optional extension
     )
 
 

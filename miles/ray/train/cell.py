@@ -242,7 +242,9 @@ class TrainerCell:
         start = time.monotonic()
         try:
             result = await asyncio.wait_for(
-                asyncio.gather(*[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]),
+                asyncio.gather(
+                    *[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]
+                ),  # config-access-exempt: attribute selected at runtime from fn_name
                 timeout=timeout,
             )
             log_structured(

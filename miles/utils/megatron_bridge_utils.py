@@ -13,7 +13,9 @@ def patch_megatron_model(model):
     unwrapped_model = unwrap_model(model)[0]
     model_config = unwrapped_model.config
     attribute_was_added = False
-    if not hasattr(model_config, "share_embeddings_and_output_weights"):
+    if not hasattr(
+        model_config, "share_embeddings_and_output_weights"
+    ):  # config-access-exempt: Bridge module capabilities vary by architecture
         model_config.share_embeddings_and_output_weights = unwrapped_model.share_embeddings_and_output_weights
         attribute_was_added = True
 
@@ -21,7 +23,9 @@ def patch_megatron_model(model):
     # Restore before bridge export reads the values.
     for m in model:
         for module in m.modules():
-            if hasattr(module, "_maintain_float32_expert_bias"):
+            if hasattr(
+                module, "_maintain_float32_expert_bias"
+            ):  # config-access-exempt: Bridge module capabilities vary by architecture
                 module._maintain_float32_expert_bias()
 
     try:

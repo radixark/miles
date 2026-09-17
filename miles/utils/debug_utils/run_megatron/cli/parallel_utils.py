@@ -42,19 +42,22 @@ class ParallelConfig:
 
     @classmethod
     def from_run_args(cls, args: RunArgs) -> ParallelConfig:
-        return cls(**{name: getattr(args, name) for name in _FIELD_NAMES})  # type: ignore[arg-type]
+        return cls(**{name: getattr(args, name) for name in _FIELD_NAMES})  # type: ignore[arg-type]  # config-access-exempt: attribute selected at runtime from name
 
     def __str__(self) -> str:
-        field_str: str = ", ".join(f"{name}={getattr(self, name)}" for name in _FIELD_NAMES)
+        field_str: str = ", ".join(
+            f"{name}={getattr(self, name)}" for name in _FIELD_NAMES
+        )  # config-access-exempt: attribute selected at runtime from name
         return f"{field_str}, nproc={self.nproc}"
 
     def dir_name(self) -> str:
         """Build directory name from parallel config, e.g. 'tp2_cp2_ep2'."""
         _SKIP: dict[str, object] = {"tp": None, "pp": 1, "cp": 1, "ep": self.tp, "etp": 1}
         parts: list[str] = [
-            f"{name}{getattr(self, name)}"
+            f"{name}{getattr(self, name)}"  # config-access-exempt: attribute selected at runtime from name
             for name in _FIELD_NAMES
-            if getattr(self, name) is not None and getattr(self, name) != _SKIP[name]
+            if getattr(self, name) is not None
+            and getattr(self, name) != _SKIP[name]  # config-access-exempt: attribute selected at runtime from name
         ]
         return "_".join(parts)
 

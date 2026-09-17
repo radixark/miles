@@ -11,9 +11,15 @@ def _applies(hf_config) -> bool:
     """True for GatedDeltaNet archs (Qwen3.5/3.6, Qwen3-Next): a linear_attention layer type or qwen3_5."""
     if hf_config is None:
         return False
-    model_type = str(getattr(hf_config, "model_type", "") or "")
-    tc = getattr(hf_config, "get_text_config", lambda: hf_config)()
-    layer_types = getattr(tc, "layer_types", None) or getattr(hf_config, "layer_types", None)
+    model_type = str(
+        getattr(hf_config, "model_type", "") or ""
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
+    tc = getattr(
+        hf_config, "get_text_config", lambda: hf_config
+    )()  # config-access-exempt: model-family schemas differ in optional get_text_config metadata
+    layer_types = getattr(tc, "layer_types", None) or getattr(
+        hf_config, "layer_types", None
+    )  # config-access-exempt: model-family schemas differ in optional layer_types metadata
     return (layer_types is not None and "linear_attention" in layer_types) or "qwen3_5" in model_type
 
 
@@ -30,7 +36,9 @@ def _is_qwen3_5_moe(hf_config) -> bool:
     """Qwen3.5 MoE; the text-only checkpoint reports model_type qwen3_5_moe_text."""
     if hf_config is None:
         return False
-    model_type = str(getattr(hf_config, "model_type", "") or "")
+    model_type = str(
+        getattr(hf_config, "model_type", "") or ""
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
     return "qwen3_5" in model_type and "moe" in model_type
 
 

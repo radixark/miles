@@ -207,8 +207,12 @@ def _build_full_grad_getter(
     grad_map: dict[torch.nn.Parameter, torch.Tensor] = {}
     # Bucket iteration copied from indep_dp.allreduce_grads_and_losses_across_replicas,
     # which cross-cell all-reduces these same bucket.grad_data buffers.
-    bucket_groups = list(getattr(model_chunk, "bucket_groups", [])) + list(
-        getattr(model_chunk, "expert_parallel_bucket_groups", [])
+    bucket_groups = list(
+        getattr(model_chunk, "bucket_groups", [])
+    ) + list(  # config-access-exempt: only distributed wrappers expose gradient bucket collections
+        getattr(
+            model_chunk, "expert_parallel_bucket_groups", []
+        )  # config-access-exempt: only distributed wrappers expose gradient bucket collections
     )
     for bucket_group in bucket_groups:
         if not bucket_group.ddp_config.use_distributed_optimizer:
@@ -242,7 +246,9 @@ def _build_full_grad_getter(
         if reduced is not None:
             return reduced
         # fallback copied from sglang dumper's original grad read (.grad else main_grad).
-        return param.grad if param.grad is not None else getattr(param, "main_grad", None)
+        return (
+            param.grad if param.grad is not None else getattr(param, "main_grad", None)
+        )  # config-access-exempt: main_grad is optional backend-attached tensor metadata
 
     return get_grad
 
@@ -257,7 +263,9 @@ def _log_model_grad_coverage(model: torch.nn.Module) -> None:
             continue
 
         total += 1
-        grad = param.grad if param.grad is not None else getattr(param, "main_grad", None)
+        grad = (
+            param.grad if param.grad is not None else getattr(param, "main_grad", None)
+        )  # config-access-exempt: main_grad is optional backend-attached tensor metadata
         if grad is None:
             missing.append(name)
         else:
@@ -352,7 +360,9 @@ def _barrier_after_dump_dir_cleanup() -> None:
 
 
 def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
-    raw = getattr(args, f"dumper_{phase.value}")
+    raw = getattr(
+        args, f"dumper_{phase.value}"
+    )  # config-access-exempt: attribute selected at runtime from f'dumper_{phase.value}'
     return {"enable": args.dumper_enable, **DumperConfig._kv_pairs_to_dict(raw)}
 
 

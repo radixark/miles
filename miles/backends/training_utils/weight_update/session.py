@@ -94,9 +94,13 @@ def check_weight_sync_results(results: list, *, is_lora: bool) -> None:
         if isinstance(result, Mapping):
             success = result.get("success")
             error_msg = result.get("error_message") or result.get("error") or "unknown error"
-        elif hasattr(result, "success"):
+        elif hasattr(
+            result, "success"
+        ):  # config-access-exempt: weight-update transports return different result schemas
             success = result.success
-            error_msg = getattr(result, "error_message", "unknown error")
+            error_msg = getattr(
+                result, "error_message", "unknown error"
+            )  # config-access-exempt: weight-update transports return different result schemas
         else:
             continue
 

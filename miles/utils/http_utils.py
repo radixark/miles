@@ -218,9 +218,13 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
         try:
             if action in ("delete", "get"):
                 assert not payload
-                response = await getattr(client, action)(url, headers=headers)
+                response = await getattr(client, action)(
+                    url, headers=headers
+                )  # config-access-exempt: attribute selected at runtime from action
             else:
-                response = await getattr(client, action)(url, json=payload or {}, headers=headers)
+                response = await getattr(client, action)(
+                    url, json=payload or {}, headers=headers
+                )  # config-access-exempt: attribute selected at runtime from action
             response.raise_for_status()
             try:
                 output = response.json()

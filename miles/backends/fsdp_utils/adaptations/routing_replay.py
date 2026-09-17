@@ -106,7 +106,7 @@ def install(model: nn.Module, hf_config) -> int:
     adapter = resolve_routing_replay_adapter(hf_config)
     if adapter is None:
         raise ValueError(
-            f"no routing-replay adapter for model_type={getattr(hf_config, 'model_type', None)!r}; "
+            f"no routing-replay adapter for model_type={getattr(hf_config, 'model_type', None)!r}; "  # config-access-exempt: model-family schemas differ in optional model_type metadata
             f"rollout routing replay on the FSDP backend requires a registered adapter"
         )
 

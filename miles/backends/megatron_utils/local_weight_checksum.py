@@ -88,7 +88,9 @@ def _hash_named_tensors(model: Sequence[DDP], *, accessor: str) -> dict[str, str
     """
     hashes: dict[str, str] = {}
     for pp_idx, model_chunk in enumerate(model):
-        for name, tensor in sorted(getattr(model_chunk, accessor)(), key=lambda x: x[0]):
+        for name, tensor in sorted(
+            getattr(model_chunk, accessor)(), key=lambda x: x[0]
+        ):  # config-access-exempt: attribute selected at runtime from accessor
             assert tensor is not None, f"pp{pp_idx}.{name}: tensor is None"
             hashes[f"pp{pp_idx}.{name}"] = hash_tensor_sha256(tensor)
     return hashes
@@ -128,9 +130,13 @@ def _build_name_by_tensor_id(model: Sequence[DDP]) -> dict[_MainParamId, str]:
     for pp_idx, model_chunk in enumerate(model):
         for name, param in model_chunk.named_parameters():
             assert param is not None, f"pp{pp_idx}.{name}: param is None"
-            main_param = getattr(param, "main_param", None)
+            main_param = getattr(
+                param, "main_param", None
+            )  # config-access-exempt: main_param is optional backend-attached tensor metadata
             if main_param is None:
-                assert getattr(param, "main_param_sharded", False), (
+                assert getattr(
+                    param, "main_param_sharded", False
+                ), (  # config-access-exempt: main_param_sharded is optional backend-attached tensor metadata
                     f"pp{pp_idx}.{name}: main_param is None but main_param_sharded is not set. "
                     "Expected only for distributed optimizer params not owned by this DP rank."
                 )
@@ -169,7 +175,9 @@ def _transform_tensor_to_hash(obj: Any) -> Any:
 
 def _iter_sub_optimizers(optimizer: MegatronOptimizer) -> Iterator[MegatronOptimizer]:
     """Flatten ChainedOptimizer into individual sub-optimizers."""
-    if hasattr(optimizer, "chained_optimizers"):
+    if hasattr(
+        optimizer, "chained_optimizers"
+    ):  # config-access-exempt: optimizer wrappers differ in chained_optimizers support
         for sub in optimizer.chained_optimizers:
             yield from _iter_sub_optimizers(sub)
     else:
