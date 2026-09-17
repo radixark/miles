@@ -14,6 +14,7 @@ from megatron.training.global_vars import get_args
 
 from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils
 from miles.utils import megatron_bridge_utils
+from miles.utils.audit_utils.config_snapshot import check_config_snapshot
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
 from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
@@ -115,6 +116,11 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
         assert Path(load_path).exists() and _is_dir_nonempty(
             load_path
         ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
+
+    check_config_snapshot(
+        boundary="checkpoint_load",
+        config={"args": args, "load": load_path, "local_checkpoint_manager": has_local_checkpoint_manager},
+    )
 
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):

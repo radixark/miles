@@ -12,6 +12,8 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
+from miles.utils.audit_utils.config_snapshot import check_config_snapshot
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,6 +111,9 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load model weights (always)
+    check_config_snapshot(
+        boundary="checkpoint_load", config={"args": actor.args, "load": str(checkpoint_dir), "format": "fsdp"}
+    )
     model_state = ModelState(actor.model)
     state_dict = {"model_state": model_state}
 

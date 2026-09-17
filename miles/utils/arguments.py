@@ -2729,6 +2729,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_ci_arguments(parser):
+            parser.add_argument("--config-snapshot-dir", type=str, default=None)
+            parser.add_argument("--config-snapshot-name", type=str, default=None)
+            parser.add_argument("--config-snapshot-normalize", type=str, default=None)
             parser.add_argument(
                 "--ci-inject-missing-prefetched-batch-bug",
                 action="store_true",

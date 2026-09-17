@@ -22,6 +22,7 @@ from miles.backends.training_utils.parallel import get_parallel_state, set_paral
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, train_dump_utils, train_metric_utils
+from miles.utils.audit_utils.config_snapshot import check_config_snapshot
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -232,6 +233,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
         """Build HF model and optionally apply Triton attention bridge patch."""
+        check_config_snapshot(
+            boundary="checkpoint_load", config={"args": self.args, "load": checkpoint_path, "format": "hf"}
+        )
         # ROCm-only: on other platforms "triton" falls through to from_pretrained, which rejects
         # it exactly as it did before this path existed.
         use_triton_bridge = self.args.attn_implementation == "triton" and torch.version.hip is not None
@@ -447,6 +451,11 @@ class FSDPTrainRayActor(TrainRayActor):
         assert attempt == 0
         assert external_data is None, "the fsdp backend trains no critic, so it is never handed critic values"
 
+        if not self._config_snapshot_train_recorded:
+            check_config_snapshot(
+                boundary="train_first_step", config={"args": self.args, "role": self.role, "rank": self._rank}
+            )
+            self._config_snapshot_train_recorded = True
         self._heartbeat.bump()
         if self.args.offload_train:
             self.wake_up()

@@ -62,6 +62,7 @@ class TrainRayActor(NodeProbeMixin):
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
+        self._config_snapshot_train_recorded = False
 
         os.environ["WORLD_SIZE"] = str(self._world_size)
         os.environ["RANK"] = str(self._rank)
