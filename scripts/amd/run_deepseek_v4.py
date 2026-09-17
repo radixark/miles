@@ -288,6 +288,17 @@ def _resolve_colocate_memory_profile(args: ScriptArgs) -> str:
     return "288gb" if gib >= 256 else "192gb"
 
 
+def _is_gfx942() -> bool:
+    # Hardware probe is delayed until launch, keeping imports GPU-free.
+    import torch
+
+    return bool(
+        torch.version.hip
+        and torch.cuda.is_available()
+        and torch.cuda.get_device_properties(torch.cuda.current_device()).gcnArchName.split(":")[0] == "gfx942"
+    )
+
+
 def _cp_derived_layout(
     total_gpus: int, *, pipeline_size: int, first_layers: int, last_layers: int, cp_size: int
 ) -> str:
@@ -444,7 +455,7 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
     _ensure_4layer_model_type(args)
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
+    ckpt_args = f"--hf-checkpoint {_hf_checkpoint_path(args)} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
     if not args.skip_saving:
         ckpt_args += (
             f"--load {load_save_path} " f"--save {load_save_path} " "--save-interval 20 " "--save-retain-interval 20 "
@@ -550,7 +561,13 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
+    if _is_gfx942():
+        # gfx942: AITER's BF16 atomic reductions perturb router/expert results
+        # between identical forwards. Triton still executes FP8 expert GEMMs.
+        sglang_args += "--sglang-moe-runner-backend triton --sglang-disable-custom-all-reduce "
     extra_env_vars = {
+        "TORCHINDUCTOR_MAX_AUTOTUNE": "0",
+        "TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE": "0",
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_HACK_FLASHMLA_BACKEND": "unified_kv_triton",

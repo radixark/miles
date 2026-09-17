@@ -106,6 +106,7 @@ def recorded(request, monkeypatch, tmp_path):
             lambda: module._FP8Capabilities("gfx950", "verified", (True, ""), (True, "")),
         )
         monkeypatch.setattr(module, "_resolve_colocate_memory_profile", lambda args: "288gb")
+        monkeypatch.setattr(module, "_is_gfx942", lambda: False)
     call_entrypoint(
         module,
         entrypoint,

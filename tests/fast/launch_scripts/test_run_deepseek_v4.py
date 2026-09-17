@@ -55,6 +55,7 @@ def amd_launcher(monkeypatch):
     freeze_environment(monkeypatch)
     module = import_launch_script(REPO_ROOT / "scripts/amd/run_deepseek_v4.py")
     monkeypatch.setattr(module, "_resolve_colocate_memory_profile", lambda args: "192gb")
+    monkeypatch.setattr(module, "_is_gfx942", lambda: True)
     return module
 
 
@@ -150,6 +151,10 @@ def test_amd_train_emits_real_fp8_recipe(monkeypatch, amd_launcher, tmp_path, re
     assert "--transformer-impl transformer_engine" in command
     assert "--no-gradient-accumulation-fusion" in command
     assert ("NVTE_FP8_BLOCK_SCALING_FP32_SCALES" in command) == (selected == "blockwise")
+    assert "--sglang-moe-runner-backend triton" in command
+    assert "--sglang-disable-custom-all-reduce" in command
+    assert "--hf-checkpoint None" not in command
+    assert '"TORCHINDUCTOR_MAX_AUTOTUNE": "0"' in command
     assert "--sglang-quantization unquant" not in command
     assert "SGLANG_DSV4_FP4_EXPERTS" in command
 
