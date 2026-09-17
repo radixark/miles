@@ -128,7 +128,7 @@ def _resolve_rollout_functions(args) -> None:
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
-def reset_arg(parser, name, **kwargs):
+def reset_arg(parser: argparse.ArgumentParser, name: str, **kwargs: Any) -> None:
     """
     Reset the default value of a Megatron argument.
     :param parser: The argument parser.
@@ -137,11 +137,28 @@ def reset_arg(parser, name, **kwargs):
     """
     for action in parser._actions:
         if name in action.option_strings:
+            _assert_reset_arg_compatible(parser=parser, action=action, name=name, kwargs=kwargs)
             if "default" in kwargs:
                 action.default = kwargs["default"]
             break
     else:
         parser.add_argument(name, **kwargs)
+
+
+def _assert_reset_arg_compatible(
+    *, parser: argparse.ArgumentParser, action: argparse.Action, name: str, kwargs: dict[str, Any]
+) -> None:
+    action_type = kwargs.get("action", "store")
+    expected_action = parser._registry_get("action", action_type, action_type)
+    assert (
+        type(action) is expected_action
+    ), f"Cannot reset {name}: action {type(action)} does not match {expected_action}"
+    expected = {"type": None, **kwargs}
+    for key, value in expected.items():
+        if key in {"action", "default", "help"}:
+            continue
+        actual = vars(action)[key]
+        assert actual == value, f"Cannot reset {name}: {key}={actual!r} does not match {value!r}"
 
 
 _FT_CHOICES = ["rollout", "train"]
