@@ -39,6 +39,12 @@ def add_tinker_arguments(parser):
         help="Largest JSON body a /oai/sessions route accepts; bodies are parsed on the shared loop (default: 16 MiB)",
     )
     add_argument(
+        "session-placeholder-keys",
+        nargs="+",
+        default=["dummy"],
+        help="API keys an agent harness sends as placeholders on the recorded chat route; they resolve to the pre-bound session's owner (default: dummy)",
+    )
+    add_argument(
         "tito-model",
         choices=[t.value for t in TITOTokenizerType],
         default=None,
