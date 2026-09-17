@@ -21,7 +21,6 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
-from miles.utils.audit_utils.checksum_policy import DEFAULT_MOVEMENT_MAX_STEPS
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
@@ -2436,12 +2435,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Save per-tensor inference engine checksums after weight publication.",
             )
             parser.add_argument(
-                "--inference-engine-weight-movement-max-steps",
-                type=int,
-                default=DEFAULT_MOVEMENT_MAX_STEPS,
-                help="Maximum published-version transitions without each tensor changing its checksum.",
-            )
-            parser.add_argument(
                 "--save-local-weight-checksum",
                 action="store_true",
                 help="Save per-rank local weight checksum per-step.",
@@ -3445,11 +3438,6 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     validate_dashboard_args(args)
-
-    assert (
-        type(args.inference_engine_weight_movement_max_steps) is int
-        and args.inference_engine_weight_movement_max_steps > 0
-    ), "--inference-engine-weight-movement-max-steps must be a positive integer"
 
     args.ft_components = _resolve_ft_components(args)
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (

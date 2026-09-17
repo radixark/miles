@@ -2,10 +2,12 @@ import abc
 import asyncio
 import logging
 import os
+import random
 import shlex
 import signal
 import subprocess
 from contextlib import ExitStack
+from copy import deepcopy
 from pathlib import Path
 from typing import TypeVar
 
@@ -39,6 +41,23 @@ class SoakActionForm(abc.ABC):
     def is_eligible(self, *, events: list[SoakEvent], target: dict | SoakDeploymentTarget) -> bool:
         return True
 
+    def fault_target_types(self, kind: str) -> set[str]:
+        return set()
+
+    @property
+    def process_patterns(self) -> dict[str, str]:
+        return {}
+
+    def prepare_request(
+        self,
+        *,
+        target: dict | SoakDeploymentTarget,
+        observation: SoakObservation,
+        events: list[SoakEvent],
+        rng: random.Random,
+    ) -> SoakActionRequest | None:
+        return SoakActionRequest(target=deepcopy(target), form_name=self.name, harms_cell=self.harms_cell)
+
     def is_recovered(self, *, action: SoakActionRecord, events: list[SoakEvent]) -> bool:
         if action.applied is None or action.result is None or not action.result.returned:
             return False
@@ -54,9 +73,7 @@ class SoakActionForm(abc.ABC):
             events,
             reconfigurations=[step for step in training_events if isinstance(step, CellReconfigureEvent)],
         )
-        episode = next(
-            (one for one in episodes if action.requested.request.request_id in one.request_ids), None
-        )
+        episode = next((one for one in episodes if action.requested.request.request_id in one.request_ids), None)
         if episode is None or episode.recovered_at is None:
             return False
         return any(

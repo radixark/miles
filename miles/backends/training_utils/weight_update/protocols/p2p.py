@@ -107,6 +107,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             last_idx = len(self._rollout_engine_rank_infos) - 1
             for i, meta in enumerate(self._rollout_engine_rank_infos):
                 meta.model_replica.load_weights(ready_hf_tensors)
+
                 # Last rollout engine rank: fire-and-forget all sessions to background,
                 # as the weight will no longer be overwritten
                 for cell_updater in meta.target_cell_updaters:

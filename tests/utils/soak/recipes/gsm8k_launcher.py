@@ -16,13 +16,12 @@ app = typer.Typer()
 class Gsm8kLaunchSpec(FrozenStrictBaseModel):
     config: ExecuteTrainConfig
     train_args: str
-    fully_async: bool
 
 
-async def execute_session(*, run: Gsm8kRun, injector: SoakSession, fully_async: bool) -> None:
+async def execute_session(*, run: Gsm8kRun, injector: SoakSession) -> None:
     log_path = run.evidence_dir / "launcher-initial.log"
     result = await launch(
-        Gsm8kLaunchSpec(config=run.config, train_args=run.train_args, fully_async=fully_async),
+        Gsm8kLaunchSpec(config=run.config, train_args=run.train_args),
         log_path=log_path,
         timeout_seconds=injector.timeouts.run_seconds,
     )
@@ -53,7 +52,7 @@ async def launch(
 @app.command()
 def main() -> None:
     spec = Gsm8kLaunchSpec.model_validate_json(sys.stdin.read())
-    launch_gsm8k(config=spec.config, train_args=spec.train_args, fully_async=spec.fully_async)
+    launch_gsm8k(config=spec.config, train_args=spec.train_args)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,6 @@ PhaseOption = Annotated[str, typer.Option(help="Phase name (multi-phase tests)")
 DumpDirOption = Annotated[str | None, typer.Option(help="Dump base directory")]
 EnableDumperOption = Annotated[bool, typer.Option(help="Enable dumper output")]
 NumStepsOption = Annotated[int, typer.Option(help="Number of train() calls")]
-FullyAsyncOption = Annotated[bool, typer.Option(help="Train through train_async.py with --fully-async")]
 TrainerCrashIntervalSecondsOption = Annotated[float, typer.Option(help="Mean seconds between trainer cell injections")]
 RolloutCrashIntervalSecondsOption = Annotated[
     float, typer.Option(help="Mean seconds between rollout engine injections")

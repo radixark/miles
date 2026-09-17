@@ -120,7 +120,6 @@ class SoakActionFormHotRestart(SoakActionForm):
         spec = HotRestartLaunchSpec(
             config=config,
             train_args=self._launch_spec.train_args,
-            fully_async=self._launch_spec.fully_async,
             target=target,
             guard_directory=self._log_dir / f"guard-{request.request_id}",
         )

@@ -78,7 +78,7 @@ def launch_guarded(spec: HotRestartLaunchSpec) -> None:
     with patch.object(entrypoint, "_defuse_previous_generation", defuse), patch.object(
         Kubectl, "delete_job", delete_job
     ), patch.object(Helm, "upgrade", upgrade), patch.object(Helm, "get_manifest", get_manifest):
-        launch_gsm8k(config=spec.config, train_args=spec.train_args, fully_async=spec.fully_async)
+        launch_gsm8k(config=spec.config, train_args=spec.train_args)
 
 
 def _without_guard_preconditions(manifest: Manifest) -> Manifest:

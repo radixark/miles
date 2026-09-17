@@ -5,7 +5,7 @@ import random
 import httpx
 from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.fault_forms import InjectFaultForm
-from tests.utils.soak.state import SoakActionRequest
+from tests.utils.soak.state import SoakActionRequest, SoakActionRequestedEvent, SoakDeploymentTarget, SoakEvent, SoakObservation, cell_is_alive, cell_type_of
 
 from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookName, FaultHookRecord, FaultHookRequest
 from miles.utils.test_utils.fault_injector import FailureMode
@@ -53,6 +53,44 @@ class HookFaultForm(InjectFaultForm):
 
     def sample_delay(self, rng: random.Random) -> float | None:
         return rng.uniform(0, self._template.delay_ms) if self.random_delay else None
+
+    def fault_target_types(self, kind: str) -> set[str]:
+        return {kind} if self._victim_form is None else {"actor"} | self._victim_form.fault_target_types(kind)
+
+    @property
+    def process_patterns(self) -> dict[str, str]:
+        return {} if self._victim_form is None else self._victim_form.process_patterns
+
+    def prepare_request(
+        self, *, target: dict | SoakDeploymentTarget, observation: SoakObservation,
+        events: list[SoakEvent], rng: random.Random,
+    ) -> SoakActionRequest | None:
+        assert isinstance(target, dict)
+        prepare = super().prepare_request if self._victim_form is None else self._victim_form.prepare_request
+        request = prepare(target=target, observation=observation, events=events, rng=rng)
+        if request is None:
+            return None
+        trigger = None
+        if self._victim_form is not None:
+            reserved = {
+                (event.request.target["metadata"]["name"], event.request.target["status"].get("workers_hash"))
+                for event in events if isinstance(event, SoakActionRequestedEvent)
+                and event.request.harms_cell and isinstance(event.request.target, dict)
+            }
+            triggers = [
+                identity for cell in observation.cells or []
+                if cell_type_of(cell) == "actor" and cell_is_alive(cell)
+                and cell["metadata"]["name"] != target["metadata"]["name"]
+                if (identity := observation.fault_targets.get(cell["metadata"]["name"])) is not None
+                and identity.workers_hash == cell["status"].get("workers_hash")
+                and (identity.cell_id, identity.workers_hash) not in reserved
+            ]
+            if not triggers:
+                return None
+            trigger = rng.choice(triggers)
+        return request.model_copy(update={
+            "form_name": self.name, "hook_trigger": trigger, "hook_delay_ms": self.sample_delay(rng),
+        })
 
     async def execute(self, request: SoakActionRequest) -> dict:
         assert request.form_name == self.name

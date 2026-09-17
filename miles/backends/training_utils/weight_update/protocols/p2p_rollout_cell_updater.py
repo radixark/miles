@@ -1,12 +1,12 @@
 import logging
 from argparse import Namespace
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextvars import copy_context
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
-from miles.utils.test_utils.fault_hooks import reach_fault_hook
+from miles.utils.test_utils.fault_hooks import FaultHookName, capture_fault_hook, reach_fault_hook
 
 from .p2p_transfer_utils import RemoteWeightInfo
 
@@ -37,12 +37,12 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
             return
         self._pending_writes.append(
             self._executor.submit(
-                copy_context().run,
                 self._write_if_active,
                 transfer_engine,
                 self.targets_by_rollout_engine_rank[rollout_engine_rank],
                 names,
                 weight_memory_registry,
+                fault_hook=capture_fault_hook(),
             )
         )
 
@@ -62,11 +62,13 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
         target: RemoteWeightInfo,
         names: list[str],
         weight_memory_registry: dict[str, tuple[int, int, int]],
+        *,
+        fault_hook: Callable[[FaultHookName], None] | None = None,
     ) -> None:
         if self.is_errored:
             logger.warning(f"[P2P-Shared] skipping a queued write to rollout cell {self.cell_id}")
             return
-        _do_p2p_write_one_session(transfer_engine, target, names, weight_memory_registry)
+        _do_p2p_write_one_session(transfer_engine, target, names, weight_memory_registry, fault_hook=fault_hook)
 
 
 def _do_p2p_write_one_session(
@@ -74,6 +76,8 @@ def _do_p2p_write_one_session(
     remote_session: RemoteWeightInfo,
     names: list[str],
     weight_memory_registry: dict[str, tuple[int, int, int]],
+    *,
+    fault_hook: Callable[[FaultHookName], None] | None = None,
 ) -> None:
     """P2P write from shared CPU pinned buffers to a single remote session.
 
@@ -112,7 +116,7 @@ def _do_p2p_write_one_session(
         f"source: {len(source_ptrs)}, target: {len(target_ptrs)}"
     )
 
-    reach_fault_hook("trainer_before_weight_send")
+    reach_fault_hook("trainer_before_weight_send", callback=fault_hook)
     ret = transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
     if ret < 0:
         raise RuntimeError(f"[P2P-Shared] Transfer failed for session {session_id}, error: {ret}")

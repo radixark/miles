@@ -8,7 +8,7 @@ import typer
 from examples.infra_features.split_deployment.address_book import DEFAULT_TRAINER_ID
 from tests.e2e.deploy.conftest_deploy.common.utils import assert_cluster_can_deploy_runs
 from tests.utils.soak.checks.weights import assert_published_weight_checksums, assert_weight_checksum_history
-from tests.utils.soak.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
+from tests.utils.soak.cli_options import NumRolloutOption, SeedOption
 from tests.utils.soak.deploy.assert_workloads import assert_take_overs_replaced_only_script
 from tests.utils.soak.deploy.cluster_observer import ClusterObserver, ClusterSnapshot
 from tests.utils.soak.deploy.evidence import (
@@ -24,7 +24,6 @@ from tests.utils.soak.deploy.soak_session import execute_hot_restart_session
 from tests.utils.soak.deploy.utils import compute_checkpoint_dir, compute_release_of_config
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.recipes.gsm8k import (
-    DEFAULT_METRIC_THRESHOLD,
     DEFAULT_NUM_ROLLOUT,
     DEFAULT_SEED,
     Gsm8kRun,
@@ -65,7 +64,6 @@ HotRestartIntervalSecondsOption = Annotated[
 def run_ci(
     seed: SeedOption = DEFAULT_SEED,
     num_rollout: NumRolloutOption = DEFAULT_NUM_ROLLOUT,
-    metric_threshold: MetricThresholdOption = DEFAULT_METRIC_THRESHOLD,
     hot_restart_interval_seconds: HotRestartIntervalSecondsOption = DEFAULT_HOT_RESTART_INTERVAL_SECONDS,
 ) -> None:
     config = command_utils.default_config()
@@ -82,8 +80,6 @@ def run_ci(
             test_name=TEST_NAME,
             seed=seed,
             num_rollout=num_rollout,
-            metric_threshold=metric_threshold,
-            fully_async=False,
             mean_interval_seconds_of_cell_type={_HOT_RESTART_TARGET_TYPE: hot_restart_interval_seconds},
             create_forms=create_forms,
             create_observer=_create_observer,
@@ -243,7 +239,7 @@ def _read_finished_steps_of_log(events_dir: Path) -> dict[int, str]:
 
 def create_hot_restart_forms(run: Gsm8kRun, *, max_allowed_rollout_id: int) -> CellFaultForms:
     form = SoakActionFormHotRestart(
-        launch_spec=Gsm8kLaunchSpec(config=run.config, train_args=run.train_args, fully_async=False),
+        launch_spec=Gsm8kLaunchSpec(config=run.config, train_args=run.train_args),
         event_log=run.event_log,
         log_dir=run.evidence_dir,
         max_allowed_rollout_id=max_allowed_rollout_id,

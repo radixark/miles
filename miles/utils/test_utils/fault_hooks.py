@@ -21,16 +21,23 @@ FaultHookStatus = Literal["armed", "scheduled", "cancelled", "expired", "fired",
 _active_hook: ContextVar[Callable[[FaultHookName], None] | None] = ContextVar("active_fault_hook", default=None)
 
 
-def reach_fault_hook(hook: FaultHookName) -> None:
-    if (callback := _active_hook.get()) is not None:
-        callback(hook)
+def capture_fault_hook() -> Callable[[FaultHookName], None] | None:
+    return _active_hook.get()
+
+
+def reach_fault_hook(hook: FaultHookName, *, callback: Callable[[FaultHookName], None] | None = None) -> None:
+    if (callback := callback if callback is not None else _active_hook.get()) is not None:
+        try:
+            callback(hook)
+        except Exception:
+            logger.exception("Could not observe or dispatch fault hook: %s", hook)
 
 
 class FaultHookRequest(FrozenStrictBaseModel):
     request_id: str = Field(min_length=1)
     instance_id: str = Field(min_length=1)
     hook: FaultHookName
-    mode: Literal["sigkill", "exit", "segfault", "sigstop", "deadlock", "thread_deadlock"]
+    mode: Literal["sigkill", "sigstop", "thread_deadlock"]
     action: Literal["inject", "observe"] = "inject"
     lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
     delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)

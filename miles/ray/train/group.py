@@ -21,7 +21,6 @@ from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_eve
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     TrainGroupStepEndEvent,
-    WeightUpdateAssignmentEvent,
     WeightUpdateResultEvent,
     WitnessAllocateIdEvent,
 )
@@ -415,19 +414,22 @@ class TrainerController:
         output = replace(output, version_epoch=self._weight_version_epoch, update_id=info.update_id)
         updated_cell_ids = [cell_id for cell_id in info.engine_cell_ids if cell_id not in set(output.failed_cell_ids)]
         if is_event_logger_initialized():
-            get_event_logger().log(
-                WeightUpdateResultEvent,
-                dict(
-                    update_id=info.update_id,
-                    version_epoch=self._weight_version_epoch,
-                    rollout_id=rollout_id,
-                    candidate_version=output.weight_version,
-                    published_version=output.weight_version if updated_cell_ids else None,
-                    target_incarnations=info.snapshot_cell_id_to_hashes,
-                    updated_cell_ids=updated_cell_ids,
-                    failed_cell_ids=list(output.failed_cell_ids),
-                ),
-            )
+            try:
+                get_event_logger().log(
+                    WeightUpdateResultEvent,
+                    dict(
+                        update_id=info.update_id,
+                        version_epoch=self._weight_version_epoch,
+                        rollout_id=rollout_id,
+                        candidate_version=output.weight_version,
+                        published_version=output.weight_version if updated_cell_ids else None,
+                        target_incarnations=info.snapshot_cell_id_to_hashes,
+                        updated_cell_ids=updated_cell_ids,
+                        failed_cell_ids=list(output.failed_cell_ids),
+                    ),
+                )
+            except Exception:
+                logger.exception("Could not record weight publication observation")
         return output
 
     async def _update_weights_on_first_alive_cell(self, info: UpdatableEngines) -> WeightUpdateOutput:
@@ -446,16 +448,6 @@ class TrainerController:
         cells_and_splitted_infos = [
             (c, s) for c, s in zip(alive_cells, splitted_infos, strict=True) if s.engine_cell_ids
         ]
-
-        if is_event_logger_initialized():
-            get_event_logger().log(
-                WeightUpdateAssignmentEvent,
-                dict(
-                    update_id=info.update_id,
-                    trainer_incarnations={c.cell_id: c.workers_hash for c, _ in cells_and_splitted_infos},
-                    targets_by_trainer={c.cell_id: s.snapshot_cell_id_to_hashes for c, s in cells_and_splitted_infos},
-                ),
-            )
 
         outcomes = await asyncio.gather(
             *[

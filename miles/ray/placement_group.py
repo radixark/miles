@@ -27,7 +27,6 @@ from miles.ray.specs.train import (
 )
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.ray.wiring import get_backend_capability
-from miles.utils.audit_utils.checksum_policy import checksum_movement_skip_reasons
 from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -324,7 +323,7 @@ async def update_weights(
             and not args.debug_rollout_only
         ),
         model_id=trainer_model_id,
-        checksum_timeout_seconds=args.update_weight_engine_request_timeout,
+        checksum_timeout_seconds=min(args.update_weight_engine_request_timeout, 5.0),
     )
 
     await _maybe_log_inference_engine_weight_checksums(
@@ -358,25 +357,23 @@ async def _maybe_log_inference_engine_weight_checksums(
 
     if not snapshots:
         return
-    assert weight_version is not None, "Checksum snapshots require a published weight version"
-    engine_checksums = [snapshot.tensors for snapshot in snapshots]
-    get_event_logger().log(
-        InferenceEngineWeightChecksumEvent,
-        dict(
-            rollout_id=args.start_rollout_id - 1 if rollout_id is None else rollout_id,
-            trainer_model_id=trainer_model_id,
-            engine_checksums=engine_checksums,
-            weight_version=weight_version,
-            version_epoch=version_epoch,
-            update_id=update_id,
-            engine_snapshots=snapshots,
-            movement_max_steps=args.inference_engine_weight_movement_max_steps,
-            movement_skip_reasons=checksum_movement_skip_reasons(
-                lora_enabled=args.lora_rank > 0 or args.lora_adapter_path is not None,
-                update_weights_interval=args.update_weights_interval,
+    try:
+        assert weight_version is not None, "Checksum snapshots require a published weight version"
+        engine_checksums = [snapshot.tensors for snapshot in snapshots]
+        get_event_logger().log(
+            InferenceEngineWeightChecksumEvent,
+            dict(
+                rollout_id=args.start_rollout_id - 1 if rollout_id is None else rollout_id,
+                trainer_model_id=trainer_model_id,
+                engine_checksums=engine_checksums,
+                weight_version=weight_version,
+                version_epoch=version_epoch,
+                update_id=update_id,
+                engine_snapshots=snapshots,
             ),
-        ),
-    )
+        )
+    except Exception:
+        logger.exception("Could not record inference engine checksum observation")
 
 
 # TODO: move (when reorganizing files)

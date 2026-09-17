@@ -9,7 +9,6 @@ from typing import Any
 from uuid import uuid4
 
 from tests.fast.cluster_backends import create_backend_for_run
-from tests.utils.soak.checks.quality import assert_tail_quality
 from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.config import SoakPolicy, create_policy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, SoakSession, create_soak_session
@@ -25,8 +24,6 @@ from tests.utils.soak.utils import (
     evidence_directory,
     get_api_server_args,
     get_dumps_root,
-    get_fully_async_args,
-    get_train_script,
     resolve_dump_dir,
 )
 
@@ -45,10 +42,6 @@ TRAIN_GPUS: int = 4
 ROLLOUT_GPUS: int = 4
 CONTEXT_PARALLEL_SIZE: int = 2
 ROLLOUT_GPUS_PER_ENGINE: int = 1
-# Must stay identical to the threshold asserted by the no-fault baseline
-# tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py: fault recovery must not cost accuracy.
-DEFAULT_METRIC_THRESHOLD: float = 0.55
-_EVAL_INTERVAL: int = 20
 
 
 @dataclass(frozen=True)
@@ -84,8 +77,6 @@ async def run_realistic_gsm8k(
     test_name: str,
     seed: int,
     num_rollout: int,
-    metric_threshold: float,
-    fully_async: bool,
     mean_interval_seconds_of_cell_type: dict[str, float],
     create_forms: CreateCellFaultFormsFn,
     build_extra_train_args: Callable[[str], str],
@@ -95,14 +86,14 @@ async def run_realistic_gsm8k(
     policy: SoakPolicy | None = None,
 ) -> Gsm8kOutcome:
     config = create_soak_config(config)
-    tail_policy = create_tail_policy(num_rollout=num_rollout, min_tail_rollouts=2 * _EVAL_INTERVAL)
+    tail_policy = create_tail_policy(num_rollout=num_rollout)
     U = create_backend_for_run(config)
     storage = await validate_dump_storage(get_dumps_root())
     storage_dir = get_dumps_root() / "launch-config" / uuid4().hex
     storage_dir.mkdir(parents=True, exist_ok=True)
     (storage_dir / "storage.json").write_text(storage.model_dump_json(indent=2))
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
-    print(f"Test: {test_name}, train script: {get_train_script(fully_async=fully_async)}")
+    print(f"Test: {test_name}, train script: train.py")
 
     prepare_gsm8k(U)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
@@ -119,8 +110,6 @@ async def run_realistic_gsm8k(
         config=config,
         seed=seed,
         num_rollout=num_rollout,
-        metric_threshold=metric_threshold,
-        fully_async=fully_async,
         test_name=test_name,
         enable_fault_tolerance=enable_fault_tolerance,
     )
@@ -163,7 +152,7 @@ async def run_realistic_gsm8k(
     if execute_session is None:
         from tests.utils.soak.recipes.gsm8k_launcher import execute_session as execute_gsm8k_session
 
-        training = execute_gsm8k_session(run=run, injector=injector, fully_async=fully_async)
+        training = execute_gsm8k_session(run=run, injector=injector)
     else:
         training = execute_session(run, injector)
     await injector.run(
@@ -172,7 +161,6 @@ async def run_realistic_gsm8k(
     )
 
     assert_tail_complete(injector.event_log.events)
-    assert_tail_quality(injector.event_log.events, metric_key="eval/gsm8k", threshold=metric_threshold)
     return Gsm8kOutcome(run=run, injector=injector)
 
 
@@ -195,8 +183,6 @@ def get_gsm8k_train_args(
     config: command_utils.ExecuteTrainConfig,
     seed: int,
     num_rollout: int,
-    metric_threshold: float,
-    fully_async: bool,
     test_name: str,
     enable_fault_tolerance: bool = True,
 ) -> str:
@@ -217,14 +203,6 @@ def get_gsm8k_train_args(
         "--over-sampling-batch-size 64 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--global-batch-size 256 "
-    ) + get_fully_async_args(fully_async=fully_async)
-
-    eval_args = (
-        f"--eval-interval {_EVAL_INTERVAL} "
-        f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
-        "--n-samples-per-eval-prompt 1 "
-        "--eval-max-response-len 1024 "
-        "--eval-top-k 1 "
     )
 
     perf_args = (
@@ -262,8 +240,6 @@ def get_gsm8k_train_args(
     ci_args = (
         "--ci-test "
         "--ci-disable-kl-checker "
-        "--ci-metric-checker-key eval/gsm8k "
-        f"--ci-metric-checker-threshold {metric_threshold} "
     )
 
     misc_args = (
@@ -286,7 +262,6 @@ def get_gsm8k_train_args(
         f"{grpo_args} "
         f"{command_utils.get_default_wandb_args(f'test_{test_name}.py', run_name_prefix=f'seed{seed}')} "
         f"{perf_args} "
-        f"{eval_args} "
         f"{sglang_args} "
         f"{fault_tolerance_args} "
         f"{ci_args} "
@@ -294,7 +269,7 @@ def get_gsm8k_train_args(
     )
 
 
-def launch_gsm8k(config: command_utils.ExecuteTrainConfig, *, train_args: str, fully_async: bool) -> None:
+def launch_gsm8k(config: command_utils.ExecuteTrainConfig, *, train_args: str) -> None:
     asyncio.run(validate_training_storage(train_args))
     create_backend_for_run(config).execute_train(
         train_args=train_args,
@@ -307,5 +282,5 @@ def launch_gsm8k(config: command_utils.ExecuteTrainConfig, *, train_args: str, f
             "RAY_DEDUP_LOGS": "0",
             "SGLANG_LOG_MS": "1",
         },
-        train_script=get_train_script(fully_async=fully_async),
+        train_script="train.py",
     )

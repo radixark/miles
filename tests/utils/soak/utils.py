@@ -26,20 +26,6 @@ def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) 
     return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
 
 
-DEFAULT_TRAIN_SCRIPT: str = "train.py"
-FULLY_ASYNC_TRAIN_SCRIPT: str = "train_async.py"
-
-
-def get_train_script(*, fully_async: bool) -> str:
-    return FULLY_ASYNC_TRAIN_SCRIPT if fully_async else DEFAULT_TRAIN_SCRIPT
-
-
-def get_fully_async_args(*, fully_async: bool) -> str:
-    if not fully_async:
-        return ""
-    return "--fully-async --pause-generation-mode in_place "
-
-
 _DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
 _DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
 

@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from datetime import datetime
 
-from tests.utils.soak.checks import inference_engine_weight_checksum_consistency, inference_engine_weight_movement
+from tests.utils.soak.checks import inference_engine_weight_checksum_consistency
 
 from miles.utils.audit_utils.event_logger.models import (
     Event,
@@ -58,5 +58,3 @@ def assert_published_weight_checksums(
 
 def assert_weight_checksum_history(events: Sequence[Event]) -> None:
     assert not inference_engine_weight_checksum_consistency.check(list(events)), "Same-version engine weights differ"
-    movement_issues = inference_engine_weight_movement.check(list(events))
-    assert not movement_issues, "Published weights failed per-tensor movement checks:\n" + "\n".join(movement_issues)

@@ -3,13 +3,11 @@
 import logging
 import random
 import time
-from copy import deepcopy
 
 from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.config import SoakCellPolicy, SoakPolicy
-from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
-from tests.utils.soak.hook_fault_form import HookFaultForm
-from tests.utils.soak.policy import eligible_cells, pending_actions
+from tests.utils.soak.fault_forms import CellFaultForms
+from tests.utils.soak.policy import eligible_cells
 from tests.utils.soak.state import (
     SoakActionAppliedEvent,
     SoakActionRequest,
@@ -156,12 +154,7 @@ class SoakActionScheduler:
             for kind in due_types
             if quiescent_polls_of_type[kind] >= self._quiescent_polls_required and cells_of_type[kind]
         }
-        ready_types = [
-            kind
-            for kind in due_types
-            if cells_of_type[kind]
-            and kind in quiescent_types
-        ]
+        ready_types = [kind for kind in due_types if cells_of_type[kind] and kind in quiescent_types]
         if not ready_types:
             logger.info(
                 "Deferring injection: no due cell kind is quiescent with a spare replica (due %s, "
@@ -174,11 +167,6 @@ class SoakActionScheduler:
 
         cell_type = self._rng.choice(ready_types)
         form = _draw_form(self._forms[cell_type], events=events, cell_type=cell_type, rng=self._rng)
-        reserved_triggers = {
-            (action.hook_trigger.cell_id, action.hook_trigger.workers_hash)
-            for action in pending_actions(events)
-            if action.hook_trigger is not None
-        }
         targets = cells_of_type[cell_type]
         if cell_type != "deployment":
             targets = eligible_cells(
@@ -187,91 +175,17 @@ class SoakActionScheduler:
                 policy=self.policy.cell_policies.get(cell_type, SoakCellPolicy()),
                 harms_cell=form.harms_cell,
             )
-            if form.harms_cell:
-                targets = [
-                    cell
-                    for cell in targets
-                    if (cell["metadata"]["name"], cell["status"].get("workers_hash")) not in reserved_triggers
-                ]
         if not targets:
             return None
         target = self._rng.choice(targets)
         if not form.is_eligible(events=events, target=target):
             return None
-        hook_trigger = None
-        target_form = form
-        if isinstance(form, HookFaultForm) and form.victim_form is not None:
-            target_form = form.victim_form
-            reserved_victims = {
-                (event.request.target["metadata"]["name"], event.request.target["status"].get("workers_hash"))
-                for event in events
-                if isinstance(event, SoakActionRequestedEvent)
-                and event.request.harms_cell
-                and isinstance(event.request.target, dict)
-            }
-            triggers = [
-                identity
-                for cell in observation.cells or []
-                if cell_type_of(cell) == "actor" and cell_is_alive(cell)
-                if (identity := observation.fault_targets.get(cell["metadata"]["name"])) is not None
-                and identity.workers_hash == cell["status"].get("workers_hash")
-                and (identity.cell_id, identity.workers_hash) not in reserved_triggers | reserved_victims
-            ]
-            if not triggers:
-                return None
-            hook_trigger = self._rng.choice(triggers)
-        request = _build_observed_request(
-            target=target, form=target_form, harms_cell=form.harms_cell, observation=observation, rng=self._rng
-        )
+        request = form.prepare_request(target=target, observation=observation, events=events, rng=self._rng)
         if request is None:
             return None
-        next_due_at = now + self._rng.expovariate(1.0 / self._mean_intervals[cell_type])
-        return request.model_copy(
-            update={
-                "form_name": form.name,
-                "next_due_at": next_due_at,
-                "hook_trigger": hook_trigger,
-                "hook_delay_ms": form.sample_delay(self._rng) if isinstance(form, HookFaultForm) else None,
-            }
-        )
-
-
-def _build_observed_request(
-    *,
-    target: dict | SoakDeploymentTarget,
-    form: SoakActionForm,
-    harms_cell: bool,
-    observation: SoakObservation,
-    rng: random.Random,
-) -> SoakActionRequest | None:
-    fault_target = None
-    candidates = None
-    if form.name.startswith(("inject_fault:", "hook:")):
-        assert isinstance(target, dict), "Fault injection requires a cell target"
-        fault_target = observation.fault_targets.get(target["metadata"]["name"])
-        if fault_target is None or fault_target.workers_hash != target["status"].get("workers_hash"):
-            return None
-    if form.name in {"delete_pod", "exec_sigkill", "exec_sigstop"}:
-        assert isinstance(target, dict), "Pod faults require a cell target"
-        candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
-        if isinstance(form, ExecSigkillFaultForm):
-            candidates = [
-                pod
-                for pod in candidates
-                if all(
-                    container in pod.process_targets and pod.process_targets[container].pattern == pattern
-                    for container, pattern in form.process_patterns.items()
-                )
-            ]
-        if not candidates:
-            return None
-    return SoakActionRequest(
-        target=deepcopy(target),
-        form_name=form.name,
-        harms_cell=harms_cell,
-        pod=rng.choice(candidates) if candidates is not None else None,
-        fault_target=fault_target,
-    )
+        return request.model_copy(update={
+            "next_due_at": now + self._rng.expovariate(1.0 / self._mean_intervals[cell_type])
+        })
 
 
 def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bool:

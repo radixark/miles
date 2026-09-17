@@ -10,7 +10,6 @@ from typing import Annotated
 import typer
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import (
-    FullyAsyncOption,
     ModeOption,
     NumStepsOption,
     RolloutCrashIntervalSecondsOption,
@@ -39,8 +38,6 @@ from tests.utils.soak.utils import (
     create_soak_config,
     evidence_directory,
     get_api_server_args,
-    get_fully_async_args,
-    get_train_script,
 )
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
@@ -65,7 +62,6 @@ def run_ci(
     num_steps: NumStepsOption = DEFAULT_NUM_STEPS,
     trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
     rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
-    fully_async: FullyAsyncOption = False,
     precise_all_gather: Annotated[bool, typer.Option()] = False,
     precise_p2p: Annotated[bool, typer.Option()] = False,
     mix_wall_clock: Annotated[bool, typer.Option()] = False,
@@ -92,15 +88,13 @@ def run_ci(
             "kill_rollout__dp2_tp2",
         }, "Precise P2P requires a disaggregated TP2 mode"
     tail_policy = create_tail_policy(num_rollout=num_steps)
-    if fully_async:
-        assert_mode_supports_fully_async(ft_mode, mode=mode)
 
     config = create_soak_config(command_utils.default_config())
-    test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
+    test_name: str = TEST_NAME
     if precise_all_gather:
-        test_name = f"precise_all_gather{'_fully_async' if fully_async else ''}"
+        test_name = "precise_all_gather"
     if precise_p2p:
-        test_name = f"precise_p2p{'_fully_async' if fully_async else ''}"
+        test_name = "precise_p2p"
     if mix_wall_clock:
         test_name += "_mixed"
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
@@ -112,7 +106,6 @@ def run_ci(
     )
     print(f"Seed: {seed}, Steps: {num_steps}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
     print(f"FT components: {ft_mode.ft_components}, cluster backend: {config.cluster_backend.value}")
-    print(f"Train script: {get_train_script(fully_async=fully_async)}")
 
     prepare(ft_mode, config=config)
 
@@ -125,7 +118,6 @@ def run_ci(
             ft_mode,
             api_server_args=get_api_server_args(config),
         )
-        + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
     if ft_mode.has_real_rollout:
@@ -199,7 +191,7 @@ def run_ci(
                     mode=ft_mode,
                     extra_env_vars={},
                     config=config,
-                    train_script=get_train_script(fully_async=fully_async),
+                    train_script="train.py",
                 ),
                 injector=injector,
                 log_path=evidence_dir / "launcher-initial.log",
@@ -246,16 +238,6 @@ def run_ci(
     )
 
     print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
-
-
-def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:
-    assert ft_mode.has_real_rollout, (
-        f"Mode {mode!r} has no rollout engines, so a fully-async soak would train off pre-recorded debug rollout "
-        f"data and would prove nothing about generating while training"
-    )
-    assert (
-        not ft_mode.colocate
-    ), f"Mode {mode!r} is colocated, which train_async.py rejects: a fully-async run needs engines of its own"
 
 
 if __name__ == "__main__":

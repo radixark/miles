@@ -14,7 +14,6 @@ class CommandActor(NodeProbeMixin):
     def __init__(self) -> None:
         self._process: subprocess.Popen | None = None
         self._shutting_down = False
-        self._fault_lock = threading.Lock()
 
     def run(self, cmd: str, envs: dict[str, str]) -> None:
         assert self._process is None, "CommandActor.run can only be called once"
@@ -28,9 +27,8 @@ class CommandActor(NodeProbeMixin):
         if self._process is None:
             return
 
-        with self._fault_lock:
-            self._shutting_down = True
-            process_utils.terminate_process_tree(self._process)
+        self._shutting_down = True
+        process_utils.terminate_process_tree(self._process)
 
     def kill_subprocess(self) -> None:
         assert self._process is not None, "CommandActor has no subprocess to kill"
@@ -47,23 +45,21 @@ class CommandActor(NodeProbeMixin):
         )
 
         logger.warning("CommandActor injects %s into subprocess tree pid=%s", mode, self._process.pid)
-        with self._fault_lock:
-            root_pidfd = os.pidfd_open(self._process.pid)
-            try:
-                if failure_mode is fault_injector.FailureMode.SIGSTOP:
-                    process_utils.stop_process_tree_and_wait(self._process, root_pidfd=root_pidfd)
-                    return
-                process_utils.kill_process_tree_and_wait(self._process, root_pidfd=root_pidfd)
-            finally:
-                os.close(root_pidfd)
+        root_pidfd = os.pidfd_open(self._process.pid)
+        try:
+            if failure_mode is fault_injector.FailureMode.SIGSTOP:
+                process_utils.stop_process_tree_and_wait(self._process, root_pidfd=root_pidfd)
+                return
+            process_utils.kill_process_tree_and_wait(self._process, root_pidfd=root_pidfd)
+        finally:
+            os.close(root_pidfd)
 
     def _babysit(self, process: subprocess.Popen) -> None:
         returncode = process.wait()
 
-        with self._fault_lock:
-            if self._shutting_down:
-                logger.info(f"CommandActor subprocess exited with returncode={returncode} during shutdown")
-                return
+        if self._shutting_down:
+            logger.info(f"CommandActor subprocess exited with returncode={returncode} during shutdown")
+            return
 
-            logger.info(f"CommandActor exits since its subprocess exited with returncode={returncode}")
-            os._exit(returncode if 0 <= returncode <= 255 else 1)
+        logger.info(f"CommandActor exits since its subprocess exited with returncode={returncode}")
+        os._exit(returncode if 0 <= returncode <= 255 else 1)

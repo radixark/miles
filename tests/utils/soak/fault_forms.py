@@ -2,13 +2,14 @@
 
 import asyncio
 import logging
+import random
 from typing import Literal
 
 import httpx
 from tests.utils.soak.action import SoakActionForm, run_command
 from tests.utils.soak.pod_manipulation import delete_observed_pod
 from tests.utils.soak.process_target import ProcessExitReceipt, ProcessStopReceipt
-from tests.utils.soak.state import SoakActionRequest, SoakPodTarget
+from tests.utils.soak.state import SoakActionRequest, SoakDeploymentTarget, SoakEvent, SoakObservation, SoakPodTarget
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
@@ -51,6 +52,21 @@ class InjectFaultForm(SoakActionForm):
     @property
     def name(self) -> str:
         return f"inject_fault:{self._failure_mode.value}"
+
+    def fault_target_types(self, kind: str) -> set[str]:
+        return {kind}
+
+    def prepare_request(
+        self, *, target: dict | SoakDeploymentTarget, observation: SoakObservation,
+        events: list[SoakEvent], rng: random.Random,
+    ) -> SoakActionRequest | None:
+        assert isinstance(target, dict)
+        identity = observation.fault_targets.get(target["metadata"]["name"])
+        if identity is None or identity.workers_hash != target["status"].get("workers_hash"):
+            return None
+        request = super().prepare_request(target=target, observation=observation, events=events, rng=rng)
+        assert request is not None
+        return request.model_copy(update={"fault_target": identity})
 
     async def execute(self, request: SoakActionRequest) -> dict:
         assert request.form_name == self.name, f"Request {request.request_id} names another form: {request.form_name}"
@@ -133,6 +149,12 @@ class DeletePodFaultForm(SoakActionForm):
     def name(self) -> str:
         return DELETE_POD_FORM_NAME
 
+    def prepare_request(
+        self, *, target: dict | SoakDeploymentTarget, observation: SoakObservation,
+        events: list[SoakEvent], rng: random.Random,
+    ) -> SoakActionRequest | None:
+        return _prepare_pod_request(form=self, target=target, observation=observation, rng=rng)
+
     async def execute(self, request: SoakActionRequest) -> dict:
         pod = _validate_pod_request(
             request=request, form_name=self.name, namespace=self._namespace, release=self._release
@@ -159,6 +181,12 @@ class ExecSigkillFaultForm(SoakActionForm):
     @property
     def process_patterns(self) -> dict[str, str]:
         return {self._container: self._process_pattern}
+
+    def prepare_request(
+        self, *, target: dict | SoakDeploymentTarget, observation: SoakObservation,
+        events: list[SoakEvent], rng: random.Random,
+    ) -> SoakActionRequest | None:
+        return _prepare_pod_request(form=self, target=target, observation=observation, rng=rng)
 
     async def execute(self, request: SoakActionRequest) -> dict:
         return await self._execute_signal(request=request, operation="kill")
@@ -211,6 +239,23 @@ class ExecSigstopFaultForm(ExecSigkillFaultForm):
 
     async def execute(self, request: SoakActionRequest) -> dict:
         return await self._execute_signal(request=request, operation="stop")
+
+
+def _prepare_pod_request(
+    *, form: SoakActionForm, target: dict | SoakDeploymentTarget,
+    observation: SoakObservation, rng: random.Random,
+) -> SoakActionRequest | None:
+    assert isinstance(target, dict)
+    candidates = [
+        pod for pod in observation.pods_of_cell.get(target["metadata"]["name"], [])
+        if all(
+            container in pod.process_targets and pod.process_targets[container].pattern == pattern
+            for container, pattern in form.process_patterns.items()
+        )
+    ]
+    if not candidates:
+        return None
+    return SoakActionRequest(target=target, form_name=form.name, harms_cell=form.harms_cell, pod=rng.choice(candidates))
 
 
 def _validate_pod_request(

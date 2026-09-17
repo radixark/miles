@@ -9,13 +9,11 @@ from tests.utils.soak.action import run_command
 
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
-    MetricEvent,
     TrainGroupStepEndEvent,
-    WeightUpdateAssignmentEvent,
 )
 
 TrainingEvent = Annotated[
-    CellReconfigureEvent | TrainGroupStepEndEvent | MetricEvent | WeightUpdateAssignmentEvent,
+    CellReconfigureEvent | TrainGroupStepEndEvent,
     Field(discriminator="type"),
 ]
 _adapter = TypeAdapter(list[TrainingEvent])
@@ -48,9 +46,7 @@ def _read_events(directory: Path) -> list[TrainingEvent]:
                 if not line.strip():
                     continue
                 payload = json.loads(line)
-                if payload["type"] in {"cell_reconfigure", "train_group_step_end", "weight_update_assignment"}:
-                    events.append(payload)
-                elif payload["type"] == "metric" and any(key.startswith("eval/") for key in payload["metrics"]):
+                if payload["type"] in {"cell_reconfigure", "train_group_step_end"}:
                     events.append(payload)
     return _adapter.validate_python(events)
 

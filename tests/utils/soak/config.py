@@ -35,8 +35,5 @@ def create_policy(
     expected_cells: dict[str, int],
 ) -> SoakPolicy:
     return SoakPolicy(
-        cell_policies={
-            kind: SoakCellPolicy(expected_cells=count)
-            for kind, count in expected_cells.items()
-        },
+        cell_policies={kind: SoakCellPolicy(expected_cells=count) for kind, count in expected_cells.items()},
     )

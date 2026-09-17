@@ -47,7 +47,7 @@ async def execute_hot_restart_session(run: Gsm8kRun, injector: SoakSession) -> N
 async def _launch_initial(run: Gsm8kRun) -> None:
     log_path = run.evidence_dir / "launcher-initial.log"
     result = await launch(
-        Gsm8kLaunchSpec(config=run.config, train_args=run.train_args, fully_async=False),
+        Gsm8kLaunchSpec(config=run.config, train_args=run.train_args),
         log_path=log_path,
         timeout_seconds=SESSION_TIMEOUT_SECONDS,
     )

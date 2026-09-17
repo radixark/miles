@@ -10,8 +10,7 @@ from typing import Any
 
 from tests.utils.soak.config import SoakPolicy, SoakTailPolicy, SoakTimeouts
 from tests.utils.soak.core import POLL_INTERVAL_SECONDS, QUIESCENT_POLLS_REQUIRED, SoakActionScheduler
-from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
-from tests.utils.soak.hook_fault_form import HookFaultForm
+from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.state import EventLog, SoakRunContextEvent
@@ -52,39 +51,23 @@ class SoakSession:
             self.event_log.persist_to(evidence_path)
         self.cell_fault_forms = cell_fault_forms
         self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
-        target_forms = {
-            kind: [
-                form.victim_form if isinstance(form, HookFaultForm) and form.victim_form is not None else form
-                for form in cell_fault_forms[kind]
-            ]
-            for kind in self._cell_types
-        }
         fault_target_types = {
-            kind
-            for kind, forms in target_forms.items()
-            if any(form.name.startswith(("inject_fault:", "hook:")) for form in forms)
-        }
-        if any(
-            isinstance(form, HookFaultForm) and form.victim_form is not None
+            target_kind
             for kind in self._cell_types
             for form in cell_fault_forms[kind]
-        ):
-            fault_target_types.add("actor")
+            for target_kind in form.fault_target_types(kind)
+        }
+        process_patterns = {
+            kind: {container: pattern for form in cell_fault_forms[kind] for container, pattern in form.process_patterns.items()}
+            for kind in self._cell_types
+        }
         self._runner = SoakRunner(
             observer=(
                 replace(
                     observer,
                     cell_types=(self._cell_types | fault_target_types) - {"deployment"},
                     fault_target_cell_types=frozenset(fault_target_types),
-                    process_patterns_of_type={
-                        kind: {
-                            container: pattern
-                            for form in target_forms[kind]
-                            if isinstance(form, ExecSigkillFaultForm)
-                            for container, pattern in form.process_patterns.items()
-                        }
-                        for kind in self._cell_types
-                    },
+                    process_patterns_of_type=process_patterns,
                 )
                 if observer is not None
                 else SoakObserver(
@@ -93,15 +76,7 @@ class SoakSession:
                     namespace=namespace,
                     release=release,
                     fault_target_cell_types=frozenset(fault_target_types),
-                    process_patterns_of_type={
-                        kind: {
-                            container: pattern
-                            for form in target_forms[kind]
-                            if isinstance(form, ExecSigkillFaultForm)
-                            for container, pattern in form.process_patterns.items()
-                        }
-                        for kind in self._cell_types
-                    },
+                    process_patterns_of_type=process_patterns,
                 )
             ),
             scheduler=SoakActionScheduler(

@@ -11,20 +11,6 @@ from tests.utils.soak.state import (
 )
 
 
-def pending_actions(events: list[SoakEvent]) -> list[SoakActionRequest]:
-    pending: dict[str, SoakActionRequest] = {}
-    for event in events:
-        if isinstance(event, SoakActionRequestedEvent):
-            pending[event.request.request_id] = event.request
-        elif isinstance(event, SoakActionResultEvent):
-            pending.pop(event.request_id, None)
-        elif isinstance(event, SoakActionAppliedEvent):
-            request = pending.get(event.request_id)
-            if request is not None and isinstance(request.target, SoakDeploymentTarget):
-                del pending[event.request_id]
-    return list(pending.values())
-
-
 def eligible_cells(
     *, cells: list[dict], events: list[SoakEvent], policy: SoakCellPolicy, harms_cell: bool
 ) -> list[dict]:
@@ -42,10 +28,7 @@ def eligible_cells(
         cell
         for cell in cells
         if _identity(cell) in ready
-        and (
-            not harms_cell
-            or (_identity(cell) not in reserved and len(ready - {_identity(cell)}) >= 1)
-        )
+        and (not harms_cell or (_identity(cell) not in reserved and len(ready - {_identity(cell)}) >= 1))
     ]
 
 
