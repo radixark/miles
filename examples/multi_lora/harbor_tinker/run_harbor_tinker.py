@@ -1,4 +1,4 @@
-"""Harbor × Tinker RL on the multi-LoRA gateway: HarborTinkerConfig → cookbook train.Config (HarborDatasetBuilder + SessionRolloutStrategy) → train.main, with a sandbox preflight; usage and run order in README.md."""
+"""Harbor × Tinker RL on the multi-LoRA gateway: HarborTinkerConfig → cookbook train.Config → train.main."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ RECIPE_NAME = "harbor-tinker"
 
 @chz.chz
 class HarborTinkerConfig:
-    """CLI knobs on top of cookbook's train.Config: gateway URL, tasks dir, harness, batch shape, concurrency, lengths."""
+    """CLI knobs on top of cookbook's train.Config: gateway, tasks dir, harness, batch shape, concurrency, lengths."""
 
     gateway: str
     model_name: str
@@ -37,9 +37,7 @@ class HarborTinkerConfig:
     concurrency: int = 16
     max_seq_len: int = 65536
     max_tokens: int = 8192
-    max_datum_tokens: int = (
-        32768  # set to the gateway's per-datum cap (min of model max_position_embeddings and --max-tokens-per-gpu); longer turns are dropped client-side
-    )
+    max_datum_tokens: int = 32768  # the gateway's per-datum cap; longer turns are dropped client-side
     temperature: float = 1.0
     loss_fn: str = "ppo"
     learning_rate: float = 3e-5
@@ -50,7 +48,7 @@ class HarborTinkerConfig:
 
 
 def preflight_sandbox() -> None:
-    """Fail fast before training: HARBOR_ENV_TYPE and HARBOR_TASKS_DIR set, a known provider with its credential in place (credential_available), its SDK importable at the floor version (preflight_sdk), and for a self-hosted AgentENV (E2B_API_URL) the endpoint answering the key (401 = bad key, refused = cluster stopped or off the tailnet)."""
+    """Fail fast before training: env vars, provider credential and SDK floor, and the AgentENV endpoint answering."""
     env_type = os.environ.get("HARBOR_ENV_TYPE", "").strip().lower()
     if not env_type:
         raise RuntimeError("set HARBOR_ENV_TYPE to the sandbox provider Harbor runs trials on (e2b for AgentENV)")
@@ -75,7 +73,7 @@ def preflight_sandbox() -> None:
 
 
 def _probe_agentenv(api_url: str, api_key: str) -> None:
-    """GET {E2B_API_URL}/sandboxes with the key: a refused connection means the cluster is stopped or this host is off its tailnet, 401 means the key is wrong; anything else is left to Harbor's own errors."""
+    """GET {E2B_API_URL}/sandboxes with the key: refused = cluster stopped or off the tailnet, 401 = wrong key."""
     try:
         response = httpx.get(f"{api_url.rstrip('/')}/sandboxes", headers={"X-API-Key": api_key}, timeout=10.0)
     except httpx.HTTPError as error:
@@ -87,7 +85,7 @@ def _probe_agentenv(api_url: str, api_key: str) -> None:
 
 
 def build_config(config: HarborTinkerConfig) -> train.Config:
-    """train.Config(model_name, base_url=gateway, recipe_name, log_path, dataset_builder=HarborDatasetBuilder(...), rollout_error_tolerance=SessionRolloutStrategy(...), learning_rate, lora_rank, max_tokens, temperature, loss_fn, max_steps, save_every, wandb_project); the cookbook's ttl_seconds default is accepted by the gateway."""
+    """Build cookbook train.Config from HarborTinkerConfig (HarborDatasetBuilder + SessionRolloutStrategy)."""
     api_key = config.api_key or os.environ.get("TINKER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
@@ -127,7 +125,7 @@ def build_config(config: HarborTinkerConfig) -> train.Config:
 
 
 def main(config: HarborTinkerConfig) -> None:
-    """Export what the trial runner and the SDK read (HARBOR_TASKS_DIR = tasks_dir, TINKER_API_KEY), preflight the sandbox, then run cookbook train.main."""
+    """Export HARBOR_TASKS_DIR and TINKER_API_KEY for the trial runner and SDK, preflight, then run train.main."""
     os.environ.setdefault("HARBOR_TASKS_DIR", config.tasks_dir)
     if config.api_key:
         os.environ.setdefault("TINKER_API_KEY", config.api_key)

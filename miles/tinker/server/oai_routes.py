@@ -1,4 +1,4 @@
-"""The four recorded-session routes (POST bind, POST chat/completions, GET turns, DELETE) mounted next to the Tinker API; no OpenAI-parity surface in stage 1; reuses build_app / _tenant and adds the 404 / 429 / 502 handlers."""
+"""The four recorded-session routes (bind, chat, turns, delete) beside the Tinker API, with 404/429/502 handlers."""
 
 import json
 
@@ -20,7 +20,7 @@ MAX_BODY_BYTES = 16 * 1024 * 1024
 
 
 def _optional_tenant(request: Request) -> str | None:
-    """_tenant, but None instead of UserInputError when no key is present (a pre-bound session serves the harness's dummy key)."""
+    """_tenant, but None when no key is present (a pre-bound session serves the harness's dummy key)."""
     try:
         return _tenant(request)
     except UserInputError:
@@ -28,7 +28,7 @@ def _optional_tenant(request: Request) -> str | None:
 
 
 async def _json_body(request: Request) -> dict:
-    """The JSON object body, or a UserInputError (400) instead of an unhandled decode error; bodies over MAX_BODY_BYTES are refused."""
+    """The JSON object body as a dict; bad JSON is a UserInputError (400); bodies over MAX_BODY_BYTES are refused."""
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
         raise UserInputError(f"request body of {len(body)} bytes exceeds the {MAX_BODY_BYTES}-byte limit")
@@ -44,7 +44,7 @@ async def _json_body(request: Request) -> dict:
 
 
 def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None:
-    """Mount the four /oai/sessions routes and their handlers: UnknownSessionError→404, SessionLimitError→429, SamplingBackendError→502 (400/403 come from build_app)."""
+    """Mount the four /oai/sessions routes; UnknownSession→404, SessionLimit→429, SamplingBackend→502."""
 
     @app.exception_handler(UnknownSessionError)
     async def _unknown_session(request: Request, error: UnknownSessionError):
@@ -60,7 +60,7 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None
 
     @app.post("/oai/sessions/{session_id}")
     async def bind_session(session_id: str, request: Request):
-        """Pin the session to {model: tinker://M/sampler_weights/V} (or {sampling_session_id}), optionally with the client's {max_datum_tokens} as the TITO chain budget; bearer required; the example's step 1."""
+        """Pin the session to a tinker:// path or sampling_session_id (optional max_datum_tokens); bearer required."""
         tenant = _tenant(request)
         payload = await _json_body(request)
         session = collector.bind(
@@ -74,13 +74,13 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None
 
     @app.post("/oai/sessions/{session_id}/v1/chat/completions")
     async def session_chat_completions(session_id: str, request: Request):
-        """OpenAI chat completion recorded as one Turn; a pre-bound session accepts the harness's dummy key, a new id with a valid bearer auto-registers; the example's step 2."""
+        """Chat completion recorded as one Turn; dummy key for pre-bound sessions, a real bearer auto-registers."""
         tenant = _optional_tenant(request)
         return await collector.chat(await _json_body(request), session_id=session_id, tenant=tenant)
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
-        """Export {session_id, model_path, turns: [{input_ids, output_ids, logprobs, finish_reason, inherits}]}; bearer must match the owner; the example's step 3."""
+        """Export {session_id, model_path, turns: [ids, logprobs, finish_reason, inherits]}; owner only."""
         return collector.trajectory(session_id, _tenant(request))
 
     @app.delete("/oai/sessions/{session_id}")

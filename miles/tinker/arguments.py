@@ -55,7 +55,7 @@ def configure_tinker_args(args):
 
 
 def _configure_tito(args):
-    """--tinker-tito-model names a TITOTokenizer family: its registered fixed chat template becomes --chat-template-path (a caller-given path is a conflict, as for --tito-model) and its required kwargs merge into --apply-chat-template-kwargs, so the full render and the incremental render agree."""
+    """--tinker-tito-model: install the family's fixed chat template and merge its kwargs so both renders agree."""
     if args.tinker_tito_model is None:
         return
     if args.chat_template_path is not None:
