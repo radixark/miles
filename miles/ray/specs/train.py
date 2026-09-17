@@ -6,7 +6,6 @@ from miles.backends.megatron_utils.megatron_config import (
     CRITIC_ROLE,
     MegatronTrainerConfig,
     compute_trainer_args,
-    resolve_megatron_config,
 )
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
@@ -65,7 +64,7 @@ def specs_trainer_controller(args) -> list[ServeWorkerSpec]:
 
 
 def compute_trainer_configs(args) -> list[MegatronTrainerConfig]:
-    return resolve_megatron_config(args).trainers
+    return args.raw_megatron.trainers
 
 
 def external_trainer_controller_addrs(args, *, trainer_ids: list[str]) -> dict[str, HostAndPort] | None:

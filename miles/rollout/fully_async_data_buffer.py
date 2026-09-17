@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter, iter_samples
 from miles.rollout.filter_hub.common_filters import apply_aborted_filter, apply_missing_reward_filter, group_staleness
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
@@ -286,7 +285,7 @@ class DefaultMultiDataBuffer(DataBuffer):
 
     def __init__(self, input: DataBufferConstructorInput):
         paths = _parse_data_buffer_paths(input.args.custom_async_data_buffer_path_per_model)
-        model_ids = resolve_megatron_config(input.args).model_ids
+        model_ids = input.args.raw_megatron.model_ids
         assert not (unknown := sorted(set(paths) - set(model_ids))), (
             f"{DATA_BUFFER_PATH_PER_MODEL_FLAG} names {unknown}, which train no policy of this run "
             f"({sorted(model_ids)})"

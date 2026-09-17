@@ -8,7 +8,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
-from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir, resolve_megatron_config
+from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ def discard(args: Namespace) -> None:
 
 
 def _read_checkpoint_iteration(args: Namespace) -> int | None:
-    leader = resolve_megatron_config(args).trainers[0]
+    leader = args.raw_megatron.trainers[0]
     load_dir = (
         compute_trainer_checkpoint_dir(base_dir=args.requested_load, trainer_id=leader.trainer_id)
         if leader.model_id is not None
