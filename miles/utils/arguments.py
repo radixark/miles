@@ -393,7 +393,9 @@ def parse_args_and_get_parser(
     sglang_validate_args(args)
 
     assert parser is not None
-    return AllConfig.model_validate(vars(args)), parser
+    values = vars(args).copy()
+    values.update(RouterConfig.from_args(args))
+    return AllConfig.model_validate(values), parser
 
 
 def parse_args_train_backend():
