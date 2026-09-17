@@ -9,7 +9,7 @@ from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
 from miles.ray.specs.train import ACTOR_ROLE, compute_trainer_configs
 from miles.ray.wiring import get_backend_capability
-from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
+from miles.tinker.arguments import configure_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
@@ -103,5 +103,5 @@ async def serve(args, *, disposer: Disposer):
 
 
 if __name__ == "__main__":
-    args = parse_args(add_tinker_arguments, entry="serve", preprocess_args=configure_tinker_args)
+    args = parse_args(entry="serve", preprocess_args=configure_tinker_args)
     asyncio.run(with_disposer(serve, args))
