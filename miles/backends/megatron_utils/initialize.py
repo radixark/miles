@@ -12,6 +12,7 @@ from megatron.core.num_microbatches_calculator import init_num_microbatches_calc
 from megatron.core.tensor_parallel.random import _get_all_rng_states, _set_all_rng_states
 from megatron.training.global_vars import _build_tokenizer, set_args
 
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import register_hf_config_aliases
@@ -96,6 +97,7 @@ def init(
     indep_dp_store_addr: str | None = None,
     indep_dp_info: IndepDPInfo | None = None,
 ):
+    assert isinstance(args.backend, MegatronArgsNamespace)
     if indep_dp_info is None:
         indep_dp_info = IndepDPInfo.create_trivial()
 
