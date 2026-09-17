@@ -2,7 +2,7 @@ import asyncio
 
 from tests.utils.soak.deploy.soak_form import SESSION_TIMEOUT_SECONDS
 from tests.utils.soak.deploy.utils import REPLACED_LAUNCH_EXIT_CODE
-from tests.utils.soak.entrypoint import SoakSession
+from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.recipes.gsm8k import Gsm8kRun
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
 from tests.utils.soak.state import SoakDeploymentTarget, SoakEvent, SoakLauncherExitedEvent
@@ -32,7 +32,7 @@ def assert_hot_restart_launches_finished(events: list[SoakEvent]) -> None:
             assert exit_event.returncode == 0, f"Launcher failed: {exit_event}"
 
 
-async def execute_hot_restart_session(run: Gsm8kRun, injector: SoakSession) -> None:
+async def execute_hot_restart_session(run: Gsm8kRun, injector: SoakRunner) -> None:
     async with asyncio.timeout(SESSION_TIMEOUT_SECONDS):
         async with asyncio.TaskGroup() as tasks:
             initial = tasks.create_task(_launch_initial(run))

@@ -1,8 +1,11 @@
 import asyncio
+import builtins
 import logging
 import subprocess
 import time
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
+from typing import Any
 
 import httpx
 from tests.utils.soak.action import SoakActionError, SoakActionForm
@@ -28,6 +31,9 @@ from miles.utils.audit_utils.process_identity import TrainerControllerProcessIde
 
 logger = logging.getLogger(__name__)
 
+# A pod deletion, the slowest form, cannot be cancelled and is two kubectl calls bounded at a minute.
+SHUTDOWN_TIMEOUT_SECONDS: float = 180.0
+
 
 class SoakRunner:
     def __init__(
@@ -43,6 +49,9 @@ class SoakRunner:
         tail_policy: SoakTailPolicy | None = None,
     ) -> None:
         assert poll_interval_seconds >= 0
+        self.event_log = event_log
+        self.cell_fault_forms = forms
+        self.timeouts = timeouts if timeouts is not None else SoakTimeouts()
         self._observer = observer
         self._scheduler = scheduler
         self._forms: dict[tuple[str, str], SoakActionForm] = {}
@@ -54,13 +63,86 @@ class SoakRunner:
                 self._forms[key] = form
         self._event_log = event_log
         self._poll_interval_seconds = poll_interval_seconds
-        self._timeouts = timeouts if timeouts is not None else SoakTimeouts()
+        self._timeouts = self.timeouts
         self._training_events_dir = training_events_dir
         self._tail_policy = tail_policy
         if tail_policy is not None and training_events_dir is None:
             raise ValueError("A recovery tail requires live training events")
 
-    async def run(self, stop_event: asyncio.Event) -> None:
+    async def run(self, training: Coroutine[Any, Any, None], *, teardown: Callable[[], Awaitable[None]]) -> None:
+        started = asyncio.Event()
+        cleaning = asyncio.Event()
+        owned = asyncio.create_task(
+            self._run(training=training, teardown=teardown, started=started, cleaning=cleaning)
+        )
+        cancelled: asyncio.CancelledError | None = None
+        forwarded = False
+        while not owned.done():
+            try:
+                if cancelled is not None and not forwarded:
+                    if not started.is_set():
+                        await asyncio.sleep(0)
+                        continue
+                    if not cleaning.is_set():
+                        owned.cancel()
+                        forwarded = True
+                await asyncio.shield(owned)
+            except asyncio.CancelledError as error:
+                cancelled = error
+            except BaseException:
+                break
+        try:
+            owned.result()
+        except BaseException as error:
+            if cancelled is not None and not forwarded and not isinstance(error, asyncio.CancelledError):
+                raise builtins.BaseExceptionGroup("Soak cancellation and cleanup failed", [cancelled, error]) from None
+            raise
+        if cancelled is not None:
+            raise cancelled
+
+    async def _run(
+        self,
+        *,
+        training: Coroutine[Any, Any, None],
+        teardown: Callable[[], Awaitable[None]],
+        started: asyncio.Event,
+        cleaning: asyncio.Event,
+    ) -> None:
+        started.set()
+        stopped = asyncio.Event()
+        errors: list[BaseException] = []
+        try:
+            async with asyncio.TaskGroup() as tasks:
+                observing = tasks.create_task(self._run_observer(stopped))
+                launched = tasks.create_task(training)
+                try:
+                    async with asyncio.timeout(self.timeouts.run_seconds):
+                        await launched
+                finally:
+                    self.event_log.close_admission()
+                    stopped.set()
+                    async with asyncio.timeout(SHUTDOWN_TIMEOUT_SECONDS):
+                        await observing
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            cleaning.set()
+            training.close()
+            try:
+                self.event_log.close_admission()
+            except BaseException as error:
+                errors.append(error)
+            for cleanup in (self.finish, teardown, self.event_log.finish):
+                try:
+                    await cleanup()
+                except BaseException as error:
+                    errors.append(error)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise builtins.BaseExceptionGroup("Soak session failed", errors)
+
+    async def _run_observer(self, stop_event: asyncio.Event) -> None:
         self._event_log.note_schedule(self._scheduler.initial_schedule())
         async with asyncio.TaskGroup() as tasks:
             observing = tasks.create_task(self._observe_and_choose(stop_event))
@@ -72,6 +154,12 @@ class SoakRunner:
     async def finish(self) -> None:
         self._finalize_cancelled_actions()
         await self._observe_and_record(timeout_seconds=self._timeouts.final_observation_seconds)
+        events = self.get_events()
+        for request_id, action in project_actions(events).items():
+            request = action.requested.request
+            form = self._forms[(target_type_of(request.target), request.form_name)]
+            assert action.result is not None and action.result.returned, f"Action did not finish: {request_id}"
+            assert form.is_recovered(action=action, events=events), f"Action did not recover: {request_id}"
 
     def get_events(self) -> list[SoakEvent]:
         return self._event_log.events

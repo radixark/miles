@@ -2,7 +2,7 @@ from pathlib import Path
 
 from tests.utils.soak.fault_forms import ACTOR_CELL_TYPE, CELL_TYPE_OF_FT_COMPONENT, ROLLOUT_CELL_TYPE, CellFaultForms
 from tests.utils.soak.recovery import compute_recovery_episodes
-from tests.utils.soak.state import SoakEvent, event_source
+from tests.utils.soak.state import SoakEvent, SoakObservation, event_source
 from tests.utils.soak.views import (
     compute_forms_drawn_without_success,
     compute_num_injections,
@@ -62,7 +62,14 @@ def _assert_enabled_fault_forms_worked(
 def assert_trainer_injections_healed(events: list[SoakEvent], *, event_dir: Path) -> None:
     event_dir = event_source(events, name="training_events", fallback=event_dir)
     assert event_dir.is_dir(), f"Event directory {event_dir} does not exist or is not a directory"
-    _assert_recovery_episodes(events, cell_type=ACTOR_CELL_TYPE, reconfigurations=load_reconfigure_events(event_dir))
+    reconfigurations = [
+        step for observation in events if isinstance(observation, SoakObservation)
+        for step in observation.training_events if isinstance(step, CellReconfigureEvent)
+    ]
+    _assert_recovery_episodes(
+        events, cell_type=ACTOR_CELL_TYPE,
+        reconfigurations=[*reconfigurations, *load_reconfigure_events(event_dir)],
+    )
 
 
 def assert_rollout_cells_served_after_injection(events: list[SoakEvent]) -> None:

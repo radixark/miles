@@ -3,7 +3,7 @@ from pathlib import Path
 
 import typer
 from tests.utils.soak.action import run_command
-from tests.utils.soak.entrypoint import SoakSession
+from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.recipes.gsm8k import Gsm8kRun, launch_gsm8k
 from tests.utils.soak.state import SoakLauncherExitedEvent
 
@@ -18,7 +18,7 @@ class Gsm8kLaunchSpec(FrozenStrictBaseModel):
     train_args: str
 
 
-async def execute_session(*, run: Gsm8kRun, injector: SoakSession) -> None:
+async def execute_session(*, run: Gsm8kRun, injector: SoakRunner) -> None:
     log_path = run.evidence_dir / "launcher-initial.log"
     result = await launch(
         Gsm8kLaunchSpec(config=run.config, train_args=run.train_args),

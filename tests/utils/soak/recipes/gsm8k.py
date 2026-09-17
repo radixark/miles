@@ -11,7 +11,8 @@ from uuid import uuid4
 from tests.fast.cluster_backends import create_backend_for_run
 from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.config import SoakPolicy, create_policy, create_tail_policy
-from tests.utils.soak.entrypoint import API_SERVER_PORT, SoakSession, create_soak_session
+from tests.utils.soak.entrypoint import API_SERVER_PORT, create_soak_session
+from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.state import EventLog
@@ -65,7 +66,7 @@ class Gsm8kRun:
 @dataclass(frozen=True)
 class Gsm8kOutcome:
     run: Gsm8kRun
-    injector: SoakSession
+    injector: SoakRunner
 
 
 CreateCellFaultFormsFn = Callable[[Gsm8kRun], CellFaultForms]
@@ -82,7 +83,7 @@ async def run_realistic_gsm8k(
     build_extra_train_args: Callable[[str], str],
     enable_fault_tolerance: bool = True,
     create_observer: Callable[[Gsm8kRun], SoakObserver] | None = None,
-    execute_session: Callable[[Gsm8kRun, SoakSession], Coroutine[Any, Any, None]] | None = None,
+    execute_session: Callable[[Gsm8kRun, SoakRunner], Coroutine[Any, Any, None]] | None = None,
     policy: SoakPolicy | None = None,
 ) -> Gsm8kOutcome:
     config = create_soak_config(config)
@@ -232,6 +233,7 @@ def get_gsm8k_train_args(
     )
 
     fault_tolerance_args = get_api_server_args(config)
+    fault_tolerance_args += "--update-weight-transfer-mode p2p "
     if enable_fault_tolerance:
         fault_tolerance_args += (
             "--use-fault-tolerance " f"--ft-components {' '.join(FT_COMPONENTS)} " "--mini-ft-controller-enable "

@@ -6,11 +6,15 @@ from typing import Annotated
 
 import typer
 from examples.infra_features.split_deployment.address_book import DEFAULT_TRAINER_ID
-from tests.e2e.deploy.conftest_deploy.common.utils import assert_cluster_can_deploy_runs
+from tests.utils.soak.checks.ft import assert_healing
 from tests.utils.soak.checks.weights import assert_published_weight_checksums, assert_weight_checksum_history
 from tests.utils.soak.cli_options import NumRolloutOption, SeedOption
-from tests.utils.soak.deploy.assert_workloads import assert_take_overs_replaced_only_script
-from tests.utils.soak.deploy.cluster_observer import ClusterObserver, ClusterSnapshot
+from tests.utils.soak.deploy.assert_workloads import (
+    _compute_workloads_with_changed_template,
+    _compute_workloads_with_replaced_pods,
+    assert_take_overs_replaced_only_script,
+)
+from tests.utils.soak.deploy.cluster_observer import ClusterObserver, ClusterSnapshot, compute_hot_restart_workloads
 from tests.utils.soak.deploy.evidence import (
     HotRestartEvidence,
     HotRestartRecord,
@@ -22,7 +26,7 @@ from tests.utils.soak.deploy.soak_form import SoakActionFormHotRestart
 from tests.utils.soak.deploy.soak_observer import HotRestartSoakObserver
 from tests.utils.soak.deploy.soak_session import execute_hot_restart_session
 from tests.utils.soak.deploy.utils import compute_checkpoint_dir, compute_release_of_config
-from tests.utils.soak.fault_forms import CellFaultForms
+from tests.utils.soak.fault_forms import CellFaultForms, create_cell_fault_forms
 from tests.utils.soak.recipes.gsm8k import DEFAULT_NUM_ROLLOUT, DEFAULT_SEED, Gsm8kRun, run_realistic_gsm8k
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
 from tests.utils.soak.state import (
@@ -39,6 +43,7 @@ from tests.utils.soak.views import project_actions
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.external_utils import command_utils
+from miles.utils.workers.types import ClusterBackend
 
 app: typer.Typer = typer.Typer()
 
@@ -60,27 +65,35 @@ def run_ci(
     seed: SeedOption = DEFAULT_SEED,
     num_rollout: NumRolloutOption = DEFAULT_NUM_ROLLOUT,
     hot_restart_interval_seconds: HotRestartIntervalSecondsOption = DEFAULT_HOT_RESTART_INTERVAL_SECONDS,
+    mix_ft: Annotated[bool, typer.Option(help="Mix trainer and rollout faults with deployment takeovers")] = False,
 ) -> None:
     config = command_utils.default_config()
-    assert_cluster_can_deploy_runs(config)
+    assert config.cluster_backend is ClusterBackend.KUBERNETES and config.namespace, "Hot restart needs Kubernetes and a namespace"
 
     max_allowed_rollout_id = num_rollout - TERMINAL_QUIESCENCE_ROLLOUTS - 1
 
     def create_forms(run: Gsm8kRun) -> CellFaultForms:
-        return create_hot_restart_forms(run, max_allowed_rollout_id=max_allowed_rollout_id)
+        forms = create_hot_restart_forms(run, max_allowed_rollout_id=max_allowed_rollout_id)
+        if mix_ft:
+            forms.update(create_cell_fault_forms(base_url=run.base_url, config=run.config))
+        return forms
+
+    intervals = {_HOT_RESTART_TARGET_TYPE: hot_restart_interval_seconds}
+    if mix_ft:
+        intervals.update(actor=120.0, rollout=240.0)
 
     outcome = asyncio.run(
         run_realistic_gsm8k(
             config=config,
-            test_name=TEST_NAME,
+            test_name=f"{TEST_NAME}_mixed" if mix_ft else TEST_NAME,
             seed=seed,
             num_rollout=num_rollout,
-            mean_interval_seconds_of_cell_type={_HOT_RESTART_TARGET_TYPE: hot_restart_interval_seconds},
+            mean_interval_seconds_of_cell_type=intervals,
             create_forms=create_forms,
             create_observer=_create_observer,
             execute_session=execute_hot_restart_session,
             build_extra_train_args=lambda dump_dir: _build_train_args(dump_dir, wandb_run_id=config.run_id),
-            enable_fault_tolerance=False,
+            enable_fault_tolerance=mix_ft,
         )
     )
 
@@ -90,11 +103,16 @@ def run_ci(
 
     evidence = _project_evidence(events=events, release=compute_release_of_config(config), namespace=config.namespace)
     evidence.write(dump_dir=str(outcome.run.evidence_dir))
-    assert_take_overs_replaced_only_script(
-        evidence,
-        num_restarts=len(evidence.records),
-        minimum_restarts=MIN_HOT_RESTARTS,
-    )
+    if mix_ft:
+        _assert_mixed_takeover_windows(events=events, forms=outcome.injector.cell_fault_forms)
+        assert_healing(
+            ("train", "rollout"), events=events, forms=outcome.injector.cell_fault_forms,
+            event_dir=outcome.run.events_dir, context="mixed FT/deployment soak",
+        )
+    else:
+        assert_take_overs_replaced_only_script(
+            evidence, num_restarts=len(evidence.records), minimum_restarts=MIN_HOT_RESTARTS,
+        )
     assert_take_over_loss_within_save_interval(evidence.records)
     source = event_source(events, name="training_events", fallback=outcome.run.events_dir)
     closures = [event.timestamp for event in events if isinstance(event, SoakAdmissionClosedEvent)]
@@ -116,6 +134,42 @@ def _assert_archived_weight_checksum_history(source: Path) -> None:
             if isinstance(event, InferenceEngineWeightChecksumEvent):
                 checksums[event.model_dump_json()] = event
     assert_weight_checksum_history(list(checksums.values()))
+
+
+def _assert_mixed_takeover_windows(*, events: list[SoakEvent], forms: CellFaultForms) -> None:
+    actions = project_actions(events)
+    form = next(form for form in forms["deployment"] if form.name == HOT_RESTART_FORM_NAME)
+    checked = 0
+    for action in actions.values():
+        target = action.requested.request.target
+        if not isinstance(target, SoakDeploymentTarget):
+            continue
+        start = events.index(action.requested)
+        before = next(
+            event for event in reversed(events[:start])
+            if isinstance(event, SoakObservation) and "hot_restart_cluster" in event.details and not event.errors
+        )
+        end = next(
+            (index for index in range(start + 1, len(events))
+             if isinstance(events[index], SoakObservation) and form.is_recovered(action=action, events=events[:index + 1])),
+            None,
+        )
+        assert end is not None, "Takeover never recovered before the run ended"
+        snapshots = [
+            ClusterSnapshot.model_validate(event.details["hot_restart_cluster"])
+            for event in [before, *events[start:end + 1]]
+            if isinstance(event, SoakObservation) and "hot_restart_cluster" in event.details
+        ]
+        snapshots = [snapshot for snapshot in snapshots if snapshot.describes_whole_release]
+        assert len(snapshots) >= 2, "Takeover has no complete before/after snapshots"
+        expected = compute_hot_restart_workloads(target.release)
+        assert set(_compute_workloads_with_replaced_pods(snapshots)) == expected, "Takeover replaced non-orchestration pods"
+        assert _compute_workloads_with_changed_template(snapshots) == expected, "Takeover changed non-orchestration templates"
+        before_uuid = snapshots[0].trainer_boot_uuid
+        assert before_uuid and snapshots[-1].trainer_boot_uuid == before_uuid, "Takeover rebooted the trainer controller"
+        assert all(snapshot.trainer_boot_uuid in {None, before_uuid} for snapshot in snapshots)
+        checked += 1
+    assert checked >= MIN_HOT_RESTARTS, "Mixed soak did not cover repeated deployment takeovers"
 
 
 def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
