@@ -82,7 +82,9 @@ def _run(kernel, query, key, value, g, beta, cu_seqlens):
         ("float16", 1e-2, 1e-2),
     ],
 )
-def test_fla_flashqla_equivalence(dtype_name, atol, rtol):
+def test_fla_flashqla_equivalence(dtype_name, atol, rtol, monkeypatch):
+    # FLA otherwise dispatches to FlashQLA, comparing the same kernel twice.
+    monkeypatch.setenv("FLA_FLASH_QLA", "0")
     torch = _require_backends()
     dtype = getattr(torch, dtype_name)
     module = load_backend_module()
