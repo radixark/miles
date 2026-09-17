@@ -103,7 +103,9 @@ def _convert_to_fp8(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command_cpu(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 

@@ -46,8 +46,8 @@ CASE = CaseConfig(
     # which Transformers v5 omits from its synthesized RoPE config.
     extra_args=(
         "--sglang-json-model-override-args "
-        "'{\"rope_scaling\": {\"rope_theta\": 1000000, \"partial_rotary_factor\": 1.0, "
-        "\"rope_type\": \"default\", \"original_max_position_embeddings\": 202752}}' "
+        '\'{"rope_scaling": {"rope_theta": 1000000, "partial_rotary_factor": 1.0, '
+        '"rope_type": "default", "original_max_position_embeddings": 202752}}\' '
     ),
     # Lean attention accesses an unallocated lock buffer during EAGLE warmup.
     extra_env_vars={"SGLANG_DISABLE_LEAN_ATTENTION": "1"},
