@@ -33,6 +33,12 @@ def add_tinker_arguments(parser):
         help="Mount the recorded-session routes /oai/sessions/* for agent harnesses; off = the plain Tinker gateway (default: off)",
     )
     add_argument(
+        "session-max-body-bytes",
+        type=int,
+        default=16 * 1024 * 1024,
+        help="Largest JSON body a /oai/sessions route accepts; bodies are parsed on the shared loop (default: 16 MiB)",
+    )
+    add_argument(
         "tito-model",
         choices=[t.value for t in TITOTokenizerType],
         default=None,
