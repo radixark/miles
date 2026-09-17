@@ -5,7 +5,6 @@ import json
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from miles.tinker.core.service import TinkerService
 from miles.tinker.core.tinker_session_server import (
     SamplingBackendError,
     SessionLimitError,
@@ -13,7 +12,7 @@ from miles.tinker.core.tinker_session_server import (
     UnknownSessionError,
 )
 from miles.tinker.core.types import UserInputError
-from miles.tinker.server.app import _tenant, build_app
+from miles.tinker.server.app import _tenant
 
 # default for --tinker-session-max-body-bytes; bodies are parsed synchronously on the shared loop
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -88,12 +87,3 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector, max_bod
         """Free the session and its turns; bearer must match the owner."""
         collector.delete(session_id, _tenant(request))
         return {"session_id": session_id, "deleted": True}
-
-
-def build_app_with_collector(
-    service: TinkerService, collector: TrajectoryCollector, max_body_bytes: int = MAX_BODY_BYTES
-) -> FastAPI:
-    """build_app plus the four session routes; the Tinker routes are untouched."""
-    app = build_app(service)
-    install_session_routes(app, collector, max_body_bytes)
-    return app
