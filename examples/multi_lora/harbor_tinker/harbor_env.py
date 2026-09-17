@@ -268,7 +268,7 @@ class SessionRolloutStrategy(RolloutStrategy):
         if self.max_datum_tokens is not None:
             bind_body["max_datum_tokens"] = (
                 self.max_datum_tokens
-            )  # the gateway keeps a TITO chain under the same cap truncate_turns enforces
+            )  # the TITO chain budget, same cap truncate_turns enforces
         bound = await http.post(f"/oai/sessions/{session_id}", json=bind_body)
         bound.raise_for_status()
         try:
