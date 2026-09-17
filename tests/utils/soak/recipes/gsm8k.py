@@ -1,6 +1,5 @@
 import asyncio
 import os
-import shutil
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from functools import partial
@@ -103,9 +102,9 @@ async def run_realistic_gsm8k(
     dump_dir: str = resolve_dump_dir(test_name, run_id=config.run_id)
     # Start from a clean dump dir so the event analyzer never reads a previous run's
     # stale events (run_training does this for the other scenarios; gsm8k bypasses it).
-    if os.path.exists(dump_dir):
-        shutil.rmtree(dump_dir)
-    os.makedirs(dump_dir, exist_ok=True)
+    if Path(dump_dir).exists() and any(Path(dump_dir).iterdir()):
+        raise ValueError(f"Soak dump directory contains existing artifacts: {dump_dir}; choose a new run_id")
+    Path(dump_dir).mkdir(parents=True, exist_ok=True)
 
     train_args = get_gsm8k_train_args(
         config=config,
