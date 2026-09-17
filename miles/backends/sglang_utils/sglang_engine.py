@@ -139,8 +139,6 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.use_rollout_indexer_replay:
         kwargs["enable_return_indexer_topk"] = True
-    if args.fp16:
-        kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
 
