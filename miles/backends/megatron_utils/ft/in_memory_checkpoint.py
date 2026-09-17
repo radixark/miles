@@ -5,6 +5,7 @@ from typing import Any
 from megatron.training.global_vars import get_args
 
 from miles.backends.megatron_utils.model import save
+from miles.utils.args.runtime import TrainerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class InMemoryCheckpointManager:
 
 
 def save_to_memory(
+    args: TrainerConfig,
     iteration: int,
     model: Sequence,
     optimizer: object,
@@ -48,6 +50,7 @@ def save_to_memory(
     """Save checkpoint to in-memory manager via model.save (with forward hook protection)."""
     manager = InMemoryCheckpointManager()
     save(
+        args=args,
         iteration=iteration,
         model=model,
         optimizer=optimizer,
