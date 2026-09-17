@@ -797,6 +797,7 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
 
 def miles_validate_args(args):
     if args.custom_config_path:
+        logger.warning("--custom-config-path is deprecated; use the custom function's declared CLI arguments instead.")
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
         for k, v in data.items():
             if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
