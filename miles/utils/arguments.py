@@ -15,8 +15,9 @@ from miles.backends.megatron_utils.megatron_config import (
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
-from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
+from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -242,7 +243,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         add_dashboard_arguments(parser)
         RouterConfig.add_arguments(parser=parser)
         DebugConfig.add_arguments(parser=parser)
-        parser = add_sglang_arguments(parser)
+        SglangConfig.add_arguments(parser)
         # required whenever expert projections are LoRA targets, inert otherwise
         # (sglang's own default is False)
         parser.set_defaults(sglang_lora_use_virtual_experts=True)
