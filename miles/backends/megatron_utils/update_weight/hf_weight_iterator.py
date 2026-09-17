@@ -33,7 +33,7 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             self.weight_update_selector = "target"
 
     def _hf_atomic_update_groups(self):
-        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.q_lora_rank)
+        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.backend.q_lora_rank)
 
     def _iter_hf_adapter_units(self, adapter, *, materialize):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP

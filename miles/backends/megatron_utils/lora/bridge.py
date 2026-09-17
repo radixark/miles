@@ -149,20 +149,20 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
-    provider.tensor_model_parallel_size = args.tensor_model_parallel_size
-    provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
-    provider.expert_model_parallel_size = args.expert_model_parallel_size
-    provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
-    provider.sequence_parallel = args.sequence_parallel
-    provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
-    provider.context_parallel_size = args.context_parallel_size
-    provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
-    provider.recompute_granularity = args.recompute_granularity
-    provider.recompute_method = args.recompute_method
-    provider.recompute_num_layers = args.recompute_num_layers
-    provider.recompute_modules = args.recompute_modules
-    provider.distribute_saved_activations = args.distribute_saved_activations
-    provider.attention_backend = args.attention_backend
+    provider.tensor_model_parallel_size = args.backend.tensor_model_parallel_size
+    provider.pipeline_model_parallel_size = args.backend.pipeline_model_parallel_size
+    provider.expert_model_parallel_size = args.backend.expert_model_parallel_size
+    provider.expert_tensor_parallel_size = args.backend.expert_tensor_parallel_size
+    provider.sequence_parallel = args.backend.sequence_parallel
+    provider.virtual_pipeline_model_parallel_size = args.backend.virtual_pipeline_model_parallel_size
+    provider.context_parallel_size = args.backend.context_parallel_size
+    provider.gradient_accumulation_fusion = args.backend.gradient_accumulation_fusion
+    provider.recompute_granularity = args.backend.recompute_granularity
+    provider.recompute_method = args.backend.recompute_method
+    provider.recompute_num_layers = args.backend.recompute_num_layers
+    provider.recompute_modules = args.backend.recompute_modules
+    provider.distribute_saved_activations = args.backend.distribute_saved_activations
+    provider.attention_backend = args.backend.attention_backend
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
@@ -177,10 +177,10 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
                 "dispatcher's permutation, which the fused kernel does not expose"
             )
         provider.moe_permute_fusion = False
-    if args.decoder_first_pipeline_num_layers is not None:
-        provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
-    if args.decoder_last_pipeline_num_layers is not None:
-        provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+    if args.backend.decoder_first_pipeline_num_layers is not None:
+        provider.num_layers_in_first_pipeline_stage = args.backend.decoder_first_pipeline_num_layers
+    if args.backend.decoder_last_pipeline_num_layers is not None:
+        provider.num_layers_in_last_pipeline_stage = args.backend.decoder_last_pipeline_num_layers
     if hasattr(
         provider, "dsa_attention_backend"
     ):  # config-access-exempt: third-party providers differ in dsa_attention_backend support
@@ -216,14 +216,14 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
         )  # config-access-exempt: model-family schemas differ in optional text_config metadata
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size))
 
-    use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
+    use_distributed_optimizer = "muon" not in (args.backend.optimizer or "").lower()
     if is_multi_lora_enabled(args):
         # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
         # every rank (whole-param sharding + retained-gradient idempotency).
         use_distributed_optimizer = False
     ddp_config = DistributedDataParallelConfig(
         use_distributed_optimizer=use_distributed_optimizer,
-        grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
+        grad_reduce_in_fp32=args.backend.accumulate_allreduce_grads_in_fp32,
     )
     ddp_config.finalize()
 

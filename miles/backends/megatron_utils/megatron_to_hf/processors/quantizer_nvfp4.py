@@ -54,7 +54,7 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
     assert quantization_config is not None
     assert quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
     if args is not None and bool(
-        getattr(args, "fp4_param", False) or getattr(args, "fp4_param_gather", False)
+        getattr(args.backend, "fp4_param", False) or getattr(args.backend, "fp4_param_gather", False)
     ):  # config-access-exempt: FP4 option names differ across Megatron versions
         raise NotImplementedError("fp4-param-gather is unsupported for Miles NVFP4 checkpoint export.")
 
@@ -81,14 +81,14 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
 
     # Skip quantization for BF16 tail of main decoder layers.
     if getattr(
-        args, "first_last_layers_bf16", False
+        args.backend, "first_last_layers_bf16", False
     ):  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
-        num_layers = int(args.num_layers)
+        num_layers = int(args.backend.num_layers)
         num_layers_at_start_in_bf16 = int(
-            getattr(args, "num_layers_at_start_in_bf16", 0)
+            getattr(args.backend, "num_layers_at_start_in_bf16", 0)
         )  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
         num_layers_at_end_in_bf16 = int(
-            getattr(args, "num_layers_at_end_in_bf16", 0)
+            getattr(args.backend, "num_layers_at_end_in_bf16", 0)
         )  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
         head_end_idx = num_layers_at_start_in_bf16
         tail_start_idx = num_layers - num_layers_at_end_in_bf16

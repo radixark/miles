@@ -84,14 +84,14 @@ class FSDPTrainRayActor(TrainRayActor):
         # Setup ParallelState for both CP and non-CP cases
         set_parallel_state(create_fsdp_parallel_state(args))
 
-        torch.manual_seed(args.seed)
+        torch.manual_seed(args.backend.seed)
 
         self.train_parallel_config = get_parallel_state().train_parallel_config(supports_precomputed_schedule=False)
 
         if self.args.debug_rollout_only:
             return 0
 
-        self.fsdp_cpu_offload = self.args.fsdp_cpu_offload
+        self.fsdp_cpu_offload = self.args.backend.fsdp_cpu_offload
         # Offload train and fsdp cpu offload cannot be used together, fsdp_cpu_offload is more aggressive
         assert not (self.args.offload_train and self.fsdp_cpu_offload)
 
@@ -170,19 +170,19 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.model = model
 
-        if args.gradient_checkpointing:
+        if args.backend.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
-        if args.optimizer == "adam":
+        if args.backend.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(),
-                lr=args.lr,
-                betas=(args.adam_beta1, args.adam_beta2),
-                eps=args.adam_eps,
-                weight_decay=args.weight_decay,
+                lr=args.backend.lr,
+                betas=(args.backend.adam_beta1, args.backend.adam_beta2),
+                eps=args.backend.adam_eps,
+                weight_decay=args.backend.weight_decay,
             )
         else:
-            raise ValueError(f"Unsupported optimizer: {args.optimizer}. Supported options: 'adam'")
+            raise ValueError(f"Unsupported optimizer: {args.backend.optimizer}. Supported options: 'adam'")
 
         # Initialize LR scheduler
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
@@ -245,8 +245,8 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         # ROCm-only: on other platforms "triton" falls through to from_pretrained, which rejects
         # it exactly as it did before this path existed.
-        use_triton_bridge = self.args.attn_implementation == "triton" and torch.version.hip is not None
-        effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
+        use_triton_bridge = self.args.backend.attn_implementation == "triton" and torch.version.hip is not None
+        effective_attn = "eager" if use_triton_bridge else self.args.backend.attn_implementation
 
         with init_context():
             model = self._get_model_cls().from_pretrained(
@@ -352,10 +352,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Delegate checkpoint saving to the shared checkpoint utilities."""
-        if self.args.debug_rollout_only or self.args.save is None:
+        if self.args.debug_rollout_only or self.args.backend.save is None:
             return
 
-        assert not self.args.async_save, "FSDPTrainRayActor does not support async_save yet."
+        assert not self.args.backend.async_save, "FSDPTrainRayActor does not support async_save yet."
         checkpoint.save(self, rollout_id)
 
     def _compute_log_prob(
@@ -502,7 +502,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         assert (
             len(num_microbatches) > 0
-        ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
+        ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.backend.micro_batch_size} and global_batch_size {self.args.backend.global_batch_size}"
 
         if self.ref_model is not None:
             with routing_replay.stage(routing_replay.FALLTHROUGH):
@@ -556,7 +556,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     )
                     losses_reduced.append(log_dict)
 
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.backend.clip_grad)
                 grad_norm = grad_norm.full_tensor().item()
 
                 self.optimizer.step()
@@ -745,7 +745,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None
 
     ``cpu_offload`` offloads params/grads/optimizer to CPU (the optimizer step runs on CPU).
     ``param_dtype``/``reduce_dtype`` are the MixedPrecisionPolicy dtypes; None falls back to the
-    args-based default (bf16 / fp32, or fp16 param when args.fp16).
+    args-based default (bf16 / fp32, or fp16 param when args.backend.fp16).
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
@@ -764,7 +764,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None
     ]
 
     if param_dtype is None:
-        param_dtype = torch.float16 if args.fp16 else torch.bfloat16
+        param_dtype = torch.float16 if args.backend.fp16 else torch.bfloat16
     if reduce_dtype is None:
         reduce_dtype = torch.float32
 
