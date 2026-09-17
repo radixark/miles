@@ -13,6 +13,7 @@ from miles.tinker.core.tinker_session_server import (
 )
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.app import _tenant
+from miles.tinker.server.oai_shapes import chat_completion_json, parse_chat_request
 
 # default for --tinker-session-max-body-bytes; bodies are parsed synchronously on the shared loop
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -74,8 +75,9 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector, max_bod
     @app.post("/oai/sessions/{session_id}/v1/chat/completions")
     async def session_chat_completions(session_id: str, request: Request):
         """Chat completion recorded as one Turn; dummy key for pre-bound sessions, a real bearer auto-registers."""
-        tenant = _optional_tenant(request)
-        return await collector.chat(await _json_body(request, max_body_bytes), session_id=session_id, tenant=tenant)
+        body = await _json_body(request, max_body_bytes)
+        result = await collector.complete(session_id, _optional_tenant(request), parse_chat_request(body))
+        return chat_completion_json(body, result)
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
