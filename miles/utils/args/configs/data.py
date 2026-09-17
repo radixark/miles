@@ -119,10 +119,6 @@ class DataConfig(BaseConfig):
     ] = None
     n_samples_per_prompt: A[int, Arg(help="Number of responses for each prompt in generation")] = 1
 
-    # gbs of the training, note that the gbs is of sample, not of prompts,
-    # so if you hope to train 1 step for each rollout, the global_bach_size should be set as
-    # `rollout_batch_size * n_samples_per_prompt`.
-    global_batch_size: A[int | None, Arg(reset=True)] = None
     num_steps_per_rollout: A[
         int | None,
         Arg(
@@ -132,8 +128,6 @@ class DataConfig(BaseConfig):
             )
         ),
     ] = None
-    # mbs for the training, will be ignored if `use_dynamic_batch_size` is set.
-    micro_batch_size: A[int, Arg(reset=True)] = 1
     balance_data: A[
         bool,
         Arg(
