@@ -68,7 +68,9 @@ def run_ci(
     mix_ft: Annotated[bool, typer.Option(help="Mix trainer and rollout faults with deployment takeovers")] = False,
 ) -> None:
     config = command_utils.default_config()
-    assert config.cluster_backend is ClusterBackend.KUBERNETES and config.namespace, "Hot restart needs Kubernetes and a namespace"
+    assert (
+        config.cluster_backend is ClusterBackend.KUBERNETES and config.namespace
+    ), "Hot restart needs Kubernetes and a namespace"
 
     max_allowed_rollout_id = num_rollout - TERMINAL_QUIESCENCE_ROLLOUTS - 1
 
@@ -106,12 +108,17 @@ def run_ci(
     if mix_ft:
         _assert_mixed_takeover_windows(events=events, forms=outcome.injector.cell_fault_forms)
         assert_healing(
-            ("train", "rollout"), events=events, forms=outcome.injector.cell_fault_forms,
-            event_dir=outcome.run.events_dir, context="mixed FT/deployment soak",
+            ("train", "rollout"),
+            events=events,
+            forms=outcome.injector.cell_fault_forms,
+            event_dir=outcome.run.events_dir,
+            context="mixed FT/deployment soak",
         )
     else:
         assert_take_overs_replaced_only_script(
-            evidence, num_restarts=len(evidence.records), minimum_restarts=MIN_HOT_RESTARTS,
+            evidence,
+            num_restarts=len(evidence.records),
+            minimum_restarts=MIN_HOT_RESTARTS,
         )
     assert_take_over_loss_within_save_interval(evidence.records)
     source = event_source(events, name="training_events", fallback=outcome.run.events_dir)
@@ -146,27 +153,38 @@ def _assert_mixed_takeover_windows(*, events: list[SoakEvent], forms: CellFaultF
             continue
         start = events.index(action.requested)
         before = next(
-            event for event in reversed(events[:start])
+            event
+            for event in reversed(events[:start])
             if isinstance(event, SoakObservation) and "hot_restart_cluster" in event.details and not event.errors
         )
         end = next(
-            (index for index in range(start + 1, len(events))
-             if isinstance(events[index], SoakObservation) and form.is_recovered(action=action, events=events[:index + 1])),
+            (
+                index
+                for index in range(start + 1, len(events))
+                if isinstance(events[index], SoakObservation)
+                and form.is_recovered(action=action, events=events[: index + 1])
+            ),
             None,
         )
         assert end is not None, "Takeover never recovered before the run ended"
         snapshots = [
             ClusterSnapshot.model_validate(event.details["hot_restart_cluster"])
-            for event in [before, *events[start:end + 1]]
+            for event in [before, *events[start : end + 1]]
             if isinstance(event, SoakObservation) and "hot_restart_cluster" in event.details
         ]
         snapshots = [snapshot for snapshot in snapshots if snapshot.describes_whole_release]
         assert len(snapshots) >= 2, "Takeover has no complete before/after snapshots"
         expected = compute_hot_restart_workloads(target.release)
-        assert set(_compute_workloads_with_replaced_pods(snapshots)) == expected, "Takeover replaced non-orchestration pods"
-        assert _compute_workloads_with_changed_template(snapshots) == expected, "Takeover changed non-orchestration templates"
+        assert (
+            set(_compute_workloads_with_replaced_pods(snapshots)) == expected
+        ), "Takeover replaced non-orchestration pods"
+        assert (
+            _compute_workloads_with_changed_template(snapshots) == expected
+        ), "Takeover changed non-orchestration templates"
         before_uuid = snapshots[0].trainer_boot_uuid
-        assert before_uuid and snapshots[-1].trainer_boot_uuid == before_uuid, "Takeover rebooted the trainer controller"
+        assert (
+            before_uuid and snapshots[-1].trainer_boot_uuid == before_uuid
+        ), "Takeover rebooted the trainer controller"
         assert all(snapshot.trainer_boot_uuid in {None, before_uuid} for snapshot in snapshots)
         checked += 1
     assert checked >= MIN_HOT_RESTARTS, "Mixed soak did not cover repeated deployment takeovers"

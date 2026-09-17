@@ -2,9 +2,9 @@ import asyncio
 
 from tests.utils.soak.deploy.soak_form import SESSION_TIMEOUT_SECONDS
 from tests.utils.soak.deploy.utils import REPLACED_LAUNCH_EXIT_CODE
-from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.recipes.gsm8k import Gsm8kRun
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
+from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.state import SoakDeploymentTarget, SoakEvent, SoakLauncherExitedEvent
 from tests.utils.soak.views import project_actions
 

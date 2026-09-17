@@ -12,9 +12,9 @@ from tests.fast.cluster_backends import create_backend_for_run
 from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.config import SoakPolicy, create_policy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, create_soak_session
-from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.observer import SoakObserver
+from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.state import EventLog
 from tests.utils.soak.storage import validate_dump_storage, validate_training_storage
 from tests.utils.soak.teardown import teardown_run

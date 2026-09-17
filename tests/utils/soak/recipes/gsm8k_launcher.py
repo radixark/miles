@@ -3,8 +3,8 @@ from pathlib import Path
 
 import typer
 from tests.utils.soak.action import run_command
-from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.recipes.gsm8k import Gsm8kRun, launch_gsm8k
+from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.state import SoakLauncherExitedEvent
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig

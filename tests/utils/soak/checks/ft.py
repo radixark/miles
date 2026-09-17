@@ -63,11 +63,15 @@ def assert_trainer_injections_healed(events: list[SoakEvent], *, event_dir: Path
     event_dir = event_source(events, name="training_events", fallback=event_dir)
     assert event_dir.is_dir(), f"Event directory {event_dir} does not exist or is not a directory"
     reconfigurations = [
-        step for observation in events if isinstance(observation, SoakObservation)
-        for step in observation.training_events if isinstance(step, CellReconfigureEvent)
+        step
+        for observation in events
+        if isinstance(observation, SoakObservation)
+        for step in observation.training_events
+        if isinstance(step, CellReconfigureEvent)
     ]
     _assert_recovery_episodes(
-        events, cell_type=ACTOR_CELL_TYPE,
+        events,
+        cell_type=ACTOR_CELL_TYPE,
         reconfigurations=[*reconfigurations, *load_reconfigure_events(event_dir)],
     )
 
