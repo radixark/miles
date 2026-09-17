@@ -114,7 +114,12 @@ async def serve(args):
     )
     if args.tinker_session_server:
         # the four /oai/sessions routes ride on the app uvicorn holds; the Tinker routes are untouched
-        install_session_routes(server.config.app, collector, max_body_bytes=args.tinker_session_max_body_bytes)
+        install_session_routes(
+            server.config.app,
+            collector,
+            max_body_bytes=args.tinker_session_max_body_bytes,
+            placeholder_keys=frozenset(args.tinker_session_placeholder_keys),
+        )
         logger.info("recorded-session routes mounted at /oai/sessions/{sid} (--tinker-session-server)")
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,

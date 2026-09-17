@@ -19,12 +19,21 @@ from miles.tinker.server.oai_shapes import chat_completion_json, parse_chat_requ
 MAX_BODY_BYTES = 16 * 1024 * 1024
 
 
-def _optional_tenant(request: Request) -> str | None:
-    """_tenant, but None when no key is present (a pre-bound session serves the harness's dummy key)."""
+def _tenant_or_anonymous(request: Request, placeholder_keys: frozenset[str]) -> str | None:
+    """_tenant, but None when the key is missing or a harness placeholder; core then requires a pre-bound session."""
     try:
-        return _tenant(request)
+        tenant = _tenant(request)
     except UserInputError:
         return None
+    return None if tenant in placeholder_keys else tenant
+
+
+def _owner(request: Request, placeholder_keys: frozenset[str]) -> str:
+    """The tenant's real API key; placeholder keys only serve the chat route of a pre-bound session."""
+    tenant = _tenant_or_anonymous(request, placeholder_keys)
+    if tenant is None:
+        raise UserInputError("this route needs the tenant's API key; placeholder keys only serve the chat route")
+    return tenant
 
 
 async def _json_body(request: Request, max_body_bytes: int = MAX_BODY_BYTES) -> dict:
@@ -43,12 +52,19 @@ async def _json_body(request: Request, max_body_bytes: int = MAX_BODY_BYTES) -> 
     return payload
 
 
-def install_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_bytes: int = MAX_BODY_BYTES) -> None:
-    """Mount the four /oai/sessions routes (bodies capped at max_body_bytes) and their 404 / 429 / 502 handlers."""
+def install_session_routes(
+    app: FastAPI,
+    collector: TrajectoryCollector,
+    max_body_bytes: int = MAX_BODY_BYTES,
+    placeholder_keys: frozenset[str] = frozenset({"dummy"}),
+) -> None:
+    """Mount the four /oai/sessions routes (body cap, harness placeholder keys) and their 404 / 429 / 502 handlers."""
 
     @app.exception_handler(UnknownSessionError)
     async def _unknown_session(request: Request, error: UnknownSessionError):
-        return JSONResponse(status_code=404, content={"error": str(error)})
+        session_id = request.path_params.get("session_id", "{sid}")
+        hint = f"bind it with POST /oai/sessions/{session_id} or send the tenant's bearer token"
+        return JSONResponse(status_code=404, content={"error": f"{error}; {hint}"})
 
     @app.exception_handler(SessionLimitError)
     async def _session_limit(request: Request, error: SessionLimitError):
@@ -61,7 +77,7 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector, max_bod
     @app.post("/oai/sessions/{session_id}")
     async def bind_session(session_id: str, request: Request):
         """Pin the session to a tinker:// path or sampling_session_id (optional max_datum_tokens); bearer required."""
-        tenant = _tenant(request)
+        tenant = _owner(request, placeholder_keys)
         payload = await _json_body(request, max_body_bytes)
         session = collector.bind(
             session_id,
@@ -74,18 +90,19 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector, max_bod
 
     @app.post("/oai/sessions/{session_id}/v1/chat/completions")
     async def session_chat_completions(session_id: str, request: Request):
-        """Chat completion recorded as one Turn; dummy key for pre-bound sessions, a real bearer auto-registers."""
+        """Chat completion recorded as one Turn; placeholder key = pre-bound session, real bearer may auto-bind."""
         body = await _json_body(request, max_body_bytes)
-        result = await collector.complete(session_id, _optional_tenant(request), parse_chat_request(body))
+        tenant = _tenant_or_anonymous(request, placeholder_keys)
+        result = await collector.complete(session_id, tenant, parse_chat_request(body))
         return chat_completion_json(body, result)
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
         """Export {session_id, model_path, turns: [ids, logprobs, finish_reason, inherits]}; owner only."""
-        return collector.trajectory(session_id, _tenant(request))
+        return collector.trajectory(session_id, _owner(request, placeholder_keys))
 
     @app.delete("/oai/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request):
         """Free the session and its turns; bearer must match the owner."""
-        collector.delete(session_id, _tenant(request))
+        collector.delete(session_id, _owner(request, placeholder_keys))
         return {"session_id": session_id, "deleted": True}

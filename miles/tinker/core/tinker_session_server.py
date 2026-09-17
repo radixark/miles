@@ -15,8 +15,6 @@ from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import OwnershipError, UserInputError
 
 TINKER_PATH_PREFIX = "tinker://"
-# what Harbor's harness bindings hand the agent as its OpenAI key (harbor_agent_function.build_trial_config)
-PLACEHOLDER_KEYS = frozenset({"dummy"})
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
@@ -219,7 +217,7 @@ class TrajectoryCollector:
     ) -> TrajectorySession:
         """Create or re-bind a session pinned to a tinker:// path or sampling_session_id; caps and ownership apply."""
         validate_session_id(session_id)
-        if not tenant or tenant in PLACEHOLDER_KEYS:
+        if not tenant:
             raise UserInputError("binding a session needs the tenant's API key")
         if max_datum_tokens is not None and (type(max_datum_tokens) is not int or max_datum_tokens < 1):
             raise UserInputError("max_datum_tokens must be a positive integer")
@@ -378,18 +376,15 @@ class TrajectoryCollector:
         return future.result["sequences"][0]
 
     def _session_for_request(self, session_id: str, tenant: str | None, model: str | None) -> TrajectorySession:
-        """The session for this request: a known id (owner or placeholder key) or a new id under a real bearer."""
+        """The session for this request: a known id (its owner, or anonymous) or a new id under a real bearer."""
         validate_session_id(session_id)
-        placeholder = not tenant or tenant in PLACEHOLDER_KEYS
+        anonymous = not tenant
         session = self.sessions.get(session_id)
         if session is None:
-            if placeholder:
-                raise UnknownSessionError(
-                    f"unknown session {session_id!r}: bind it with POST /oai/sessions/{session_id} "
-                    "or send the tenant's bearer token"
-                )
+            if anonymous:
+                raise UnknownSessionError(f"unknown session {session_id!r}")
             return self.bind(session_id, tenant, model)
-        if not placeholder and tenant != session.tenant:
+        if not anonymous and tenant != session.tenant:
             raise OwnershipError("session does not belong to this tenant")
         self._check_same_version(session, model)
         session.last_seen = self.clock()
