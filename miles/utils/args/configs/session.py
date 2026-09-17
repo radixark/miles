@@ -3,6 +3,8 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 
 
 class SessionConfig(BaseConfig):
+    session_server_addrs: list[str] | None = None
+    session_server_instance_ids: dict[str, str] | None = None
     use_session_server: A[
         str | bool,
         Arg(
