@@ -82,6 +82,7 @@ def test_actor_ref_actor_switch_restores_model_companion(
         source_getter=partial(train_actor._named_actor_weights, include_model_companion=True)
     )
     train_actor._active_model_tag = "actor"
+    train_actor._asleep = False
     actor_sample = SampleLineage(source_sample_index=7, output_index=0, output_count=1)
     ref_sample = SampleLineage(source_sample_index=8, output_index=0, output_count=1)
     train_actor.model[0].model_companion.record_sample_consumptions([actor_sample])

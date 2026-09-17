@@ -13,6 +13,7 @@ from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import ExplicitlyDroppedSamplesEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.types import Sample
 
 
 class _GenerateState:
@@ -64,7 +65,7 @@ def _drop_events(event_dir: Path) -> list[ExplicitlyDroppedSamplesEvent]:
 class TestLegacyRolloutSampleOwnership:
     async def test_generate_stamps_compact_rows_with_the_issued_source(self, monkeypatch) -> None:
         """The legacy generate boundary preserves one issued source across compact rows."""
-        source = make_sample(index=7, reward=0.0)
+        source = make_sample(index=7, reward=0.0, status=Sample.Status.PENDING, response="", response_length=0)
         rows = [make_sample(index=7, reward=0.0), make_sample(index=7, reward=0.0)]
         args = make_args(
             partial_rollout=False,
@@ -139,6 +140,7 @@ class TestLegacyRolloutSampleOwnership:
             rollout_all_samples_process_path=None,
             partial_rollout=False,
             reward_key=None,
+            rollout_global_dataset=True,
         )
         state = _GenerateState(groups)
         monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)
@@ -167,6 +169,7 @@ class TestLegacyRolloutSampleOwnership:
             rollout_all_samples_process_path=None,
             partial_rollout=False,
             reward_key=None,
+            rollout_global_dataset=True,
         )
         state = _GenerateState(groups)
         monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)
@@ -199,6 +202,7 @@ class TestLegacyRolloutSampleOwnership:
             rollout_all_samples_process_path=None,
             partial_rollout=False,
             reward_key=None,
+            rollout_global_dataset=True,
         )
         state = _GenerateState(groups)
         monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)

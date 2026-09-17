@@ -34,6 +34,7 @@ from miles.utils.audit_utils.event_logger.models import (
 )
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -334,7 +335,7 @@ class TestOutputSnapshotReplay:
 
         class Store:
             def put(self, *, value, value_spec):
-                return value
+                return _MooncakeStoreObjectRef(payload=value)
 
         monkeypatch.setattr(rollout_executor_module, "postprocess_rollout_data", postprocess_rollout_data)
         monkeypatch.setattr(rollout_executor_module, "log_rollout_data", lambda *args, **kwargs: None)
