@@ -2,6 +2,21 @@ from typing import Any
 
 import torch
 
+from miles.utils.args.schema import A, Arg, BaseConfig
+
+
+class MisConfig(BaseConfig):
+    use_rs: A[bool, Arg()] = False
+    tis_level: A[str, Arg(choices=["token", "sequence", "geometric"])] = "token"
+    rs_level: A[str, Arg(choices=["token", "sequence", "geometric"])] = "token"
+    tis_mode: A[str, Arg(choices=["truncate", "mask", "clip"])] = "truncate"
+    tis_lower_bound: A[float | None, Arg()] = 0.5
+    tis_upper_bound: A[float, Arg()] = 2.0
+    rs_lower_bound: A[float | None, Arg()] = None
+    rs_upper_bound: A[float | None, Arg()] = None
+    rs_veto_threshold: A[float, Arg()] = 1.0e-4
+    tis_batch_normalize: A[bool, Arg()] = False
+
 
 # NOTE:
 # - `compute_mis_weights` is a lightweight, standalone function that is useful to unit-test on CPU.
@@ -395,6 +410,9 @@ def compute_mis_weights_with_cp(
     return pg_loss, modified_masks, result_metrics
 
 
+compute_mis_weights_with_cp.config_class = MisConfig
+
+
 def add_ppl_metrics(
     train_log_prob: torch.Tensor,
     rollout_log_prob: torch.Tensor,
@@ -506,3 +524,6 @@ def compute_mis_weights_fsdp(
         result_metrics[f"mis_{key}"] = torch.cat(values, dim=0)
 
     return pg_loss, modified_masks, result_metrics
+
+
+compute_mis_weights_fsdp.config_class = MisConfig
