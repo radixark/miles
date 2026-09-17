@@ -121,6 +121,10 @@ class TinkerService:
         session.last_heartbeat = time.monotonic()
         return True
 
+    def tenant_alive(self, tenant: str) -> bool:
+        """True while the tenant still holds at least one Tinker session lease."""
+        return any(record.tenant == tenant for record in self.sessions.values())
+
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
         session = self._session_for(tenant, payload["session_id"])
@@ -445,6 +449,21 @@ class TinkerService:
             "base_model": self.config.base_model,
             "model_path": session.model_path,
         }
+
+    def resolve_sampler_path(
+        self, tenant: str, model_path: str | None, sampling_session_id: str | None = None
+    ) -> str | None:
+        """None for the frozen base, else a tinker:// sampler path the tenant owns and that exists on disk."""
+        if sampling_session_id is not None:
+            model_path = self.get_sampler(tenant, sampling_session_id)["model_path"]
+        if model_path is None or model_path == self.config.base_model:
+            return None
+        if not model_path.startswith("tinker://"):
+            raise UserInputError(
+                f"model must be {self.config.base_model!r} or a tinker://…/sampler_weights/… path, got {model_path!r}"
+            )
+        resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
+        return model_path
 
     def submit_sample(self, tenant: str, payload: dict) -> tuple[str, list[str]]:
         base_model = payload.get("base_model")
