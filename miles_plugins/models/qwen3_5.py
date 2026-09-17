@@ -24,7 +24,9 @@ from .qwen_gdn_backend import get_chunk_gated_delta_rule
 
 def _get_text_config(hf_config):
     """Extract text config from a VLM config if needed."""
-    if hasattr(hf_config, "text_config"):
+    if hasattr(
+        hf_config, "text_config"
+    ):  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
         return hf_config.text_config
     return hf_config
 
@@ -248,8 +250,10 @@ def get_qwen3_5_spec(args, config, vp_stage):
     text_config = _get_text_config(hf_config)
 
     # Compute layer_types if the config class doesn't expose it
-    if not hasattr(text_config, "layer_types"):
-        interval = getattr(text_config, "full_attention_interval", 4)
+    if not hasattr(text_config, "layer_types"):  # config-access-exempt: older HF checkpoints omit explicit layer_types
+        interval = getattr(
+            text_config, "full_attention_interval", 4
+        )  # config-access-exempt: older HF checkpoints encode full-attention cadence with this optional field
         n = text_config.num_hidden_layers
         text_config.layer_types = [
             "full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)

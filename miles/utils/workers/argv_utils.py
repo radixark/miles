@@ -64,7 +64,9 @@ def parse_config_argv(config_cls: type[_ConfigT], argv: list[str] | None) -> _Co
 
 
 def dataclass_to_values(args_obj: object) -> dict[str, object]:
-    return {field.name: getattr(args_obj, field.name) for field in dataclasses.fields(args_obj)}
+    return {
+        field.name: getattr(args_obj, field.name) for field in dataclasses.fields(args_obj)
+    }  # config-access-exempt: attribute selected at runtime from field.name
 
 
 def render_cli_argv(
@@ -94,7 +96,7 @@ def render_cli_argv(
             (
                 input_values[name]
                 if name in input_values and input_values[name] is not None
-                else getattr(expected_obj, name)
+                else getattr(expected_obj, name)  # config-access-exempt: attribute selected at runtime from name
             ),
         )
     ]
@@ -123,9 +125,11 @@ def _parse_without_exiting(parser: argparse.ArgumentParser, argv: list[str]) -> 
 
 def _describe_mismatch(parsed: _ArgsT, wanted: _ArgsT, *, uncompared_fields: frozenset[str]) -> str:
     return ", ".join(
-        f"{field.name}: parsed {getattr(parsed, field.name)!r} != wanted {getattr(wanted, field.name)!r}"
+        f"{field.name}: parsed {getattr(parsed, field.name)!r} != wanted {getattr(wanted, field.name)!r}"  # config-access-exempt: attribute selected at runtime from field.name
         for field in dataclasses.fields(wanted)
-        if field.name not in uncompared_fields and getattr(parsed, field.name) != getattr(wanted, field.name)
+        if field.name not in uncompared_fields
+        and getattr(parsed, field.name)
+        != getattr(wanted, field.name)  # config-access-exempt: attribute selected at runtime from field.name
     )
 
 
@@ -231,7 +235,9 @@ def parse_declared_args(text: str, *, parser: argparse.ArgumentParser) -> dict[s
             continue
         assert token in action_by_option_string, f"the argument parser does not declare {token!r}"
         dests.append(action_by_option_string[token].dest)
-    return {dest: getattr(namespace, dest) for dest in dests}
+    return {
+        dest: getattr(namespace, dest) for dest in dests
+    }  # config-access-exempt: attribute selected at runtime from dest
 
 
 def declared_arg_dests(parser: argparse.ArgumentParser) -> frozenset[str]:

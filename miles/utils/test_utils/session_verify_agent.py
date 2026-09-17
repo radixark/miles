@@ -36,7 +36,10 @@ def _append_session_verify_record(entry: dict) -> bool:
     payload = (json.dumps(entry) + "\n").encode()
     fd = os.open(
         metrics_path,
-        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+        os.O_WRONLY
+        | os.O_APPEND
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0),  # config-access-exempt: os.O_CLOEXEC is platform-dependent
         0o600,
     )
     try:
@@ -495,8 +498,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """
     tito_model = input.args.tito_model
     allowed_roles = list(fixed_template_append_roles(tito_model))
-    cycles = getattr(input.args, "session_verify_cycles", DEFAULT_CYCLES)
-    failure_mode = getattr(input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE)
+    cycles = getattr(
+        input.args, "session_verify_cycles", DEFAULT_CYCLES
+    )  # config-access-exempt: optional custom session-verification hook argument
+    failure_mode = getattr(
+        input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE
+    )  # config-access-exempt: optional custom session-verification hook argument
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["tito_model"] = tito_model
     input.sample.metadata["session_verify_cycles"] = cycles

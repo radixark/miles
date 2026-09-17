@@ -58,7 +58,9 @@ class RolloutDataSource(DataSource):
             if (d := args.dump_details) is not None:
                 tokenizer.save_pretrained(Path(d) / "tokenizer")
                 # Bespoke processors (e.g. Inkling's) are not ProcessorMixin and cannot serialise.
-                if hasattr(processor, "save_pretrained"):
+                if hasattr(
+                    processor, "save_pretrained"
+                ):  # config-access-exempt: custom processors may omit serialization support
                     processor.save_pretrained(Path(d) / "processor")
 
             self.dataset = Dataset(

@@ -92,3 +92,9 @@ repos:
         language: pygrep
         entry: 'huggingface-cli'
         types: [python]
+
+      - id: config-attribute-access
+        name: Ban dynamic attribute access without an explicit exemption
+        entry: uv run --no-project python tools/lint_config_attribute_access.py
+        language: system
+        pass_filenames: false

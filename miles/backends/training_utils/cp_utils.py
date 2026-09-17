@@ -483,7 +483,9 @@ def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: to
     Returns ``None`` when CP is not configured on the module (``cp_group`` not set).
     Raises ``RuntimeError`` if hybrid CP is configured but ``fla.ops.cp`` is missing.
     """
-    cp_group = getattr(module, "cp_group", None)
+    cp_group = getattr(
+        module, "cp_group", None
+    )  # config-access-exempt: only context-parallel modules carry a CP group
     if cp_group is None:
         return None
     if _fla_build_cp_context is None:

@@ -57,7 +57,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         custom_agent_function is not None
     ), f"Custom agent function {input.args.custom_agent_function_path} not found"
 
-    max_seq_len = getattr(input.args, "max_seq_len", None)
+    max_seq_len = getattr(
+        input.args, "max_seq_len", None
+    )  # config-access-exempt: optional length limit registered by custom agent hooks
 
     metadata = input.sample.metadata
     if max_seq_len is not None:

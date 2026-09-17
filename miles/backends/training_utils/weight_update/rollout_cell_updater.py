@@ -34,7 +34,9 @@ class _RolloutCellUpdater:
             done: Future[Any] = Future()
             done.set_result(None)
             return done
-        return async_utils.submit(self._run_guarded(getattr(self._api_client, name)(**kwargs)))
+        return async_utils.submit(
+            self._run_guarded(getattr(self._api_client, name)(**kwargs))
+        )  # config-access-exempt: attribute selected at runtime from name
 
     async def _run_guarded(self, request: Coroutine[Any, Any, Any]) -> object | None:
         try:

@@ -24,7 +24,9 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             self.model,
             required_placement=WeightUpdatePlacement(gather_pp=True),
             model_name=type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name,
-            quantization_config=getattr(self.hf_config, "quantization_config", None),
+            quantization_config=getattr(
+                self.hf_config, "quantization_config", None
+            ),  # config-access-exempt: model-family schemas differ in optional quantization_config metadata
         )
         self.weight_publisher = WeightPublisher(iterator, build_lora_sync_config(args))
 

@@ -110,7 +110,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.tokenizer = load_tokenizer(
                     self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
                 )
-                if hasattr(self.hf_config, "vision_config"):
+                if hasattr(
+                    self.hf_config, "vision_config"
+                ):  # config-access-exempt: model-family schemas differ in optional vision_config metadata
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
@@ -214,7 +216,9 @@ class FSDPTrainRayActor(TrainRayActor):
         return int(self.args.start_rollout_id)
 
     def _get_model_cls(self):
-        if hasattr(self.hf_config, "vision_config"):
+        if hasattr(
+            self.hf_config, "vision_config"
+        ):  # config-access-exempt: model-family schemas differ in optional vision_config metadata
             from transformers import AutoModelForImageTextToText
 
             return AutoModelForImageTextToText
@@ -226,9 +230,13 @@ class FSDPTrainRayActor(TrainRayActor):
             # Resolve natively-supported archs by model_type string: AutoConfig/AutoModel registries can
             # be re-registered at runtime (sglang vendors a nemotron_h config whose hybrid_override_pattern
             # parsing mis-places the attention layers), which would silently train a mis-shaped model.
-            native_cls_name = MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.get(getattr(self.hf_config, "model_type", ""))
+            native_cls_name = MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.get(
+                getattr(self.hf_config, "model_type", "")
+            )  # config-access-exempt: model-family schemas differ in optional model_type metadata
             if native_cls_name is not None:
-                return getattr(transformers, native_cls_name)
+                return getattr(
+                    transformers, native_cls_name
+                )  # config-access-exempt: attribute selected at runtime from native_cls_name
             return AutoModelForCausalLM
 
     def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):

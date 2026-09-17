@@ -46,7 +46,9 @@ def compute_session_server_config(
         use_rollout_indexer_replay=args.use_rollout_indexer_replay,
         sglang_speculative_algorithm=args.sglang.common_value("speculative_algorithm"),
         num_layers=args.num_layers,
-        moe_router_topk=getattr(args, "moe_router_topk", None),
+        moe_router_topk=getattr(
+            args, "moe_router_topk", None
+        ),  # config-access-exempt: non-Megatron backends do not supply the MoE router option
         save_debug_trajectory_data=args.save_debug_trajectory_data,
         lora_rank=args.lora_rank,
         lora_adapter_path=args.lora_adapter_path,

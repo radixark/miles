@@ -159,7 +159,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     ):
         processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
-        prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
+        prompt_ids = (
+            prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
+        )  # config-access-exempt: tokenizers may return tensors, arrays, or Python lists
         sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
     else:
         prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)

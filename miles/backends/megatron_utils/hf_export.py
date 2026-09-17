@@ -150,7 +150,9 @@ def save_hf_model(
                 model,
                 path,
                 model_name=type(hf_config).__name__.lower() if args.model_name is None else args.model_name,
-                quantization_config=getattr(hf_config, "quantization_config", None),
+                quantization_config=getattr(
+                    hf_config, "quantization_config", None
+                ),  # config-access-exempt: model-family schemas differ in optional quantization_config metadata
                 megatron_local_weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
             )
         else:

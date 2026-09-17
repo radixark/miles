@@ -483,7 +483,9 @@ class _ServeActorRayCommManager(_BaseActorManager[ServeWorkerSpec]):
             f"{actor_class.__name__}WithConcurrencyGroups",
             (actor_class,),
             {
-                name: _route_method_to_concurrency_group(getattr(actor_class, name), group=group)
+                name: _route_method_to_concurrency_group(
+                    getattr(actor_class, name), group=group
+                )  # config-access-exempt: attribute selected at runtime from name
                 for name, group in method_groups.items()
             },
         )
