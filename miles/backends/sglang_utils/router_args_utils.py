@@ -1,22 +1,24 @@
 import argparse
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from sglang_router.launch_router import RouterArgs
 
 from miles.utils.workers.argv_utils import render_cli_argv
 
-_ROUTER_DEST_PREFIX = "router_"
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import AllConfig
 
 
 def compute_sglang_router_args(
-    args: argparse.Namespace,
+    args: "AllConfig",
     *,
     host: str,
     port: int,
     prometheus_port: int,
     has_pd_disaggregation: bool,
 ) -> dict[str, object]:
-    router_args = _extract_router_cli_values(args)
+    router_args = dict(args.router_args)
     router_args.update(
         host=host,
         port=port,
@@ -50,15 +52,4 @@ def parse_router_args_argv(argv: list[str]) -> RouterArgs:
 def _make_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     RouterArgs.add_cli_args(parser)
-    return parser
-
-
-def _extract_router_cli_values(args: argparse.Namespace) -> dict[str, object]:
-    prefixed_defaults = vars(_make_prefixed_cli_parser().parse_args([]))
-    return {name.removeprefix(_ROUTER_DEST_PREFIX): getattr(args, name) for name in prefixed_defaults}
-
-
-def _make_prefixed_cli_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
     return parser
