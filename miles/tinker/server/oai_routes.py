@@ -15,7 +15,7 @@ from miles.tinker.core.tinker_session_server import (
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.app import _tenant, build_app
 
-# an agent's chat history is a few hundred KB at most; anything near this is a mistake or an attack on the shared loop
+# default for --tinker-session-max-body-bytes; bodies are parsed synchronously on the shared loop
 MAX_BODY_BYTES = 16 * 1024 * 1024
 
 
@@ -27,11 +27,11 @@ def _optional_tenant(request: Request) -> str | None:
         return None
 
 
-async def _json_body(request: Request) -> dict:
-    """The JSON object body as a dict; bad JSON is a UserInputError (400); bodies over MAX_BODY_BYTES are refused."""
+async def _json_body(request: Request, max_body_bytes: int = MAX_BODY_BYTES) -> dict:
+    """The JSON object body as a dict; bad JSON is a UserInputError (400); bodies over max_body_bytes are refused."""
     body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
-        raise UserInputError(f"request body of {len(body)} bytes exceeds the {MAX_BODY_BYTES}-byte limit")
+    if len(body) > max_body_bytes:
+        raise UserInputError(f"request body of {len(body)} bytes exceeds the {max_body_bytes}-byte limit")
     if not body:
         return {}
     try:
@@ -43,8 +43,8 @@ async def _json_body(request: Request) -> dict:
     return payload
 
 
-def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None:
-    """Mount the four /oai/sessions routes; UnknownSession→404, SessionLimit→429, SamplingBackend→502."""
+def install_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_bytes: int = MAX_BODY_BYTES) -> None:
+    """Mount the four /oai/sessions routes (bodies capped at max_body_bytes) and their 404 / 429 / 502 handlers."""
 
     @app.exception_handler(UnknownSessionError)
     async def _unknown_session(request: Request, error: UnknownSessionError):
@@ -62,7 +62,7 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None
     async def bind_session(session_id: str, request: Request):
         """Pin the session to a tinker:// path or sampling_session_id (optional max_datum_tokens); bearer required."""
         tenant = _tenant(request)
-        payload = await _json_body(request)
+        payload = await _json_body(request, max_body_bytes)
         session = collector.bind(
             session_id,
             tenant,
@@ -76,7 +76,7 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None
     async def session_chat_completions(session_id: str, request: Request):
         """Chat completion recorded as one Turn; dummy key for pre-bound sessions, a real bearer auto-registers."""
         tenant = _optional_tenant(request)
-        return await collector.chat(await _json_body(request), session_id=session_id, tenant=tenant)
+        return await collector.chat(await _json_body(request, max_body_bytes), session_id=session_id, tenant=tenant)
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
@@ -90,8 +90,10 @@ def install_session_routes(app: FastAPI, collector: TrajectoryCollector) -> None
         return {"session_id": session_id, "deleted": True}
 
 
-def build_app_with_collector(service: TinkerService, collector: TrajectoryCollector) -> FastAPI:
+def build_app_with_collector(
+    service: TinkerService, collector: TrajectoryCollector, max_body_bytes: int = MAX_BODY_BYTES
+) -> FastAPI:
     """build_app plus the four session routes; the Tinker routes are untouched."""
     app = build_app(service)
-    install_session_routes(app, collector)
+    install_session_routes(app, collector, max_body_bytes)
     return app
