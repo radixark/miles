@@ -50,6 +50,13 @@ def test_the_rollout_profile_follows_the_hardware(monkeypatch, tmp_path, overrid
     assert f"--sglang-ep-size {expected_size}" in train_command
 
 
+def test_dapo_grader_accepts_the_dataset_answer_format():
+    from miles.rollout.rm_hub.math_dapo_utils import compute_score
+
+    assert compute_score("Reasoning.\nAnswer: 45", "45")["score"] == 1.0
+    assert compute_score("Reasoning.\nAnswer: 46", "45")["score"] == -1.0
+
+
 @pytest.fixture
 def amd_launcher(monkeypatch):
     freeze_environment(monkeypatch)
@@ -151,6 +158,7 @@ def test_amd_train_emits_real_fp8_recipe(monkeypatch, amd_launcher, tmp_path, re
     assert "--transformer-impl transformer_engine" in command
     assert "--no-gradient-accumulation-fusion" in command
     assert ("NVTE_FP8_BLOCK_SCALING_FP32_SCALES" in command) == (selected == "blockwise")
+    assert "--rm-type dapo --reward-key score --eval-reward-key score" in command
     assert "--sglang-router-policy round_robin" in command
     assert '"GPU_MAX_HW_QUEUES": "1"' in command
     assert "--sglang-moe-runner-backend triton" in command

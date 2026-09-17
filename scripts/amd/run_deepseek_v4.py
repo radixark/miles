@@ -467,7 +467,6 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type math "
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
@@ -489,6 +488,10 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
     match args.task:
         case "dapo_aime":
             rollout_args += (
+                # DAPO prompts explicitly request "Answer:", not LaTeX boxed.
+                # The math grader only extracts boxed answers and silently
+                # yields all-zero rewards on otherwise-correct completions.
+                "--rm-type dapo --reward-key score --eval-reward-key score "
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
                 f"--rollout-max-response-len 8192 "
@@ -501,6 +504,7 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
             )
         case "gsm8k":
             rollout_args += (
+                "--rm-type math "
                 f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
                 "--input-key messages "
                 "--rollout-max-response-len 256 "

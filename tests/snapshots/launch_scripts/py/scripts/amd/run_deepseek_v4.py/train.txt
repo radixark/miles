@@ -81,13 +81,15 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --label-key label
   --apply-chat-template
   --rollout-shuffle
-  --rm-type math
   --num-rollout 3000
   --rollout-batch-size 32
   --n-samples-per-prompt 8
   --rollout-temperature 0.8
   --num-steps-per-rollout 1
   --balance-data
+  --rm-type dapo
+  --reward-key score
+  --eval-reward-key score
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --rollout-max-response-len 8192
