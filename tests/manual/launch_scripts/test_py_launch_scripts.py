@@ -68,6 +68,7 @@ _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, ob
 # The machine each recording represents. Launchers default --hardware to whatever node they run on, so the
 # suite pins one; FROZEN_HARDWARE covers the rest.
 _HARDWARE_A_RECORDING_REPRESENTS = {
+    "scripts/amd/run_glm5_2_744b_a40b_lora.py": "MI355X",
     "scripts/amd/run_qwen3_30b_a3b.py": "MI355X",
     "scripts/amd/run_qwen3_4b.py": "MI355X",
     "scripts/amd/run_qwen3_4b_lora.py": "MI355X",
