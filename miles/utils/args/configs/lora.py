@@ -4,6 +4,16 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 class LoraConfig(BaseConfig):
     """Add LoRA-related arguments for Megatron backend."""
 
+    sglang_lora_use_virtual_experts: A[
+        bool,
+        Arg(
+            cli_name="--no-sglang-lora-use-virtual-experts",
+            action="store_false",
+            help="Serve MoE-expert LoRA through sglang's fused_moe_lora alignment path instead "
+            "of the virtual-experts path.",
+        ),
+    ] = True
+
     lora_rank: A[int, Arg(help="LoRA rank. Set to 0 to disable LoRA (default: 0)")] = 0
     lora_alpha: A[int, Arg(help="LoRA alpha for scaling (default: 16)")] = 16
     lora_dropout: A[float, Arg(help="LoRA dropout rate (default: 0.0)")] = 0.0

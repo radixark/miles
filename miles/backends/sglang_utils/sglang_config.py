@@ -13,10 +13,10 @@ from miles.backends.sglang_utils.arguments import (
     _EVAL_SKIPPED_SERVER_ARGS,
     _SKIPPED_SERVER_ARGS,
     _add_prefixed_server_args,
-    add_sglang_router_arguments,
     collect_eval_sglang_overrides,
 )
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.utils.args.configs.sglang_client import SglangClientConfig
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -301,8 +301,7 @@ class SglangConfig(FrozenStrictBaseModel):
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
-        add_sglang_router_arguments(parser)
-        parser.add_argument("--sglang-server-concurrency", type=int, default=512)
+        SglangClientConfig.add_arguments(parser=parser)
 
         _add_prefixed_primary_server_args(parser)
         _add_prefixed_server_args(
