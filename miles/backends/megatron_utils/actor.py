@@ -244,7 +244,8 @@ class MegatronTrainRayActor(TrainRayActor):
         self._active_model_tag: str | None = "actor"
 
         if self.args.backend.vocab_size is None:
-            self.args.backend.vocab_size = self.tokenizer.vocab_size
+            with self.args.backend.mutable():
+                self.args.backend.vocab_size = self.tokenizer.vocab_size
 
         load_output = self._load_state_core(
             checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
@@ -375,7 +376,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def _load_state_core(
         self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object]
     ) -> LoadCheckpointOutput:
-        with inplace_modify_args(self.args.backend, overrider_for_loading):
+        with self.args.backend.mutable(), inplace_modify_args(self.args.backend, overrider_for_loading):
             load_output = load_model_state(
                 self.args,
                 model=self.model,
@@ -990,46 +991,47 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
-        old_args = (
-            self.args.backend.load,
-            self.args.backend.no_load_optim,
-            self.args.backend.no_load_rng,
-            self.args.backend.finetune,
-        )
-        self.args.backend.load = path
-        self.args.backend.no_load_optim = True
-        self.args.backend.no_load_rng = True
-        self.args.backend.finetune = True
+        with self.args.backend.mutable():
+            old_args = (
+                self.args.backend.load,
+                self.args.backend.no_load_optim,
+                self.args.backend.no_load_rng,
+                self.args.backend.finetune,
+            )
+            self.args.backend.load = path
+            self.args.backend.no_load_optim = True
+            self.args.backend.no_load_rng = True
+            self.args.backend.finetune = True
 
-        # load_checkpoint reads self.args.backend.ckpt_step to pick which iteration to load.
-        # Temporarily override it for ref/teacher loads, then restore after the load below.
-        if model_tag == "ref" and self.args.ref_ckpt_step is not None:
-            old_ckpt_step = self.args.backend.ckpt_step
-            self.args.backend.ckpt_step = self.args.ref_ckpt_step
+            # load_checkpoint reads self.args.backend.ckpt_step to pick which iteration to load.
+            # Temporarily override it for ref/teacher loads, then restore after the load below.
+            if model_tag == "ref" and self.args.ref_ckpt_step is not None:
+                old_ckpt_step = self.args.backend.ckpt_step
+                self.args.backend.ckpt_step = self.args.ref_ckpt_step
 
-        if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
-            old_ckpt_step = self.args.backend.ckpt_step
-            self.args.backend.ckpt_step = self.args.opd_teacher_ckpt_step
+            if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
+                old_ckpt_step = self.args.backend.ckpt_step
+                self.args.backend.ckpt_step = self.args.opd_teacher_ckpt_step
 
-        _, _ = load_checkpoint(
-            self.model,
-            None,
-            None,
-            checkpointing_context={},
-            skip_load_to_model_and_opt=False,
-        )
-        (
-            self.args.backend.load,
-            self.args.backend.no_load_optim,
-            self.args.backend.no_load_rng,
-            self.args.backend.finetune,
-        ) = old_args
+            _, _ = load_checkpoint(
+                self.model,
+                None,
+                None,
+                checkpointing_context={},
+                skip_load_to_model_and_opt=False,
+            )
+            (
+                self.args.backend.load,
+                self.args.backend.no_load_optim,
+                self.args.backend.no_load_rng,
+                self.args.backend.finetune,
+            ) = old_args
 
-        if model_tag == "ref" and self.args.ref_ckpt_step is not None:
-            self.args.backend.ckpt_step = old_ckpt_step
+            if model_tag == "ref" and self.args.ref_ckpt_step is not None:
+                self.args.backend.ckpt_step = old_ckpt_step
 
-        if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
-            self.args.backend.ckpt_step = old_ckpt_step
+            if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
+                self.args.backend.ckpt_step = old_ckpt_step
 
         self.weights_backuper.backup(model_tag)
         self._active_model_tag = model_tag
