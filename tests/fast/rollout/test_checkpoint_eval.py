@@ -27,6 +27,7 @@ def make_args(**overrides) -> Namespace:
         debug_train_only=False,
         offload_train=False,
         ci_test=False,
+        namespaced_radix_cache=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
@@ -583,8 +584,8 @@ def external_fn_env(monkeypatch):
         calls.append(("get", url))
         return {"weight_version": server.loaded_version}
 
-    async def fake_run_eval(state, cache):
-        calls.append(("eval", state))
+    async def fake_run_eval(state, cache, *, kv_cache_namespace: str | None = None):
+        calls.append(("eval", state, kv_cache_namespace))
         return {"ds": {"rewards": [1.0]}}
 
     async def fake_wait_ok(url, **kwargs):
@@ -622,6 +623,7 @@ async def test_external_eval_fn_waits_pins_then_evals(external_fn_env):
     )
     assert external_fn_env.calls[2] == ("get", "http://eval-host:31000/model_info")
     assert external_fn_env.calls[3][0] == "eval"
+    assert external_fn_env.calls[3][2] is None
     # The eval state targets the external server, built from the real training args.
     state = external_fn_env.calls[3][1]
     assert (state.args.sglang_router_ip, state.args.sglang_router_port) == ("eval-host", 31000)

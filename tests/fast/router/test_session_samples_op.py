@@ -199,8 +199,12 @@ async def test_assembled_sample_golden(core):
     assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
     assert m.weight_versions == [
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)], output_start=3),
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)], output_start=7),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)], output_start=3, prompt_tokens=3
+        ),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)], output_start=7, prompt_tokens=7
+        ),
     ]
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
     assert m.prefix_cache_info.to_dict() == {"cached_tokens": 5, "total_prompt_tokens": 10}
@@ -260,6 +264,7 @@ async def test_assembled_sample_carries_prefill_spans_per_turn(core):
             spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)],
             prefill_spans=[WeightVersionSpan(version="w1", abs_start=0, abs_end=3)],
             output_start=3,
+            prompt_tokens=3,
         ),
         WeightVersionsPerCall(
             spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)],
@@ -268,6 +273,7 @@ async def test_assembled_sample_carries_prefill_spans_per_turn(core):
                 WeightVersionSpan(version="w2", abs_start=5, abs_end=7),
             ],
             output_start=7,
+            prompt_tokens=7,
         ),
     ]
     m.validate()
