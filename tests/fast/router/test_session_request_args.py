@@ -184,10 +184,30 @@ class TestTurnArgs:
             second = self._turn(env, session_id, history)  # tools omitted: inherited, and back on the wire
             assert second.status_code == 200
             assert env.backend.request_log[-1]["tools"] == TOOLS
+            before = requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json()
+            backend_requests = len(env.backend.request_log)
 
             third = self._turn(env, session_id, history, tools=OTHER_TOOLS)
             assert third.status_code == 400
             assert "tools changed on a continued turn" in third.json()["error"]
+            assert requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json() == before
+            assert len(env.backend.request_log) == backend_requests
+
+    def test_retry_inherits_target_checkpoint_kwargs_not_latest_turn(self, version):
+        with _serve(version) as env:
+            session_id = _create_session(env.url)
+            first = self._turn(env, session_id, [USER], chat_template_kwargs=THINKING_ON)
+            assert first.status_code == 200
+            assistant = first.json()["choices"][0]["message"]
+            history = [USER, assistant, {"role": "user", "content": "more"}]
+            assert self._turn(env, session_id, history, chat_template_kwargs=LAUNCH_KWARGS).status_code == 200
+            assert _metadata(env.url, session_id)["turn_args"]["chat_template_kwargs"] == LAUNCH_KWARGS
+
+            assert self._turn(env, session_id, history).status_code == 200
+
+            assert env.backend.request_log[-1]["chat_template_kwargs"] == THINKING_ON
+            assert _metadata(env.url, session_id)["turn_args"] == env.backend.request_log[-1]
+            assert len(_records(env.url, session_id)) == 2
 
     def test_a_new_root_may_choose_again(self, version):
         """v1: retrying the first turn rolls back to the empty checkpoint; v2: a second root."""
