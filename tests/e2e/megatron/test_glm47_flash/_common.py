@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import miles.utils.external_utils.command_utils as U
 
@@ -24,6 +24,8 @@ class CaseConfig:
     use_bridge: bool = False
     use_r3: bool = False
     max_tokens_per_gpu: int = 8192
+    extra_args: str = ""
+    extra_env_vars: dict[str, str] = field(default_factory=dict)
 
 
 def prepare(case: CaseConfig) -> None:
@@ -160,6 +162,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
+        f"{case.extra_args} "
         f"{mtp_args} "
         f"{ci_args} "
         f"{misc_args} "
@@ -177,4 +180,5 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
         train_args=train_args,
         num_gpus_per_node=case.num_gpus_per_node,
         megatron_model_type=MODEL_TYPE,
+        extra_env_vars=case.extra_env_vars,
     )

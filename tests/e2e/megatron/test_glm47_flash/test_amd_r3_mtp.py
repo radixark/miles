@@ -25,7 +25,6 @@ register_rocm_ci(
     est_time=1100,
     suite="stage-c-4-gpu-mi350",
     labels=["megatron", "amd"],
-    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -43,6 +42,15 @@ CASE = CaseConfig(
     ep_size=2,
     # GLM-4.7-Flash has 20 attention heads; non-EP SGLang TP must divide it.
     rollout_num_gpus_per_engine=4,
+    # AITER's MLA RoPE path requires the checkpoint's original context length,
+    # which Transformers v5 omits from its synthesized RoPE config.
+    extra_args=(
+        "--sglang-json-model-override-args "
+        "'{\"rope_scaling\": {\"rope_theta\": 1000000, \"partial_rotary_factor\": 1.0, "
+        "\"rope_type\": \"default\", \"original_max_position_embeddings\": 202752}}' "
+    ),
+    # Lean attention accesses an unallocated lock buffer during EAGLE warmup.
+    extra_env_vars={"SGLANG_DISABLE_LEAN_ATTENTION": "1"},
 )
 
 
