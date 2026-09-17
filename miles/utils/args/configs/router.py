@@ -11,6 +11,7 @@ _ROUTER_DEST_PREFIX = "router_"
 
 # TODO: use all sglang router arguments with `--sglang-router` prefix
 class RouterConfig(BaseConfig):
+    sglang_model_routers: dict[str, tuple[str, int]] | None
     sglang_router_ip: A[str | None, Arg(help="IP address of the SGLang router")] = None
     sglang_router_port: A[int | None, Arg(help="Port of the SGLang router")] = None
     sglang_router_policy: A[
@@ -38,7 +39,6 @@ class RouterConfig(BaseConfig):
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         super().add_arguments(parser=parser)
-        parser.set_defaults(sglang_model_routers=None)
         RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
 
     @classmethod
