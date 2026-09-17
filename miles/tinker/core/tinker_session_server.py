@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 import uuid
@@ -15,6 +16,8 @@ from miles.tinker.core.future import FAILED
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_sampler_checkpoint
+
+logger = logging.getLogger(__name__)
 
 TINKER_PATH_PREFIX = "tinker://"
 # what Harbor's harness bindings hand the agent as its OpenAI key (harbor_agent_function.build_trial_config)
@@ -237,8 +240,9 @@ class TrajectoryCollector:
         max_sessions_per_tenant: int = 1024,
         max_turns_per_session: int = 1024,
         tito_tokenizer=None,
+        sweep_interval_s: float = 60.0,
     ) -> None:
-        """Keep the service, HF tokenizer, collector settings, caps and the optional injected TITOTokenizer."""
+        """Keep the service, HF tokenizer, settings (TTL, sweep period), caps and the optional TITOTokenizer."""
         self.service = service
         self.tokenizer = tokenizer
         self.session_ttl_s = session_ttl_s
@@ -247,6 +251,7 @@ class TrajectoryCollector:
         self.max_sessions_per_tenant = max_sessions_per_tenant
         self.max_turns_per_session = max_turns_per_session
         self.tito_tokenizer = tito_tokenizer
+        self.sweep_interval_s = sweep_interval_s
         self.sessions: dict[str, TrajectorySession] = {}
 
     def bind(
@@ -329,6 +334,13 @@ class TrajectoryCollector:
         for sid in expired:
             del self.sessions[sid]
         return len(expired)
+
+    async def run_sweeper(self) -> None:
+        """Every sweep_interval_s drop what sweep() considers dead; runs for the life of the gateway."""
+        while True:
+            await asyncio.sleep(self.sweep_interval_s)
+            if dropped := self.sweep():
+                logger.info(f"swept {dropped} recorded session(s)")
 
     def _tenant_alive(self, tenant: str) -> bool:
         """True while the tenant still holds a Tinker session lease (service.sessions records know their tenant)."""

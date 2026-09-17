@@ -25,8 +25,6 @@ from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
 
-_SWEEP_INTERVAL_S = 60.0
-
 
 def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
     """The collector over the running service: loads the HF tokenizer, TTL from the flag, optional TITOTokenizer."""
@@ -42,15 +40,15 @@ def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
         session_ttl_s=args.tinker_session_ttl_s,
         chat_template_kwargs=args.apply_chat_template_kwargs,
         tito_tokenizer=tito_tokenizer,
+        sweep_interval_s=args.tinker_session_sweep_interval_s,
     )
 
 
-async def _sweep_collector(collector: TrajectoryCollector, interval_s: float) -> None:
-    """Every interval_s drop recorded sessions idle past their TTL; lives and dies with service.run()."""
-    while True:
-        await asyncio.sleep(interval_s)
-        if dropped := collector.sweep():
-            logger.info(f"swept {dropped} idle recorded session(s)")
+def _on_sweeper_done(task: asyncio.Task, service_task: asyncio.Task) -> None:
+    """Log a crashed recorded-session sweeper and take the dispatcher down with it (cancel = normal exit)."""
+    if not task.cancelled() and task.exception() is not None:
+        logger.error(f"recorded-session sweeper died: {task.exception()!r}; stopping the gateway")
+        service_task.cancel()
 
 
 async def serve(args):
@@ -120,9 +118,10 @@ async def serve(args):
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
     # not keep answering /healthz while every training future pends forever
     service_task = asyncio.create_task(service.run())
-    if collector is not None:
-        # the sweep lives exactly as long as the dispatcher; nothing else needs to know about it
-        sweep_task = asyncio.create_task(_sweep_collector(collector, _SWEEP_INTERVAL_S))
+    sweep_task = asyncio.create_task(collector.run_sweeper()) if collector is not None else None
+    if sweep_task is not None:
+        # supervised like the dispatcher: a dead sweeper stops the gateway instead of silently leaking sessions
+        sweep_task.add_done_callback(lambda task: _on_sweeper_done(task, service_task))
         service_task.add_done_callback(lambda _: sweep_task.cancel())
     server_task = asyncio.create_task(server.serve())
     try:
@@ -134,6 +133,10 @@ async def serve(args):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        if sweep_task is not None:
+            sweep_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sweep_task
 
     await inference_controller.dispose()
     await trainer.dispose()
