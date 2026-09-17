@@ -54,7 +54,9 @@ def test_dapo_grader_accepts_the_dataset_answer_format():
     from miles.rollout.rm_hub.math_dapo_utils import compute_score
 
     assert compute_score("Reasoning.\nAnswer: 45", "45")["score"] == 1.0
+    assert compute_score("Reasoning.\nAnswer: 45<｜end▁of▁sentence｜>", "45")["score"] == 1.0
     assert compute_score("Reasoning.\nAnswer: 46", "45")["score"] == -1.0
+    assert compute_score("Reasoning.\nAnswer: 46<｜end▁of▁sentence｜>", "45")["score"] == -1.0
 
 
 @pytest.fixture
