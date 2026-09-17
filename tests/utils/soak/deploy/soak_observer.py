@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
+from tests.utils.soak.deploy.cluster_observer import (
     BOOT_UUID_TIMEOUT_SECONDS,
     POD_KIND,
     WORKLOAD_KINDS,
@@ -16,7 +16,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
     parse_pod_facts,
     parse_workload_facts,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.progress import observe_run_progress
+from tests.utils.soak.deploy.progress import observe_run_progress
 from tests.utils.soak.action import run_command
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.state import SoakDeploymentTarget, SoakObservation

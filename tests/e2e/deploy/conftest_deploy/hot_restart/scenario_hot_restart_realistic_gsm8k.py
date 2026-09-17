@@ -7,19 +7,19 @@ from typing import Annotated
 import typer
 from examples.infra_features.split_deployment.address_book import DEFAULT_TRAINER_ID
 from tests.e2e.deploy.conftest_deploy.common.utils import assert_cluster_can_deploy_runs
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_take_overs_replaced_only_script
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver, ClusterSnapshot
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+from tests.utils.soak.deploy.assert_workloads import assert_take_overs_replaced_only_script
+from tests.utils.soak.deploy.cluster_observer import ClusterObserver, ClusterSnapshot
+from tests.utils.soak.deploy.evidence import (
     HotRestartEvidence,
     HotRestartRecord,
     read_discarded_event_dirs,
     read_step_events,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME
-from tests.e2e.deploy.conftest_deploy.hot_restart.soak_form import SoakActionFormHotRestart
-from tests.e2e.deploy.conftest_deploy.hot_restart.soak_observer import HotRestartSoakObserver
-from tests.e2e.deploy.conftest_deploy.hot_restart.soak_session import execute_hot_restart_session
-from tests.e2e.deploy.conftest_deploy.hot_restart.utils import compute_checkpoint_dir, compute_release_of_config
+from tests.utils.soak.deploy.fault_form import HOT_RESTART_FORM_NAME
+from tests.utils.soak.deploy.soak_form import SoakActionFormHotRestart
+from tests.utils.soak.deploy.soak_observer import HotRestartSoakObserver
+from tests.utils.soak.deploy.soak_session import execute_hot_restart_session
+from tests.utils.soak.deploy.utils import compute_checkpoint_dir, compute_release_of_config
 from tests.utils.soak.checks.weights import assert_published_weight_checksums, assert_weight_checksum_history
 from tests.utils.soak.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.utils.soak.fault_forms import CellFaultForms

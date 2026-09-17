@@ -2,7 +2,7 @@ import logging
 import shlex
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_freeze_plan
+from tests.utils.soak.deploy.driver import compute_freeze_plan
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
 from miles.utils.test_utils.ft_test_actions import (

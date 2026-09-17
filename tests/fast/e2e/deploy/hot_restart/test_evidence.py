@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+from tests.utils.soak.deploy.evidence import (
     CHECKPOINT_TRACKER_FILENAME,
     HotRestartEvidence,
     HotRestartRecord,

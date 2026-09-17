@@ -1,11 +1,11 @@
 import pytest
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_process import (
+from tests.utils.soak.deploy.assert_process import (
     _compute_trainer_boot_uuids,
     assert_baseline_read_before_first_take_over,
     assert_run_watched_closely,
     assert_trainer_not_rebooted,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import POD_KIND
+from tests.utils.soak.deploy.cluster_observer import POD_KIND
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import cluster_snapshot
 from tests.fast.e2e.deploy.hot_restart.restart_facts import (
     evidence_of,

@@ -1,10 +1,10 @@
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
+from tests.utils.soak.deploy.cluster_observer import (
     STATEFUL_SET_KIND,
     ClusterSnapshot,
     PodFact,
     WorkloadFact,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
+from tests.utils.soak.deploy.evidence import HotRestartEvidence, HotRestartRecord
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ENGINE_POOL,
     ORCHESTRATOR,

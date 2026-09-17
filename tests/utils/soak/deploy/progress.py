@@ -3,7 +3,7 @@ from pathlib import Path
 
 import typer
 from pydantic import TypeAdapter
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import RunProgress, read_run_progress
+from tests.utils.soak.deploy.evidence import RunProgress, read_run_progress
 from tests.utils.soak.action import run_command
 
 _adapter = TypeAdapter(RunProgress)
@@ -15,7 +15,7 @@ async def observe_run_progress(*, checkpoint_dir: Path, events_dir: Path, timeou
         [
             sys.executable,
             "-m",
-            "tests.e2e.deploy.conftest_deploy.hot_restart.progress",
+            "tests.utils.soak.deploy.progress",
             str(checkpoint_dir),
             str(events_dir),
         ],

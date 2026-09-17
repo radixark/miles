@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import tests.e2e.deploy
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_deterministic as scenario
-from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import compute_freeze_plan_path
+from tests.utils.soak.deploy.freeze_plan import compute_freeze_plan_path
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import (
     HotRestartMode,
     compute_checkpoint_dir,

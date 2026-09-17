@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterSnapshot
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
+from tests.utils.soak.deploy.cluster_observer import ClusterSnapshot
+from tests.utils.soak.deploy.evidence import HotRestartEvidence
 
 MINIMUM_COMPLETE_SNAPSHOTS: int = 2
 MINIMUM_OBSERVATION_SUCCESS_RATIO: float = 0.5

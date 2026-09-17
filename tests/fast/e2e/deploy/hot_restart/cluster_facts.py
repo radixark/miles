@@ -1,4 +1,4 @@
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
+from tests.utils.soak.deploy.cluster_observer import (
     STATEFUL_SET_KIND,
     ClusterSnapshot,
     PodFact,

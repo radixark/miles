@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import WORKLOAD_KINDS, parse_workload_facts
+from tests.utils.soak.deploy.cluster_observer import WORKLOAD_KINDS, parse_workload_facts
 from tests.utils.soak.action import run_command
 from tests.utils.soak.state import SoakDeploymentTarget
 

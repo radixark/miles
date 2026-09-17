@@ -8,9 +8,9 @@ from urllib.parse import quote
 
 import typer
 import yaml
-from tests.e2e.deploy.conftest_deploy.hot_restart.deployment_target import validate_deployment_target
-from tests.e2e.deploy.conftest_deploy.hot_restart.guard_manifest import GUARDED_WORKLOAD_KINDS
-from tests.e2e.deploy.conftest_deploy.hot_restart.uninstall_lock import uninstall_lock
+from tests.utils.soak.deploy.deployment_target import validate_deployment_target
+from tests.utils.soak.deploy.guard_manifest import GUARDED_WORKLOAD_KINDS
+from tests.utils.soak.deploy.uninstall_lock import uninstall_lock
 from tests.utils.soak.recipes.gsm8k import launch_gsm8k
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
 from tests.utils.soak.state import SoakDeploymentTarget
@@ -105,7 +105,7 @@ def _write_guard_plugin(*, target: SoakDeploymentTarget, directory: Path) -> Pat
             [
                 sys.executable,
                 "-m",
-                "tests.e2e.deploy.conftest_deploy.hot_restart.guard_manifest",
+                "tests.utils.soak.deploy.guard_manifest",
                 str(target_path),
             ]
         )

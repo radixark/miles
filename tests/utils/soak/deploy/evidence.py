@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterSnapshot
+from tests.utils.soak.deploy.cluster_observer import ClusterSnapshot
 
 from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.audit_utils.event_logger.models import MetricEvent

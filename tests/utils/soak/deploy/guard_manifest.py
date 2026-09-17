@@ -4,7 +4,7 @@ from pathlib import Path
 
 import typer
 import yaml
-from tests.e2e.deploy.conftest_deploy.hot_restart.deployment_target import read_validated_workloads
+from tests.utils.soak.deploy.deployment_target import read_validated_workloads
 from tests.utils.soak.state import SoakDeploymentTarget
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (

@@ -2,8 +2,8 @@ import json
 import shlex
 
 import pytest
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_freeze_plan
-from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
+from tests.utils.soak.deploy.driver import compute_freeze_plan
+from tests.utils.soak.deploy.freeze_plan import (
     arm_first_freeze,
     compute_freeze_plan_path,
     with_freeze_plan_of,

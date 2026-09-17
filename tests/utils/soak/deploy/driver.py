@@ -6,14 +6,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+from tests.utils.soak.deploy.cluster_observer import ClusterObserver
+from tests.utils.soak.deploy.evidence import (
     HotRestartEvidence,
     HotRestartRecord,
     RunProgress,
     read_run_progress,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.utils import REPLACED_LAUNCH_EXIT_CODE, compute_hot_restart_config
+from tests.utils.soak.deploy.utils import REPLACED_LAUNCH_EXIT_CODE, compute_hot_restart_config
 from tests.e2e.ft.conftest_ft.execution import run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 

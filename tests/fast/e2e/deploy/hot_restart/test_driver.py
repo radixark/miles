@@ -6,15 +6,15 @@ from typing import Any
 
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import driver as driver_module
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
+from tests.utils.soak.deploy.driver import (
     HotRestartDriver,
     ScheduledFreeze,
     compute_freeze_plan,
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
-from tests.e2e.deploy.conftest_deploy.hot_restart.utils import HOT_RESTART_ARG
+from tests.utils.soak.deploy.evidence import HotRestartRecord, RunProgress
+from tests.utils.soak.deploy.utils import HOT_RESTART_ARG
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import NAMESPACE, RELEASE
 

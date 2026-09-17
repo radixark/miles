@@ -1,17 +1,17 @@
 import asyncio
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
-from tests.e2e.deploy.conftest_deploy.hot_restart.deployment_target import validate_deployment_target
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
-from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
+from tests.utils.soak.deploy.cluster_observer import compute_hot_restart_workloads
+from tests.utils.soak.deploy.deployment_target import validate_deployment_target
+from tests.utils.soak.deploy.evidence import HotRestartRecord
+from tests.utils.soak.deploy.fault_form import (
     HOT_RESTART_FORM_NAME,
     TAKE_OVER_POLL_INTERVAL_SECONDS,
     TAKE_OVER_TIMEOUT_SECONDS,
     restamped_replaced_workloads,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.guarded_launcher import HotRestartLaunchSpec
-from tests.e2e.deploy.conftest_deploy.hot_restart.utils import REPLACED_LAUNCH_EXIT_CODE, compute_hot_restart_config
+from tests.utils.soak.deploy.guarded_launcher import HotRestartLaunchSpec
+from tests.utils.soak.deploy.utils import REPLACED_LAUNCH_EXIT_CODE, compute_hot_restart_config
 from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
 from tests.utils.soak.state import (
@@ -117,7 +117,7 @@ class SoakActionFormHotRestart(SoakActionForm):
             spec,
             log_path=log_path,
             timeout_seconds=SESSION_TIMEOUT_SECONDS,
-            module_name="tests.e2e.deploy.conftest_deploy.hot_restart.guarded_launcher",
+            module_name="tests.utils.soak.deploy.guarded_launcher",
         )
         self._event_log.note_launcher_exited(
             SoakLauncherExitedEvent(request_id=request.request_id, returncode=result, log_path=log_path)

@@ -2,12 +2,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
+from tests.utils.soak.deploy.assert_redone_from_checkpoint import (
     compute_expected_attempts,
     read_checkpoint_snapshot_dirs,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+from tests.utils.soak.deploy.driver import ScheduledFreeze
+from tests.utils.soak.deploy.evidence import (
     HotRestartRecord,
     read_discarded_event_dirs,
     read_last_saved_iteration,

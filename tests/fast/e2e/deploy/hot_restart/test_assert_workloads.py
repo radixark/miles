@@ -1,5 +1,5 @@
 import pytest
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import (
+from tests.utils.soak.deploy.assert_workloads import (
     _compute_restart_stamps_of_workload,
     _compute_unattributed_pod_names,
     _compute_workload_of_pod,
@@ -7,7 +7,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import (
     _compute_workloads_with_replaced_pods,
     assert_only_orchestration_restarted,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
+from tests.utils.soak.deploy.cluster_observer import (
     LEADER_WORKER_SET_KIND,
     compute_hot_restart_workloads,
 )

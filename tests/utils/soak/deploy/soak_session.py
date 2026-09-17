@@ -1,7 +1,7 @@
 import asyncio
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.soak_form import SESSION_TIMEOUT_SECONDS
-from tests.e2e.deploy.conftest_deploy.hot_restart.utils import REPLACED_LAUNCH_EXIT_CODE
+from tests.utils.soak.deploy.soak_form import SESSION_TIMEOUT_SECONDS
+from tests.utils.soak.deploy.utils import REPLACED_LAUNCH_EXIT_CODE
 from tests.utils.soak.entrypoint import SoakSession
 from tests.utils.soak.recipes.gsm8k import Gsm8kRun
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch

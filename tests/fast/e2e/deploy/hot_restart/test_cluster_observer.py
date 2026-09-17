@@ -3,7 +3,7 @@ import time
 
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import cluster_observer as cluster_module
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
+from tests.utils.soak.deploy.cluster_observer import (
     LEADER_WORKER_SET_KIND,
     POD_KIND,
     STATEFUL_SET_KIND,
