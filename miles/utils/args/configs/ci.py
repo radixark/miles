@@ -4,6 +4,8 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 class CiConfig(BaseConfig):
     ci_disable_config_snapshot: A[bool, Arg()] = False
     config_snapshot_name: A[str | None, Arg()] = None
+    ci_enable_metrics_capture: bool
+
     ci_inject_missing_prefetched_batch_bug: A[
         bool, Arg(help="Discard the restored prefetched batch to test sample ownership failure detection.")
     ] = False
