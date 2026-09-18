@@ -312,10 +312,6 @@ def _execute_train(args: ScriptArgs):
         "TORCH_NCCL_DEBUG_INFO_TEMP_FILE": "/tmp/nccl_trace",
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256",
         "SGLANG_NSA_FORCE_MLA": "1",
-        # Node-local caches: the NFS defaults (~/.triton, ~/.cache/tvm-ffi)
-        # race across nodes under many-process cold compiles.
-        "TRITON_CACHE_DIR": os.environ.get("TRITON_CACHE_DIR", "/tmp/triton_cache"),
-        "TVM_FFI_CACHE_DIR": os.environ.get("TVM_FFI_CACHE_DIR", "/tmp/tvm_ffi_cache"),
         "INDEXER_ROPE_NEOX_STYLE": "0",
         "NVSHMEM_DISABLE_NCCL": "1",
         # openenv_daytona_agent_function / openenv_generate import path
