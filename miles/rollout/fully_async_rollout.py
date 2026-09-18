@@ -137,24 +137,21 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
                 active[task] = prompt_group
             done, _ = await self._scheduler.wait_for_progress(set(active))
             for task in done:
-                prompt_group = active.pop(task)
-                if task.cancelled():
-                    # This completed group was cancelled; the producer was not.
-                    # task.result() would re-raise CancelledError and stop the producer,
-                    # so send an aborted group to the buffer instead.
-                    # Cancellation of the producer itself still propagates from its
-                    # await calls: no surrounding handler catches it here.
-                    logger.warning(
-                        "Rollout group was cancelled; marking samples aborted: indices=%s",
-                        [sample.index for sample in prompt_group],
-                    )
-                    entry = DataBufferInput(
-                        prompt_group=prompt_group,
-                        group=[replace(sample, status=Sample.Status.ABORTED) for sample in prompt_group],
-                    )
-                else:
-                    entry = task.result()
+                entry = self._collect_group_result(task, active.pop(task))
                 await self._output.put(entry)
+
+    def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
+        if not task.cancelled():
+            return task.result()
+
+        logger.warning(
+            "Rollout group was cancelled; marking samples aborted: indices=%s",
+            [sample.index for sample in prompt_group],
+        )
+        return DataBufferInput(
+            prompt_group=prompt_group,
+            group=[replace(sample, status=Sample.Status.ABORTED) for sample in prompt_group],
+        )
 
     # -------------------------- consumer --------------------------
 
