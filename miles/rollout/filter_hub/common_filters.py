@@ -1,4 +1,5 @@
 from argparse import Namespace
+from numbers import Number
 
 import torch
 
@@ -35,6 +36,12 @@ def apply_missing_reward_filter(args: Namespace, samples: Group, **kwargs) -> Fi
 
 def apply_reward_nonzero_std_filter(args, samples: list[Sample | list[Sample]], **kwargs):
     rewards = [sample.get_reward_value(args) for sample in iter_samples(samples)]
+    if any(not isinstance(reward, Number) for reward in rewards):
+        # Dropping payload-only groups can starve rollout; keeping them would bypass this configured filter.
+        raise ValueError(
+            "apply_reward_nonzero_std_filter requires numeric rewards. "
+            "Set --reward-key to a numeric reward field or disable this dynamic-sampling filter."
+        )
     keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
     return FilterOutput(
         keep=keep,

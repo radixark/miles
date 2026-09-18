@@ -5,6 +5,7 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 import warnings
 from argparse import Namespace
 
+import numpy as np
 import pytest
 
 from miles.rollout.filter_hub import dynamic_sampling_filters
@@ -104,6 +105,54 @@ def test_legacy_filters_preserve_structured_results(legacy_name, samples, expect
     result = legacy(Namespace(reward_key=None), samples, ignored=True)
     assert isinstance(result, DynamicFilterOutput)
     assert result == expected
+
+
+@pytest.mark.parametrize(
+    ("rewards", "expected"),
+    [
+        ([0.0, 0.0], FilterOutput(keep=False, reason="zero_std_0.0")),
+        ([1.24, 1.24], FilterOutput(keep=False, reason="zero_std_1.2")),
+        ([0.0, 1.0], FilterOutput(keep=True)),
+        ([1, 1], FilterOutput(keep=False, reason="zero_std_1")),
+        ([0, 1], FilterOutput(keep=True)),
+        ([True, True], FilterOutput(keep=False, reason="zero_std_1")),
+        ([False, True], FilterOutput(keep=True)),
+        ([np.float32(1), np.float32(1)], FilterOutput(keep=False, reason="zero_std_1.0")),
+        ([np.float32(0), np.float32(1)], FilterOutput(keep=True)),
+        ([np.float64(1), np.float64(1)], FilterOutput(keep=False, reason="zero_std_1.0")),
+        ([np.float64(0), np.float64(1)], FilterOutput(keep=True)),
+        ([np.int64(1), np.int64(1)], FilterOutput(keep=False, reason="zero_std_1")),
+        ([np.int64(0), np.int64(1)], FilterOutput(keep=True)),
+    ],
+)
+def test_reward_nonzero_std_filter_requires_key_for_dict_rewards(rewards, expected):
+    args = Namespace(reward_key=None)
+    scalar_group = [make_sample(reward=reward) for reward in rewards]
+    assert apply_reward_nonzero_std_filter(args, scalar_group) == expected
+
+    dict_group = [make_sample(reward={"score": reward, "pred": "answer"}) for reward in rewards]
+    with pytest.raises(ValueError, match="--reward-key"):
+        apply_reward_nonzero_std_filter(args, dict_group)
+
+    assert apply_reward_nonzero_std_filter(Namespace(reward_key="score"), dict_group) == expected
+
+
+@pytest.mark.parametrize(
+    ("reward_key", "group"),
+    [
+        (None, [make_sample(reward={"teacher": {}}), make_sample(reward={"teacher": {}})]),
+        (None, [make_sample(reward=1.0), [make_sample(reward={"score": 2.0})]]),
+        ("score", [make_sample(reward={"score": 1.0}), [make_sample(reward={"score": {"value": 2.0}})]]),
+    ],
+    ids=["distillation-payload", "mixed-nested", "non-numeric-selected-key"],
+)
+def test_preput_reward_nonzero_std_filter_rejects_non_numeric_rewards(reward_key, group):
+    with pytest.raises(ValueError, match="--reward-key"):
+        apply_preput_filters(
+            Namespace(reward_key=reward_key),
+            dynamic_sampling_filters.check_reward_nonzero_std,
+            group,
+        )
 
 
 def test_iter_samples_preserves_flat_and_mixed_nested_order():
