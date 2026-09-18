@@ -31,6 +31,9 @@ def _runtime_env(submit_command):
 
 
 class TestExecuteTrainConfig:
+    def test_process_cleanup_is_enabled_by_default(self):
+        assert command_utils.ExecuteTrainConfig().skip_process_cleanup is False
+
     def test_num_nodes_reads_the_slurm_allocation_when_the_config_is_built(self, monkeypatch):
         """A plain class-level default would bake in the allocation at import and ignore later changes."""
         monkeypatch.setenv("SLURM_JOB_NUM_NODES", "8")
@@ -328,8 +331,141 @@ class TestExecuteTrain:
         assert not any("ray stop" in command or "ray start" in command for command in commands)
         assert not any("pkill -9 ray" in command for command in commands)
 
-    def test_runs_the_callback_before_submitting(self, commands):
+    @pytest.mark.parametrize("external_ray", [False, True])
+    def test_default_process_cleanup_is_unchanged(self, commands, monkeypatch, external_ray):
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", str(int(external_ray)))
+
+        command_utils.execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
+
+        assert commands[0] == (
+            "pkill -9 sglang; sleep 3; "
+            + ("" if external_ray else "ray stop --force; pkill -9 ray; ")
+            + "pkill -9 miles; sleep 3; "
+            + ("" if external_ray else "pkill -9 ray; ")
+            + "pkill -9 miles; pkill -9 redis; true; "
+        )
+
+    @pytest.mark.parametrize("ray_address", [None, "http://10.0.0.2:8265"])
+    @pytest.mark.parametrize("train_script", ["train_async.py", "/opt/train.py"])
+    @pytest.mark.parametrize("model_type", ["deepseek-v3-5layer", None])
+    def test_skip_cleanup_only_submits_with_unchanged_argv_and_runtime_env(
+        self, commands, monkeypatch, ray_address, train_script, model_type
+    ):
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
+        monkeypatch.setenv("MASTER_ADDR", "10.0.0.2")
+        monkeypatch.setenv("NCCL_NVLS_ENABLE", "0")
+        monkeypatch.setenv("PYTHONPATH", "/existing:/custom")
+        if ray_address is not None:
+            monkeypatch.setenv("RAY_ADDRESS", ray_address)
+        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: pytest.fail("unexpected GPU probe"))
+        train_args = "--run-name 'a run' --train-env-vars " + shlex.quote('{"VALUE": "it\'s unchanged"}')
+        if model_type is None:
+            train_args = "--train-backend fsdp " + train_args
+        kwargs = dict(
+            train_args=train_args,
+            num_gpus_per_node=8,
+            megatron_model_type=model_type,
+            train_script=train_script,
+            megatron_path="/megatron",
+            extra_env_vars={"VALUE": "argument", "OTHER": "kept", "PYTHONPATH": "/custom"},
+        )
+        config = command_utils.ExecuteTrainConfig(extra_env_vars=json.dumps({"VALUE": "it's preserved"}))
+        command_utils.execute_train(**kwargs, config=config)
+        default_submit = commands[-1]
+        commands.clear()
+
+        config.skip_process_cleanup = True
+        command_utils.execute_train(**kwargs, config=config)
+
+        assert commands == [default_submit]
+        assert not any(token in commands[0] for token in ("pkill", "ray stop", "ray start", "sleep ", "ssh "))
+        tokens = shlex.split(commands[0])
+        assert tokens[tokens.index("ray") : tokens.index("ray") + 3] == ["ray", "job", "submit"]
+        assert ("--address=http://127.0.0.1:8265" in tokens) == (ray_address is None)
+        expected_script = (
+            train_script if train_script.startswith("/") else f"{command_utils.repo_base_dir}/{train_script}"
+        )
+        model_argv = shlex.split(load_model_args(model_type)) if model_type else []
+        assert tokens[tokens.index("--") + 1 :] == ["python3", expected_script, *model_argv, *shlex.split(train_args)]
+        env = _runtime_env(commands[0])
+        assert env["VALUE"] == "it's preserved"
+        assert env["OTHER"] == "kept"
+        assert env["MASTER_ADDR"] == "10.0.0.2"
+        assert env["PYTHONPATH"] == f"{command_utils.repo_base_dir}:/megatron:/custom:/existing"
+        assert "skip_process_cleanup" not in env
+
+    @pytest.mark.parametrize("external_ray", [None, "0", "false", "invalid"])
+    def test_skip_cleanup_requires_external_ray_before_any_work(self, commands, monkeypatch, external_ray):
+        if external_ray is not None:
+            monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", external_ray)
+        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: pytest.fail("unexpected GPU probe"))
+
+        with pytest.raises(ValueError, match="requires MILES_SCRIPT_EXTERNAL_RAY=1"):
+            command_utils.execute_train(
+                train_args="",
+                num_gpus_per_node=8,
+                megatron_model_type="qwen3-4B",
+                extra_env_vars={"MILES_SCRIPT_EXTERNAL_RAY": "1"},
+                config=command_utils.ExecuteTrainConfig(skip_process_cleanup=True),
+                before_ray_job_submit=lambda: pytest.fail("unexpected callback"),
+            )
+
+        assert commands == []
+
+    def test_skip_cleanup_rejects_hooks_instead_of_silently_skipping_their_cleanup(self, commands, monkeypatch):
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
+        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: pytest.fail("unexpected GPU probe"))
+
+        with pytest.raises(ValueError, match="no before_ray_job_submit hook"):
+            command_utils.execute_train(
+                train_args="",
+                num_gpus_per_node=8,
+                megatron_model_type="qwen3-4B",
+                config=command_utils.ExecuteTrainConfig(skip_process_cleanup=True),
+                before_ray_job_submit=lambda: pytest.fail("unexpected worker join or other cleanup"),
+            )
+
+        assert commands == []
+
+    def test_skip_cleanup_does_not_disable_other_command_helpers(self, commands, monkeypatch):
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
+        monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: False)
+        monkeypatch.setattr(command_utils, "wait_for_server_ready", lambda *args, **kwargs: None)
+
+        command_utils.execute_train(
+            train_args="",
+            num_gpus_per_node=8,
+            megatron_model_type="qwen3-4B",
+            config=command_utils.ExecuteTrainConfig(skip_process_cleanup=True),
+        )
+        command_utils.start_mooncake_master()
+
+        assert len(commands) == 2
+        assert "ray job submit" in commands[0]
+        assert "pkill -x mooncake_master" in commands[1]
+
+    def test_skip_cleanup_does_not_swallow_submit_errors(self, commands, monkeypatch):
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
+
+        def fail_submit(command):
+            commands.append(command)
+            raise RuntimeError("submission failed")
+
+        monkeypatch.setattr(command_utils, "exec_command_cpu", fail_submit)
+        with pytest.raises(RuntimeError, match="submission failed"):
+            command_utils.execute_train(
+                train_args="",
+                num_gpus_per_node=8,
+                megatron_model_type="qwen3-4B",
+                config=command_utils.ExecuteTrainConfig(skip_process_cleanup=True),
+            )
+        assert len(commands) == 1
+        assert "ray job submit" in commands[0]
+
+    @pytest.mark.parametrize("external_ray", [False, True])
+    def test_runs_the_callback_before_submitting(self, commands, monkeypatch, external_ray):
         """before_ray_job_submit exists to prepare state the job will read."""
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", str(int(external_ray)))
         command_utils.execute_train(
             train_args="",
             num_gpus_per_node=8,
@@ -338,7 +474,8 @@ class TestExecuteTrain:
         )
 
         assert commands.index("CALLBACK") < len(commands) - 1
-        assert "ray start --head" in commands[commands.index("CALLBACK") - 1]
+        previous_command = commands[commands.index("CALLBACK") - 1]
+        assert ("pkill -9 sglang" if external_ray else "ray start --head") in previous_command
         assert "ray job submit" in commands[-1]
 
     def test_can_skip_the_ray_job_submit(self, commands, monkeypatch):

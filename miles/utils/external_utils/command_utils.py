@@ -152,6 +152,10 @@ class ExecuteTrainConfig:
     num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
+    skip_process_cleanup: bool = field(
+        default=False,
+        metadata={"help": "Skip the process-cleanup preamble; requires external Ray and no worker joining."},
+    )
 
 
 def resolve_extra_env_vars(extra_env_vars: dict[str, str], config: ExecuteTrainConfig) -> dict[str, str]:
@@ -171,6 +175,12 @@ def execute_train(
     config: ExecuteTrainConfig | None = None,
     megatron_path: str = "/root/Megatron-LM",
 ):
+    """Submit training, optionally leaving an externally managed cluster's processes alone.
+
+    ``skip_process_cleanup`` only skips this function's cleanup preamble. It requires
+    ``MILES_SCRIPT_EXTERNAL_RAY=1`` and no submit hook, since hooks may clean worker
+    processes too. Other helpers and the training job's own cleanup are unaffected.
+    """
     if extra_env_vars is None:
         extra_env_vars = {}
     if config is None:
@@ -178,27 +188,34 @@ def execute_train(
     if not os.path.isabs(train_script):
         train_script = f"{repo_base_dir}/{train_script}"
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
+    if config.skip_process_cleanup:
+        if not external_ray:
+            raise ValueError("skip_process_cleanup requires MILES_SCRIPT_EXTERNAL_RAY=1.")
+        # Hooks can join workers with their own destructive cleanup. Do not silently drop them.
+        if before_ray_job_submit is not None:
+            raise ValueError("skip_process_cleanup requires no before_ray_job_submit hook; disable worker joining.")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
-    exec_command_cpu(
-        "pkill -9 sglang; "
-        "sleep 3; "
-        f"{'' if external_ray else 'ray stop --force; '}"
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # cannot be run in CI, o/w kill the parent script
-        # TODO: do we really need this kill? (or can we instead kill miles)
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "sleep 3; "
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "pkill -9 redis; "
-        "true; "
-    )
+    if not config.skip_process_cleanup:
+        exec_command_cpu(
+            "pkill -9 sglang; "
+            "sleep 3; "
+            f"{'' if external_ray else 'ray stop --force; '}"
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            # cannot be run in CI, o/w kill the parent script
+            # TODO: do we really need this kill? (or can we instead kill miles)
+            # "pkill -9 python; "
+            "pkill -9 miles; "
+            "sleep 3; "
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            # "pkill -9 python; "
+            "pkill -9 miles; "
+            "pkill -9 redis; "
+            "true; "
+        )
 
     if not external_ray:
         exec_command_cpu(
