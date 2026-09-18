@@ -1,0 +1,6 @@
+diff --git a/quant/common.py b/quant/common.py
+--- a/quant/common.py
++++ b/quant/common.py
+@@ -7 +7 @@
+-from tilelang.utils.target import determine_target
++from tilelang.backend.target import determine_target
