@@ -170,7 +170,8 @@ def args(**changes):
             optimizer_cpu_offload=True,
             overlap_cpu_optimizer_d2h_h2d=True,
             train_backend="megatron",
-        ) | changes
+        )
+        | changes
     )
 
 
@@ -239,6 +240,7 @@ def test_multistep_exact_original_hdo_parity(streams, decoupled, fused, foreach)
     actual = install(make_hdo(fused=fused, foreach=foreach))
     max_live = []
     for child in actual.cpu_optimizers:
+
         def check_live(optimizer, unused_args, unused_kwargs):
             live = [p for opt in actual.cpu_optimizers for p in sources(opt) if p.grad is not None]
             assert live == sources(optimizer)
@@ -277,7 +279,8 @@ def test_none_grad_transitions_skip_decay_moments_and_step(streams):
                     param.grad = None
         before = {
             index: (actual.param_to_inner_param[source].clone(), copy.deepcopy(actual.state.get(source, {})))
-            for index, source in enumerate(sources(actual)) if index in missing
+            for index, source in enumerate(sources(actual))
+            if index in missing
         }
         reference.step()
         reference._h2d_stream.synchronize()
@@ -333,9 +336,17 @@ def test_hook_order_and_pending_copies_are_completed(streams):
     streams.current.commands.append(Command(lambda: source.decoupled_grad.copy_(expected_grad)))
     hdo.step()
     assert log == [
-        "hdo-pre", "groups", "gpu-post",
-        "cpu-0-pre", "cpu-0-post", "cpu-1-pre", "cpu-1-post", "cpu-2-pre", "cpu-2-post",
-        "state", "hdo-post",
+        "hdo-pre",
+        "groups",
+        "gpu-post",
+        "cpu-0-pre",
+        "cpu-0-post",
+        "cpu-1-pre",
+        "cpu-1-post",
+        "cpu-2-pre",
+        "cpu-2-post",
+        "state",
+        "hdo-post",
     ]
     state = hdo.cpu_optimizers[0].state[sources(hdo.cpu_optimizers[0])[0]]
     torch.testing.assert_close(state["exp_avg"], expected_grad * (1 - 0.83), rtol=1e-7, atol=0)
@@ -418,11 +429,14 @@ def test_opt_in_parser_and_disabled_noop():
     install_optimizer_cpu_streaming_gradients(SimpleNamespace(), object())
 
 
-@pytest.mark.parametrize("change,match", [
-    ({"optimizer_cpu_offload": False}, "requires --optimizer-cpu-offload"),
-    ({"overlap_cpu_optimizer_d2h_h2d": False}, "requires --overlap-cpu"),
-    ({"train_backend": "fsdp"}, "requires the Megatron"),
-])
+@pytest.mark.parametrize(
+    "change,match",
+    [
+        ({"optimizer_cpu_offload": False}, "requires --optimizer-cpu-offload"),
+        ({"overlap_cpu_optimizer_d2h_h2d": False}, "requires --overlap-cpu"),
+        ({"train_backend": "fsdp"}, "requires the Megatron"),
+    ],
+)
 def test_incompatible_args_rejected(streams, change, match):
     hdo = make_hdo()
     with pytest.raises(RuntimeError, match=match):
@@ -430,14 +444,18 @@ def test_incompatible_args_rejected(streams, change, match):
     assert "step" not in hdo.__dict__
 
 
-@pytest.mark.parametrize("defect,match", [
-    ("batched", "exactly one"),
-    ("mapping", "mapping"),
-    ("missing_hook", "copy-back hook"),
-    ("stream", "stream"),
-    ("cached", "cached CPU gradients"),
-    ("overlap", "per-parameter overlap"),
-])
+@pytest.mark.parametrize(
+    "defect,match",
+    [
+        ("batched", "exactly one"),
+        ("mapping", "mapping"),
+        ("missing_hook", "copy-back hook"),
+        ("unrelated_hook", "copy-back hook"),
+        ("stream", "stream"),
+        ("cached", "cached CPU gradients"),
+        ("overlap", "per-parameter overlap"),
+    ],
+)
 def test_capability_checks_are_atomic_across_wrappers(streams, defect, match):
     good, bad = make_hdo(), make_hdo()
     child = bad.cpu_optimizers[0]
@@ -446,8 +464,10 @@ def test_capability_checks_are_atomic_across_wrappers(streams, defect, match):
         child.param_groups[0]["params"].append(sources(bad.cpu_optimizers[1])[0])
     elif defect == "mapping":
         del bad.cpu_copys_map_gpu_param[param]
-    elif defect == "missing_hook":
+    elif defect in ("missing_hook", "unrelated_hook"):
         child._optimizer_step_post_hooks.clear()
+        if defect == "unrelated_hook":
+            child.register_step_post_hook(lambda *_: None)
     elif defect == "stream":
         bad._h2d_stream = object()
     elif defect == "cached":
