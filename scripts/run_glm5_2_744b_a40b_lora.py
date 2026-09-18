@@ -63,11 +63,6 @@ _MEGATRON_MODEL_TYPE = {
     "GLM-5.2_5layer": "glm5.2-744B-A40B_5layer_lora",
 }
 
-# Standard attn + MLA + MLP/MoE, EXCLUDING the DSA indexer (wq_b/wk/weights_proj).
-_DEFAULT_TARGET_MODULES = (
-    "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
-)
-
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -98,7 +93,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
-    target_modules: str = _DEFAULT_TARGET_MODULES
+    target_modules: str = "all-linear"
     # required for true on-policy under colocate (OFF -> KL ~1.0 vs ~1e-4); opt out only
     # when host RAM cannot take the ~372 GB/node mirror on the full model
     lora_base_cpu_backup: bool = True
@@ -192,11 +187,8 @@ def _train(args: ScriptArgs):
 
     # the full rollout config applies to the toys too (same glm_moe_dsa serving path)
     _is_full = True
-    _tm = args.target_modules
     # KEEP_MOE_LORA=0 drops the expert projections (attention-only LoRA)
     _keep_moe_lora = os.environ.get("KEEP_MOE_LORA", "1") != "0"
-    if _is_full and not _keep_moe_lora:
-        _tm = ",".join(m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj"))
     # the MOE_LORA_LAYERS subset feature is disabled; warn so it is not silently ignored
     _moe_lora_layers = os.environ.get("MOE_LORA_LAYERS", "").strip()
     if _moe_lora_layers:
@@ -204,7 +196,12 @@ def _train(args: ScriptArgs):
             f"[run_glm5_2_744b_a40b_lora] WARNING: MOE_LORA_LAYERS={_moe_lora_layers} is SET but the subset-rewrite "
             "feature is DISABLED (commented out for debugging) -> MoE-expert LoRA stays on ALL layers."
         )
-    lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{_tm}" '
+    lora_args = (
+        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} "
+        f'--target-modules "{args.target_modules}" '
+    )
+    if not _keep_moe_lora:
+        lora_args += "--exclude-modules gate_proj,up_proj,down_proj "
     if _keep_moe_lora and args.experts_shared_outer_loras:
         lora_args += "--experts-shared-outer-loras "
     if _is_full:

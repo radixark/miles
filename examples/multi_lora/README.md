@@ -22,8 +22,10 @@ Bridge and checks adapter coverage at initialization. A target definition does
 not by itself establish end-to-end training and sampling support for a model.
 `--tinker-train-attn`, `--tinker-train-mlp`, and `--tinker-train-unembed` default to enabled;
 use `--no-tinker-train-attn`, `--no-tinker-train-mlp`, or `--no-tinker-train-unembed` to disable a group.
-Every client's corresponding SDK flags must match the server layout. Tinker startup rejects
-`--target-modules` and `--exclude-modules`; native Miles training still accepts them.
+Explicit HF `--target-modules` overrides these flags; `--exclude-modules` applies
+after selection. The final selection must consist of complete training groups,
+and the gateway derives its SDK flags from those groups. Every client's SDK
+flags must match the resulting server layout.
 
 ## Run
 

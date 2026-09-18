@@ -123,7 +123,7 @@
 "--lora-dropout"
 "0.0"
 "--target-modules"
-"gate_proj,up_proj,down_proj"
+"gate_up_proj,down_proj"
 "--sglang-lora-backend"
 "triton"
 "--hf-checkpoint"

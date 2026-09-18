@@ -1,7 +1,7 @@
 """Unit tests for miles.backends.megatron_utils.lora.utils.
 
 Tests cover module name conversion, LoRA detection helpers, parameter identification,
-exclude-module parsing, and LoRA sync config building — all without GPU.
+and LoRA sync config building — all without GPU.
 """
 
 import sys
@@ -15,126 +15,14 @@ import torch
 
 import miles.backends.megatron_utils.lora.utils as lora_utils
 from miles.backends.megatron_utils.lora.utils import (
-    _get_lora_class_name,
     _is_adapter_param_name,
     build_lora_sync_config,
     convert_target_modules_to_hf,
-    convert_target_modules_to_megatron,
     is_lora_enabled,
     load_lora_adapter,
-    parse_exclude_modules,
     save_lora_checkpoint,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
-
-# ---------------------------------------------------------------------------
-# _get_lora_class_name
-# ---------------------------------------------------------------------------
-
-
-class TestGetLoraClassName:
-    def test_none_returns_canonical(self):
-        assert _get_lora_class_name(None) == "CanonicalLoRA"
-
-    def test_type_returns_class_name(self):
-        class FakeLoRA:
-            pass
-
-        assert _get_lora_class_name(FakeLoRA) == "FakeLoRA"
-
-    def test_instance_returns_class_name(self):
-        class FakeLoRA:
-            pass
-
-        assert _get_lora_class_name(FakeLoRA()) == "FakeLoRA"
-
-
-# ---------------------------------------------------------------------------
-# convert_target_modules_to_megatron
-# ---------------------------------------------------------------------------
-
-
-def _make_lora_type(name: str):
-    """Helper to create a mock lora_type whose class name matches *name*."""
-    mock = MagicMock()
-    type(mock).__name__ = name
-    return mock
-
-
-class TestConvertTargetModulesToMegatron:
-    def test_gdn_hf_names_collapse_to_fused_in_proj(self):
-        lora = _make_lora_type("LoRA")
-        result = convert_target_modules_to_megatron(["in_proj_qkvz", "in_proj_ba", "out_proj"], lora_type=lora)
-        assert result == ["in_proj", "out_proj"]
-
-    # --- "all-linear" variants ------------------------------------------------
-
-    @pytest.mark.parametrize("shorthand", ["all", "all-linear", "all_linear"])
-    def test_all_linear_string_canonical(self, shorthand):
-        result = convert_target_modules_to_megatron(shorthand, lora_type=None)
-        assert result == [
-            "linear_q",
-            "linear_k",
-            "linear_v",
-            "linear_proj",
-            "linear_fc1_up",
-            "linear_fc1_gate",
-            "linear_fc2",
-        ]
-
-    @pytest.mark.parametrize("shorthand", ["all", "all-linear", "all_linear"])
-    def test_all_linear_string_standard(self, shorthand):
-        lora_type = _make_lora_type("LoRA")
-        result = convert_target_modules_to_megatron(shorthand, lora_type=lora_type)
-        assert result == ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
-
-    @pytest.mark.parametrize("shorthand", ["all", "all-linear", "all_linear"])
-    def test_all_linear_single_element_list(self, shorthand):
-        result = convert_target_modules_to_megatron([shorthand], lora_type=None)
-        assert len(result) == 7  # CanonicalLoRA has 7 modules
-
-    # --- HF -> Megatron conversion (standard LoRA) ----------------------------
-
-    def test_hf_to_megatron_standard_dedup(self):
-        lora = _make_lora_type("LoRA")
-        result = convert_target_modules_to_megatron(["q_proj", "k_proj", "v_proj"], lora_type=lora)
-        assert result == ["linear_qkv"]
-
-    def test_hf_to_megatron_standard_all_modules(self):
-        lora = _make_lora_type("LoRA")
-        modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        result = convert_target_modules_to_megatron(modules, lora_type=lora)
-        assert result == ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
-
-    # --- HF -> Megatron conversion (CanonicalLoRA) ----------------------------
-
-    def test_hf_to_megatron_canonical_split(self):
-        result = convert_target_modules_to_megatron(["q_proj", "k_proj", "v_proj"], lora_type=None)
-        assert result == ["linear_q", "linear_k", "linear_v"]
-
-    def test_hf_to_megatron_canonical_gate_up(self):
-        result = convert_target_modules_to_megatron(["gate_proj", "up_proj"], lora_type=None)
-        assert result == ["linear_fc1_gate", "linear_fc1_up"]
-
-    # --- Already in Megatron format -------------------------------------------
-
-    def test_megatron_format_passthrough(self):
-        modules = ["linear_qkv", "linear_proj"]
-        result = convert_target_modules_to_megatron(modules, lora_type=None)
-        assert result == modules
-
-    def test_megatron_format_passthrough_canonical(self):
-        modules = ["linear_q", "linear_k", "linear_v"]
-        result = convert_target_modules_to_megatron(modules, lora_type=None)
-        assert result == modules
-
-    # --- Single string input --------------------------------------------------
-
-    def test_single_hf_string_input(self):
-        lora = _make_lora_type("LoRA")
-        result = convert_target_modules_to_megatron("o_proj", lora_type=lora)
-        assert result == ["linear_proj"]
-
 
 # ---------------------------------------------------------------------------
 # convert_target_modules_to_hf
@@ -182,17 +70,6 @@ class TestConvertTargetModulesToHf:
 
     def test_unknown_module_passthrough(self):
         assert convert_target_modules_to_hf(["some_custom_module"]) == ["some_custom_module"]
-
-    def test_roundtrip_canonical_all_linear(self):
-        megatron = convert_target_modules_to_megatron("all-linear", lora_type=None)
-        hf = convert_target_modules_to_hf(megatron)
-        assert set(hf) == {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
-
-    def test_roundtrip_standard_all_linear(self):
-        lora = _make_lora_type("LoRA")
-        megatron = convert_target_modules_to_megatron("all-linear", lora_type=lora)
-        hf = convert_target_modules_to_hf(megatron)
-        assert set(hf) == {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
 
 
 # ---------------------------------------------------------------------------
@@ -275,36 +152,6 @@ class TestIsAdapterParamName:
     )
     def test_negative(self, name):
         assert _is_adapter_param_name(name) is False
-
-
-# ---------------------------------------------------------------------------
-# parse_exclude_modules
-# ---------------------------------------------------------------------------
-
-
-class TestParseExcludeModules:
-    def test_none(self):
-        args = Namespace(exclude_modules=None)
-        assert parse_exclude_modules(args) == []
-
-    def test_single_module_string(self):
-        args = Namespace(exclude_modules="o_proj")
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert result == ["linear_proj"]
-
-    def test_comma_separated(self):
-        args = Namespace(exclude_modules="o_proj, down_proj")
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert set(result) == {"linear_proj", "linear_fc2"}
-
-    def test_list_input(self):
-        args = Namespace(exclude_modules=["o_proj", "down_proj"])
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert set(result) == {"linear_proj", "linear_fc2"}
-
-    def test_missing_attr(self):
-        args = Namespace()
-        assert parse_exclude_modules(args) == []
 
 
 # ---------------------------------------------------------------------------

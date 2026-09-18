@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 
 
 @dataclass(frozen=True)
@@ -204,8 +205,10 @@ def resolve_hf_lora_targets(
     train_mlp: bool | None = None,
     train_unembed: bool | None = None,
 ) -> list[str]:
-    if target_modules is not None:
-        assert target_modules, "Explicit LoRA targets must not be empty"
+    if target_modules == ["all-linear"]:
+        train_attn = train_mlp = train_unembed = None
+    elif target_modules is not None:
+        assert target_modules and "all-linear" not in target_modules, "Use all-linear alone or provide explicit targets"
         return list(target_modules)
 
     layout = get_hf_lora_targets(hf_config)
@@ -223,3 +226,25 @@ def resolve_hf_lora_targets(
         targets = [target for target in targets if target not in layout.default_exclude]
     assert targets, "At least one trainable LoRA module group is required"
     return targets
+
+
+def parse_lora_targets(value: str | list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    targets = value.split(",") if isinstance(value, str) else value
+    targets = [target.strip() for target in targets]
+    assert targets and all(targets), "LoRA target lists must not contain empty entries"
+    return list(dict.fromkeys(targets))
+
+
+def matches_hf_lora_target(module: str, target: str) -> bool:
+    # Scoped selectors must match registry patterns exactly to keep appended MTP layers out.
+    return module == target if "." in target else fnmatchcase(module.rsplit(".", 1)[-1], target)
+
+
+def exclude_hf_lora_targets(targets: list[str], exclusions: list[str]) -> list[str]:
+    selected = [
+        target for target in targets if not any(matches_hf_lora_target(target, pattern) for pattern in exclusions)
+    ]
+    assert selected, "LoRA target selection is empty after --exclude-modules"
+    return selected

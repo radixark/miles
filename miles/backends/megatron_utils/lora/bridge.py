@@ -14,9 +14,9 @@ from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
 from miles.backends.megatron_utils.lora.target_modules import (
-    resolve_hf_target_modules,
+    resolve_megatron_lora_targets,
     select_present_target_modules,
-    validate_hf_target_adapters,
+    validate_lora_target_adapters,
 )
 from miles.backends.megatron_utils.lora.utils import (
     convert_target_modules_to_hf,
@@ -104,6 +104,8 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     )
     # sglang only wraps a fused MoE layer when both expert projections are targeted.
     served = set(convert_target_modules_to_hf(list(args.target_modules)))
+    if "gate_up_proj" in served:
+        served.update(("gate_proj", "up_proj"))
     expert_pair = {"gate_proj", "up_proj", "down_proj"}
     if served & expert_pair:
         assert expert_pair <= served, (
@@ -178,32 +180,24 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         _validate_multi_lora_moe_support(args, provider)
 
     create_adapter = create_multi_lora_instance if is_multi_lora_enabled(args) else create_lora_instance
-    scoped_hf_targets = any(target.startswith("model.") for target in args.target_modules) or args.target_modules == [
-        "lm_head"
-    ]
-
-    hf_candidates = None
-    if scoped_hf_targets:
-        assert not (is_multi_lora_enabled(args) and args.lora_type == "canonical_lora"), (
-            "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
-        )
-        model_bridge = bridge._model_bridge
-        # Some registries inspect checkpoint keys to distinguish packed and per-expert layouts.
-        model_bridge.hf_pretrained = bridge.hf_pretrained
-        hf_candidates = resolve_hf_target_modules(
-            args.target_modules,
-            model_bridge.mapping_registry().get_all_mappings(),
-            canonical=args.lora_type == "canonical_lora",
-        )
+    assert not (is_multi_lora_enabled(args) and args.lora_type == "canonical_lora"), (
+        "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
+    )
+    model_bridge = bridge._model_bridge
+    # Some registries inspect checkpoint keys to distinguish packed and per-expert layouts.
+    model_bridge.hf_pretrained = bridge.hf_pretrained
+    target_candidates = resolve_megatron_lora_targets(
+        args.target_modules,
+        model_bridge.mapping_registry().get_all_mappings(),
+        canonical=args.lora_type == "canonical_lora",
+        exclude_modules=args.exclude_modules,
+    )
 
     def apply_lora_hook(model_chunks):
-        candidates = (
-            select_present_target_modules(model_chunks, hf_candidates) if hf_candidates is not None else None
-        )
-        lora = create_adapter(args, target_modules=list(candidates) if candidates is not None else None)
+        candidates = select_present_target_modules(model_chunks, target_candidates)
+        lora = create_adapter(args, target_modules=list(candidates))
         transformed = lora(model_chunks, training=True)
-        if candidates is not None:
-            validate_hf_target_adapters(transformed, candidates)
+        validate_lora_target_adapters(transformed, candidates)
         lora.set_params_to_save(transformed)
         return transformed
 

@@ -102,12 +102,12 @@ in PR #1792 are not released on `main` yet. FSDP does not currently implement
 LoRA training.
 </Warning>
 
-`all-linear` expands to Q/K/V/O and gate/up/down projections, and conditionally
-adds MLA Q/KV projections based on the HF config. It does not literally wrap
-every linear layer. GDN and other model-specific projections require an explicit
-target list. Current GLM recipes validate models that contain DSA while leaving
-the DSA indexer unadapted; current hybrid-model recipes also leave MTP blocks and
-vision towers unadapted. Use the model launcher as the source of truth.
+Omitting `--target-modules` or passing `all-linear` uses the model defaults from
+`miles/utils/hf_lora_targets.py`: attention + MLP, with model-specific exclusions
+and output-head defaults. Multi-LoRA without explicit targets selects all three
+training groups; Tinker controls them with `--tinker-train-attn/mlp/unembed`.
+An explicit target list overrides the default selection. `all-linear` always
+means the ordinary model defaults, including when explicitly passed to Tinker.
 
 ### Core arguments
 
@@ -117,8 +117,8 @@ vision towers unadapted. Use the model launcher as the source of truth.
 | `--lora-alpha` | `16` | Adapter scaling factor. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
 | `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
-| `--target-modules` | none | Required with a positive rank. Accepts `all-linear`, HF leaf names, Megatron names, or model-specific wildcard paths. |
-| `--exclude-modules` | none | Comma-separated exact entries removed from the resolved targets. |
+| `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, HF leaf names or scoped registry patterns; Bridge also accepts Megatron selectors. |
+| `--exclude-modules` | none | Comma-separated HF leaf names or scoped registry patterns removed after selection; Bridge also accepts Megatron selectors. |
 | `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
@@ -159,15 +159,20 @@ Inkling entries use its HF adapter export schema, which differs from its base
 checkpoint packing. Backend conversion must account for those representations;
 a layout entry is not a backend support claim.
 
-Tinker currently calls this resolver with its three flags. Wiring ordinary LoRA
-CLI defaults and explicit Tinker overrides to the resolver is a separate step;
-existing `all-linear` recipes and explicit Megatron targets retain their behavior.
-The current Bridge converter accepts scoped module patterns matching its registry
-exactly and rejects missing mappings, missing modules, and skipped adapters.
-Packed-parameter targets and Inkling's native injection still require integration.
+Ordinary LoRA and Tinker both use this selection policy. Bridge resolves HF
+module and packed-parameter names through its registry; adapter factories receive
+only the resolved Megatron targets. Explicit Megatron selectors also go through
+the registry. Missing mappings, missing modules, and skipped adapters fail at
+initialization. Scoped HF selectors must match registry patterns exactly;
+arbitrary layer subsets are not implemented by this converter.
 Standard LoRA requires all projections of a fused weight together;
 `canonical_lora` supports individual Q/K/V and gate/up selections.
 Injection checks do not validate export or serving compatibility.
+
+Tinker accepts explicit HF targets and exclusions only when the resulting layout
+consists of complete attention, MLP, and output-head groups. It derives the SDK
+training flags from that final selection; partial groups are rejected because
+the SDK cannot describe them.
 
 SGLang normalizes target names into buffer types (for example, Q/K/V become
 `qkv_proj`); it does not own the selection policy. FSDP currently has no LLM LoRA
@@ -175,9 +180,9 @@ injection path. Its eventual integration must use the same selected HF targets
 and translate any runtime fusion through model conversion metadata.
 
 This argument table describes the general Bridge surface. Current native Inkling
-uses a fixed model-specific adapter schema: `--target-modules` does not select
-individual training modules, `--exclude-modules` is not applied, and
-`canonical_lora` is not implemented. Use the Inkling launcher defaults.
+uses a fixed model-specific adapter schema: defaults select that complete schema,
+and partial/custom layouts or `canonical_lora` are rejected before injection.
+Use the Inkling launcher defaults.
 
 ### Rollout topology
 
@@ -208,7 +213,7 @@ LORA_ARGS=(
   --lora-rank 32
   --lora-alpha 32
   --lora-dropout 0.0
-  --target-modules "gate_proj,up_proj,down_proj"
+  --target-modules "gate_up_proj,down_proj"
   --sglang-lora-backend triton
   --megatron-to-hf-mode bridge
 )

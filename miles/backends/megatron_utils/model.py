@@ -152,11 +152,11 @@ def setup_model_and_optimizer(
         model = _setup_lora_model_via_bridge(args)
     else:
         provider_func = get_model_provider_func(args, role)
-        if (
-            is_lora_enabled(args)
-            and role == "actor"
-            and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
-        ):
+        if is_lora_enabled(args) and role == "actor":
+            assert "inkling" in (args.custom_model_provider_path or ""), (
+                "Native LoRA injection is only implemented for Inkling; use --megatron-to-hf-mode bridge"
+            )
+            assert args.lora_type == "lora", "Native Inkling does not implement --lora-type canonical_lora"
             from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
 
             provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)

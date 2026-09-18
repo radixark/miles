@@ -1,7 +1,13 @@
 import argparse
 
 from miles.utils.hf_config import load_hf_config
-from miles.utils.hf_lora_targets import resolve_hf_lora_targets
+from miles.utils.hf_lora_targets import (
+    exclude_hf_lora_targets,
+    get_hf_lora_targets,
+    matches_hf_lora_target,
+    parse_lora_targets,
+    resolve_hf_lora_targets,
+)
 
 
 def add_tinker_arguments(parser):
@@ -28,14 +34,29 @@ def add_tinker_arguments(parser):
 
 def configure_tinker_args(args):
     assert args.train_backend == "megatron", "Tinker requires the Megatron backend"
-    assert (
-        args.target_modules is None and args.exclude_modules is None
-    ), "Tinker uses --tinker-train-attn/mlp/unembed; --target-modules and --exclude-modules are not supported"
-    modules = resolve_hf_lora_targets(
-        load_hf_config(args.hf_checkpoint).to_dict(),
+    hf_config = load_hf_config(args.hf_checkpoint).to_dict()
+    layout = get_hf_lora_targets(hf_config)
+    requested = resolve_hf_lora_targets(
+        hf_config,
+        target_modules=parse_lora_targets(args.target_modules),
         train_attn=args.tinker_train_attn,
         train_mlp=args.tinker_train_mlp,
         train_unembed=args.tinker_train_unembed,
     )
-    # The common LoRA validator parses and validates this before trainer/engine initialization.
-    args.target_modules = ",".join(modules)
+    available = layout.attention + layout.mlp + layout.unembed
+    for target in requested:
+        assert any(matches_hf_lora_target(module, target) for module in available), (
+            f"Tinker target {target!r} is not an HF target of this model; use the model's HF projection names"
+        )
+    targets = [module for module in available if any(matches_hf_lora_target(module, target) for target in requested)]
+    targets = exclude_hf_lora_targets(targets, parse_lora_targets(args.exclude_modules) or [])
+    for name, group in (("attn", layout.attention), ("mlp", layout.mlp), ("unembed", layout.unembed)):
+        selected = set(targets).intersection(group)
+        assert not selected or selected == set(group), (
+            f"Tinker targets must select the whole {name} group or none of it; "
+            "the SDK cannot describe a partial training group"
+        )
+        setattr(args, f"tinker_train_{name}", bool(selected))
+    args.target_modules = targets
+    # Exclusions must be applied before advertising the SDK training groups.
+    args.exclude_modules = None

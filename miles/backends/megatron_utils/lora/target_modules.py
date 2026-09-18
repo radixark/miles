@@ -3,48 +3,81 @@ from fnmatch import fnmatchcase
 
 import torch.distributed as dist
 
-from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_megatron
+from miles.utils.hf_lora_targets import matches_hf_lora_target
+
+
+_CANONICAL_PROJECTIONS = {
+    "q_proj": "linear_q",
+    "k_proj": "linear_k",
+    "v_proj": "linear_v",
+    "gate_proj": "linear_fc1_gate",
+    "up_proj": "linear_fc1_up",
+}
 
 
 @dataclass(frozen=True)
 class _TargetModule:
     megatron_module: str
-    hf_modules: frozenset[str]
+    selectors: frozenset[str]
 
 
-def resolve_hf_target_modules(hf_targets, mappings, *, canonical):
-    """Resolve HF module patterns through Bridge, retaining fused-module boundaries."""
-    targets = set(hf_targets)
+def _matches_megatron_target(module, target):
+    return fnmatchcase(module if "." in target else module.rsplit(".", 1)[-1], target)
+
+
+def _canonical_module(module, hf_target):
+    leaf = _CANONICAL_PROJECTIONS[hf_target.rsplit(".", 1)[-1]]
+    return f"{module.rsplit('.', 1)[0]}.{leaf}" if "." in module else leaf
+
+
+def _match_target_modules(module, hf_modules, targets, *, canonical):
+    selected, covered = set(), set()
+    for target in targets:
+        matched = {name for name in hf_modules if matches_hf_lora_target(name, target)}
+        if _matches_megatron_target(module, target):
+            matched.update(hf_modules)
+        if canonical and len(hf_modules) > 1 and module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1"):
+            matched.update(
+                name for name in hf_modules if _matches_megatron_target(_canonical_module(module, name), target)
+            )
+        if matched:
+            covered.add(target)
+            selected.update(matched)
+    return selected, covered
+
+
+def resolve_megatron_lora_targets(targets, mappings, *, canonical, exclude_modules=()):
+    """Map HF selectors or explicit Megatron names to adapters without widening fused selections."""
     candidates = {}
     covered = set()
     for mapping in mappings:
+        module, weight = mapping.megatron_param.rsplit(".", 1)
+        if weight not in ("weight", "weight*"):
+            continue
         hf_params = mapping.hf_param
         hf_params = [hf_params] if isinstance(hf_params, str) else list(hf_params.values())
-        if not all(name.endswith(".weight") for name in hf_params):
-            continue
+        # Packed expert mappings address HF parameters directly, without a .weight suffix.
         hf_modules = {name.removesuffix(".weight") for name in hf_params}
-        selected = targets & hf_modules
+        selected, matched = _match_target_modules(module, hf_modules, targets, canonical=canonical)
+        covered.update(matched)
+        excluded, _ = _match_target_modules(module, hf_modules, exclude_modules, canonical=canonical)
+        selected -= excluded
         if not selected:
             continue
-        # Exact registry patterns preserve scope, including the expert wildcard in weight*.
-        module, weight = mapping.megatron_param.rsplit(".", 1)
-        assert weight in ("weight", "weight*"), f"Unsupported LoRA parameter: {mapping.megatron_param}"
         if canonical and len(hf_modules) > 1:
             assert module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1"), (
                 f"CanonicalLoRA does not define split adapters for {module!r}"
             )
             for target in sorted(selected):
-                leaf = convert_target_modules_to_megatron([target.rsplit(".", 1)[-1]])[0]
-                name = f"{module.rsplit('.', 1)[0]}.{leaf}" if "." in module else leaf
-                candidates[name] = _TargetModule(module, frozenset({target}))
+                candidates[_canonical_module(module, target)] = _TargetModule(module, frozenset(matched))
         else:
             assert selected == hf_modules, (
                 f"LoRA on fused module {module!r} requires all HF targets {sorted(hf_modules)}; "
                 "use canonical_lora to select individual projections"
             )
-            candidates[module] = _TargetModule(module, frozenset(selected))
-        covered.update(selected)
-    assert targets <= covered, f"HF LoRA targets have no Bridge mapping: {sorted(targets - covered)}"
+            candidates[module] = _TargetModule(module, frozenset(matched))
+    assert set(targets) <= covered, f"LoRA targets have no Bridge mapping: {sorted(set(targets) - covered)}"
+    assert candidates, "No LoRA targets remain after applying --exclude-modules"
     return candidates
 
 
@@ -57,13 +90,14 @@ def select_present_target_modules(model_chunks, candidates):
     }
     # PP/EP ranks may own different projections; validate against the complete distributed model.
     present = _gather_set(present)
-    expected = set().union(*(mapping.hf_modules for mapping in candidates.values()))
-    covered = set().union(*(candidates[target].hf_modules for target in present))
-    assert expected <= covered, f"HF LoRA targets have no Megatron modules: {sorted(expected - covered)}"
+    # A leaf selector needs a match, not every optional layout declared by the registry.
+    expected = set().union(*(mapping.selectors for mapping in candidates.values()))
+    covered = set().union(*(candidates[target].selectors for target in present))
+    assert expected <= covered, f"LoRA targets have no Megatron modules: {sorted(expected - covered)}"
     return {target: mapping for target, mapping in candidates.items() if target in present}
 
 
-def validate_hf_target_adapters(model_chunks, candidates):
+def validate_lora_target_adapters(model_chunks, candidates):
     missing = set()
     for chunk in model_chunks:
         for name, module in chunk.named_modules():
