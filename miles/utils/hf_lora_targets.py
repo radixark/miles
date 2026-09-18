@@ -1,3 +1,5 @@
+"""LoRA projection groups in the HF model namespace; backend layouts are resolved separately."""
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -43,7 +45,27 @@ def _gpt_oss_targets(config):
 
 
 def _deepseek_mlp_targets(config):
-    # Some DeepSeek configs interleave dense layers after the initial dense block.
+    mlp = []
+    if config["first_k_dense_replace"] > 0:
+        mlp.extend(_DENSE_MLP)
+    if config["first_k_dense_replace"] < config["num_hidden_layers"]:
+        mlp.extend(_PACKED_EXPERTS)
+        if config["n_shared_experts"]:
+            mlp.extend(_SHARED_EXPERTS)
+    return tuple(mlp)
+
+
+def _mla_attention_targets(config):
+    query = ("q_proj",) if config["q_lora_rank"] is None else ("q_a_proj", "q_b_proj")
+    return _prefix_paths("self_attn", *query, "kv_a_proj_with_mqa", "kv_b_proj", "o_proj")
+
+
+def _deepseek_targets(config):
+    return _mla_attention_targets(config), _deepseek_mlp_targets(config)
+
+
+def _kimi_targets(config):
+    # Kimi's custom HF implementation retains per-expert modules and interleaved dense layers.
     num_moe_layers = sum(
         bool(config["n_routed_experts"])
         and layer_id >= config["first_k_dense_replace"]
@@ -57,17 +79,22 @@ def _deepseek_mlp_targets(config):
         mlp.extend(_ROUTED_EXPERTS)
         if config["n_shared_experts"]:
             mlp.extend(_SHARED_EXPERTS)
-    return tuple(mlp)
-
-
-def _deepseek_targets(config):
-    query = ("q_proj",) if config["q_lora_rank"] is None else ("q_a_proj", "q_b_proj")
-    attention = _prefix_paths("self_attn", *query, "kv_a_proj_with_mqa", "kv_b_proj", "o_proj")
-    return attention, _deepseek_mlp_targets(config)
+    return _mla_attention_targets(config), tuple(mlp)
 
 
 def _glm4_moe_targets(config):
     return _QKVO_ATTENTION, _deepseek_mlp_targets(config)
+
+
+def _glm_dsa_targets(config):
+    mlp = []
+    if "dense" in config["mlp_layer_types"]:
+        mlp.extend(_DENSE_MLP)
+    if "sparse" in config["mlp_layer_types"]:
+        mlp.extend(_PACKED_EXPERTS)
+        if config["n_shared_experts"]:
+            mlp.extend(_SHARED_EXPERTS)
+    return _mla_attention_targets(config), tuple(mlp)
 
 
 def _qwen_moe_mlp_targets(config, *, shared_expert=False):
@@ -82,7 +109,7 @@ def _qwen_moe_mlp_targets(config, *, shared_expert=False):
     if num_moe_layers < config["num_hidden_layers"]:
         mlp.extend(_DENSE_MLP)
     if num_moe_layers:
-        mlp.extend(_ROUTED_EXPERTS)
+        mlp.extend(_PACKED_EXPERTS)
         if shared_expert and config["shared_expert_intermediate_size"]:
             mlp.extend(_QWEN_SHARED_EXPERT)
     return tuple(mlp)
@@ -149,15 +176,15 @@ _HF_LORA_MODELS = {
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
-    "kimi_k2": _HfLoraModelSpec(_deepseek_targets),
+    "kimi_k2": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
-        _deepseek_targets,
+        _kimi_targets,
         layer_prefix="language_model.model.layers.*",
         unembed="language_model.lm_head",
         unwrap_text_config=True,
     ),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
-    "glm_moe_dsa": _HfLoraModelSpec(_deepseek_targets),
+    "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
     "inkling_model": _HfLoraModelSpec(
         _inkling_targets,
         layer_prefix="language_model.layers.*",
