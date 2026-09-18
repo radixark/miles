@@ -212,14 +212,14 @@ def resolve_hf_lora_targets(
         return list(target_modules)
 
     layout = get_hf_lora_targets(hf_config)
-    flags = (train_attn, train_mlp, train_unembed)
-    use_defaults = all(flag is None for flag in flags)
+    train_flags = (train_attn, train_mlp, train_unembed)
+    use_defaults = all(enabled is None for enabled in train_flags)
     if use_defaults:
-        flags = (True, True, layout.default_train_unembed)
+        train_flags = (True, True, layout.default_train_unembed)
     else:
-        assert all(flag is not None for flag in flags), "Specify all three LoRA training group flags together"
+        assert all(enabled is not None for enabled in train_flags), "Specify all three LoRA training group flags together"
     targets = []
-    for enabled, group in zip(flags, (layout.attention, layout.mlp, layout.unembed), strict=True):
+    for enabled, group in zip(train_flags, (layout.attention, layout.mlp, layout.unembed), strict=True):
         if enabled:
             targets.extend(group)
     if use_defaults:

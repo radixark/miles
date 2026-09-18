@@ -26,7 +26,7 @@ def _matches_megatron_target(module, target):
     return fnmatchcase(module if "." in target else module.rsplit(".", 1)[-1], target)
 
 
-def _canonical_module(module, hf_target):
+def _canonical_adapter_module(module, hf_target):
     leaf = _CANONICAL_PROJECTIONS[hf_target.rsplit(".", 1)[-1]]
     return f"{module.rsplit('.', 1)[0]}.{leaf}" if "." in module else leaf
 
@@ -39,7 +39,7 @@ def _match_target_modules(module, hf_modules, targets, *, canonical):
             matched.update(hf_modules)
         if canonical and len(hf_modules) > 1 and module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1"):
             matched.update(
-                name for name in hf_modules if _matches_megatron_target(_canonical_module(module, name), target)
+                name for name in hf_modules if _matches_megatron_target(_canonical_adapter_module(module, name), target)
             )
         if matched:
             covered.add(target)
@@ -70,7 +70,7 @@ def resolve_megatron_lora_targets(targets, mappings, *, canonical, exclude_modul
                 f"CanonicalLoRA does not define split adapters for {module!r}"
             )
             for target in sorted(selected):
-                candidates[_canonical_module(module, target)] = _TargetModule(
+                candidates[_canonical_adapter_module(module, target)] = _TargetModule(
                     module, frozenset(matched), frozenset({target})
                 )
         else:
@@ -92,7 +92,7 @@ def select_present_target_modules(model_chunks, candidates):
         if any(fnmatchcase(name, mapping.megatron_module) for name in local_names)
     }
     # PP/EP ranks may own different projections
-    present = _gather_set(present)
+    present = _gather_module_names(present)
     # a selector needs one match across the registry's optional layouts
     expected = set().union(*(mapping.selectors for mapping in candidates.values()))
     covered = set().union(*(candidates[target].selectors for target in present))
@@ -107,16 +107,16 @@ def validate_lora_target_adapters(model_chunks, candidates):
             if any(fnmatchcase(name, mapping.megatron_module) for mapping in candidates.values()):
                 if not any(param.requires_grad for param in module.parameters()):
                     missing.add(name)
-    missing = _gather_set(missing)
+    missing = _gather_module_names(missing)
     assert not missing, f"LoRA injection skipped selected Megatron modules: {sorted(missing)}"
 
 
-def _gather_set(local):
+def _gather_module_names(local_names):
     if not dist.is_initialized():
-        return local
-    gathered = [None] * dist.get_world_size()
-    dist.all_gather_object(gathered, local)
-    return set().union(*gathered)
+        return local_names
+    names_by_rank = [None] * dist.get_world_size()
+    dist.all_gather_object(names_by_rank, local_names)
+    return set().union(*names_by_rank)
 
 
 def configure_lora_targets(args):

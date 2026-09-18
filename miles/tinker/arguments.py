@@ -36,14 +36,14 @@ def configure_tinker_args(args):
     assert args.train_backend == "megatron", "Tinker requires the Megatron backend"
     hf_config = load_hf_config(args.hf_checkpoint).to_dict()
     layout = get_hf_lora_targets(hf_config)
-    requested = resolve_hf_lora_targets(
+    requested_targets = resolve_hf_lora_targets(
         hf_config,
         target_modules=parse_lora_targets(args.target_modules),
         train_attn=args.tinker_train_attn,
         train_mlp=args.tinker_train_mlp,
         train_unembed=args.tinker_train_unembed,
     )
-    targets = expand_hf_lora_targets(requested, layout)
+    targets = expand_hf_lora_targets(requested_targets, layout)
     targets = exclude_hf_lora_targets(targets, parse_lora_targets(args.exclude_modules) or [])
     for name, group in (("attn", layout.attention), ("mlp", layout.mlp), ("unembed", layout.unembed)):
         selected = set(targets).intersection(group)
