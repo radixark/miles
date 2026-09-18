@@ -252,15 +252,22 @@ class TestUpdateWeights:
         rollout_executor.set_weight_version = AsyncMock()
         return actor_model, rollout_executor
 
+    @staticmethod
+    def _args():
+        return Namespace(debug_train_only=True, debug_rollout_only=False)
+
     async def test_the_executor_is_told_which_version_the_engines_now_serve(self):
         """Without this the executor stamps every sample it collects with weight_version=None."""
         from miles.ray.placement_group import update_weights
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
 
-        await update_weights(actor_model, rollout_executor, rollout_id=3)
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
 
-        actor_model.update_weights.assert_awaited_once_with(rollout_id=3)
+        await update_weights(self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3)
+
+        info = inference_controller.start_update_weights.await_args.kwargs["model_id"]
+        assert info is None
         rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id=None)
 
     async def test_the_published_version_names_the_policy_it_belongs_to(self):
@@ -269,7 +276,11 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
 
-        await update_weights(actor_model, rollout_executor, rollout_id=3, trainer_model_id="alpha")
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+
+        await update_weights(
+            self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3, trainer_model_id="alpha"
+        )
 
         rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id="alpha")
 
@@ -279,7 +290,9 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=None)
 
-        await update_weights(actor_model, rollout_executor)
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+
+        await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
 
         rollout_executor.set_weight_version.assert_not_awaited()
 
