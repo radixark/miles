@@ -120,7 +120,7 @@ def fill_replay_data(
                     replay_data = pad_func(replay_data, pad)
 
         # sequence_parallel is Megatron-only; FSDP has tp_size == 1 so the slice is a no-op there.
-        if args.backend.sequence_parallel and if_sp_region:
+        if args.train_backend == "megatron" and args.backend.sequence_parallel and if_sp_region:
             seqlen = replay_data.size(0)
             assert seqlen % tp_size == 0
             start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
