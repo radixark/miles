@@ -54,7 +54,6 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
-from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
@@ -67,7 +66,6 @@ from miles.utils.object_store_config import (
 )
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
-from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 from miles.utils.workers.worker_provider.static import parse_host_and_port
@@ -186,32 +184,9 @@ def _assert_reset_arg_compatible(
         assert actual == value, f"Cannot reset {name}: {key}={actual!r} does not match {value!r}"
 
 
-def add_user_provided_function_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    try:
-        with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
-            args_partial, _ = parser.parse_known_args()
-    except SystemExit:
-        return parser
-    paths = [args_partial.custom_inference_engine_provider_path]
-    if not use_legacy_rollout_v1():
-        paths = [
-            resolve_rollout_function_paths(args_partial)[0],
-            args_partial.custom_generate_function_path,
-            *paths,
-        ]
-    for path in paths:
-        try:
-            fn = load_function(path)
-        except (ModuleNotFoundError, ValueError):
-            continue
-        if fn is not None and callable(
-            getattr(fn, "add_arguments", None)
-        ):  # config-access-exempt: custom hooks may optionally register CLI arguments
-            fn.add_arguments(parser)
-    return parser
-
-
 def get_miles_extra_args_provider(add_custom_arguments=None):
+    from miles.utils.args.custom_function import add_user_provided_function_arguments
+
     def add_miles_arguments(parser):
         parser.set_defaults(entry="train")
 
