@@ -40,7 +40,11 @@ def fake_tools(tmp_path, monkeypatch):
             'while IFS= read -r pattern || [ -n "$pattern" ]; do\n'
             '  [ -z "$pattern" ] && continue\n'
             '  case "$command" in\n'
-            "    $pattern*) exit 1 ;;\n"
+            "    $pattern*)\n"
+            '      case "$command" in\n'
+            '        *" --previous") echo "Error from server (BadRequest): previous terminated container not found" >&2 ;;\n'
+            "      esac\n"
+            "      exit 1 ;;\n"
             "  esac\n"
             f"done < {failing_path}\n"
             f'if [ "{binary} $1 $2" = "kubectl get pods" ]; then\n'
@@ -422,7 +426,11 @@ class TestCollectDiagnosis:
         assert result.returncode != 0
         assert "logs of wb-0" in result.stderr
         assert "events" in result.stderr
-        assert {path.name for path in written.iterdir()} == {"events.txt", "wb-0.log", "wb-0.describe.txt"}
+        assert {path.name for path in written.iterdir()} == {
+            "events.txt",
+            "wb-0.log",
+            "wb-0.describe.txt",
+        }
 
 
 class TestDryRun:
