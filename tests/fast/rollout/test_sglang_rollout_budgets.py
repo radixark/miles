@@ -1,0 +1,524 @@
+"""CPU-only tests: no tokenizer, inference server, reward backend, or GPU required."""
+
+import argparse
+import asyncio
+import importlib.util
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from miles.rollout.filter_hub.base_types import FilterOutput
+from miles.utils.types import Sample
+
+
+@pytest.fixture
+def isolated_modules(monkeypatch):
+    """Load real production code with only the GPU-only dumper import stubbed.
+
+    Use --noconftest on GPU-less ROCm hosts: the global fixtures import SGLang
+    serving modules which inspect the local GPU at import time.
+    """
+    import miles.utils
+
+    dumper = ModuleType("miles.utils.dumper_utils")
+    dumper.configure_sglang = AsyncMock()
+    monkeypatch.setitem(sys.modules, dumper.__name__, dumper)
+    monkeypatch.setattr(miles.utils, "dumper_utils", dumper, raising=False)
+    root = Path(__file__).resolve().parents[3]
+    loaded = {}
+    for name, path in (
+        ("miles.rollout._budget_test_sglang_rollout", "miles/rollout/sglang_rollout.py"),
+        ("miles.utils._budget_test_arguments", "miles/utils/arguments.py"),
+    ):
+        spec = importlib.util.spec_from_file_location(name, root / path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        loaded[path] = module
+    return SimpleNamespace(
+        rollout=loaded["miles/rollout/sglang_rollout.py"], arguments=loaded["miles/utils/arguments.py"]
+    )
+
+
+@pytest.fixture
+def rollout(isolated_modules):
+    return isolated_modules.rollout
+
+
+@pytest.fixture
+def env(monkeypatch, rollout):
+    # Deliberately omit the new arguments: old test/plugin namespaces must work.
+    args = argparse.Namespace(
+        rollout_global_dataset=True,
+        rollout_batch_size=2,
+        over_sampling_batch_size=2,
+        n_samples_per_prompt=2,
+        dynamic_sampling_filter_path=None,
+        rollout_sample_filter_path=None,
+        rollout_all_samples_process_path=None,
+        partial_rollout=False,
+        group_rm=False,
+        reward_key=None,
+        sglang_router_policy="round_robin",
+        sglang_router_ip="own-rollout",
+        sglang_router_port=30000,
+        sglang_model_routers={"ref": ("other-model", 30001)},
+        use_miles_router=False,
+    )
+    state = object.__new__(rollout.GenerateState)
+    state.args = args
+    state.sampling_params = {}
+    state.reset()
+    monkeypatch.setattr(rollout, "GenerateState", lambda _args: state)
+    monkeypatch.setattr(rollout, "_ROLLOUT_ABORT_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(rollout, "_ROLLOUT_CANCEL_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(rollout.sglang_router, "__version__", "0.3.0")
+    monkeypatch.setattr(rollout.dumper_utils, "configure_sglang", AsyncMock())
+    monkeypatch.setattr(rollout, "recompute_samples_rollout_logprobs_via_prefill", AsyncMock())
+    monkeypatch.setattr(rollout, "call_agent_abort_hook", AsyncMock())
+    get = AsyncMock(return_value={"workers": [{"url": "http://own-worker@0"}, {"url": "http://own-worker@1"}]})
+    post = AsyncMock(return_value={})
+    monkeypatch.setattr(rollout, "get", get)
+    monkeypatch.setattr(rollout, "post", post)
+    pbar = Mock()
+    monkeypatch.setattr(rollout, "tqdm", Mock(return_value=pbar))
+
+    tasks = []
+    create_task = asyncio.create_task
+
+    def track_task(coro, **kwargs):
+        task = create_task(coro, **kwargs)
+        tasks.append(task)
+        return task
+
+    monkeypatch.setattr(rollout.asyncio, "create_task", track_task)
+    generated = []
+
+    async def generate(_args, sample, _params, evaluation=False):
+        generated.append(sample.index)
+        sample.status = Sample.Status.COMPLETED
+        sample.response = "answer"
+        sample.reward = 1.0
+        return sample
+
+    monkeypatch.setattr(rollout, "generate_and_rm", generate)
+    requested = []
+    next_group = 0
+
+    def data_source(count):
+        nonlocal next_group
+        requested.append(count)
+        groups = [
+            [Sample(index=i * args.n_samples_per_prompt + j, group_index=i) for j in range(args.n_samples_per_prompt)]
+            for i in range(next_group, next_group + count)
+        ]
+        next_group += count
+        return groups
+
+    env = SimpleNamespace(
+        args=args,
+        state=state,
+        tasks=tasks,
+        data_source=data_source,
+        generated=generated,
+        generate=generate,
+        requested=requested,
+        get=get,
+        post=post,
+        pbar=pbar,
+    )
+    yield env
+    assert all(task.done() for task in tasks), "rollout leaked pending tasks"
+    assert not state.pendings
+
+
+def reject_groups(monkeypatch, rollout, predicate=lambda _group: True):
+    monkeypatch.setattr(
+        rollout,
+        "apply_preput_filters",
+        lambda _args, _filter, group: FilterOutput(keep=not predicate(group), reason="test_reject"),
+    )
+
+
+async def test_legacy_namespace_completes_without_new_fields(env, rollout):
+    output, aborted = await rollout.generate_rollout_async(env.args, 0, env.data_source)
+    assert len(output.samples) == 2
+    assert [sample.reward for group in output.samples for sample in group] == [1.0] * 4
+    assert aborted == []
+    assert env.requested == [2]
+    assert env.state.submitted_candidate_groups == 0
+    assert not env.state.aborted
+    env.pbar.close.assert_called_once()
+    env.get.assert_awaited_once_with("http://own-rollout:30000/workers")
+    env.post.assert_awaited_once_with("http://own-worker/abort_request", {"abort_all": True})
+
+
+async def test_candidate_budget_resets_for_each_outer_rollout(env, rollout):
+    env.args.rollout_max_candidate_groups = 2
+    env.args.rollout_timeout_seconds = 1.0
+    for rollout_id in (0, 1):
+        output, _ = await rollout.generate_rollout_async(env.args, rollout_id, env.data_source)
+        assert len(output.samples) == 2
+        assert env.state.submitted_candidate_groups == 0
+    assert env.requested == [2, 2]
+    assert len(env.generated) == 8
+
+
+async def test_budget_clamps_oversampling_and_fails_explicitly(env, monkeypatch, rollout):
+    env.args.over_sampling_batch_size = 32
+    env.args.rollout_max_candidate_groups = 3
+    reject_groups(monkeypatch, rollout)
+    with pytest.raises(
+        RuntimeError, match=r"insufficient valid groups \(0/2\).*candidate group budget exhausted"
+    ) as exc:
+        await rollout.generate_rollout_async(env.args, 7, env.data_source)
+    assert "Rollout 7" in str(exc.value)
+    assert "submitted_candidate_groups=3" in str(exc.value)
+    assert env.requested == [3]
+    assert len(env.generated) == 6
+
+
+async def test_counts_actual_submissions_not_data_source_request_size(env, monkeypatch, rollout):
+    env.args.over_sampling_batch_size = 8
+    env.args.rollout_max_candidate_groups = 3
+    reject_groups(monkeypatch, rollout)
+
+    def short_source(count):
+        return env.data_source(count)[:1]
+
+    with pytest.raises(RuntimeError, match="submitted_candidate_groups=3"):
+        await rollout.generate_rollout_async(env.args, 0, short_source)
+    assert env.requested == [3, 2, 1]
+    assert len(env.generated) == 6
+
+
+async def test_unbounded_defaults_keep_replenishing_after_filter_drops(env, monkeypatch, rollout):
+    reject_groups(monkeypatch, rollout, predicate=lambda group: group[0].group_index < 2)
+    output, _ = await rollout.generate_rollout_async(env.args, 0, env.data_source)
+    assert len(output.samples) == 2
+    assert env.requested == [2, 2]
+    assert output.metrics == {"rollout/dynamic_filter/drop_test_reject": 2}
+
+
+async def test_exhausted_budget_allows_inflight_to_fill_target(env, monkeypatch, rollout):
+    env.args.over_sampling_batch_size = 3
+    env.args.rollout_max_candidate_groups = 3
+    dropped = asyncio.Event()
+
+    def filter_group(_args, _filter, group):
+        if group[0].group_index == 0:
+            dropped.set()
+            return FilterOutput(keep=False, reason="test_reject")
+        return FilterOutput(keep=True)
+
+    async def delayed_generate(args, sample, params, evaluation=False):
+        if sample.group_index:
+            await dropped.wait()
+        return await env.generate(args, sample, params, evaluation=evaluation)
+
+    monkeypatch.setattr(rollout, "apply_preput_filters", filter_group)
+    monkeypatch.setattr(rollout, "generate_and_rm", delayed_generate)
+    output, _ = await rollout.generate_rollout_async(env.args, 0, env.data_source)
+    assert len(output.samples) == 2
+    assert [group[0].group_index for group in output.samples] == [1, 2]
+    assert env.requested == [3]
+
+
+async def test_budget_smaller_than_target_waits_then_fails(env, rollout):
+    env.args.rollout_max_candidate_groups = 1
+    with pytest.raises(RuntimeError, match=r"insufficient valid groups \(1/2\).*budget exhausted"):
+        await rollout.generate_rollout_async(env.args, 0, env.data_source)
+    assert env.requested == [1]
+    assert len(env.generated) == 2
+
+
+async def test_deadline_includes_waiting_and_cancels_all_tasks(env, monkeypatch, rollout):
+    env.args.rollout_timeout_seconds = 0.02
+    cancelled = []
+
+    async def hung_generate(_args, sample, _params, evaluation=False):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(sample.index)
+
+    monkeypatch.setattr(rollout, "generate_and_rm", hung_generate)
+    with pytest.raises(RuntimeError, match=r"insufficient valid groups \(0/2\).*sampling deadline exceeded") as exc:
+        await asyncio.wait_for(rollout.generate_rollout_async(env.args, 0, env.data_source), timeout=1.0)
+    assert "submitted_candidate_groups=2" in str(exc.value)
+    assert sorted(cancelled) == [0, 1, 2, 3]
+    env.post.assert_awaited_once()
+    env.pbar.close.assert_called_once()
+
+
+async def test_deadline_includes_async_configuration(env, monkeypatch, rollout):
+    env.args.rollout_timeout_seconds = 0.02
+
+    async def hung_config(_args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(rollout.dumper_utils, "configure_sglang", hung_config)
+    with pytest.raises(RuntimeError, match="sampling deadline exceeded"):
+        await rollout.generate_rollout_async(env.args, 0, env.data_source)
+    assert env.requested == []
+
+
+async def test_expired_deadline_never_submits_more_groups(env, rollout):
+    # Runtime guard also protects direct callers bypassing argument validation.
+    env.args.rollout_timeout_seconds = 0.0
+    with pytest.raises(RuntimeError, match="sampling deadline exceeded"):
+        await rollout.generate_rollout_async(env.args, 0, env.data_source)
+    assert env.generated == []
+    assert env.requested == []
+
+
+async def test_failed_rollout_resets_budget_and_deadline_for_retry(env, monkeypatch, rollout):
+    env.args.rollout_max_candidate_groups = 2
+    env.args.rollout_timeout_seconds = 0.02
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(rollout, "generate_and_rm", hang)
+    with pytest.raises(RuntimeError, match="sampling deadline exceeded"):
+        await rollout.generate_rollout_async(env.args, 0, env.data_source)
+    monkeypatch.setattr(rollout, "generate_and_rm", env.generate)
+    output, _ = await rollout.generate_rollout_async(env.args, 1, env.data_source)
+    assert len(output.samples) == 2
+    assert env.requested == [2, 2]
+
+
+@pytest.mark.parametrize("failure_site", ["get", "post", "hook", "drain"])
+async def test_hung_abort_is_bounded_without_losing_original_error(env, monkeypatch, failure_site, rollout):
+    original = ValueError("original generation failure")
+    started = asyncio.Event()
+    cancelled = []
+    count = 0
+
+    async def fail_one_sample(_args, sample, _params, evaluation=False):
+        nonlocal count
+        count += 1
+        if count == 4:
+            started.set()
+        try:
+            await started.wait()
+            if sample.index == 0:
+                raise original
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(sample.index)
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(rollout, "generate_and_rm", fail_one_sample)
+    if failure_site != "drain":
+        monkeypatch.setattr(rollout, "call_agent_abort_hook" if failure_site == "hook" else failure_site, hang)
+    with pytest.raises(ValueError) as exc:
+        await asyncio.wait_for(rollout.generate_rollout_async(env.args, 0, env.data_source), timeout=1.0)
+    assert exc.value is original
+    assert sorted(cancelled) == [0, 1, 2, 3]
+
+
+async def test_cleanup_error_does_not_mask_generation_error(env, monkeypatch, rollout):
+    original = ValueError("generate exploded")
+
+    async def fail(*_args, **_kwargs):
+        raise original
+
+    monkeypatch.setattr(rollout, "generate_and_rm", fail)
+    env.get.side_effect = RuntimeError("abort discovery exploded")
+    with pytest.raises(ValueError) as exc:
+        await rollout.generate_rollout_async(env.args, 0, env.data_source)
+    assert exc.value is original
+
+
+async def test_external_cancellation_reclaims_tasks_and_preserves_cancel(env, monkeypatch, rollout):
+    started = asyncio.Event()
+
+    async def hang(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(rollout, "generate_and_rm", hang)
+    unrelated = asyncio.create_task(asyncio.Event().wait())
+    task = asyncio.create_task(rollout.generate_rollout_async(env.args, 0, env.data_source))
+    try:
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1.0)
+        assert not unrelated.done()
+    finally:
+        unrelated.cancel()
+        await asyncio.gather(unrelated, return_exceptions=True)
+
+
+async def test_empty_data_source_fails_without_busy_loop(env, rollout):
+    with pytest.raises(RuntimeError, match="data source returned no groups"):
+        await rollout.generate_rollout_async(env.args, 0, lambda _count: [])
+    assert env.generated == []
+
+
+async def test_success_with_oversampling_cancels_unused_tasks(env, monkeypatch, rollout):
+    env.args.over_sampling_batch_size = 3
+    env.args.rollout_max_candidate_groups = 3
+
+    async def hang_extra(args, sample, params, evaluation=False):
+        if sample.group_index == 2:
+            await asyncio.Event().wait()
+        return await env.generate(args, sample, params, evaluation=evaluation)
+
+    monkeypatch.setattr(rollout, "generate_and_rm", hang_extra)
+    output, _ = await asyncio.wait_for(rollout.generate_rollout_async(env.args, 0, env.data_source), timeout=1.0)
+    assert len(output.samples) == 2
+
+
+async def test_successful_partial_rollout_still_collects_aborted_groups(env, monkeypatch, rollout):
+    env.args.partial_rollout = True
+    env.args.over_sampling_batch_size = 3
+    env.args.rollout_max_candidate_groups = 3
+    aborted = asyncio.Event()
+
+    async def abort_post(*_args, **_kwargs):
+        aborted.set()
+        return {}
+
+    async def partial_generate(args, sample, params, evaluation=False):
+        if sample.group_index == 2:
+            await aborted.wait()
+            sample.status = Sample.Status.ABORTED
+            sample.response = "partial"
+            return sample
+        return await env.generate(args, sample, params, evaluation=evaluation)
+
+    monkeypatch.setattr(rollout, "post", abort_post)
+    monkeypatch.setattr(rollout, "generate_and_rm", partial_generate)
+    output, partials = await rollout.generate_rollout_async(env.args, 8, env.data_source)
+    assert len(output.samples) == 2
+    assert len(partials) == 1
+    assert all(sample.metadata["start_rollout_id"] == 8 for sample in partials[0])
+
+
+def test_budget_cli_defaults_and_types(monkeypatch, isolated_modules):
+    monkeypatch.setattr("sys.argv", ["pytest"])
+    parser = isolated_modules.arguments.get_miles_extra_args_provider()(argparse.ArgumentParser())
+    defaults = parser.parse_args([])
+    assert defaults.rollout_max_candidate_groups is None
+    assert defaults.rollout_timeout_seconds is None
+    args = parser.parse_args(["--rollout-max-candidate-groups", "32", "--rollout-timeout-seconds", "900.5"])
+    assert args.rollout_max_candidate_groups == 32
+    assert args.rollout_timeout_seconds == 900.5
+    isolated_modules.arguments.validate_rollout_sampling_budgets(args)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5])
+def test_reject_invalid_candidate_budget(value, isolated_modules):
+    with pytest.raises(ValueError, match="positive integer"):
+        isolated_modules.arguments.validate_rollout_sampling_budgets(
+            SimpleNamespace(rollout_max_candidate_groups=value)
+        )
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_reject_invalid_deadline(value, isolated_modules):
+    with pytest.raises(ValueError, match="finite and positive"):
+        isolated_modules.arguments.validate_rollout_sampling_budgets(SimpleNamespace(rollout_timeout_seconds=value))
+
+
+def test_argument_validation_accepts_legacy_namespace(isolated_modules):
+    isolated_modules.arguments.validate_rollout_sampling_budgets(SimpleNamespace())
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+def test_budget_flags_cannot_silently_use_unsupported_rollout(isolated_modules, monkeypatch, legacy):
+    monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
+    args = SimpleNamespace(
+        partial_rollout=False,
+        fully_async=False,
+        rollout_function_path="miles.rollout.sglang_rollout.generate_rollout" if legacy else None,
+        eval_function_path=None,
+        eval_num_gpus=0,
+        rollout_max_candidate_groups=32,
+    )
+    if legacy:
+        isolated_modules.arguments._resolve_rollout_functions(args)
+    else:
+        with pytest.raises(ValueError, match="other rollout implementations do not enforce these budgets"):
+            isolated_modules.arguments._resolve_rollout_functions(args)
+
+
+async def test_deadline_reports_nonempty_but_insufficient_batch(env, monkeypatch, rollout):
+    env.args.rollout_timeout_seconds = 0.02
+
+    async def hang_second(args, sample, params, evaluation=False):
+        if sample.group_index == 1:
+            await asyncio.Event().wait()
+        return await env.generate(args, sample, params, evaluation=evaluation)
+
+    monkeypatch.setattr(rollout, "generate_and_rm", hang_second)
+    with pytest.raises(RuntimeError, match=r"insufficient valid groups \(1/2\).*sampling deadline exceeded"):
+        await rollout.generate_rollout_async(env.args, 0, env.data_source)
+
+
+async def test_overproducing_source_cannot_exceed_submission_budget(env, monkeypatch, rollout):
+    env.args.rollout_max_candidate_groups = 2
+    reject_groups(monkeypatch, rollout)
+    with pytest.raises(RuntimeError, match="submitted_candidate_groups=2"):
+        await rollout.generate_rollout_async(env.args, 0, lambda count: env.data_source(count + 5))
+    assert len(env.generated) == 4
+
+
+async def test_partial_group_task_submission_failure_reclaims_children(env, rollout):
+    env.args.sglang_enable_deterministic_inference = True
+    env.state.group_sampling_seeds = [0]  # The second sample fails after the first task was created.
+    with pytest.raises(IndexError):
+        await rollout.generate_rollout_async(env.args, 0, env.data_source)
+
+
+async def test_simultaneous_failures_are_all_retrieved(env, monkeypatch, rollout):
+    errors = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+
+    async def fail(*_args, **_kwargs):
+        raise ValueError("simultaneous generation failures")
+
+    monkeypatch.setattr(rollout, "generate_and_rm", fail)
+    try:
+        with pytest.raises(ValueError, match="simultaneous generation failures"):
+            await rollout.generate_rollout_async(env.args, 0, env.data_source)
+        assert all(not getattr(task, "_log_traceback", False) for task in env.tasks)
+        assert errors == []
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_abort_task_ignoring_cancel_cannot_block_forever(env, monkeypatch, rollout):
+    # asyncio cannot kill a coroutine that ignores cancellation; bound the wait,
+    # retain an exception-consumption callback, then release the fake for teardown.
+    release = asyncio.Event()
+    ignored_cancel = asyncio.Event()
+    monkeypatch.setattr(rollout, "_ROLLOUT_CANCEL_TIMEOUT_SECONDS", 0.02)
+
+    async def stubborn_get(_url):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            ignored_cancel.set()
+            await release.wait()
+            raise RuntimeError("late abort failure")
+
+    monkeypatch.setattr(rollout, "get", stubborn_get)
+    reject_groups(monkeypatch, rollout)
+    env.args.rollout_max_candidate_groups = 2
+    try:
+        with pytest.raises(RuntimeError, match="candidate group budget exhausted"):
+            await asyncio.wait_for(rollout.generate_rollout_async(env.args, 0, env.data_source), timeout=1.0)
+        assert ignored_cancel.is_set()
+    finally:
+        release.set()
+        await asyncio.gather(*env.tasks, return_exceptions=True)

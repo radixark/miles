@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -72,6 +73,14 @@ def _resolve_rollout_functions(args) -> None:
 
     user_eval_path = args.eval_function_path
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
+    if any(
+        getattr(args, name, None) is not None for name in ("rollout_max_candidate_groups", "rollout_timeout_seconds")
+    ) and args.rollout_function_path != "miles.rollout.sglang_rollout.generate_rollout":
+        raise ValueError(
+            "--rollout-max-candidate-groups and --rollout-timeout-seconds require "
+            "--rollout-function-path miles.rollout.sglang_rollout.generate_rollout "
+            "(or MILES_USE_LEGACY_ROLLOUT_V1=1); other rollout implementations do not enforce these budgets"
+        )
     # An inherited eval path is the rollout fn serving eval itself, never a checkpoint
     # backend: skip the resolve so custom rollout modules are not imported on the driver.
     checkpoint_backend = user_eval_path is not None and is_checkpoint_eval_fn(args.eval_function_path)
@@ -665,6 +674,26 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Regardless of whether partial rollout is used or filters are applied, "
                     "the sampling granularity is always determined by this value. "
                     "If this value is None, rollout_batch_size will be used as the default over_sampling_batch_size."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-max-candidate-groups",
+                type=int,
+                default=None,
+                help=(
+                    "Maximum candidate prompt groups submitted per legacy sglang_rollout training rollout, "
+                    "including in-flight and filtered groups. None disables the limit. "
+                    "Already submitted groups may finish; fail if they cannot fill rollout_batch_size."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-timeout-seconds",
+                type=float,
+                default=None,
+                help=(
+                    "Wall-clock sampling deadline per legacy sglang_rollout training rollout, including waiting. "
+                    "None disables the deadline. An incomplete batch raises an error rather than training. "
+                    "Abort and cancellation have a separate bounded cleanup grace period."
                 ),
             )
             parser.add_argument(
@@ -2853,6 +2882,15 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
     return bool(args.ft_components) and args.api_server_port != 0
 
 
+def validate_rollout_sampling_budgets(args) -> None:
+    max_groups = getattr(args, "rollout_max_candidate_groups", None)
+    timeout = getattr(args, "rollout_timeout_seconds", None)
+    if max_groups is not None and (not isinstance(max_groups, int) or max_groups <= 0):
+        raise ValueError("--rollout-max-candidate-groups must be a positive integer")
+    if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError("--rollout-timeout-seconds must be finite and positive")
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -2862,6 +2900,7 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     validate_dashboard_args(args)
+    validate_rollout_sampling_budgets(args)
 
     args.ft_components = _resolve_ft_components(args)
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (

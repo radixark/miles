@@ -48,6 +48,9 @@ __all__ = ["generate_rollout", "get_model_url"]
 
 logger = logging.getLogger(__name__)
 
+_ROLLOUT_ABORT_TIMEOUT_SECONDS = 5.0
+_ROLLOUT_CANCEL_TIMEOUT_SECONDS = 5.0
+
 
 def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate") -> str:
     """Return the router URL for a named model.
@@ -120,6 +123,7 @@ class GenerateState(metaclass=SingletonMeta):
 
     def reset(self) -> None:
         self.remaining_batch_size = 0
+        self.submitted_candidate_groups = 0
         self.pendings = set()
         self.aborted = False
 
@@ -136,7 +140,8 @@ class GenerateState(metaclass=SingletonMeta):
                     )
                 )
             )
-        self.remaining_batch_size += len(samples)
+            self.submitted_candidate_groups += 1
+            self.remaining_batch_size += 1
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
@@ -355,16 +360,20 @@ async def generate_and_rm_group(
                 sample.routing_key = str(uuid.uuid4())
 
     tasks = []
-    for idx, sample in enumerate(group):
-        current_sampling_params = sampling_params.copy()
-        if getattr(args, "sglang_enable_deterministic_inference", False):
-            seed = state.group_sampling_seeds[idx]
-            current_sampling_params["sampling_seed"] = seed
-        tasks.append(
-            asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
-        )
-
-    group = await asyncio.gather(*tasks)
+    try:
+        for idx, sample in enumerate(group):
+            current_sampling_params = sampling_params.copy()
+            if getattr(args, "sglang_enable_deterministic_inference", False):
+                seed = state.group_sampling_seeds[idx]
+                current_sampling_params["sampling_seed"] = seed
+            tasks.append(
+                asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
+            )
+        group = await asyncio.gather(*tasks)
+    except BaseException:
+        # gather propagates a child's failure without cancelling its siblings.
+        await _cancel_rollout_tasks(tasks)
+        raise
 
     # for the rm that need the whole group, we will do the rm here
     if not state.aborted and args.group_rm:
@@ -375,13 +384,48 @@ async def generate_and_rm_group(
     return group
 
 
+def _consume_task_exception(task: asyncio.Task) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+async def _cancel_rollout_tasks(tasks) -> None:
+    """Cancel only owned tasks, and never wait indefinitely for a misbehaving plugin."""
+    tasks = set(tasks)
+    if not tasks:
+        return
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    done, pending = await asyncio.wait(tasks, timeout=_ROLLOUT_CANCEL_TIMEOUT_SECONDS)
+    for task in done:
+        _consume_task_exception(task)
+    for task in pending:
+        task.add_done_callback(_consume_task_exception)
+    if pending:
+        logger.error("%d rollout tasks ignored cancellation; cleanup grace period expired", len(pending))
+
+
 async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
-    aborted_samples = []
-
+    """Best-effort endpoint abort plus bounded local task cleanup."""
     state = GenerateState(args)
-    assert not state.aborted
     state.aborted = True
+    aborted_samples = []
+    abort_task = asyncio.create_task(_abort_and_collect(args, rollout_id, state, aborted_samples))
+    try:
+        done, _ = await asyncio.wait({abort_task}, timeout=_ROLLOUT_ABORT_TIMEOUT_SECONDS)
+        if done:
+            abort_task.result()
+        else:
+            logger.warning("Rollout %s abort timed out; cancelling local generation tasks", rollout_id)
+    finally:
+        await _cancel_rollout_tasks({abort_task} | state.pendings)
+        state.pendings.clear()
+    return aborted_samples
 
+
+async def _abort_and_collect(args, rollout_id, state, aborted_samples) -> None:
+    # Discover only this rollout router's workers, never other model/eval endpoints.
     if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
         urls = response["urls"]
@@ -404,14 +448,14 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     # make sure all the pending tasks are finished
     count = 0
     while state.pendings:
-        done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
 
-        if not args.partial_rollout:
-            continue
-
-        # for partial rollout, collect the partial samples into the data buffer
         for task in done:
+            # Keep unconsumed done tasks owned by state if a sibling raises.
+            state.pendings.remove(task)
             group = task.result()
+            if not args.partial_rollout:
+                continue
             for sample in group:
                 if sample.response and "start_rollout_id" not in sample.metadata:
                     sample.metadata["start_rollout_id"] = rollout_id
@@ -421,7 +465,100 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     if args.partial_rollout:
         logger.info(f"Collected {count} partial samples into the data buffer")
 
-    return aborted_samples
+
+def _insufficient_rollout_batch(args, rollout_id, state, valid_groups, reason) -> RuntimeError:
+    return RuntimeError(
+        f"Rollout {rollout_id}: insufficient valid groups ({valid_groups}/{args.rollout_batch_size}); {reason}. "
+        f"submitted_candidate_groups={state.submitted_candidate_groups}, "
+        f"pending_groups={sum(not task.done() for task in state.pendings)}, "
+        f"rollout_max_candidate_groups={getattr(args, 'rollout_max_candidate_groups', None)}, "
+        f"rollout_timeout_seconds={getattr(args, 'rollout_timeout_seconds', None)}"
+    )
+
+
+async def _collect_rollout_samples(args, rollout_id, state, data_source):
+    data, all_data = [], []
+    metrics = MetricGatherer()
+    timeout = getattr(args, "rollout_timeout_seconds", None)
+    deadline = asyncio.get_running_loop().time() + timeout if timeout is not None else None
+    collector = asyncio.create_task(
+        _fill_rollout_batch(args, rollout_id, state, data_source, data, all_data, metrics, deadline)
+    )
+    try:
+        # Unlike wait_for, wait does not wait indefinitely for cancellation handlers.
+        done, _ = await asyncio.wait({collector}, timeout=timeout)
+        if not done:
+            raise _insufficient_rollout_batch(args, rollout_id, state, len(data), "sampling deadline exceeded")
+        collector.result()
+        return data, all_data, metrics
+    finally:
+        await _cancel_rollout_tasks({collector})
+
+
+async def _fill_rollout_batch(args, rollout_id, state, data_source, data, all_data, metrics, deadline):
+    def check_deadline():
+        if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+            raise _insufficient_rollout_batch(args, rollout_id, state, len(data), "sampling deadline exceeded")
+
+    await dumper_utils.configure_sglang(args)
+    dynamic_filter = load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path else None
+    max_groups = getattr(args, "rollout_max_candidate_groups", None)
+    target = args.rollout_batch_size
+    do_print = True
+    pbar = tqdm(total=target * args.n_samples_per_prompt, desc="Rollout generation")
+    try:
+        while len(data) < target:
+            check_deadline()
+            while state.remaining_batch_size < target:
+                check_deadline()
+                request_size = args.over_sampling_batch_size
+                if max_groups is not None:
+                    request_size = min(request_size, max_groups - state.submitted_candidate_groups)
+                    if request_size <= 0:
+                        break
+                samples = data_source(request_size)
+                check_deadline()
+                if max_groups is not None:
+                    samples = samples[:request_size]
+                if not samples:
+                    raise _insufficient_rollout_batch(
+                        args, rollout_id, state, len(data), "data source returned no groups"
+                    )
+                state.submit_generate_tasks(samples)
+
+            # Exhausting the submission budget does not discard in-flight groups.
+            if not state.pendings:
+                raise _insufficient_rollout_batch(
+                    args, rollout_id, state, len(data), "candidate group budget exhausted"
+                )
+            done, _ = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
+            check_deadline()
+            for task in done:
+                # Keep unconsumed completed siblings tracked for exception cleanup.
+                state.pendings.remove(task)
+                group = task.result()
+                if do_print:
+                    sample = group[0][0] if isinstance(group[0], list) else group[0]
+                    logger.info(
+                        "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
+                        sample_text_preview(sample),
+                        str(sample.label)[:100],
+                        reward_log_summary(sample.reward),
+                    )
+                    do_print = False
+                assert len(group) == args.n_samples_per_prompt
+                all_data.append(group)
+                filter_output = apply_preput_filters(args, dynamic_filter, group)
+                check_deadline()
+                if not filter_output.keep:
+                    metrics.on_dynamic_filter_drop(reason=filter_output.reason)
+                    state.remaining_batch_size -= 1
+                    continue
+                if len(data) < target:
+                    data.append(group)
+                    pbar.update(args.n_samples_per_prompt)
+    finally:
+        pbar.close()
 
 
 async def generate_rollout_async(
@@ -440,80 +577,40 @@ async def generate_rollout_async(
             - aborted_samples: any partial groups collected during abort when partial_rollout is enabled
     """
     assert args.rollout_global_dataset
-
-    await dumper_utils.configure_sglang(args)
-
     state = GenerateState(args)
-
-    # instantiate data filters
-    dynamic_filter = (
-        load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path is not None else None
-    )
-
-    metric_gatherer = MetricGatherer()
-
-    # target_data_size is the total number of valid samples to get
-    target_data_size = args.rollout_batch_size
-
-    data = []
-    all_data = []
-    do_print = True
-    pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
-    while len(data) < target_data_size:
-        while state.remaining_batch_size < target_data_size:
-            # get samples from the buffer and submit the generation requests.
-            samples = data_source(args.over_sampling_batch_size)
-            state.submit_generate_tasks(samples)
-
-        # wait for the generation to finish
-        done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            group: list[Sample] = task.result()
-
-            if do_print:
-                sample = group[0][0] if isinstance(group[0], list) else group[0]
-                logger.info(
-                    "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
-                    sample_text_preview(sample),
-                    str(sample.label)[:100],
-                    reward_log_summary(sample.reward),
-                )
-                do_print = False
-
-            assert len(group) == args.n_samples_per_prompt
-            all_data.append(group)
-            filter_output = apply_preput_filters(args, dynamic_filter, group)
-            if not filter_output.keep:
-                metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
-                state.remaining_batch_size -= 1
-                continue
-
-            # add the samples to the data
-            # NOTE: here we have not stored all the unused samples back to the data buffer.
-            if len(data) < target_data_size:
-                data.append(group)
-                pbar.update(args.n_samples_per_prompt)
-
-    pbar.close()
-    sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
-    logger.info(
-        "Finish rollout: text_preview=%s, label=%s, reward_summary=%s",
-        sample_text_preview(sample),
-        str(sample.label)[:100],
-        reward_log_summary(sample.reward),
-    )
-
-    # there are still some unfinished requests, abort them
-    aborted_samples = await abort(args, rollout_id)
+    # Budgets and task ownership belong to one outer rollout, not to the filter.
+    state.reset()
+    abort_started = False
+    try:
+        data, all_data, metric_gatherer = await _collect_rollout_samples(args, rollout_id, state, data_source)
+        sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
+        logger.info(
+            "Finish rollout: valid_groups=%s, submitted_candidate_groups=%s, "
+            "text_preview=%s, label=%s, reward_summary=%s",
+            len(data),
+            state.submitted_candidate_groups,
+            sample_text_preview(sample),
+            str(sample.label)[:100],
+            reward_log_summary(sample.reward),
+        )
+        abort_started = True
+        aborted_samples = await abort(args, rollout_id)
+    except BaseException:
+        if not abort_started:
+            try:
+                await abort(args, rollout_id)
+            except BaseException:
+                logger.warning("Rollout %s cleanup failed; preserving original exception", rollout_id, exc_info=True)
+        raise
+    finally:
+        # Also reset on failure so a later rollout/eval cannot inherit the budget.
+        state.reset()
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
     all_samples = sorted(
         all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
     )
-
-    # reset the global state to prevent effects on the next rollout or eval.
-    state.reset()
     if (x := args.rollout_sample_filter_path) is not None:
         filter_func = load_function(x)
         filter_func(args, data)
