@@ -36,7 +36,7 @@ python scripts/run_glm5_2_744b_a40b.py prepare --model-name GLM-5.2 --num-nodes 
 
 ### 3.2 HF → Megatron `torch_dist` conversion
 
-Also handled by `prepare`. Before conversion the launcher validates, via `_validate_glm_checkpoint`, that the checkpoint uses the native GLM-5.2 config (`model_type=glm_moe_dsa`, `architectures=[GlmMoeDsaForCausalLM]`, `num_hidden_layers=78`, no `auto_map`) and fails fast if it does not, then converts it to the `glm5.2-744B-A40B` Megatron model type. The full model converts with PP = 4 (18/20 first/last layer split); the pruned model converts on a single GPU, because DSA's cross-layer index sharing forbids a pipeline stage that starts on a skip layer. Run `prepare-cp` afterwards on every node to copy the converted checkpoint from shared NFS to local disk.
+Also handled by `prepare`. Before conversion the launcher validates, via `_validate_glm_checkpoint`, that the checkpoint uses the native GLM-5.2 config (`model_type=glm_moe_dsa`, `architectures=[GlmMoeDsaForCausalLM]`, `num_hidden_layers=78`, no `auto_map`) and fails fast if it does not, then converts it to the `glm5.2-744B-A40B` Megatron model type. The full model converts with PP = 4 (18/20 first/last layer split); the pruned model converts on a single GPU, because DSA's cross-layer index sharing forbids a pipeline stage that starts on a skip layer. `train` copies the converted checkpoint from shared NFS to node-local disk on every trainer pod before the job starts.
 
 ## 4. Launch
 
@@ -54,7 +54,7 @@ Full model (≥ 16 nodes):
 python scripts/run_glm5_2_744b_a40b.py full-train --model-name GLM-5.2 --num-nodes 32
 ```
 
-The Typer app exposes four subcommands:
+The Typer app exposes three subcommands:
 
 ```bash
 python scripts/run_glm5_2_744b_a40b.py full-train --model-name GLM-5.2 --num-nodes <N>
@@ -62,10 +62,7 @@ python scripts/run_glm5_2_744b_a40b.py full-train --model-name GLM-5.2 --num-nod
 # Just download model + datasets and convert to Megatron
 python scripts/run_glm5_2_744b_a40b.py prepare    --model-name GLM-5.2 --num-nodes <N>
 
-# Copy converted checkpoint from shared NFS to local disk (run on every node)
-python scripts/run_glm5_2_744b_a40b.py prepare-cp --model-name GLM-5.2 --num-nodes <N>
-
-# Train only (assumes prepare/prepare-cp done)
+# Train only (assumes prepare done)
 python scripts/run_glm5_2_744b_a40b.py train      --model-name GLM-5.2 --num-nodes <N>
 ```
 
