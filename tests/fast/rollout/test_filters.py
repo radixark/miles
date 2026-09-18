@@ -248,3 +248,14 @@ def test_group_staleness_uses_oldest_version_across_nested_samples():
     assert group_staleness(group, current_version=None) is None
     assert group_staleness([make_sample()], current_version=10) is None
     assert group_staleness([make_sample(weight_versions=("12",))], current_version=10) == -2
+
+
+@pytest.mark.parametrize(("decode_version", "prefill_version", "expected"), [("10", "8", 2), ("8", "10", 2)])
+def test_group_staleness_includes_cached_prompt_weights(
+    decode_version: str, prefill_version: str, expected: int
+) -> None:
+    """Fresh decode weights cannot hide stale prompt KV, and fresh prompt KV cannot hide old decode weights."""
+    sample = make_sample(weight_versions=(decode_version,))
+    sample.weight_versions[0].prefill_spans = [WeightVersionSpan(version=prefill_version, abs_start=0, abs_end=1)]
+
+    assert group_staleness([[sample]], current_version=10) == expected

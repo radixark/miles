@@ -7,7 +7,7 @@ import logging
 from argparse import Namespace
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-
+from pathlib import Path
 
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.rollout.data_source import DataSource, RolloutDataSource
@@ -122,17 +122,17 @@ class MultiLoRAAsyncDataSource(DataSource):
                 continue
             self.sources[name].add_samples([group])
 
-    def save(self, rollout_id):
+    def save(self, directory: Path):
         for source in self.sources.values():
-            source.save(rollout_id)
+            source.save(directory)
 
-    def load(self, rollout_id=None):
+    def load(self, directory: Path):
         if not self.sources:
             logger.warning("this run serves no adapter, so no dataset state is restored")
             return
 
         for source in self.sources.values():
-            source.load(rollout_id)
+            source.load(directory)
 
     def close(self) -> None:
         from miles.rollout.multi_lora.async_rollout import AsyncMultiLoRAWorker

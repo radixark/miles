@@ -17,8 +17,10 @@ from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, Rollo
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.inference_rollout.compatibility import load_generate_function
+from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.function_registry import load_function
@@ -183,6 +185,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
 
+    if (extra_key := sample.kv_cache_namespace) is not None:
+        payload["extra_key"] = extra_key
     if sample.adapter is not None:
         from miles.ray.multi_lora.controller import AdaptersCache
 
@@ -285,6 +289,8 @@ async def generate_and_rm(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
+    input_sample_index = sample.index
+
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
         sample.loss_mask = [0] * sample.response_length
@@ -326,6 +332,8 @@ async def generate_and_rm(
                 sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
+            if not evaluation:
+                stamp_sample_lineage(sample, source_sample_index=input_sample_index)
 
     if sink is not None:
         sink.attempt_end(sample)
@@ -423,6 +431,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
 
         if not args.partial_rollout:
+            groups = [task.result() for task in done]
+            SampleOwnershipRecorder.log_dropped_groups(args=args, before=groups, after=[], reason="aborted")
             continue
 
         # for partial rollout, collect the partial samples into the data buffer
@@ -502,6 +512,7 @@ async def generate_rollout_async(
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="dynamic_filter")
                 state.remaining_batch_size -= 1
                 continue
 
@@ -510,6 +521,8 @@ async def generate_rollout_async(
             if len(data) < target_data_size:
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
+            else:
+                SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="oversampling")
 
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
@@ -531,9 +544,13 @@ async def generate_rollout_async(
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
+    before_filter = SampleOwnershipRecorder.flatten_samples(data)
     if (x := args.rollout_sample_filter_path) is not None:
         filter_func = load_function(x)
         filter_func(args, data)
+    SampleOwnershipRecorder.log_dropped_groups(
+        args=args, before=before_filter, after=data, reason="rollout_sample_filter"
+    )
 
     # There can be circumstances where users want to process all samples including filtered ones.
     if (x := args.rollout_all_samples_process_path) is not None:
@@ -693,5 +710,6 @@ def generate_rollout(
         return output
 
     output, aborted_samples = run(generate_rollout_async(args, rollout_id, data_source.get_samples))
-    data_source.add_samples(aborted_samples)
+    if aborted_samples:
+        data_source.add_samples(aborted_samples)
     return output

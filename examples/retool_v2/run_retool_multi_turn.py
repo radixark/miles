@@ -21,6 +21,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     prompt_data: str = "/root/dapo-math-17k/dapo-math-17k.jsonl"
     generate_max_turns: int = 16
     rollout_num_gpus_per_engine: int = 2
+    fully_async: bool = False
     extra_args: str = ""
 
     # resolved in __post_init__, not set by user
@@ -30,6 +31,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     def __post_init__(self):
         self.hardware = command_utils.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.rollout_num_gpus_per_engine = min(self.rollout_num_gpus_per_engine, self.num_gpus_per_node)
         if self.use_sft_model:
             self.hf_checkpoint = "/root/font-info/qwen3-4b-sft"
             self.ref_load = "/root/font-info/qwen3-4b-sft_torch_dist"
@@ -123,6 +125,8 @@ def execute(args: ScriptArgs):
             "--eval-top-p 1 "
         )
 
+    async_args = "--fully-async " if args.fully_async else ""
+
     grpo_args = (
         "--advantage-estimator grpo "
         "--use-kl-loss "
@@ -147,7 +151,7 @@ def execute(args: ScriptArgs):
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 2 "
+        f"--tensor-model-parallel-size {args.rollout_num_gpus_per_engine} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -163,6 +167,7 @@ def execute(args: ScriptArgs):
     misc_args = (
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
@@ -186,6 +191,7 @@ def execute(args: ScriptArgs):
         f"{sglang_args} "
         f"{misc_args} "
         f"{custom_args} "
+        f"{async_args} "
         f"{args.extra_args} "
     )
 
@@ -193,6 +199,7 @@ def execute(args: ScriptArgs):
         train_args=train_args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=megatron_model_type,
+        train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars={
             "PYTHONPATH": "/root/Megatron-LM/:/root/miles",
         },

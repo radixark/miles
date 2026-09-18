@@ -28,6 +28,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
+from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -67,7 +68,7 @@ class FSDPTrainRayActor(TrainRayActor):
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
-    ) -> int | None:  # type: ignore[override]
+    ) -> TrainerLoadState | None:  # type: ignore[override]
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
@@ -90,7 +91,7 @@ class FSDPTrainRayActor(TrainRayActor):
         }
 
         if self.args.debug_rollout_only:
-            return 0
+            return TrainerLoadState(start_rollout_id=0, restored_trained_iteration=False)
 
         self.fsdp_cpu_offload = getattr(self.args, "fsdp_cpu_offload", False)
         # Offload train and fsdp cpu offload cannot be used together, fsdp_cpu_offload is more aggressive
@@ -212,7 +213,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.prof.on_init_end()
 
-        return int(getattr(self.args, "start_rollout_id", 0))
+        start_rollout_id = int(getattr(self.args, "start_rollout_id", 0))
+        return TrainerLoadState(start_rollout_id=start_rollout_id, restored_trained_iteration=start_rollout_id > 0)
 
     def _get_model_cls(self):
         if hasattr(self.hf_config, "vision_config"):

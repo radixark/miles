@@ -437,8 +437,8 @@ class TestComputePassrateFromSamples:
 
 
 class TestWeightVersionMetrics:
-    def test_reports_oldest_version_statistics_and_mixed_ratio(self):
-        """weight_version/* summarises each sample's oldest version; mixed counts samples spanning an update."""
+    def test_all_numeric_inputs_keep_the_existing_decode_metric_keys_and_values(self):
+        """All-numeric decode spans retain the complete pre-existing metric surface."""
         samples = [
             _make_versioned_sample(["4"], index=0),
             _make_versioned_sample(["5", "6"], index=1),
@@ -446,9 +446,41 @@ class TestWeightVersionMetrics:
 
         out = _compute_metrics_from_samples(make_args(), samples)
 
+        assert {key: value for key, value in out.items() if key.startswith("weight_version/")} == {
+            "weight_version/mean": 4.5,
+            "weight_version/median": 4.5,
+            "weight_version/max": 5,
+            "weight_version/min": 4,
+            "weight_version/mixed_version_ratio": 0.5,
+        }
+
+    def test_a_placeholder_and_numeric_decode_mix_is_mixed(self):
+        """Any two distinct version labels count as mixed, placeholders included."""
+        sample = _make_versioned_sample(["default", "4"], index=0)
+
+        out = _compute_metrics_from_samples(make_args(), [sample])
+
         assert out["weight_version/min"] == 4
-        assert out["weight_version/max"] == 5
+        assert out["weight_version/mixed_version_ratio"] == 1.0
+
+    def test_the_mixed_ratio_denominator_is_the_sample_count_not_the_call_count(self):
+        """Mixedness is a per-sample verdict, so one sample spanning three calls still weighs one sample."""
+        samples = [
+            _make_versioned_sample(["4", "5", "6"], index=0),
+            _make_versioned_sample(["7"], index=1),
+        ]
+
+        out = _compute_metrics_from_samples(make_args(), samples)
+
         assert out["weight_version/mixed_version_ratio"] == 0.5
+
+    def test_no_version_metrics_when_no_span_carries_a_numeric_version(self):
+        """Placeholder-only labels leave nothing to average, so the whole series stays absent."""
+        samples = [_make_versioned_sample(["default", "mock-v0"], index=0)]
+
+        out = _compute_metrics_from_samples(make_args(), samples)
+
+        assert not any(key.startswith("weight_version/") for key in out)
 
     def test_a_call_spanning_no_update_is_not_mixed(self):
         """Two calls that both saw the same version must not count as mixed."""
@@ -482,6 +514,160 @@ def _make_versioned_sample(versions: list[str], *, index: int) -> Sample:
         WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
     ]
     return sample
+
+
+def _prefilled_sample(*turns: tuple[list[tuple[str, int]], list[str]], index: int = 0) -> Sample:
+    calls: list[WeightVersionsPerCall] = []
+    generated_end = 0
+    for prefill, decode in turns:
+        prefill_spans: list[WeightVersionSpan] = []
+        output_start = 0
+        for version, num_tokens in prefill:
+            prefill_spans.append(WeightVersionSpan(version, output_start, output_start + num_tokens))
+            output_start += num_tokens
+        assert output_start >= generated_end, "each turn's prompt must cover everything generated so far"
+        spans = [
+            WeightVersionSpan(version, output_start + i, output_start + i + 1) for i, version in enumerate(decode)
+        ]
+        calls.append(WeightVersionsPerCall(spans=spans, prefill_spans=prefill_spans, output_start=output_start))
+        generated_end = output_start + len(decode)
+
+    sample = make_sample(
+        index=index,
+        group_index=0,
+        response_length=generated_end - calls[0].output_start,
+        tokens=list(range(generated_end)),
+        weight_versions=calls,
+    )
+    sample.validate()
+    return sample
+
+
+class TestPrefillWeightVersionMetrics:
+    def test_stale_token_ratio_counts_prompt_tokens_older_than_the_decode_version(self):
+        """Prompt tokens whose KV predates the call's decode version are stale; the ratio is over all prompt tokens."""
+        first = _prefilled_sample(([("1", 3), ("5", 5)], ["5"]), index=0)
+        second = _prefilled_sample(([("5", 2)], ["5"]), index=1)
+
+        out = _compute_metrics_from_samples(make_args(), [first, second])
+
+        assert out["weight_version/prefill_stale_token_ratio"] == pytest.approx(3 / 10)
+
+    def test_lag_is_the_decode_version_minus_the_oldest_prompt_version_per_call(self):
+        """Each call contributes its own lag, and the batch reports the worst one."""
+        first = _prefilled_sample(([("1", 3), ("5", 5)], ["5"]), ([("4", 4), ("6", 5)], ["6"]), index=0)
+        second = _prefilled_sample(([("6", 2)], ["6"]), index=1)
+
+        out = _compute_metrics_from_samples(make_args(), [first, second])
+
+        assert out["weight_version/prefill_lag_max"] == 4
+
+    def test_mixed_ratio_is_the_share_of_samples_with_a_multi_version_prompt(self):
+        """Prefill mixedness and oldest-version statistics span every call in a sample."""
+        mixed = _prefilled_sample(([("5", 2)], ["5"]), ([("1", 4)], ["5"]), index=0)
+        uniform = _prefilled_sample(([("5", 2)], ["5"]), ([("5", 4)], ["5"]), index=1)
+
+        out = _compute_metrics_from_samples(make_args(), [mixed, uniform])
+
+        assert out["weight_version/prefill_min"] == 1
+        assert out["weight_version/prefill_max"] == 5
+        assert out["weight_version/prefill_mean"] == 3
+        assert out["weight_version/prefill_median"] == 3
+        assert out["weight_version/prefill_mixed_version_ratio"] == 0.5
+
+    def test_a_call_spanning_an_update_measures_lag_against_its_newest_decode_version(self):
+        """Under in_place a call can decode across an update; its current version is the newest one it saw."""
+        sample = _prefilled_sample(([("3", 4)], ["4", "5"]))
+
+        out = _compute_metrics_from_samples(make_args(), [sample])
+
+        assert out["weight_version/prefill_lag_max"] == 2
+        assert out["weight_version/prefill_stale_token_ratio"] == 1.0
+
+    def test_stale_and_lag_only_cover_comparable_calls(self):
+        """Calls with a placeholder version anywhere stay out of the stale and lag figures entirely."""
+        sample = _prefilled_sample(
+            ([("default", 2), ("4", 2)], ["5"]),
+            ([("2", 5)], ["mock-v0"]),
+            ([("3", 6)], ["5"]),
+        )
+
+        out = _compute_metrics_from_samples(make_args(), [sample])
+
+        assert out["weight_version/prefill_lag_max"] == 2
+        assert out["weight_version/prefill_stale_token_ratio"] == 1.0
+
+    def test_a_prompt_spanning_two_labels_is_mixed_without_being_comparable(self):
+        """Mixedness reads the raw labels, so it survives calls that stale and lag must skip."""
+        mixed = _prefilled_sample(([("3", 2), ("4", 2)], ["mock-v0"]), index=0)
+        uniform = _prefilled_sample(([("default", 4)], ["5"]), index=1)
+
+        out = _compute_metrics_from_samples(make_args(), [mixed, uniform])
+
+        assert out["weight_version/prefill_mixed_version_ratio"] == 0.5
+        assert not any(
+            key in out for key in ("weight_version/prefill_stale_token_ratio", "weight_version/prefill_lag_max")
+        )
+
+    def test_no_prefill_metrics_when_no_call_carries_prefill_spans(self):
+        """Engines without prefill weight versions must not synthesise the prefill series."""
+        out = _compute_metrics_from_samples(make_args(), [_make_versioned_sample(["4", "5"], index=0)])
+
+        assert "weight_version/min" in out
+        assert not any(key.startswith("weight_version/prefill_") for key in out)
+
+    def test_prefill_spans_do_not_move_the_oldest_weight_version_series(self):
+        """Prompt KV versions are reported separately and leave weight_version/min to the output spans."""
+        sample = _prefilled_sample(([("1", 3)], ["5"]))
+
+        out = _compute_metrics_from_samples(make_args(), [sample])
+
+        assert out["weight_version/min"] == 5
+        assert out["weight_version/mixed_version_ratio"] == 0.0
+
+
+class TestCiPrefillLagMetrics:
+    @pytest.mark.parametrize("overrides", [{"ci_test": False, "ci_assert_prefill_lag_max": 1}, {"ci_test": True}])
+    def test_lag_is_not_bounded_without_the_ci_gate(self, overrides: dict[str, object]) -> None:
+        """Large lag is reported without enforcement unless CI and its bound are both enabled."""
+        sample = _prefilled_sample(([("2", 3)], ["5"]))
+
+        metrics = _compute_metrics_from_samples(make_args(**overrides), [sample])
+
+        assert metrics["weight_version/prefill_lag_max"] == 3
+
+    @pytest.mark.parametrize(("prefill_version", "expected_lag", "expected_ratio"), [("4", 1, 1.0), ("5", 0, 0.0)])
+    def test_prefill_metrics_within_the_bound_are_reported(
+        self, prefill_version: str, expected_lag: int, expected_ratio: float
+    ) -> None:
+        """CI reports exact freshness metrics for fresh and one-version-old prompts."""
+        sample = _prefilled_sample(([(prefill_version, 3)], ["5"]))
+
+        metrics = _compute_metrics_from_samples(make_args(ci_test=True, ci_assert_prefill_lag_max=1), [sample])
+
+        assert metrics["weight_version/prefill_lag_max"] == expected_lag
+        assert metrics["weight_version/prefill_stale_token_ratio"] == expected_ratio
+
+    def test_prefill_metrics_beyond_the_bound_fail(self) -> None:
+        """CI rejects reported prompt KV lag beyond the configured bound."""
+        sample = _prefilled_sample(([("2", 3)], ["5"]))
+
+        with pytest.raises(AssertionError, match="lag metric 3"):
+            _compute_metrics_from_samples(make_args(ci_test=True, ci_assert_prefill_lag_max=1), [sample])
+
+    def test_missing_prefill_metrics_fail_instead_of_passing_vacuously(self) -> None:
+        """CI fails when an engine reports decode versions but no prompt KV versions."""
+        sample = _make_versioned_sample(["5"], index=0)
+
+        with pytest.raises(AssertionError, match="CI requires prompt KV lag"):
+            _compute_metrics_from_samples(make_args(ci_test=True, ci_assert_prefill_lag_max=1), [sample])
+
+    def test_prefill_spans_without_comparable_decode_versions_fail(self) -> None:
+        """CI fails when prompt versions exist but no call can produce freshness metrics."""
+        sample = _prefilled_sample(([("4", 3)], ["default"]))
+
+        with pytest.raises(AssertionError, match="CI requires prompt KV lag"):
+            _compute_metrics_from_samples(make_args(ci_test=True, ci_assert_prefill_lag_max=1), [sample])
 
 
 class TestLogRolloutData:

@@ -5,6 +5,7 @@ import os
 import random
 import shutil
 from contextlib import ExitStack, nullcontext
+from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -13,6 +14,10 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
+from miles.backends.training_utils.model_companion import (
+    ModelCompanionInstallationUtils,
+    ModelCompanionWeightVersionUtils,
+)
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -20,11 +25,13 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
+from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import StoreObjectRef, ValueSpec
@@ -57,7 +64,7 @@ from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
-from .initialize import RandomState, init, is_first_replica_megatron_main_rank
+from .initialize import RandomState, init, is_first_replica_megatron_main_rank, is_local_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import (
     LoadCheckpointOutput,
@@ -108,10 +115,11 @@ class MegatronTrainRayActor(TrainRayActor):
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
-    ) -> int | None:
+    ) -> TrainerLoadState | None:
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
+        self._cell_index = indep_dp_info.cell_index
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -180,7 +188,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 _setup_disk_offload_reclaim(os.environ.get("TMS_DISK_BACKUP_DIR"))
 
         if self.args.debug_rollout_only:
-            return 0
+            return TrainerLoadState(start_rollout_id=0, restored_trained_iteration=False)
 
         if role != "critic":
             for m in all_replay_managers:
@@ -223,14 +231,14 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             if self.args.offload_train:
                 self.sleep()
-            return load_output.start_rollout_id
+            return _to_load_state(load_output)
 
         main_cast_ctx = None
         if args.rematerialize_param_from_master_weight:
             main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
-            source_getter=self._named_actor_weights,
+            source_getter=partial(self._named_actor_weights, include_model_companion=True),
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
@@ -265,6 +273,8 @@ class MegatronTrainRayActor(TrainRayActor):
             is_lora=is_lora,
             lora_sync_config=build_lora_sync_config(self.args) if is_lora else None,
         )
+        # Temporary hack until Yueming's multi-LoRA refactor.
+        self._multi_lora_weight_version = 0
 
         # Adapters currently loaded into Megatron slots on this rank.
         self.loaded_adapters: dict[str, object] = {}
@@ -283,7 +293,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.prof.on_init_end()
 
-        return load_output.start_rollout_id
+        return _to_load_state(load_output)
 
     def _clear_quantized_weight_workspaces(self) -> None:
         if not (
@@ -301,7 +311,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     module._fp8_workspaces.clear()
 
     @with_logs
-    def load_state(self) -> int:
+    def load_state(self) -> TrainerLoadState:
         assert self.is_initialized()
 
         # reloading does not support things like these
@@ -365,7 +375,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._last_rollout_id = None
 
         logger.info(f"load_state rolled this trainer back to checkpoint iteration {load_output.loaded_rollout_id}")
-        return load_output.start_rollout_id
+        return _to_load_state(load_output)
 
     def _load_state_core(
         self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object]
@@ -581,6 +591,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
+            self._publish_model_companion_info(rollout_id=rollout_id, attempt=attempt, result=result)
             return result
 
     @with_logs
@@ -784,6 +795,22 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
 
+    def _publish_model_companion_info(self, *, rollout_id: int, attempt: int, result: TrainStepOutput) -> None:
+        if (
+            not self.args.enable_sample_ownership_checker
+            or self.role != "actor"
+            or result.outcome != TrainStepOutcome.NORMAL
+            or not is_local_replica_megatron_main_rank()
+        ):
+            return
+
+        SampleOwnershipRecorder.publish_model_companion_info(
+            self.model,
+            rollout_id=rollout_id,
+            attempt=attempt,
+            cell_index=self._cell_index,
+        )
+
     @with_logs
     @timer
     def reconcile_adapters(self) -> None:
@@ -891,21 +918,35 @@ class MegatronTrainRayActor(TrainRayActor):
 
         save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
 
-    def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False):
+    def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False, include_model_companion: bool = False):
         return named_params_and_buffers(
             self.args,
             self.model,
             convert_to_global_name=self.args.megatron_to_hf_mode == "raw",
             translate_gpu_to_cpu=translate_gpu_to_cpu,
+            include_model_companion=include_model_companion,
         )
 
-    def _get_actor_weights(self):
+    def _get_actor_weights(self, *, include_model_companion: bool = False) -> dict[str, torch.Tensor]:
         if self._weight_sync_reads_tms_backup:
-            return dict(self._named_actor_weights(translate_gpu_to_cpu=True))
+            return dict(
+                self._named_actor_weights(translate_gpu_to_cpu=True, include_model_companion=include_model_companion)
+            )
         # use cpu backup only when weight is not live on gpu
         if self.args.colocate or self._asleep or self._active_model_tag != "actor":
-            return self.weights_backuper.get("actor")
-        return dict(self._named_actor_weights())
+            return {
+                name: tensor
+                for name, tensor in self.weights_backuper.get("actor").items()
+                if include_model_companion or not ModelCompanionInstallationUtils.is_companion_parameter(name)
+            }
+        return dict(self._named_actor_weights(include_model_companion=include_model_companion))
+
+    def _get_actor_weight_version(self) -> int:
+        if is_multi_lora_enabled(self.args):
+            return self._multi_lora_weight_version + 1
+        return ModelCompanionWeightVersionUtils.from_params(
+            self._get_actor_weights(include_model_companion=True).items()
+        )
 
     @with_logs
     @timer
@@ -965,22 +1006,22 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            weight_version = self._get_actor_weight_version()
+            self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):
                 from miles.backends.megatron_utils.multi_lora_utils import commit_weight_push
 
+                self._multi_lora_weight_version = weight_version
                 self._multi_lora_pending_push.clear()
                 commit_weight_push(version_update_names, self._is_first_replica_megatron_main_rank)
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
                 engine = random.choice(rollout_engines)
                 engine_version = async_utils.run(engine.get_weight_version())
-                if str(engine_version) != str(self.weight_updater.weight_version):
-                    raise RuntimeError(
-                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                    )
+                if str(engine_version) != str(weight_version):
+                    raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {weight_version}")
 
             if getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:
@@ -998,7 +1039,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             destroy_process_groups()
 
-        return self.weight_updater.weight_version
+        return weight_version
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
@@ -1061,3 +1102,10 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_world_size=dist.get_world_size(),
         )
         self.weight_updater.conn_status.mark_trainer_stale()
+
+
+def _to_load_state(load_output: LoadCheckpointOutput) -> TrainerLoadState:
+    return TrainerLoadState(
+        start_rollout_id=load_output.start_rollout_id,
+        restored_trained_iteration=load_output.restored_trained_iteration,
+    )

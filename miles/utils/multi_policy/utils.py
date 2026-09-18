@@ -5,6 +5,7 @@ from pathlib import Path
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args, resolve_megatron_config
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
+from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.ray.specs.train import compute_trainer_configs
 from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 class TrainerInfo:
     model_id: str
     start_rollout_id: int
+    restored_trained_iteration: bool
     handle: BaseWorkerHandle
 
 
@@ -38,7 +40,10 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         )
         assert model_id not in trainers, f"{trainer_config} shares its model id with an already created trainer"
         trainers[model_id] = TrainerInfo(
-            model_id=model_id, start_rollout_id=created.start_rollout_id, handle=created.handle
+            model_id=model_id,
+            start_rollout_id=created.start_rollout_id,
+            restored_trained_iteration=created.restored_trained_iteration,
+            handle=created.handle,
         )
 
     for model_id, trainer in trainers.items():
@@ -47,19 +52,20 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         )
     leader_model_id = resolve_megatron_config(args).leader_model_id
     leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
-    _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
-    await rollout_executor.load(leader_rollout_id)
+    if leader_rollout_id >= 0 and trainers[leader_model_id].restored_trained_iteration:
+        _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
+        await rollout_executor.load(leader_rollout_id)
 
     return trainers
 
 
 def _assert_global_rollout_state_exists(args, *, leader_rollout_id: int) -> None:
-    if leader_rollout_id < 0 or not args.rollout_global_dataset or args.load is None:
+    if not args.rollout_global_dataset or args.load is None:
         return
 
-    path = Path(args.load) / "rollout" / f"global_dataset_state_dict_{leader_rollout_id}.pt"
-    assert path.exists(), (
-        f"the policies restored a checkpoint of rollout {leader_rollout_id}, but {path} is missing; the data "
+    directory = compute_rollout_checkpoint_dir(args.load, rollout_id=leader_rollout_id)
+    assert directory.is_dir(), (
+        f"the policies restored a checkpoint of rollout {leader_rollout_id}, but {directory} is missing; the data "
         f"source would silently restart from the first prompt and retrain what the checkpoint already saw"
     )
 

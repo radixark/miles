@@ -445,6 +445,8 @@ def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
                 f"indicates a TITO subclass / setup bug, not a real PASS."
             )
         forbidden = [m for m in mismatches if m.get("type") in _FORBIDDEN_MISMATCH_TYPES]
+        if forbidden:
+            logger.error("Hard TITO mismatch: leaf=%r mismatches=%r", sample.metadata.get("leaf"), forbidden)
         assistant_mismatches = [m for m in mismatches if m.get("type") == "assistant_text"]
         if metrics_path:
             had_assistant_mismatch = bool(assistant_mismatches)

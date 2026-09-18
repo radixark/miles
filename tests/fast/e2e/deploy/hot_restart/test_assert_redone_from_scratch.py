@@ -1,3 +1,4 @@
+import shutil
 from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartReco
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import compute_checkpoint_dir
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
+from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
@@ -53,7 +55,13 @@ class _Run:
             _write_finished_step(self.events_dir, rollout_id=rollout_id)
 
     def save(self, iteration: int) -> None:
-        event_logger_checkpoint.snapshot(self.megatron_args, iteration)
+        directory = compute_rollout_checkpoint_dir(self.checkpoint_dir, rollout_id=iteration)
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True)
+        event_logger_checkpoint.snapshot(
+            self.megatron_args, directory=directory / event_logger_checkpoint.SNAPSHOT_DIRNAME
+        )
         (self.checkpoint_dir / TRACKER_FILENAME).write_text(str(iteration))
 
     def take_over(self) -> None:

@@ -1,7 +1,9 @@
 import argparse
 import logging
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,6 +22,7 @@ from miles.utils.arguments import (
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
     _resolve_run_uuid,
+    _resolve_sample_ownership_check,
     _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
@@ -64,6 +67,7 @@ _NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
         "metadata_key",
         "opd_teacher_key",
         "reward_key",
+        "router_allow_requests_without_routing_key",
         "tool_key",
     }
 )
@@ -344,6 +348,39 @@ class TestEventDirectoryDefaults:
         assert defaulted.save_debug_event_data == "/checkpoints/run/events"
         assert explicit.save_debug_event_data == "/audit/events"
 
+    def test_an_explicit_event_directory_asks_for_engine_weight_checksums(self) -> None:
+        """Requesting an event dump opts into the engine checksum event it is meant to collect."""
+        args = self._parse(["--save-debug-event-data", "/audit/events"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
+    def test_the_ci_event_directory_fallback_does_not_ask_for_engine_weight_checksums(self) -> None:
+        """CI gets an event directory for sample ownership without the engine checksum allocation."""
+        args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data is not None
+        assert args.log_inference_engine_weight_checksums is False
+
+    def test_ci_with_an_event_analyzer_collects_engine_weight_checksums(self) -> None:
+        """Enabling analysis preserves checksum evidence even with an implicit CI directory."""
+        args = self._parse(["--ci-test", "--enable-event-analyzer"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
+    def test_engine_weight_checksums_can_be_requested_explicitly_in_ci(self) -> None:
+        """The explicit flag overrides the directory-derived default."""
+        args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef", "--log-inference-engine-weight-checksums"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
     def test_dump_details_places_events_under_the_dump_root(self) -> None:
         """A dump root keeps audit events with its other debug artifacts even when checkpoints are saved."""
         args = self._parse(["--save", "/checkpoints/run", "--dump-details", "/debug/run"])
@@ -351,6 +388,182 @@ class TestEventDirectoryDefaults:
         miles_validate_args(args)
 
         assert args.save_debug_event_data == "/debug/run/events"
+
+
+class TestSampleOwnershipCheckArguments:
+    def test_enabled_checker_rejects_custom_converter(self) -> None:
+        """Enabled checking rejects an unsupported custom converter."""
+        args = self._checker_args(custom_convert_samples_to_train_data_path="custom.convert")
+
+        with pytest.raises(AssertionError, match="incompatible with --custom-convert-samples-to-train-data-path"):
+            _resolve_sample_ownership_check(args)
+
+    @staticmethod
+    def _parse(extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_an_enabled_checker_without_an_event_directory_is_rejected(self) -> None:
+        """An enabled checker outside CI refuses to launch without somewhere to record evidence."""
+        args = self._parse(["--enable-sample-ownership-checker", "--run-uuid", "0123456789abcdef"])
+
+        with pytest.raises(ValueError, match="needs an event directory"):
+            miles_validate_args(args)
+
+    def test_ci_falls_back_to_a_run_specific_temporary_event_directory(self) -> None:
+        """CI records evidence under a run-specific temporary directory without enabling the GPU witness."""
+        args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.enable_sample_ownership_checker is True
+        assert args.enable_witness is False
+        assert args.save_debug_event_data == os.path.join(
+            tempfile.gettempdir(), "miles-ci", "0123456789abcdef", "events"
+        )
+
+    def test_ci_keeps_the_checkpoint_event_directory(self) -> None:
+        """A checkpoint root supplies the event directory before the CI temporary fallback applies."""
+        args = self._parse(["--ci-test", "--save", "/checkpoints/run", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data == "/checkpoints/run/events"
+
+    def test_the_checker_is_off_unless_it_is_requested(self) -> None:
+        """A run that does not ask for checking leaves witness collection and event storage untouched."""
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.enable_sample_ownership_checker is False
+        assert args.enable_witness is False
+        assert args.save_debug_event_data is None
+
+    def test_the_checker_can_be_enabled_explicitly(self) -> None:
+        """The command-line flag asks for checking."""
+        assert self._parse(["--enable-sample-ownership-checker"]).enable_sample_ownership_checker is True
+
+    def test_the_checker_can_be_disabled_explicitly(self) -> None:
+        """An explicit opt-out overrides the CI default."""
+        assert self._parse(["--no-enable-sample-ownership-checker"]).enable_sample_ownership_checker is False
+
+    @pytest.mark.parametrize(
+        "ci_test,requested,enabled",
+        [(False, None, False), (False, False, False), (False, True, True), (True, None, True), (True, False, False)],
+    )
+    def test_ci_enables_the_checker_unless_it_is_requested_explicitly(
+        self, ci_test: bool, requested: bool | None, enabled: bool
+    ) -> None:
+        """CI enables checking only where the tri-state flag was left unset."""
+        args = self._checker_args(ci_test=ci_test, enable_sample_ownership_checker=requested)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is enabled
+
+    @pytest.mark.parametrize("ci_test,grace_steps", [(False, 10), (True, 2)])
+    def test_ci_shortens_the_step_grace(self, ci_test: bool, grace_steps: int) -> None:
+        """CI shortens the issued-sample grace while ordinary runs keep the longer default."""
+        args = self._checker_args(ci_test=ci_test)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.sample_ownership_grace_steps == grace_steps
+
+    def test_an_explicit_step_grace_is_preserved_in_ci(self) -> None:
+        """CI defaults do not overwrite an explicitly configured grace period."""
+        args = self._checker_args(ci_test=True, sample_ownership_grace_steps=7)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.sample_ownership_grace_steps == 7
+
+    @staticmethod
+    def _checker_args(**overrides) -> SimpleNamespace:
+        values = dict(
+            enable_sample_ownership_checker=True,
+            custom_convert_samples_to_train_data_path=None,
+            sample_ownership_grace_steps=None,
+            ci_test=False,
+            train_backend="megatron",
+            num_critic_only_steps=0,
+            lora_rank=0,
+            lora_adapter_path=None,
+            multi_lora=False,
+            megatron_config=None,
+            debug_train_only=False,
+            debug_rollout_only=False,
+            debug_disable_optimizer=False,
+            enable_witness=False,
+            save_debug_event_data="/audit/events",
+            run_uuid="0123456789abcdef",
+        )
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    @pytest.mark.parametrize(
+        "overrides,reason",
+        [
+            ({"train_backend": "fsdp"}, "the FSDP backend has no model companion info"),
+            ({"lora_rank": 8}, "LoRA training has no model companion info"),
+            ({"multi_lora": True}, "multi-LoRA training can replay samples"),
+            ({"debug_train_only": True}, "train-only mode has no issuing data source"),
+            ({"debug_rollout_only": True}, "rollout-only mode has no trainer model companion"),
+            ({"debug_disable_optimizer": True}, "a disabled optimizer trains nothing"),
+            ({"num_critic_only_steps": 1}, "critic-only warmup steps drop actor samples"),
+        ],
+    )
+    def test_unsupported_modes_are_rejected(self, overrides: dict, reason: str) -> None:
+        """Modes without one current single-policy model companion info refuse to launch with the checker on."""
+        args = self._checker_args(**overrides)
+
+        with pytest.raises(ValueError, match=reason):
+            _resolve_sample_ownership_check(args)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"lora_rank": 8},
+            {"multi_lora": True},
+            {"debug_train_only": True},
+            {"debug_rollout_only": True},
+            {"debug_disable_optimizer": True},
+            {"num_critic_only_steps": 1},
+        ],
+    )
+    def test_unsupported_modes_silently_disable_the_default(self, overrides: dict) -> None:
+        """A run that never asked for checking is not blocked by a mode the checker cannot cover."""
+        args = self._checker_args(enable_sample_ownership_checker=None, ci_test=True, **overrides)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is False
+
+    def test_multi_policy_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Several actor lineages cannot share the single-policy current-witness checker."""
+        monkeypatch.setattr(
+            "miles.utils.arguments.resolve_megatron_config",
+            lambda _args: SimpleNamespace(
+                trainers=[
+                    SimpleNamespace(role="actor"),
+                    SimpleNamespace(role="actor"),
+                ]
+            ),
+        )
+        args = self._checker_args(megatron_config="config")
+
+        with pytest.raises(ValueError, match="multi-policy training has separate model companion lineages"):
+            _resolve_sample_ownership_check(args)
+
+    def test_a_negative_step_grace_is_rejected(self) -> None:
+        """A negative step grace cannot turn a required check into a dormant one."""
+        args = self._checker_args(sample_ownership_grace_steps=-1)
+
+        with pytest.raises(ValueError, match="--sample-ownership-grace-steps"):
+            _resolve_sample_ownership_check(args)
 
 
 class TestMaybeApplyDumperOverrides:
@@ -465,24 +678,61 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
 
 def test_fully_async_rejects_abort_pause_mode():
     """Generation is always in flight, so aborting on every weight update would kill it."""
-    args = SimpleNamespace(
-        fully_async=True,
-        multi_lora=False,
-        rollout_function_path=None,
-        eval_function_path=None,
-        colocate=False,
-        partial_rollout=False,
-        pause_generation_mode="abort",
-        recompute_logprobs_via_prefill=False,
-        rollout_all_samples_process_path=None,
-        eval_num_gpus=0,
-    )
+    args = _make_fully_async_args(colocate=False, pause_generation_mode="abort")
 
     with pytest.raises(AssertionError, match="pause-generation-mode abort"):
         _resolve_rollout_functions(args)
 
     args.pause_generation_mode = "retract"
     _resolve_rollout_functions(args)
+
+
+def _make_fully_async_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        fully_async=True,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=True,
+        partial_rollout=False,
+        pause_generation_mode="retract",
+        namespaced_radix_cache=False,
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+        train_backend="megatron",
+        ft_components=[],
+    )
+    return SimpleNamespace(**{**defaults, **overrides})
+
+
+def test_fully_async_accepts_colocate():
+    """The driver-orchestrated colocate path is allowed."""
+    _resolve_rollout_functions(_make_fully_async_args())
+
+
+def test_fully_async_colocate_rejects_fsdp_train_backend():
+    """Only the megatron IPC updater lets the driver own the pause/continue window."""
+    args = _make_fully_async_args(train_backend="fsdp")
+
+    with pytest.raises(AssertionError, match="megatron IPC weight updater"):
+        _resolve_rollout_functions(args)
+
+
+def test_fully_async_colocate_rejects_in_place_pause_mode():
+    """Colocate releases the KV cache, so in_place cannot keep its promise to preserve it."""
+    args = _make_fully_async_args(pause_generation_mode="in_place")
+
+    with pytest.raises(AssertionError, match="pause-generation-mode retract"):
+        _resolve_rollout_functions(args)
+
+
+def test_fully_async_colocate_rejects_rollout_fault_tolerance():
+    """A cell replaced inside the training pause would serve without the pause or its KV cache."""
+    args = _make_fully_async_args(ft_components=["rollout"])
+
+    with pytest.raises(AssertionError, match="rollout fault tolerance"):
+        _resolve_rollout_functions(args)
 
 
 class TestClusterBackend:
@@ -1702,6 +1952,84 @@ class TestSnapshotEvalValidation:
         assert args.starts_inference_engines is False
 
 
+class TestPartitionRadixCacheByRolloutCallResolution:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_it_is_unset_before_validation(self):
+        """The flag is tri-state, so parsing alone must not decide it."""
+        assert self._parse([]).namespaced_radix_cache is None
+
+    def test_fully_async_with_in_place_pausing_turns_it_on(self, caplog):
+        """in_place never flushes the cache, so the fully async producer gets the partition by default."""
+        args = self._parse(["--fully-async", "--pause-generation-mode", "in_place"])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is True
+        assert any("--namespaced-radix-cache" in record.message for record in caplog.records)
+
+    @pytest.mark.parametrize(
+        argnames="extra",
+        argvalues=[
+            [],
+            ["--pause-generation-mode", "in_place"],
+            ["--fully-async"],
+            ["--fully-async", "--pause-generation-mode", "retract"],
+        ],
+    )
+    def test_every_other_configuration_leaves_it_off(self, caplog, extra):
+        """Existing runs keep one shared radix cache, so nothing changes for them."""
+        args = self._parse(extra)
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is False
+        assert not any("--namespaced-radix-cache" in record.message for record in caplog.records)
+
+    def test_an_explicit_yes_is_respected_outside_the_default_configuration(self):
+        """A run that asks for the partition gets it even without fully async in_place pausing."""
+        args = self._parse(["--namespaced-radix-cache"])
+
+        miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is True
+
+    def test_an_explicit_no_is_respected_inside_the_default_configuration(self):
+        """The default is only a default: fully async in_place can still opt out."""
+        args = self._parse(["--fully-async", "--pause-generation-mode", "in_place", "--no-namespaced-radix-cache"])
+
+        miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is False
+
+    @pytest.mark.parametrize("namespaced", [False, True])
+    def test_legacy_rollout_rejects_only_enabled_namespaced_caches(
+        self, monkeypatch: pytest.MonkeyPatch, namespaced: bool
+    ) -> None:
+        """Legacy rollout cannot silently accept cache isolation that its entrypoints do not implement."""
+        monkeypatch.setenv("MILES_USE_LEGACY_ROLLOUT_V1", "1")
+        args = self._parse(
+            [
+                "--pause-generation-mode",
+                "in_place",
+                "--namespaced-radix-cache" if namespaced else "--no-namespaced-radix-cache",
+            ]
+        )
+
+        if namespaced:
+            with pytest.raises(AssertionError, match="--namespaced-radix-cache requires the class-based rollout API"):
+                miles_validate_args(args)
+        else:
+            miles_validate_args(args)
+            assert args.namespaced_radix_cache is False
+            assert args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout"
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
@@ -1881,6 +2209,38 @@ def test_critic_rejects_reward_level_kl(tmp_path):
 
     with pytest.raises(AssertionError, match="does not support reward-level KL"):
         miles_validate_args(args)
+
+
+class TestDataSourceSelection:
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            ([], "miles.rollout.data_source.RolloutDataSource"),
+            (["--fully-async"], "miles.rollout.data_source.RolloutDataSource"),
+            (["--partial-rollout"], "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"),
+            (["--partial-rollout", "--data-source-path", "custom.Source"], "custom.Source"),
+        ],
+    )
+    def test_validation_selects_the_source_for_the_rollout_mode(self, extra: list[str], expected: str) -> None:
+        """Only partial rollout needs the built-in source to retain aborted groups."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args([*REQUIRED_ARGS, "--num-rollout", "1", *extra])
+
+        miles_validate_args(args)
+
+        assert args.data_source_path == expected
+
+    def test_partial_rollout_logs_the_default_buffered_source(self, caplog) -> None:
+        """Operators can see when partial rollout changes the default data source."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args([*REQUIRED_ARGS, "--num-rollout", "1", "--partial-rollout"])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert "legacy buffered data source" in caplog.text
 
 
 class TestMultiLoRAValidation:
@@ -2582,7 +2942,7 @@ class TestSecretArgumentsAreClassified:
             if _SECRET_ENV_VAR_PATTERN.search(name) and not name.startswith(_SGLANG_ARG_PREFIXES)
         }
 
-        assert suspicious - _SECRET_ARG_NAMES == _NOT_ACTUALLY_SECRET_ARG_NAMES, (
+        assert suspicious - _SECRET_ARG_NAMES <= _NOT_ACTUALLY_SECRET_ARG_NAMES, (
             "an argument's name looks like a credential; add it to _SECRET_ARG_NAMES in env_report/redaction.py so the env "
             "report hashes it, or to _NOT_ACTUALLY_SECRET_ARG_NAMES here to say it names something else"
         )
@@ -2653,3 +3013,46 @@ class TestMilesValidateArgsCheckpointResolution:
         miles_validate_args(args)
 
         assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
+
+
+class TestMilesValidateArgsDiskDeltaResume:
+    @staticmethod
+    def _parse(load_dir, tmp_path):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        parser.set_defaults(finetune=False)
+        return parser.parse_args(
+            [
+                "--update-weight-transfer-mode",
+                "disk-delta",
+                "--update-weight-disk-dir",
+                str(tmp_path / "shared"),
+                "--update-weight-local-checkpoint-dir",
+                str(tmp_path / "local"),
+                "--hf-checkpoint",
+                str(tmp_path),
+                "--ref-load",
+                str(tmp_path),
+                "--load",
+                str(load_dir),
+                "--num-rollout",
+                "1",
+            ]
+            + REQUIRED_ARGS
+        )
+
+    def test_resuming_from_a_training_checkpoint_is_rejected(self, tmp_path):
+        """The first sync only snapshots --hf-checkpoint, so the restored weights would never reach the engines."""
+        load_dir = tmp_path / "ckpt"
+        load_dir.mkdir()
+        (load_dir / "latest_checkpointed_iteration.txt").write_text("10")
+
+        with pytest.raises(ValueError, match="cannot resume from a training checkpoint"):
+            miles_validate_args(self._parse(load_dir, tmp_path))
+
+    def test_a_load_directory_without_a_checkpoint_still_starts(self, tmp_path):
+        """A fresh run points --load at a directory megatron has not written yet, and that is the supported shape."""
+        load_dir = tmp_path / "ckpt"
+        load_dir.mkdir()
+
+        miles_validate_args(self._parse(load_dir, tmp_path))

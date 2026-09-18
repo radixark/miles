@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from miles.backends.sglang_utils import sglang_api_client
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType
 from miles.utils.http_utils import GeneralHttpClientProvider
 
 SERVER_URL = "http://fake-host:1234"
@@ -881,3 +881,27 @@ class TestABodylessSuccess:
         await client.abort_all_requests()
 
         assert "timeout" not in recorder.calls[0][2]
+
+
+class TestWorkerTypeInfer:
+    def test_a_prefill_engine_is_recognized_from_its_disaggregation_mode(self):
+        """PD registration reads the role off /server_info."""
+        assert WorkerType.from_server_info({"disaggregation_mode": "prefill"}) == WorkerType.PREFILL
+
+    def test_a_decode_engine_is_recognized_from_its_disaggregation_mode(self):
+        """The decode half of a PD fleet must be told apart from a regular engine."""
+        assert WorkerType.from_server_info({"disaggregation_mode": "decode"}) == WorkerType.DECODE
+
+    def test_an_engine_outside_pd_is_regular(self):
+        """sglang reports "null" for an engine that serves both phases."""
+        assert WorkerType.from_server_info({"disaggregation_mode": "null"}) == WorkerType.REGULAR
+
+    def test_an_engine_that_does_not_report_the_mode_at_all_is_refused(self):
+        """An engine whose /server_info lacks the key is a contract break, not a regular engine."""
+        with pytest.raises(KeyError):
+            WorkerType.from_server_info({})
+
+    def test_an_engine_reporting_an_unknown_mode_is_refused(self):
+        """A mode miles does not know must fail closed instead of being served as regular."""
+        with pytest.raises(ValueError):
+            WorkerType.from_server_info({"disaggregation_mode": "something_new"})

@@ -37,6 +37,10 @@ class EventLogger:
     def source(self) -> ProcessIdentity:
         return self._source
 
+    @property
+    def log_dir(self) -> Path:
+        return self._log_dir
+
     @contextmanager
     def with_context(self, ctx: dict[str, Any]) -> Generator[None, None, None]:
         """Temporarily merge extra fields into every event logged within this scope.
@@ -133,7 +137,7 @@ def _maybe_with_context(
         yield
 
 
-def read_events(log_dir: Path) -> list[Event]:
+def read_events(log_dir: Path, *, strict: bool = False) -> list[Event]:
     """Read all JSONL event files from a directory and return parsed events."""
     events: list[Event] = []
 
@@ -152,6 +156,8 @@ def read_events(log_dir: Path) -> list[Event]:
                     event = _event_adapter.validate_json(raw_line)
                     events.append(event)
                 except Exception:
+                    if strict:
+                        raise
                     logger.warning(
                         "Failed to parse event at %s:%d",
                         jsonl_path,

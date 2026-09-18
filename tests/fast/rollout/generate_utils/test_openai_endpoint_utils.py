@@ -127,6 +127,35 @@ class TestOpenAIEndpointTracerCreate:
         assert tracer.base_url == "http://10.0.0.2:5005/sessions/session-abc"
         assert tracer.session_server_instance_id == "instance-b"
 
+    @staticmethod
+    def _capture_session_posts(monkeypatch) -> list[dict]:
+        bodies: list[dict] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            bodies.append(payload)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        return bodies
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra_key", "expected_body"),
+        [(None, {}), ("train:-:7", {"extra_key": "train:-:7"})],
+        ids=["unkeyed", "keyed"],
+    )
+    async def test_create_posts_the_extra_key_for_the_server_to_lock_on_the_session(
+        self, monkeypatch, extra_key, expected_body
+    ):
+        """The extra key travels in the POST /sessions body, and no key posts {} so the server stores none."""
+        bodies = self._capture_session_posts(monkeypatch)
+
+        await OpenAIEndpointTracer.create(
+            SimpleNamespace(session_server_addrs=["127.0.0.1:12345"]), extra_key=extra_key
+        )
+
+        assert bodies == [expected_body]
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("addrs_kwargs", [{}, {"session_server_addrs": None}, {"session_server_addrs": []}])
     async def test_create_without_session_server_addrs_raises_before_post(self, monkeypatch, addrs_kwargs):

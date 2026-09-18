@@ -43,7 +43,12 @@ def apply_reward_nonzero_std_filter(args, samples: list[Sample | list[Sample]], 
 
 
 def group_staleness(group: Group, current_version: int | None) -> int | None:
-    versions = [version for sample in iter_samples(group) if (version := sample.oldest_weight_version) is not None]
+    versions = [
+        version
+        for sample in iter_samples(group)
+        for version in (sample.oldest_weight_version, sample.oldest_prefill_weight_version)
+        if version is not None
+    ]
     oldest = min(versions) if versions else None
     if oldest is None or current_version is None:
         return None

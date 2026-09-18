@@ -140,7 +140,12 @@ class TestTrainParallelConfigWiring:
             placement_group,
             "create_training_model",
             lambda args, *, handle, trainer_id, resumed: _return(
-                placement_group.TrainerInfo(handle=actor_handle, restored_rollout_id=0, start_rollout_id=0)
+                placement_group.TrainerInfo(
+                    handle=actor_handle,
+                    restored_rollout_id=0,
+                    start_rollout_id=0,
+                    restored_trained_iteration=False,
+                )
             ),
         )
 

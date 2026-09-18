@@ -15,7 +15,7 @@ from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenize
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan
 
 register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=[])
 
@@ -143,14 +143,18 @@ def expected_request(
     *,
     return_routed_experts: bool = False,
     return_indexer_topk: bool = False,
+    extra_key: str | None = None,
 ) -> dict:
-    return {
+    result = {
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
         "return_routed_experts": return_routed_experts,
         "return_indexer_topk": return_indexer_topk,
     }
+    if extra_key is not None:
+        result["extra_key"] = extra_key
+    return result
 
 
 def expected_openai_request(messages: list[dict], **extra) -> dict:
@@ -251,6 +255,30 @@ class TestBasicMultiTurn:
         verify_samples(result.sample, expected)
 
 
+class TestRadixCacheExtraKey:
+    def test_every_turn_of_a_started_sample_carries_its_kv_cache_namespace(self, variant, generation_env):
+        """Both turns of a multi-turn sample send the same namespace key and the sample keeps it."""
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        S = TwoTurnStub
+        sample = make_sample(prompt=S.PROMPT)
+        sample.kv_cache_namespace = "train:-:7"
+        result = _run_generate(variant, generation_env, sample)
+
+        extra_key = "train:-:7"
+        if is_agentic_variant(variant):
+            assert _strip_pretokenized(result.requests) == [
+                expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN, extra_key=extra_key),
+                expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT, extra_key=extra_key),
+            ]
+        else:
+            assert result.requests == [
+                expected_request(S.FIRST_PROMPT_TOKEN_IDS, extra_key=extra_key),
+                expected_request(S.SECOND_PROMPT_TOKEN_IDS, extra_key=extra_key),
+            ]
+        assert [s.kv_cache_namespace for s in listify(result.sample)] == ["train:-:7"]
+
+
 class TestExitConditions:
     @pytest.mark.parametrize(
         "generation_env",
@@ -282,10 +310,17 @@ class TestExitConditions:
         def process_fn(prompt: str) -> ProcessResult:
             base_result = S.process_fn(prompt)
             num_tokens = len(TOKENIZER.encode(base_result.text, add_special_tokens=False))
+            num_prompt_tokens = len(TOKENIZER.encode(prompt, add_special_tokens=False))
             version = "7" if base_result.text == S.FIRST_RESPONSE else "8"
             return replace(
                 base_result,
-                meta_info=ProcessResultMetaInfo(weight_versions=[{"version": version, "start": 0, "end": num_tokens}]),
+                meta_info=ProcessResultMetaInfo(
+                    weight_versions=[{"version": version, "start": 0, "end": num_tokens}],
+                    prefill_weight_versions=[
+                        {"version": "6", "start": 0, "end": 1},
+                        {"version": version, "start": 1, "end": num_prompt_tokens},
+                    ],
+                ),
             )
 
         generation_env.mock_server.process_fn = process_fn
@@ -293,13 +328,24 @@ class TestExitConditions:
 
         sample = result.sample
         assert [[span.version for span in call.spans] for call in sample.weight_versions] == [["7"], ["8"]]
-        first, second = sample.weight_versions[0].spans[0], sample.weight_versions[1].spans[0]
+        first_call, second_call = sample.weight_versions
+        first, second = first_call.spans[0], second_call.spans[0]
         n1 = len(TOKENIZER.encode(S.FIRST_RESPONSE, add_special_tokens=False))
         n2 = len(TOKENIZER.encode(S.SECOND_RESPONSE, add_special_tokens=False))
         assert (first.abs_end - first.abs_start, second.abs_end - second.abs_start) == (n1, n2)
         assert first.abs_start == len(S.FIRST_PROMPT_TOKEN_IDS)
         assert first.abs_end < second.abs_start
         assert second.abs_end == len(sample.tokens)
+        assert (first_call.output_start, second_call.output_start) == (first.abs_start, second.abs_start)
+        assert first_call.prefill_spans == [
+            WeightVersionSpan("6", 0, 1),
+            WeightVersionSpan("7", 1, len(S.FIRST_PROMPT_TOKEN_IDS)),
+        ]
+        assert second_call.prefill_spans == [
+            WeightVersionSpan("6", 0, 1),
+            WeightVersionSpan("8", 1, second.abs_start),
+        ]
+        sample.validate()
 
     def test_partial_rollout_not_supported(self, variant, generation_env):
         generation_env.args.partial_rollout = True

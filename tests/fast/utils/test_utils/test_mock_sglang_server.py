@@ -222,6 +222,22 @@ class TestGenerateEndpoint:
                 },
             }
 
+    def test_generate_forwards_prefill_weight_version_spans_in_meta_info(self):
+        """Prompt KV version spans set on the process result reach the generate meta_info verbatim."""
+        spans = [{"version": "1", "start": 0, "end": 2}, {"version": "2", "start": 2, "end": 3}]
+
+        def process_fn(_: str) -> ProcessResult:
+            return ProcessResult(text="ok", meta_info=ProcessResultMetaInfo(prefill_weight_versions=spans))
+
+        with with_mock_server(process_fn=process_fn) as server:
+            response = requests.post(
+                f"{server.url}/generate",
+                json={"input_ids": [1, 2, 3], "sampling_params": {}, "return_logprob": True},
+                timeout=5.0,
+            )
+
+        assert response.json()["meta_info"]["prefill_weight_versions"] == spans
+
     def test_finish_reason_length(self):
         def process_fn(_: str) -> ProcessResult:
             return ProcessResult(text="truncated output", finish_reason="length")
@@ -300,6 +316,24 @@ class TestChatCompletionsEndpoint:
         assert meta_info["weight_versions"] == spans
         assert "weight_version" not in meta_info
         assert meta_info["completion_tokens"] == len(meta_info["output_token_logprobs"])
+
+    def test_chat_completions_forwards_prefill_weight_version_spans_in_meta_info(self):
+        """Prompt KV version spans set on the process result reach the chat choice's meta_info verbatim."""
+        spans = [{"version": "1", "start": 0, "end": 5}, {"version": "2", "start": 5, "end": 9}]
+
+        def process_fn(_: str) -> ProcessResult:
+            return ProcessResult(text="one", meta_info=ProcessResultMetaInfo(prefill_weight_versions=spans))
+
+        with with_mock_server(process_fn=process_fn) as server:
+            response = requests.post(
+                f"{server.url}/v1/chat/completions",
+                json={"model": "test", "messages": [{"role": "user", "content": "count"}]},
+                timeout=5.0,
+            )
+            meta_info = response.json()["choices"][0]["meta_info"]
+
+        assert meta_info["prefill_weight_versions"] == spans
+        assert "weight_versions" not in meta_info
 
     def test_with_tool_calls(self):
         tool_call_response = 'Let me check for you.\n<tool_call>\n{"name": "get_year", "arguments": {}}\n</tool_call>'

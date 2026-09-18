@@ -1,6 +1,7 @@
 import itertools
 import logging
 
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import Sample
 
@@ -44,6 +45,7 @@ def postprocess_rollout_data(args, data, train_parallel_config):
             if trim_len == 0:
                 raise ValueError(f"Not enough samples {len(data)} for global_batch_size {global_batch_size}")
             origin_data_length = len(data)
+            SampleOwnershipRecorder.log_dropped_groups(args=args, before=data, after=data[:trim_len], reason="trim")
             data = data[:trim_len]
             logger.info(f"trim number of samples from {origin_data_length} to {trim_len}")
         logger.info(f"Final collected {len(data)} samples from rollout to train")

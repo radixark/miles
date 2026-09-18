@@ -73,7 +73,7 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-decode-log-interval 1000 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --no-enable-sample-ownership-checker "
 
     misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {NUM_GPUS} " "--colocate "
 

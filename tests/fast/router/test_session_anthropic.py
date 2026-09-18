@@ -91,8 +91,9 @@ def anthropic_env_loose(request):
         yield SimpleNamespace(version=request.param, **vars(env))
 
 
-def _create_session(url: str) -> str:
-    return requests.post(f"{url}/sessions", timeout=5.0).json()["session_id"]
+def _create_session(url: str, *, extra_key: str | None = None) -> str:
+    body = {} if extra_key is None else {"extra_key": extra_key}
+    return requests.post(url=f"{url}/sessions", json=body, timeout=5.0).json()["session_id"]
 
 
 def _post_messages(url: str, session_id: str, payload: dict) -> requests.Response:
@@ -882,6 +883,36 @@ def _tool_turn2_payload(tool_use: dict) -> dict:
 
 
 class TestAnthropicToolFlow:
+    def test_keyed_multi_turn_messages_override_every_client_key(self, anthropic_env: SimpleNamespace) -> None:
+        """Every Anthropic turn of a v2 session forwards the session key instead of the client's key."""
+        if anthropic_env.version == "v1":
+            pytest.skip("session server v1 does not support the KV cache namespace")
+
+        key = "train:-:7"
+        session_id = _create_session(url=anthropic_env.url, extra_key=key)
+        request_start = len(anthropic_env.backend.request_log)
+        messages = [{"role": "user", "content": "hello"}]
+
+        for client_key in ("client-key", "another-client-key"):
+            response = _post_messages(
+                url=anthropic_env.url,
+                session_id=session_id,
+                payload=_payload(messages=messages, extra_key=client_key),
+            )
+            assert response.status_code == 200
+            assert response.json()["content"] == [{"type": "text", "text": "anthropic-echo"}]
+            messages = [
+                *messages,
+                {"role": "assistant", "content": response.json()["content"]},
+                {"role": "user", "content": "continue"},
+            ]
+
+        records = _records(url=anthropic_env.url, session_id=session_id)
+        assert len(records) == 2
+        first_ids = records[0]["request"]["input_ids"]
+        assert records[1]["request"]["input_ids"][: len(first_ids)] == first_ids
+        assert [body["extra_key"] for body in anthropic_env.backend.request_log[request_start:]] == [key] * 2
+
     def test_multi_turn_tool_flow_reuses_stored_prefix(self, anthropic_env_loose):
         url = anthropic_env_loose.url
         session_id = _create_session(url)

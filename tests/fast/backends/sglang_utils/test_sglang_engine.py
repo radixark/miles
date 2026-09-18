@@ -11,12 +11,13 @@ pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_engine import _assert_launch_gate_served, compute_engine_launch_cmd
 
 
 def _cmd(
     *,
-    worker_type: str = "regular",
+    worker_type: WorkerType = WorkerType.REGULAR,
     args=None,
     interpreter_prefix: list[str] | None = None,
     addr_overrides: dict | None = None,
@@ -96,7 +97,7 @@ class TestComputeEngineLaunchCmd:
 
     def test_a_prefill_command_carries_the_bootstrap_port(self):
         """PD-disaggregation prefill flags survive into the command."""
-        cmd = _cmd(worker_type="prefill", addr_overrides=dict(disaggregation_bootstrap_port=20090))
+        cmd = _cmd(worker_type=WorkerType.PREFILL, addr_overrides=dict(disaggregation_bootstrap_port=20090))
         parsed = parse_server_args_argv(shlex.split(cmd)[3:])
         assert parsed.disaggregation_mode == "prefill"
         assert parsed.disaggregation_bootstrap_port == 20090

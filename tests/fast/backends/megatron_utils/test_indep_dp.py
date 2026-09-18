@@ -152,6 +152,42 @@ class TestAllreduceGradsAndLossesAcrossReplicas:
         assert "op=cross_cell phase=end kind=grad_allreduce" in messages[1]
         assert "this_rank_ok=true consensus_ok=true" in messages[1]
 
+    def test_training_metadata_is_collected_inside_the_failure_boundary(self, megatron_env) -> None:
+        """FT metadata collection participates in the same failure result as gradient reduction."""
+        pg = SimpleNamespace(errored=lambda: None)
+        util = FakeCrossCellPGUtil()
+        calls = []
+        args = SimpleNamespace(calculate_per_token_loss=False)
+
+        with patch.object(indep_dp.GeneralPGUtil, "create", return_value=util):
+            consensus, _ = indep_dp.allreduce_grads_and_losses_across_replicas(
+                args,
+                [_make_model_chunk()],
+                _make_parallel_state(pg),
+                losses_reduced=[],
+                collect_training_metadata=lambda: calls.append("collected"),
+            )
+
+        assert consensus is True
+        assert calls == ["collected"]
+
+    def test_training_metadata_failure_discards_the_step(self, megatron_env) -> None:
+        """A failed metadata collective cannot leave a successful optimizer step."""
+        pg = SimpleNamespace(errored=lambda: None)
+        util = FakeCrossCellPGUtil()
+        args = SimpleNamespace(calculate_per_token_loss=False)
+
+        with patch.object(indep_dp.GeneralPGUtil, "create", return_value=util):
+            consensus, _ = indep_dp.allreduce_grads_and_losses_across_replicas(
+                args,
+                [_make_model_chunk()],
+                _make_parallel_state(pg),
+                losses_reduced=[],
+                collect_training_metadata=lambda: (_ for _ in ()).throw(RuntimeError("metadata gather failed")),
+            )
+
+        assert consensus is False
+
     def test_a_raising_allreduce_emits_an_ft_tagged_fail_record(self, megatron_env, caplog) -> None:
         """A synchronous collective failure is reported as an ft-tagged fail record and discards the step."""
         pg = SimpleNamespace(errored=lambda: None)

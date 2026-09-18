@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -103,12 +104,12 @@ class TestAddSamples:
 
 
 class TestLoad:
-    def test_load_warns_when_no_adapter_source_exists(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_load_warns_when_no_adapter_source_exists(self, caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
         """A run serving no adapter must say that it restored no dataset state."""
         source = MultiLoRAAsyncDataSource(Namespace())
 
         with caplog.at_level(logging.WARNING, logger="miles.rollout.multi_lora.data_source"):
-            source.load()
+            source.load(tmp_path)
 
         assert "this run serves no adapter, so no dataset state is restored" in caplog.messages
 

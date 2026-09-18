@@ -7,7 +7,6 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
@@ -166,6 +165,7 @@ class TrainerInfo(NamedTuple):
     handle: BaseWorkerHandle
     restored_rollout_id: int
     start_rollout_id: int
+    restored_trained_iteration: bool
 
 
 # TODO: move (when reorganizing files)
@@ -182,22 +182,22 @@ async def take_over_trainers(args, *, handles: dict[str, BaseWorkerHandle]) -> b
     await wait_external_trainers(args, handles=handles)
     resumed = await wait_trainers_idle(handles)
 
-    if resumed and not _trainer_has_checkpoint(args):
-        event_logger_checkpoint.discard(args)
+    event_logger_checkpoint.restore(args)
 
     return resumed
 
 
-def _trainer_has_checkpoint(args) -> bool:
-    assert args.megatron_config is None, "a multi policy run's base --load holds no tracker to read"
-    return read_checkpoint_tracker_iteration(args.requested_load) is not None
-
-
 # TODO: move (when reorganizing files)
 async def create_training_model(args, *, handle: BaseWorkerHandle, trainer_id: str, resumed: bool) -> TrainerInfo:
-    restored_rollout_ids = await trainer_init_or_load_state(handle, args, trainer_id=trainer_id, resumed=resumed)
+    load_states = await trainer_init_or_load_state(handle, args, trainer_id=trainer_id, resumed=resumed)
+    restored_rollout_ids = [state.start_rollout_id for state in load_states]
     assert len(set(restored_rollout_ids)) == 1, f"trainer {trainer_id!r} restored {restored_rollout_ids}"
     [restored_rollout_id] = set(restored_rollout_ids)
+    restored_trained_iterations = [state.restored_trained_iteration for state in load_states]
+    assert (
+        len(set(restored_trained_iterations)) == 1
+    ), f"trainer {trainer_id!r} disagrees about having restored a trained iteration: {restored_trained_iterations}"
+    [restored_trained_iteration] = set(restored_trained_iterations)
 
     if (x := args.start_rollout_id) is None:
         start_rollout_id = restored_rollout_id
@@ -209,7 +209,12 @@ async def create_training_model(args, *, handle: BaseWorkerHandle, trainer_id: s
             )
         start_rollout_id = x
 
-    return TrainerInfo(handle=handle, restored_rollout_id=restored_rollout_id, start_rollout_id=start_rollout_id)
+    return TrainerInfo(
+        handle=handle,
+        restored_rollout_id=restored_rollout_id,
+        start_rollout_id=start_rollout_id,
+        restored_trained_iteration=restored_trained_iteration,
+    )
 
 
 # TODO: move (when reorganizing files)
@@ -250,7 +255,8 @@ async def create_training_models(
     args.start_rollout_id = actor_info.start_rollout_id
 
     await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
-    await rollout_executor.load(args.start_rollout_id - 1)
+    if args.start_rollout_id > 0 and actor_info.restored_trained_iteration:
+        await rollout_executor.load(args.start_rollout_id - 1)
 
     return actor_info.handle, critic_info.handle if critic_info is not None else None
 
@@ -324,6 +330,8 @@ async def update_weights(
 async def _maybe_log_inference_engine_weight_checksums(
     args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None, trainer_model_id: str | None
 ) -> None:
+    if not args.log_inference_engine_weight_checksums:
+        return
     if not is_event_logger_initialized():
         return
     if args.debug_train_only or args.debug_rollout_only:

@@ -2,12 +2,12 @@ import asyncio
 import ipaddress
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -111,7 +111,7 @@ class _ExternalEngineInfo:
     url: str
     host: str
     port: int
-    worker_type: Literal["regular", "prefill", "decode"]
+    worker_type: WorkerType
     num_gpus: int
     disaggregation_bootstrap_port: int | None
 
@@ -131,7 +131,7 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                 workers_hash=engine.url,
                 meta=dict(
                     model_id=_EXTERNAL_MODEL_ID,
-                    worker_type=engine.worker_type,
+                    worker_type=engine.worker_type.value,
                     num_gpus_per_engine=engine.num_gpus,
                     gpu_offset=gpu_offset,
                     sglang_api_key=args.sglang_api_key,
@@ -219,7 +219,7 @@ async def _discover_external_engine(url: str, *, api_key: str | None) -> _Extern
         url=url,
         host=addr.host,
         port=addr.port,
-        worker_type=_infer_worker_type(server_info),
+        worker_type=WorkerType.from_server_info(server_info),
         num_gpus=int(server_info["internal_states"][0]["world_size"]),
         disaggregation_bootstrap_port=(
             int(x) if (x := server_info.get("disaggregation_bootstrap_port")) is not None else None
@@ -244,13 +244,6 @@ async def _fetch_server_info_with_retry(
         raise TimeoutError(f"External engine {url} did not answer /server_info within {timeout_seconds}s") from e
 
 
-def _infer_worker_type(server_info: dict[str, Any]) -> Literal["regular", "prefill", "decode"]:
-    mode = server_info.get("disaggregation_mode")
-    if mode in ("prefill", "decode"):
-        return mode
-    return "regular"
-
-
 # ============================== args cross-check ==============================
 
 
@@ -269,7 +262,7 @@ def _assert_engines_match_args(args: Any, *, engines: list[_ExternalEngineInfo])
         f"{args.rollout_num_gpus_per_engine} (--rollout-num-gpus-per-engine)"
     )
 
-    pd_engine_urls = [engine.url for engine in engines if engine.worker_type != "regular"]
+    pd_engine_urls = [engine.url for engine in engines if engine.worker_type != WorkerType.REGULAR]
     assert bool(pd_engine_urls) == args.rollout_external_router_pd, (
         f"the router is launched in PD mode iff --rollout-external-router-pd is set "
         f"({args.rollout_external_router_pd}), but the engines reporting prefill/decode are "
@@ -277,8 +270,8 @@ def _assert_engines_match_args(args: Any, *, engines: list[_ExternalEngineInfo])
     )
 
     assert not args.rollout_external_router_pd or {engine.worker_type for engine in engines} == {
-        "prefill",
-        "decode",
+        WorkerType.PREFILL,
+        WorkerType.DECODE,
     }, (
         f"--rollout-external-router-pd needs prefill and decode engines, got "
         f"{[(engine.url, engine.worker_type) for engine in engines]}"
