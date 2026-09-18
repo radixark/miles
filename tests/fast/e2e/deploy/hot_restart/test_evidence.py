@@ -3,11 +3,14 @@ from pathlib import Path
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
     CHECKPOINT_TRACKER_FILENAME,
+    HotRestartEvidence,
+    HotRestartRecord,
     RunProgress,
     read_finished_rollout_ids,
     read_last_saved_iteration,
     read_run_progress,
 )
+from tests.fast.e2e.deploy.hot_restart.cluster_facts import RELEASE, TRAINER, cluster_snapshot, pod_fact, workload_fact
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
@@ -87,3 +90,23 @@ class TestReadRunProgress:
         progress = read_run_progress(checkpoint_dir=tmp_path / "ckpt", events_dir=tmp_path / "events")
 
         assert progress == RunProgress(last_saved_iteration=1, last_finished_rollout_id=2)
+
+
+class TestHotRestartEvidence:
+    def test_what_the_target_side_observed_survives_to_the_comparison(self, tmp_path):
+        """The compare step runs as a subcommand of its own and cannot watch the run itself."""
+        evidence = HotRestartEvidence(
+            records=(HotRestartRecord(index=0, saved_iteration_at_trigger=1, frozen_rollout_id=2),),
+            snapshots=(
+                cluster_snapshot(pods=[pod_fact(f"{TRAINER}-0", uid="uid-t")], workloads=[workload_fact(TRAINER)]),
+            ),
+            release=RELEASE,
+        )
+        evidence.write(dump_dir=str(tmp_path))
+
+        assert HotRestartEvidence.load(dump_dir=str(tmp_path)) == evidence
+
+    def test_comparing_without_a_target_run_fails_loudly(self, tmp_path):
+        """A missing file would otherwise read as a run that redid nothing."""
+        with pytest.raises(AssertionError):
+            HotRestartEvidence.load(dump_dir=str(tmp_path))
