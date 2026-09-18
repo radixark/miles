@@ -119,17 +119,17 @@ def _gather_module_names(local_names):
     return set().union(*names_by_rank)
 
 
-def configure_lora_targets(args):
+def resolve_hf_lora_targets_from_bridge(hf_checkpoint, target_modules, *, canonical, exclude_modules):
     # Bridge is optional outside the Megatron backend.
     from megatron.bridge import AutoBridge
 
-    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    bridge = AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
     model_bridge = bridge._model_bridge
     model_bridge.hf_pretrained = bridge.hf_pretrained
     candidates = resolve_megatron_lora_targets(
-        args.target_modules,
+        target_modules,
         model_bridge.mapping_registry().get_all_mappings(),
-        canonical=args.lora_type == "canonical_lora",
-        exclude_modules=args.exclude_modules,
+        canonical=canonical,
+        exclude_modules=exclude_modules,
     )
-    args.hf_lora_targets = sorted({target for module in candidates.values() for target in module.hf_modules})
+    return sorted({target for module in candidates.values() for target in module.hf_modules})

@@ -3157,9 +3157,14 @@ def miles_validate_args(args):
     if is_lora_enabled(args):
         if args.megatron_to_hf_mode == "bridge":
             # Resolving before actor creation gives trainer and engine the same HF selection.
-            from miles.backends.megatron_utils.lora.target_modules import configure_lora_targets
+            from miles.backends.megatron_utils.lora.target_modules import resolve_hf_lora_targets_from_bridge
 
-            configure_lora_targets(args)
+            args.hf_lora_targets = resolve_hf_lora_targets_from_bridge(
+                args.hf_checkpoint,
+                args.target_modules,
+                canonical=args.lora_type == "canonical_lora",
+                exclude_modules=args.exclude_modules,
+            )
         else:
             layout = get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
             args.hf_lora_targets = exclude_hf_lora_targets(
