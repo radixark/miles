@@ -148,6 +148,31 @@ async def batched_custom_rm(args, samples: list[Sample]) -> list[float]:
 Prefixing any of them with `boxed_` (for example `boxed_math`) extracts `\boxed{}`
 from the response before grading.
 
+### Multiple reward functions
+
+Use `--reward-funcs` with a comma-separated list of built-in names or dotted custom
+function paths, and optionally `--reward-weights` in the same order:
+
+```bash
+--reward-funcs math,my_pkg.rewards.format_score --reward-weights 1.0,0.25
+```
+
+Custom functions use `async def format_score(args, sample: Sample, **kwargs) -> float | None`.
+All functions run concurrently per sample. The result is the weighted sum, with
+weights defaulting to `1.0` for every function. Returning `None` skips that function
+for that sample without rescaling the remaining weights; if all return `None`, the
+reward is `0.0`. Unweighted values (including `None`) are stored in
+`sample.metadata["reward_components"]`, keyed by the configured name or dotted path,
+for logging.
+
+For dict-returning built-ins such as `dapo`, set `--reward-key` (for example,
+`--reward-key score`) to select each component's numeric value; the combined reward is
+then stored as `{reward_key: total}` so every `--reward-key` consumer keeps working, and as
+a plain float otherwise. `--reward-funcs` cannot be combined with `--rm-type` or
+`--custom-rm-path`; the number of weights must match the number of functions. A per-sample
+`reward_spec` still overrides the composite for that sample. With `--group-rm`, these
+functions still receive one sample at a time.
+
 ### `--custom-reward-post-process-path`
 
 Hook to normalize rewards differently from the default GRPO normalization.

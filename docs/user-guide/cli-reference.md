@@ -272,6 +272,8 @@ Sections mirror the launch-script argument groups.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--rm-type` | str | – | Built-in reward: `math`, `dapo`, `deepscaler`, `gemma_math`, `f1`, `gpqa`, `ifbench`, `remote_rm`, `random`, `deterministic_random`. A `boxed_` prefix (e.g. `boxed_math`) extracts `\boxed{}` from the response before grading. |
+| `--reward-funcs` | comma-separated str | – | Built-in reward names or dotted custom function paths, scored concurrently per sample and summed with weights. `None` skips a component; all `None` gives `0.0`. Mutually exclusive with `--rm-type` and `--custom-rm-path`. See [Customization](/user-guide/customization#multiple-reward-functions). |
+| `--reward-weights` | comma-separated floats | all `1.0` | Weights in `--reward-funcs` order; requires that flag and a matching number of entries. |
 | `--rm-url` | str | – | Endpoint when `--rm-type remote_rm`. |
 | `--group-rm` | flag | off | Batched reward computation. |
 | `--custom-rm-path` | str | – | Custom reward function (see [Customization](/user-guide/customization)). |
