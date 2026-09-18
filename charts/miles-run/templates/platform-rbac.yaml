@@ -1,0 +1,56 @@
+{{- $context := . }}
+{{- $read := .Values.run.objectNames.platformRead }}
+{{- $readDelete := .Values.run.objectNames.platformReadDelete }}
+{{- $levels := list
+      (dict "access" "read" "name" $read
+            "used" (include "miles-run.accountUsedByAWorker" (dict "context" . "name" $read)))
+      (dict "access" "read-delete" "name" $readDelete
+            "used" (or .Values.run.orchestrator.command
+                       (include "miles-run.accountUsedByAWorker" (dict "context" . "name" $readDelete)))) }}
+{{- range $level := $levels }}
+{{- if $level.used }}
+{{- $name := $level.name }}
+{{- $labels := dict "context" $context "component" (printf "platform-%s" $level.access) }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ $context.Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ $context.Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: {{ if eq $level.access "read" }}["get", "list", "watch"]{{ else }}["get", "list", "watch", "delete"]{{ end }}
+  {{- if and (ne $level.access "read") (include "miles-run.autoUninstallEnabled" $context) }}
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ $context.Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name | quote }}
+    namespace: {{ $context.Release.Namespace | quote }}
+{{- end }}
+{{- end }}

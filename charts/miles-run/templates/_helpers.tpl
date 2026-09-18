@@ -6,6 +6,15 @@
 {{- include "miles-common.selectorLabels" . }}
 {{- end }}
 
+{{- define "miles-run.accountUsedByAWorker" -}}
+{{- $name := .name -}}
+{{- range $worker := .context.Values.run.staticWorkers -}}
+{{- if eq (default "" $worker.serviceAccountName) $name -}}
+used
+{{- end -}}
+{{- end -}}
+{{- end }}
+
 {{- define "miles-run.podDefaults" -}}
 {{- include "miles-run.podDefaultsFor" (dict "context" . "gated" false) }}
 {{- end }}

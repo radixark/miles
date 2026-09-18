@@ -13,6 +13,7 @@ from tests.fast.charts.utils import (
 )
 
 ORCHESTRATOR = "myrun-miles-run-orchestrator"
+ORCHESTRATOR_ACCOUNT = "myrun-miles-run-platform-read-delete"
 WRAPPER_MODULE = "miles.utils.external_utils.command_utils.helm_backend.orchestrator.wrapper"
 
 
@@ -98,17 +99,17 @@ class TestOrchestratorIdentity:
     def test_grants_the_orchestrator_the_pod_rights_observation_and_healing_need(self):
         """Healing a cell means deleting its pods, and observing one means watching them."""
         objects = render_run()
-        role = named_object(objects, "Role", ORCHESTRATOR)
-        binding = named_object(objects, "RoleBinding", ORCHESTRATOR)
+        role = named_object(objects, "Role", ORCHESTRATOR_ACCOUNT)
+        binding = named_object(objects, "RoleBinding", ORCHESTRATOR_ACCOUNT)
 
         assert role["rules"] == [
             {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch", "delete"]},
             {"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create"]},
         ]
-        assert binding["roleRef"]["name"] == ORCHESTRATOR
-        assert binding["subjects"] == [dict(kind="ServiceAccount", name=ORCHESTRATOR, namespace=NAMESPACE)]
+        assert binding["roleRef"]["name"] == ORCHESTRATOR_ACCOUNT
+        assert binding["subjects"] == [dict(kind="ServiceAccount", name=ORCHESTRATOR_ACCOUNT, namespace=NAMESPACE)]
 
     def test_runs_the_orchestrator_under_the_account_that_binding_names(self):
         """A role bound to an account nobody runs as grants nothing at all."""
-        assert pod_spec_of(render_run(), "StatefulSet", ORCHESTRATOR)["serviceAccountName"] == ORCHESTRATOR
-        assert named_object(render_run(), "ServiceAccount", ORCHESTRATOR)["metadata"]["namespace"] == NAMESPACE
+        assert pod_spec_of(render_run(), "StatefulSet", ORCHESTRATOR)["serviceAccountName"] == ORCHESTRATOR_ACCOUNT
+        assert named_object(render_run(), "ServiceAccount", ORCHESTRATOR_ACCOUNT)["metadata"]["namespace"] == NAMESPACE
