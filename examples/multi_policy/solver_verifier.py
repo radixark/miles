@@ -1,11 +1,14 @@
 # See tests/e2e/short/test_multi_policy_solver_verifier_gsm8k.py for an end-to-end run of this example.
+import argparse
 import dataclasses
 import re
 from enum import Enum
+from typing import Any
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.single_turn import generate as single_turn_generate
+from miles.utils.iter_utils import group_by
 from miles.utils.types import Sample
 
 _AGREE_MARKER = "AGREE"
@@ -66,6 +69,25 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     solver_sample.trainer_model_id = solver_model_id
     verifier_sample.trainer_model_id = verifier_model_id
     return GenerateFnOutput(samples=[solver_sample, verifier_sample])
+
+
+def split_eval_data_by_policy(
+    rollout_id: int, args: argparse.Namespace, data: dict[str, dict[str, Any]], extra_metrics: dict[str, Any] | None
+) -> bool:
+    reward_key = args.eval_reward_key or args.reward_key
+    for name in list(data):
+        entry = data.pop(name)
+        for model_id, samples in group_by(entry["samples"], lambda sample: sample.trainer_model_id).items():
+            assert model_id is not None, (
+                f"an eval sample of dataset {name!r} carries no trainer_model_id, so its reward cannot be "
+                f"attributed to a policy; the generate function must stamp every sample it returns"
+            )
+            data[f"{name}/{model_id}"] = dict(
+                rewards=[sample.reward[reward_key] if sample.reward is not None else None for sample in samples],
+                truncated=[sample.status == Sample.Status.TRUNCATED for sample in samples],
+                samples=samples,
+            )
+    return False
 
 
 def _compute_verifier_reward(*, solver_correct: bool, verdict: _Verdict | None, verifier_correct: bool) -> float:
