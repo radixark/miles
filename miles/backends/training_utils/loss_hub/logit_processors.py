@@ -258,7 +258,7 @@ def get_log_probs_and_entropy(
             entropy_requires_grad=entropy_requires_grad,
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
-            vocab_size=args.backend.vocab_size,
+            vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
             sampling_mask=sampling_mask,
             temperature=1.0 if args.true_on_policy_mode else args.rollout_temperature,
             debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,
