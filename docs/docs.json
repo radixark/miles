@@ -414,16 +414,6 @@
    "permanent": true
   },
   {
-   "source": "/hardware/amd",
-   "destination": "/hardware-platforms/amd-gpus",
-   "permanent": true
-  },
-  {
-   "source": "/hardware-platforms/amd",
-   "destination": "/hardware-platforms/amd-gpus",
-   "permanent": true
-  },
-  {
    "source": "/advanced/fp8-low-precision",
    "destination": "/advanced/low-precision",
    "permanent": true
