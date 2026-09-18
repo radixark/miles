@@ -358,16 +358,10 @@
    },
    {
     "tab": "Hardware",
-    "groups": [
-     {
-      "group": "Hardware Platforms",
-      "icon": "microchip",
-      "pages": [
-       "hardware-platforms/overview",
-       "hardware-platforms/nvidia-gpus",
-       "hardware-platforms/amd-gpus"
-      ]
-     }
+    "pages": [
+     "hardware-platforms/overview",
+     "hardware-platforms/nvidia-gpus",
+     "hardware-platforms/amd-gpus"
     ]
    }
   ]
