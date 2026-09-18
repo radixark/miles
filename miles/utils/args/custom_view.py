@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from typing import Any
 
 from pydantic import ConfigDict
@@ -13,15 +14,17 @@ class ImmutableNamespace(BaseConfig):
 
 
 def compute_custom_function_config(
-    args: BaseLeafConfig,
+    args: BaseLeafConfig | ImmutableNamespace,
     function: CustomFunctionConfig,
     *runtime_sources: dict[str, Any],
+    nested_functions: Iterable[CustomFunctionConfig | None] = (),
 ) -> ImmutableNamespace:
     sources = [dict(args)]
     if isinstance(args, TrainerConfig):
         sources.append(vars(args.backend))
-    if (config := function.config) is not None:
-        sources.append(dict(config))
+    for hook in (function, *nested_functions):
+        if hook is not None and (config := hook.config) is not None:
+            sources.append(dict(config))
     return ImmutableNamespace.model_validate(_merge_dicts(*sources, *runtime_sources))
 
 
