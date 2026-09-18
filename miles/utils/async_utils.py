@@ -5,6 +5,8 @@ import logging
 import threading
 import traceback
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from contextlib import AsyncExitStack
+from types import TracebackType
 from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,8 @@ __all__ = [
     "eager_create_task",
     "gather_and_raise_first",
     "maybe_await",
+    "with_disposer",
+    "Disposer",
 ]
 
 _T = TypeVar("_T")
@@ -173,3 +177,36 @@ async def gather_and_raise_first(
 
 async def maybe_await(value: Awaitable[_T] | _T) -> _T:
     return await value if inspect.isawaitable(value) else value
+
+
+async def with_disposer(fn: Callable[..., Awaitable[_T]], *args: Any, **kwargs: Any) -> _T:
+    async with Disposer() as disposer:
+        return await fn(*args, disposer=disposer, **kwargs)
+
+
+class Disposer:
+    def __init__(self) -> None:
+        self._stack = AsyncExitStack()
+
+    async def __aenter__(self) -> "Disposer":
+        await self._stack.__aenter__()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        exc_traceback: TracebackType | None,
+    ) -> bool:
+        return await self._stack.__aexit__(exc_type, exc, exc_traceback)
+
+    def add(self, *items: Any) -> None:
+        for item in items:
+            if item is None:
+                continue
+            teardown = item.dispose if hasattr(item, "dispose") else item
+            assert callable(teardown), teardown
+            if inspect.iscoroutinefunction(teardown):
+                self._stack.push_async_callback(teardown)
+            else:
+                self._stack.callback(teardown)
