@@ -1197,9 +1197,15 @@ class TestCellStop:
         cell = manager._pools["engine"].cells[0]
         fake_ray_cluster.kill_error = RuntimeError("kill failed")
 
-        await cell.stop()
+        with pytest.raises(RuntimeError, match="kill failed"):
+            await cell.stop()
 
         assert fake_ray_cluster.events.count(EVENT_KILL) == 2
+        # Failed stops must retain owned handles for a later retry.
+        assert cell.actors is not None
+        fake_ray_cluster.kill_error = None
+        await cell.stop()
+        assert all(handle.killed for handle in fake_ray_cluster.handles)
         assert cell.actors is None
 
 

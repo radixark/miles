@@ -4,6 +4,11 @@ from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 
 def launch_worker_manager(args):
+    """Create a new job-owned manager; callers must dispose it after use.
+
+    This never attaches to an existing manager. Only workers launched from the
+    computed specs belong to it; external/placeholder engines are not adopted.
+    """
     # TODO: after k8s native mode is created, early return when in that mode
     return _launch_ray_worker_manager(args)
 

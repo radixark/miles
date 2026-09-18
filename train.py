@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 
+import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
@@ -21,28 +22,116 @@ from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 
 logger = logging.getLogger(__name__)
 
+_DISPOSE_TIMEOUT_SECONDS = 60.0
+# Keep timed-out tasks alive until they settle. This bounds driver cleanup, not
+# asyncio.run() shutdown if a disposer blocks the loop or refuses cancellation.
+_pending_dispose_tasks: set[asyncio.Task] = set()
+
+
+def _observe_dispose_result(task):
+    _pending_dispose_tasks.discard(task)
+    if not task.cancelled():
+        # A timed-out disposer may finish later. Retrieve its exception so it
+        # does not become an unhandled task exception during loop shutdown.
+        task.exception()
+
+
+async def _dispose_component(name, component):
+    if name in ("rollout_executor", "worker_manager"):
+        await component.dispose.remote()
+        if name == "worker_manager":
+            # Children must finish shutdown before their owning manager dies.
+            # Use the handle returned by launch, never a global name lookup.
+            ray.kill(component, no_restart=True)
+    else:
+        await component.dispose()
+
+
+async def _dispose_training_components(rollout_executor, inference_controller, actor_model, critic_model, worker_manager):
+    """Release controllers, then the actual workers owned by this job."""
+    first_error = None
+    # Preserve the normal shutdown order: close the executor's data/eval
+    # backends before unregistering inference services and stopping watchers.
+    for name, component in (
+        ("rollout_executor", rollout_executor),
+        ("inference_controller", inference_controller),
+        ("actor_model", actor_model),
+        ("critic_model", critic_model),
+        ("worker_manager", worker_manager),
+    ):
+        if component is None:
+            continue
+        task = asyncio.create_task(_dispose_component(name, component))
+        _pending_dispose_tasks.add(task)
+        task.add_done_callback(_observe_dispose_result)
+        try:
+            done, _ = await asyncio.wait([task], timeout=_DISPOSE_TIMEOUT_SECONDS)
+            if not done:
+                task.cancel()
+                # wait_for() waits for cancellation acknowledgement, which can
+                # hang and prevent all remaining components from being disposed.
+                if name == "worker_manager":
+                    logger.error("Worker teardown timed out; manager was not killed and worker children may remain")
+                raise TimeoutError(f"Disposing {name} timed out after {_DISPOSE_TIMEOUT_SECONDS}s")
+            task.result()
+        except (Exception, asyncio.CancelledError) as error:
+            logger.warning("Failed to dispose %s; continuing cleanup", name, exc_info=True)
+            if first_error is None:
+                first_error = error
+    return first_error
+
 
 async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
-    _worker_manager = launch_worker_manager(args)
-    object_store.init_instance(args, contribute_segment=False)
-    init_tracking(args)
-
     if args.colocate_memory_peak_device == "gpu":
         assert (
             args.offload_train and args.offload_rollout
         ), "--colocate-memory-peak-device gpu requires --offload-train and --offload-rollout"
         assert not args.use_critic, "--colocate-memory-peak-device gpu is not wired for the critic path"
 
-    # create the rollout manager, with sglang engines inside.
-    # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+    worker_manager = inference_controller = rollout_executor = actor_model = critic_model = None
+    original_error = None
+    try:
+        worker_manager = launch_worker_manager(args)
+        object_store.init_instance(args, contribute_segment=False)
+        init_tracking(args)
+        # Initialize rollout first to calculate num_rollout. Only objects returned
+        # by these factories are visible here; rollback of an object whose init
+        # fails inside a factory must be implemented by that factory itself.
+        inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+        actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
+        await _train_with_components(
+            args, inference_controller, rollout_executor, actor_model, critic_model, num_rollout_per_epoch
+        )
+    except BaseException as error:
+        original_error = error
+        raise
+    finally:
+        cleanup_task = asyncio.create_task(
+            _dispose_training_components(rollout_executor, inference_controller, actor_model, critic_model, worker_manager)
+        )
+        cancellation = None
+        # Defer even repeated cancellation until each known component has had a
+        # bounded cleanup attempt. Never replace the original training exception.
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
+        cleanup_error = cleanup_task.result()
+        if original_error is None:
+            if cancellation is not None:
+                raise cancellation
+            if cleanup_error is not None:
+                raise cleanup_error
 
-    # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
 
+async def _train_with_components(
+    args, inference_controller, rollout_executor, actor_model, critic_model, num_rollout_per_epoch
+):
     if args.api_server_port:
         start_api_server(
             args=args,
@@ -175,12 +264,9 @@ async def train(args):
             )
             break
 
+    # Drain only on normal completion; an exceptional exit must not wait for
+    # unrelated snapshot evals before attempting resource cleanup.
     await eval_dispatcher.drain()
-    await rollout_executor.dispose.remote()
-    await inference_controller.dispose()
-    await actor_model.dispose()
-    if critic_model is not None:
-        await critic_model.dispose()
 
 
 if __name__ == "__main__":

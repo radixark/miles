@@ -38,16 +38,35 @@ if TYPE_CHECKING:
 
 # TODO: unique name, maybe with args.run_uuid
 _ACTOR_NAME = "ray_worker_manager"
+_LAUNCH_ROLLBACK_TIMEOUT_SECONDS = 60.0
 
 
 class RayWorkerManager:
     def __init__(self):
         self.port_allocator = PortAllocator()
+        self._pools: dict[str, _PoolManager] = {}
+        self._closing = False
+        self._lifecycle_lock = asyncio.Lock()
+        self._start_task: asyncio.Task | None = None
 
     @staticmethod
     def launch(specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
-        ray.get(obj.init.remote(specs, pgs))
+        try:
+            ray.get(obj.init.remote(specs, pgs))
+        except BaseException:
+            # Only this newly created handle is owned here. Never resolve the
+            # well-known name on failure: it may belong to another Ray job.
+            try:
+                ray.get(obj.dispose.remote(), timeout=_LAUNCH_ROLLBACK_TIMEOUT_SECONDS)
+            except (Exception, asyncio.CancelledError):
+                logger.exception("Worker manager rollback failed; worker children may remain")
+            else:
+                try:
+                    ray.kill(obj, no_restart=True)
+                except Exception:
+                    logger.exception("Failed to kill the rolled-back worker manager")
+            raise
         return obj
 
     @staticmethod
@@ -55,6 +74,10 @@ class RayWorkerManager:
         return ray.get_actor(_ACTOR_NAME)
 
     async def init(self, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
+        if self._closing:
+            raise RuntimeError("Worker manager is closing; cannot initialize")
+        if self._pools:
+            raise RuntimeError("Worker manager is already initialized")
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
@@ -62,18 +85,44 @@ class RayWorkerManager:
         await self.start_cells([c.cell_id for c in self._all_cells()])
 
     async def start_cells(self, cell_ids: list[str]) -> None:
-        cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
-        try:
-            await _gather_or_raise([c.launch_actors() for c in cells])
-            await _gather_or_raise([c.alloc_ports() for c in cells])
-            await _gather_or_raise([c.post_setup() for c in cells])
-        except Exception:
-            logger.error(f"Starting cells {[c.cell_id for c in cells]} failed, rolling back", exc_info=True)
-            await asyncio.gather(*[c.stop() for c in cells], return_exceptions=True)
-            raise
+        async with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("Worker manager is closing; cannot start cells")
+            cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
+            self._start_task = asyncio.current_task()
+            try:
+                await _gather_or_raise([c.launch_actors() for c in cells])
+                await _gather_or_raise([c.alloc_ports() for c in cells])
+                await _gather_or_raise([c.post_setup() for c in cells])
+            except BaseException:
+                # dispose() may cancel startup, but must not cancel its rollback.
+                self._start_task = None
+                logger.error(f"Starting cells {[c.cell_id for c in cells]} failed, rolling back", exc_info=True)
+                await asyncio.gather(*[c.stop() for c in cells], return_exceptions=True)
+                raise
+            finally:
+                self._start_task = None
 
     async def stop_cells(self, cell_ids: list[str]) -> None:
-        await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
+        async with self._lifecycle_lock:
+            await _gather_or_raise([self._find_cell(cell_id).stop() for cell_id in cell_ids])
+
+    async def dispose(self) -> None:
+        """Permanently stop only workers created by this manager's specs.
+
+        Unlike controller disposal, this shuts down command process groups and
+        kills trainer actors by their owned handles. External/placeholder engines
+        are not in these pools. Keep the manager alive if a stop fails, so its
+        handles remain available for retry rather than abandoning worker children.
+        """
+        if not self._closing:
+            self._closing = True
+            if self._start_task is not None:
+                self._start_task.cancel()
+        # Cancel in-flight startup (e.g. a pending GPU allocation) and wait for
+        # its rollback. Late FT/API requests must not resurrect cells afterward.
+        async with self._lifecycle_lock:
+            await _gather_or_raise([cell.stop() for cell in self._all_cells()])
 
     def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
         cell = self._find_cell(cell_id)
@@ -202,7 +251,7 @@ class _CellManager(Generic[SpecT]):
         self.actors = None
 
     async def _for_all_actors(self, fn: Callable[[_BaseActorManager], Any]):
-        await asyncio.gather(*[fn(a) for a in self.actors])
+        await _gather_or_raise([fn(a) for a in self.actors])
 
     def get_info(self) -> CellInfo:
         return CellInfo(
@@ -311,13 +360,19 @@ class _BaseActorManager(Generic[SpecT]):
         if self.actor_handle is None:
             return
 
-        await self._shutdown_gracefully()
-
         try:
-            ray.kill(self.actor_handle)
-            logger.info(f"Killed actor at {self=}")
-        except Exception as e:
-            logger.warning(f"Failed to kill actor at {self=} ({e})")
+            await self._shutdown_gracefully()
+        finally:
+            # Cancellation of a shutdown RPC must not skip the exact-handle
+            # kill. Retain handles on failure so dispose() can be retried.
+            try:
+                ray.kill(self.actor_handle, no_restart=True)
+            except Exception:
+                logger.exception(f"Failed to kill actor at {self=}")
+                raise
+            else:
+                logger.info(f"Killed actor at {self=}")
+                self.actor_handle = None
 
     async def _shutdown_gracefully(self) -> None:
         pass
