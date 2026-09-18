@@ -32,7 +32,7 @@ def configure_tinker_args(args):
         args.target_modules is None and args.exclude_modules is None
     ), "Tinker uses --tinker-train-attn/mlp/unembed; --target-modules and --exclude-modules are not supported"
     modules = resolve_hf_lora_targets(
-        load_hf_config(args.hf_checkpoint).model_type,
+        load_hf_config(args.hf_checkpoint).to_dict(),
         train_attn=args.tinker_train_attn,
         train_mlp=args.tinker_train_mlp,
         train_unembed=args.tinker_train_unembed,

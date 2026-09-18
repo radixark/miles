@@ -35,7 +35,7 @@ _QKV = _mapping(
 
 
 def test_scoped_attention_excludes_mtp():
-    targets = resolve_hf_lora_targets("qwen3", train_attn=True, train_mlp=False, train_unembed=False)
+    targets = resolve_hf_lora_targets({"model_type": "qwen3"}, train_attn=True, train_mlp=False, train_unembed=False)
     output = _mapping("decoder.layers.*.self_attention.linear_proj.weight", "model.layers.*.self_attn.o_proj.weight")
     mtp = _mapping("mtp.layers.*.self_attention.linear_proj.weight", "mtp.layers.*.self_attn.o_proj.weight")
     candidates = resolve_hf_target_modules(targets, [_QKV, output, mtp], canonical=False)

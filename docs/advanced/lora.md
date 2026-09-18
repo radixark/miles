@@ -126,22 +126,53 @@ vision towers unadapted. Use the model launcher as the source of truth.
 | `--check-lora-weight-equal` | off | On the colocated path, verify each synchronized adapter tensor with SHA-256. |
 | `--update-weights-interval` | `1` | Publish new weights every N rollout/train iterations. This is not LoRA-specific, but it controls when the live adapter is synchronized. |
 
-HF checkpoint target groups live in `miles/utils/hf_lora_targets.py`. Tinker selects these
-with its attention / MLP / unembed flags; native Bridge training can pass the same
-scoped HF patterns through `--target-modules`. Scoped HF patterns must match
-Bridge's registry patterns exactly. Bridge supplies the backend name conversion;
-initialization rejects missing mappings, missing modules, and skipped adapters.
-These checks cover injection; export and serving compatibility still require model-specific validation.
-Standard LoRA requires all projections of a fused weight to be selected together;
-`canonical_lora` supports individual Q/K/V and gate/up selections. Existing native
-`all-linear` recipes and explicit Megatron targets retain their current behavior.
+### HF target source of truth
 
-These paths describe the HF checkpoint format, not every backend's runtime graph.
+`miles/utils/hf_lora_targets.py` defines the HF projection groups and default
+selection policy independently of the training backend. `get_hf_lora_targets()`
+accepts the HF config as a dictionary and returns scoped attention, MLP, and
+output-head targets. It reads the text config for multimodal models and accounts
+for optional MLA query compression, dense/shared expert groups, and hybrid
+attention layer types. Vision towers, routers, norms, and GDN convolutions are
+outside these groups.
+
+| Model layout | Attention | MLP | Ordinary LoRA default |
+|---|---|---|---|
+| Llama, Qwen2/2.5, Qwen3 | Q/K/V/O | Dense gate/up/down | Attention + MLP |
+| Qwen3 MoE | Q/K/V/O | Routed experts; dense layers when configured | Attention + MLP |
+| Qwen3-Next | Q/K/V/O + GDN qkvz/ba/out | Routed + shared experts; configured dense layers | Attention + MLP |
+| Qwen3.5/3.6, text and multimodal | Q/K/V/O + GDN qkv/z/b/a/out | Dense or packed routed + shared experts | Attention + MLP |
+| GPT-OSS | Q/K/V/O | Packed gate_up/down experts | Attention + MLP |
+| DeepSeek V2/V3, Kimi K2/K2.5 | MLA | Dense + routed + shared experts as configured | Attention + MLP |
+| DeepSeek V3.2, GLM-5/5.1/5.2 | MLA + DSA indexer | Dense + routed + shared experts as configured | Attention + MLP, excluding indexer |
+| GLM-4 MoE | Q/K/V/O | Dense + routed + shared experts as configured | Attention + MLP |
+| Inkling | Q/K/V/R/O | Dense + routed + shared expert adapter projections | Attention + MLP + output head |
+
+`resolve_hf_lora_targets()` selects targets in this order:
+
+1. An explicit target list is returned unchanged, without applying defaults or group flags.
+2. Three explicit training flags select the corresponding complete groups.
+3. With neither, use attention + MLP and the model-specific defaults above.
+
+Packed expert entries identify HF parameters rather than `nn.Linear` modules.
+Inkling entries use its HF adapter export schema, which differs from its base
+checkpoint packing. Backend conversion must account for those representations;
+a layout entry is not a backend support claim.
+
+Tinker currently calls this resolver with its three flags. Wiring ordinary LoRA
+CLI defaults and explicit Tinker overrides to the resolver is a separate step;
+existing `all-linear` recipes and explicit Megatron targets retain their behavior.
+The current Bridge converter accepts scoped module patterns matching its registry
+exactly and rejects missing mappings, missing modules, and skipped adapters.
+Packed-parameter targets and Inkling's native injection still require integration.
+Standard LoRA requires all projections of a fused weight together;
+`canonical_lora` supports individual Q/K/V and gate/up selections.
+Injection checks do not validate export or serving compatibility.
+
 SGLang normalizes target names into buffer types (for example, Q/K/V become
-`qkv_proj`); the adapter tensors retain their HF checkpoint names. FSDP currently
-has no LLM LoRA injection path. A future implementation must also handle HF runtime
-fusion: packed MoE parameters are already converted back to checkpoint names by
-`fsdp_utils/adaptations/weight_bridge.py` using Transformers' conversion metadata.
+`qkv_proj`); it does not own the selection policy. FSDP currently has no LLM LoRA
+injection path. Its eventual integration must use the same selected HF targets
+and translate any runtime fusion through model conversion metadata.
 
 This argument table describes the general Bridge surface. Current native Inkling
 uses a fixed model-specific adapter schema: `--target-modules` does not select
