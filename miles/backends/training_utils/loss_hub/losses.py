@@ -10,6 +10,7 @@ from miles.backends.training_utils.cp_utils import (
     get_sum_of_sample_mean,
 )
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
+from miles.backends.training_utils.loss_hub.entropy_control import ENTROPY_KEY, entropy_coef_to_apply
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss_hub.math_utils import (
     compute_approx_kl,
@@ -110,7 +111,10 @@ def policy_loss_function(
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
     max_seq_lens = batch.get("max_seq_lens", None)
-    calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy
+    use_adaptive_entropy = getattr(args, "use_adaptive_entropy", False)
+    # Adaptive mode gates and sizes the bonus from the previous step's entropy.
+    entropy_coef = entropy_coef_to_apply(args)
+    calculate_entropy = entropy_coef != 0 or args.observe_training_entropy or use_adaptive_entropy
 
     log_probs_and_entropy = get_log_probs_and_entropy(
         logits,
@@ -119,7 +123,7 @@ def policy_loss_function(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         with_entropy=calculate_entropy,
-        entropy_requires_grad=args.entropy_coef != 0,
+        entropy_requires_grad=entropy_coef != 0,
         max_seq_lens=max_seq_lens,
     )
 
@@ -306,8 +310,8 @@ def policy_loss_function(
         entropy = log_probs_and_entropy["entropy"]
         entropy = torch.cat(entropy, dim=0)
         entropy_loss = sum_of_sample_mean(entropy)
-        if args.entropy_coef != 0:
-            loss = pg_loss - args.entropy_coef * entropy_loss
+        if entropy_coef != 0:
+            loss = pg_loss - entropy_coef * entropy_loss
         else:
             entropy_loss = entropy_loss.detach()
 
@@ -362,7 +366,7 @@ def policy_loss_function(
     reported_loss = {
         "loss": loss.clone().detach(),
         "pg_loss": pg_loss.clone().detach(),
-        "entropy_loss": entropy_loss.clone().detach(),
+        ENTROPY_KEY: entropy_loss.clone().detach(),
         "pg_clipfrac": pg_clipfrac.clone().detach(),
         "ppo_kl": ppo_kl.clone().detach(),
         "ess_ratio": ess_ratio_sum.squeeze(),

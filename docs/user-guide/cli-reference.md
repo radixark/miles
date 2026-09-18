@@ -69,11 +69,22 @@ then push up until you OOM.
 | `--use-kl-loss` | off | Compute KL against the reference model. |
 | `--kl-loss-coef` | `0.0` | Weight of KL in the loss (0 means monitor only). |
 | `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
-| `--entropy-coef` | `0.0` | Entropy bonus weight. |
+| `--entropy-coef` | `0.0` | Entropy bonus weight; starting coefficient in adaptive mode. |
 | `--observe-training-entropy` | off | Log training entropy even when `--entropy-coef` is `0.0`; detached from backward when the coefficient is zero. |
+| `--use-adaptive-entropy` | off | Skywork-OR1 adaptive entropy bonus: applied only while entropy is at or below `--entropy-target`, with the coefficient moving by `--entropy-coef-delta` per step within `[--entropy-coef-min, --entropy-coef-max]`. |
+| `--entropy-target` | `0.2` | Target training entropy in nats, using the `entropy_loss` reduction. |
+| `--entropy-coef-delta` | `0.005` | Adaptive coefficient change per optimizer step. |
+| `--entropy-coef-min` | `0.0` | Lower clamp for the adaptive coefficient. |
+| `--entropy-coef-max` | `1.0` | Upper clamp for the adaptive coefficient. |
 | `--eps-clip` | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | `–` | Asymmetric high clip (DAPO-style). |
 | `--use-tis` | off | Truncated Importance Sampling for train/inference precision mismatch. |
+
+Adaptive mode always reports `train/entropy_loss`, including steps with no entropy
+bonus. It also reports `train/entropy_coef`: the coefficient that will apply on
+the next optimizer step, including zero when the gate is closed. Entropy is
+detached from backward whenever the applied coefficient is zero. On process
+restart, the controller starts again from `--entropy-coef`.
 
 ### Sampling
 
@@ -239,7 +250,12 @@ Sections mirror the launch-script argument groups.
 | `--use-kl-loss` | flag | off | Compute KL vs. reference. |
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 means monitor). |
 | `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
-| `--entropy-coef` | float | `0.0` | Entropy bonus weight. |
+| `--entropy-coef` | float | `0.0` | Entropy bonus weight; starting coefficient in adaptive mode. |
+| `--use-adaptive-entropy` | flag | off | Adaptive entropy bonus, see `--entropy-target`, `--entropy-coef-delta`, `--entropy-coef-min`, `--entropy-coef-max`. |
+| `--entropy-target` | float | `0.2` | Target training entropy in nats, using the `entropy_loss` reduction. |
+| `--entropy-coef-delta` | float | `0.005` | Adaptive coefficient change per optimizer step. |
+| `--entropy-coef-min` | float | `0.0` | Lower clamp for the adaptive coefficient. |
+| `--entropy-coef-max` | float | `1.0` | Upper clamp for the adaptive coefficient. |
 | `--observe-training-entropy` | flag | off | Log detached training entropy when entropy bonus weight is zero. |
 | `--eps-clip` | float | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | float | – | Asymmetric high clip. |
