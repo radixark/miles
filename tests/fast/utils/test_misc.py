@@ -20,6 +20,7 @@ from miles.utils.misc import (
     get_current_node_ip,
     get_free_port,
     get_gpu_uuids,
+    merge_asserting_consistency,
 )
 
 
@@ -478,3 +479,18 @@ class TestCancelAndAwaitTask:
 
         with pytest.raises(RuntimeError, match="teardown exploded"):
             await cancel_and_await_task(task)
+
+
+class TestMergeAssertingConsistency:
+    def test_disjoint_keys_are_merged(self):
+        """The common case: two views of the same cell describe different fields of it."""
+        assert merge_asserting_consistency({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+
+    def test_a_key_both_sides_agree_on_is_kept_once(self):
+        """Two pods of one cell repeat the cell-wide annotations, which is not a conflict."""
+        assert merge_asserting_consistency({"a": 1, "b": 2}, {"b": 2, "c": 3}) == {"a": 1, "b": 2, "c": 3}
+
+    def test_a_key_the_two_sides_disagree_on_is_rejected(self):
+        """Silently picking a winner would hand the caller one pod's answer as the whole cell's."""
+        with pytest.raises(AssertionError, match="disagree"):
+            merge_asserting_consistency({"a": 1}, {"a": 2})
