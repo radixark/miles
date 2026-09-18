@@ -144,6 +144,7 @@ async def generate_rollout_async(
 
             assert len(group) == args.n_samples_per_prompt
             all_data.append(group)
+            metric_gatherer.on_group_before_dynamic_filter(args, group)
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
