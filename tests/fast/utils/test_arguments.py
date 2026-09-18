@@ -591,14 +591,29 @@ class TestSessionServerPauseGenerationMode:
             miles_validate_args(args)
 
     @pytest.mark.parametrize(
-        ("extra", "expect_warning"),
+        ("extra", "expect_warning", "expect_payload_warning"),
         [
             (
                 ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "retract"],
                 True,
+                True,
             ),
-            (["--use-session-server", "--pause-generation-mode", "retract"], False),
-            (["--use-rollout-routing-replay", "--pause-generation-mode", "retract"], False),
+            (["--use-session-server", "--pause-generation-mode", "retract"], False, False),
+            (["--use-rollout-routing-replay", "--pause-generation-mode", "retract"], True, False),
+            ([], False, False),
+            (["--pause-generation-mode", "retract"], False, False),
+            (["--use-rollout-routing-replay"], True, False),
+            (["--use-session-server", "--use-rollout-routing-replay"], True, True),
+            (
+                ["--use-session-server", "v1", "--use-rollout-routing-replay", "--pause-generation-mode", "retract"],
+                True,
+                True,
+            ),
+            (
+                ["--use-session-server", "v2", "--use-rollout-routing-replay", "--pause-generation-mode", "retract"],
+                True,
+                True,
+            ),
             (
                 [
                     "--use-session-server",
@@ -608,21 +623,46 @@ class TestSessionServerPauseGenerationMode:
                     "abort",
                 ],
                 False,
+                False,
             ),
             (
                 ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "in_place"],
                 False,
+                False,
+            ),
+            (["--use-rollout-routing-replay", "--pause-generation-mode", "abort"], False, False),
+            (["--use-rollout-routing-replay", "--pause-generation-mode", "in_place"], False, False),
+            (["--use-routing-replay", "--pause-generation-mode", "retract"], False, False),
+            (
+                ["--use-session-server", "--use-routing-replay", "--pause-generation-mode", "retract"],
+                False,
+                False,
             ),
         ],
     )
-    def test_retract_r3_warning(self, caplog, extra, expect_warning):
+    def test_retract_r3_warning(self, caplog, extra, expect_warning, expect_payload_warning):
         args = self._parse(extra)
 
         with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
             miles_validate_args(args)
 
-        warned = any("R3 payloads can become very large" in record.message for record in caplog.records)
-        assert warned is expect_warning
+        warnings = [
+            record.message
+            for record in caplog.records
+            if record.message.startswith("--use-rollout-routing-replay with --pause-generation-mode=retract")
+        ]
+        assert len(warnings) == int(expect_warning)
+        if expect_warning:
+            assert "SGLang" in warnings[0]
+            assert "routes replayed in training may not be the routes used to sample" in warnings[0]
+            assert "log-probabilities" in warnings[0]
+            assert "--pause-generation-mode abort" in warnings[0]
+            assert "--pause-generation-mode in_place" in warnings[0]
+
+        payload_warnings = [
+            record.message for record in caplog.records if "R3 payloads can become very large" in record.message
+        ]
+        assert len(payload_warnings) == int(expect_payload_warning)
 
 
 class TestSnapshotEvalValidation:
