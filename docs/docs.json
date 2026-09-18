@@ -365,7 +365,7 @@
       "pages": [
        "hardware-platforms/overview",
        "hardware-platforms/nvidia-gpus",
-       "hardware-platforms/amd"
+       "hardware-platforms/amd-gpus"
       ]
      }
     ]
@@ -405,17 +405,22 @@
   },
   {
    "source": "/platforms/amd",
-   "destination": "/hardware-platforms/amd",
+   "destination": "/hardware-platforms/amd-gpus",
    "permanent": true
   },
   {
    "source": "/getting-started/amd",
-   "destination": "/hardware-platforms/amd",
+   "destination": "/hardware-platforms/amd-gpus",
    "permanent": true
   },
   {
    "source": "/hardware/amd",
-   "destination": "/hardware-platforms/amd",
+   "destination": "/hardware-platforms/amd-gpus",
+   "permanent": true
+  },
+  {
+   "source": "/hardware-platforms/amd",
+   "destination": "/hardware-platforms/amd-gpus",
    "permanent": true
   },
   {
