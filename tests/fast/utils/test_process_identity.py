@@ -29,6 +29,10 @@ class TestProcessIdentityToName:
     def test_trainer_controller(self) -> None:
         assert TrainerControllerProcessIdentity(trainer_id="actor").to_name() == "trainer_controller_actor"
 
+    def test_a_policy_trainer_controller_of_a_multi_policy_run(self) -> None:
+        """A generic trainer id must survive validation, or a multi policy worker cannot configure its logger."""
+        assert TrainerControllerProcessIdentity(trainer_id="alpha-actor").to_name() == "trainer_controller_alpha-actor"
+
     def test_inference_controller(self) -> None:
         assert SimpleProcessIdentity(component="inference_controller").to_name() == "inference_controller"
 
