@@ -126,6 +126,23 @@ vision towers unadapted. Use the model launcher as the source of truth.
 | `--check-lora-weight-equal` | off | On the colocated path, verify each synchronized adapter tensor with SHA-256. |
 | `--update-weights-interval` | `1` | Publish new weights every N rollout/train iterations. This is not LoRA-specific, but it controls when the live adapter is synchronized. |
 
+HF checkpoint target groups live in `miles/utils/hf_lora_targets.py`. Tinker selects these
+with its attention / MLP / unembed flags; native Bridge training can pass the same
+scoped HF patterns through `--target-modules`. Scoped HF patterns must match
+Bridge's registry patterns exactly. Bridge supplies the backend name conversion;
+initialization rejects missing mappings, missing modules, and skipped adapters.
+These checks cover injection; export and serving compatibility still require model-specific validation.
+Standard LoRA requires all projections of a fused weight to be selected together;
+`canonical_lora` supports individual Q/K/V and gate/up selections. Existing native
+`all-linear` recipes and explicit Megatron targets retain their current behavior.
+
+These paths describe the HF checkpoint format, not every backend's runtime graph.
+SGLang normalizes target names into buffer types (for example, Q/K/V become
+`qkv_proj`); the adapter tensors retain their HF checkpoint names. FSDP currently
+has no LLM LoRA injection path. A future implementation must also handle HF runtime
+fusion: packed MoE parameters are already converted back to checkpoint names by
+`fsdp_utils/adaptations/weight_bridge.py` using Transformers' conversion metadata.
+
 This argument table describes the general Bridge surface. Current native Inkling
 uses a fixed model-specific adapter schema: `--target-modules` does not select
 individual training modules, `--exclude-modules` is not applied, and

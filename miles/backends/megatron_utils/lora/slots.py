@@ -11,7 +11,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-def create_multi_lora_instance(args: Namespace):
+def create_multi_lora_instance(args: Namespace, *, target_modules=None):
     """Create a MultiLoRA instance from training args."""
     from megatron.bridge.peft.multi_lora import MultiLoRA
 
@@ -27,9 +27,12 @@ def create_multi_lora_instance(args: Namespace):
 
         lora_cls = LoRA
 
+    if target_modules is None:
+        target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
+
     # exclude_modules was already folded into target_modules during arg validation.
     return MultiLoRA(
-        target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls),
+        target_modules=target_modules,
         n_adapters=args.multi_lora_n_adapters,
         dim=args.lora_rank,
         alpha=args.lora_alpha,

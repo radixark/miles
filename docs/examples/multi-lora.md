@@ -18,7 +18,10 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
   (`linear_qkv`, `linear_proj`), the per-expert MoE projections (`linear_fc1`, `linear_fc2`),
   and the output layer (`output_layer`) so the cookbook's default `train_unembed=True` is servable.
 
-The gateway currently resolves Tinker training groups for `qwen3` and `qwen3_moe`.
+The shared `miles/utils/hf_lora_targets.py` defines HF training groups for
+`llama`, `qwen2`, `qwen3`, and `qwen3_moe`. Megatron resolves these scoped paths
+through Bridge and checks adapter coverage at initialization. A target definition
+does not by itself establish end-to-end training and sampling support for a model.
 `--tinker-train-attn`, `--tinker-train-mlp`, and `--tinker-train-unembed` default to enabled;
 use `--no-tinker-train-attn`, `--no-tinker-train-mlp`, or `--no-tinker-train-unembed` to disable a group.
 Every client's corresponding SDK flags must match the server layout. Tinker startup rejects

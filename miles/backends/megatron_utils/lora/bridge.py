@@ -12,11 +12,20 @@ from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
 
+from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
+from miles.backends.megatron_utils.lora.target_modules import (
+    resolve_hf_target_modules,
+    select_present_target_modules,
+    validate_hf_target_adapters,
+)
+from miles.backends.megatron_utils.lora.utils import (
+    convert_target_modules_to_hf,
+    create_lora_instance,
+    patch_param_grad_buffer_for_colocate_mode_lora,
+)
 from miles.utils.hf_config import load_hf_config
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
-
-from .utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
 
 logger = logging.getLogger(__name__)
 
@@ -168,16 +177,33 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if is_multi_lora_enabled(args):
         _validate_multi_lora_moe_support(args, provider)
 
-        from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
+    create_adapter = create_multi_lora_instance if is_multi_lora_enabled(args) else create_lora_instance
+    scoped_hf_targets = any(target.startswith("model.") for target in args.target_modules) or args.target_modules == [
+        "lm_head"
+    ]
 
-        lora = create_multi_lora_instance(args)
-    else:
-        from .utils import create_lora_instance
-
-        lora = create_lora_instance(args)
+    hf_candidates = None
+    if scoped_hf_targets:
+        assert not (is_multi_lora_enabled(args) and args.lora_type == "canonical_lora"), (
+            "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
+        )
+        model_bridge = bridge._model_bridge
+        # Some registries inspect checkpoint keys to distinguish packed and per-expert layouts.
+        model_bridge.hf_pretrained = bridge.hf_pretrained
+        hf_candidates = resolve_hf_target_modules(
+            args.target_modules,
+            model_bridge.mapping_registry().get_all_mappings(),
+            canonical=args.lora_type == "canonical_lora",
+        )
 
     def apply_lora_hook(model_chunks):
+        candidates = (
+            select_present_target_modules(model_chunks, hf_candidates) if hf_candidates is not None else None
+        )
+        lora = create_adapter(args, target_modules=list(candidates) if candidates is not None else None)
         transformed = lora(model_chunks, training=True)
+        if candidates is not None:
+            validate_hf_target_adapters(transformed, candidates)
         lora.set_params_to_save(transformed)
         return transformed
 

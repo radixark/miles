@@ -352,7 +352,7 @@ def parse_exclude_modules(args: Namespace, lora_type=None) -> list[str]:
     return exclude_modules
 
 
-def create_lora_instance(args: Namespace):
+def create_lora_instance(args: Namespace, *, target_modules=None):
     """Create a LoRA or CanonicalLoRA instance based on args.
 
     Returns:
@@ -368,7 +368,8 @@ def create_lora_instance(args: Namespace):
     else:
         lora_cls = LoRA
 
-    target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
+    if target_modules is None:
+        target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
     exclude_modules = parse_exclude_modules(args, lora_type=lora_cls)
 
     lora_kwargs = dict(
