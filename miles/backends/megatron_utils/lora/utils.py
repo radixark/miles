@@ -11,115 +11,11 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
+from miles.utils.lora import is_lora_enabled  # noqa: F401 (re-exported)
+from miles.utils.lora import lora_rollout_enabled  # noqa: F401 (re-exported)
+from miles.utils.lora import build_lora_config, get_adapter_target_modules, validate_adapter_export
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Unified HF <-> Megatron module name mappings
-# ---------------------------------------------------------------------------
-
-# Standard LoRA: merged Q/K/V and merged up/gate
-_STANDARD_LORA_HF_TO_MEGATRON = {
-    "q_proj": "linear_qkv",
-    "k_proj": "linear_qkv",
-    "v_proj": "linear_qkv",
-    "o_proj": "linear_proj",
-    "gate_proj": "linear_fc1",
-    "up_proj": "linear_fc1",
-    "down_proj": "linear_fc2",
-    "lm_head": "output_layer",
-    # GDN (Qwen3.5/Qwen3-Next): both slices live in the single fused megatron in_proj
-    "in_proj_qkvz": "in_proj",
-    "in_proj_ba": "in_proj",
-}
-
-_STANDARD_LORA_ALL_MODULES = ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
-
-# CanonicalLoRA: Split Q/K/V and up/gate
-_CANONICAL_LORA_HF_TO_MEGATRON = {
-    "q_proj": "linear_q",
-    "k_proj": "linear_k",
-    "v_proj": "linear_v",
-    "o_proj": "linear_proj",
-    "gate_proj": "linear_fc1_gate",
-    "up_proj": "linear_fc1_up",
-    "down_proj": "linear_fc2",
-    "lm_head": "output_layer",
-    "in_proj_qkvz": "in_proj",
-    "in_proj_ba": "in_proj",
-}
-
-_CANONICAL_LORA_ALL_MODULES = [
-    "linear_q",
-    "linear_k",
-    "linear_v",
-    "linear_proj",
-    "linear_fc1_up",
-    "linear_fc1_gate",
-    "linear_fc2",
-]
-
-# Megatron -> HF (inverse mapping, one-to-many)
-# Covers both standard LoRA (merged) and CanonicalLoRA (split) module names.
-_MEGATRON_TO_HF_MODULES = {
-    # Standard LoRA (merged layers)
-    "linear_qkv": ["q_proj", "k_proj", "v_proj"],
-    "linear_proj": ["o_proj"],
-    "linear_fc1": ["gate_proj", "up_proj"],
-    "linear_fc2": ["down_proj"],
-    "output_layer": ["lm_head"],
-    # CanonicalLoRA (split layers)
-    "linear_q": ["q_proj"],
-    "linear_k": ["k_proj"],
-    "linear_v": ["v_proj"],
-    "linear_fc1_gate": ["gate_proj"],
-    "linear_fc1_up": ["up_proj"],
-    # GDN linear attention: SGLang serves the fused in_proj as two modules
-    "in_proj": ["in_proj_qkvz", "in_proj_ba"],
-}
-
-_HF_MODULE_NAMES = {
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj",
-    "lm_head",
-    "in_proj_qkvz",
-    "in_proj_ba",
-}
-
-# DeepSeek / Kimi MLA (HF names on checkpoint; Megatron uses linear_* from Megatron-Bridge mappings).
-_MLA_HF_TO_MEGATRON = {
-    "q_a_proj": "linear_q_down_proj",
-    "kv_a_proj_with_mqa": "linear_kv_down_proj",
-    "q_b_proj": "linear_q_up_proj",
-    "kv_b_proj": "linear_kv_up_proj",
-    # DSA indexer (GLM-5 / DeepSeek-V3.2): HF/SGLang leaf names vs Megatron-Bridge linear_* names.
-    "wq_b": "linear_wq_b",
-    "wk": "linear_wk",
-    "weights_proj": "linear_weights_proj",
-}
-_MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
-
-# Empty: dropping a module here makes sglang silently skip its shipped adapter tensors.
-_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
-
-
-# ---------------------------------------------------------------------------
-# Core helpers
-# ---------------------------------------------------------------------------
-
-
-def sglang_lora_target_all_sentinel(args) -> bool:
-    """Hand SGLang the ``"all"`` shorthand so it auto-detects module names (required for Inkling)."""
-    from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
-
-    return is_inkling_checkpoint(getattr(args, "hf_checkpoint", None) or "")
-
 
 _marked_lora_grad_params_cache: dict[int, list] = {}
 
@@ -221,143 +117,12 @@ def patch_param_grad_buffer_for_colocate_mode_lora() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Module name conversion
-# ---------------------------------------------------------------------------
-
-
-def _get_lora_class_name(lora_type: type | object | None) -> str:
-    """Resolve LoRA type to its class name string."""
-    if lora_type is None:
-        return "CanonicalLoRA"
-    if isinstance(lora_type, type):
-        return lora_type.__name__
-    return type(lora_type).__name__
-
-
-def convert_target_modules_to_megatron(
-    hf_modules: str | list[str],
-    lora_type: type | object | None = None,
-) -> list[str]:
-    """Convert HuggingFace LoRA target module names to Megatron format.
-
-    HF:  q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, lm_head
-    Megatron (LoRA):          linear_qkv, linear_proj, linear_fc1, linear_fc2, output_layer
-    Megatron (CanonicalLoRA): linear_q, linear_k, linear_v, linear_proj,
-                              linear_fc1_up, linear_fc1_gate, linear_fc2
-
-    Special values: "all", "all-linear", "all_linear" -> all standard linear modules.
-    If input is already in Megatron format, returns as-is.
-    """
-    class_name = _get_lora_class_name(lora_type)
-    is_canonical = class_name == "CanonicalLoRA"
-
-    all_modules = _CANONICAL_LORA_ALL_MODULES if is_canonical else _STANDARD_LORA_ALL_MODULES
-    hf_to_megatron = _CANONICAL_LORA_HF_TO_MEGATRON if is_canonical else _STANDARD_LORA_HF_TO_MEGATRON
-
-    # Handle special "all-linear" variants
-    if isinstance(hf_modules, str):
-        if hf_modules in ("all", "all-linear", "all_linear"):
-            return list(all_modules)
-        hf_modules = [hf_modules]
-    elif isinstance(hf_modules, list) and len(hf_modules) == 1:
-        if hf_modules[0] in ("all", "all-linear", "all_linear"):
-            return list(all_modules)
-
-    if isinstance(hf_modules, tuple):
-        hf_modules = list(hf_modules)
-
-    # Check if already in Megatron format (standard / canonical / Kimi MLA linear_*).
-    if all(m not in _HF_MODULE_NAMES and m not in _MLA_HF_TO_MEGATRON for m in hf_modules if "*" not in m):
-        return list(hf_modules)
-
-    # Convert HF names to Megatron names (dedup while preserving order)
-    megatron_modules: list[str] = []
-    for module in hf_modules:
-        if module in _MLA_HF_TO_MEGATRON:
-            megatron_name = _MLA_HF_TO_MEGATRON[module]
-        else:
-            megatron_name = hf_to_megatron.get(module, module)
-        if megatron_name not in megatron_modules:
-            megatron_modules.append(megatron_name)
-
-    return megatron_modules
-
-
-def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
-    """Convert Megatron LoRA target module names to HuggingFace format.
-
-    Supports both standard LoRA and CanonicalLoRA module names.
-
-    Megatron standard:   linear_qkv, linear_proj, linear_fc1, linear_fc2, output_layer
-    Megatron canonical:  linear_q, linear_k, linear_v, linear_proj,
-                         linear_fc1_up, linear_fc1_gate, linear_fc2
-    HF:                  q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
-    Kimi MLA Megatron:   linear_q_down_proj -> q_a_proj, linear_kv_down_proj -> kv_a_proj_with_mqa, ...
-
-    Wildcards (``*.layers.2.mlp.experts.linear_fc1``) get the last dotted
-    segment mapped to an HF leaf name; SGLang uses the result to choose
-    adapter-buffer types, not to scope by layer.
-    """
-    if isinstance(megatron_modules, tuple):
-        megatron_modules = list(megatron_modules)
-    hf_modules: list[str] = []
-    for module in megatron_modules:
-        lookup_key = module.rsplit(".", 1)[-1] if "." in module else module
-        if lookup_key in _MEGATRON_MLA_TO_HF:
-            hf_modules.append(_MEGATRON_MLA_TO_HF[lookup_key])
-        elif lookup_key in _MEGATRON_TO_HF_MODULES:
-            hf_modules.extend(_MEGATRON_TO_HF_MODULES[lookup_key])
-        else:
-            # same-name passthrough; SGLang needs the leaf, not a path or pattern
-            hf_modules.append(lookup_key)
-    seen: set[str] = set()
-    unique: list[str] = []
-    for m in hf_modules:
-        if m not in seen:
-            seen.add(m)
-            unique.append(m)
-    return unique
-
-
-def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
-    """HF target_modules for SGLang LoRA init/sync (minus _SGLANG_UNSUPPORTED_HF_TARGETS, currently empty)."""
-    raw = list(args.target_modules) if args.target_modules else []
-    hf = convert_target_modules_to_hf(raw)
-    out = [m for m in hf if m not in _SGLANG_UNSUPPORTED_HF_TARGETS]
-    dropped = set(hf) - set(out)
-    if dropped:
-        logger.warning(
-            "target_modules_hf_for_sglang_rollout: omitting %s for SGLang (unsupported by default "
-            "get_hidden_dim); Megatron should not train LoRA on these if rollout sync is required.",
-            sorted(dropped),
-        )
-    return out
-
-
-# ---------------------------------------------------------------------------
 # Model setup helpers (used by model.py)
 # ---------------------------------------------------------------------------
 
 
-def parse_exclude_modules(args: Namespace, lora_type=None) -> list[str]:
-    """Parse and convert exclude_modules argument."""
-    exclude_modules: list[str] = []
-    raw = getattr(args, "exclude_modules", None)
-    if raw:
-        if isinstance(raw, str):
-            exclude_modules = [m.strip() for m in raw.split(",")]
-        else:
-            exclude_modules = list(raw)
-        exclude_modules = convert_target_modules_to_megatron(exclude_modules, lora_type=lora_type)
-    return exclude_modules
-
-
-def create_lora_instance(args: Namespace):
-    """Create a LoRA or CanonicalLoRA instance based on args.
-
-    Returns:
-        A LoRA/CanonicalLoRA dataclass instance ready to be applied to a model.
-    """
+def create_lora_instance(args: Namespace, *, target_modules):
+    """Create a LoRA adapter with resolved Megatron target modules."""
     from megatron.bridge.peft.canonical_lora import CanonicalLoRA
     from megatron.bridge.peft.lora import LoRA
 
@@ -368,12 +133,8 @@ def create_lora_instance(args: Namespace):
     else:
         lora_cls = LoRA
 
-    target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
-    exclude_modules = parse_exclude_modules(args, lora_type=lora_cls)
-
     lora_kwargs = dict(
         target_modules=target_modules,
-        exclude_modules=exclude_modules,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=args.lora_dropout,
@@ -391,8 +152,7 @@ def create_lora_instance(args: Namespace):
 
     logger.info(
         f"Created {lora_cls.__name__}: rank={args.lora_rank}, alpha={args.lora_alpha}, "
-        f"dropout={args.lora_dropout}, target_modules={target_modules}, "
-        f"exclude_modules={exclude_modules}"
+        f"dropout={args.lora_dropout}, target_modules={target_modules}"
     )
     return lora
 
@@ -461,6 +221,8 @@ def save_lora_checkpoint(
     # so every rank must call export_adapter_weights.
     try:
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+        # Megatron is optional until the HF export path is entered.
+        from miles.backends.megatron_utils.update_weight.hf_weight_iterator import _gather_pp_full_adapter
 
         lora_state_dict: dict[str, torch.Tensor] = {}
         with megatron_bridge_utils.patch_megatron_model(model):
@@ -471,33 +233,22 @@ def save_lora_checkpoint(
             ):
                 lora_state_dict[hf_name] = weight
 
-        if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
-            torch.save(lora_state_dict, save_path / "adapter_model.bin")
-
-            target_modules_hf = (
-                convert_target_modules_to_hf(list(args.target_modules))
-                if args.target_modules
-                else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-            )
-            config = {
-                "peft_type": "LORA",
-                "r": args.lora_rank,
-                "lora_alpha": args.lora_alpha,
-                "target_modules": target_modules_hf,
-                "lora_dropout": args.lora_dropout,
-                "bias": "none",
-                "task_type": "CAUSAL_LM",
-            }
-            with open(save_path / "adapter_config.json", "w") as f:
-                json.dump(config, f, indent=2)
-
-            os.sync()
-            logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
+        lora_state_dict = dict(_gather_pp_full_adapter(list(lora_state_dict.items())))
     except Exception as hf_export_err:
         logger.warning(
             f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
             f"shards + training state are sufficient for training resume."
         )
+    else:
+        validate_adapter_export(lora_state_dict, args.hf_lora_targets, shared_outer=args.experts_shared_outer_loras)
+        if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
+            torch.save(
+                {name: weight.cpu() for name, weight in lora_state_dict.items()}, save_path / "adapter_model.bin"
+            )
+            config = build_lora_config(args, target_modules=get_adapter_target_modules(lora_state_dict))
+            (save_path / "adapter_config.json").write_text(json.dumps(config, indent=2))
+            os.sync()
+            logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
 
     # ---- Training state (iteration + scheduler, and the optimizer unless opted out) ----
     if optimizer is not None:
@@ -627,29 +378,3 @@ def _load_training_state(
     if iteration is not None:
         logger.info(f"Resuming LoRA training from iteration {iteration}")
     return iteration
-
-
-# ---------------------------------------------------------------------------
-# LoRA config dict for weight sync to SGLang
-# ---------------------------------------------------------------------------
-
-
-def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
-    """Build LoRA config dict for syncing weights to SGLang engines."""
-    if sglang_lora_target_all_sentinel(args):
-        target_modules_hf: Any = "all-linear"
-    else:
-        target_modules_hf = (
-            target_modules_hf_for_sglang_rollout(args)
-            if args.target_modules
-            else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        )
-    return {
-        "peft_type": "LORA",
-        "r": args.lora_rank,
-        "lora_alpha": args.lora_alpha,
-        "target_modules": target_modules_hf,
-        "lora_dropout": args.lora_dropout,
-        "bias": "none",
-        "task_type": "CAUSAL_LM",
-    }

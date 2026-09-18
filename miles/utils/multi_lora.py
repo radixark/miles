@@ -27,7 +27,7 @@ def is_multi_lora_enabled(args: Any) -> bool:
 
 # Leaf module names that can live inside MoE experts (they also name the dense MLP
 # projections); the bulk aliases expand to them during target-module resolution.
-_EXPERT_LEAF_NAMES = frozenset({"linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj"})
+_EXPERT_LEAF_NAMES = frozenset({"linear_fc1", "linear_fc2", "gate_proj", "up_proj", "gate_up_proj", "down_proj"})
 _ALL_MODULE_ALIASES = frozenset({"all", "all-linear", "all_linear"})
 
 

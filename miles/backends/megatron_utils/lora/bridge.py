@@ -12,11 +12,19 @@ from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
 
+from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
+from miles.backends.megatron_utils.lora.target_modules import (
+    resolve_megatron_lora_targets,
+    select_present_target_modules,
+    validate_lora_target_adapters,
+)
+from miles.backends.megatron_utils.lora.utils import (
+    create_lora_instance,
+    patch_param_grad_buffer_for_colocate_mode_lora,
+)
 from miles.utils.hf_config import load_hf_config
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
-
-from .utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +83,7 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     post-finalize because they depend on the resolved provider, not the CLI)."""
     if not getattr(provider, "num_moe_experts", None):
         return
-    if not targets_expert_leaves(args.target_modules):
+    if not targets_expert_leaves(args.hf_lora_targets):
         logger.info("[multilora] MoE model with no expert leaves in --target-modules; experts stay frozen")
         return
 
@@ -94,7 +102,9 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
         "desynchronizes the dispatched token order)."
     )
     # sglang only wraps a fused MoE layer when both expert projections are targeted.
-    served = set(convert_target_modules_to_hf(list(args.target_modules)))
+    served = {target.rsplit(".", 1)[-1] for target in args.hf_lora_targets}
+    if "gate_up_proj" in served:
+        served.update(("gate_proj", "up_proj"))
     expert_pair = {"gate_proj", "up_proj", "down_proj"}
     if served & expert_pair:
         assert expert_pair <= served, (
@@ -149,7 +159,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
-    if is_multi_lora_enabled(args) and targets_expert_leaves(args.target_modules):
+    if is_multi_lora_enabled(args) and targets_expert_leaves(args.hf_lora_targets):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
         if getattr(provider, "moe_permute_fusion", False):
@@ -168,16 +178,26 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if is_multi_lora_enabled(args):
         _validate_multi_lora_moe_support(args, provider)
 
-        from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
-
-        lora = create_multi_lora_instance(args)
-    else:
-        from .utils import create_lora_instance
-
-        lora = create_lora_instance(args)
+    create_adapter = create_multi_lora_instance if is_multi_lora_enabled(args) else create_lora_instance
+    assert not (
+        is_multi_lora_enabled(args) and args.lora_type == "canonical_lora"
+    ), "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
+    model_bridge = bridge._model_bridge
+    model_bridge.hf_pretrained = bridge.hf_pretrained
+    target_candidates = resolve_megatron_lora_targets(
+        args.target_modules,
+        model_bridge.mapping_registry().get_all_mappings(),
+        canonical=args.lora_type == "canonical_lora",
+        exclude_modules=args.exclude_modules,
+    )
 
     def apply_lora_hook(model_chunks):
+        candidates = select_present_target_modules(model_chunks, target_candidates)
+        # export coverage excludes registry alternatives absent from the model
+        args.hf_lora_targets = sorted({target for module in candidates.values() for target in module.hf_modules})
+        lora = create_adapter(args, target_modules=list(candidates))
         transformed = lora(model_chunks, training=True)
+        validate_lora_target_adapters(transformed, candidates)
         lora.set_params_to_save(transformed)
         return transformed
 

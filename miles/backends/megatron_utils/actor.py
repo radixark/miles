@@ -13,7 +13,7 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
-from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
+from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
@@ -28,6 +28,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
+from miles.utils.lora import build_lora_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -287,7 +288,7 @@ class MegatronTrainRayActor(TrainRayActor):
             iterator_factory=get_hf_weight_iterator,
             parallel_state=get_parallel_state(),
             is_lora=is_lora,
-            lora_sync_config=build_lora_sync_config(args) if is_lora else None,
+            lora_sync_config=build_lora_config(args, target_modules=args.hf_lora_targets) if is_lora else None,
         )
 
     def _clear_quantized_weight_workspaces(self) -> None:

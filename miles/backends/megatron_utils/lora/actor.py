@@ -4,11 +4,11 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.megatron_utils.lora.utils import build_lora_sync_config
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.data import get_rollout_data
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import WeightPublisher
+from miles.utils.lora import build_lora_config
 from miles.utils.multi_lora import AdapterSpec
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.structured_log import with_logs
@@ -25,7 +25,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             model_name=type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
         )
-        self.weight_publisher = WeightPublisher(iterator, build_lora_sync_config(args))
+        self.weight_publisher = WeightPublisher(iterator, build_lora_config(args, target_modules=args.hf_lora_targets))
 
     @with_logs
     def forward_backward(self, batch_id: int, rollout_data_ref: Box) -> dict:
