@@ -35,6 +35,7 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -46,7 +47,13 @@ logger = logging.getLogger(__name__)
 class RolloutExecutor:
     """The class to run rollout and convert rollout data to training data."""
 
-    def __init__(self, *, args):
+    def __init__(
+        self,
+        *,
+        args,
+        router_provider: BaseWorkerProvider,
+        session_server_provider: BaseWorkerProvider | None,
+    ):
         event_logger_checkpoint.restore(args)
         configure_logger(args, source=RolloutExecutorProcessIdentity())
 
@@ -54,12 +61,14 @@ class RolloutExecutor:
         # set by the training actor after each weight update
         self.weight_version: int | None = None
         self._rollouts_since_weight_version_publish = 0
+        self._router_provider = router_provider
+        self._session_server_provider = session_server_provider
 
     async def init(self) -> None:
         args = self.args
         if not args.debug_train_only:
-            await resolve_router_addrs(args)
-            await wait_session_server_ready(args)
+            await resolve_router_addrs(args, provider=self._router_provider)
+            await wait_session_server_ready(args, provider=self._session_server_provider)
 
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")

@@ -23,9 +23,15 @@ from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ft_utils.mini_ft_controller import _compute_cell_snapshot, _MiniFTController
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 _POOL_ID = "inference-engine-0"
 _CELL_IDS = ["inference-engine-0-0-0", "inference-engine-0-0-1"]
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"this module addresses cells through a patched _compute_addr_info ({worker_name=})")
 
 
 class _FakeRouter:
@@ -166,6 +172,7 @@ class _Harness:
                 server_cells={},
                 args=self.args,
                 context_lock=self.controller.context_lock,
+                engine_provider=_StubProvider(),
                 router_ip="10.0.0.9",
                 router_port=20000,
                 model_name="default",
