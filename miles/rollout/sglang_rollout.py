@@ -630,7 +630,7 @@ async def eval_rollout_single_dataset(
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
-            sample.generate_function_path = dataset_cfg.custom_generate_function_path
+            sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
