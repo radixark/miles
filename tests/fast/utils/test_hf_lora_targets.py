@@ -18,7 +18,11 @@ def test_missing_targets_and_all_linear_use_model_defaults():
     assert "lm_head" not in targets
 
 
-@pytest.mark.parametrize("value", ["q_proj, k_proj", "q_proj,k_proj", ["q_proj", "k_proj"]])
+@pytest.mark.parametrize(
+    "value",
+    ["q_proj, k_proj", "q_proj,k_proj", ["q_proj", "k_proj"]],
+    ids=["spaced", "comma-separated", "list"],
+)
 def test_explicit_targets_override_group_flags(value):
     targets = resolve_hf_lora_targets(
         {"model_type": "custom"},
