@@ -101,9 +101,13 @@ class LinearTrajectory:
     ) -> PreparedChatRequest:
         """Return the prepared request with prompt token IDs in `body["input_ids"]`.
 
-        Select the checkpoint that the request continues, resolve arguments,
-        and render its prompt before discarding any history. A validation or
-        rendering error leaves session state unchanged.
+        In order: select the checkpoint *client_args*'s messages continue
+        (``_find_rollback_checkpoint``); decide the request args
+        (``request_args.prepare_chat_request``, which may raise a 400); render
+        the prompt with those template args; then roll back to the checkpoint
+        (``_rollback_to_checkpoint``). The args come before the render because
+        they change the token ids. Both steps precede rollback so a validation
+        or rendering error leaves session state unchanged.
 
         The caller must hold `self.lock`.
         """
@@ -130,10 +134,17 @@ class LinearTrajectory:
         tito_tokenizer: TITOTokenizer,
         message_matcher: SessionMessageMatcher | None = None,
     ) -> list[int]:
-        """Render from the selected checkpoint without modifying session state.
+        """Build prompt token IDs while reusing the selected checkpoint's token prefix.
 
-        Validate the appended roles and reuse that checkpoint's stored messages
-        and token prefix. An empty checkpoint renders the request from scratch.
+        Use `template_args` for newly rendered tokens, without modifying session state.
+
+        Validates that *request_messages* extends the selected checkpoint's history
+        under *message_matcher* (defaults to the strict matcher) and reuses its stored
+        token_ids as the pretokenized prefix. When no stored checkpoint is selected
+        to build on — the first turn, or a retry of the first turn that selects
+        the empty checkpoint — renders *request_messages* from scratch via
+        the chat template instead.
+
         Must be called under ``self.lock``.
         """
         matcher = message_matcher if message_matcher is not None else strict_message_matches
@@ -149,6 +160,8 @@ class LinearTrajectory:
 
         message_end = self.generated_checkpoint_message_ends[checkpoint_index]
         stored_messages = self.messages[:message_end]
+        # Confirm the selected checkpoint's stored messages are a prefix of request,
+        #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
         try:
             assert_messages_append_only_with_allowed_role(
                 stored_messages, request_messages, tito_tokenizer.allowed_append_roles, message_matcher=matcher
@@ -207,9 +220,61 @@ class LinearTrajectory:
     ) -> int:
         """Find the last generated checkpoint in the matching prefix, without mutation.
 
-        Return the current tip for an append-only request, or -1 when the
-        request starts from scratch. Client-injected assistant messages do not
-        create checkpoints. Reject rollback beyond ``MAX_ASSISTANT_ROLLBACK_STEPS``.
+        In agentic workflows the agent may retry from an earlier point — for
+        example, re-running a tool call with different arguments. When that
+        happens the new request shares a common prefix with the stored messages
+        but diverges before the end. This method selects the last generated
+        assistant checkpoint within the matching prefix, or the empty checkpoint
+        when the matching prefix holds no generated checkpoint at all. The caller
+        applies rollback only after argument resolution and rendering succeed.
+
+        Only a single-step rollback is allowed (controlled by
+        ``MAX_ASSISTANT_ROLLBACK_STEPS``). Discarding exactly one generated
+        checkpoint means the agent is retrying from the preceding checkpoint —
+        the request shares the stored prefix up to that generated response and
+        then continues with whatever the agent chooses (same or different tool
+        result, additional messages, etc.). Any request that would need to
+        discard more than one generated checkpoint (i.e. jump back across
+        multiple turns) is rejected with ``MessageValidationError`` and no
+        state is modified.
+
+        Example — agent retries after the first tool call::
+
+            stored:  [sys, user, assistant₁, tool₁, assistant₂]
+                      ───────────────────── ▲
+                      checkpoint 0 (assistant₁)   checkpoint 1 (assistant₂)
+
+            request: [sys, user, assistant₁, tool₁_different, ...]
+                                             ↑ diverges here (index 3)
+
+            match_len = 3  (sys, user, assistant₁ all match)
+            Last generated checkpoint in matched prefix → assistant₁ (checkpoint 0)
+            discard_count = 2 - 1 = 1  (≤ MAX_ASSISTANT_ROLLBACK_STEPS)
+
+            After preparation succeeds and the caller applies rollback:
+              messages           = [sys, user, assistant₁]
+              trajectory_token_ids = [checkpoint_0_ids]
+              records              = [record_0]
+              num_assistant        = 1
+
+        Example — agent retries the very first turn::
+
+            stored:  [user, assistant₁]
+            request: [user]
+                           ↑ stored continues past the request (index 1)
+
+            match_len = 1  (user matches), no generated checkpoint in the matched prefix
+            Rollback target → the empty checkpoint (index -1)
+            discard_count = 1 - 0 = 1  (≤ MAX_ASSISTANT_ROLLBACK_STEPS)
+
+            The caller re-renders the prompt from scratch before applying rollback.
+            After successful preparation and rollback, the session is empty,
+            so turn 1 regenerates like any later turn.
+
+        No rollback is needed when:
+        - The stored history is empty (return -1).
+        - *request_messages* is a strict extension of stored messages
+          (``match_len >= len(stored)``; return the current checkpoint index).
         """
         stored = self.messages
         if not stored or not self.trajectory_token_ids:
@@ -225,6 +290,8 @@ class LinearTrajectory:
         if match_len >= len(stored):
             return self.num_assistant - 1
 
+        # Only responses generated by this session create checkpoints.
+        # Client-injected assistant messages won't create new checkpoints.
         checkpoint_index = -1
         for i in reversed(range(len(self.generated_checkpoint_message_ends))):
             if self.generated_checkpoint_message_ends[i] <= match_len:
@@ -247,6 +314,8 @@ class LinearTrajectory:
         discard_count = self.num_assistant - (checkpoint_index + 1)
         if discard_count == 0:
             return
+        # No generated checkpoint in the matched prefix means the agent is retrying the
+        # first turn, so roll back to the empty checkpoint and retain no messages.
         rollback_msg_end = self.generated_checkpoint_message_ends[checkpoint_index] if checkpoint_index >= 0 else 0
         logger.info(
             "Rolling back session: stored %d messages / %d checkpoints -> "
