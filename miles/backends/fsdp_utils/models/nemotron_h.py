@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 _CLOBBERED_PARAM_SUFFIXES = (".mixer.dt_bias", ".mixer.out_proj.weight")
 
+# Set by bind_nemotron_h_hub_kernels() on each attention mixer instance; read per forward.
+HUB_VARLEN_ATTR = "_hub_flash_attn_varlen_func"
+
 
 def reload_nemotron_h_clobbered_weights(model, ckpt_path, tol=1e-3) -> int:
     """Restore NemotronH mixer parameters overwritten after checkpoint loading."""
@@ -115,15 +118,19 @@ def _patch_attn_forward(attn_cls):
         return
 
     try:
-        from flash_attn import flash_attn_varlen_func
+        from flash_attn import flash_attn_varlen_func as native_varlen_func
     except Exception:  # pragma: no cover
-        flash_attn_varlen_func = None
+        native_varlen_func = None
 
     @functools.wraps(orig)
     def forward(self, hidden_states, *args, **kwargs):
         cu = getattr(self, "_packing_cu_seqlens", None)
         cache = kwargs.get("past_key_values", kwargs.get("cache_params"))
-        if cu is None or cache is not None or flash_attn_varlen_func is None:
+        # Read the handle per forward so `--kernel-backend hub` can serve varlen from the Hub on a
+        # node whose flash-attn wheel is missing; without either, the packed-document reset below
+        # cannot run and attention would silently go dense across document boundaries.
+        varlen_func = getattr(self, HUB_VARLEN_ATTR, None) or native_varlen_func
+        if cu is None or cache is not None or varlen_func is None:
             return orig(self, hidden_states, *args, **kwargs)
         # Packed rows arrive as (1, total_tokens, hidden); flash varlen consumes flat
         # (tokens, heads, head_dim) and handles GQA natively, so K/V stay at kv-head count.
@@ -132,9 +139,7 @@ def _patch_attn_forward(attn_cls):
         kf = self.k_proj(hidden_states).view(b * q, -1, self.head_dim)
         vf = self.v_proj(hidden_states).view(b * q, -1, self.head_dim)
         ml = self._packing_max_seqlen
-        o = flash_attn_varlen_func(
-            qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=ml, max_seqlen_k=ml, causal=True
-        )
+        o = varlen_func(qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=ml, max_seqlen_k=ml, causal=True)
         return self.o_proj(o.reshape(b, q, -1)), None
 
     forward._nemotron_packing = True
@@ -193,3 +198,37 @@ def apply_nemotron_h_sglang_match_patch(model):
         attn_cls.__name__ if attn_cls else None,
     )
     return True
+
+
+def bind_nemotron_h_hub_kernels(model, args) -> int:
+    """Stash the Hub varlen-attention kernel on each NemotronH attention mixer. Returns mixers patched.
+
+    ``_patch_attn_forward`` above rewrites attention as ``flash_attn_varlen_func`` with per-document
+    ``cu_seqlens``, and returns the unpatched dense forward when no varlen kernel is importable.
+    This supplies one from the Hub so that fallback isn't reached. The value is read per forward, so
+    this can run before or after the packing patch installs the wrapper.
+    """
+    from ..kernels.hub import resolve_slot
+    from ..kernels.presets import SLOT_FLASH_ATTN_VARLEN
+
+    mixers = [
+        mod.mixer
+        for mod in model.modules()
+        if getattr(mod, "block_type", None) == "attention" and hasattr(mod, "mixer")
+    ]
+    if not mixers:
+        return 0
+
+    functions = resolve_slot(args, SLOT_FLASH_ATTN_VARLEN)
+    if not functions:
+        return 0
+
+    for mixer in mixers:
+        setattr(mixer, HUB_VARLEN_ATTR, functions["flash_attn_varlen_func"])
+
+    logger.info(
+        "[fsdp hub kernels] NemotronH varlen attention served from the Hub on %d mixer(s); "
+        "the packed-document attention reset stays active without the flash-attn wheel",
+        len(mixers),
+    )
+    return len(mixers)
