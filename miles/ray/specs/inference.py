@@ -148,6 +148,18 @@ def compute_engine_pool_ids(args) -> list[str]:
     return [spec.name for spec in specs_inference_engine(args)]
 
 
+def _compute_dist_init_port_span(args, server_group_config: ServerGroupConfig) -> int:
+    """Return the TCP port span that SGLang derives from ``dist_init``."""
+    enable_dp_attention = server_group_config.overrides.get(
+        "enable_dp_attention", getattr(args, "sglang_enable_dp_attention", False)
+    )
+    if not enable_dp_attention:
+        return 1
+
+    dp_size = server_group_config.overrides.get("dp_size", args.sglang_dp_size)
+    return 30 + dp_size
+
+
 def _compute_spec_inference_engine(
     args,
     model_idx: int,
@@ -217,7 +229,7 @@ def _compute_spec_inference_engine(
                 static_port=9000,
                 mode="master",
                 allow_dynamic=True,
-                num_consecutive=30 + args.sglang_dp_size,
+                num_consecutive=_compute_dist_init_port_span(args, server_group_config),
             ),
             PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
             *(
