@@ -4,6 +4,7 @@ import random
 
 import aiohttp
 
+from miles.rollout.rm_hub.math_dapo_strict_utils import compute_score as compute_score_dapo_strict
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -63,6 +64,8 @@ async def async_rm(args, sample: Sample, **kwargs):
         return get_gemma_math_reward(response, label)
     elif rm_type == "dapo":
         return compute_score_dapo(response, label)
+    elif rm_type == "dapo_strict":
+        return compute_score_dapo_strict(response, label, is_complete=sample.status == Sample.Status.COMPLETED)
     elif rm_type == "math":
         return 1 if grade_answer_verl(response, label) else 0
     elif rm_type == "f1":
