@@ -19,7 +19,7 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
   and the output layer (`output_layer`) so the cookbook's default `train_unembed=True` is servable.
 
 The example enables attention, MLP, and output-head training. Client SDK flags
-must match the server's selected groups. See [LoRA target selection](../advanced/lora.md#hf-target-source-of-truth)
+must match the server's selected groups. See [LoRA target selection](/advanced/lora#hf-target-source-of-truth)
 for defaults, `--tinker-train-*` flags, and explicit target overrides.
 
 ## Run
