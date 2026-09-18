@@ -180,74 +180,56 @@ def compute_approx_kl(
     return kl
 
 
+def compute_sequence_kl(
+    log_probs: list[torch.Tensor],
+    old_log_probs: list[torch.Tensor],
+    local_loss_masks: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+) -> torch.Tensor:
+    """Reduce one masked log-ratio sum per sequence across context-parallel ranks."""
+    numerators = torch.stack(
+        [
+            ((old_log_prob - log_prob) * mask).sum()
+            for log_prob, old_log_prob, mask in zip(log_probs, old_log_probs, local_loss_masks, strict=True)
+        ]
+    )
+    cp = get_parallel_state().cp
+    if cp.size > 1:
+        # Empty ranks must still participate in the backward collective.
+        numerators.requires_grad_(torch.is_grad_enabled())
+        numerators = dist.nn.all_reduce(numerators, group=cp.group)
+    # Response masks are replicated across CP ranks; their counts are already global.
+    denominators = torch.stack([mask.sum() for mask in loss_masks]).clamp_min(1)
+    return numerators / denominators
+
+
 def compute_opsm_mask(
     args: Namespace,
-    full_log_probs: list[torch.Tensor],
-    full_old_log_probs: list[torch.Tensor],
+    sequence_kl: torch.Tensor,
     advantages: list[torch.Tensor],
     loss_masks: list[torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute Off-Policy Sequence Masking (OPSM) mask.
-
-    Args:
-        args: Configuration containing `opsm_delta` threshold.
-        full_log_probs: Current policy log-probs per sample.
-        full_old_log_probs: Old policy log-probs per sample.
-        advantages: Advantage values per sample.
-        loss_masks: Loss masks per sample.
-
-    Returns:
-        Tuple of `(opsm_mask, opsm_clipfrac)` where `opsm_mask` is a
-        concatenated tensor of per-token masks and
-        `opsm_clipfrac` is the count of masked sequences.
-    """
+    """Compute the per-token OPSM mask and count of masked sequences."""
     opsm_mask_list = []
-    device = advantages[0].device
-    opsm_clipfrac = torch.tensor(0.0, device=device)
+    opsm_clipfrac = torch.tensor(0.0, device=advantages[0].device)
 
-    for full_log_prob, full_old_log_prob, advantage, loss_mask in zip(
-        full_log_probs, full_old_log_probs, advantages, loss_masks, strict=False
-    ):
-        # Calculate sequence-level KL
-        seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-
+    for seq_kl, advantage, loss_mask in zip(sequence_kl, advantages, loss_masks, strict=False):
         # Create mask: 0 if (advantage < 0 and seq_kl > delta), else 1
         mask = ((advantage < 0) & (seq_kl > args.opsm_delta)).float()
         opsm_clipfrac += mask.sum() / torch.clamp_min(loss_mask.sum(), 1)
-
         opsm_mask_list.append(1 - mask)
 
-    opsm_mask = torch.cat(opsm_mask_list, dim=0)
-    return opsm_mask, opsm_clipfrac
+    return torch.cat(opsm_mask_list, dim=0), opsm_clipfrac
 
 
 def compute_gspo_kl(
-    full_log_probs: list[torch.Tensor],
-    full_old_log_probs: list[torch.Tensor],
+    sequence_kl: torch.Tensor,
     local_log_probs: list[torch.Tensor],
-    loss_masks: list[torch.Tensor],
 ) -> torch.Tensor:
-    """Compute GSPO-style per-sequence KL divergence.
-
-    Args:
-        full_log_probs: Current policy log-probs per sample (full or CP-local).
-        full_old_log_probs: Old policy log-probs per sample (full or CP-local).
-        local_log_probs: Local (CP-local) log-probs for expansion shape reference.
-        loss_masks: Loss masks per sample.
-
-    Returns:
-        Concatenated tensor of per-token KL values where each token in a
-        sequence has the same KL value (the sequence-level KL).
-    """
-    # Compute sequence-level KL and expand to per-token
-    ppo_kl = [
-        ((old_logprob - log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-        for log_prob, old_logprob, loss_mask in zip(full_log_probs, full_old_log_probs, loss_masks, strict=False)
-    ]
-    ppo_kl = [kl.expand_as(log_prob) for kl, log_prob in zip(ppo_kl, local_log_probs, strict=False)]
-    ppo_kl = torch.cat(ppo_kl, dim=0)
-
-    return ppo_kl
+    """Expand each sequence's global masked mean log-ratio to its local tokens."""
+    return torch.cat(
+        [kl.expand_as(log_prob) for kl, log_prob in zip(sequence_kl, local_log_probs, strict=False)], dim=0
+    )
 
 
 @torch.compile(dynamic=True)
