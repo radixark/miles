@@ -1,7 +1,6 @@
 import json
 import logging
 import time
-from copy import deepcopy
 
 from starlette.responses import Response
 
@@ -16,7 +15,7 @@ from miles.rollout.session.core import (
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
-from miles.rollout.session.request_args import parse_chat_request
+from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
@@ -59,7 +58,7 @@ class SessionCoreV2(SessionCore):
         metadata["accumulated_token_ids"] = latest.token_ids if latest is not None else []
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
-        metadata["turn_args"] = deepcopy(latest.turn_args) if latest is not None else {}
+        metadata["turn_args"] = filter_turn_args(latest.turn_args) if latest is not None else {}
         return metadata
 
     async def get_session(self, session_id: str) -> Response:

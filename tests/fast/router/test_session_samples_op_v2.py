@@ -1027,3 +1027,29 @@ async def test_hooks_cannot_mutate_committed_turn_args():
         response = await hooked.collect_samples(sid, max_seq_len=None)
         assert response.status_code == 200, response.body
         assert [node.turn_args for node in nodes] == before
+
+
+@pytest.mark.asyncio
+async def test_metadata_omits_input_ids_without_changing_stored_turn_args(core):
+    sid = await _retry_shaped_session(core)
+    nodes = core.registry.sessions[sid].tree.nodes
+    expected = []
+    for node in nodes:
+        args = {"temperature": 0.7, "messages": node.path_messages(), "chat_template_kwargs": {"nested": [node.seq]}}
+        expected.append(deepcopy(args))
+        node.turn_args = {**args, "input_ids": list(node.record.request["input_ids"])}
+    before = [deepcopy(node.turn_args) for node in nodes]
+
+    response = await core.get_session(sid)
+    metadata = json.loads(response.body)["metadata"]
+    assert metadata["turn_args"] == expected[-1]
+    assert [node["turn_args"] for node in metadata["tree"]["nodes"]] == expected
+
+    status, payload = await _collect_via_op(core, sid)
+    assert status == 200
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    assert reply.session_metadata == metadata
+    assert reply.samples
+    for sample in reply.samples:
+        assert sample.metadata["turn_args"] == expected[sample.metadata["leaf"]["node_id"]]
+    assert [node.turn_args for node in nodes] == before

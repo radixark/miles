@@ -1,10 +1,10 @@
 import logging
 from argparse import Namespace
-from copy import deepcopy
 from typing import Any
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.errors import TokenizationError
+from miles.rollout.session.request_args import filter_turn_args
 from miles.rollout.session.samples.merge import (
     compute_samples_from_openai_records,
     merge_samples_with_addition_r3,
@@ -32,7 +32,7 @@ def tree_metadata(state: SessionStateV2) -> dict:
             "completion_span": list(node.completion_span),
             "num_tokens": len(node.token_ids),
             "response_id": node.response_id,
-            "turn_args": deepcopy(node.turn_args),
+            "turn_args": filter_turn_args(node.turn_args),
         }
         for node in state.tree.nodes
     ]
@@ -84,7 +84,7 @@ def build_leaf_material(
             sample = merge_samples(turns, registry.tokenizer)
         flat: dict[str, Any] = {
             "accumulated_token_ids": list(leaf.token_ids),
-            "turn_args": deepcopy(leaf.turn_args),
+            "turn_args": filter_turn_args(leaf.turn_args),
             "leaf": {
                 "node_id": leaf.seq,
                 "parent": leaf.parent.seq if leaf.parent is not None else None,

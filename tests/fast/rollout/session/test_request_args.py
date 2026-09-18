@@ -7,7 +7,7 @@ import pytest
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError
-from miles.rollout.session.request_args import prepare_chat_request, resolve_request_args_by_config
+from miles.rollout.session.request_args import filter_turn_args, prepare_chat_request, resolve_request_args_by_config
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -190,3 +190,22 @@ def test_template_projection_only_selects_render_fields():
     }
     assert extract_template_args(request_args) == {"enable_thinking": True, "tools": [{"name": "f"}]}
     assert extract_template_args({"temperature": 0.7}) == {}
+
+
+def test_filter_turn_args_drops_payload_before_copying_and_isolates_metadata():
+    payload = MagicMock()
+    payload.__deepcopy__ = MagicMock(side_effect=AssertionError("excluded payload must not be copied"))
+    turn_args = {"input_ids": payload, "temperature": 0.7, "chat_template_kwargs": {"nested": [1]}}
+
+    metadata = filter_turn_args(turn_args)
+
+    assert metadata == {"temperature": 0.7, "chat_template_kwargs": {"nested": [1]}}
+    metadata["chat_template_kwargs"]["nested"].append(2)
+    assert turn_args["chat_template_kwargs"] == {"nested": [1]}
+    assert turn_args["input_ids"] is payload
+
+
+def test_filter_turn_args_accepts_an_explicit_drop_list():
+    turn_args = {"input_ids": [1], "messages": [{"role": "user", "content": "hi"}], "seed": 42}
+    assert filter_turn_args(turn_args, drop_keys=("input_ids", "messages")) == {"seed": 42}
+    assert filter_turn_args(turn_args, drop_keys=()) == turn_args

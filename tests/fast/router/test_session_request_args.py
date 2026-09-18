@@ -43,6 +43,11 @@ def _metadata(url: str, session_id: str) -> dict:
     return requests.get(f"{url}/sessions/{session_id}", timeout=5.0).json()["metadata"]
 
 
+def _assert_exported_turn_args(exported: dict, request_args: dict):
+    assert "input_ids" not in exported
+    assert {**exported, "input_ids": request_args["input_ids"]} == request_args
+
+
 class TestForbiddenClientFields:
     @pytest.mark.parametrize(
         ("field", "value"),
@@ -150,7 +155,7 @@ class TestTurnArgs:
 
             first = self._turn(env, session_id, [USER], chat_template_kwargs=THINKING_ON)
             assert first.status_code == 200
-            assert _metadata(env.url, session_id)["turn_args"] == env.backend.request_log[-1]
+            _assert_exported_turn_args(_metadata(env.url, session_id)["turn_args"], env.backend.request_log[-1])
             assert _metadata(env.url, session_id)["turn_args"]["chat_template_kwargs"] == THINKING_ON
             assistant = first.json()["choices"][0]["message"]
             history = [USER, assistant, {"role": "user", "content": "more"}]
@@ -163,7 +168,7 @@ class TestTurnArgs:
             third = self._turn(env, session_id, history, chat_template_kwargs=LAUNCH_KWARGS)
             assert third.status_code == 200
             assert env.backend.request_log[-1]["chat_template_kwargs"] == LAUNCH_KWARGS
-            assert _metadata(env.url, session_id)["turn_args"] == env.backend.request_log[-1]
+            _assert_exported_turn_args(_metadata(env.url, session_id)["turn_args"], env.backend.request_log[-1])
             if version == "v1":
                 assert len(_records(env.url, session_id)) == 2
             else:
@@ -176,7 +181,7 @@ class TestTurnArgs:
             session_id = _create_session(env.url)
             first = self._turn(env, session_id, [USER], tools=TOOLS)
             assert first.status_code == 200
-            assert _metadata(env.url, session_id)["turn_args"] == env.backend.request_log[-1]
+            _assert_exported_turn_args(_metadata(env.url, session_id)["turn_args"], env.backend.request_log[-1])
             assert _metadata(env.url, session_id)["turn_args"]["tools"] == TOOLS
             assistant = first.json()["choices"][0]["message"]
             history = [USER, assistant, {"role": "user", "content": "more"}]
@@ -206,7 +211,7 @@ class TestTurnArgs:
             assert self._turn(env, session_id, history).status_code == 200
 
             assert env.backend.request_log[-1]["chat_template_kwargs"] == THINKING_ON
-            assert _metadata(env.url, session_id)["turn_args"] == env.backend.request_log[-1]
+            _assert_exported_turn_args(_metadata(env.url, session_id)["turn_args"], env.backend.request_log[-1])
             assert len(_records(env.url, session_id)) == 2
 
     def test_a_new_root_may_choose_again(self, version):
@@ -219,13 +224,14 @@ class TestTurnArgs:
             assert again.status_code == 200
             assert env.backend.request_log[-1]["chat_template_kwargs"] == LAUNCH_KWARGS
             metadata = _metadata(env.url, session_id)
-            assert metadata["turn_args"] == env.backend.request_log[-1]
+            _assert_exported_turn_args(metadata["turn_args"], env.backend.request_log[-1])
             if version == "v1":
                 assert len(_records(env.url, session_id)) == 1
             else:
                 nodes = metadata["tree"]["nodes"]
                 assert [node["parent"] for node in nodes] == [None, None]
-                assert [node["turn_args"] for node in nodes] == env.backend.request_log
+                for node, request_args in zip(nodes, env.backend.request_log, strict=True):
+                    _assert_exported_turn_args(node["turn_args"], request_args)
 
     def test_failed_turn_records_nothing(self, version):
         original = MockSGLangServer._handle_generate_like_request
@@ -244,7 +250,7 @@ class TestTurnArgs:
                 assert _metadata(env.url, session_id)["turn_args"] == {}
                 assert self._turn(env, session_id, [USER]).status_code == 200
             assert env.backend.request_log[-1]["chat_template_kwargs"] == LAUNCH_KWARGS
-            assert _metadata(env.url, session_id)["turn_args"] == env.backend.request_log[-1]
+            _assert_exported_turn_args(_metadata(env.url, session_id)["turn_args"], env.backend.request_log[-1])
 
     def test_full_snapshot_records_sampling_without_inheriting_it(self, version):
         with _serve(version) as env:
@@ -252,14 +258,22 @@ class TestTurnArgs:
             first = self._turn(env, session_id, [USER], temperature=0.2, seed=42, tools=TOOLS)
             assert first.status_code == 200
             first_args = _metadata(env.url, session_id)["turn_args"]
-            assert first_args == env.backend.request_log[-1]
+            first_request = deepcopy(env.backend.request_log[-1])
+            _assert_exported_turn_args(first_args, first_request)
             assert first_args["temperature"] == 0.2 and first_args["seed"] == 42
-            assert first_args["input_ids"]
+            assert first_request["input_ids"]
             assistant = first.json()["choices"][0]["message"]
             history = [USER, assistant, {"role": "user", "content": "more"}]
-            assert self._turn(env, session_id, history, temperature=0.8).status_code == 200
+            original_resolve = TITOTokenizer.resolve_request_args
+
+            def resolve(tokenizer, request_args, *, turn_args):
+                assert turn_args == first_request
+                return original_resolve(tokenizer, request_args, turn_args=turn_args)
+
+            with patch.object(TITOTokenizer, "resolve_request_args", new=resolve):
+                assert self._turn(env, session_id, history, temperature=0.8).status_code == 200
             second_args = _metadata(env.url, session_id)["turn_args"]
-            assert second_args == env.backend.request_log[-1]
+            _assert_exported_turn_args(second_args, env.backend.request_log[-1])
             assert second_args["temperature"] == 0.8 and "seed" not in second_args
             assert second_args["tools"] == TOOLS
             assert second_args["chat_template_kwargs"] == LAUNCH_KWARGS
@@ -292,7 +306,7 @@ class TestTurnArgs:
             assert wire["tools"] == TOOLS
             assert wire["chat_template_kwargs"] == THINKING_ON
             assert wire["input_ids"] != default_ids
-            assert _metadata(env.url, session_id)["turn_args"] == wire
+            _assert_exported_turn_args(_metadata(env.url, session_id)["turn_args"], wire)
 
 
 def test_v2_concurrent_first_turns_with_different_kwargs_both_commit_as_roots():
