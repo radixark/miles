@@ -87,7 +87,12 @@ RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f
 RUN pip install flash-linear-attention==0.5.2
 # required for DeepSeek V4
 RUN pip install tilelang==0.1.14 apache-tvm-ffi==0.1.11
-RUN pip install --no-deps tile_kernels==1.0.0
+# TileKernels target-import fix: https://github.com/deepseek-ai/TileKernels/pull/25.
+COPY docker/patch/tile_kernels_target.patch /tmp/tile_kernels_target.patch
+RUN pip install --no-deps tile_kernels==1.0.0 && \
+    TILE_KERNELS_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("tile_kernels").submodule_search_locations[0])') && \
+    patch --fuzz=0 -p1 -d "$TILE_KERNELS_DIR" < /tmp/tile_kernels_target.patch && \
+    rm /tmp/tile_kernels_target.patch
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 # Its dependency pins would downgrade TileLang and TVM-FFI; use the versions above.
 # FlashQLA FP16 on Blackwell retains a pre-existing compile failure.
