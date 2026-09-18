@@ -598,17 +598,17 @@ class TestGetWorkerAddrs:
             manager = await _launch([spec])
 
         assert observed == [None, None]
-        assert set(manager.get_worker_addrs("engine-0-0")) == {"primary", "rpc"}
+        assert set(manager.get_worker_addrs("engine-00000-00000")) == {"primary", "rpc"}
 
     async def test_a_worker_without_its_ports_yet_is_refused_rather_than_answered(
         self, fake_ray_cluster: FakeRayCluster
     ):
         """Returning nothing would be read as a worker that has no endpoints at all."""
         manager = await _launch([_make_spec("engine")])
-        manager._find_actor("engine-0-0").self_addrs = None
+        manager._find_actor("engine-00000-00000").self_addrs = None
 
         with pytest.raises(AssertionError, match="has not been given its ports yet"):
-            manager.get_worker_addrs("engine-0-0")
+            manager.get_worker_addrs("engine-00000-00000")
 
 
 class TestPinToHead:
@@ -1256,6 +1256,15 @@ class TestCellLifecycle:
 
 
 class TestCellStop:
+    async def test_shutting_down_the_manager_stops_every_cell_it_owns(self, fake_ray_cluster: FakeRayCluster):
+        """A finished run releases its own workers without selecting unrelated host processes by name."""
+        manager = await _launch([_make_spec("engine", num_cells=2), _make_spec("router")])
+
+        await manager.shutdown()
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 3
+        assert not any(info.alive for info in manager.get_cell_infos(pool_ids=["engine", "router"]).values())
+
     async def test_stopping_a_cell_shuts_down_and_kills_every_worker(self, fake_ray_cluster: FakeRayCluster):
         """A stopped cell releases all of its workers, not just the first one."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
@@ -1367,6 +1376,20 @@ class TestStopDetails:
 
 
 class TestGetWorkerInfos:
+    async def test_a_worker_still_being_given_its_ports_is_described_as_holding_none(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A description is taken of whatever exists at the time, and a cell mid-start is part of that;
+        it has to render as a worker holding no endpoints rather than fail the whole description."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        manager._find_actor("engine-00000-00001").self_addrs = None
+
+        infos = manager.get_worker_infos("engine-00000")
+
+        assert [info.name for info in infos] == ["engine-00000-00000", "engine-00000-00001"]
+        assert infos[1].self_addrs == {}
+        assert manager.get_addrs()["engine"][1] == {}
+
     async def test_describes_every_worker_of_only_the_requested_cell(self, fake_ray_cluster: FakeRayCluster):
         """A consumer asking about one cell gets that cell's workers, in rank order, fully described."""
         spec = _make_spec(
@@ -1573,11 +1596,11 @@ class TestStartAndStopCells:
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
         actors = manager._pools["engine"].cells[0].actors
 
-        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
 
         actors[1].self_addrs = None
 
-        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
 
     async def test_a_half_started_cell_is_withheld_without_withholding_its_healthy_siblings(
         self, fake_ray_cluster: FakeRayCluster
@@ -1590,8 +1613,8 @@ class TestStartAndStopCells:
             cell_id for cell_id, info in manager.get_cell_infos(pool_ids=["engine"]).items() if info.alive
         ]
 
-        assert alive_cell_ids == ["engine-0"]
-        for info in manager.get_worker_infos("engine-0"):
+        assert alive_cell_ids == ["engine-00000"]
+        for info in manager.get_worker_infos("engine-00000"):
             assert "primary" in info.self_addrs, f"{info.name} is reported alive but describes no ports"
 
     async def test_an_unknown_cell_id_fails_loudly(self, fake_ray_cluster: FakeRayCluster):
@@ -1777,7 +1800,9 @@ class TestStartCellsRollback:
         with pytest.raises(RuntimeError, match="no capacity"):
             with pytest.MonkeyPatch.context() as patched:
                 patched.setattr(_CommandActorManager, "launch_actor", staggered_launch)
-                await manager.init([_make_spec("engine", num_cells=2)], {})
+                await manager.init(
+                    worker_manager_args(), [_make_spec("engine", num_cells=2)], {}, comm_backend=WorkerCommBackend.RAY
+                )
         await asyncio.sleep(0.1)
 
         assert all(handle.killed for handle in fake_ray_cluster.handles)

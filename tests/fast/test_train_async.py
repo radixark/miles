@@ -9,10 +9,12 @@ from tests.fast.fixtures.driver_fakes import (
     FakeObjectStore,
     FakeRolloutExecutor,
     FakeTrainingModel,
+    FakeWorkerManager,
 )
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray import placement_group as placement_group_mod
+from miles.ray import wiring
 from miles.utils import object_store
 
 from miles.ray import placement_group as placement_group_mod
@@ -214,3 +216,24 @@ class TestTerminalLifecycle:
             "executor_dispose",
             "inference_dispose",
         ]
+
+    async def test_async_train_releases_its_worker_manager_after_eval_and_component_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The async driver releases its own manager after eval draining and component cleanup."""
+        events: list[str] = []
+        args = _make_args(use_critic=True, keep_old_actor=True, eval_interval=1, hf_checkpoint="/ckpt/hf")
+        manager = FakeWorkerManager(events)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        monkeypatch.setattr(train_async_driver, "init_orchestration_script", lambda _args: manager)
+        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
+
+        await train_async_driver.train(args)
+
+        assert manager.killed == [manager]
+        assert events.index("eval:0") < events.index("manager_shutdown")
+        assert all(
+            events.index(event) < events.index("manager_shutdown") for event in events if event.endswith("_dispose")
+        )
+        assert events.index("manager_shutdown") < events.index("manager_kill")
