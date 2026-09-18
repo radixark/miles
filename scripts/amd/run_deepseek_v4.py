@@ -27,20 +27,9 @@ Args:
       fix must be rebuilt into the AOT binary before use (not merely cherry-picked).
       CPU AdamW retains FP32 masters/moments and streams one gradient at a time;
       BF16 model parameters are reconstructed from masters with byte checks.
-      Legacy rollout submits 8 candidate groups x 4 samples initially: 32 requests,
-      or 8 per TP4 engine under round-robin routing. Refill is batched, not a fixed
-      concurrency floor: at most 9 groups / 36 client requests can be outstanding;
-      each engine still runs at most 8 requests. The budget remains 32 candidate
-      groups / 1800 seconds per rollout. Truncated responses are loss-masked without
-      changing rewards; completed responses must have reward diversity. Format
-      penalties are not math errors.
-      --dump-details is opt-in: beside normal successful training dumps, legacy
-      rollout writes candidates/<id>.success.pt or candidates/<id>.failure.pt with
-      completed candidate groups (including rejected ones), text/rewards, filter
-      decisions and summary counts at collection exit. Unfinished requests have
-      no completed evidence. These sidecars are diagnostic-only, not replay inputs;
-      heavy per-token/replay tensors are omitted. Failure summaries always log,
-      including when dumping is disabled. --debug-data-root controls the root.
+      Legacy rollout is bounded to 32 candidates / 1800 seconds per rollout;
+      truncated responses are loss-masked without changing rewards, and completed
+      responses must have reward diversity. Format penalties are not math errors.
       Continuous mode keeps running until interrupted; num_rollout=3000 is only
       the constant-schedule initialization horizon, NOT a stopping condition.
       --extra-args allows --num-rollout, --prompt-data, --log-interval, --save-interval,
@@ -111,15 +100,7 @@ _MEGATRON_MODEL_TYPE = {
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    profile: Literal["default", "fp8_smoke"] = field(
-        default="default",
-        metadata={
-            "help": (
-                "fp8_smoke: 2-node FP8, target 2 x 4 samples, oversampling 8 groups (32 initial requests); "
-                "strict completed reward diversity, max 32 candidate groups / 1800 seconds."
-            )
-        },
-    )
+    profile: Literal["default", "fp8_smoke"] = "default"
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     # Context parallelism for the training actor. 1 keeps the historical layout untouched.
     # Above 1 it is what makes long sequences fit, because it is the only axis that divides
@@ -161,16 +142,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     use_fault_tolerance: bool = True
 
     # debug configs
-    dump_details: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Opt in to debug dumps under --debug-data-root. Legacy rollout also saves completed candidate "
-                "evidence, including rejected groups, in candidates/<id>.success.pt or <id>.failure.pt; "
-                "diagnostic-only, not training/replay input."
-            )
-        },
-    )
+    dump_details: bool = False
     debug_train_run_id: str | None = None
     debug_train_rollout_id: str | None = None
     debug_data_root: str = "/root/shared_data"
@@ -635,7 +607,7 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
         # The modern rollout pipeline does not enforce these per-rollout budgets.
         rollout_args += (
             "--rollout-function-path miles.rollout.sglang_rollout.generate_rollout "
-            "--over-sampling-batch-size 8 --rollout-max-candidate-groups 32 --rollout-timeout-seconds 1800 "
+            "--over-sampling-batch-size 2 --rollout-max-candidate-groups 32 --rollout-timeout-seconds 1800 "
             "--continuous-rollout "
             "--dynamic-sampling-filter-path "
             "miles.rollout.filter_hub.truncated_response_filters.mask_truncated_and_require_completed_reward_diversity "

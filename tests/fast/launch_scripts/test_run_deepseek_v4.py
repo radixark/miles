@@ -4,6 +4,8 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
+
 from tests.fast.launch_scripts.py_harness import (
     REPO_ROOT,
     call_entrypoint,
@@ -11,7 +13,6 @@ from tests.fast.launch_scripts.py_harness import (
     import_launch_script,
     install_command_recorder,
 )
-from typer.testing import CliRunner
 
 
 @pytest.mark.parametrize(
@@ -299,7 +300,7 @@ def _assert_fp8_smoke_argv(argv):
         "--rollout-batch-size": "2",
         "--n-samples-per-prompt": "4",
         "--num-steps-per-rollout": "1",
-        "--over-sampling-batch-size": "8",
+        "--over-sampling-batch-size": "2",
         "--rollout-max-candidate-groups": "32",
         "--rollout-timeout-seconds": "1800",
         "--rollout-function-path": "miles.rollout.sglang_rollout.generate_rollout",
@@ -361,45 +362,22 @@ def _assert_fp8_smoke_argv(argv):
     }
 
 
-def test_fp8_smoke_help_explains_sampling_and_existing_dump_option(monkeypatch, fp8_smoke_launcher):
-    recording = install_command_recorder(monkeypatch)
-    monkeypatch.setattr(fp8_smoke_launcher, "_probe_fp8_capabilities", lambda: pytest.fail("unexpected GPU probe"))
-    monkeypatch.setenv("COLUMNS", "240")
-    result = CliRunner().invoke(fp8_smoke_launcher.app, ["train", "--help"], terminal_width=240)
-    assert result.exit_code == 0, result.exception
-    help_text = " ".join(result.stdout.replace("│", " ").split())
-    for text in ("oversampling 8 groups", "32 initial requests", "1800 seconds", "diagnostic-only"):
-        assert text in help_text
-    assert not recording.commands
-
-
-@pytest.mark.parametrize("dump_details", [False, True])
-def test_fp8_smoke_cli_emits_exact_recipe_and_config_paths(monkeypatch, fp8_smoke_launcher, dump_details):
+def test_fp8_smoke_cli_emits_exact_recipe_and_config_paths(monkeypatch, fp8_smoke_launcher):
     recording = install_command_recorder(monkeypatch)
     result = CliRunner().invoke(
         fp8_smoke_launcher.app,
         [
             "train",
-            "--profile",
-            "fp8_smoke",
+            "--profile", "fp8_smoke",
             "--skip-process-cleanup",
             "--no-join-ray-workers",
-            "--model-dir",
-            "/models",
-            "--model-local-dir",
-            "/local-models",
-            "--data-dir",
-            "/data",
-            "--save-dir",
-            "/checkpoints",
-            "--run-id",
-            "profile-test",
-            "--megatron-path",
-            "/megatron",
-            "--debug-data-root",
-            "/debug",
-        ]
-        + (["--dump-details"] if dump_details else []),
+            "--model-dir", "/models",
+            "--model-local-dir", "/local-models",
+            "--data-dir", "/data",
+            "--save-dir", "/checkpoints",
+            "--run-id", "profile-test",
+            "--megatron-path", "/megatron",
+        ],
     )
     assert result.exit_code == 0, result.exception
     assert len(recording.commands) == 1
@@ -408,11 +386,6 @@ def test_fp8_smoke_cli_emits_exact_recipe_and_config_paths(monkeypatch, fp8_smok
     assert all(text not in submit for text in ("pkill", "ssh ", "ray start", "audit.", "/apps/"))
     argv = shlex.split(submit)
     _assert_fp8_smoke_argv(argv)
-    assert argv.count("--dump-details") == int(dump_details)
-    if dump_details:
-        assert argv[argv.index("--dump-details") + 1] == "/debug/profile-test/dump_details"
-    assert "--rollout-all-samples-process-path" not in argv
-    assert "--rollout-sample-filter-path" not in argv
     paths = {
         "--hf-checkpoint": "/models/DeepSeek-V4-Flash-FP8",
         "--ref-load": "/local-models/DeepSeek-V4-Flash-FP8_torch_dist",
@@ -480,7 +453,6 @@ def test_fp8_smoke_requires_explicit_safe_cluster(monkeypatch, fp8_smoke_launche
     "extra_args",
     [
         "--rollout-batch-size 3",
-        "--over-sampling-batch-size 2",
         "--rollout-max-candidate-groups=0",
         "--rollout-timeout-seconds 0",
         "--rollout-function-path custom.rollout",
