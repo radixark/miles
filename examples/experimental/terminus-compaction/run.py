@@ -25,15 +25,15 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
-_HARBOR_PIPELINE_DIR = U.repo_base_dir / "examples" / "swe-agent-harbor-docker"
+_HARBOR_PIPELINE_DIR = command_utils.repo_base_dir / "examples" / "swe-agent-harbor-docker"
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
-    run_id: str = field(default_factory=U.create_run_id)
+    run_id: str = field(default_factory=command_utils.create_run_id)
     megatron_model_type: str = "glm4.7-flash"
     megatron_path: str = "/root/Megatron-LM"
     num_gpus_per_node: int = 8
@@ -206,7 +206,7 @@ def _observability_args(args: ScriptArgs) -> str:
         "--use-miles-dashboard "
         "--use-rollout-entropy "
         f"{prometheus_args}"
-        f"{U.get_default_wandb_args(__file__, run_name_prefix='terminus-compaction', run_id=args.run_id)}"
+        f"{command_utils.get_default_wandb_args(__file__, run_name_prefix='terminus-compaction', run_id=args.run_id)}"
     )
 
 
@@ -241,6 +241,7 @@ def _extra_env_vars(args: ScriptArgs) -> dict[str, str]:
 
 
 def _prepare(args: ScriptArgs) -> None:
+    U = args.create_backend()
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -252,9 +253,9 @@ def _prepare(args: ScriptArgs) -> None:
 
 
 def _execute(args: ScriptArgs) -> None:
+    U = args.create_backend()
     U.execute_train(
         train_args=_build_train_args(args),
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -262,7 +263,7 @@ def _execute(args: ScriptArgs) -> None:
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs) -> None:
     if not args.skip_prepare:
         _prepare(args)

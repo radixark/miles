@@ -8,15 +8,15 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = "deepseek-ai"
     model_name: str = "DeepSeek-V3"
     megatron_model_type: str = "deepseek-v3"
@@ -36,6 +36,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(
         f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
@@ -49,6 +50,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _prepare_bf16_ckpt(args: ScriptArgs):
+    U = args.create_backend()
     U.fp8_cast_bf16(
         path_src=f"{args.model_dir}/{args.model_name}",
         path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
@@ -57,6 +59,7 @@ def _prepare_bf16_ckpt(args: ScriptArgs):
 
 def _prepare_megatron_ckpt(args: ScriptArgs):
     # TODO unify 5layer w/ 20layer, also maybe unify the whole script
+    U = args.create_backend()
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
     num_gpus_per_node = args.num_gpus_per_node
     multinode = True
@@ -94,16 +97,17 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
 
 def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
     copies = [
-        U.rsync_cmd(
+        command_utils.rsync_cmd(
             f"{args.model_dir}/{args.model_name}_torch_dist",
             f"{args.model_local_dir}/{args.model_name}_torch_dist",
         ),
-        U.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
+        command_utils.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
     ]
     return {"trainer": " && ".join(copies)}
 
 
-def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
+def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
@@ -288,7 +292,7 @@ def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -303,13 +307,12 @@ def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**sglang_extra_env_vars},
         megatron_path=args.megatron_path,
-        before_ray_job_submit=before_ray_job_submit,
         prepare_cmd=_prepare_cmd(args),
     )
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs) -> None:
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
@@ -318,7 +321,7 @@ def full_train(args: ScriptArgs) -> None:
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs) -> None:
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
@@ -326,7 +329,7 @@ def prepare(args: ScriptArgs) -> None:
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs) -> None:
     _execute_train(args)
 
