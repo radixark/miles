@@ -17,6 +17,7 @@ class CaseConfig:
     tp_size: int
     ep_size: int
     rollout_num_gpus_per_engine: int
+    etp_size: int = 1
     sglang_ep_size: int = None
     sglang_dp_size: int = None
     sglang_enable_dp_attention: bool = False
@@ -39,10 +40,15 @@ class CaseConfig:
         # Validation only — topology values are passed explicitly, not inferred.
         if self.fully_async and self.colocate:
             raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
-        if self.num_gpus_per_node % (self.cp_size * self.pp_size) != 0:
+        if self.num_gpus_per_node % (self.tp_size * self.cp_size * self.pp_size) != 0:
             raise ValueError(
-                "num_gpus_per_node must be divisible by cp_size * pp_size: "
-                f"{self.num_gpus_per_node=} {self.cp_size=} {self.pp_size=}"
+                "num_gpus_per_node must be divisible by tp_size * cp_size * pp_size: "
+                f"{self.num_gpus_per_node=} {self.tp_size=} {self.cp_size=} {self.pp_size=}"
+            )
+        if self.num_gpus_per_node % (self.etp_size * self.ep_size * self.pp_size) != 0:
+            raise ValueError(
+                "num_gpus_per_node must be divisible by etp_size * ep_size * pp_size: "
+                f"{self.num_gpus_per_node=} {self.etp_size=} {self.ep_size=} {self.pp_size=}"
             )
         if not self.colocate and self.rollout_num_gpus is None:
             raise ValueError("rollout_num_gpus must be set when colocate is False")
@@ -134,7 +140,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"--pipeline-model-parallel-size {case.pp_size} "
         f"--context-parallel-size {case.cp_size} "
         f"--expert-model-parallel-size {case.ep_size} "
-        "--expert-tensor-parallel-size 1 "
+        f"--expert-tensor-parallel-size {case.etp_size} "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
