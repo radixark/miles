@@ -473,7 +473,9 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
-            return result
+        del rollout_data
+        clear_memory()
+        return result
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutput:

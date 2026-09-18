@@ -81,6 +81,8 @@ def _worker(actor_module, role, *, asleep=True):
 
 def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "critic")
+    clear_memory = Mock()
+    monkeypatch.setattr(actor_module, "clear_memory", clear_memory)
     critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
     worker.train_critic = Mock(return_value=critic_output)
     monkeypatch.setattr(
@@ -104,10 +106,13 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
     assert result.outcome is TrainStepOutcome.NORMAL
     assert result.values.inner == "cpu-values-ref"
     assert phases == ["data_preprocess", "critic_train"]
+    clear_memory.assert_called_once_with()
 
 
 def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor")
+    clear_memory = Mock()
+    monkeypatch.setattr(actor_module, "clear_memory", clear_memory)
     worker.train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
@@ -121,10 +126,13 @@ def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module
     assert worker.train_actor.call_args.kwargs["external_data"] is values
     worker.sleep.assert_not_called()
     assert result is None
+    clear_memory.assert_called_once_with()
 
 
 def test_train_keeps_model_resident(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor", asleep=False)
+    clear_memory = Mock()
+    monkeypatch.setattr(actor_module, "clear_memory", clear_memory)
     worker.train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
@@ -134,6 +142,7 @@ def test_train_keeps_model_resident(actor_module, monkeypatch):
 
     worker.wake_up.assert_not_called()
     worker.sleep.assert_not_called()
+    clear_memory.assert_called_once_with()
 
 
 def test_compute_log_prob_keeps_logits_in_model_precision(actor_module, monkeypatch):
