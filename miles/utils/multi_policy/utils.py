@@ -147,7 +147,6 @@ def _assert_no_debug_rollout_data_flags(args) -> None:
         flag
         for flag, value in (
             ("--dump-details", args.dump_details),
-            ("--save-debug-rollout-data", args.save_debug_rollout_data),
             ("--load-debug-rollout-data", args.load_debug_rollout_data),
             ("--ci-inject-rollout-data-path", args.ci_inject_rollout_data_path),
         )
@@ -155,7 +154,7 @@ def _assert_no_debug_rollout_data_flags(args) -> None:
     ]
     assert not set_flags, (
         f"multi policy training does not support {set_flags}: those paths are keyed by rollout id alone, and "
-        f"every policy counts its own rollouts, so the policies would overwrite and replay each other's data"
+        f"every policy counts its own rollouts, so the policies would overwrite and replay each other's data."
     )
 
 

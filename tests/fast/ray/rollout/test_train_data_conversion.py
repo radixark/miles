@@ -696,7 +696,7 @@ class TestSplitTrainDataByDp:
             "sample_indices": [0, 1, 2, 3],
         }
         refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.inner) for r in refs]
+        parts = [ray.get(r.payload) for r in refs]
         # stride: dp=0 takes [0, 2], dp=1 takes [1, 3]
         assert list(parts[0]["partition"]) == [0, 2]
         assert list(parts[1]["partition"]) == [1, 3]
@@ -714,7 +714,7 @@ class TestSplitTrainDataByDp:
             "sample_indices": [0, 1, 2, 3],
         }
         refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.inner) for r in refs]
+        parts = [ray.get(r.payload) for r in refs]
         sizes = [len(p["tokens"]) for p in parts]
         assert max(sizes) - min(sizes) <= 1
 
@@ -731,7 +731,7 @@ class TestSplitTrainDataByDp:
             "round_number": [1, 2],
         }
         refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.inner) for r in refs]
+        parts = [ray.get(r.payload) for r in refs]
         assert "rollout_log_probs" in parts[0]
         assert "round_number" in parts[0]
 
@@ -749,7 +749,7 @@ class TestSplitTrainDataByDp:
             "dynamic_global_batch_size": 4,
         }
         refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.inner) for r in refs]
+        parts = [ray.get(r.payload) for r in refs]
         for p in parts:
             assert p["raw_reward"] == [9.0, 8.0, 7.0, 6.0]
             assert p["dynamic_global_batch_size"] == 4
@@ -767,7 +767,7 @@ class TestSplitTrainDataByDp:
             "sample_indices": list(range(n)),
         }
         refs = split_train_data_by_dp(args, data, {"dp_size": 4})
-        parts = [ray.get(r.inner) for r in refs]
+        parts = [ray.get(r.payload) for r in refs]
         all_indices = sorted(i for p in parts for i in p["partition"])
         assert all_indices == list(range(n))
 

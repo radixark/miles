@@ -6,7 +6,12 @@ import pytest
 import torch
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
-from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import (
+    RolloutDataInjectionUtil,
+    load_debug_rollout_data,
+    save_debug_rollout_data,
+    save_debug_trajectory_data,
+)
 
 # ----------------------------- save / load round-trip -----------------------------
 
@@ -27,6 +32,37 @@ class TestRoundTrip:
         for orig, got in zip(original, loaded, strict=True):
             assert got.index == orig.index
             assert got.response_length == orig.response_length
+
+    def test_a_policy_keyed_dump_does_not_collide_with_another_policy(self, tmp_path: Path):
+        """Multi-policy runs count rollouts per policy, so unkeyed dumps would overwrite each other."""
+        args = make_args(save_debug_rollout_data=str(tmp_path / "rollout_{rollout_id}.pt"))
+
+        save_debug_rollout_data(args, [make_sample()], rollout_id=7, evaluation=False, trainer_model_id="solver")
+        save_debug_rollout_data(args, [make_sample()], rollout_id=7, evaluation=False, trainer_model_id="verifier")
+
+        assert (tmp_path / "rollout_solver_7.pt").exists()
+        assert (tmp_path / "rollout_verifier_7.pt").exists()
+
+    def test_policy_key_is_applied_to_every_debug_artifact(self, tmp_path: Path):
+        """Policy keys keep trajectory and dashboard sidecars distinct for the same rollout."""
+        args = make_args(
+            save_debug_rollout_data=str(tmp_path / "rollout_data" / "rollout_{rollout_id}.pt"),
+            save_debug_trajectory_data=str(tmp_path / "trajectories" / "rollout_{rollout_id}.jsonl"),
+        )
+        solver_sample = make_sample(metadata={"messages": [{"role": "user", "content": "solve"}]})
+        verifier_sample = make_sample(metadata={"messages": [{"role": "user", "content": "verify"}]})
+
+        save_debug_rollout_data(
+            args=args, data=[solver_sample], rollout_id=7, evaluation=False, trainer_model_id="solver"
+        )
+        save_debug_rollout_data(
+            args=args, data=[verifier_sample], rollout_id=7, evaluation=False, trainer_model_id="verifier"
+        )
+
+        assert (tmp_path / "trajectories" / "rollout_solver_7.jsonl").exists()
+        assert (tmp_path / "trajectories" / "rollout_verifier_7.jsonl").exists()
+        assert (tmp_path / "dashboard_columns" / "rollout_solver_7.parquet").exists()
+        assert (tmp_path / "dashboard_columns" / "rollout_verifier_7.parquet").exists()
 
     def test_metadata_round_trip(self, tmp_path: Path):
         """Metadata passed to save comes back verbatim from load."""
@@ -92,6 +128,21 @@ class TestRoundTrip:
         monkeypatch.setattr(torch, "save", lambda *a, **kw: called.append((a, kw)))
         save_debug_rollout_data(args, [make_sample()], rollout_id=0, evaluation=False)
         assert called == []
+
+    def test_a_rollout_dump_template_without_the_rollout_id_is_refused(self, tmp_path: Path):
+        """A literal dump path would let every rollout overwrite the preceding rollout."""
+        args = make_args(save_debug_rollout_data=str(tmp_path / "rollout.pt"))
+
+        with pytest.raises(AssertionError, match=r"must contain the \{rollout_id\} placeholder"):
+            save_debug_rollout_data(args, [make_sample()], rollout_id=0, evaluation=False)
+
+    def test_a_trajectory_template_without_the_rollout_id_is_refused(self, tmp_path: Path):
+        """A literal trajectory path would let every rollout overwrite the preceding trajectory."""
+        args = make_args(save_debug_trajectory_data=str(tmp_path / "trajectory.jsonl"))
+        sample = make_sample(metadata={"messages": [{"role": "user", "content": "question"}]})
+
+        with pytest.raises(AssertionError, match=r"must contain the \{rollout_id\} placeholder"):
+            save_debug_trajectory_data(args, [sample], rollout_id=0, evaluation=False)
 
 
 # ----------------------------- subsample -----------------------------
