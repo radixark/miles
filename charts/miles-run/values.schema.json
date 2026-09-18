@@ -1,10 +1,11 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "miles-workbench values",
+  "title": "miles-run values",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "infra"
+    "infra",
+    "run"
   ],
   "properties": {
     "global": {
@@ -24,22 +25,8 @@
     "infra": {
       "$ref": "#/definitions/InfraValues"
     },
-    "objectName": {
-      "maxLength": 52,
-      "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$",
-      "type": "string"
-    },
-    "resources": {
-      "$ref": "#/definitions/WorkbenchResources"
-    },
-    "rbac": {
-      "$ref": "#/definitions/RbacSection"
-    },
-    "serviceAccount": {
-      "$ref": "#/definitions/ServiceAccountSection"
-    },
-    "uninstaller": {
-      "$ref": "#/definitions/Uninstaller"
+    "run": {
+      "$ref": "#/definitions/RunValues"
     }
   },
   "definitions": {
@@ -135,6 +122,37 @@
       },
       "type": "object"
     },
+    "ObjectNames": {
+      "additionalProperties": false,
+      "properties": {
+        "orchestrator": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "orchestrator"
+      ],
+      "type": "object"
+    },
+    "OrchestratorSection": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "resources": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "Paths": {
       "additionalProperties": false,
       "properties": {
@@ -147,18 +165,6 @@
         },
         "repos": {
           "$ref": "#/definitions/Repos"
-        }
-      },
-      "type": "object"
-    },
-    "RbacSection": {
-      "additionalProperties": false,
-      "properties": {
-        "create": {
-          "type": "boolean"
-        },
-        "leaderWorkerSets": {
-          "type": "boolean"
         }
       },
       "type": "object"
@@ -190,6 +196,45 @@
       },
       "type": "object"
     },
+    "RunValues": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 40,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "stateFile": {
+          "minLength": 1,
+          "pattern": "^/",
+          "type": "string"
+        },
+        "objectNames": {
+          "$ref": "#/definitions/ObjectNames"
+        },
+        "orchestrator": {
+          "$ref": "#/definitions/OrchestratorSection"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "not": {
+              "const": "PYTHONPATH"
+            },
+            "pattern": "^[ -<>-~]+$"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "stateFile",
+        "objectNames"
+      ],
+      "type": "object"
+    },
     "Scheduling": {
       "additionalProperties": false,
       "properties": {
@@ -209,17 +254,6 @@
         "affinity": {
           "additionalProperties": true,
           "type": "object"
-        }
-      },
-      "type": "object"
-    },
-    "ServiceAccountSection": {
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "maxLength": 253,
-          "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$",
-          "type": "string"
         }
       },
       "type": "object"
@@ -305,50 +339,6 @@
         "type",
         "mountPath"
       ],
-      "type": "object"
-    },
-    "Uninstaller": {
-      "additionalProperties": false,
-      "properties": {
-        "serviceAccount": {
-          "maxLength": 63,
-          "minLength": 1,
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
-    "WorkbenchResources": {
-      "additionalProperties": false,
-      "properties": {
-        "requests": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              }
-            ]
-          },
-          "type": "object"
-        },
-        "limits": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              }
-            ]
-          },
-          "type": "object"
-        }
-      },
       "type": "object"
     }
   }
