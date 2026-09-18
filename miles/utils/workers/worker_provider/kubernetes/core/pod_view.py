@@ -63,7 +63,7 @@ def parse_pod(pod: Pod, keys: CellLabelKeys) -> ParsedPod | None:
         meta=meta,
         cell_size=int(metadata.annotations.get(keys.cell_size_annotation, 0)),
         subdomain=pod.spec.subdomain,
-        gpu_ids=_parse_gpu_ids(meta.get(keys.gpu_ids_meta, "")),
+        gpu_ids=_parse_gpu_ids(meta.get(keys.gpu_ids_meta, ""), base=_base_gpu_id(pod, keys)),
     )
 
 
@@ -82,8 +82,12 @@ def _read_meta(pod: Pod, keys: CellLabelKeys) -> dict[str, str]:
     return {key[len(prefix) :]: value for key, value in annotations.items() if key.startswith(prefix)}
 
 
-def _parse_gpu_ids(value: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in value.split(",") if part)
+def _parse_gpu_ids(value: str, *, base: int) -> tuple[int, ...]:
+    return tuple(base + int(part) for part in value.split(",") if part)
+
+
+def _base_gpu_id(pod: Pod, keys: CellLabelKeys) -> int:
+    return int(pod.metadata.annotations.get(keys.base_gpu_id_annotation) or 0)
 
 
 def _is_ready(status: PodStatus) -> bool:
