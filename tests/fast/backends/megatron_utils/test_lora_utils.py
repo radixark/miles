@@ -479,7 +479,7 @@ class TestLoadTrainingStateOptimizerGate:
     @staticmethod
     def _recorder():
         loaded = []
-        return loaded, SimpleNamespace(load_state_dict=loaded.append)
+        return loaded, SimpleNamespace(load_state_dict=loaded.append, reload_model_params=lambda: None)
 
     @staticmethod
     def _write_training_state(tmp_path):

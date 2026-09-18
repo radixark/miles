@@ -1,17 +1,20 @@
 """E2E test for LoRA training with Qwen2.5-0.5B on GSM8K.
 
-Uses the Megatron backend with bridge mode.  Runs a short GRPO training loop
+Uses the Megatron backend with bridge mode. Runs a short GRPO training loop
 with LoRA enabled (rank=32, all-linear) to validate:
   - LoRA model setup via Bridge
   - LoRA weight sync to SGLang rollout engines
   - LoRA checkpoint save (native + HF PEFT format)
+  - Distributed optimizer checkpoint resume
   - Training completes without errors
 
-Requires: 8 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
+Requires: 4 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
 Triggered by label: run-ci-lora
 """
 
 import os
+import shutil
+from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
@@ -26,16 +29,20 @@ ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4
+CHECKPOINT_DIR = Path("/root/checkpoints/lora-qwen2.5-0.5B-ci")
 
 
 def prepare():
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command_cpu("hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k")
+    shutil.rmtree(CHECKPOINT_DIR, ignore_errors=True)
 
 
-def execute():
+def execute(adapter_path: Path | None = None, num_rollout: int = 3):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " "--megatron-to-hf-mode bridge "
+    if adapter_path is not None:
+        ckpt_args += f"--lora-adapter-path {adapter_path} --override-opt-param-scheduler "
 
     lora_args = "--lora-rank 32 " "--lora-alpha 32 " "--lora-dropout 0.0 " '--target-modules "all-linear" '
 
@@ -46,7 +53,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3 "
+        f"--num-rollout {num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
@@ -96,7 +103,7 @@ def execute():
 
     ci_args = "--ci-test "
 
-    save_args = "--save-interval 2 " "--save /root/checkpoints/lora-qwen2.5-0.5B-ci "
+    save_args = f"--save-interval 2 --save {CHECKPOINT_DIR} "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -138,3 +145,7 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute()
+    adapters = sorted(CHECKPOINT_DIR.glob("iter_*/adapter"))
+    assert adapters
+    assert list(adapters[-1].glob("optimizer_param_state_rank*_optimizer*.pt"))
+    execute(adapter_path=adapters[-1], num_rollout=1)
