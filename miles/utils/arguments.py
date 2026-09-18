@@ -1071,6 +1071,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of rollout steps. If not set, we will calculate the number of rollout steps from the dataset size.",
             )
             parser.add_argument(
+                "--continuous-rollout",
+                action="store_true",
+                help=(
+                    "Keep the synchronous Megatron training loop running until interrupted. "
+                    "num-rollout remains a positive scheduler initialization horizon, not a stop condition. "
+                    "Requires constant learning-rate/weight-decay schedules; per-rollout budgets still apply."
+                ),
+            )
+            parser.add_argument(
                 "--debug-exit-after-rollout",
                 type=int,
                 default=None,
@@ -2900,6 +2909,21 @@ def validate_rollout_sampling_budgets(args) -> None:
         raise ValueError("--rollout-timeout-seconds must be finite and positive")
 
 
+def validate_continuous_rollout(args) -> None:
+    if not getattr(args, "continuous_rollout", False):
+        return
+    if args.train_backend != "megatron" or args.fully_async:
+        raise ValueError("--continuous-rollout requires the synchronous Megatron driver")
+    if args.num_rollout is None or args.num_rollout <= 0:
+        raise ValueError("--continuous-rollout requires a positive --num-rollout scheduler horizon")
+    if args.lr_decay_style != "constant" or args.weight_decay_incr_style != "constant":
+        raise ValueError("--continuous-rollout requires constant learning-rate and weight-decay schedules")
+    if args.lr_warmup_fraction is not None:
+        raise ValueError("--continuous-rollout requires an explicit warmup iteration count, not a fraction")
+    if args.debug_exit_after_rollout is not None or args.debug_train_only or args.debug_rollout_only:
+        raise ValueError("--continuous-rollout does not allow debug stop/partial-training modes")
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -2910,6 +2934,7 @@ def miles_validate_args(args):
 
     validate_dashboard_args(args)
     validate_rollout_sampling_budgets(args)
+    validate_continuous_rollout(args)
 
     args.ft_components = _resolve_ft_components(args)
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (

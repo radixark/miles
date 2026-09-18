@@ -143,6 +143,25 @@ def _install_driver_fakes(
     return components
 
 
+async def test_continuous_rollout_runs_past_horizon_until_external_error(monkeypatch, train_driver):
+    events = []
+    args = _make_args(num_rollout=1, continuous_rollout=True)
+    components = _install_driver_fakes(monkeypatch, args, events, train_driver)
+    observed = []
+
+    async def train_until_interrupted(rollout_id, *unused_args, **unused_kwargs):
+        observed.append(rollout_id)
+        if rollout_id == 3:
+            raise RuntimeError("external stop")
+
+    components.actor_model.train = train_until_interrupted
+    with pytest.raises(RuntimeError, match="external stop"):
+        await train_driver.train(args)
+    assert observed == [0, 1, 2, 3]
+    assert "update_weights:2" in events
+    assert "worker_manager_dispose" in events
+
+
 class TestEvalOnlyRun:
     async def test_eval_only_prepares_inference_and_runs_exactly_one_eval(
         self, monkeypatch: pytest.MonkeyPatch, train_driver
