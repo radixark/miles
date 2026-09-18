@@ -17,6 +17,7 @@ from miles.rollout.generate_utils.sampling_mask import append_forced_sampling_to
 from miles.utils.types import Sample
 
 _DUMMY_USER = {"role": "user", "content": "dummy"}
+_INVALID_TOOL_ARGUMENTS = "Invalid tool arguments: expected a JSON object. The tool was not executed."
 
 
 def create_tool_call_parser(tool_specs, tool_call_parser):
@@ -41,19 +42,38 @@ async def _execute_tool_call(
 ) -> dict[str, Any]:
     if isinstance(call, ChatCompletionMessageToolCall):
         name = call.function.name
-        params = json.loads(call.function.arguments) if call.function.arguments else {}
+        arguments = call.function.arguments
         tool_call_id = call.id
     elif isinstance(call, ToolCallItem):
         name = call.name
-        params = json.loads(call.parameters) if call.parameters else {}
+        arguments = call.parameters
         tool_call_id = f"call_{uuid.uuid4().hex[:24]}"
     else:
         raise TypeError(f"Unsupported tool call type: {type(call)}")
+
+    params = _parse_tool_arguments(arguments)
+    if params is None:
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": _INVALID_TOOL_ARGUMENTS,
+            "name": name,
+        }
 
     result = await execute_one(name, params)
     assert isinstance(result, str)
 
     return {"role": "tool", "tool_call_id": tool_call_id, "content": result, "name": name}
+
+
+def _parse_tool_arguments(arguments: str) -> dict[str, Any] | None:
+    if not arguments:
+        return {}
+    try:
+        params = json.loads(arguments)
+    except json.JSONDecodeError:
+        return None
+    return params if isinstance(params, dict) else None
 
 
 def update_sample_with_tool_responses(sample: Sample, tool_messages: list[dict[str, Any]], tokenizer):
