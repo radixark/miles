@@ -44,6 +44,7 @@ class HarborTinkerConfig:
     max_steps: int | None = None
     save_every: int = 5
     wandb_project: str | None = None
+    wandb_name: str | None = None  # W&B run name; one run per LoRA tenant
     record_path: str | None = None  # per-trajectory JSONL (task, turns, token counts, reward) for experiment notes
 
 
@@ -121,6 +122,7 @@ def build_config(config: HarborTinkerConfig) -> train.Config:
         max_steps=config.max_steps,
         save_every=config.save_every,
         wandb_project=config.wandb_project,
+        wandb_name=config.wandb_name,
     )
 
 
