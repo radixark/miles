@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
+from miles.utils.object_store_config import MOONCAKE_MASTER_PORT, compute_mooncake_init_kwargs
 from miles.utils.workers.argv_utils import parse_declared_args
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
@@ -165,7 +166,6 @@ class ArgvManipulator:
         return rewritten
 
 
-MOONCAKE_MASTER_PORT = 50051
 MOONCAKE_MASTER_METRICS_PORT = 0
 MOONCAKE_MASTER_LOG_PATH = Path("/tmp/mooncake_master.log")
 
@@ -173,7 +173,6 @@ MOONCAKE_MASTER_LOG_PATH = Path("/tmp/mooncake_master.log")
 OBJECT_STORE_BACKEND_FLAG = "--object-store-backend"
 MOONCAKE_BACKEND_NAME = "mooncake"
 MOONCAKE_INIT_KWARGS_FLAG = "--mooncake-store-init-kwargs"
-MOONCAKE_MASTER_ADDRESS_KEY = "master_server_address"
 
 
 def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
@@ -192,12 +191,7 @@ def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
 
 
 def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT) -> str:
-    init_kwargs = {
-        "protocol": "tcp",
-        MOONCAKE_MASTER_ADDRESS_KEY: f"127.0.0.1:{master_port}",
-        "global_segment_size": "2gb",
-        "local_buffer_size": "2gb",
-    }
+    init_kwargs = compute_mooncake_init_kwargs(master_port=master_port)
     return (
         f"{OBJECT_STORE_BACKEND_FLAG} {MOONCAKE_BACKEND_NAME} "
         f"{MOONCAKE_INIT_KWARGS_FLAG} {shlex.quote(json.dumps(init_kwargs))} "
