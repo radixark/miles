@@ -123,7 +123,7 @@ class TestPrepareChatRequest:
         assert continued.template_args == prepared.template_args
         assert launch_kwargs == original
 
-    def test_inherited_tools_reach_the_wire_and_empty_template_args_leave_it(self):
+    def test_inherited_tools_reach_the_wire_and_empty_args_are_retained(self):
         recorded = {"chat_template_kwargs": self.LAUNCH, "tools": self.TOOLS}
         prepared = prepare_chat_request(
             {"messages": [], "tools": []},
@@ -141,7 +141,8 @@ class TestPrepareChatRequest:
             turn_args=None,
         )
         assert prepared.template_args == {}
-        assert "tools" not in prepared.body and "chat_template_kwargs" not in prepared.body
+        assert prepared.body["tools"] is None
+        assert prepared.body["chat_template_kwargs"] == {}
 
     def test_a_refused_request_is_a_400(self):
         with pytest.raises(MessageValidationError, match="tools changed") as excinfo:

@@ -310,7 +310,8 @@ class TestConfig:
         request_args = startup_tito.resolve_request_args({"chat_template_kwargs": request_kwargs}, turn_args=None)
 
         assert request_args == {
-            "chat_template_kwargs": {"drop_thinking": False, "thinking": expected, "custom_option": "launch"}
+            "chat_template_kwargs": {"drop_thinking": False, "thinking": expected, "custom_option": "launch"},
+            "tools": None,
         }
         assert startup_tito.chat_template_kwargs == {
             "drop_thinking": False,
@@ -344,26 +345,28 @@ class TestResolveRequestArgs:
         assert launch.resolve_request_args({"messages": []}, turn_args=None) == {
             "messages": [],
             "chat_template_kwargs": self.LAUNCH,
+            "tools": None,
         }
         assert launch.resolve_request_args({"chat_template_kwargs": None, "tools": []}, turn_args=None) == {
-            "chat_template_kwargs": self.LAUNCH
+            "chat_template_kwargs": self.LAUNCH,
+            "tools": None,
         }
 
     def test_continued_turn_inherits_omitted_kwargs_and_request_overrides_history(self):
         launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)
         recorded = {"chat_template_kwargs": {"enable_thinking": True}}
 
-        assert launch.resolve_request_args({}, turn_args=recorded) == recorded
+        assert launch.resolve_request_args({}, turn_args=recorded) == {**recorded, "tools": None}
         same = launch.resolve_request_args({"chat_template_kwargs": {"enable_thinking": True}}, turn_args=recorded)
-        assert same == recorded
+        assert same == {**recorded, "tools": None}
         assert launch.resolve_request_args(
             {"chat_template_kwargs": {"enable_thinking": False}}, turn_args=recorded
-        ) == {"chat_template_kwargs": {"enable_thinking": False}}
+        ) == {"chat_template_kwargs": {"enable_thinking": False}, "tools": None}
         assert recorded == {"chat_template_kwargs": {"enable_thinking": True}}
 
     def test_empty_history_keeps_defaults_but_does_not_allow_new_tools(self):
         launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)
-        assert launch.resolve_request_args({}, turn_args={}) == {"chat_template_kwargs": self.LAUNCH}
+        assert launch.resolve_request_args({}, turn_args={}) == {"chat_template_kwargs": self.LAUNCH, "tools": None}
         assert launch.resolve_request_args({"tools": self.TOOLS}, turn_args=None)["tools"] == self.TOOLS
         with pytest.raises(ValueError, match="tools changed"):
             launch.resolve_request_args({"tools": self.TOOLS}, turn_args={})
@@ -372,9 +375,12 @@ class TestResolveRequestArgs:
         launch = TITOTokenizer(MagicMock())
         recorded = {"tools": self.TOOLS}
 
-        assert launch.resolve_request_args({}, turn_args=recorded) == {"tools": self.TOOLS}
+        assert launch.resolve_request_args({}, turn_args=recorded) == {"chat_template_kwargs": {}, "tools": self.TOOLS}
         bare = [tool["function"] for tool in self.TOOLS]  # the same tools in the other accepted spelling
-        assert launch.resolve_request_args({"tools": bare}, turn_args=recorded) == {"tools": bare}
+        assert launch.resolve_request_args({"tools": bare}, turn_args=recorded) == {
+            "chat_template_kwargs": {},
+            "tools": bare,
+        }
         with pytest.raises(ValueError, match="tools changed on a continued turn"):
             launch.resolve_request_args({"tools": self.OTHER_TOOLS}, turn_args=recorded)
         with pytest.raises(ValueError, match="tools changed on a continued turn"):
@@ -389,13 +395,14 @@ class TestResolveRequestArgs:
 
         family = _ToolsAtTheTailTITOTokenizer(MagicMock())
         args = family.resolve_request_args({"tools": self.OTHER_TOOLS}, turn_args={"tools": self.TOOLS})
-        assert args == {"tools": self.OTHER_TOOLS}
+        assert args == {"chat_template_kwargs": {}, "tools": self.OTHER_TOOLS}
 
     def test_family_constants_override_requested_values(self, qwen3_tito: Qwen3TITOTokenizer):
         args = qwen3_tito.resolve_request_args({"chat_template_kwargs": {"enable_thinking": True}}, turn_args=None)
-        assert args == {"chat_template_kwargs": {"clear_thinking": False, "enable_thinking": True}}
+        assert args == {"chat_template_kwargs": {"clear_thinking": False, "enable_thinking": True}, "tools": None}
         assert qwen3_tito.resolve_request_args({"chat_template_kwargs": {"clear_thinking": True}}, turn_args=None) == {
-            "chat_template_kwargs": {"clear_thinking": False}
+            "chat_template_kwargs": {"clear_thinking": False},
+            "tools": None,
         }
 
     @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
@@ -406,7 +413,7 @@ class TestResolveRequestArgs:
         assert launch.chat_template_kwargs == {"drop_thinking": False, "thinking": False}
 
         recorded = launch.resolve_request_args({"chat_template_kwargs": {"thinking": True}}, turn_args=None)
-        assert recorded == {"chat_template_kwargs": {"drop_thinking": False, "thinking": True}}
+        assert recorded == {"chat_template_kwargs": {"drop_thinking": False, "thinking": True}, "tools": None}
         same = launch.resolve_request_args({"chat_template_kwargs": {"enable_thinking": True}}, turn_args=recorded)
         assert same == recorded
         assert (
@@ -420,7 +427,12 @@ class TestResolveRequestArgs:
         request_args = {"temperature": 0.8, "model": "m"}
         result = launch.resolve_request_args(request_args, turn_args=turn_args)
         assert result is request_args
-        assert result == {"temperature": 0.8, "model": "m", "chat_template_kwargs": {"enable_thinking": True}}
+        assert result == {
+            "temperature": 0.8,
+            "model": "m",
+            "chat_template_kwargs": {"enable_thinking": True},
+            "tools": None,
+        }
         assert turn_args["temperature"] == 0.2
 
     def test_inherited_nested_values_are_owned_by_the_working_request(self):

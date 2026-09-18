@@ -163,10 +163,7 @@ class TITOTokenizer:
         }
         # Launch kwargs may contain tools; requests carry them at the top level.
         kwargs.pop("tools", None)
-        if kwargs:
-            request_args["chat_template_kwargs"] = deepcopy(kwargs)
-        else:
-            request_args.pop("chat_template_kwargs", None)
+        request_args["chat_template_kwargs"] = deepcopy(kwargs)
 
     def resolve_tools(
         self,
@@ -188,10 +185,7 @@ class TITOTokenizer:
                     "tools changed on a continued turn: the turn being continued was rendered with different tools, "
                     "and this model family renders tools in the prompt prefix"
                 )
-        if tools:
-            request_args["tools"] = deepcopy(tools)
-        else:
-            request_args.pop("tools", None)
+        request_args["tools"] = deepcopy(tools)
 
     def apply_fixed_template_kwargs(
         self,
@@ -217,12 +211,10 @@ class TITOTokenizer:
         recorded = turn_args.get("chat_template_kwargs") or {}
         kwargs = request_args.setdefault("chat_template_kwargs", {})
         for key in self.FIXED_TEMPLATE.consistant_kwargs:
-            if key in recorded:
-                kwargs[key] = deepcopy(recorded[key])
-            else:
-                kwargs.pop(key, None)
-        if not kwargs:
-            request_args.pop("chat_template_kwargs", None)
+            kwargs.pop(key, None)
+        kwargs.update(
+            deepcopy({key: recorded[key] for key in self.FIXED_TEMPLATE.consistant_kwargs if key in recorded})
+        )
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
