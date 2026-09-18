@@ -216,6 +216,11 @@ def setup_model_and_optimizer(
 
         setup_optimizer_state_streaming(args, optimizer)
 
+    if getattr(args, "optimizer_cpu_streaming_gradients", False):
+        from .optimizer_cpu_streaming_gradients import install_optimizer_cpu_streaming_gradients
+
+        install_optimizer_cpu_streaming_gradients(args, optimizer)
+
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler
 

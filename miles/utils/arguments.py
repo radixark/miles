@@ -319,6 +319,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_train_arguments(parser):
+            from miles.backends.megatron_utils.optimizer_cpu_streaming_gradients import (
+                add_optimizer_cpu_streaming_gradients_argument,
+            )
+
+            add_optimizer_cpu_streaming_gradients_argument(parser)
             parser.add_argument(
                 "--train-backend",
                 type=str,
