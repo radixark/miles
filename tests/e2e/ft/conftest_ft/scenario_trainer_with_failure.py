@@ -1,7 +1,6 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
-import json
 from pathlib import Path
 
 from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
@@ -9,12 +8,14 @@ from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.ray.specs.train import compute_trainer_pool_id
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
     compare_dumps,
 )
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
+from miles.utils.test_utils.ft_test_actions import compute_ft_test_actions_arg
 from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 from miles.utils.workers.naming import compute_cell_id
 
@@ -105,7 +106,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
         base += f"--load {phase_a_dir}/ckpt "
         if is_target:
-            base += f"--ci-ft-test-actions '{json.dumps(_build_actions(num_cells=mode.num_cells))}' "
+            base += compute_ft_test_actions_arg(_build_actions(num_cells=mode.num_cells))
             if mode.has_real_rollout:
                 # Post-fault rollouts inject the baseline's recorded data (see README).
                 baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
@@ -130,7 +131,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     for side in ["baseline", "target"]:
         for phase in PHASES:
             assert_reconfigure_events(
-                Path(f"{dump_dir}/{side}/{phase}/events"),
+                Path(f"{dump_dir}/{side}/{phase}/{EVENTS_DIRNAME}"),
                 expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
             )
 
