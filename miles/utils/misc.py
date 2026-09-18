@@ -61,11 +61,13 @@ async def call_agent_abort_hook(args) -> None:
     sibling ``abort`` callable in the same module as the configured agent function
     and call it. Backends that don't expose one are left to drain as before.
     """
+    from miles.utils.args.custom_view import compute_custom_function_config
+
     agent_function_path = args.custom_agent_function_path
     if not agent_function_path:
         return
 
-    module_path, _, _ = agent_function_path.rpartition(".")
+    module_path, _, _ = agent_function_path.path.rpartition(".")
     if not module_path:
         return
     try:
@@ -74,7 +76,8 @@ async def call_agent_abort_hook(args) -> None:
         return  # plugin doesn't expose an abort hook; nothing to tear down
 
     try:
-        await abort_hook(args)
+        fn_args = compute_custom_function_config(args, agent_function_path)
+        await abort_hook(fn_args)
     except Exception as e:
         logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
 
