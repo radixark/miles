@@ -75,13 +75,7 @@
        }
       ]
      },
-     "user-guide/cli-reference",
-     {
-      "group": "Hardware",
-      "pages": [
-       "hardware/amd"
-      ]
-     }
+     "user-guide/cli-reference"
     ]
    },
    {
@@ -360,6 +354,12 @@
     "pages": [
      "blog/index",
      "subscribe"
+    ]
+   },
+   {
+    "tab": "Hardware",
+    "pages": [
+     "hardware/amd"
     ]
    }
   ]
