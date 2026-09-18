@@ -221,6 +221,26 @@ def compute_opsm_mask(
     return opsm_mask, opsm_clipfrac
 
 
+def compute_top_entropy_mask(entropy: torch.Tensor, loss_mask: torch.Tensor, quantile: float) -> torch.Tensor:
+    """Keep only the top-``quantile`` share of active tokens by entropy.
+
+    From "Beyond the 80/20 Rule" (https://arxiv.org/abs/2506.01939): the policy
+    gradient is applied to the high-entropy "forking" tokens only. ``quantile``
+    is the share of active tokens to keep (1.0 keeps every token, 0.2 keeps the
+    fifth with the highest entropy). The threshold is the ``1 - quantile``
+    quantile of the entropies of the tokens this rank computes the loss for in
+    the current micro-batch. Tokens outside ``loss_mask`` are always dropped.
+
+    Returns a float mask with the shape of ``entropy``; it never carries a gradient.
+    """
+    active = loss_mask.bool()
+    if quantile >= 1.0 or not active.any():
+        return active.to(entropy.dtype)
+    threshold = torch.quantile(entropy[active].detach().float(), 1.0 - quantile)
+    keep = active & (entropy.detach().float() >= threshold)
+    return keep.to(entropy.dtype)
+
+
 def compute_gspo_kl(
     full_log_probs: list[torch.Tensor],
     full_old_log_probs: list[torch.Tensor],

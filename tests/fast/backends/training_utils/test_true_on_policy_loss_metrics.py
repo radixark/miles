@@ -22,6 +22,7 @@ def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
         calculate_per_token_loss=False,
         qkv_format="thd",
         entropy_coef=0.0,
+        top_entropy_quantile=1.0,
         use_kl_loss=False,
         use_unbiased_kl=False,
         kl_loss_type="k1",
