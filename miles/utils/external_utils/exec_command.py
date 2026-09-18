@@ -1,10 +1,14 @@
+import logging
 import re
 import subprocess
 
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
+from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.misc import get_current_node_ip
+
+logger = logging.getLogger(__name__)
 
 
 def exec_command_gpu(cmd: str, capture_output: bool = False) -> str | None:
@@ -16,7 +20,8 @@ def exec_command_cpu(cmd: str, capture_output: bool = False) -> str | None:
 
 
 def _exec_command(cmd: str, capture_output: bool = False) -> str | None:
-    print(f"EXEC: {cmd}", flush=True)
+    configure_logger_raw("launcher")
+    logger.info(f"EXEC: {cmd}")
 
     try:
         result = subprocess.run(
@@ -28,12 +33,13 @@ def _exec_command(cmd: str, capture_output: bool = False) -> str | None:
         )
     except subprocess.CalledProcessError as e:
         if capture_output:
-            print(f"{e.stdout=} {e.stderr=}")
+            logger.error(f"{e.stdout=} {e.stderr=}")
         raise
 
     if capture_output:
-        print(f"Captured stdout={result.stdout} stderr={result.stderr}")
+        logger.info(f"Captured stdout={result.stdout} stderr={result.stderr}")
         return result.stdout
+    return None
 
 
 @ray.remote(num_cpus=0.001)
