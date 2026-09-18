@@ -7,6 +7,7 @@ import torch.distributed as dist
 
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.config import build_trainer_config
+from miles.backends.torchtitan_utils.hf_export import export_hf
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
@@ -123,7 +124,14 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             torch.cuda.empty_cache()
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
-        if self.args.debug_rollout_only or self.args.save is None:
+        if self.args.debug_rollout_only:
             return
         assert not self.args.async_save, "TorchtitanTrainRayActor does not support async_save yet."
-        self.trainer.checkpointer.save(self.trainer.step, last_step=True)
+        if self.args.save is not None:
+            self.trainer.checkpointer.save(self.trainer.step, last_step=True)
+        if self.args.save_hf is not None and self.role == "actor":
+            self.export_hf(rollout_id, self.args.save_hf.format(rollout_id=rollout_id))
+
+    def export_hf(self, rollout_id: int, path: str) -> None:
+        self._heartbeat.bump()
+        export_hf(self.trainer.checkpointer, hf_checkpoint=self.args.hf_checkpoint, path=path)
