@@ -8,7 +8,6 @@ class HfLoraTargets:
     attention: tuple[str, ...]
     mlp: tuple[str, ...]
     unembed: tuple[str, ...]
-    default_exclude: tuple[str, ...] = ()
     default_train_unembed: bool = False
 
 
@@ -18,7 +17,6 @@ class _HfLoraModelSpec:
     layer_prefix: str = "model.layers.*"
     unembed: str = "lm_head"
     unwrap_text_config: bool = False
-    default_exclude: tuple[str, ...] = ()
     default_train_unembed: bool = False
 
 
@@ -32,7 +30,6 @@ _ROUTED_EXPERTS = _prefix_paths("mlp.experts.*", "gate_proj", "up_proj", "down_p
 _SHARED_EXPERTS = _prefix_paths("mlp.shared_experts", "gate_proj", "up_proj", "down_proj")
 _QWEN_SHARED_EXPERT = _prefix_paths("mlp.shared_expert", "gate_proj", "up_proj", "down_proj")
 _PACKED_EXPERTS = _prefix_paths("mlp.experts", "gate_up_proj", "down_proj")
-_INDEXER = _prefix_paths("self_attn.indexer", "wq_b", "wk", "weights_proj")
 _GDN_NEXT = _prefix_paths("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
 _GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
 
@@ -67,11 +64,6 @@ def _deepseek_targets(config):
     query = ("q_proj",) if config["q_lora_rank"] is None else ("q_a_proj", "q_b_proj")
     attention = _prefix_paths("self_attn", *query, "kv_a_proj_with_mqa", "kv_b_proj", "o_proj")
     return attention, _deepseek_mlp_targets(config)
-
-
-def _dsa_targets(config):
-    attention, mlp = _deepseek_targets(config)
-    return attention + _INDEXER, mlp
 
 
 def _glm4_moe_targets(config):
@@ -156,7 +148,7 @@ _HF_LORA_MODELS = {
     "gpt_oss": _HfLoraModelSpec(_gpt_oss_targets),
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
-    "deepseek_v32": _HfLoraModelSpec(_dsa_targets, default_exclude=_INDEXER),
+    "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
     "kimi_k2": _HfLoraModelSpec(_deepseek_targets),
     "kimi_k25": _HfLoraModelSpec(
         _deepseek_targets,
@@ -165,7 +157,7 @@ _HF_LORA_MODELS = {
         unwrap_text_config=True,
     ),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
-    "glm_moe_dsa": _HfLoraModelSpec(_dsa_targets, default_exclude=_INDEXER),
+    "glm_moe_dsa": _HfLoraModelSpec(_deepseek_targets),
     "inkling_model": _HfLoraModelSpec(
         _inkling_targets,
         layer_prefix="language_model.layers.*",
@@ -192,7 +184,6 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         attention=_prefix_paths(spec.layer_prefix, *attention),
         mlp=_prefix_paths(spec.layer_prefix, *mlp),
         unembed=(spec.unembed,),
-        default_exclude=_prefix_paths(spec.layer_prefix, *spec.default_exclude),
         default_train_unembed=spec.default_train_unembed,
     )
 
@@ -215,8 +206,7 @@ def resolve_hf_lora_targets(
 
     layout = get_hf_lora_targets(hf_config)
     train_flags = (train_attn, train_mlp, train_unembed)
-    use_defaults = all(enabled is None for enabled in train_flags)
-    if use_defaults:
+    if all(enabled is None for enabled in train_flags):
         train_flags = (True, True, layout.default_train_unembed)
     else:
         assert all(
@@ -226,8 +216,6 @@ def resolve_hf_lora_targets(
     for enabled, group in zip(train_flags, (layout.attention, layout.mlp, layout.unembed), strict=True):
         if enabled:
             targets.extend(group)
-    if use_defaults:
-        targets = [target for target in targets if target not in layout.default_exclude]
     assert targets, "At least one trainable LoRA module group is required"
     return targets
 
