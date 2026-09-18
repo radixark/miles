@@ -27,14 +27,62 @@ affinity:
 {{- end }}
 {{- end }}
 
+{{- define "miles-common.envBase" -}}
+{{- $base := dict -}}
+{{- with include "miles-common.codePythonPath" . }}{{- $base = dict "PYTHONPATH" . }}{{- end }}
+{{- toYaml (merge (deepCopy (.Values.infra.env | default dict)) $base) }}
+{{- end }}
+
 {{- define "miles-common.env" -}}
-{{- with .Values.infra.env -}}
+{{- include "miles-common.envBlock" (include "miles-common.envBase" . | fromYaml) }}
+{{- end }}
+
+{{- define "miles-common.envBlock" -}}
+{{- with . -}}
 env:
 {{- range $name, $value := . }}
   - name: {{ $name | quote }}
     value: {{ $value | quote }}
 {{- end }}
 {{- end }}
+{{- end }}
+
+{{- define "miles-common.repoTargets" -}}
+- name: miles
+  path: /root/miles
+- name: megatron
+  path: /root/Megatron-LM
+- name: sglang
+  path: /sgl-workspace/sglang
+{{- end }}
+
+{{- define "miles-common.overriddenRepos" -}}
+{{- $repos := ((.Values.infra.paths | default dict).repos | default dict) -}}
+{{- $mounted := list -}}
+{{- if ne ((.Values.infra.sharedStorage | default dict).type | default "none") "none" -}}
+{{- range $target := include "miles-common.repoTargets" . | fromYamlArray }}
+{{- with get $repos $target.name }}
+{{- $mounted = append $mounted (dict "path" $target.path "subPath" .) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- toYaml $mounted }}
+{{- end }}
+
+{{- define "miles-common.codeVolumeMounts" -}}
+{{- range include "miles-common.overriddenRepos" . | fromYamlArray }}
+- name: shared-storage
+  mountPath: {{ .path | quote }}
+  subPath: {{ .subPath | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "miles-common.codePythonPath" -}}
+{{- $entries := list -}}
+{{- range include "miles-common.overriddenRepos" . | fromYamlArray }}
+{{- $entries = append $entries .path }}
+{{- end }}
+{{- join ":" $entries }}
 {{- end }}
 
 {{- define "miles-common.sharedStorageVolume" -}}
