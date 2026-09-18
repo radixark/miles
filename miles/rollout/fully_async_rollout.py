@@ -139,9 +139,11 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             for task in done:
                 prompt_group = active.pop(task)
                 if task.cancelled():
-                    # Reading a cancelled child's result would cancel the producer too.
-                    # Only handle finished children here; cancellation of this worker
-                    # at an await remains a shutdown signal and propagates normally.
+                    # This completed group was cancelled; the producer was not.
+                    # task.result() would re-raise CancelledError and stop the producer,
+                    # so send an aborted group to the buffer instead.
+                    # Cancellation of the producer itself still propagates from its
+                    # await calls: no surrounding handler catches it here.
                     logger.warning(
                         "Rollout group was cancelled; marking samples aborted: indices=%s",
                         [sample.index for sample in prompt_group],
