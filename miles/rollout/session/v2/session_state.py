@@ -97,13 +97,6 @@ def prepare_token_ids_and_request_args(
 ) -> tuple[PreparedChatRequest, TrajectoryNode | None]:
     """Turn a parsed chat request into the outbound body with ``input_ids``,
     plus the node it attaches under (the parent for ``commit_generation``).
-
-    In order: find the attach node (``attach_point_for_request``, pure); decide
-    request args (``request_args.prepare_chat_request``, which may raise a
-    400); render the prompt under that node with those template args. The args
-    come before the render because they change the token ids; see
-    ``request_args`` for why they are checked against the node. Nothing here
-    changes session state.
     """
     request_messages = client_args.get("messages", [])
     parent = attach_point_for_request(state, request_messages, message_matcher=message_matcher).node

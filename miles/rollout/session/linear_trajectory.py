@@ -101,13 +101,6 @@ class LinearTrajectory:
     ) -> PreparedChatRequest:
         """Turn a parsed chat request into the outbound body with ``input_ids``.
 
-        In order: roll back to the checkpoint *client_args*'s messages continue
-        (``_try_detect_and_rollback_to_assistant_checkpoint``); decide the
-        request args (``request_args.prepare_chat_request``, which may raise a
-        400); render the prompt with those template args.  The args
-        come before the render because they change the token ids; see
-        ``request_args`` for why they are checked against the checkpoint.
-
         Must be called under ``self.lock``.
         """
         matcher = message_matcher if message_matcher is not None else strict_message_matches
