@@ -248,6 +248,20 @@ class TestConcurrencyGroups:
 
 
 class TestEnvironmentVariables:
+    @pytest.mark.parametrize("initial", [None, "0", "1"])
+    @pytest.mark.parametrize("mode", ["broadcast", "nccl-m2n"])
+    @pytest.mark.parametrize("override", [None, "0"])
+    def test_nccl_m2n_requires_cumem(self, monkeypatch, initial, mode, override):
+        if initial is None:
+            monkeypatch.delenv("NCCL_CUMEM_ENABLE", raising=False)
+        else:
+            monkeypatch.setenv("NCCL_CUMEM_ENABLE", initial)
+        train_env_vars = {} if override is None else {"NCCL_CUMEM_ENABLE": override}
+        args = _make_args(update_weight_transfer_mode=mode, train_env_vars=train_env_vars)
+        env_vars = train_specs.compute_trainer_env_vars(args, _make_context(), fp8_scales="0")
+        expected = "1" if mode == "nccl-m2n" else (override or initial or "0")
+        assert env_vars["NCCL_CUMEM_ENABLE"] == expected
+
     def test_user_env_vars_are_forwarded(self):
         """--train-env-vars must reach the worker process."""
         (spec,) = specs_trainer(_make_args(train_env_vars={"MY_VAR": "1"}))

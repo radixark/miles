@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
@@ -92,13 +93,24 @@ class TestHealthCheckerActiveness:
 
         assert not cell._get_health_checker_active_and_epoch().active
 
-    async def test_a_cell_holding_stale_weights_is_probed(self, monkeypatch):
-        """It answers requests with stale weights, so a crash there is a real failure."""
+    @pytest.mark.parametrize("check_weight_update_equal", [False, True])
+    async def test_generation_probes_wait_for_the_first_weight_update(self, monkeypatch, check_weight_update_equal):
+        """Pending weights may be randomized by the checker; generation must wait for a refit."""
         _stub_network(monkeypatch)
-        cell = _make_cell()
+        cell = _make_cell(router=SimpleNamespace(add_worker=_noop_add_worker))
+        cell.args.check_weight_update_equal = check_weight_update_equal
+        check_weights = AsyncMock()
+        monkeypatch.setattr(cell, "check_weights", check_weights)
 
         await cell.init()
         await cell.tick()
+
+        assert [call.kwargs["action"] for call in check_weights.await_args_list] == (
+            ["snapshot", "reset_tensors"] if check_weight_update_equal else []
+        )
+        assert not cell._get_health_checker_active_and_epoch().active
+
+        await cell.mark_weights_ready()
 
         assert cell._get_health_checker_active_and_epoch().active
 
@@ -127,10 +139,14 @@ class TestHealthCheckerActiveness:
         """Engines are unusable while offloaded or mid weight update, whatever state they are in."""
         _stub_network(monkeypatch)
         active = {"value": True}
-        cell = _make_cell(global_activeness=lambda: ActiveAndEpoch(active=active["value"], epoch=0))
+        cell = _make_cell(
+            global_activeness=lambda: ActiveAndEpoch(active=active["value"], epoch=0),
+            router=SimpleNamespace(add_worker=_noop_add_worker),
+        )
 
         await cell.init()
         await cell.tick()
+        await cell.mark_weights_ready()
         assert cell._get_health_checker_active_and_epoch().active
 
         active["value"] = False

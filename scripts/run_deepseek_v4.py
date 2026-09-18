@@ -32,6 +32,11 @@ Usage patterns:
        python scripts/run_deepseek_v4.py train            --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 8 --num-gpus-per-node 8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
+
+  3. M2N refits on a prepared disaggregated GB300 Flash job:
+       python scripts/run_deepseek_v4.py train --hardware GB300 \
+           --num-nodes 16 --num-gpus-per-node 4 --rollout-num-nodes 8 \
+           --update-weight-transfer-mode nccl-m2n --m2n-pp-concurrency 2
 """
 
 from dataclasses import dataclass, field
@@ -106,6 +111,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
     # use colocate by default. will switch to disaggregated mode when 0 < rollout_num_nodes < num_nodes
     rollout_num_nodes: int = 0
+    update_weight_transfer_mode: Literal["broadcast", "p2p", "disk-delta", "nccl-m2n"] = "broadcast"
+    m2n_pp_concurrency: int = 2
     colocate: bool = field(init=False)
     actor_num_nodes: int = field(init=False)
     actor_num_gpus_per_node: int = field(init=False)
@@ -155,6 +162,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         self.colocate = self.rollout_num_nodes == 0
+        if self.update_weight_transfer_mode == "nccl-m2n":
+            assert not self.colocate, "nccl-m2n requires disaggregated rollout (--rollout-num-nodes > 0)"
+            assert self.m2n_pp_concurrency > 0, "m2n_pp_concurrency must be positive"
         self.actor_num_nodes = self.num_nodes - self.rollout_num_nodes
         self.actor_num_gpus_per_node = self.num_gpus_per_node
         if self.colocate:
@@ -657,9 +667,9 @@ def _train(args: ScriptArgs):
         "--train-memory-margin-bytes 3221225472 "
         "--sglang-mem-fraction-static 0.7 "
         "--accumulate-allreduce-grads-in-fp32 "
-        # GB300 host RAM is smaller than the engine weight mirror plus the trainer
-        # backup, so overlap the handoff on the GPU instead.
-        f"{'--colocate-memory-peak-device gpu ' if args.hardware == 'GB300' else ''}"
+        # For colocated GB300 runs, overlap the offload handoff on the GPU to
+        # avoid holding the engine weight mirror and trainer backup in host RAM.
+        f"{'--colocate-memory-peak-device gpu ' if args.hardware == 'GB300' and args.colocate else ''}"
         f"--dsv4-impl {args.dsv4_impl} "
         f"{f'--dsa-kernel-backend {args.dsa_kernel_backend} ' if args.dsa_kernel_backend else ''}"
         "--model-name deepseekv4 "  # for mbridge load
@@ -725,6 +735,8 @@ def _train(args: ScriptArgs):
         f"{eval_args} "
         f"{sglang_args} "
         f"{misc_args} "
+        f"--update-weight-transfer-mode {args.update_weight_transfer_mode} "
+        f"--m2n-pp-concurrency {args.m2n_pp_concurrency} "
         f"{args.extra_args} "
     )
 

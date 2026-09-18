@@ -117,8 +117,7 @@ def _compute_spec_trainer(
 
 def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
     env_vars = {
-        # because sglang will always set NCCL_CUMEM_ENABLE to 0
-        # we need also set it to 0 to prevent nccl error.
+        # Match SGLang's default; M2N requires cuMem on both sides (below).
         "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
         # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
         "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
@@ -126,6 +125,9 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
         **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
         **args.train_env_vars,
     }
+
+    if getattr(args, "update_weight_transfer_mode", "broadcast") == "nccl-m2n":
+        env_vars["NCCL_CUMEM_ENABLE"] = "1"
 
     if source_patcher_config := args.dumper_source_patcher_config_train:
         env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config

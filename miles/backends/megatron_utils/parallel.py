@@ -15,6 +15,11 @@ from ..training_utils.parallel import ParallelState, get_parallel_state
 logger = logging.getLogger(__name__)
 
 
+def get_expert_data_parallel_rank_and_size() -> tuple[int, int]:
+    """Expert replica coordinates, not yet exposed by the shared ParallelState."""
+    return mpu.get_expert_data_parallel_rank(), mpu.get_expert_data_parallel_world_size()
+
+
 def create_megatron_parallel_state(
     indep_dp: GroupInfo,
 ) -> ParallelState:

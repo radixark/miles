@@ -257,7 +257,8 @@
        "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
        "examples/ppo",
        "examples/retool-v2",
-       "examples/swe-agent-harbor-docker"
+       "examples/swe-agent-harbor-docker",
+       "examples/nccl-m2n"
       ]
      },
      {

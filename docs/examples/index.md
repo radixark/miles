@@ -27,6 +27,7 @@ data and weights around.
 
 - **[fully_async](/examples/infra-features/fully-async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
 - **[low_precision](/examples/infra-features/low-precision)**: Examples of FP8 training and inference, plus INT4 QAT, for improved throughput and stability.
+- **[nccl_m2n](/examples/nccl-m2n)**: Four-GPU smoke example for M2N weight refits, concurrent trainer PP stages, and residual broadcasts.
 - **[p2p_weight_transfer](/examples/infra-features/p2p-weight-transfer)**: Point-to-point weight transfer between training and rollout engines.
 - **[random_async](/examples/infra-features/random-async)**: Dataset-free stress test of the async rollout ↔ trainer loop.
 - **[train_infer_mismatch_helper](/examples/infra-features/train-infer-mismatch-helper)**: Algorithmic methods for rollout correction (e.g., TIS, MIS).

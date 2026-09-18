@@ -315,7 +315,7 @@ class SGLangApiClient:
         return await self._make_request("update_weights_from_disk", payload)
 
     async def init_weights_update_group(
-        self, master_address, master_port, rank_offset, world_size, group_name, backend
+        self, master_address, master_port, rank_offset, world_size, group_name, backend, m2n_manifest=None
     ):
         return await self._make_request(
             "init_weights_update_group",
@@ -326,10 +326,11 @@ class SGLangApiClient:
                 "world_size": world_size,
                 "group_name": group_name,
                 "backend": backend,
+                **({"m2n_manifest": m2n_manifest} if m2n_manifest is not None else {}),
             },
         )
 
-    async def destroy_weights_update_group(self, group_name):
+    async def destroy_weights_update_group(self, group_name, *, strict: bool = False):
         try:
             return await self._make_request(
                 "destroy_weights_update_group",
@@ -338,8 +339,9 @@ class SGLangApiClient:
                 },
             )
         except httpx.HTTPError:
+            if strict:
+                raise
             # catch the case there the engine is just created and does not have the group.
-            pass
 
     async def update_weights_from_distributed(
         self,
@@ -350,6 +352,8 @@ class SGLangApiClient:
         flush_cache=False,
         weight_version: str | None = None,
         selector: str = "all",
+        load_format: str | None = None,
+        m2n_group_names: list[str] | None = None,
     ):
         payload = {
             "names": names,
@@ -361,6 +365,10 @@ class SGLangApiClient:
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
+        if load_format is not None:
+            payload["load_format"] = load_format
+        if m2n_group_names is not None:
+            payload["m2n_group_names"] = m2n_group_names
         return await self._make_request(
             "update_weights_from_distributed",
             payload,

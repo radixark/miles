@@ -346,6 +346,19 @@ class TestSessionServerRouterPoolLookup:
 
 
 class TestInferenceEngineEnvVars:
+    @pytest.mark.parametrize("initial", [None, "0", "1"])
+    @pytest.mark.parametrize("mode", ["broadcast", "nccl-m2n"])
+    def test_nccl_m2n_requires_cumem(self, monkeypatch, initial, mode):
+        if initial is None:
+            monkeypatch.delenv("NCCL_CUMEM_ENABLE", raising=False)
+        else:
+            monkeypatch.setenv("NCCL_CUMEM_ENABLE", initial)
+        envs = compute_inference_engine_env_vars(make_args(update_weight_transfer_mode=mode))
+        if mode == "nccl-m2n":
+            assert envs["NCCL_CUMEM_ENABLE"] == "1"
+        else:
+            assert "NCCL_CUMEM_ENABLE" not in envs
+
     def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
         """The launcher's environment is how operators retune sglang per cluster, so defaults must not overwrite it."""
         monkeypatch.setenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "true")

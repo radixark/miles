@@ -264,4 +264,8 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
         }.items()
     }
     env_vars.update(dumper_utils.get_sglang_env(args))
+    if getattr(args, "update_weight_transfer_mode", "broadcast") == "nccl-m2n":
+        # NCCL caches cuMem settings: set this before SGLang initializes NCCL,
+        # not when the first M2N weight-update request arrives.
+        env_vars["NCCL_CUMEM_ENABLE"] = "1"
     return env_vars

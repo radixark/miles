@@ -28,6 +28,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         non_expert_infos, expert_infos = _get_megatron_local_param_infos(
             self.args, self.model, gather_pp=self.placement.gather_pp
         )
+        self.excluded_native_names: set[str] = set()
         ep_size = get_parallel_state().ep.size
         self._non_expert_batches = _pack_param_infos_by_size(self.args, non_expert_infos)
         # An expert batch materializes ep_size x its metadata size after the EP all_gather.
@@ -42,6 +43,10 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             desc="Update weights",
         )
         for param_infos in self._non_expert_batches:
+            param_infos = [info for info in param_infos if info.name not in self.excluded_native_names]
+            if not param_infos:
+                pbar.update(1)
+                continue
             named_params = _materialize_non_expert_batch(
                 self.args, param_infos, weights, gather_pp=self.placement.gather_pp
             )
@@ -50,6 +55,10 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             del named_params
             pbar.update(1)
         for param_infos in self._expert_batches:
+            param_infos = [info for info in param_infos if info.name not in self.excluded_native_names]
+            if not param_infos:
+                pbar.update(1)
+                continue
             named_params = _materialize_expert_batch(
                 self.args, param_infos, weights, gather_pp=self.placement.gather_pp
             )

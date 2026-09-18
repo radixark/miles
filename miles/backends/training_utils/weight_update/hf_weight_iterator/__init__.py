@@ -74,6 +74,7 @@ class HfWeightIteratorBase(ABC):
         self.placement = placement
         self.model_name = model_name
         self.quantization_config = quantization_config
+        self.excluded_hf_names: set[str] = set()
 
     def iter_hf_weights(
         self,
@@ -101,7 +102,18 @@ class HfWeightIteratorBase(ABC):
             hf_param_units = itertools.chain(hf_param_units, prefixed_units(lora_name, adapter))
         atomic_update_groups = self._hf_atomic_update_groups() if include_base and materialize else []
         hf_param_units = assemble_atomic_update_groups(hf_param_units, atomic_update_groups)
-        yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
+        yield from pack_units_by_size(self._residual_units(hf_param_units), self.args.update_weight_buffer_size)
+
+    def _residual_units(self, units):
+        """Omit complete units already written by a shard-aware transport."""
+        for unit in units:
+            names = {name for name, _ in unit}
+            routed = names & self.excluded_hf_names
+            if routed:
+                if routed != names:
+                    raise RuntimeError(f"Shard transfer splits an atomic HF update unit: {sorted(names)}")
+                continue
+            yield unit
 
     @abstractmethod
     def _iter_hf_param_units(
