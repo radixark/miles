@@ -193,7 +193,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
 
     def apply_lora_hook(model_chunks):
         candidates = select_present_target_modules(model_chunks, target_candidates)
-        # Remove registry alternatives absent from the distributed model before checking exports.
+        # export coverage excludes registry alternatives absent from the model
         args.hf_lora_targets = sorted({target for module in candidates.values() for target in module.hf_modules})
         lora = create_adapter(args, target_modules=list(candidates))
         transformed = lora(model_chunks, training=True)

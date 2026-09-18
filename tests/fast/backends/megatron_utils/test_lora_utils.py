@@ -1,7 +1,4 @@
-"""Unit tests for miles.backends.megatron_utils.lora.utils.
-
-Tests cover LoRA detection, adapter parameters, and training checkpoint state.
-"""
+"""LoRA detection, adapter parameters, and training checkpoint state."""
 
 import sys
 import types

@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def create_multi_lora_instance(args: Namespace, *, target_modules):
-    """Create a MultiLoRA instance from training args."""
     from megatron.bridge.peft.multi_lora import MultiLoRA
 
     return MultiLoRA(

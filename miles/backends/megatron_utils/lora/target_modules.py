@@ -91,9 +91,9 @@ def select_present_target_modules(model_chunks, candidates):
         for target, mapping in candidates.items()
         if any(fnmatchcase(name, mapping.megatron_module) for name in local_names)
     }
-    # PP/EP ranks may own different projections; validate against the complete distributed model.
+    # PP/EP ranks may own different projections
     present = _gather_set(present)
-    # A leaf selector needs a match, not every optional layout declared by the registry.
+    # a selector needs one match across the registry's optional layouts
     expected = set().union(*(mapping.selectors for mapping in candidates.values()))
     covered = set().union(*(candidates[target].selectors for target in present))
     assert expected <= covered, f"LoRA targets have no Megatron modules: {sorted(expected - covered)}"
