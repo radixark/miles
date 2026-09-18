@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from ray import cloudpickle
+from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
@@ -127,7 +128,7 @@ def _make_pgs(num_slots: int = 8) -> dict[str, PlacementGroupInfo]:
 
 async def _launch(specs, pgs=None) -> RayWorkerManager:
     manager = RayWorkerManager()
-    await manager.init(specs, pgs if pgs is not None else {})
+    await manager.init(worker_manager_args(), specs, pgs if pgs is not None else {})
     return manager
 
 
