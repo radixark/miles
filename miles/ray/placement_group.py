@@ -13,7 +13,13 @@ from miles.ray.specs.inference import (
     create_inference_controller_handle,
 )
 from miles.ray.specs.rollout import create_rollout_executor_handle
-from miles.ray.specs.train import compute_actor_args, compute_critic_args, create_trainer_controller_handle
+from miles.ray.specs.train import (
+    ACTOR_ROLE,
+    CRITIC_ROLE,
+    compute_actor_args,
+    compute_critic_args,
+    create_trainer_controller_handle,
+)
 from miles.ray.wiring import get_backend_capability
 from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -136,11 +142,11 @@ async def create_training_models(
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
     capability = get_backend_capability(args)
 
-    actor_model = create_trainer_controller_handle(capability=capability, role="actor")
+    actor_model = create_trainer_controller_handle(capability=capability, trainer_id=ACTOR_ROLE)
     actor_start_rollout_ids = await actor_model.init(compute_actor_args(args))
 
     if args.use_critic:
-        critic_model = create_trainer_controller_handle(capability=capability, role="critic")
+        critic_model = create_trainer_controller_handle(capability=capability, trainer_id=CRITIC_ROLE)
         critic_start_rollout_ids = await critic_model.init(compute_critic_args(args))
     else:
         critic_model = None
