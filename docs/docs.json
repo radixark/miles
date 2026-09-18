@@ -358,8 +358,16 @@
    },
    {
     "tab": "Hardware",
-    "pages": [
-     "hardware/amd"
+    "groups": [
+     {
+      "group": "Hardware Platforms",
+      "icon": "microchip",
+      "pages": [
+       "hardware-platforms/overview",
+       "hardware-platforms/nvidia-gpus",
+       "hardware-platforms/amd"
+      ]
+     }
     ]
    }
   ]
@@ -387,22 +395,27 @@
   },
   {
    "source": "/platforms/index",
-   "destination": "/getting-started/installation",
+   "destination": "/hardware-platforms/overview",
    "permanent": true
   },
   {
    "source": "/platforms/nvidia",
-   "destination": "/getting-started/installation",
+   "destination": "/hardware-platforms/nvidia-gpus",
    "permanent": true
   },
   {
    "source": "/platforms/amd",
-   "destination": "/hardware/amd",
+   "destination": "/hardware-platforms/amd",
    "permanent": true
   },
   {
    "source": "/getting-started/amd",
-   "destination": "/hardware/amd",
+   "destination": "/hardware-platforms/amd",
+   "permanent": true
+  },
+  {
+   "source": "/hardware/amd",
+   "destination": "/hardware-platforms/amd",
    "permanent": true
   },
   {
