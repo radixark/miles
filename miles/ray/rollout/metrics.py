@@ -36,13 +36,15 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
                 f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None (likely errored/aborted trials); treating as 0.0 for metrics."
             )
             rewards = [0.0 if r is None else r for r in rewards]
-        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
+        has_numeric_rewards = all(isinstance(reward, Number) for reward in rewards)
+        if has_numeric_rewards:
+            log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
         if (samples := data[key].get("samples")) is not None:
             log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
         if "truncated" in data[key]:
             truncated = data[key]["truncated"]
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
-        if args.log_passrate:
+        if args.log_passrate and has_numeric_rewards:
             log_dict |= dict_add_prefix(
                 compute_pass_rate(
                     flat_rewards=rewards,
@@ -235,6 +237,11 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     if args.advantage_estimator == "ppo":
         return {}
 
+    # Non-numeric rewards make these rates undefined; omit the batch rather than
+    # report false zeros or silently change the denominator to a numeric subset.
+    if any(not isinstance(sample.get_reward_value(args), Number) for sample in all_samples):
+        return {}
+
     def _is_zero_std(samples: list[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
@@ -328,6 +335,8 @@ def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str,
         return {}
 
     flat_rewards = [sample.get_reward_value(args) for group in completed_groups for sample in group]
+    if any(not isinstance(reward, Number) for reward in flat_rewards):
+        return {}
 
     return compute_pass_rate(
         flat_rewards=flat_rewards,
