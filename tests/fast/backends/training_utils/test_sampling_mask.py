@@ -116,6 +116,7 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
         log_probs_chunk_size=-1,
         vocab_size=4,
         allgather_cp=False,
+        debug_unified_grad_fused_logprob=False,
     )
     logits = torch.tensor(
         [
