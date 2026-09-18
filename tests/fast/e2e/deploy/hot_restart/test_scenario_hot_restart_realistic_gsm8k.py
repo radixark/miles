@@ -3,6 +3,7 @@ import shutil
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -10,7 +11,6 @@ from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_re
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFaultForm
 from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ACTOR_CELL_TYPE
 from tests.e2e.ft.conftest_ft.fault_injection.state import InjectionEvent
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
@@ -67,17 +67,42 @@ class TestTheRecipeIsTheOneFtConverges:
 
 
 class TestTheInjectionPlan:
+    def test_virtual_cells_remain_available_before_the_closing_window(self):
+        """A draw before the final fifteen rollouts still reaches the ordinary scheduler."""
+        form = MagicMock(spec=HotRestartFaultForm)
+        form.is_within_injection_window.return_value = True
+        cells = scenario._create_virtual_cells_before(form)
+
+        assert len(cells) == 2
+
+    def test_virtual_cells_disappear_at_the_closing_window(self):
+        """Completing rollout 234 leaves all of 235-249 free of new take-overs."""
+        form = MagicMock(spec=HotRestartFaultForm)
+        form.is_within_injection_window.return_value = False
+        cells = scenario._create_virtual_cells_before(form)
+
+        assert cells == []
+
+    def test_the_plan_supplies_two_healthy_virtual_cells(self):
+        """The regular scheduler sees a spare target without borrowing a real FT cell."""
+        cells = scenario._create_virtual_cells()
+
+        assert [cell["metadata"]["name"] for cell in cells] == list(scenario._VIRTUAL_CELL_NAMES)
+        assert all(
+            cell["metadata"]["labels"]["miles.io/cell-type"] == scenario._HOT_RESTART_CELL_TYPE for cell in cells
+        )
+
     def test_the_only_fault_the_plan_may_draw_is_a_hot_restart(self):
         """A pod kill mixed in would make the trainer boot uuid this test pins change for a second reason."""
-        forms = scenario.create_hot_restart_forms(_run("/dumps"))
+        forms = scenario.create_hot_restart_forms(_run("/dumps"), max_allowed_rollout_id=234)
 
-        assert list(forms) == [ACTOR_CELL_TYPE]
-        assert [type(one) for one in forms[ACTOR_CELL_TYPE]] == [HotRestartFaultForm]
+        assert list(forms) == [scenario._HOT_RESTART_CELL_TYPE]
+        assert [type(one) for one in forms[scenario._HOT_RESTART_CELL_TYPE]] == [HotRestartFaultForm]
 
     def test_the_plan_relaunches_the_release_the_run_was_installed_under(self):
         """A relaunch of another release would leave the trainers of this run behind."""
         run = _run("/dumps")
-        [form] = scenario.create_hot_restart_forms(run)[ACTOR_CELL_TYPE]
+        [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)[scenario._HOT_RESTART_CELL_TYPE]
 
         assert form._launch is run.launch
         assert form._config is run.config
@@ -85,7 +110,7 @@ class TestTheInjectionPlan:
     def test_the_form_reads_the_progress_of_the_run_it_restarts(self):
         """Eligibility is read off this run's checkpoints and events, not off a neighbouring dump directory."""
         run = _run("/dumps/gsm8k")
-        [form] = scenario.create_hot_restart_forms(run)[ACTOR_CELL_TYPE]
+        [form] = scenario.create_hot_restart_forms(run, max_allowed_rollout_id=234)[scenario._HOT_RESTART_CELL_TYPE]
 
         assert form._checkpoint_dir == scenario.compute_checkpoint_dir(run.dump_dir)
         assert form._events_dir == run.events_dir
@@ -141,7 +166,10 @@ class TestEveryDrawHasToLand:
 
 def _injection(*, succeeded: bool) -> InjectionEvent:
     return InjectionEvent(
-        cell_name="actor-0", form_name=scenario.HOT_RESTART_FORM_NAME, succeeded=succeeded, harmed=False
+        cell_name="hot-restart-virtual-cell-0",
+        form_name=scenario.HOT_RESTART_FORM_NAME,
+        succeeded=succeeded,
+        harmed=False,
     )
 
 
