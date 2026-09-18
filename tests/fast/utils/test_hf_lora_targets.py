@@ -2,11 +2,7 @@
 
 import pytest
 
-from miles.utils.hf_lora_targets import (
-    exclude_hf_lora_targets,
-    parse_lora_targets,
-    resolve_hf_lora_targets,
-)
+from miles.utils.hf_lora_targets import exclude_hf_lora_targets, parse_lora_targets, resolve_hf_lora_targets
 
 
 def test_missing_targets_and_all_linear_use_model_defaults():

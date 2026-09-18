@@ -13,11 +13,7 @@ import torch.distributed as dist
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora import is_lora_enabled  # noqa: F401 (re-exported)
 from miles.utils.lora import lora_rollout_enabled  # noqa: F401 (re-exported)
-from miles.utils.lora import (
-    build_lora_config,
-    get_adapter_target_modules,
-    validate_adapter_export,
-)
+from miles.utils.lora import build_lora_config, get_adapter_target_modules, validate_adapter_export
 
 logger = logging.getLogger(__name__)
 
