@@ -3,6 +3,7 @@ from typing import Any
 
 import torch
 
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.multi_lora import is_multi_lora_enabled
@@ -64,7 +65,8 @@ def convert_samples_to_train_data(
     Convert inference generated samples to training data.
     """
     if (f := custom_convert_samples_to_train_data_func) is not None:
-        return f(args, samples)
+        fn_args = compute_custom_function_config(args, args.custom_convert_samples_to_train_data_path)
+        return f(fn_args, samples)
 
     raw_rewards, rewards = _post_process_rewards(
         args,
@@ -286,7 +288,8 @@ def _post_process_rewards(
     prompt_group_sizes: list[int] | None = None,
 ):
     if (f := custom_reward_post_process_func) is not None:
-        return f(args, samples)
+        fn_args = compute_custom_function_config(args, args.custom_reward_post_process_path)
+        return f(fn_args, samples)
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
