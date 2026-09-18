@@ -152,6 +152,10 @@ def _filter_group(
             sample.status == Sample.Status.COMPLETED
             and not sample.remove_sample
             and sample.effective_response_length > 0
+            # A strict grader's invalid/format penalty is not proof of a
+            # completed mathematical error. Keep its reward in the baseline,
+            # but do not let it manufacture completed-answer diversity.
+            and (not isinstance(sample.reward, dict) or sample.reward.get("valid", True))
             for sample in samples
         ],
         dtype=torch.bool,

@@ -55,6 +55,21 @@ def make_group(rewards=(-1.0, 1.0, -1.0, 1.0), *, truncated=()):
     ]
 
 
+def test_strict_grader_format_penalty_is_not_completed_math_diversity():
+    args = make_args(reward_key="score")
+    samples = make_group(rewards=(
+        {"score": -1.0, "valid": False},
+        {"score": 1.0, "valid": True},
+        {"score": 1.0, "valid": True},
+        {"score": 1.0, "valid": True},
+    ))
+    result = mask_truncated_and_require_completed_reward_diversity(args, samples)
+    assert not result.keep
+    assert result.reason == "no_completed_reward_diversity"
+    samples[0].reward["valid"] = True
+    assert mask_truncated_and_require_completed_reward_diversity(args, samples).keep
+
+
 def convert(args, samples):
     return convert_samples_to_train_data(
         args,
