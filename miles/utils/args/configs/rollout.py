@@ -2,6 +2,7 @@ import argparse
 import json
 from typing import Any
 
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.object_store import ObjectStoreBackend
 
@@ -33,7 +34,7 @@ class RolloutRelatedConfig(BaseConfig):
         ),
     ] = None
     rollout_function_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Path to the rollout generation function. "
@@ -46,7 +47,7 @@ class RolloutRelatedConfig(BaseConfig):
                 "for the default class-based implementation). "
                 "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
                 "and `truncated`."
-            )
+            ),
         ),
     ] = None
     fully_async: A[
@@ -293,32 +294,32 @@ class RolloutRelatedConfig(BaseConfig):
         ),
     ] = None
     custom_generate_function_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Only substitue the `def generate(args, sample, sampling_params)` function within the example rollout function. "
                 "This should be useful if you need to implement some special rollout logic, e.g. multi-turn, function calling."
-            )
+            ),
         ),
     ] = None
     custom_rollout_log_function_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "The custom function for logging rollout data. The signature of the functions is: "
                 "def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool. "
                 "The return value indicates whether to skip the default logging. "
-            )
+            ),
         ),
     ] = None
     custom_eval_rollout_log_function_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "The custom function for logging eval rollout data. "
                 "def log_eval_rollout_data(rollout_id, args, data, extra_metrics) -> bool. "
                 "The return value indicates whether to skip the default logging. "
-            )
+            ),
         ),
     ] = None
 
@@ -361,12 +362,12 @@ class RolloutRelatedConfig(BaseConfig):
     keep_old_actor: A[bool, Arg(help="Whether to keep the rollout model on training process")] = False
 
     rollout_data_postprocess_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "The called after we have all the rollout data including log_probs. "
                 "It may be helpful for updating loss mask."
-            )
+            ),
         ),
     ] = None
     pin_rollout_manager_to_head: A[
@@ -404,14 +405,14 @@ class RolloutRelatedConfig(BaseConfig):
         ),
     ] = False
     custom_inference_engine_provider_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Import path of a callable(args, *, capability) returning the BaseWorkerProvider "
                 "that reports the inference engine cells. Setting this implies external rollout. "
                 "When unset it is filled in automatically: the static discovery provider with "
                 "--rollout-external-engine-addrs, the backend's own provider otherwise."
-            )
+            ),
         ),
     ] = None
     update_weight_transfer_mode: A[
@@ -477,14 +478,14 @@ class RolloutRelatedConfig(BaseConfig):
         ),
     ] = "xxh3-128"
     custom_update_weight_post_write_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Path to a custom function called on each trainer rank after a disk-delta sync's "
                 "files are written, before the engines read them — to publish the writes on a "
                 "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
                 "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."
-            )
+            ),
         ),
     ] = None
     p2p_transfer_timeout: A[
