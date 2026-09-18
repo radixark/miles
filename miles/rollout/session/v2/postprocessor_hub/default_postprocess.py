@@ -1,6 +1,6 @@
 from miles.utils.types import Sample
 
-_SERVER_OWNED_METADATA_KEYS = ("accumulated_token_ids", "tito_session_mismatch", "leaf")
+_SERVER_OWNED_METADATA_KEYS = ("accumulated_token_ids", "tito_session_mismatch", "leaf", "turn_args")
 
 
 def check_input_metadata(agent_metadata: dict) -> dict:

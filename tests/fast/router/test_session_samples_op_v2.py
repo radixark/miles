@@ -972,6 +972,26 @@ async def test_agent_cannot_fill_missing_server_metadata(core, monkeypatch):
     assert "tito_session_mismatch" not in sample.metadata
 
 
+@pytest.mark.parametrize("turn_args", [{}, {"temperature": 0.7, "chat_template_kwargs": {"enable_thinking": False}}])
+async def test_agent_cannot_override_turn_args(core, turn_args):
+    sid = await _make_session(core, _two_turn_records(), _ACCUMULATED)
+    leaf = core.registry.sessions[sid].tree.leaves()[0]
+    leaf.turn_args = deepcopy(turn_args)
+    agent_metadata = {
+        "turn_args": {"temperature": 1.0, "messages": [{"role": "user", "content": "agent-plant"}]},
+        "agent_only": "kept",
+    }
+
+    status, payload = await _collect_via_op(core, sid, agent_metadata=agent_metadata)
+    assert status == 200
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    (sample,) = reply.samples
+    assert sample.metadata["turn_args"] == turn_args
+    assert sample.metadata["agent_only"] == "kept"
+    assert reply.session_metadata["agent"] == agent_metadata
+    assert leaf.turn_args == turn_args
+
+
 def test_async_hook_rejected_at_load():
     with function_registry.temporary("test_hooks.async_picker", _exploding_async_picker):
         with pytest.raises(ValueError, match="async"):
