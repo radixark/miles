@@ -406,6 +406,27 @@ class TestResolveRequestArgs:
         }
 
     @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
+    def test_deepseek_thinking_rule_uses_resolved_kwargs(self, tito_cls):
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        model = tito_cls(tokenizer, chat_template_kwargs={"thinking": False})
+        request_args = {
+            "chat_template_kwargs": {"thinking_mode": "thinking", "custom_option": "resolved"},
+            "temperature": 0.7,
+        }
+
+        model.resolve_thinking(
+            request_args,
+            request_source={"chat_template_kwargs": {"enable_thinking": False}},
+            turn_args={"chat_template_kwargs": {"thinking": False}},
+        )
+
+        assert request_args == {
+            "chat_template_kwargs": {"thinking": True, "custom_option": "resolved"},
+            "temperature": 0.7,
+        }
+
+    @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
     def test_deepseek_recorded_mode_overrides_request_aliases(self, tito_cls):
         tokenizer = MagicMock()
         tokenizer.convert_tokens_to_ids.return_value = 1

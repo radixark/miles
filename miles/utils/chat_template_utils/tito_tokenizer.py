@@ -825,6 +825,28 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
         rules.append(self.resolve_thinking)
         return rules
 
+    def resolve_template_kwargs(
+        self,
+        request_args: dict[str, Any],
+        *,
+        request_source: dict[str, Any],
+        turn_args: dict[str, Any] | None,
+    ) -> None:
+        super().resolve_template_kwargs(request_args, request_source=request_source, turn_args=turn_args)
+        # Thinking aliases are one setting: history overrides the request and launch defaults.
+        for source in (
+            (turn_args or {}).get("chat_template_kwargs") or {},
+            request_source.get("chat_template_kwargs") or {},
+            self.chat_template_kwargs,
+        ):
+            mode = {key: source[key] for key in _DEEPSEEK_MODE_KWARG_ALIASES if key in source}
+            if mode:
+                break
+        kwargs = request_args["chat_template_kwargs"]
+        for alias in _DEEPSEEK_MODE_KWARG_ALIASES:
+            kwargs.pop(alias, None)
+        kwargs.update(mode)
+
     def resolve_thinking(
         self,
         request_args: dict[str, Any],
@@ -832,18 +854,12 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
         request_source: dict[str, Any],
         turn_args: dict[str, Any] | None,
     ) -> None:
-        """Keep the recorded mode, or resolve request aliases over launch defaults."""
-        sources = (
-            (turn_args or {}).get("chat_template_kwargs") or {},
-            request_source.get("chat_template_kwargs") or {},
-            self.chat_template_kwargs,
-        )
-        source = next((args for args in sources if _DEEPSEEK_MODE_KWARG_ALIASES.intersection(args)), {})
-        kwargs = request_args.setdefault("chat_template_kwargs", {})
+        kwargs = request_args["chat_template_kwargs"]
+        thinking = deepseek.V32.render_thinking_enabled(kwargs)
         for alias in _DEEPSEEK_MODE_KWARG_ALIASES:
             kwargs.pop(alias, None)
         # SGLang's reasoning parser reads the canonical thinking flag.
-        kwargs["thinking"] = deepseek.V32.render_thinking_enabled(source)
+        kwargs["thinking"] = thinking
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +915,28 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         rules.append(self.resolve_thinking)
         return rules
 
+    def resolve_template_kwargs(
+        self,
+        request_args: dict[str, Any],
+        *,
+        request_source: dict[str, Any],
+        turn_args: dict[str, Any] | None,
+    ) -> None:
+        super().resolve_template_kwargs(request_args, request_source=request_source, turn_args=turn_args)
+        # Thinking aliases are one setting: history overrides the request and launch defaults.
+        for source in (
+            (turn_args or {}).get("chat_template_kwargs") or {},
+            request_source.get("chat_template_kwargs") or {},
+            self.chat_template_kwargs,
+        ):
+            mode = {key: source[key] for key in _DEEPSEEK_MODE_KWARG_ALIASES if key in source}
+            if mode:
+                break
+        kwargs = request_args["chat_template_kwargs"]
+        for alias in _DEEPSEEK_MODE_KWARG_ALIASES:
+            kwargs.pop(alias, None)
+        kwargs.update(mode)
+
     def resolve_thinking(
         self,
         request_args: dict[str, Any],
@@ -906,18 +944,12 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         request_source: dict[str, Any],
         turn_args: dict[str, Any] | None,
     ) -> None:
-        """Keep the recorded mode, or resolve request aliases over launch defaults."""
-        sources = (
-            (turn_args or {}).get("chat_template_kwargs") or {},
-            request_source.get("chat_template_kwargs") or {},
-            self.chat_template_kwargs,
-        )
-        source = next((args for args in sources if _DEEPSEEK_MODE_KWARG_ALIASES.intersection(args)), {})
-        kwargs = request_args.setdefault("chat_template_kwargs", {})
+        kwargs = request_args["chat_template_kwargs"]
+        thinking = deepseek.V4.render_thinking_enabled(kwargs)
         for alias in _DEEPSEEK_MODE_KWARG_ALIASES:
             kwargs.pop(alias, None)
         # SGLang's reasoning parser reads the canonical thinking flag.
-        kwargs["thinking"] = deepseek.V4.render_thinking_enabled(source)
+        kwargs["thinking"] = thinking
 
     def tokenize_additional_messages(
         self,
