@@ -46,8 +46,7 @@
        "index",
        "getting-started/index",
        "getting-started/installation",
-       "getting-started/quick-start",
-       "getting-started/amd"
+       "getting-started/quick-start"
       ]
      },
      {
@@ -76,7 +75,13 @@
        }
       ]
      },
-     "user-guide/cli-reference"
+     "user-guide/cli-reference",
+     {
+      "group": "Hardware",
+      "pages": [
+       "getting-started/amd"
+      ]
+     }
     ]
    },
    {
