@@ -186,7 +186,5 @@ class TrainRayActor(NodeProbeMixin):
     def _get_parallel_config(self):
         raise NotImplementedError
 
-    def set_rollout_executor(self, rollout_executor):
-        self.rollout_executor = rollout_executor
-        if self.args.rank == 0:
-            ray.get(self.rollout_executor.set_train_parallel_config.remote(self.train_parallel_config))
+    def get_train_parallel_config(self) -> dict:
+        return self.train_parallel_config
