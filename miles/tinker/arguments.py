@@ -3,8 +3,8 @@ import argparse
 from miles.utils.hf_config import load_hf_config
 from miles.utils.hf_lora_targets import (
     exclude_hf_lora_targets,
+    expand_hf_lora_targets,
     get_hf_lora_targets,
-    matches_hf_lora_target,
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
@@ -43,12 +43,7 @@ def configure_tinker_args(args):
         train_mlp=args.tinker_train_mlp,
         train_unembed=args.tinker_train_unembed,
     )
-    available = layout.attention + layout.mlp + layout.unembed
-    for target in requested:
-        assert any(matches_hf_lora_target(module, target) for module in available), (
-            f"Tinker target {target!r} is not an HF target of this model; use the model's HF projection names"
-        )
-    targets = [module for module in available if any(matches_hf_lora_target(module, target) for target in requested)]
+    targets = expand_hf_lora_targets(requested, layout)
     targets = exclude_hf_lora_targets(targets, parse_lora_targets(args.exclude_modules) or [])
     for name, group in (("attn", layout.attention), ("mlp", layout.mlp), ("unembed", layout.unembed)):
         selected = set(targets).intersection(group)

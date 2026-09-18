@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles.utils.hf_config import load_hf_config
-from miles.utils.hf_lora_targets import matches_hf_lora_target, resolve_hf_lora_targets
+from miles.utils.hf_lora_targets import resolve_hf_lora_targets
 
 logger = logging.getLogger(__name__)
 
@@ -434,15 +434,9 @@ def wrap_model_provider_with_inkling_lora(provider_func, args):
     """Wrap a miles model provider so every built chunk gets LoRA before DDP wrap."""
 
     expected = resolve_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
-    selected = {
-        module
-        for module in expected
-        if any(matches_hf_lora_target(module, target) for target in args.target_modules)
-        and not any(matches_hf_lora_target(module, target) for target in args.exclude_modules)
-    }
-    assert selected == set(expected) and all(
-        any(matches_hf_lora_target(module, target) for module in expected) for target in args.target_modules
-    ), "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
+    assert set(args.hf_lora_targets) == set(expected), (
+        "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
+    )
 
     def wrapped(*provider_args, **provider_kwargs):
         return apply_inkling_lora(provider_func(*provider_args, **provider_kwargs), args)

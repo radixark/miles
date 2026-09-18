@@ -7,6 +7,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
+from miles.utils.lora import get_adapter_target_modules
 from miles.utils.multi_lora import AdapterSpec
 
 
@@ -28,7 +29,11 @@ class WeightPublisher:
             data = safetensors.torch.save(tensors) if is_writer else None
 
             if is_writer:
-                config = self._adapter_config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
+                config = self._adapter_config | {
+                    "r": adapter.rank,
+                    "lora_alpha": adapter.alpha,
+                    "target_modules": get_adapter_target_modules(tensors),
+                }
                 (tmp_dir / "adapter_config.json").write_text(json.dumps(config))
                 (tmp_dir / "adapter_model.safetensors").write_bytes(data)
 

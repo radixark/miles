@@ -1,14 +1,13 @@
 """Unit tests for miles.backends.megatron_utils.lora.utils.
 
-Tests cover module name conversion, LoRA detection helpers, parameter identification,
-and LoRA sync config building — all without GPU.
+Tests cover LoRA detection, adapter parameters, and training checkpoint state.
 """
 
 import sys
 import types
 from argparse import Namespace
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -16,61 +15,11 @@ import torch
 import miles.backends.megatron_utils.lora.utils as lora_utils
 from miles.backends.megatron_utils.lora.utils import (
     _is_adapter_param_name,
-    build_lora_sync_config,
-    convert_target_modules_to_hf,
     is_lora_enabled,
     load_lora_adapter,
     save_lora_checkpoint,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
-
-# ---------------------------------------------------------------------------
-# convert_target_modules_to_hf
-# ---------------------------------------------------------------------------
-
-
-class TestConvertTargetModulesToHf:
-    def test_standard_linear_qkv(self):
-        assert convert_target_modules_to_hf(["linear_qkv"]) == ["q_proj", "k_proj", "v_proj"]
-
-    def test_standard_linear_proj(self):
-        assert convert_target_modules_to_hf(["linear_proj"]) == ["o_proj"]
-
-    def test_standard_linear_fc1(self):
-        assert convert_target_modules_to_hf(["linear_fc1"]) == ["gate_proj", "up_proj"]
-
-    def test_standard_linear_fc2(self):
-        assert convert_target_modules_to_hf(["linear_fc2"]) == ["down_proj"]
-
-    def test_gdn_in_proj_expands_to_sglang_modules(self):
-        assert convert_target_modules_to_hf(["in_proj"]) == ["in_proj_qkvz", "in_proj_ba"]
-
-    @pytest.mark.parametrize(
-        "module,expected",
-        [
-            ("out_proj", ["out_proj"]),  # same-name passthrough
-            ("language_model.decoder.layers.*.self_attention.out_proj", ["out_proj"]),  # wildcard path
-            ("language_model.decoder.layers.0.self_attention.out_proj", ["out_proj"]),  # dotted path, passthrough
-            (
-                "language_model.decoder.layers.0.self_attention.linear_qkv",  # dotted path, table-mapped
-                ["q_proj", "k_proj", "v_proj"],
-            ),
-        ],
-    )
-    def test_paths_reduce_to_leaf_before_mapping(self, module, expected):
-        assert convert_target_modules_to_hf([module]) == expected
-
-    def test_canonical_split_modules(self):
-        result = convert_target_modules_to_hf(["linear_q", "linear_k", "linear_v"])
-        assert result == ["q_proj", "k_proj", "v_proj"]
-
-    def test_canonical_fc1_gate_up(self):
-        result = convert_target_modules_to_hf(["linear_fc1_gate", "linear_fc1_up"])
-        assert result == ["gate_proj", "up_proj"]
-
-    def test_unknown_module_passthrough(self):
-        assert convert_target_modules_to_hf(["some_custom_module"]) == ["some_custom_module"]
-
 
 # ---------------------------------------------------------------------------
 # is_lora_enabled
@@ -155,82 +104,12 @@ class TestIsAdapterParamName:
 
 
 # ---------------------------------------------------------------------------
-# build_lora_sync_config
-# ---------------------------------------------------------------------------
-
-
-class TestBuildLoraSyncConfig:
-    def test_basic_config(self):
-        args = Namespace(
-            lora_rank=32,
-            lora_alpha=32,
-            lora_dropout=0.0,
-            target_modules=["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"],
-        )
-        config = build_lora_sync_config(args)
-        assert config["peft_type"] == "LORA"
-        assert config["r"] == 32
-        assert config["lora_alpha"] == 32
-        assert config["lora_dropout"] == 0.0
-        assert config["bias"] == "none"
-        assert config["task_type"] == "CAUSAL_LM"
-        assert set(config["target_modules"]) == {
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        }
-
-    def test_no_target_modules_uses_default(self):
-        args = Namespace(lora_rank=16, lora_alpha=16, lora_dropout=0.0, target_modules=None)
-        config = build_lora_sync_config(args)
-        assert len(config["target_modules"]) == 7
-
-    def test_canonical_target_modules(self):
-        args = Namespace(
-            lora_rank=8,
-            lora_alpha=8,
-            lora_dropout=0.1,
-            target_modules=["linear_q", "linear_k"],
-        )
-        config = build_lora_sync_config(args)
-        assert config["target_modules"] == ["q_proj", "k_proj"]
-        assert config["r"] == 8
-
-
-# ---------------------------------------------------------------------------
 # LORA_ADAPTER_NAME constant
 # ---------------------------------------------------------------------------
 
 
 def test_lora_adapter_name_constant():
     assert LORA_ADAPTER_NAME == "miles_lora"
-
-
-class TestBuildLoraSyncConfigUnderMultiLora:
-    @staticmethod
-    def _args(**overrides):
-        return Namespace(
-            **{
-                "lora_rank": 8,
-                "lora_alpha": 8,
-                "lora_dropout": 0.0,
-                "target_modules": ["linear_qkv"],
-                "multi_lora": False,
-                **overrides,
-            }
-        )
-
-    def test_a_single_adapter_on_an_inkling_checkpoint_publishes_the_shorthand(self, monkeypatch):
-        """The engine was launched to auto-detect its targets, so the adapter must say the same."""
-        monkeypatch.setattr(
-            "miles.backends.megatron_utils.lora.utils.sglang_lora_target_all_sentinel", lambda _a: True
-        )
-
-        assert build_lora_sync_config(self._args())["target_modules"] == "all-linear"
 
 
 class TestSaveLoraCheckpointTrainingState:

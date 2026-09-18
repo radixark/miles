@@ -248,3 +248,12 @@ def exclude_hf_lora_targets(targets: list[str], exclusions: list[str]) -> list[s
     ]
     assert selected, "LoRA target selection is empty after --exclude-modules"
     return selected
+
+
+def expand_hf_lora_targets(targets: list[str], layout: HfLoraTargets) -> list[str]:
+    available = layout.attention + layout.mlp + layout.unembed
+    for target in targets:
+        assert any(matches_hf_lora_target(module, target) for module in available), (
+            f"LoRA target {target!r} is not an HF target of this model"
+        )
+    return [module for module in available if any(matches_hf_lora_target(module, target) for target in targets)]

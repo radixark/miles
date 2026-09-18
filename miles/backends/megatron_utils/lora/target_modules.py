@@ -19,6 +19,7 @@ _CANONICAL_PROJECTIONS = {
 class _TargetModule:
     megatron_module: str
     selectors: frozenset[str]
+    hf_modules: frozenset[str]
 
 
 def _matches_megatron_target(module, target):
@@ -69,13 +70,15 @@ def resolve_megatron_lora_targets(targets, mappings, *, canonical, exclude_modul
                 f"CanonicalLoRA does not define split adapters for {module!r}"
             )
             for target in sorted(selected):
-                candidates[_canonical_module(module, target)] = _TargetModule(module, frozenset(matched))
+                candidates[_canonical_module(module, target)] = _TargetModule(
+                    module, frozenset(matched), frozenset({target})
+                )
         else:
             assert selected == hf_modules, (
                 f"LoRA on fused module {module!r} requires all HF targets {sorted(hf_modules)}; "
                 "use canonical_lora to select individual projections"
             )
-            candidates[module] = _TargetModule(module, frozenset(matched))
+            candidates[module] = _TargetModule(module, frozenset(matched), frozenset(selected))
     assert set(targets) <= covered, f"LoRA targets have no Bridge mapping: {sorted(set(targets) - covered)}"
     assert candidates, "No LoRA targets remain after applying --exclude-modules"
     return candidates
@@ -114,3 +117,19 @@ def _gather_set(local):
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, local)
     return set().union(*gathered)
+
+
+def configure_lora_targets(args):
+    # Bridge is optional outside the Megatron backend.
+    from megatron.bridge import AutoBridge
+
+    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    model_bridge = bridge._model_bridge
+    model_bridge.hf_pretrained = bridge.hf_pretrained
+    candidates = resolve_megatron_lora_targets(
+        args.target_modules,
+        model_bridge.mapping_registry().get_all_mappings(),
+        canonical=args.lora_type == "canonical_lora",
+        exclude_modules=args.exclude_modules,
+    )
+    args.hf_lora_targets = sorted({target for module in candidates.values() for target in module.hf_modules})

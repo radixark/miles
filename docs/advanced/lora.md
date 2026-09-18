@@ -167,15 +167,22 @@ initialization. Scoped HF selectors must match registry patterns exactly;
 arbitrary layer subsets are not implemented by this converter.
 Standard LoRA requires all projections of a fused weight together;
 `canonical_lora` supports individual Q/K/V and gate/up selections.
-Injection checks do not validate export or serving compatibility.
+Exports check HF target coverage and A/B pairing after collecting rank-local
+names. This does not establish numerical or kernel compatibility for every model.
 
 Tinker accepts explicit HF targets and exclusions only when the resulting layout
 consists of complete attention, MLP, and output-head groups. It derives the SDK
 training flags from that final selection; partial groups are rejected because
 the SDK cannot describe them.
 
-SGLang normalizes target names into buffer types (for example, Q/K/V become
-`qkv_proj`); it does not own the selection policy. FSDP currently has no LLM LoRA
+SGLang receives the selected HF paths and normalizes them into buffer types
+(for example, Q/K/V become `qkv_proj`); it does not own the selection policy.
+Adapter checkpoints derive their concrete `target_modules` from exported tensor
+keys rather than a separate Megatron-to-HF name table. Online adapter registration
+uses the resolved HF selection, without an extra tensor export.
+This requires SGLang's HF-path CLI and model-aware normalization changes,
+including the GDN split-name aliases and Inkling's fused layout. Miles no longer
+substitutes `all` for Inkling targets. FSDP currently has no LLM LoRA
 injection path. Its eventual integration must use the same selected HF targets
 and translate any runtime fusion through model conversion metadata.
 

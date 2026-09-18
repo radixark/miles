@@ -19,7 +19,6 @@ from miles.backends.megatron_utils.lora.target_modules import (
     validate_lora_target_adapters,
 )
 from miles.backends.megatron_utils.lora.utils import (
-    convert_target_modules_to_hf,
     create_lora_instance,
     patch_param_grad_buffer_for_colocate_mode_lora,
 )
@@ -84,7 +83,7 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     post-finalize because they depend on the resolved provider, not the CLI)."""
     if not getattr(provider, "num_moe_experts", None):
         return
-    if not targets_expert_leaves(args.target_modules):
+    if not targets_expert_leaves(args.hf_lora_targets):
         logger.info("[multilora] MoE model with no expert leaves in --target-modules; experts stay frozen")
         return
 
@@ -103,7 +102,7 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
         "desynchronizes the dispatched token order)."
     )
     # sglang only wraps a fused MoE layer when both expert projections are targeted.
-    served = set(convert_target_modules_to_hf(list(args.target_modules)))
+    served = {target.rsplit(".", 1)[-1] for target in args.hf_lora_targets}
     if "gate_up_proj" in served:
         served.update(("gate_proj", "up_proj"))
     expert_pair = {"gate_proj", "up_proj", "down_proj"}
@@ -160,7 +159,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
-    if is_multi_lora_enabled(args) and targets_expert_leaves(args.target_modules):
+    if is_multi_lora_enabled(args) and targets_expert_leaves(args.hf_lora_targets):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
         if getattr(provider, "moe_permute_fusion", False):
@@ -184,7 +183,6 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
     )
     model_bridge = bridge._model_bridge
-    # Some registries inspect checkpoint keys to distinguish packed and per-expert layouts.
     model_bridge.hf_pretrained = bridge.hf_pretrained
     target_candidates = resolve_megatron_lora_targets(
         args.target_modules,
@@ -195,6 +193,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
 
     def apply_lora_hook(model_chunks):
         candidates = select_present_target_modules(model_chunks, target_candidates)
+        # Remove registry alternatives absent from the distributed model before checking exports.
+        args.hf_lora_targets = sorted({target for module in candidates.values() for target in module.hf_modules})
         lora = create_adapter(args, target_modules=list(candidates))
         transformed = lora(model_chunks, training=True)
         validate_lora_target_adapters(transformed, candidates)

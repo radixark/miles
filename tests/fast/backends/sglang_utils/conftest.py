@@ -49,6 +49,7 @@ def make_engine_args(**overrides: Any) -> Namespace:
         use_rollout_indexer_replay=False,
         fp16=False,
         lora_rank=0,
+        hf_lora_targets=[f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
         sglang_api_key=None,
         lora_adapter_path=None,
         multi_lora=False,

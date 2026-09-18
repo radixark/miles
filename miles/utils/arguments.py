@@ -18,7 +18,13 @@ from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_dsa, load_hf_config
-from miles.utils.hf_lora_targets import exclude_hf_lora_targets, parse_lora_targets, resolve_hf_lora_targets
+from miles.utils.hf_lora_targets import (
+    exclude_hf_lora_targets,
+    expand_hf_lora_targets,
+    get_hf_lora_targets,
+    parse_lora_targets,
+    resolve_hf_lora_targets,
+)
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -3148,6 +3154,17 @@ def miles_validate_args(args):
     from miles.utils.multi_lora import validate_multi_lora_args
 
     validate_multi_lora_args(args)
+    if is_lora_enabled(args):
+        if args.megatron_to_hf_mode == "bridge":
+            # Resolving before actor creation gives trainer and engine the same HF selection.
+            from miles.backends.megatron_utils.lora.target_modules import configure_lora_targets
+
+            configure_lora_targets(args)
+        else:
+            layout = get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
+            args.hf_lora_targets = exclude_hf_lora_targets(
+                expand_hf_lora_targets(args.target_modules, layout), args.exclude_modules
+            )
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

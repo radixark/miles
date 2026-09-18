@@ -18,7 +18,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     resolve_placement,
 )
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
-from miles.utils.lora import is_lora_weight_name
+from miles.utils.lora import validate_adapter_export
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +43,18 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
         # for distributed LoRA; add an e2e for native-LoRA disaggregate when it does
         if self.placement.gather_pp:
             named_tensors = _gather_pp_full_adapter(named_tensors)
+        weight_names = [name for name, _ in named_tensors]
+        if not self.placement.gather_pp:
+            # Check complete target coverage even when tensor transport remains PP-local.
+            pp = get_parallel_state().pp
+            gathered_names = [None] * pp.size
+            dist.all_gather_object(gathered_names, weight_names, group=pp.group)
+            weight_names = [name for names in gathered_names for name in names]
+        validate_adapter_export(
+            weight_names, self.args.hf_lora_targets, shared_outer=self.args.experts_shared_outer_loras
+        )
         if not materialize:
             return
-        if not named_tensors:
-            raise RuntimeError(
-                f"LoRA weight sync failed: the adapter export produced zero tensors"
-                f"{f' for adapter {adapter!r}' if adapter is not None else ''}. "
-                "This usually means the Megatron-Bridge or SGLang version is incompatible."
-            )
-        if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
-            raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
         while named_tensors:
             hf_name, tensor = named_tensors.pop(0)
             yield [(hf_name, tensor)]

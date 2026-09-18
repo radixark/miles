@@ -98,55 +98,22 @@ class TestComputeEngineLaunchCmd:
 
 
 class TestLoraTargetModules:
-    @staticmethod
-    def _parsed_lora_targets(target_modules: list[str]):
-        args = make_engine_args(lora_rank=16, target_modules=target_modules)
-        return parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
-
-    def test_spellable_targets_are_named_one_by_one(self):
-        """Naming the exact modules keeps SGLang from allocating adapter buffers for the rest."""
-        targets = self._parsed_lora_targets(["layers.*.self_attention.linear_qkv"])
-
-        assert sorted(targets) == ["k_proj", "q_proj", "v_proj"]
-
-    def test_gdn_attention_targets_are_named_one_by_one(self):
-        """Qwen3.5 GDN adapters must reach the engine as the exact fused slices, not as the
-        auto-detecting shorthand that would cover every compatible module instead."""
-        targets = self._parsed_lora_targets(["layers.*.self_attention.in_proj"])
-
-        assert sorted(targets) == ["in_proj_ba", "in_proj_qkvz"]
-
-    def test_an_inkling_checkpoint_asks_sglang_to_discover_the_names(self, monkeypatch: pytest.MonkeyPatch):
-        """Inkling exposes module names the megatron-to-HF mapping cannot produce, so it is the
-        one family that hands SGLang the shorthand instead of naming its targets."""
-        monkeypatch.setattr(
-            "miles.backends.sglang_utils.sglang_engine.sglang_lora_target_all_sentinel", lambda _args: True
-        )
-
-        targets = self._parsed_lora_targets(["layers.*.self_attention.linear_qkv"])
-
-        assert set(targets) == {"all"}
-
-    def test_a_multi_lora_inkling_launch_still_names_its_targets(self, monkeypatch: pytest.MonkeyPatch):
-        """Several adapters share one slot budget here, so discovering every compatible module
-        sizes that budget off the base model instead of off what the adapters fill."""
-        monkeypatch.setattr(
-            "miles.backends.sglang_utils.sglang_engine.sglang_lora_target_all_sentinel", lambda _args: True
-        )
+    @pytest.mark.parametrize(
+        "hf_targets",
+        [
+            [f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
+            [f"model.layers.*.linear_attn.in_proj_{projection}" for projection in ("qkv", "z", "b", "a")],
+            [f"language_model.layers.*.attn.{projection}" for projection in ("wq_du", "wk_dv", "wv_dv", "wr_du")],
+        ],
+        ids=["qkv", "gdn", "inkling"],
+    )
+    @pytest.mark.parametrize("multi_lora", [False, True], ids=["single", "multi"])
+    def test_hf_paths_survive_the_engine_cli(self, hf_targets, multi_lora):
         args = make_engine_args(
             lora_rank=16,
-            target_modules=["layers.*.self_attention.linear_qkv"],
-            multi_lora=True,
+            hf_lora_targets=hf_targets,
+            multi_lora=multi_lora,
             multi_lora_n_adapters=4,
         )
-
         targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
-
-        assert sorted(targets) == ["k_proj", "q_proj", "v_proj"]
-
-    def test_asking_for_every_module_is_still_honoured(self):
-        """SGLang accepts the shorthand as a target name, so a run that spelled it out itself
-        is not the substitution this refuses."""
-        targets = self._parsed_lora_targets(["all"])
-
-        assert set(targets) == {"all"}
+        assert set(targets) == set(hf_targets)

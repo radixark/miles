@@ -93,3 +93,4 @@ def test_one_to_one_mapping_keeps_bridge_module_name():
     mapping = _mapping("decoder.layers.*.self_attention.output_projection.weight", target + ".weight")
     candidates = resolve_megatron_lora_targets([target], [mapping], canonical=True)
     assert list(candidates) == ["decoder.layers.*.self_attention.output_projection"]
+    assert next(iter(candidates.values())).hf_modules == {target}
