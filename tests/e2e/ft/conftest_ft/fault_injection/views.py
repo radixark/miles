@@ -2,6 +2,7 @@
 
 import dataclasses
 import enum
+from datetime import datetime
 from typing import Literal
 
 from tests.e2e.ft.conftest_ft.fault_injection.state import (
@@ -87,6 +88,17 @@ def compute_forms_drawn_without_success(events: list[Event]) -> list[tuple[str, 
         if event.succeeded:
             worked.add(key)
     return sorted(drawn - worked)
+
+
+def compute_injection_times(events: list[Event], *, cell_type: str | None = None) -> list[datetime]:
+    cell_type_of_name = _compute_cell_type_of_name(events)
+    return [
+        event.timestamp
+        for event in events
+        if isinstance(event, InjectionEvent)
+        and event.succeeded
+        and (cell_type is None or cell_type_of_name.get(event.cell_name) == cell_type)
+    ]
 
 
 def compute_states_of_cell_name(events: list[Event]) -> dict[str, list[ObservedCellState]]:
