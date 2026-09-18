@@ -128,13 +128,10 @@ means the ordinary model defaults, including when explicitly passed to Tinker.
 
 ### HF target source of truth
 
-`miles/utils/hf_lora_targets.py` defines the HF projection groups and default
-selection policy independently of the training backend. `get_hf_lora_targets()`
-accepts the HF config as a dictionary and returns scoped attention, MLP, and
-output-head targets. It reads the text config for multimodal models and accounts
-for optional MLA query compression, dense/shared expert groups, and hybrid
-attention layer types. Vision towers, routers, norms, and GDN convolutions are
-outside these groups.
+`miles/utils/hf_lora_targets.py` owns **HF target groups and defaults** for all
+backends. It derives attention, MLP, and output-head paths from the model config,
+including nested text models, optional MLA projections, expert layouts, and
+hybrid attention. Vision towers, routers, norms, and GDN convolutions are excluded.
 
 | Model layout | Attention | MLP | Ordinary LoRA default |
 |---|---|---|---|
@@ -150,9 +147,12 @@ outside these groups.
 
 `resolve_hf_lora_targets()` selects targets in this order:
 
-1. An explicit target list is returned unchanged, without applying defaults or group flags.
-2. Three explicit training flags select the corresponding complete groups.
-3. With neither, use attention + MLP and the model-specific defaults above.
+1. `all-linear` selects the ordinary model defaults, regardless of training flags.
+2. Any other explicit target list overrides defaults and training flags.
+3. Without explicit targets, three training flags select the corresponding groups;
+   without flags, use the ordinary model defaults.
+
+`--exclude-modules` applies after selection.
 
 Packed expert entries identify HF parameters rather than `nn.Linear` modules.
 Inkling entries use its HF adapter export schema, which differs from its base
@@ -167,8 +167,9 @@ initialization. Scoped HF selectors must match registry patterns exactly;
 arbitrary layer subsets are not implemented by this converter.
 Standard LoRA requires all projections of a fused weight together;
 `canonical_lora` supports individual Q/K/V and gate/up selections.
-Exports check HF target coverage and A/B pairing after collecting rank-local
-names. This does not establish numerical or kernel compatibility for every model.
+Exports check selected HF patterns and A/B pairing across ranks. These checks
+do not prove that every layer or expert within a wildcard was exported, or
+establish tensor-shape, numerical, or kernel compatibility.
 
 Tinker accepts explicit HF targets and exclusions only when the resulting layout
 consists of complete attention, MLP, and output-head groups. It derives the SDK
@@ -180,13 +181,11 @@ SGLang receives the selected HF paths and normalizes them into buffer types
 Adapter checkpoints derive their concrete `target_modules` from exported tensor
 keys rather than a separate Megatron-to-HF name table. Online adapter registration
 uses the resolved HF selection, without an extra tensor export.
-This requires SGLang's HF-path CLI and model-aware normalization changes,
-including the GDN split-name aliases and Inkling's fused layout. Miles no longer
-substitutes `all` for Inkling targets. FSDP currently has no LLM LoRA
-injection path. Its eventual integration must use the same selected HF targets
-and translate any runtime fusion through model conversion metadata.
+This requires [SGLang's HF-path normalization support](https://github.com/sgl-project/sglang/pull/40242),
+including GDN split names and Inkling's fused layout. FSDP LoRA injection remains
+unsupported.
 
-This argument table describes the general Bridge surface. Current native Inkling
+Native Inkling
 uses a fixed model-specific adapter schema: defaults select that complete schema,
 and partial/custom layouts or `canonical_lora` are rejected before injection.
 Use the Inkling launcher defaults.

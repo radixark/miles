@@ -18,17 +18,9 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
   (`linear_qkv`, `linear_proj`), the per-expert MoE projections (`linear_fc1`, `linear_fc2`),
   and the output layer (`output_layer`) so the cookbook's default `train_unembed=True` is servable.
 
-The shared `miles/utils/hf_lora_targets.py` defines model-aware HF attention, MLP,
-and output-head groups; see [LoRA target selection](../advanced/lora.md#hf-target-source-of-truth)
-for the layouts and defaults. Megatron resolves supported scoped paths through
-Bridge and checks adapter coverage at initialization. A target definition does
-not by itself establish end-to-end training and sampling support for a model.
-`--tinker-train-attn`, `--tinker-train-mlp`, and `--tinker-train-unembed` default to enabled;
-use `--no-tinker-train-attn`, `--no-tinker-train-mlp`, or `--no-tinker-train-unembed` to disable a group.
-Explicit HF `--target-modules` overrides these flags; `--exclude-modules` applies
-after selection. The final selection must consist of complete training groups,
-and the gateway derives its SDK flags from those groups. Every client's SDK
-flags must match the resulting server layout.
+The example enables attention, MLP, and output-head training. Client SDK flags
+must match the server's selected groups. See [LoRA target selection](../advanced/lora.md#hf-target-source-of-truth)
+for defaults, `--tinker-train-*` flags, and explicit target overrides.
 
 ## Run
 
