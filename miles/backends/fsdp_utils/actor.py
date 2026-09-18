@@ -188,8 +188,9 @@ class FSDPTrainRayActor(TrainRayActor):
         # Initialize LR scheduler
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
 
-        self.global_step = 0
-        self.micro_step = 0
+        # Cumulative optimizer steps and training micro-batches per rank; None means unknown on resume.
+        self.global_step: int | None = 0
+        self.micro_step: int | None = 0
 
         checkpoint_payload = checkpoint.load(self)
 
@@ -540,6 +541,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 grad_norm = grad_norm.full_tensor().item()
 
                 self.optimizer.step()
+                if self.global_step is not None:
+                    self.global_step += 1
                 self.lr_scheduler.step()
 
                 if self.args.ci_test:
@@ -602,6 +605,8 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
         loss.backward()
+        if self.micro_step is not None:
+            self.micro_step += 1
 
         return log_dict
 

@@ -173,9 +173,13 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
 
     metadata = checkpoint_payload.get("metadata") or {}
     iteration = checkpoint_payload.get("iteration")
+    # Unversioned checkpoints never maintained these totals. Preserve unknown progress as JSON null,
+    # including on subsequent saves: rollout IDs cannot reconstruct optimizer or micro-batch counts.
+    global_step = metadata.get("global_step") if metadata.get("step_counters_version") == 1 else None
+    micro_step = metadata.get("micro_step") if metadata.get("step_counters_version") == 1 else None
+    actor.global_step = int(global_step) if global_step is not None else None
+    actor.micro_step = int(micro_step) if micro_step is not None else None
     if metadata:
-        actor.global_step = int(metadata.get("global_step", actor.global_step))
-        actor.micro_step = int(metadata.get("micro_step", actor.micro_step))
         next_rollout = metadata.get("next_rollout_id")
         if next_rollout is not None:
             actor.args.start_rollout_id = next_rollout
@@ -236,6 +240,7 @@ def save(actor: Any, iteration: int) -> None:
             "iteration": step_id,
             "rollout_id": iteration,
             "next_rollout_id": iteration + 1,
+            "step_counters_version": 1,
             "global_step": actor.global_step,
             "micro_step": actor.micro_step,
             "world_size": dist.get_world_size(),
