@@ -41,9 +41,10 @@ from tests.fast.utils.fake_ray_ids import fake_ray_node_id
 
 from miles.utils import http_utils
 from miles.utils.http_utils import (
+    MILES_PREFER_IPV6_ENV,
     GeneralHttpClientProvider,
+    resolve_ip,
     wait_for_server_ready,
-    wait_tcp_ready,
     wait_tcp_ready_async,
 )
 
@@ -63,6 +64,90 @@ def _listen_after_delay(host: str, port: int, delay: float, stop_event: threadin
     srv.listen(1)
     stop_event.wait()
     srv.close()
+
+
+def _addrinfo_of(records: dict[int, list[str]]):
+    def _getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ips = records.get(family)
+        if not ips:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return [(family, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in ips]
+
+    return _getaddrinfo
+
+
+def _refuse_lookup(*_args, **_kwargs):
+    raise AssertionError("a name lookup ran for a host that needs none")
+
+
+class TestResolveIp:
+    def test_an_ipv4_literal_passes_through_without_a_lookup(self, monkeypatch):
+        """A literal already is what a socket address parser wants, so resolving it would only add a failure mode."""
+        monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
+
+        assert resolve_ip("10.0.0.7") == "10.0.0.7"
+
+    def test_a_wildcard_literal_passes_through(self, monkeypatch):
+        """Kubernetes binds every command worker on the wildcard, which no lookup could produce."""
+        monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
+
+        assert resolve_ip("0.0.0.0") == "0.0.0.0"
+        assert resolve_ip("::") == "[::]"
+
+    def test_an_ipv6_literal_keeps_its_brackets(self, monkeypatch):
+        """A socket address parser needs the brackets to tell the address from the port."""
+        monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
+
+        assert resolve_ip("[fd00::7]") == "[fd00::7]"
+        assert resolve_ip("fd00::7") == "[fd00::7]"
+
+    def test_a_hostname_resolves_to_its_first_non_loopback_address(self, monkeypatch):
+        """Ray hands out the hostname a slurm node was started with, and the router cannot bind on a name."""
+        monkeypatch.delenv(MILES_PREFER_IPV6_ENV, raising=False)
+        monkeypatch.setattr(socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["127.0.1.1", "10.0.0.7"]}))
+
+        assert resolve_ip("node1234") == "10.0.0.7"
+
+    def test_ipv4_is_the_only_family_by_default(self, monkeypatch):
+        """A dual-stack name binds the v4 address unless the deployment asks for v6."""
+        monkeypatch.delenv(MILES_PREFER_IPV6_ENV, raising=False)
+        monkeypatch.setattr(
+            socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["10.0.0.7"], socket.AF_INET6: ["fd00::7"]})
+        )
+
+        assert resolve_ip("node1234") == "10.0.0.7"
+
+    def test_ipv6_is_preferred_when_the_environment_asks_for_it(self, monkeypatch):
+        """MILES_PREFER_IPV6 picks the v6 address of a dual-stack name."""
+        monkeypatch.setenv(MILES_PREFER_IPV6_ENV, "1")
+        monkeypatch.setattr(
+            socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["10.0.0.7"], socket.AF_INET6: ["fd00::7"]})
+        )
+
+        assert resolve_ip("node1234") == "[fd00::7]"
+
+    def test_a_v6_only_request_never_falls_back_to_v4(self, monkeypatch):
+        """A deployment that asked for v6 has a v4 that does not route, so a silent v4 bind would be unreachable."""
+        monkeypatch.setenv(MILES_PREFER_IPV6_ENV, "1")
+        monkeypatch.setattr(socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["10.0.0.7"]}))
+
+        with pytest.raises(socket.gaierror):
+            resolve_ip("node1234")
+
+    def test_a_name_that_only_reaches_loopback_fails_loudly(self, monkeypatch):
+        """Binding on loopback would start a router nothing else can reach, so the launch must fail instead."""
+        monkeypatch.delenv(MILES_PREFER_IPV6_ENV, raising=False)
+        monkeypatch.setattr(socket, "getaddrinfo", _addrinfo_of({socket.AF_INET: ["127.0.1.1"]}))
+
+        with pytest.raises(RuntimeError, match="node1234"):
+            resolve_ip("node1234")
+
+    def test_an_unknown_name_fails_loudly(self, monkeypatch):
+        """An unresolvable name has no address to bind, so the lookup error propagates as is."""
+        monkeypatch.setattr(socket, "getaddrinfo", _addrinfo_of({}))
+
+        with pytest.raises(socket.gaierror):
+            resolve_ip("node1234")
 
 
 # ---------------------------------------------------------------------------
@@ -250,65 +335,124 @@ class TestWaitForServerReadySimulatedDelays:
         assert fake_time[0] >= timeout
 
 
-class TestWaitTcpReady:
-    def test_keeps_retrying_until_the_port_accepts(self):
-        """Readiness depends on the endpoint alone, retrying while it refuses connections."""
-        attempts: list[tuple[tuple[str, int], float | None]] = []
-        sleeps: list[float] = []
-        fake_time = [0.0]
+class _FakeWriter:
+    """Minimal stand-in for the writer half of an opened connection."""
 
-        def fake_sleep(duration):
-            sleeps.append(duration)
-            fake_time[0] += duration
+    def __init__(self) -> None:
+        self.closed: bool = False
+        self.wait_closed_awaited: bool = False
 
-        def fake_connect(addr, timeout=None):
-            attempts.append((addr, timeout))
-            if len(attempts) < 3:
-                raise OSError("Connection refused")
-            return _FakeSocket()
+    def close(self) -> None:
+        self.closed = True
 
-        with (
-            patch("miles.utils.http_utils.time.time", side_effect=lambda: fake_time[0]),
-            patch("miles.utils.http_utils.time.sleep", side_effect=fake_sleep),
-            patch("miles.utils.http_utils.socket.create_connection", side_effect=fake_connect),
-        ):
-            wait_tcp_ready("[2001:db8::7]", 23456, timeout=30)
-
-        assert attempts == [(("2001:db8::7", 23456), 1)] * 3
-        assert sleeps == [0.5, 0.5]
-
-    def test_gives_up_when_the_deadline_passes(self):
-        """A port that never opens fails with a timeout instead of blocking forever."""
-        fake_time = [0.0]
-
-        def fake_sleep(duration):
-            fake_time[0] += duration
-
-        def fake_connect(addr, timeout=None):
-            raise OSError("Connection refused")
-
-        with (
-            patch("miles.utils.http_utils.time.time", side_effect=lambda: fake_time[0]),
-            patch("miles.utils.http_utils.time.sleep", side_effect=fake_sleep),
-            patch("miles.utils.http_utils.socket.create_connection", side_effect=fake_connect),
-        ):
-            with pytest.raises(RuntimeError, match="Server at 127.0.0.1:23456 not ready after 1s"):
-                wait_tcp_ready("127.0.0.1", 23456, timeout=1)
-
-        assert fake_time[0] >= 1
+    async def wait_closed(self) -> None:
+        self.wait_closed_awaited = True
 
 
 class TestWaitTcpReadyAsync:
+    async def test_retries_the_timeout_exception_exported_by_asyncio(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Python 3.10's distinct asyncio timeout must be treated as a refused attempt."""
+
+        class LegacyAsyncioTimeout(Exception):
+            pass
+
+        attempts = 0
+        writer = _FakeWriter()
+
+        async def fake_wait_for(awaitable: Any, *, timeout: float) -> tuple[object, _FakeWriter]:
+            nonlocal attempts
+            awaitable.close()
+            attempts += 1
+            if attempts == 1:
+                raise LegacyAsyncioTimeout
+            return object(), writer
+
+        monkeypatch.setattr(http_utils.asyncio, "TimeoutError", LegacyAsyncioTimeout)
+        monkeypatch.setattr(http_utils.asyncio, "wait_for", fake_wait_for)
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+
+        await wait_tcp_ready_async("127.0.0.1", 23456, timeout=30)
+
+        assert attempts == 2
+        assert writer.wait_closed_awaited
+
+    async def test_a_successful_probe_waits_until_its_writer_is_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A successful probe returns only after its connection writer finishes closing."""
+        writer = _FakeWriter()
+
+        async def fake_open_connection(host: str, port: int) -> tuple[object, _FakeWriter]:
+            return object(), writer
+
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        await wait_tcp_ready_async("127.0.0.1", 23456, timeout=30)
+
+        assert writer.closed
+        assert writer.wait_closed_awaited
+
+    async def test_keeps_retrying_until_the_port_accepts(self, monkeypatch):
+        """Readiness depends on the endpoint alone, retrying while it refuses connections."""
+        attempts: list[tuple[str, int]] = []
+        writer = _FakeWriter()
+
+        async def fake_open_connection(host, port):
+            attempts.append((host, port))
+            if len(attempts) < 3:
+                raise OSError("Connection refused")
+            return object(), writer
+
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        await wait_tcp_ready_async("[2001:db8::7]", 23456, timeout=30)
+
+        assert attempts == [("2001:db8::7", 23456)] * 3
+        assert writer.closed
+
+    async def test_gives_up_when_the_deadline_passes(self, monkeypatch):
+        """A port that never opens fails with a timeout instead of blocking forever."""
+
+        async def fake_open_connection(host, port):
+            raise OSError("Connection refused")
+
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        with pytest.raises(RuntimeError, match="Server at 127.0.0.1:23456 not ready after 0.05s"):
+            await wait_tcp_ready_async("127.0.0.1", 23456, timeout=0.05)
+
+    async def test_a_connection_that_never_answers_is_one_refused_attempt(self, monkeypatch):
+        """A syn that hangs must not hold the whole budget; each attempt has its own small timeout."""
+        attempts: list[tuple[str, int]] = []
+
+        async def fake_open_connection(host, port):
+            attempts.append((host, port))
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(http_utils, "_CONNECT_ATTEMPT_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        with pytest.raises(RuntimeError, match="not ready"):
+            await wait_tcp_ready_async("127.0.0.1", 23456, timeout=0.05)
+
+        assert len(attempts) > 1
+
     async def test_it_returns_once_the_port_accepts(self):
         """The async probe must still answer the question the blocking one answered."""
-        server = await asyncio.start_server(lambda reader, writer: None, "127.0.0.1", 0)
+
+        async def _close_immediately(reader, writer) -> None:
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_server(_close_immediately, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
 
         try:
             await asyncio.wait_for(wait_tcp_ready_async("127.0.0.1", port, timeout=5), timeout=5)
         finally:
             server.close()
-            await server.wait_closed()
+            await asyncio.wait_for(server.wait_closed(), timeout=5)
 
     async def test_a_closed_port_leaves_the_event_loop_free(self):
         """The blocking probe froze the whole startup loop for up to two minutes per router."""

@@ -1,0 +1,197 @@
+### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download zai-org/GLM-4.5
+  --local-dir /root/models/GLM-4.5
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/datasets/aime-2024
+
+### 4
+hf download
+  --repo-type dataset zhuzilin/aime-2025
+  --local-dir /root/datasets/aime-2025
+
+### 5
+[multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 4
+  --master-addr {{master_addr}}
+  --master-port 23456
+  --nnodes={{nnodes}}
+  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 96
+  --num-query-groups 8
+  --kv-channels 128
+  --num-layers 92
+  --hidden-size 5120
+  --ffn-hidden-size 12288
+  --add-qkv-bias
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --rotary-percent 0.5
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 151552
+  --rotary-base 1000000
+  --moe-ffn-hidden-size 1536
+  --moe-shared-expert-intermediate-size 1536
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-router-topk-scaling-factor 2.5
+  --moe-layer-freq '[0]*3+[1]*89'
+  --num-experts 160
+  --moe-grouped-gemm
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --hf-checkpoint /root/models/GLM-4.5
+  --save /root/models/GLM-4.5_torch_dist 
+
+### 6
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 7
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 4
+  --disable-usage-stats
+
+### 8
+[multi_node num_nodes=None] mkdir -p /root/local_data/GLM-4.5_torch_dist && rsync -a
+  --info=progress2 /root/models/GLM-4.5_torch_dist/ /root/local_data/GLM-4.5_torch_dist && mkdir -p /root/local_data/GLM-4.5 && rsync -a
+  --info=progress2 /root/models/GLM-4.5/ /root/local_data/GLM-4.5
+
+### 9
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 10
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 96
+  --num-query-groups 8
+  --kv-channels 128
+  --num-layers 92
+  --hidden-size 5120
+  --ffn-hidden-size 12288
+  --add-qkv-bias
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --rotary-percent 0.5
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 151552
+  --rotary-base 1000000
+  --moe-ffn-hidden-size 1536
+  --moe-shared-expert-intermediate-size 1536
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-router-topk-scaling-factor 2.5
+  --moe-layer-freq '[0]*3+[1]*89'
+  --num-experts 160
+  --moe-grouped-gemm
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --hf-checkpoint /root/local_data/GLM-4.5
+  --ref-load /root/local_data/GLM-4.5_torch_dist
+  --load /root/shared_data/260101-000000-000/checkpoints
+  --save /root/shared_data/260101-000000-000/checkpoints
+  --save-interval 10
+  --save-retain-interval 10 
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type math
+  --num-rollout 3000
+  --rollout-batch-size 32
+  --n-samples-per-prompt 8
+  --rollout-temperature 1
+  --num-steps-per-rollout 1
+  --balance-data
+  --rollout-stop-token-ids 151329 151336 151338
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --rollout-max-response-len 8192 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98 
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --kl-coef 0.00
+  --entropy-coef 0.00
+  --eps-clip 1e-4
+  --eps-clip-high 2e-4
+  --use-tis 
+  --use-wandb
+  --wandb-project miles-run_glm45_355b_a32b
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 4
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 4
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 16384 
+  --eval-interval 20
+  --eval-top-p 1
+  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
+  --n-samples-per-eval-prompt 8
+  --eval-max-response-len 8192 
+  --rollout-num-gpus-per-engine 4
+  --sglang-mem-fraction-static 0.7
+  --sglang-tp-size 4
+  --sglang-chunked-prefill-size 8192
+  --sglang-attention-backend trtllm_mha 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --update-weight-buffer-size 2147483648
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 4
+  --num-gpus-per-node 4
+  --colocate
+  --use-fault-tolerance
+  --dump-details /root/shared_data/260101-000000-000/dump_details
+  --disable-weights-backuper
+  --router-health-success-threshold 1
+  --router-health-check-interval-secs 15   

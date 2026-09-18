@@ -4,25 +4,28 @@ from contextlib import suppress
 
 import uvicorn
 
-from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.train.group import TrainerController
-from miles.ray.wiring import launch_worker_manager
+from miles.backends.megatron_utils.megatron_config import compute_trainer_args
+from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
+from miles.ray.rollout.router_manager import resolve_router_addrs
+from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
+from miles.ray.specs.train import ACTOR_ROLE, compute_trainer_configs
+from miles.ray.wiring import get_backend_capability
 from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
-from miles.utils import object_store
 from miles.utils.arguments import parse_args
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.hf_config import load_hf_config
+from miles.utils.hot_restart import init_or_reset_inference_controller
 from miles.utils.http_utils import init_http_client
-from miles.utils.logging_utils import configure_logger
+from miles.utils.orchestration_utils import init_orchestration_script
 
 logger = logging.getLogger(__name__)
 
 
-async def serve(args):
+async def serve(args, *, disposer: Disposer):
     assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
     assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
@@ -35,25 +38,27 @@ async def serve(args):
         trainer_token_limit = args.max_tokens_per_gpu // pad_size * pad_size
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
-    configure_logger(args, source=MainProcessIdentity())
-
+    _worker_manager = init_orchestration_script(args, disposer=disposer)
     init_http_client(args)
 
-    _worker_manager = launch_worker_manager(args)
-    object_store.init_instance(args, contribute_segment=False)
+    capability = get_backend_capability(args)
+    await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
+    inference_controller = create_inference_controller_handle(capability=capability)
+    await init_or_reset_inference_controller(inference_controller, args=args)
+    disposer.add(inference_controller)
 
-    inference_controller = InferenceController(args)
-    await inference_controller.init()
-
-    trainer = TrainerController(
-        args=args,
-        role="actor",
-        with_ref=False,
-        with_opd_teacher=False,
-        inference_controller=None,
-        rollout_executor=None,
+    trainer_configs = compute_trainer_configs(args)
+    handles = create_trainer_handles(args, trainer_configs=trainer_configs)
+    resumed = await take_over_trainers(args, handles=handles)
+    [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
+    actor_info = await create_training_model(
+        compute_trainer_args(args, actor_config),
+        handle=handles[actor_config.trainer_id],
+        trainer_id=actor_config.trainer_id,
+        resumed=resumed,
     )
-    await trainer.init()
+    trainer = actor_info.handle
+    disposer.add(trainer)
 
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
@@ -94,13 +99,10 @@ async def serve(args):
             with suppress(asyncio.CancelledError):
                 await task
 
-    await inference_controller.dispose()
-    await trainer.dispose()
-
 
 if __name__ == "__main__":
     args = parse_args(add_tinker_arguments, entry="serve", preprocess_args=configure_tinker_args)
     # commands ship one work unit at a time; its size is the batch size
     args.use_dynamic_global_batch_size = True
     args.delay_split_train_data_by_dp = True
-    asyncio.run(serve(args))
+    asyncio.run(with_disposer(serve, args))

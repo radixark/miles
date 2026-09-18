@@ -254,6 +254,7 @@ def _memory_args(chunk_size: int, vocab_size: int) -> Namespace:
         log_probs_chunk_size=chunk_size,
         vocab_size=vocab_size,
         allgather_cp=False,
+        debug_unified_grad_fused_logprob=False,
     )
 
 

@@ -1,12 +1,13 @@
 import logging
 import math
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
 from sglang.srt.debug_utils.comparator.display import _render_polars_as_text
 
-from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ def compare_metrics(
 
     issues: list[str] = []
     issues += _check_event_counts(baseline_events, target_events, baseline_dir, target_dir)
+    issues += _check_events_line_up(baseline_events, target_events)
 
     if not issues:
         for step_idx, (b_event, t_event) in enumerate(zip(baseline_events, target_events, strict=True)):
@@ -47,6 +49,65 @@ def compare_metrics(
         f"  - {i}" for i in issues
     )
     print(f"MetricEvent comparison passed: {len(baseline_events)} steps compared")
+
+
+def read_metric_series(dump_dir: str, *, key: str) -> list[tuple[int, float]]:
+    events = _keep_only_final_attempt(_read_metric_events(Path(dump_dir)))
+    return [
+        (event.rollout_id, float(value))
+        for event in events
+        if isinstance(value := event.metrics.get(key), (int, float)) and not isinstance(value, bool)
+    ]
+
+
+def assert_gradients_nonzero(*, side: str, dump_dir: str, min_trained_rollouts: int) -> None:
+    assert_metric_finite_and_nonzero(
+        side=side, dump_dir=dump_dir, key="train/grad_norm", min_rollouts=min_trained_rollouts
+    )
+
+
+def assert_metric_finite_and_nonzero(*, side: str, dump_dir: str, key: str, min_rollouts: int) -> None:
+    series = read_metric_series(dump_dir, key=key)
+    usable = [(rollout_id, value) for rollout_id, value in series if math.isfinite(value) and value != 0.0]
+    usable_rollouts = {rollout_id for rollout_id, _ in usable}
+
+    assert len(usable_rollouts) >= min_rollouts, (
+        f"{side}: {key} is finite and non-zero in only {len(usable_rollouts)} of "
+        f"{len({rollout_id for rollout_id, _ in series})} rollout(s) ({series}), so this run's weights may have "
+        f"moved on nothing training produced"
+    )
+
+
+def assert_metrics_classified(dump_dir: str, *, compared: tuple[str, ...], ignored: tuple[str, ...]) -> None:
+    keys = {key for event in _keep_only_final_attempt(_read_metric_events(Path(dump_dir))) for key in event.metrics}
+    unclassified: list[str] = sorted(key for key in keys if not key.startswith(compared + ignored))
+
+    assert not unclassified, (
+        f"metrics {unclassified} belong to no namespace this comparison has classified, so they would be dropped "
+        f"from one that claims to cover everything; add them to the compared prefixes {list(compared)}, or to the "
+        f"ignored ones {list(ignored)} with a reason they cannot match"
+    )
+
+
+def read_rollout_completion_times(dump_dir: str) -> list[tuple[int, datetime]]:
+    events = _read_metric_events(Path(dump_dir))
+    return sorted(
+        ((event.rollout_id, event.timestamp) for event in events if _is_rollout_completion(event)),
+        key=lambda one: one[1],
+    )
+
+
+def _is_rollout_completion(event: MetricEvent) -> bool:
+    return event.rollout_id is not None and event.source.component == "rollout_executor"
+
+
+def _check_events_line_up(baseline_events: list[MetricEvent], target_events: list[MetricEvent]) -> list[str]:
+    return [
+        f"step {index}: baseline is rollout {b.rollout_id} while target is rollout {t.rollout_id}, so the two "
+        f"sides are not describing the same step"
+        for index, (b, t) in enumerate(zip(baseline_events, target_events, strict=False))
+        if b.rollout_id != t.rollout_id
+    ]
 
 
 def _keep_only_final_attempt(events: list[MetricEvent]) -> list[MetricEvent]:
@@ -95,21 +156,28 @@ def _check_step_metrics(
     atol: float,
     exclude_keys: list[str] | None = None,
 ) -> list[str]:
-    issues: list[str] = []
-    for key in baseline_event.metrics:
-        if not any(key.startswith(prefix) for prefix in key_prefixes):
-            continue
-        if exclude_keys and key in exclude_keys:
-            continue
+    baseline_keys = _select_keys(baseline_event, key_prefixes, exclude_keys=exclude_keys)
+    target_keys = _select_keys(target_event, key_prefixes, exclude_keys=exclude_keys)
 
-        if key not in target_event.metrics:
-            issues.append(f"Step {step_idx}: metric '{key}' present in baseline but missing in target")
-            continue
-
+    issues: list[str] = [
+        f"Step {step_idx}: metric '{key}' present in baseline but missing in target"
+        for key in sorted(baseline_keys - target_keys)
+    ]
+    issues += [
+        f"Step {step_idx}: metric '{key}' present in target but missing in baseline"
+        for key in sorted(target_keys - baseline_keys)
+    ]
+    for key in sorted(baseline_keys & target_keys):
         issues += _check_single_metric(
             step_idx, key, baseline_event.metrics[key], target_event.metrics[key], rtol, atol=atol
         )
     return issues
+
+
+def _select_keys(event: MetricEvent, key_prefixes: list[str], *, exclude_keys: list[str] | None) -> set[str]:
+    prefixes: tuple[str, ...] = tuple(key_prefixes)
+    excluded: set[str] = set(exclude_keys or [])
+    return {key for key in event.metrics if key.startswith(prefixes) and key not in excluded}
 
 
 def _check_single_metric(
@@ -197,10 +265,13 @@ def _check_required_keys_exist(events: list[MetricEvent]) -> list[str]:
     return issues
 
 
-def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
-    """Read all MetricEvents from the events directory."""
-    events_dir: Path = dump_dir / "events"
+def read_metric_events(events_dir: Path) -> list[MetricEvent]:
+    """Read all MetricEvents written into one events directory."""
     if not events_dir.exists():
         return []
     all_events = read_events(events_dir)
     return [e for e in all_events if isinstance(e, MetricEvent)]
+
+
+def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
+    return read_metric_events(dump_dir / EVENTS_DIRNAME)

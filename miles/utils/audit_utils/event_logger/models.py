@@ -8,6 +8,46 @@ from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
+class EnvReportEditablePackageInfo(FrozenStrictBaseModel):
+    name: str
+    version: str
+    location: str
+
+
+class EnvReportGitRepoInfo(FrozenStrictBaseModel):
+    package_name: str
+    location: str
+    commit: str
+    dirty: bool
+    diff_stat: str
+    uncommitted_hash: str | None
+    untracked_paths: list[str]
+    untracked_paths_truncated: bool
+    untracked_unhashed_paths: list[str]
+
+
+class EnvReportArgsDump(FrozenStrictBaseModel):
+    values: dict[str, Any]
+    skipped_names: list[str]
+
+
+class EnvReportProcessFacts(FrozenStrictBaseModel):
+    hostname: str
+    argv: list[str]
+    args: EnvReportArgsDump
+    env_vars: dict[str, str]
+    launcher_env_report: dict[str, Any] | None
+
+
+class EnvReport(FrozenStrictBaseModel):
+    process: EnvReportProcessFacts
+    key_versions: dict[str, str]
+    editable_packages: list[EnvReportEditablePackageInfo]
+    git_repos: list[EnvReportGitRepoInfo]
+    full_pip_list: list[dict[str, str]]
+    packages_probed: bool
+
+
 class EventBase(FrozenStrictBaseModel):
     timestamp: datetime
     source: ProcessIdentity
@@ -72,8 +112,10 @@ class CellReconfigureEvent(EventBase):
 
 class InferenceEngineWeightChecksumEvent(EventBase):
     type: Literal["inference_engine_weight_checksum"] = "inference_engine_weight_checksum"
-    # None for the initial out-of-loop weight sync (not tied to a rollout).
-    rollout_id: int | None
+    # The out-of-loop startup sync stamps start_rollout_id - 1, so -1 is a fresh run's initial sync.
+    rollout_id: int
+    # The policy whose weights were pushed, or None for a run that trains one unnamed policy.
+    trainer_model_id: str | None = None
     # One {tensor -> hash} dict per rollout engine; a TP>1 engine's ranks merge with a rank{r}/ prefix.
     engine_checksums: list[dict[str, str]]
 
@@ -82,6 +124,18 @@ class TrainAdvantageComputationEvent(_ActorTrainEventBase):
     type: Literal["train_advantage_computation"] = "train_advantage_computation"
     advantages: list[list[float]]
     witness_ids: list[list[int]]
+
+
+class EnvReportEvent(EventBase):
+    type: Literal["env_report"] = "env_report"
+    report: EnvReport
+
+
+class EngineEnvReportEvent(EventBase):
+    type: Literal["engine_env_report"] = "engine_env_report"
+    cell_id: str
+    server_url: str
+    server_info: dict[str, Any]
 
 
 class MetricEvent(EventBase):
@@ -99,6 +153,8 @@ Event = Annotated[
     | CellReconfigureEvent
     | InferenceEngineWeightChecksumEvent
     | TrainAdvantageComputationEvent
+    | EnvReportEvent
+    | EngineEnvReportEvent
     | MetricEvent,
     Discriminator("type"),
 ]

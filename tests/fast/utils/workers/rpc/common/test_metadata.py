@@ -1,4 +1,5 @@
 import functools
+import inspect
 from collections.abc import Callable
 from typing import Annotated, Any
 
@@ -28,6 +29,17 @@ def _passthrough(fn: Callable[..., Any]) -> Callable[..., Any]:
         return fn(*args, **kwargs)
 
     return wrapper
+
+
+def _inject_ray_trace_context(fn: Callable[..., Any]) -> Callable[..., Any]:
+    signature = inspect.signature(fn)
+    fn.__signature__ = signature.replace(
+        parameters=[
+            *signature.parameters.values(),
+            inspect.Parameter("_ray_trace_ctx", inspect.Parameter.KEYWORD_ONLY, default=None),
+        ]
+    )
+    return fn
 
 
 def _opaque_passthrough(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -68,6 +80,14 @@ class _GoodWorker:
 
 
 class TestCollectSpecs:
+    def test_mutating_collected_specs_does_not_poison_the_cache(self) -> None:
+        """Mutating one collected mapping leaves later collections complete."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        specs.clear()
+
+        collected_again = collect_rpc_method_specs(_GoodWorker)
+        assert set(collected_again) == {"demo_default_arg", "demo_async_model", "demo_grouped"}
+
     def test_collects_public_methods_only(self):
         """Public methods are collected; underscore-prefixed ones are skipped."""
         specs = collect_rpc_method_specs(_GoodWorker)
@@ -419,15 +439,14 @@ class TestFailLoud:
         assert specs["demo_wrapped_async"].is_async
         assert specs["demo_wrapped_async"].serializer.decode_query({"x": 1}) == {"x": 1}
 
-    def test_no_public_methods_rejected(self):
-        """A worker class with no public methods fails at collection time."""
+    def test_no_public_methods_collects_an_empty_surface(self):
+        """A worker whose whole value is a lifecycle side effect answers no call, and still has to be servable."""
 
         class Worker:
             def _demo_hidden(self, x: int) -> int:
                 return x
 
-        with pytest.raises(TypeError, match="no public rpc methods"):
-            collect_rpc_method_specs(Worker)
+        assert collect_rpc_method_specs(Worker) == {}
 
     def test_any_annotation_allowed(self):
         """Any-annotated parameters are accepted and passed through."""
@@ -609,3 +628,84 @@ class TestCanonicalizeMethodArguments:
         assert canonicalize_method_arguments(spec=spec, args=(1,), kwargs={"nope": 2}) == {"a": 1, "nope": 2}
         with pytest.raises(ValidationError):
             spec.serializer.decode_query(canonicalize_method_arguments(spec=spec, args=(1,), kwargs={"nope": 2}))
+
+
+class TestRayInjectedTraceContext:
+    def test_a_method_carrying_rays_injected_trace_context_is_still_collected(self):
+        """Ray rewrites actor method signatures with a keyword-only _ray_trace_ctx, which must not reach the wire."""
+
+        class Worker:
+            @_inject_ray_trace_context
+            def demo_traced(self, a: int, b: int) -> int:
+                return a + b
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_traced"].positional_parameter_names == ("a", "b")
+        assert specs["demo_traced"].serializer.decode_query({"a": 1, "b": 2}) == {"a": 1, "b": 2}
+        with pytest.raises(ValidationError):
+            specs["demo_traced"].serializer.decode_query({"a": 1, "b": 2, "_ray_trace_ctx": {}})
+
+    def test_an_unannotated_parameter_beside_the_injected_one_is_still_rejected(self):
+        """Skipping ray's parameter must not excuse a genuinely unannotated parameter on the same method."""
+
+        class Worker:
+            @_inject_ray_trace_context
+            def demo_traced(self, x) -> int:
+                return x
+
+        with pytest.raises(TypeError, match="parameter 'x' must be type-annotated"):
+            collect_rpc_method_specs(Worker)
+
+    def test_an_ordinary_parameter_borrowing_rays_name_is_still_rejected(self):
+        """Only ray's keyword-only injection is skipped, not any parameter that happens to share its name."""
+
+        class Worker:
+            def demo_shadowed(self, _ray_trace_ctx) -> int:
+                return 0
+
+        with pytest.raises(TypeError, match="parameter '_ray_trace_ctx' must be type-annotated"):
+            collect_rpc_method_specs(Worker)
+
+
+class TestAWorkersOwnParameterNamedLikeRaysInjection:
+    def test_an_unannotated_keyword_only_parameter_of_that_name_with_another_default_is_refused(self):
+        """Ray's injection defaults to None, so this one is the worker's own and takes the annotation check."""
+
+        class Worker:
+            def demo_declared(self, *, _ray_trace_ctx=0) -> int:
+                return _ray_trace_ctx
+
+        with pytest.raises(TypeError, match="parameter '_ray_trace_ctx' must be type-annotated"):
+            collect_rpc_method_specs(Worker)
+
+    def test_an_unannotated_required_keyword_only_parameter_of_that_name_is_refused(self):
+        """Skipping it joined no request model and left the method uncallable without ever saying so."""
+
+        class Worker:
+            def demo_declared(self, *, _ray_trace_ctx) -> int:
+                return _ray_trace_ctx
+
+        with pytest.raises(TypeError, match="parameter '_ray_trace_ctx' must be type-annotated"):
+            collect_rpc_method_specs(Worker)
+
+    def test_an_annotated_keyword_only_parameter_of_that_name_satisfies_the_annotation_check(self):
+        """The check the skip used to excuse is the only thing asked of a parameter the worker declares."""
+
+        class Worker:
+            def demo_declared(self, a: int, *, _ray_trace_ctx: int = 3) -> int:
+                return a + _ray_trace_ctx
+
+        assert collect_rpc_method_specs(Worker)["demo_declared"].positional_parameter_names == ("a",)
+
+    def test_the_shape_ray_actually_injects_is_still_skipped(self):
+        """Every part of the match has to keep admitting the shape ray rewrites actor methods with."""
+
+        class Worker:
+            @_inject_ray_trace_context
+            def demo_traced(self, a: int) -> int:
+                return a
+
+        specs = collect_rpc_method_specs(Worker)
+
+        assert specs["demo_traced"].positional_parameter_names == ("a",)
+        assert specs["demo_traced"].serializer.decode_query({"a": 1}) == {"a": 1}

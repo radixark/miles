@@ -15,6 +15,7 @@ from miles.ray.rollout.cell_state import (
     StateUninitialized,
 )
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
@@ -22,6 +23,12 @@ _ADDR_INFO = CellAddrInfo(
     server_url="http://10.0.0.1:30000",
     bootstrap_port=None,
     gate_url="http://10.0.0.1:13000",
+)
+
+_ADDR_INFO_NO_GATE = CellAddrInfo(
+    server_url="http://10.0.0.1:30000",
+    bootstrap_port=None,
+    gate_url=None,
 )
 
 
@@ -43,6 +50,14 @@ def _make_meta(**overrides) -> ServerCellMetadata:
     )
 
 
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> dict[str, HostAndPort]:
+        return dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            gate=HostAndPort(host="10.0.0.1", port=13000),
+        )
+
+
 class _RecordingRouterApiClient:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
@@ -60,8 +75,9 @@ class _RecordingRouterApiClient:
 class _RecordingApiClient:
     calls: list[tuple[str, dict]] = []
 
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, api_key: str | None = None):
         self.server_url = server_url
+        self.api_key = api_key
 
     async def release_memory_occupation(self, tags=None):
         _RecordingApiClient.calls.append(("release", dict(tags=tags)))
@@ -78,8 +94,9 @@ class _ResultApiClient:
     results: dict[str, dict] = {}
     errors: dict[str, Exception] = {}
 
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, api_key: str | None = None):
         self.server_url = server_url
+        self.api_key = api_key
 
     async def release_memory_occupation(self, tags=None):
         return await self._record("release_memory_occupation", dict(tags=tags))
@@ -143,6 +160,7 @@ def _make_cell(
             args=make_args(**(args_overrides or {})),
             meta=_make_meta(**meta_overrides),
             router_api_client=router or _RecordingRouterApiClient(),
+            provider=_StubProvider(),
         )
     )
 
@@ -179,22 +197,8 @@ class TestInit:
         with pytest.raises(AssertionError):
             await cell.init()
 
-    async def test_external_rollout_initialization_is_rejected_before_allocating_an_address(
-        self, cell_env, monkeypatch
-    ):
-        """External address allocation was removed, so the cell must refuse instead of opening a gate it does not own."""
-
-        async def _unexpected_compute_addr_info(self) -> CellAddrInfo:
-            raise AssertionError("external rollout initialization looked up a worker address")
-
-        monkeypatch.setattr(ServerCell, "_compute_addr_info", _unexpected_compute_addr_info)
-        cell = _make_cell(args_overrides=dict(rollout_external=True))
-
-        with pytest.raises(NotImplementedError):
-            await cell.init()
-
-        assert cell.is_uninitialized
-        assert cell_env["activated"] == []
+        assert cell.is_initializing
+        assert len(cell_env["activated"]) == 1
 
     async def test_an_address_lookup_failure_leaves_the_cell_uninitialized_and_retryable(self, cell_env, monkeypatch):
         """Worker addresses appear late, so a lookup error must not consume the cell's only init."""
@@ -239,6 +243,75 @@ class TestInit:
 
         assert isinstance(cell._state, StateInitializing)
         assert cell_env["activated"] == ["http://10.0.0.1:13000"]
+
+    async def test_a_cell_without_a_gate_port_skips_activation(self, cell_env, monkeypatch):
+        """External engines run no launch-gate wrapper, so init must not dial one."""
+
+        async def _compute(self) -> CellAddrInfo:
+            return _ADDR_INFO_NO_GATE
+
+        monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute)
+        cell = _make_cell()
+
+        await cell.init()
+
+        assert cell_env["activated"] == []
+        assert cell.is_initializing
+
+
+class TestGatelessCellLifecycle:
+    async def test_a_gateless_cell_still_waits_for_a_weight_push_before_serving(self, cell_env, monkeypatch):
+        """An external cell keeps on-policy semantics: only a weight update publishes it to the router."""
+
+        async def _compute(self) -> CellAddrInfo:
+            return _ADDR_INFO_NO_GATE
+
+        monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute)
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router)
+
+        await cell.init()
+        await cell.tick()
+        assert cell.is_pending_weights
+        assert router.calls == []
+
+        await cell.mark_weights_ready()
+
+        assert cell.is_serving
+        assert [name for name, _kwargs in router.calls] == ["add_worker"]
+
+
+class TestTickReportsTheEngineEnv:
+    async def test_a_cell_that_serves_nothing_yet_is_not_asked_for_its_env(self, cell_env, monkeypatch):
+        """An engine that has not answered a probe cannot answer /server_info either."""
+        cell_env["health"]["ready"] = False
+        cell = _make_cell()
+        asked: list[str] = []
+        monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
+
+        await cell.init()
+        await cell.tick()
+
+        assert asked == []
+
+    async def test_a_serving_cell_is_asked_for_its_env_on_every_tick(self, cell_env, monkeypatch):
+        """The reporter decides how often to actually read; the tick just keeps offering it the chance."""
+        cell = _make_cell()
+        asked: list[str] = []
+        monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
+
+        await cell.init()
+        await cell.tick()
+        await cell.tick()
+
+        assert asked == [cell.meta.cell_id, cell.meta.cell_id]
+
+
+def _record_into(asked: list[str]):
+    async def _report_if_due(*, cell_id: str, server_url: str, api_client) -> None:
+        asked.append(cell_id)
+
+    return _report_if_due
 
 
 class TestTick:

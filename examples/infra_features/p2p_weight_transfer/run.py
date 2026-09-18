@@ -638,8 +638,8 @@ def cmd_prepare(model_name: str, download_only: bool = False, ckpt_dir: str | No
     for ds in cfg.datasets:
         run_cmd(
             f'python3 -c "'
-            f"from miles.utils.external_utils.command_utils import hf_download_dataset; "
-            f"hf_download_dataset('{ds}')"
+            f"from miles.utils.external_utils import command_utils; "
+            f"command_utils.default_config().create_backend().hf_download_dataset('{ds}')"
             f'"'
         )
 
@@ -657,8 +657,8 @@ def cmd_prepare(model_name: str, download_only: bool = False, ckpt_dir: str | No
 
         run_cmd(
             f'python3 -c "'
-            f"from miles.utils.external_utils.command_utils import convert_checkpoint; "
-            f"convert_checkpoint("
+            f"from miles.utils.external_utils import command_utils; "
+            f"command_utils.default_config().create_backend().convert_checkpoint("
             f"model_name='{model_name}', "
             f"megatron_model_type='{cfg.model_type}', "
             f"num_gpus_per_node={cfg.convert_gpus_per_node}, "

@@ -102,6 +102,27 @@ class TestMergeSamples:
         ]
         merged.validate()
 
+    def test_merge_preserves_the_shared_trainer_model_id(self, mock_tokenizer: MagicMock) -> None:
+        """Merging turns from one trainer preserves their shared policy identity."""
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.trainer_model_id = "policy-a"
+        b.trainer_model_id = "policy-a"
+
+        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+
+        assert merged.trainer_model_id == "policy-a"
+
+    def test_merge_rejects_turns_from_different_trainer_models(self, mock_tokenizer: MagicMock) -> None:
+        """Merging turns from different trainers rejects the cross-policy trajectory."""
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.trainer_model_id = "policy-a"
+        b.trainer_model_id = "policy-b"
+
+        with pytest.raises(AssertionError, match="trainer_model_id mismatch"):
+            _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+
     def test_merge_preserves_indexer_topk_from_final_sample(self, mock_tokenizer):
         a = make_sample(
             tokens=[1, 2, 10],

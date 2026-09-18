@@ -288,3 +288,59 @@ class TestRpcTransport:
                     seconds=1.0,
                     response_model=HealthResponse,
                 )
+
+
+class TestUnpinningThePin:
+    def test_unpinning_forgets_the_pinned_value(self):
+        """Only a wait that was told to expect a replaced server process may accept a new boot uuid."""
+        pin = BootUuidPin(required=True, worker_cls_name="Worker")
+        pin.verify(_response(boot_uuid="boot-a"))
+
+        pin.unpin()
+
+        assert pin.expected is None
+        assert pin.needs_handshake() is True
+
+    def test_an_unpinned_pin_adopts_the_next_boot_uuid(self):
+        """The replacement process is the one this client drives from now on."""
+        pin = BootUuidPin(required=True, worker_cls_name="Worker")
+        pin.verify(_response(boot_uuid="boot-a"))
+        pin.unpin()
+
+        pin.verify(_response(boot_uuid="boot-b"))
+
+        assert pin.expected == "boot-b"
+
+    def test_an_unpinned_pin_is_strict_again_afterwards(self):
+        """Fencing has to come back the moment readiness is established, or a silent restart passes."""
+        pin = BootUuidPin(required=True, worker_cls_name="Worker")
+        pin.unpin()
+        pin.verify(_response(boot_uuid="boot-b"))
+
+        with pytest.raises(ServerRestartedError, match="boot-c"):
+            pin.verify(_response(boot_uuid="boot-c"))
+
+    def test_unpinning_an_optional_pin_changes_nothing(self):
+        """A client that does not require a stable server has nothing to forget."""
+        pin = BootUuidPin(required=False, worker_cls_name="Worker")
+
+        pin.unpin()
+
+        assert pin.expected is None
+        assert pin.needs_handshake() is False
+
+
+class TestRestoringThePin:
+    def test_a_restored_pin_fences_against_the_process_it_was_pinned_to(self):
+        """A readiness wait that never succeeded must not leave the fence open for the next ordinary call."""
+        pin = BootUuidPin(required=True, worker_cls_name="Worker")
+        pin.verify(_response(boot_uuid="boot-a"))
+
+        pin.repin(pin.unpin())
+
+        assert pin.expected == "boot-a"
+        assert pin.needs_handshake() is False
+
+    def test_unpinning_an_unpinned_pin_answers_nothing(self):
+        """A handle that never handshook has nothing to restore, and must not invent a baseline."""
+        assert BootUuidPin(required=True, worker_cls_name="Worker").unpin() is None

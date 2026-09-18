@@ -7,7 +7,7 @@ import time
 import urllib.request
 from contextlib import contextmanager, suppress
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 MODEL_NAME = "Qwen3-4B-Instruct-2507"
 BASE_MODEL = f"Qwen/{MODEL_NAME}"
@@ -16,6 +16,7 @@ SERVE_TIMEOUT_S = 1200
 
 
 def prepare_gateway():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models")
     U.exec_command_cpu(f"hf download {BASE_MODEL} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command_cpu("pip install tinker==0.26.2")

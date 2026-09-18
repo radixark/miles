@@ -189,6 +189,8 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         del long_lived_tensors
 
     def after_engines_resumed(self) -> None:
+        if self.args.offload_train:
+            return
         torch.cuda.ipc_collect()
         torch.cuda.empty_cache()
 

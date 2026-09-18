@@ -50,8 +50,8 @@ from types import SimpleNamespace
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=1200,
@@ -122,6 +122,7 @@ def probe_e2b_endpoint() -> None:
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     # a stale trial dir from a prior manual run must not vouch for this one
     shutil.rmtree(TRIALS_DIR, ignore_errors=True)
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
@@ -142,6 +143,7 @@ def prepare():
 
 
 def execute(worker_env: dict[str, str]):
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint {MODEL_DIR} "
     rollout_args = (
         f"--prompt-data {PROMPT_DATA} "
@@ -169,9 +171,7 @@ def execute(worker_env: dict[str, str]):
         f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate "
         "--train-backend fsdp --debug-rollout-only --ci-test "
     )
-    train_args = (
-        f"{ckpt_args} {rollout_args} {agent_args} {sglang_args} {U.get_default_wandb_args(__file__)} {misc_args}"
-    )
+    train_args = f"{ckpt_args} {rollout_args} {agent_args} {sglang_args} {command_utils.get_default_wandb_args(__file__)} {misc_args}"
 
     extra_env_vars = {
         "PYTHONPATH": ":".join([*agentic_pythonpath_dirs(), str(REPO)]),

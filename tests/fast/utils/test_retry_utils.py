@@ -4,7 +4,7 @@ import logging
 import pytest
 
 from miles.utils import retry_utils
-from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
+from miles.utils.retry_utils import AttemptTimeoutError, NonRetryableError, retry, retry_until_deadline
 
 pytestmark = pytest.mark.asyncio
 
@@ -415,8 +415,8 @@ class TestRetryUntilDeadline:
         with pytest.raises(ValueError, match="still down"):
             await retry_until_deadline(attempt, total_seconds=0.1, retry_on=ValueError, initial_delay=0.02)
 
-    async def test_failed_attempts_emit_structured_info_logs(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Each failed attempt emits its structured retry diagnostics."""
+    async def test_a_retried_attempt_emits_structured_info_logs(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Every condition the caller declared retryable is expected, so the log says retrying, not failed."""
         attempts = 0
 
         async def attempt(remaining: float) -> str:
@@ -438,7 +438,7 @@ class TestRetryUntilDeadline:
         records = [
             record
             for record in caplog.records
-            if "op=retry_until_deadline" in record.message and "phase=attempt_failed" in record.message
+            if "op=retry_until_deadline" in record.message and "phase=retrying" in record.message
         ]
         assert result == "done"
         assert len(records) == 2
@@ -469,7 +469,7 @@ class TestRetryUntilDeadline:
                 log_fields={"op": "submit", "call": "c1"},
             )
 
-        records = [record for record in caplog.records if "phase=attempt_failed" in record.message]
+        records = [record for record in caplog.records if "phase=retrying" in record.message]
         assert len(records) == 1
         assert "op=submit" in records[0].message
         assert "call=c1" in records[0].message
@@ -587,6 +587,86 @@ class TestRetryUntilDeadline:
         assert raised == [OSError, ValueError]
         assert fake_sleep.delays == [0.5, 1.0]
 
+    async def test_an_attempt_is_not_bounded_unless_a_bound_is_asked_for(self):
+        """The existing callers hand the whole remaining budget to one attempt, and that must keep working."""
+
+        async def attempt(remaining: float) -> str:
+            await asyncio.sleep(0.05)
+            return "done"
+
+        assert await retry_until_deadline(attempt, total_seconds=5.0, retry_on=ValueError) == "done"
+
+    async def test_an_attempt_that_never_answers_is_cut_short_and_tried_again(self):
+        """Without a per-attempt bound one call that hangs eats the whole nominal budget in a single attempt."""
+        attempts = 0
+
+        async def attempt(remaining: float) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await asyncio.sleep(30.0)
+            return "done"
+
+        result = await retry_until_deadline(
+            attempt, total_seconds=5.0, retry_on=ValueError, attempt_seconds=0.02, initial_delay=0.01
+        )
+
+        assert result == "done"
+        assert attempts == 2
+
+    async def test_an_attempt_is_told_it_only_has_its_own_bound(self):
+        """An attempt that sizes its own request off the remaining budget would overshoot the bound it runs under."""
+        seen: list[float] = []
+
+        async def attempt(remaining: float) -> str:
+            seen.append(remaining)
+            return "done"
+
+        await retry_until_deadline(attempt, total_seconds=100.0, retry_on=ValueError, attempt_seconds=0.5)
+
+        assert seen == [0.5]
+
+    async def test_a_bound_attempt_that_never_answers_reports_the_bound_it_ran_out_of(self):
+        """An operator seeing only the nominal deadline would never learn the attempt stopped answering."""
+
+        async def attempt(remaining: float) -> None:
+            await asyncio.sleep(30.0)
+
+        with pytest.raises(AttemptTimeoutError, match="did not answer within 0.02s"):
+            await retry_until_deadline(
+                attempt, total_seconds=0.05, retry_on=ValueError, attempt_seconds=0.02, initial_delay=0.01
+            )
+
 
 async def _immediately(value):
     return value
+
+
+class TestWhoTheAttemptTimeoutBelongsTo:
+    async def test_a_timeout_the_attempt_raised_itself_reaches_the_caller_unretried(self):
+        """`AttemptTimeoutError` is always retryable, so mislabelling one hides an error the caller never allowed."""
+        attempts = 0
+
+        async def attempt(remaining: float) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise TimeoutError("the worker did not answer")
+
+        with pytest.raises(TimeoutError, match="the worker did not answer"):
+            await retry_until_deadline(
+                attempt, total_seconds=5.0, retry_on=ValueError, attempt_seconds=1.0, initial_delay=0.01
+            )
+
+        assert attempts == 1
+
+    async def test_an_attempt_is_never_given_longer_than_the_deadline_that_is_left(self):
+        """A per-attempt bound wider than the remaining budget would push the last attempt past the deadline."""
+        seen: list[float] = []
+
+        async def attempt(remaining: float) -> str:
+            seen.append(remaining)
+            return "done"
+
+        await retry_until_deadline(attempt, total_seconds=0.5, retry_on=ValueError, attempt_seconds=100.0)
+
+        assert seen and seen[0] <= 0.5

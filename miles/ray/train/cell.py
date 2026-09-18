@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 
-from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.ray.train.cell_monitor import compute_cell_status
 from miles.ray.train.cell_state import (
     CellState,
@@ -16,9 +15,10 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
-from miles.utils.workers.worker_spec import HostAndPort
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ class TrainerCell:
         cell_id: str,
         cell_index: int,
         workers_hash: str,
-        rollout_executor: object | None,
         health_checker: BaseHealthChecker,
+        provider: BaseWorkerProvider,
     ) -> None:
         self.args = args
         self.cell_id = cell_id
@@ -47,14 +47,15 @@ class TrainerCell:
         self.role = role
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
-        self.rollout_executor = rollout_executor
         self.health_checker = health_checker
 
-        (worker_infos,) = RayWorkerProvider.create().get_worker_infos(cell_ids=[cell_id])
+        (worker_infos,) = provider.get_worker_infos(cell_ids=[cell_id])
         self._master_addr: HostAndPort = worker_infos[0].self_addrs[MASTER_PORT_NAME]
+        worker_handles = provider.get_handles_of_worker_infos(worker_infos)
+        assert len(worker_handles) == len(worker_infos), f"cell {cell_id} holds workers that cannot be called"
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`
-        self._state: CellState = StateAllocatedUninitialized(worker_handles=[info.handle for info in worker_infos])
+        self._state: CellState = StateAllocatedUninitialized(worker_handles=list(worker_handles.values()))
 
     # ------------------------ API ------------------------
 
@@ -62,6 +63,7 @@ class TrainerCell:
         self,
         *,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
         recv_ckpt_src_rank: int | None = None,
     ):
         await self.execute(
@@ -76,12 +78,16 @@ class TrainerCell:
             with_ref=self.with_ref,
             with_opd_teacher=self.with_opd_teacher,
             indep_dp_info=indep_dp_info,
+            indep_dp_store_addr=indep_dp_store_addr,
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
         self._mark_as_alive(indep_dp_info=indep_dp_info)
         self.health_checker.start()
         await asyncio.sleep(0)
         return results
+
+    async def load_state(self) -> list:
+        return await self.execute("load_state")
 
     async def train(
         self,
@@ -106,19 +112,17 @@ class TrainerCell:
             ),
         )
 
-    async def set_rollout_executor(self):
-        if (executor := self.rollout_executor) is not None:
-            return await self.execute("set_rollout_executor", rollout_executor=executor)
-        return []
-
     # ------------------------ API :: cooperatively prepare ------------------------
 
     async def prepare_indep_dp_mode_alive(
         self,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
         send_ckpt_dst_ranks: list[int],
     ):
-        await self.execute("reconfigure_indep_dp", indep_dp_info=indep_dp_info)
+        await self.execute(
+            "reconfigure_indep_dp", indep_dp_info=indep_dp_info, indep_dp_store_addr=indep_dp_store_addr
+        )
         self._update_indep_dp_info(indep_dp_info)
 
         for dst_rank in send_ckpt_dst_ranks:
@@ -127,14 +131,14 @@ class TrainerCell:
     async def prepare_indep_dp_mode_healing(
         self,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
         recv_ckpt_src_rank: int | None,
     ):
         await self.init(
             indep_dp_info=indep_dp_info,
+            indep_dp_store_addr=indep_dp_store_addr,
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
-
-        await self.set_rollout_executor()
 
     # ------------------------ state transition ------------------------
 
@@ -299,7 +303,7 @@ class TrainerCell:
 async def _kill_worker(handle: BaseWorkerHandle) -> None:
     try:
         await asyncio.wait_for(handle.kill_self(), timeout=KILL_RPC_TIMEOUT_S)
-    except WorkerUnreachableError:
+    except (WorkerUnreachableError, ServerRestartedError):
         return
     except (TimeoutError, asyncio.TimeoutError):
         logger.warning("Timed out asking a worker to kill itself; falling back to the death confirmation probe")
