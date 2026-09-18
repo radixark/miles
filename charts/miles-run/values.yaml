@@ -4,20 +4,20 @@ infra:
     tag: dev
     pullPolicy: Always
     pullSecrets: []
-  sharedStorage:
-    type: hostPath
-    hostPath: /cluster-storage
-    pvcClaimName: ""
-    mountPath: /cluster-storage
+  volumes:
+    - name: cluster-storage
+      hostPath:
+        path: /cluster-storage
+        type: Directory
+      mounts:
+        - mountPath: /cluster-storage
   paths:
-    runsSubPath: miles_data
-    repos:
-      miles: ""
-      megatron: ""
-      sglang: ""
-  nodeLocalStorage:
-    hostPath: ""
-    mountPath: /scratch
+    runsRoot: /cluster-storage/miles_data
+  devShm:
+    mountPath: /dev/shm
+    hostPath:
+      path: /dev/shm
+      type: Directory
   scheduling:
     nodeSelector: {}
     tolerations: []

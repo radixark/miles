@@ -36,6 +36,11 @@ python -m miles.utils.external_utils.miles_workbench exec -n "$MILES_NS" -- \
   bash -lc "cd /root/miles && python scripts/run_qwen3_4b.py train"
 ```
 
+The recipe defaults to `/root/models`, `/root/datasets` and `/root/shared_data`; the example
+[`infra.yaml`](#for-cluster-administrator) mounts all three from the shared volume. Fill them once
+with `python scripts/run_qwen3_4b.py prepare`, or pass `--model-dir`, `--data-dir` and
+`--output-dir` to point the recipe elsewhere.
+
 ## Observability
 
 **Built in**
@@ -63,13 +68,19 @@ python -m miles.utils.external_utils.miles_workbench uninstall -n "$MILES_NS"
 
 ## Folder convention
 
-A run is many pods on many machines, and they share nothing but the storage `infra.yaml` mounts.
-A path that is not on it is the most common way a run fails.
+A run is many pods on many machines, and they share nothing but the volumes `infra.yaml` mounts.
+A path that is on none of them is the most common way a run fails.
 
-- Every path your script names — `/root/models`, `/root/datasets` — has to be on it.
+- Every path your script names — `/root/models`, `/root/datasets` — has to be under one of the
+  mounts, and so does `infra.paths.runsRoot`, where the launcher keeps each run's directory.
+- `infra.paths.runsRoot` has to be under a volume every pod shares — a `hostPath` on shared storage
+  or a read-write-many claim. An `emptyDir` there is rejected: each pod would get its own copy, and
+  the verdict one pod writes is a file no other pod can read.
 - Copying a file into a pod is pointless: pods come and go, the mount survives.
-- To run your own branch instead of the image's copy, name its sub-path under the storage root:
-  `infra.paths.repos.miles: alice/miles`. `megatron` and `sglang` work the same way.
+- To run your own branch instead of the image's copy, mount it at the platform-owned source root:
+  `/root/miles`, `/root/Megatron-LM`, or `/sgl-workspace/sglang`. The chart injects these canonical
+  roots into `PYTHONPATH`; `infra.env.PYTHONPATH` cannot override them, and a copy mounted anywhere
+  else is not imported.
 
 ## For cluster administrator
 
@@ -91,11 +102,23 @@ infra:
   image:
     repository: radixark/miles
     tag: dev
-  sharedStorage:
-    type: hostPath
-    hostPath: /cluster-storage
-    mountPath: /cluster-storage
+  volumes:
+    - name: cluster-storage
+      hostPath: {path: /cluster-storage, type: Directory}
+      mounts:
+        - {mountPath: /cluster-storage}
+        - {mountPath: /root/miles, subPath: alice/miles}
+        - {mountPath: /root/models, subPath: models}
+        - {mountPath: /root/datasets, subPath: datasets}
+        - {mountPath: /root/shared_data, subPath: alice/shared_data}
+  paths:
+    runsRoot: /cluster-storage/miles_data
 ```
+
+The `hostPath` above stands for a cluster-wide shared filesystem (NFS, Lustre, a CSI mount) already
+mounted at `/cluster-storage` on every node: a per-node directory would lose the orchestrator state
+file and the shared checkpoints. Where Pod Security forbids `hostPath`, replace that key with an RWX
+`persistentVolumeClaim` and keep the mounts.
 
 `charts/miles-run/values.yaml` shows the full shape, and each chart's `values.schema.json` is the
 authoritative field list.

@@ -75,7 +75,7 @@ spec:
             requests:
               cpu: "100m"
               memory: 256Mi
-      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" . | trim) (include "miles-run.nodeLocalVolume" . | trim)) | join "\n" }}
+      {{- $volumes := compact (list (include "miles-common.volumes" . | trim)) | join "\n" }}
       {{- with $volumes }}
       volumes:
         {{- . | nindent 8 }}
