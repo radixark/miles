@@ -6,6 +6,7 @@ The CPU E4M3FN reference deliberately does not use the HIP conversion kernels.
 
 import importlib
 import json
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -64,7 +65,8 @@ def test_act_quant_matches_cpu_fn_bytes(dtype, block_size, scale_fmt, noncontigu
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("block_size", [64, 128])
-def test_qat_matches_cpu_and_preserves_ste(dtype, block_size, monkeypatch):
+@pytest.mark.parametrize("scale_fmt", ["ue8m0", None])
+def test_qat_matches_cpu_and_preserves_ste(dtype, block_size, scale_fmt, monkeypatch):
     import miles_plugins.models.deepseek_v4.ops.qat as qat
 
     def broken_tilelang_path(*args, **kwargs):
@@ -72,13 +74,62 @@ def test_qat_matches_cpu_and_preserves_ste(dtype, block_size, monkeypatch):
 
     monkeypatch.setattr(qat, "per_token_cast_back", broken_tilelang_path)
     x = _input(dtype, noncontiguous=True).detach().requires_grad_(True)
-    _, _, ref = _cpu_reference(x, block_size, "ue8m0")
-    out = qat.fp8_simulate_qat(x, block_size)
+    _, _, ref = _cpu_reference(x, block_size, scale_fmt)
+    out = qat.fp8_simulate_qat(x, block_size, scale_fmt)
     torch.testing.assert_close(out.cpu(), ref, rtol=0, atol=0)
+    if scale_fmt == "ue8m0":
+        # Existing callers keep the old two-argument behavior exactly.
+        torch.testing.assert_close(out, qat.fp8_simulate_qat(x, block_size), rtol=0, atol=0)
     assert torch.isfinite(out).all()
     grad = torch.randn_like(out)
     out.backward(grad)
     torch.testing.assert_close(x.grad, grad, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize(
+    "ratio,rotate,mode",
+    [(ratio, False, mode) for ratio in (4, 128) for mode in ("legacy", "off", "fp8_ue8m0")]
+    + [(4, True, mode) for mode in ("legacy", "off", "fp8_ue8m0", "fp8_dynamic")],
+)
+def test_compressor_qat_policies_match_cpu_reference(packed, ratio, rotate, mode):
+    """Real gfx942 compressor with raw/THD inputs; prepared for an idle GPU, not CPU CI."""
+    from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
+    from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout
+
+    # Explicit policies must work without TE FP8; legacy still follows fp8.
+    config = SimpleNamespace(
+        hidden_size=32,
+        qk_pos_emb_head_dim=64,
+        layernorm_epsilon=1e-6,
+        fp8="e4m3" if mode == "legacy" else None,
+        dsv4_kv_qat="off" if rotate else mode,
+        dsv4_index_qat=mode if rotate else "off",
+        csa_compress_rotary_base=160000,
+        original_max_position_embeddings=65536,
+        rotary_scaling_factor=4,
+        beta_fast=32,
+        beta_slow=1,
+    )
+    compressor = DeepSeekV4Compressor(config, 128 if rotate else 512, ratio, rotate).cuda()
+    torch.manual_seed(27)
+    with torch.no_grad():
+        for name, param in compressor.named_parameters():
+            if "norm" not in name:
+                param.normal_(0, 0.05)
+    rows = 2 * ratio
+    x = torch.randn(rows, 1, 32, device="cuda", dtype=torch.bfloat16)
+    layout = ThdLayout(torch.tensor([0, rows], device="cuda", dtype=torch.int32), 0, rows) if packed else None
+    with torch.no_grad():
+        actual = compressor(x, layout)
+        compressor.use_fp8_qat = False
+        unquantized = compressor(x, layout)
+    expected = unquantized.cpu().clone()
+    if mode != "off":
+        width, block = (128, 128) if rotate else (448, 64)
+        _, _, reference = _cpu_reference(unquantized[..., :width], block, None if mode == "fp8_dynamic" else "ue8m0")
+        expected[..., :width] = reference
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("block_size", [64, 128])

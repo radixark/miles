@@ -24,6 +24,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
+from miles_plugins.models.deepseek_v4.arguments import validate_dsv4_qat_args
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
@@ -33,7 +34,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_window_topk_idxs_cp,
 )
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
-from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
+from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat, resolve_fp8_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     CompressorInputCompact,
@@ -98,7 +99,7 @@ class DeepSeekV4Attention(MegatronModule):
         self.window_size = config.csa_window_size
         self.compress_ratio = config.csa_compress_ratios[layer_id] if config.csa_compress_ratios else 0
         self.eps = config.layernorm_epsilon
-        self.use_fp8_qat = config.fp8 is not None
+        self.use_fp8_qat, self.qat_scale_fmt = resolve_fp8_qat(config)
 
         assert self.o_lora_rank == 1024
         assert self.head_dim == 512
@@ -291,7 +292,9 @@ class DeepSeekV4Attention(MegatronModule):
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
         if self.use_fp8_qat:
             kv_vanilla = kv_vanilla.clone()
-            kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(kv_vanilla[..., : self.nope_head_dim], 64)
+            kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(
+                kv_vanilla[..., : self.nope_head_dim], 64, self.qat_scale_fmt
+            )
 
         seqlen_global = seqlen_local * self.cp_size
         # Only the BSHD helpers take stream positions; the _thd ones derive them from cu_seqlens.
@@ -446,9 +449,12 @@ def get_dsv4_spec(args, config, vp_stage):
 
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
+    validate_dsv4_qat_args(args)
     if args.dsv4_impl == "megatron":
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
+    config.dsv4_kv_qat = getattr(args, "dsv4_kv_qat", "legacy")
+    config.dsv4_index_qat = getattr(args, "dsv4_index_qat", "legacy")
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 

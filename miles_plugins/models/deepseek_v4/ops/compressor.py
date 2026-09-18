@@ -7,7 +7,7 @@ from torch.nn import Linear
 
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
 from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
-from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
+from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat, resolve_fp8_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, batch_of_row, compressed_cu_seqlens
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
@@ -99,7 +99,9 @@ class DeepSeekV4Compressor(nn.Module):
         self.overlap = compress_ratio == 4
         self.rotate = rotate
         coff = 1 + self.overlap
-        self.use_fp8_qat = config.fp8 is not None
+        # Only the indexer's compressor rotates; its QAT must follow Index QAT,
+        # not the policy of the main attention's SWA/C4/C128 KV cache.
+        self.use_fp8_qat, self.qat_scale_fmt = resolve_fp8_qat(config, is_indexer=rotate)
 
         self.cp_group = cp_group
         self.cp_size = cp_group.size() if cp_group is not None else 1
@@ -185,11 +187,13 @@ class DeepSeekV4Compressor(nn.Module):
         if self.rotate:
             kv = rotate_activation(kv)
             if self.use_fp8_qat:
-                kv = fp8_simulate_qat(kv, 128)
+                kv = fp8_simulate_qat(kv, 128, self.qat_scale_fmt)
         else:
             if self.use_fp8_qat:
                 kv = kv.clone()
-                kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
+                kv[..., : self.nope_head_dim] = fp8_simulate_qat(
+                    kv[..., : self.nope_head_dim], 64, self.qat_scale_fmt
+                )
 
         return kv
 
@@ -286,11 +290,13 @@ class DeepSeekV4Compressor(nn.Module):
         if self.rotate:
             kv = rotate_activation(kv)
             if self.use_fp8_qat:
-                kv = fp8_simulate_qat(kv, 128)
+                kv = fp8_simulate_qat(kv, 128, self.qat_scale_fmt)
         else:
             if self.use_fp8_qat:
                 kv = kv.clone()
-                kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
+                kv[..., : self.nope_head_dim] = fp8_simulate_qat(
+                    kv[..., : self.nope_head_dim], 64, self.qat_scale_fmt
+                )
 
         return kv
 
