@@ -20,7 +20,9 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extrac
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 
 
-def filter_turn_args(turn_args: dict[str, Any], *, drop_keys: tuple[str, ...] = ("input_ids",)) -> dict[str, Any]:
+def filter_turn_args(
+    turn_args: dict[str, Any], *, drop_keys: tuple[str, ...] = ("input_ids", "messages")
+) -> dict[str, Any]:
     """Copy turn args for metadata, omitting payloads before copying their values."""
     return deepcopy({key: value for key, value in turn_args.items() if key not in drop_keys})
 

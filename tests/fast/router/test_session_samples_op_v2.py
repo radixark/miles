@@ -1030,14 +1030,18 @@ async def test_hooks_cannot_mutate_committed_turn_args():
 
 
 @pytest.mark.asyncio
-async def test_metadata_omits_input_ids_without_changing_stored_turn_args(core):
+async def test_metadata_omits_payloads_without_changing_stored_turn_args(core):
     sid = await _retry_shaped_session(core)
     nodes = core.registry.sessions[sid].tree.nodes
     expected = []
     for node in nodes:
-        args = {"temperature": 0.7, "messages": node.path_messages(), "chat_template_kwargs": {"nested": [node.seq]}}
+        args = {"temperature": 0.7, "chat_template_kwargs": {"nested": [node.seq]}}
         expected.append(deepcopy(args))
-        node.turn_args = {**args, "input_ids": list(node.record.request["input_ids"])}
+        node.turn_args = {
+            **args,
+            "input_ids": list(node.record.request["input_ids"]),
+            "messages": node.path_messages(),
+        }
     before = [deepcopy(node.turn_args) for node in nodes]
 
     response = await core.get_session(sid)

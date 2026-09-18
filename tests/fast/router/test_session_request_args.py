@@ -45,7 +45,8 @@ def _metadata(url: str, session_id: str) -> dict:
 
 def _assert_exported_turn_args(exported: dict, request_args: dict):
     assert "input_ids" not in exported
-    assert {**exported, "input_ids": request_args["input_ids"]} == request_args
+    assert "messages" not in exported
+    assert {**exported, "input_ids": request_args["input_ids"], "messages": request_args["messages"]} == request_args
 
 
 class TestForbiddenClientFields:
@@ -262,6 +263,8 @@ class TestTurnArgs:
             _assert_exported_turn_args(first_args, first_request)
             assert first_args["temperature"] == 0.2 and first_args["seed"] == 42
             assert first_request["input_ids"]
+            assert first_request["messages"] == [USER]
+            assert _records(env.url, session_id)[0]["request"] == first_request
             assistant = first.json()["choices"][0]["message"]
             history = [USER, assistant, {"role": "user", "content": "more"}]
             original_resolve = TITOTokenizer.resolve_request_args

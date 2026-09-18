@@ -192,20 +192,21 @@ def test_template_projection_only_selects_render_fields():
     assert extract_template_args({"temperature": 0.7}) == {}
 
 
-def test_filter_turn_args_drops_payload_before_copying_and_isolates_metadata():
+@pytest.mark.parametrize("field", ["input_ids", "messages"])
+def test_filter_turn_args_drops_payload_before_copying_and_isolates_metadata(field):
     payload = MagicMock()
     payload.__deepcopy__ = MagicMock(side_effect=AssertionError("excluded payload must not be copied"))
-    turn_args = {"input_ids": payload, "temperature": 0.7, "chat_template_kwargs": {"nested": [1]}}
+    turn_args = {field: payload, "temperature": 0.7, "chat_template_kwargs": {"nested": [1]}}
 
     metadata = filter_turn_args(turn_args)
 
     assert metadata == {"temperature": 0.7, "chat_template_kwargs": {"nested": [1]}}
     metadata["chat_template_kwargs"]["nested"].append(2)
     assert turn_args["chat_template_kwargs"] == {"nested": [1]}
-    assert turn_args["input_ids"] is payload
+    assert turn_args[field] is payload
 
 
 def test_filter_turn_args_accepts_an_explicit_drop_list():
     turn_args = {"input_ids": [1], "messages": [{"role": "user", "content": "hi"}], "seed": 42}
-    assert filter_turn_args(turn_args, drop_keys=("input_ids", "messages")) == {"seed": 42}
+    assert filter_turn_args(turn_args, drop_keys=("input_ids",)) == {"messages": turn_args["messages"], "seed": 42}
     assert filter_turn_args(turn_args, drop_keys=()) == turn_args
