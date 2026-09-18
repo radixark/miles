@@ -119,6 +119,7 @@ class Job(FrozenPartialBaseModel):
 class ObjectReference(FrozenPartialBaseModel):
     name: str | None = None
     kind: str | None = None
+    uid: str | None = None
 
 
 class Event(FrozenPartialBaseModel):
