@@ -5,8 +5,11 @@ from functools import partial
 import ray.actor
 
 from miles.utils.misc import cancel_and_await_task
+from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,11 @@ class RayWorkerProvider(BaseWorkerProvider):
         await self._poll_once(reconcile, seen_infos=seen_infos, pool_ids=pool_ids)
         task = asyncio.create_task(self._watch_loop(reconcile, seen_infos, pool_ids=pool_ids))
         return partial(cancel_and_await_task, task)
+
+    def _build_handle_of_worker_info(self, info: WorkerInfo) -> BaseWorkerHandle:
+        if info.worker_class is not None:
+            return build_rpc_handle_of_worker_info(info)
+        return RayWorkerHandle(ray.get(self._worker_manager_handle.get_actor_handle.remote(info.name)))
 
     def _watched_pool_ids(self) -> list[str]:
         assert self._pool_ids is not None, "this provider was built without the pool_ids it is meant to observe"
