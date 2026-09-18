@@ -7,7 +7,7 @@ import sys
 
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
+from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lora_rollout_enabled
 from miles.utils.multi_lora import is_multi_lora_enabled
@@ -189,5 +189,12 @@ def _compute_server_args(
         logger.info(f"Warning: The following arguments is not supported in the current sglang: {unused_keys}.")
         for key in unused_keys:
             kwargs.pop(key)
+
+    if is_multi_lora_enabled(args):
+        assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
+        if kwargs.get("max_loaded_loras") is None:
+            # use --sglang-max-loaded-loras to override
+            # TODO: dynamic allocation
+            kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
     return kwargs

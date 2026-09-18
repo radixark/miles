@@ -1,7 +1,5 @@
 import dataclasses
 import itertools
-import json
-import os
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
@@ -22,21 +20,6 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         from megatron.bridge import AutoBridge
 
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
-
-        if (
-            self.quantization_config is not None
-            and self.quantization_config.get("quant_method") == "compressed-tensors"
-        ):
-            quantized_basenames = _load_quantized_param_basenames(self.args.hf_checkpoint)
-            if quantized_basenames is not None:
-                # Quantize exactly the params the checkpoint stores packed; the
-                # published ignore list of multimodal checkpoints (e.g.
-                # Kimi-K2.5 VL) omits vision_tower/mm_projector, so it cannot
-                # be trusted as the sole quantization criterion.
-                self.quantization_config = {
-                    **self.quantization_config,
-                    "_miles_quantized_basenames": quantized_basenames,
-                }
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
@@ -75,11 +58,11 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
-        from ..multi_lora_utils import slice_lora_to_rank
+        from ..lora.slots import slice_lora_to_rank
 
         with expose_adapter_slot(self.model, adapter.slot):
             named_tensors = self._export_current_adapter()
-        return [(h, slice_lora_to_rank(h, w, adapter.config.rank)) for h, w in named_tensors]
+        return [(h, slice_lora_to_rank(h, w, adapter.rank)) for h, w in named_tensors]
 
     def _export_current_adapter(self) -> list:
         with megatron_bridge_utils.patch_megatron_model(self.model):
@@ -106,16 +89,6 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     yield q_hf_name, q_weight, megatron_param_name
             else:
                 yield hf_name, weight, megatron_param_name
-
-
-def _load_quantized_param_basenames(hf_checkpoint):
-    """Base names of params stored packed (`<base>.weight_packed`) in the checkpoint, or None if unknown."""
-    index_path = os.path.join(hf_checkpoint, "model.safetensors.index.json")
-    if not os.path.exists(index_path):
-        return None
-    with open(index_path) as f:
-        names = json.load(f)["weight_map"]
-    return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
 
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):

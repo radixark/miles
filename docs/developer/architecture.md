@@ -68,7 +68,7 @@ is loaded only when a run names its import path in a flag (`--spec`, or one of t
 per-architecture weight bridges, `megatron_bridge/` the `megatron.bridge` shims, and
 `optimizers/` optimizer plugins.
 
-`train.py`, `train_async.py` and `train_multi_lora_async.py` are the entry points. They are
+`train.py` and `train_async.py` are the entry points. They are
 thin; most logic lives in the modules above.
 
 ## A request's life

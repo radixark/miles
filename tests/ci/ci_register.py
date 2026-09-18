@@ -158,8 +158,9 @@ def _extract_list_constant(node: ast.AST, *, context: str = "value") -> list:
 
 
 class RegistryVisitor(ast.NodeVisitor):
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, *, known_labels=KNOWN_LABELS):
         self.filename = filename
+        self.known_labels = known_labels
         self.registries: list[CIRegistry] = []
 
     def _parse_call_args(self, func_call: ast.Call, func_name: str) -> CIRegistry:
@@ -234,9 +235,9 @@ class RegistryVisitor(ast.NodeVisitor):
                 f"CPU has no GPU generation and ROCm is a separate backend"
             )
 
-        unknown = [label for label in labels if label not in KNOWN_LABELS]
+        unknown = [label for label in labels if label not in self.known_labels]
         if unknown:
-            valid_list = ", ".join(sorted(KNOWN_LABELS))
+            valid_list = ", ".join(sorted(self.known_labels))
             raise ValueError(
                 f"{self.filename}: unknown labels {unknown} in {func_name}(); "
                 f"valid labels: [{valid_list}]. "
@@ -302,11 +303,11 @@ class RegistryVisitor(ast.NodeVisitor):
                 self.registries.append(cr)
 
 
-def ut_parse_one_file(filename: str) -> list[CIRegistry]:
+def ut_parse_one_file(filename: str, *, known_labels=KNOWN_LABELS) -> list[CIRegistry]:
     with open(filename) as f:
         file_content = f.read()
     tree = ast.parse(file_content, filename=filename)
-    visitor = RegistryVisitor(filename=filename)
+    visitor = RegistryVisitor(filename=filename, known_labels=known_labels)
     visitor.visit(tree)
     return visitor.registries
 
@@ -363,10 +364,10 @@ def _make_implicit_cpu_registry(filename: str) -> CIRegistry:
     )
 
 
-def collect_tests(files: list[str], sanity_check: bool = True) -> list[CIRegistry]:
+def collect_tests(files: list[str], sanity_check: bool = True, *, known_labels=KNOWN_LABELS) -> list[CIRegistry]:
     ci_tests: list[CIRegistry] = []
     for file in files:
-        registries = ut_parse_one_file(file)
+        registries = ut_parse_one_file(file, known_labels=known_labels)
         if _is_implicit_fast_cpu_path(file):
             # tests/fast/ is CPU-only by location;
             for r in registries:

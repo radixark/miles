@@ -62,9 +62,16 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
+        # TODO: will rewrite in native lora refactor
+        if "kimi_k3" in self.model_name.lower():
+            from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
 
-        return export_inkling_lora_hf_named(self.model)
+            return [named_tensor for chunk in export_kimi_k3_lora_hf_chunks(self.model) for named_tensor in chunk]
+        if "inkling" in (self.args.custom_model_provider_path or ""):
+            from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
+
+            return export_inkling_lora_hf_named(self.model)
+        raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:
@@ -201,7 +208,7 @@ def _get_megatron_local_param_infos(
     """
     pp_size = get_parallel_state().pp.size
 
-    from ..lora_utils import _is_adapter_param_name
+    from ..lora.utils import _is_adapter_param_name
 
     param_infos: dict[str, ParamInfo] = {}
     rank = dist.get_rank()

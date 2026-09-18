@@ -7,6 +7,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.indep_dp import create_tcp_store
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
 
 MASTER_PORT_NAME = "master"
@@ -95,7 +96,11 @@ def _compute_spec_trainer(
             num_gpu_slots_per_worker=1,
             pg_name="actor",
         ),
-        worker_class=_TRAINER_ACTOR_CLASSES[args.train_backend],
+        worker_class=(
+            "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
+            if args.train_backend == "megatron" and role == "actor" and is_multi_lora_enabled(args)
+            else _TRAINER_ACTOR_CLASSES[args.train_backend]
+        ),
         ctor_kwargs=lambda ctx: dict(
             args=args,
             world_size=gpus_per_cell,

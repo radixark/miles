@@ -1,0 +1,6 @@
+### 0
+mkdir -p /root/models
+
+### 1
+hf download Qwen/Qwen3-30B-A3B
+  --local-dir /root/models/Qwen3-30B-A3B

@@ -960,3 +960,21 @@ class TestSplitTrainDataByDpScheduled:
         assert shards[0]["num_microbatches"] == [2, 2]
         assert shards[0]["dynamic_global_batch_size"] == 8
         assert shards[0]["num_rollouts"] == [8, 8]
+
+
+def test_delayed_dp_split_preserves_the_tinker_loss_vectors():
+    """The tinker losses zip loss_weights / advantages / rollout_log_probs per
+    datum; a key missing from the shard whitelist disappears silently and only
+    fails inside the trainer."""
+    from miles.ray.rollout.train_data_conversion import _package_shards
+
+    data = {
+        "tokens": [[1], [2], [3], [4]],
+        "loss_weights": [[1.0]] * 4,
+        "advantages": [[0.5]] * 4,
+        "rollout_log_probs": [[-0.1]] * 4,
+    }
+    shards = _package_shards(None, data, [[0, 2], [1, 3]])
+    for shard in shards:
+        assert shard["loss_weights"] and shard["advantages"] and shard["rollout_log_probs"]
+    assert shards[0]["advantages"] == [[0.5], [0.5]]

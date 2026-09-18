@@ -11,7 +11,6 @@ welcome: bug reports, doc fixes, new model recipes, full features.
 miles/
 ├── train.py                  # synchronous entry point
 ├── train_async.py            # fully-async entry point
-├── train_multi_lora_async.py # multi-LoRA async entry point
 ├── miles/                    # the package
 │   ├── backends/
 │   │   ├── megatron_utils/   # Megatron actor, weight sync, checkpointing, fp32 markers

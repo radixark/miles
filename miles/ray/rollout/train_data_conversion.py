@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 ROLLOUT_DATA_TENSOR_DTYPES = {
     "tokens": "int32",
+    "target_tokens": "int32",
     "loss_masks": "int32",
     "rollout_log_probs": "float32",
     "rollout_sampling_mask_ids": "int32",
@@ -150,21 +151,6 @@ def convert_samples_to_train_data(
 
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
-
-    if any(sample.adapter is not None for sample in samples):
-        assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
-        train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
-        # Slots whose adapter batch completes with this batch: the trainer scales their
-        # accumulated gradients by 1/adapter-batch-size and advances the LR schedule.
-        step_slots = sorted(metadata.get("step_slots", []))
-        train_data["step_slots"] = step_slots
-        train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))
-        step_slot_set = set(step_slots)
-        train_data["step_adapter_batch_sizes"] = {
-            sample.adapter.slot: sample.metadata["adapter_global_batch_size"]
-            for sample in samples
-            if sample.adapter.slot in step_slot_set
-        }
 
     if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
         train_data["prompt_group_sizes"] = prompt_group_sizes
@@ -397,6 +383,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
+            "loss_weights",
+            "advantages",
+            "target_tokens",
         ]:
             if key not in data:
                 continue
@@ -407,10 +396,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "raw_reward",
             "total_lengths",
             "dynamic_global_batch_size",
-            "step_slots",
-            "step_adapter_names",
-            "step_adapter_batch_sizes",
             "prompt_group_sizes",
+            "loss_fn",
+            "loss_fn_config",
         ]:
             if key not in data:
                 continue

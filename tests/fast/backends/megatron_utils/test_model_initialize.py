@@ -127,7 +127,7 @@ def _mock_megatron_environment():
             },
         )
         _stub_module(
-            "miles.backends.megatron_utils.bridge_lora_helpers",
+            "miles.backends.megatron_utils.lora.bridge",
             {
                 "_ensure_model_list": MagicMock(),
                 "_setup_lora_model_via_bridge": MagicMock(),
