@@ -1,6 +1,8 @@
+import json
 import logging
 import time
 import traceback
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -8,6 +10,123 @@ import torch
 from miles.utils.memory_utils import print_memory
 
 logger = logging.getLogger(__name__)
+
+_LOW_PRECISION_CATEGORIES = (
+    "scale_amax",
+    "quantization",
+    "gemm",
+    "dequantization",
+    "layout_memory",
+)
+
+
+def categorize_low_precision_kernel(name: str) -> str | None:
+    """Map a CUDA kernel name to a stable, user-facing profiling category."""
+    normalized = name.casefold()
+    patterns = (
+        ("dequantization", ("dequant", "cast_from_fp8", "cast_from_fp4")),
+        ("quantization", ("quantize", "cast_to_fp8", "cast_to_fp4", "fp8_cast", "fp4_cast")),
+        ("gemm", ("gemm", "nvjet_", "cublas", "cutlass", "matmul")),
+        ("scale_amax", ("amax", "compute_scale", "scale_inv", "scale_kernel")),
+        ("layout_memory", ("swizzle", "transpose", "permute", "memcpy", "memset", "copy_kernel")),
+    )
+    for category, markers in patterns:
+        if any(marker in normalized for marker in markers):
+            return category
+    return None
+
+
+def _summarize_low_precision_events(events, *, name: str, rank: int, step: int) -> dict:
+    events = list(events)
+    category_totals = {category: {"duration_us": 0.0, "kernel_calls": 0} for category in _LOW_PRECISION_CATEGORIES}
+    kernels = defaultdict(lambda: {"duration_us": 0.0, "calls": 0, "parents": set(), "input_shapes": set()})
+    kernel_metadata = defaultdict(lambda: {"parents": set(), "input_shapes": set()})
+    uncategorized_duration = 0.0
+    uncategorized_calls = 0
+
+    for event in events:
+        for kernel in getattr(event, "kernels", ()):
+            metadata = kernel_metadata[kernel.name]
+            metadata["parents"].add(event.name)
+            if event.input_shapes:
+                metadata["input_shapes"].add(json.dumps(event.input_shapes))
+
+    for event in events:
+        if getattr(getattr(event, "device_type", None), "name", None) != "CUDA":
+            continue
+        duration = float(event.device_time)
+        category = categorize_low_precision_kernel(event.name)
+        if category is None:
+            uncategorized_duration += duration
+            uncategorized_calls += 1
+            continue
+
+        category_totals[category]["duration_us"] += duration
+        category_totals[category]["kernel_calls"] += 1
+        kernel_summary = kernels[(category, event.name)]
+        kernel_summary["duration_us"] += duration
+        kernel_summary["calls"] += 1
+        metadata = kernel_metadata[event.name]
+        kernel_summary["parents"].update(metadata["parents"])
+        kernel_summary["input_shapes"].update(metadata["input_shapes"])
+
+    kernel_details = []
+    for (category, kernel_name), summary in sorted(kernels.items()):
+        kernel_details.append(
+            {
+                "category": category,
+                "name": kernel_name,
+                "duration_us": summary["duration_us"],
+                "calls": summary["calls"],
+                "parents": sorted(summary["parents"]),
+                "input_shapes": [json.loads(shapes) for shapes in sorted(summary["input_shapes"])],
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "profile_name": name,
+        "rank": rank,
+        "step": step,
+        "duration_model": "sum_of_unique_cuda_activity_durations; overlapping kernels are not wall time",
+        "categories": category_totals,
+        "uncategorized": {
+            "duration_us": uncategorized_duration,
+            "kernel_calls": uncategorized_calls,
+        },
+        "kernels": kernel_details,
+    }
+
+
+def _create_trace_handler(args, *, name: str):
+    rank = torch.distributed.get_rank()
+    profile_low_precision = getattr(args, "profile_low_precision", False)
+    if profile_low_precision and not args.tensorboard_dir:
+        raise ValueError("--profile-low-precision requires --tensorboard-dir")
+    tensorboard_handler = torch.profiler.tensorboard_trace_handler(
+        args.tensorboard_dir,
+        worker_name=f"{name}_rank_{rank}",
+        use_gzip=True,
+    )
+    if not profile_low_precision:
+        return tensorboard_handler
+
+    output_dir = Path(args.tensorboard_dir)
+
+    def handle_trace(profiler):
+        tensorboard_handler(profiler)
+        summary = _summarize_low_precision_events(
+            profiler.events(),
+            name=name,
+            rank=rank,
+            step=profiler.step_num,
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"low_precision_{name}_rank_{rank}_step_{profiler.step_num}.json"
+        output_path.write_text(json.dumps(summary, indent=2) + "\n")
+        logger.info(f"Low-precision profile summary written to {output_path}")
+
+    return handle_trace
 
 
 class TrainProfiler:
@@ -66,11 +185,7 @@ def _create_torch_profiler(args, name):
             active=args.profile_step_end - args.profile_step_start,
             repeat=1,
         ),
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(
-            args.tensorboard_dir,
-            worker_name=f"{name}_rank_{torch.distributed.get_rank()}",
-            use_gzip=True,
-        ),
+        on_trace_ready=_create_trace_handler(args, name=name),
         record_shapes=True,
         with_stack=True,
         profile_memory=True,
