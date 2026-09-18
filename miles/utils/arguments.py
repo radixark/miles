@@ -400,7 +400,6 @@ def parse_args_and_get_parser(
     vars(args).setdefault("ckpt_step", None)
     vars(args).setdefault("lora_A_init_method", "xavier")
     vars(args).setdefault("lora_B_init_method", "zero")
-    vars(args).setdefault("custom_agent_function_path", None)
 
     assert parser is not None
     resolve_custom_function_configs(args)
