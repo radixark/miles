@@ -16,6 +16,7 @@ def _cmd(
     *,
     worker_type: str = "regular",
     args=None,
+    interpreter_prefix: list[str] | None = None,
     addr_overrides: dict | None = None,
     base_gpu_id: int = 0,
     random_seed: int = 0,
@@ -33,6 +34,7 @@ def _cmd(
     addr_and_ports.update(addr_overrides or {})
     return compute_engine_launch_cmd(
         args or make_engine_args(),
+        interpreter_prefix=interpreter_prefix or [sys.executable],
         node_rank=0,
         worker_type=worker_type,
         base_gpu_id=base_gpu_id,
@@ -53,6 +55,20 @@ def _cmd(
 
 
 class TestComputeEngineLaunchCmd:
+    def test_the_command_preserves_every_interpreter_prefix_token(self):
+        """Every interpreter option stays ordered immediately before the SGLang module invocation."""
+        interpreter_prefix = [sys.executable, "-O", "-X", "faulthandler"]
+
+        tokens = shlex.split(_cmd(interpreter_prefix=interpreter_prefix))
+
+        assert tokens[: len(interpreter_prefix) + 2] == [*interpreter_prefix, "-m", "sglang.launch_server"]
+
+    def test_a_cpu_only_controller_renders_the_worker_device(self):
+        """A controller without an accelerator still renders a CUDA worker command."""
+        parsed = parse_server_args_argv(shlex.split(_cmd())[3:])
+
+        assert parsed.device == "cuda"
+
     def test_the_command_launches_sglang_with_the_allocated_addressing(self):
         """The rendered launch_server command carries the addr map."""
         tokens = shlex.split(_cmd())
