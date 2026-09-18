@@ -1,0 +1,64 @@
+{{- if .Values.run.mooncake.enabled }}
+{{- $name := .Values.run.objectNames.mooncakeMaster }}
+{{- $labels := dict "context" . "component" "mooncake-master" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+spec:
+  selector:
+    {{- include "miles-run.selectorLabels" $labels | nindent 4 }}
+  ports:
+    - name: rpc
+      port: {{ .Values.run.mooncake.rpcPort }}
+    - name: metrics
+      port: {{ .Values.run.mooncake.metricsPort }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $name | quote }}
+  selector:
+    matchLabels:
+      {{- include "miles-run.selectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "miles-run.labels" $labels | nindent 8 }}
+    spec:
+      {{- include "miles-run.podDefaults" . | nindent 6 }}
+      restartPolicy: Always
+      containers:
+        - name: mooncake-master
+          {{- include "miles-run.containerDefaults" . | nindent 10 }}
+          command:
+            - mooncake_master
+            - --rpc_port
+            - {{ .Values.run.mooncake.rpcPort | quote }}
+            - --metrics_port
+            - {{ .Values.run.mooncake.metricsPort | quote }}
+          {{- with include "miles-run.env" (dict "context" . "entry" dict) }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          ports:
+            - name: rpc
+              containerPort: {{ .Values.run.mooncake.rpcPort }}
+            - name: metrics
+              containerPort: {{ .Values.run.mooncake.metricsPort }}
+          resources:
+            {{- toYaml .Values.run.mooncake.resources | nindent 12 }}
+      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" . | trim) (include "miles-run.nodeLocalVolume" . | trim)) | join "\n" }}
+      {{- with $volumes }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
+{{- end }}
