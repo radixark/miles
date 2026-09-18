@@ -138,6 +138,19 @@ class TestSessionRoutes:
         assert response.status_code == 404
         assert response.json()["error"] == "session not found: session_id=nonexistent"
 
+    def test_not_found_body_names_the_serving_instance(self, router_env):
+        """A retry that lands on another session server must be tellable from a bad id (#956)."""
+        response = requests.get(f"{router_env.url}/sessions/nonexistent", timeout=5.0)
+        assert response.status_code == 404
+        assert response.json()["session_server_instance_id"] == _INSTANCE_ID
+
+    def test_chat_after_delete_says_deleted(self, router_env):
+        session_id = _create_session(router_env.url)
+        assert requests.delete(f"{router_env.url}/sessions/{session_id}", timeout=5.0).status_code == 204
+        response = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]})
+        assert response.status_code == 404
+        assert response.json()["error"] == f"session not found (deleted): session_id={session_id}"
+
 
 class TestSessionProxy:
     def test_proxy_chat_appends_record(self, router_env):
