@@ -67,6 +67,7 @@ class InferenceController:
         if not self.args.starts_inference_engines:
             return
 
+        await self._engine_provider.init()
         router_addrs = await resolve_router_addrs(self.args, router_providers=self._router_providers)
         self.servers = await create_rollout_servers(
             self.args,
