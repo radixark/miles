@@ -65,7 +65,7 @@ class TestOneConfigPerSoak:
         monkeypatch.setattr(scenario_random_crash, "get_common_train_args", lambda mode, **kwargs: "")
         monkeypatch.setattr(scenario_random_crash, "get_ft_args", lambda mode: "")
         monkeypatch.setattr(scenario_random_crash, "spawn_fault_injector", lambda **kwargs: _StubInjector())
-        monkeypatch.setattr(scenario_random_crash, "assert_healing", lambda mode, **kwargs: None)
+        monkeypatch.setattr(scenario_random_crash, "assert_healing", lambda ft_components, **kwargs: None)
 
         scenario_random_crash.run_ci("kill_train__dp4_cp2__fake_rollout__moe_5layer", num_steps=1)
 
@@ -88,9 +88,7 @@ class TestOneConfigPerSoak:
         monkeypatch.setattr(scenario_realistic_gsm8k, "_prepare_gsm8k", lambda U: None)
         monkeypatch.setattr(scenario_realistic_gsm8k, "resolve_dump_dir", lambda test_name: str(tmp_path / "gsm8k"))
         monkeypatch.setattr(scenario_realistic_gsm8k, "spawn_fault_injector", lambda **kwargs: _StubInjector())
-        monkeypatch.setattr(
-            scenario_realistic_gsm8k, "assert_soak_reconfigure_events", lambda event_dir, **kwargs: None
-        )
+        monkeypatch.setattr(scenario_realistic_gsm8k, "assert_healing", lambda ft_components, **kwargs: None)
 
         scenario_realistic_gsm8k.run_ci(num_rollout=1)
 
