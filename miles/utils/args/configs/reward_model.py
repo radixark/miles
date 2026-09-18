@@ -1,3 +1,4 @@
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
@@ -19,28 +20,28 @@ class RewardModelConfig(BaseConfig):
         Arg(help="URL for the reward model service for --rm-type remote_rm, e.g. http://localhost:8000"),
     ] = None
     custom_rm_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Path to the custom reward model function. "
                 "If set, we will use this function to calculate the reward instead of the default one. "
                 "The function should have the signature `def custom_rm(args, sample) -> float`."
-            )
+            ),
         ),
     ] = None
     custom_reward_post_process_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
-            help="Path to the custom function that will post process reward, by default it will be the normalization for grpo. "
+            help="Path to the custom function that will post process reward, by default it will be the normalization for grpo. ",
         ),
     ] = None
     custom_convert_samples_to_train_data_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Path to a custom function that converts samples to training data. "
                 "If set, this function will replace the default _convert_samples_to_train_data. "
                 "The function should have the signature `def convert_samples_to_train_data(args, samples) -> dict`."
-            )
+            ),
         ),
     ] = None

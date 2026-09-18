@@ -1,3 +1,4 @@
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.eval_config import EvalDatasetConfig
 
@@ -7,7 +8,7 @@ class EvalConfig(BaseConfig):
     eval_uses_snapshots: bool
 
     eval_function_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Path to the eval fn. Two kinds fit here. A rollout fn generates against the "
@@ -15,7 +16,7 @@ class EvalConfig(BaseConfig):
                 "when --eval-num-gpus is set. A CheckpointEvalFn subclass gets the snapshot "
                 "path instead and owns the rest itself — weight delivery, endpoint, generation. "
                 "If not set, defaults to --rollout-function-path."
-            )
+            ),
         ),
     ] = None
 
