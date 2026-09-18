@@ -79,7 +79,7 @@
      {
       "group": "Hardware",
       "pages": [
-       "getting-started/amd"
+       "hardware/amd"
       ]
      }
     ]
@@ -397,7 +397,12 @@
   },
   {
    "source": "/platforms/amd",
-   "destination": "/getting-started/amd",
+   "destination": "/hardware/amd",
+   "permanent": true
+  },
+  {
+   "source": "/getting-started/amd",
+   "destination": "/hardware/amd",
    "permanent": true
   },
   {

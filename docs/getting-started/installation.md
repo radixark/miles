@@ -36,7 +36,7 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
       -it rocm/sgl-dev:miles-rocm10-mi35x /bin/bash
     ```
 
-    See [AMD ROCm](/getting-started/amd) for more details.
+    See [AMD ROCm](/hardware/amd) for more details.
 
   </Tab>
 
