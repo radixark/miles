@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 import miles.utils.workers.process_utils as process_utils
-from miles.utils.workers.process_utils import kill_process_tree, launch_bound_subprocess, terminate_process_tree
+from miles.utils.workers.process_utils import (
+    kill_process,
+    kill_process_tree,
+    launch_bound_subprocess,
+    terminate_process_tree,
+)
 
 _SLEEP_FOREVER = "import time; time.sleep(300)"
 
@@ -182,6 +187,34 @@ class TestKillProcessTree:
 
         process.wait(timeout=15)
         assert process.returncode == -signal.SIGKILL
+
+
+class TestKillProcess:
+    def test_kills_only_the_requested_process_with_sigkill(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Killing one process sends SIGKILL to its exact pid through the OS boundary."""
+        process = subprocess.Popen.__new__(subprocess.Popen)
+        process.pid = 12345
+        sent_signals: list[tuple[int, int]] = []
+
+        monkeypatch.setattr(
+            process_utils.os, "kill", lambda pid, signal_number: sent_signals.append((pid, signal_number))
+        )
+
+        kill_process(process)
+
+        assert sent_signals == [(process.pid, signal.SIGKILL)]
+
+    def test_an_already_exited_process_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Killing a process that has already exited returns normally."""
+        process = subprocess.Popen.__new__(subprocess.Popen)
+        process.pid = 12345
+
+        def raise_process_lookup_error(pid: int, signal_number: int) -> None:
+            raise ProcessLookupError
+
+        monkeypatch.setattr(process_utils.os, "kill", raise_process_lookup_error)
+
+        kill_process(process)
 
 
 class TestLaunchBoundSubprocess:
