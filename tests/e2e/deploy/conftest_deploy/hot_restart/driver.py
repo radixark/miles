@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import signal
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -18,6 +19,7 @@ from tests.e2e.ft.conftest_ft.execution import run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, read_frozen_rollout_id
 from miles.utils.test_utils.polling_worker import PollingWorker
@@ -36,6 +38,7 @@ CONSECUTIVE_READ_FAILURE_LIMIT: int = 20
 TRACKER_SETTLE_ATTEMPTS: int = 3
 TRACKER_SETTLE_INTERVAL_SECONDS: float = 2.0
 HOT_RESTART_ARG: str = HOT_RESTART_SEPARATOR.join(one.value for one in HotRestartComponent)
+REPLACED_LAUNCH_EXIT_CODE: int = 128 + signal.SIGTERM
 
 
 # ============================== run directories ===============================
@@ -126,6 +129,7 @@ class HotRestartDriver:
         ), "an empty schedule describes a run nothing freezes, and this driver only takes over a frozen run"
         self._failures: list[BaseException] = []
         self._relaunch_threads: list[threading.Thread] = []
+        self._schedule_finished = threading.Event()
         self._worker = PollingWorker(name="hot-restart-driver", run=self._drive)
         self._max_finished_rollout_id: int | None = None
         self._num_take_overs_caught_up: int = 0
@@ -160,6 +164,17 @@ class HotRestartDriver:
             thread.join(timeout=RELAUNCH_JOIN_TIMEOUT_SECONDS)
         self._observer.observe_once_or_warn()
 
+    def wait_until_all_restarts_triggered(self) -> None:
+        assert self.records, (
+            f"a launch exited {REPLACED_LAUNCH_EXIT_CODE} before the driver triggered any hot restart, so no "
+            f"scheduled replacement explains its SIGTERM"
+        )
+        timeout_seconds = self.freeze_timeout_seconds * self.num_restarts
+        assert self._schedule_finished.wait(timeout=timeout_seconds), (
+            f"the replaced launch exited {REPLACED_LAUNCH_EXIT_CODE}, but the driver did not trigger all "
+            f"{self.num_restarts} hot restart(s) within {timeout_seconds}s"
+        )
+
     def assert_nothing_running(self) -> None:
         self._worker.assert_not_running(
             message=(
@@ -188,6 +203,8 @@ class HotRestartDriver:
         except BaseException as e:
             logger.warning("The hot restart driver stopped before every take-over had landed", exc_info=True)
             self._failures.append(e)
+        finally:
+            self._schedule_finished.set()
 
     def _take_over_at_scheduled_freezes(self, stop_event: threading.Event) -> None:
         for index, scheduled in enumerate(self.schedule):
@@ -200,6 +217,7 @@ class HotRestartDriver:
             logger.info(f"Hot restart {record.index} is due against a frozen run: {record}")
             self._relaunch_on_thread(index)
 
+        self._schedule_finished.set()
         self._observe_until_stopped(stop_event)
 
     def _observe_until_stopped(self, stop_event: threading.Event) -> None:
@@ -327,15 +345,27 @@ class HotRestartDriver:
         try:
             self.relaunch(frozen_rollout_id)
         except BaseException as e:
+            if frozen_rollout_id is not None and is_replaced_launch_exit(e):
+                logger.info(f"The launch replaced by the next take-over exited {REPLACED_LAUNCH_EXIT_CODE}")
+                return
             logger.warning("A hot restart relaunch failed", exc_info=True)
             self._failures.append(e)
+
+
+def is_replaced_launch_exit(error: BaseException) -> bool:
+    return isinstance(error, RunExitedError) and error.exit_code == REPLACED_LAUNCH_EXIT_CODE
 
 
 @contextmanager
 def driving_hot_restarts(driver: HotRestartDriver, *, dump_dir: str) -> Iterator[HotRestartDriver]:
     driver.start()
     try:
-        yield driver
+        try:
+            yield driver
+        except RunExitedError as e:
+            if not is_replaced_launch_exit(e) or not driver.records:
+                raise
+            driver.wait_until_all_restarts_triggered()
     finally:
         driver.stop_collecting()
         driver.evidence.write(dump_dir=dump_dir)
