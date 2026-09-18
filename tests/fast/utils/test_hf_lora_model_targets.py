@@ -145,7 +145,5 @@ def test_targets_match_native_hf_model(model_type, overrides):
 
     defaults = resolve_hf_lora_targets(config.to_dict())
     assert set(defaults) == set(layout.attention + layout.mlp)
-    all_groups = resolve_hf_lora_targets(
-        config.to_dict(), train_attn=True, train_mlp=True, train_unembed=True
-    )
+    all_groups = resolve_hf_lora_targets(config.to_dict(), train_attn=True, train_mlp=True, train_unembed=True)
     assert set(all_groups) == set(layout.attention + layout.mlp + layout.unembed)
