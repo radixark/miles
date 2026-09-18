@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -724,11 +725,18 @@ class TestTitoFixedTemplateConfiguration:
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
 
     @pytest.mark.parametrize("family", ["qwen38small", "qwen4exp"])
-    def test_qwen38_families_resolve_default_template(self, family):
-        args = self._parse(["--use-session-server", "--tito-model", family])
+    @pytest.mark.parametrize("effort", [None, "low", "medium", "xhigh"])
+    def test_qwen38_families_resolve_default_template(self, family, effort):
+        extra = ["--use-session-server", "--tito-model", family]
+        if effort is not None:
+            extra += ["--apply-chat-template-kwargs", json.dumps({"reasoning_effort": effort})]
+        args = self._parse(extra)
         miles_validate_args(args)
         assert args.chat_template_path.endswith("/qwen3.8_small_and_flash_next_fixed.jinja")
-        assert args.apply_chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "xhigh"}
+        expected = {"preserve_thinking": True}
+        if effort is not None:
+            expected["reasoning_effort"] = effort
+        assert args.apply_chat_template_kwargs == expected
 
     def test_glm53_uses_native_template(self):
         args = self._parse(["--use-session-server", "--tito-model", "glm53"])

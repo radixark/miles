@@ -459,8 +459,7 @@ class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
 
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.8_small_and_flash_next_fixed.jinja",
-        # FIXME: Keep xhigh until per-request Qwen3.8 effort is supported and verified end to end.
-        extra_kwargs={"preserve_thinking": True, "reasoning_effort": "xhigh"},
+        extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
         consistant_kwargs=["add_vision_id", "enable_thinking", "reasoning_effort"],
     )

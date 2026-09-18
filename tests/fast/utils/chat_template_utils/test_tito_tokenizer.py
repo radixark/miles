@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
@@ -508,6 +507,7 @@ class TestResolveRequestArgs:
             (Qwen36TITOTokenizer, "add_vision_id", True, False),
             (Qwen38SmallTITOTokenizer, "add_vision_id", True, False),
             (Qwen38SmallTITOTokenizer, "enable_thinking", True, False),
+            (Qwen38SmallTITOTokenizer, "reasoning_effort", "low", "medium"),
             (GLM53TITOTokenizer, "reasoning_effort", "max", "low"),
             (Nemotron3TITOTokenizer, "low_effort", True, False),
             (Kimi25TITOTokenizer, "thinking", True, False),
@@ -555,6 +555,7 @@ class TestResolveRequestArgs:
         [
             (InklingTITOTokenizer, "reasoning_effort", "high", "low", "hello"),
             (Qwen38SmallTITOTokenizer, "enable_thinking", True, False, "hello"),
+            (Qwen38SmallTITOTokenizer, "reasoning_effort", "low", "medium", "hello"),
             (
                 Qwen35TITOTokenizer,
                 "add_vision_id",
@@ -589,24 +590,34 @@ class TestResolveRequestArgs:
             == old_render
         )
 
-    def test_qwen38_workaround_overrides_effort_and_preserve_thinking(self):
+    @pytest.mark.parametrize(
+        "launch_kwargs, request_kwargs, expected_effort",
+        [
+            ({}, {}, None),
+            ({"reasoning_effort": "low"}, {}, "low"),
+            ({"reasoning_effort": "low"}, {"reasoning_effort": "medium"}, "medium"),
+            ({"reasoning_effort": "medium"}, {"reasoning_effort": "low"}, "low"),
+            ({"reasoning_effort": "low"}, {"reasoning_effort": "xhigh"}, "xhigh"),
+        ],
+    )
+    def test_qwen38_new_root_selects_effort(self, launch_kwargs, request_kwargs, expected_effort):
         tokenizer = MagicMock()
         tokenizer.encode.return_value = [1]
-        model = Qwen38SmallTITOTokenizer(tokenizer)
+        model = Qwen38SmallTITOTokenizer(tokenizer, chat_template_kwargs=launch_kwargs)
         result = model.resolve_request_args(
-            {"chat_template_kwargs": {"reasoning_effort": "low", "preserve_thinking": False}}, turn_args=None
+            {"chat_template_kwargs": {**request_kwargs, "preserve_thinking": False}}, turn_args=None
         )
-        assert result["chat_template_kwargs"] == {"reasoning_effort": "xhigh", "preserve_thinking": True}
+        expected = {"preserve_thinking": True}
+        if expected_effort is not None:
+            expected["reasoning_effort"] = expected_effort
+        assert result["chat_template_kwargs"] == expected
 
     @pytest.mark.parametrize("turn_args", [None, {}, {"chat_template_kwargs": {"reasoning_effort": "low"}}])
-    def test_qwen38_effort_history_without_fixed_effort(self, turn_args):
-        class Qwen38WithoutFixedEffort(Qwen38SmallTITOTokenizer):
-            FIXED_TEMPLATE = replace(Qwen38SmallTITOTokenizer.FIXED_TEMPLATE, extra_kwargs={"preserve_thinking": True})
-
+    def test_qwen38_effort_follows_history(self, turn_args):
         tokenizer = MagicMock()
         tokenizer.encode.return_value = [1]
         tokenizer.convert_tokens_to_ids.return_value = 1
-        model = Qwen38WithoutFixedEffort(tokenizer)
+        model = Qwen38SmallTITOTokenizer(tokenizer, chat_template_kwargs={"reasoning_effort": "xhigh"})
         original_turn = deepcopy(turn_args)
         request_args = {"chat_template_kwargs": {"reasoning_effort": "medium"}}
 
@@ -621,16 +632,19 @@ class TestResolveRequestArgs:
             assert "reasoning_effort" not in kwargs
         assert turn_args == original_turn
 
-    @pytest.mark.parametrize("turn_args", [{}, {"chat_template_kwargs": {"reasoning_effort": "low"}}])
-    def test_qwen38_fixed_effort_overrides_history(self, turn_args):
+    def test_qwen38_omitted_effort_uses_template_default(self):
         tokenizer = MagicMock()
         tokenizer.encode.return_value = [1]
-        tokenizer.convert_tokens_to_ids.return_value = 1
         model = Qwen38SmallTITOTokenizer(tokenizer)
-        result = model.resolve_request_args(
-            {"chat_template_kwargs": {"reasoning_effort": "medium"}}, turn_args=turn_args
+        result = model.resolve_request_args({}, turn_args=None)
+        kwargs = extract_template_args(result)
+        assert "reasoning_effort" not in kwargs
+        template_text = (TEMPLATE_DIR / model.FIXED_TEMPLATE.template).read_text()
+        messages = [{"role": "user", "content": "hello"}]
+        rendered = apply_chat_template_from_str(template_text, messages, add_generation_prompt=True, **kwargs)
+        assert rendered == apply_chat_template_from_str(
+            template_text, messages, add_generation_prompt=True, **{**kwargs, "reasoning_effort": "xhigh"}
         )
-        assert result["chat_template_kwargs"]["reasoning_effort"] == "xhigh"
 
 
 class TestCompletionPostprocess:
