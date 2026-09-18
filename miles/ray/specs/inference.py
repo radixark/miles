@@ -9,6 +9,7 @@ from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import resolve_ip
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
@@ -107,7 +108,10 @@ def _create_inference_registration_reporter(args, *, capability: BackendCapabili
 
 
 def compute_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
-    return load_function(args.custom_inference_engine_provider_path)(args, capability=capability)
+    path = args.custom_inference_engine_provider_path
+    fn = load_function(path)
+    fn_args = compute_custom_function_config(args, path)
+    return fn(fn_args, capability=capability)
 
 
 def backend_inference_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
