@@ -26,7 +26,7 @@ from miles.utils.args.configs.algo import AlgoConfig
 from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
 from miles.utils.args.configs.ci import CiConfig
 from miles.utils.args.configs.cluster import ClusterConfig
-from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig
+from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig, Dsv4MegatronPluginsConfig
 from miles.utils.args.configs.dashboard import DashboardConfig
 from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.debug import DebugConfig
@@ -263,6 +263,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         PrefillDecodeDisaggregationConfig.add_arguments(parser=parser)
         CiConfig.add_arguments(parser=parser)
         CustomMegatronPluginsConfig.add_arguments(parser=parser)
+        Dsv4MegatronPluginsConfig.add_arguments(parser=parser)
         parser = add_user_provided_function_arguments(parser)
 
         reset_arg(
