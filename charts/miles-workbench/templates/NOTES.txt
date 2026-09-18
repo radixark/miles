@@ -1,8 +1,7 @@
 Workbench "{{ include "miles-workbench.fullname" . }}" installed in namespace {{ .Release.Namespace }}.
 
-Wait for it, then get a shell:
+Get a shell:
 
-  kubectl rollout status statefulset/{{ include "miles-workbench.fullname" . }} -n {{ .Release.Namespace }}
   kubectl exec -it statefulset/{{ include "miles-workbench.fullname" . }} -n {{ .Release.Namespace }} -- bash
 
 Inside the pod, run long-lived launches under tmux; helm and kubectl act as the
