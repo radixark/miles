@@ -12,7 +12,7 @@ infra:
       mounts:
         - mountPath: /cluster-storage
   paths:
-    runsRoot: /cluster-storage/miles_data
+    runsRoot: /cluster-storage/${NAMESPACE}/miles_data
   devShm:
     mountPath: /dev/shm
     hostPath:
