@@ -1,4 +1,4 @@
-from miles.ray.specs.inference import SESSION_SERVER_POOL_ID, compute_router_pool_id
+from miles.ray.specs.inference import SESSION_SERVER_POOL_ID, compute_router_providers
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -23,7 +23,7 @@ def spec_rollout_executor(args) -> ServeWorkerSpec:
         worker_class=ROLLOUT_EXECUTOR_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
             args=args,
-            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
+            router_providers=compute_router_providers(args, capability=ctx.capability),
             session_server_provider=(
                 ctx.capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID)
                 if args.use_session_server
