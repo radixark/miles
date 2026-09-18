@@ -5,7 +5,6 @@ import torch.distributed as dist
 
 from miles.utils.hf_lora_targets import matches_hf_lora_target
 
-
 _CANONICAL_PROJECTIONS = {
     "q_proj": "linear_q",
     "k_proj": "linear_k",
@@ -39,7 +38,9 @@ def _match_target_modules(module, hf_modules, targets, *, canonical):
             matched.update(hf_modules)
         if canonical and len(hf_modules) > 1 and module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1"):
             matched.update(
-                name for name in hf_modules if _matches_megatron_target(_canonical_adapter_module(module, name), target)
+                name
+                for name in hf_modules
+                if _matches_megatron_target(_canonical_adapter_module(module, name), target)
             )
         if matched:
             covered.add(target)
@@ -66,9 +67,10 @@ def resolve_megatron_lora_targets(targets, mappings, *, canonical, exclude_modul
         if not selected:
             continue
         if canonical and len(hf_modules) > 1:
-            assert module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1"), (
-                f"CanonicalLoRA does not define split adapters for {module!r}"
-            )
+            assert module.rsplit(".", 1)[-1] in (
+                "linear_qkv",
+                "linear_fc1",
+            ), f"CanonicalLoRA does not define split adapters for {module!r}"
             for target in sorted(selected):
                 candidates[_canonical_adapter_module(module, target)] = _TargetModule(
                     module, frozenset(matched), frozenset({target})

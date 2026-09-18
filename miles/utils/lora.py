@@ -72,9 +72,9 @@ def validate_adapter_export(weight_names, targets, *, shared_outer=False):
             module = re.sub(r"\bexperts\.\d+\.", "experts.", module)
         factors[factor].add(module)
     assert factors["A"], "Adapter export contains no LoRA weights"
-    assert factors["A"] == factors["B"], (
-        f"Adapter export has unpaired A/B modules: {sorted(factors['A'] ^ factors['B'])}"
-    )
+    assert (
+        factors["A"] == factors["B"]
+    ), f"Adapter export has unpaired A/B modules: {sorted(factors['A'] ^ factors['B'])}"
     if shared_outer:
         targets = [target.replace(".experts.*.", ".experts.") for target in targets]
     modules = factors["A"]

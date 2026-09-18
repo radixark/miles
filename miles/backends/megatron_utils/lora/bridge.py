@@ -179,9 +179,9 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         _validate_multi_lora_moe_support(args, provider)
 
     create_adapter = create_multi_lora_instance if is_multi_lora_enabled(args) else create_lora_instance
-    assert not (is_multi_lora_enabled(args) and args.lora_type == "canonical_lora"), (
-        "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
-    )
+    assert not (
+        is_multi_lora_enabled(args) and args.lora_type == "canonical_lora"
+    ), "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
     model_bridge = bridge._model_bridge
     model_bridge.hf_pretrained = bridge.hf_pretrained
     target_candidates = resolve_megatron_lora_targets(

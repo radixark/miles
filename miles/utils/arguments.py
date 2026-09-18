@@ -3114,9 +3114,9 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     if is_lora_enabled(args):
-        assert args.train_backend == "megatron", (
-            "LoRA injection is not implemented for FSDP; use --train-backend megatron"
-        )
+        assert (
+            args.train_backend == "megatron"
+        ), "LoRA injection is not implemented for FSDP; use --train-backend megatron"
         assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
         targets = parse_lora_targets(args.target_modules)
         if targets is None or targets == ["all-linear"]:

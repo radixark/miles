@@ -434,9 +434,9 @@ def wrap_model_provider_with_inkling_lora(provider_func, args):
     """Wrap a miles model provider so every built chunk gets LoRA before DDP wrap."""
 
     expected = resolve_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
-    assert set(args.hf_lora_targets) == set(expected), (
-        "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
-    )
+    assert set(args.hf_lora_targets) == set(
+        expected
+    ), "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
 
     def wrapped(*provider_args, **provider_kwargs):
         return apply_inkling_lora(provider_func(*provider_args, **provider_kwargs), args)

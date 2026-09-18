@@ -208,7 +208,9 @@ def resolve_hf_lora_targets(
     if target_modules == ["all-linear"]:
         train_attn = train_mlp = train_unembed = None
     elif target_modules is not None:
-        assert target_modules and "all-linear" not in target_modules, "Use all-linear alone or provide explicit targets"
+        assert (
+            target_modules and "all-linear" not in target_modules
+        ), "Use all-linear alone or provide explicit targets"
         return list(target_modules)
 
     layout = get_hf_lora_targets(hf_config)
@@ -217,7 +219,9 @@ def resolve_hf_lora_targets(
     if use_defaults:
         train_flags = (True, True, layout.default_train_unembed)
     else:
-        assert all(enabled is not None for enabled in train_flags), "Specify all three LoRA training group flags together"
+        assert all(
+            enabled is not None for enabled in train_flags
+        ), "Specify all three LoRA training group flags together"
     targets = []
     for enabled, group in zip(train_flags, (layout.attention, layout.mlp, layout.unembed), strict=True):
         if enabled:
@@ -253,7 +257,7 @@ def exclude_hf_lora_targets(targets: list[str], exclusions: list[str]) -> list[s
 def expand_hf_lora_targets(targets: list[str], layout: HfLoraTargets) -> list[str]:
     available = layout.attention + layout.mlp + layout.unembed
     for target in targets:
-        assert any(matches_hf_lora_target(module, target) for module in available), (
-            f"LoRA target {target!r} is not an HF target of this model"
-        )
+        assert any(
+            matches_hf_lora_target(module, target) for module in available
+        ), f"LoRA target {target!r} is not an HF target of this model"
     return [module for module in available if any(matches_hf_lora_target(module, target) for target in targets)]
