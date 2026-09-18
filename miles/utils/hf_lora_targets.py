@@ -1,132 +1,198 @@
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class HfLoraTargets:
     attention: tuple[str, ...]
     mlp: tuple[str, ...]
-    unembed: tuple[str, ...] = ("lm_head",)
+    unembed: tuple[str, ...]
     default_exclude: tuple[str, ...] = ()
     default_train_unembed: bool = False
 
 
-def _projections(prefix, *names):
-    return tuple(f"{prefix}.{name}" for name in names)
+@dataclass(frozen=True)
+class _HfLoraModelSpec:
+    build_groups: Callable[[dict], tuple[tuple[str, ...], tuple[str, ...]]]
+    layer_prefix: str = "model.layers.*"
+    unembed: str = "lm_head"
+    unwrap_text_config: bool = False
+    default_exclude: tuple[str, ...] = ()
+    default_train_unembed: bool = False
 
 
-_ATTENTION = _projections("self_attn", "q_proj", "k_proj", "v_proj", "o_proj")
-_MLP = _projections("mlp", "gate_proj", "up_proj", "down_proj")
-_EXPERTS = _projections("mlp.experts.*", "gate_proj", "up_proj", "down_proj")
-_SHARED_EXPERTS = _projections("mlp.shared_experts", "gate_proj", "up_proj", "down_proj")
-_SHARED_EXPERT = _projections("mlp.shared_expert", "gate_proj", "up_proj", "down_proj")
-_PACKED_EXPERTS = _projections("mlp.experts", "gate_up_proj", "down_proj")
-_MLA = _projections("self_attn", "q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "o_proj")
-_INDEXER = _projections("self_attn.indexer", "wq_b", "wk", "weights_proj")
-_GDN_NEXT = _projections("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
-_GDN_35 = _projections("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+def _prefix_paths(prefix, *paths):
+    return tuple(f"{prefix}.{path}" for path in paths)
 
-# Language-layer projections; backend fusion and checkpoint packing are separate conversions.
-HF_LORA_TARGETS = {
-    "llama": HfLoraTargets(_ATTENTION, _MLP),
-    "qwen2": HfLoraTargets(_ATTENTION, _MLP),
-    "qwen3": HfLoraTargets(_ATTENTION, _MLP),
-    "qwen3_moe": HfLoraTargets(_ATTENTION, _EXPERTS),
-    "qwen3_next": HfLoraTargets(_ATTENTION + _GDN_NEXT, _EXPERTS + _SHARED_EXPERT),
-    "qwen3_5_text": HfLoraTargets(_ATTENTION + _GDN_35, _MLP),
-    "qwen3_5_moe_text": HfLoraTargets(_ATTENTION + _GDN_35, _PACKED_EXPERTS + _SHARED_EXPERT),
-    "gpt_oss": HfLoraTargets(_ATTENTION, _PACKED_EXPERTS),
-    "deepseek_v2": HfLoraTargets(_MLA, _MLP + _EXPERTS + _SHARED_EXPERTS),
-    "deepseek_v3": HfLoraTargets(_MLA, _MLP + _EXPERTS + _SHARED_EXPERTS),
-    "deepseek_v32": HfLoraTargets(
-        _MLA + _INDEXER, _MLP + _EXPERTS + _SHARED_EXPERTS, default_exclude=_INDEXER
-    ),
-    "kimi_k2": HfLoraTargets(_MLA, _MLP + _EXPERTS + _SHARED_EXPERTS),
-    "glm4_moe": HfLoraTargets(_ATTENTION, _MLP + _EXPERTS + _SHARED_EXPERTS),
-    "glm_moe_dsa": HfLoraTargets(
-        _MLA + _INDEXER, _MLP + _EXPERTS + _SHARED_EXPERTS, default_exclude=_INDEXER
-    ),
+
+_QKVO_ATTENTION = _prefix_paths("self_attn", "q_proj", "k_proj", "v_proj", "o_proj")
+_DENSE_MLP = _prefix_paths("mlp", "gate_proj", "up_proj", "down_proj")
+_ROUTED_EXPERTS = _prefix_paths("mlp.experts.*", "gate_proj", "up_proj", "down_proj")
+_SHARED_EXPERTS = _prefix_paths("mlp.shared_experts", "gate_proj", "up_proj", "down_proj")
+_QWEN_SHARED_EXPERT = _prefix_paths("mlp.shared_expert", "gate_proj", "up_proj", "down_proj")
+_PACKED_EXPERTS = _prefix_paths("mlp.experts", "gate_up_proj", "down_proj")
+_INDEXER = _prefix_paths("self_attn.indexer", "wq_b", "wk", "weights_proj")
+_GDN_NEXT = _prefix_paths("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
+_GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+
+
+def _dense_targets(config):
+    return _QKVO_ATTENTION, _DENSE_MLP
+
+
+def _gpt_oss_targets(config):
+    return _QKVO_ATTENTION, _PACKED_EXPERTS
+
+
+def _deepseek_mlp_targets(config):
+    # Some DeepSeek configs interleave dense layers after the initial dense block.
+    num_moe_layers = sum(
+        bool(config["n_routed_experts"])
+        and layer_id >= config["first_k_dense_replace"]
+        and layer_id % config.get("moe_layer_freq", 1) == 0
+        for layer_id in range(config["num_hidden_layers"])
+    )
+    mlp = []
+    if num_moe_layers < config["num_hidden_layers"]:
+        mlp.extend(_DENSE_MLP)
+    if num_moe_layers:
+        mlp.extend(_ROUTED_EXPERTS)
+        if config["n_shared_experts"]:
+            mlp.extend(_SHARED_EXPERTS)
+    return tuple(mlp)
+
+
+def _deepseek_targets(config):
+    query = ("q_proj",) if config["q_lora_rank"] is None else ("q_a_proj", "q_b_proj")
+    attention = _prefix_paths("self_attn", *query, "kv_a_proj_with_mqa", "kv_b_proj", "o_proj")
+    return attention, _deepseek_mlp_targets(config)
+
+
+def _dsa_targets(config):
+    attention, mlp = _deepseek_targets(config)
+    return attention + _INDEXER, mlp
+
+
+def _glm4_moe_targets(config):
+    return _QKVO_ATTENTION, _deepseek_mlp_targets(config)
+
+
+def _qwen_moe_mlp_targets(config, *, shared_expert=False):
+    # These optional HF fields allow dense layers inside an otherwise MoE model.
+    num_moe_layers = sum(
+        bool(config["num_experts"])
+        and layer_id not in config.get("mlp_only_layers", [])
+        and (layer_id + 1) % config.get("decoder_sparse_step", 1) == 0
+        for layer_id in range(config["num_hidden_layers"])
+    )
+    mlp = []
+    if num_moe_layers < config["num_hidden_layers"]:
+        mlp.extend(_DENSE_MLP)
+    if num_moe_layers:
+        mlp.extend(_ROUTED_EXPERTS)
+        if shared_expert and config["shared_expert_intermediate_size"]:
+            mlp.extend(_QWEN_SHARED_EXPERT)
+    return tuple(mlp)
+
+
+def _hybrid_attention_targets(config, linear_attention):
+    attention = []
+    if "full_attention" in config["layer_types"]:
+        attention.extend(_QKVO_ATTENTION)
+    if "linear_attention" in config["layer_types"]:
+        attention.extend(linear_attention)
+    return tuple(attention)
+
+
+def _qwen3_moe_targets(config):
+    return _QKVO_ATTENTION, _qwen_moe_mlp_targets(config)
+
+
+def _qwen3_next_targets(config):
+    return _hybrid_attention_targets(config, _GDN_NEXT), _qwen_moe_mlp_targets(config, shared_expert=True)
+
+
+def _qwen3_5_targets(config):
+    return _hybrid_attention_targets(config, _GDN_35), _DENSE_MLP
+
+
+def _qwen3_5_moe_targets(config):
+    mlp = _PACKED_EXPERTS
+    if config["shared_expert_intermediate_size"]:
+        mlp += _QWEN_SHARED_EXPERT
+    return _hybrid_attention_targets(config, _GDN_35), mlp
+
+
+def _inkling_targets(config):
     # Inkling uses its HF adapter export schema, which differs from its base checkpoint packing.
-    "inkling_model": HfLoraTargets(
-        _projections("attn", "wq_du", "wk_dv", "wv_dv", "wr_du", "wo_ud"),
-        _projections("mlp", "gate_up_proj", "down_proj")
-        + _projections("mlp.experts", "w1", "w3", "w2")
-        + _projections("mlp.shared_experts", "w1", "w3", "w2"),
+    attention = _prefix_paths("attn", "wq_du", "wk_dv", "wv_dv", "wr_du", "wo_ud")
+    mlp = []
+    # Despite its name, dense_mlp_idx is the number of leading dense layers.
+    num_dense_layers = config["dense_mlp_idx"]
+    if num_dense_layers > 0:
+        mlp.extend(_prefix_paths("mlp", "gate_up_proj", "down_proj"))
+    if num_dense_layers < config["num_hidden_layers"]:
+        mlp.extend(_prefix_paths("mlp.experts", "w1", "w3", "w2"))
+        if config["n_shared_experts"]:
+            mlp.extend(_prefix_paths("mlp.shared_experts", "w1", "w3", "w2"))
+    return attention, tuple(mlp)
+
+
+_HF_LORA_MODELS = {
+    "llama": _HfLoraModelSpec(_dense_targets),
+    "qwen2": _HfLoraModelSpec(_dense_targets),
+    "qwen3": _HfLoraModelSpec(_dense_targets),
+    "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets),
+    "qwen3_next": _HfLoraModelSpec(_qwen3_next_targets),
+    "qwen3_5_text": _HfLoraModelSpec(_qwen3_5_targets),
+    "qwen3_5_moe_text": _HfLoraModelSpec(_qwen3_5_moe_targets),
+    "qwen3_5": _HfLoraModelSpec(
+        _qwen3_5_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+    ),
+    "qwen3_5_moe": _HfLoraModelSpec(
+        _qwen3_5_moe_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+    ),
+    "gpt_oss": _HfLoraModelSpec(_gpt_oss_targets),
+    "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
+    "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
+    "deepseek_v32": _HfLoraModelSpec(_dsa_targets, default_exclude=_INDEXER),
+    "kimi_k2": _HfLoraModelSpec(_deepseek_targets),
+    "kimi_k25": _HfLoraModelSpec(
+        _deepseek_targets,
+        layer_prefix="language_model.model.layers.*",
+        unembed="language_model.lm_head",
+        unwrap_text_config=True,
+    ),
+    "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
+    "glm_moe_dsa": _HfLoraModelSpec(_dsa_targets, default_exclude=_INDEXER),
+    "inkling_model": _HfLoraModelSpec(
+        _inkling_targets,
+        layer_prefix="language_model.layers.*",
+        unembed="language_model.lm_head",
         default_train_unembed=True,
     ),
-}
-
-# Wrapper model_type -> text layout, language-layer prefix, output-head path.
-_HF_LANGUAGE_MODELS = {
-    "qwen3_5": ("qwen3_5_text", "model.language_model.layers.*", "lm_head"),
-    "qwen3_5_moe": ("qwen3_5_moe_text", "model.language_model.layers.*", "lm_head"),
-    "kimi_k25": ("kimi_k2", "language_model.model.layers.*", "language_model.lm_head"),
-    "inkling_mm_model": ("inkling_model", "language_model.layers.*", "language_model.lm_head"),
+    "inkling_mm_model": _HfLoraModelSpec(
+        _inkling_targets,
+        layer_prefix="language_model.layers.*",
+        unembed="language_model.lm_head",
+        unwrap_text_config=True,
+        default_train_unembed=True,
+    ),
 }
 
 
 def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     model_type = hf_config["model_type"]
-    layer_prefix, unembed = "model.layers.*", "lm_head"
-    if model_type in _HF_LANGUAGE_MODELS:
-        model_type, layer_prefix, unembed = _HF_LANGUAGE_MODELS[model_type]
-        hf_config = hf_config["text_config"]
-    elif model_type == "inkling_model":
-        layer_prefix, unembed = "language_model.layers.*", "language_model.lm_head"
-    assert model_type in HF_LORA_TARGETS, f"HF LoRA target layout is not defined for model_type={model_type!r}"
-    layout = HF_LORA_TARGETS[model_type]
-    attention, mlp = layout.attention, layout.mlp
-
-    if "self_attn.q_a_proj" in attention and hf_config["q_lora_rank"] is None:
-        attention = ("self_attn.q_proj",) + tuple(p for p in attention if p not in _MLA[:2])
-    if _SHARED_EXPERTS[0] in mlp:
-        # Some DeepSeek configs interleave dense layers after the initial dense block.
-        num_moe_layers = sum(
-            bool(hf_config["n_routed_experts"])
-            and i >= hf_config["first_k_dense_replace"]
-            and i % hf_config.get("moe_layer_freq", 1) == 0
-            for i in range(hf_config["num_hidden_layers"])
-        )
-        if not num_moe_layers:
-            mlp = tuple(p for p in mlp if p not in _EXPERTS + _SHARED_EXPERTS)
-        elif not hf_config["n_shared_experts"]:
-            mlp = tuple(p for p in mlp if p not in _SHARED_EXPERTS)
-        if num_moe_layers == hf_config["num_hidden_layers"]:
-            mlp = tuple(p for p in mlp if p not in _MLP)
-    if model_type in ("qwen3_moe", "qwen3_next"):
-        # These optional HF fields allow dense layers inside an otherwise MoE model.
-        num_moe_layers = sum(
-            bool(hf_config["num_experts"])
-            and i not in hf_config.get("mlp_only_layers", [])
-            and (i + 1) % hf_config.get("decoder_sparse_step", 1) == 0
-            for i in range(hf_config["num_hidden_layers"])
-        )
-        if not num_moe_layers:
-            mlp = ()
-        if num_moe_layers < hf_config["num_hidden_layers"]:
-            mlp = _MLP + mlp
-    if _SHARED_EXPERT[0] in mlp and not hf_config["shared_expert_intermediate_size"]:
-        mlp = tuple(p for p in mlp if p not in _SHARED_EXPERT)
-    if "linear_attn.out_proj" in attention:
-        layer_types = set(hf_config["layer_types"])
-        if "full_attention" not in layer_types:
-            attention = tuple(p for p in attention if p not in _ATTENTION)
-        if "linear_attention" not in layer_types:
-            attention = tuple(p for p in attention if not p.startswith("linear_attn."))
-    if model_type == "inkling_model":
-        if not hf_config["n_shared_experts"]:
-            mlp = tuple(p for p in mlp if not p.startswith("mlp.shared_experts."))
-        # Despite its name, dense_mlp_idx is the number of leading dense layers.
-        if hf_config["dense_mlp_idx"] <= 0:
-            mlp = tuple(p for p in mlp if p not in ("mlp.gate_up_proj", "mlp.down_proj"))
-        elif hf_config["dense_mlp_idx"] >= hf_config["num_hidden_layers"]:
-            mlp = tuple(p for p in mlp if not p.startswith(("mlp.experts.", "mlp.shared_experts.")))
-
-    return replace(
-        layout,
-        attention=_projections(layer_prefix, *attention),
-        mlp=_projections(layer_prefix, *mlp),
-        unembed=(unembed,),
-        default_exclude=_projections(layer_prefix, *layout.default_exclude),
+    assert model_type in _HF_LORA_MODELS, f"HF LoRA target layout is not defined for model_type={model_type!r}"
+    spec = _HF_LORA_MODELS[model_type]
+    text_config = hf_config["text_config"] if spec.unwrap_text_config else hf_config
+    attention, mlp = spec.build_groups(text_config)
+    return HfLoraTargets(
+        attention=_prefix_paths(spec.layer_prefix, *attention),
+        mlp=_prefix_paths(spec.layer_prefix, *mlp),
+        unembed=(spec.unembed,),
+        default_exclude=_prefix_paths(spec.layer_prefix, *spec.default_exclude),
+        default_train_unembed=spec.default_train_unembed,
     )
 
 
