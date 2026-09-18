@@ -293,7 +293,7 @@ class TestTheOneEventPerRolloutPremise:
     def test_a_run_taking_several_optimizer_steps_per_rollout_is_refused(self):
         """Such a run logs one event per step, so every attempt count would be a multiple of the truth."""
         with pytest.raises(AssertionError, match="one train/grad_norm event per rollout"):
-            scenario._assert_each_step_leaves_exactly_one_train_event(
+            scenario._assert_one_train_event_per_step(
                 "--global-batch-size 128 --rollout-batch-size 32 --n-samples-per-prompt 8 "
             )
 
@@ -337,4 +337,4 @@ class TestTheSaveShapeTheTakeOverNeeds:
     def test_a_run_saving_asynchronously_is_refused(self):
         """Such a checkpoint can land after the step that triggered it, so the pin means nothing."""
         with pytest.raises(AssertionError, match="lets a checkpoint land after"):
-            scenario._assert_the_run_saves_before_it_reports_the_step("--save /ckpt --async-save ")
+            scenario._assert_run_saves_before_step_report("--save /ckpt --async-save ")
