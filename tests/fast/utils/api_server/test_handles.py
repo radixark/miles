@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from miles.utils.ft_utils.api_server.handles import _CellHandler
@@ -47,7 +49,7 @@ def _make_actor_handler(
     handler = _CellHandler(
         cell_type="actor",
         operations=RayCellOperations(worker_manager_handle=manager),
-        controller=group,
+        controllers=[group],
         pool_ids=["trainer-engine-actor"],
     )
     return handler, group, manager
@@ -151,7 +153,7 @@ def _make_rollout_handler(
     return _CellHandler(
         cell_type="rollout",
         operations=RayCellOperations(worker_manager_handle=manager),
-        controller=controller,
+        controllers=[controller],
         pool_ids=[cell_id.rsplit("-", 1)[0]],
     )
 
@@ -233,7 +235,7 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
-            controller=controller,
+            controllers=[controller],
             pool_ids=_pool_ids_of(manager),
         )
 
@@ -248,7 +250,7 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
-            controller=MockInferenceController(),
+            controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
         )
 
@@ -263,7 +265,7 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
-            controller=MockInferenceController(),
+            controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
         )
 
@@ -301,7 +303,7 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
-            controller=controller,
+            controllers=[controller],
             pool_ids=_pool_ids_of(manager),
         )
         await handler.resume(ENGINE_CELL_ID)
@@ -328,7 +330,7 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
-            controller=MockInferenceController(),
+            controllers=[MockInferenceController()],
             pool_ids=["inference-engine-0-0"],
         )
 
@@ -347,7 +349,7 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
-            controller=controller,
+            controllers=[controller],
             pool_ids=_pool_ids_of(manager),
         )
 
@@ -362,7 +364,7 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             worker_manager=manager,
-            controller=MockInferenceController(),
+            controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
         )
 
@@ -381,7 +383,7 @@ class TestRolloutCellHandlerInjectFault:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
-            controller=MockInferenceController(),
+            controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
         )
 
@@ -393,6 +395,51 @@ class TestRolloutCellHandlerInjectFault:
 
 
 class TestCellStatusGeneration:
+    async def test_fetches_controller_statuses_concurrently(self) -> None:
+        """Every controller status request starts before a blocked peer is released, and all results are merged."""
+        entered: list[str] = []
+        release_first = asyncio.Event()
+        second_entered = asyncio.Event()
+        first_status = _running_status(TriState.TRUE)
+        second_status = _running_status(TriState.FALSE)
+
+        class BlockingController:
+            async def get_cell_statuses(self) -> dict[str, CellStatus]:
+                entered.append("first")
+                await release_first.wait()
+                return {"trainer-a-0": first_status}
+
+        class RecordingController:
+            async def get_cell_statuses(self) -> dict[str, CellStatus]:
+                entered.append("second")
+                second_entered.set()
+                return {"trainer-b-0": second_status}
+
+        manager = MockWorkerManager([])
+        handler = _CellHandler(
+            cell_type="actor",
+            operations=RayCellOperations(
+                worker_manager_handle=manager,
+                resolve_inference_controller=lambda: MockStopCellController(manager),
+            ),
+            controllers=[BlockingController(), RecordingController()],
+            pool_ids=[],
+        )
+        statuses_task = asyncio.create_task(handler._get_cell_statuses())
+
+        try:
+            await asyncio.wait_for(second_entered.wait(), timeout=1)
+            fetched_concurrently = True
+        except TimeoutError:
+            fetched_concurrently = False
+
+        assert not statuses_task.done()
+
+        release_first.set()
+        assert await statuses_task == {"trainer-a-0": first_status, "trainer-b-0": second_status}
+        assert fetched_concurrently
+        assert entered == ["first", "second"]
+
     @pytest.mark.asyncio
     async def test_a_status_about_an_older_generation_carries_no_verdict(self) -> None:
         """The two sources are polled apart, so a status from the previous process must not be published as this one's."""

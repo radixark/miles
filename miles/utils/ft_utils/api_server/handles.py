@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
@@ -19,12 +20,12 @@ class _CellHandler:
         *,
         cell_type: str,
         operations: BaseCellOperations,
-        controller: _CellStatusSource,
+        controllers: list[_CellStatusSource],
         pool_ids: list[str],
     ) -> None:
         self._cell_type = cell_type
         self._operations = operations
-        self._controller = controller
+        self._controllers = controllers
         self._pool_ids = pool_ids
 
     @property
@@ -45,7 +46,7 @@ class _CellHandler:
 
     async def list_cells(self) -> list[Cell]:
         cell_infos = await self._get_cell_infos()
-        statuses = await self._controller.get_cell_statuses()
+        statuses = await self._get_cell_statuses()
         return [
             self._compute_cell(cell_id, cell_infos=cell_infos, statuses=statuses) for cell_id in sorted(cell_infos)
         ]
@@ -54,7 +55,7 @@ class _CellHandler:
         return self._compute_cell(
             cell_id,
             cell_infos=await self._get_cell_infos(),
-            statuses=await self._controller.get_cell_statuses(),
+            statuses=await self._get_cell_statuses(),
         )
 
     def _compute_cell(self, cell_id: str, *, cell_infos: dict[str, CellInfo], statuses: dict[str, CellStatus]) -> Cell:
@@ -73,6 +74,13 @@ class _CellHandler:
                 else _compute_status_of_generation(statuses.get(cell_id), workers_hash=info.workers_hash)
             ),
         )
+
+    async def _get_cell_statuses(self) -> dict[str, CellStatus]:
+        return {
+            cell_id: status
+            for statuses in await asyncio.gather(*(c.get_cell_statuses() for c in self._controllers))
+            for cell_id, status in statuses.items()
+        }
 
     async def _get_cell_infos(self) -> dict[str, CellInfo]:
         return await self._operations.cell_infos(pool_ids=self._pool_ids)
