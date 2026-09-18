@@ -35,7 +35,7 @@ class KubernetesBackendCapability(BackendCapability):
         assert (
             spec is not None
         ), f"{pool_id} is not a static pool of this run, which addresses {sorted(self._static_specs)} statically"
-        return StaticWorkerProvider(release=self._release, spec=spec)
+        return StaticWorkerProvider.of_release(release=self._release, spec=spec)
 
     def cell_operations(self) -> BaseCellOperations:
         return self._cell_operations
