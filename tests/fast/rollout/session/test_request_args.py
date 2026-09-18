@@ -38,6 +38,26 @@ class TestResolveRequestArgsByConfig:
         assert wire["return_routed_experts"] is True
         assert wire["return_indexer_topk"] is True
 
+    def test_sampling_replay_uses_launch_defaults_without_overwriting_request_filters(self):
+        config = make_session_server_config(rollout_top_p=0.95, rollout_top_k=32, rollout_temperature=0.7)
+
+        wire, _ = resolve_request_args_by_config({"top_p": 0.8, "custom_params": {"caller_option": "kept"}}, config)
+
+        assert wire["return_sampling_mask"] is True
+        assert wire["temperature"] == 0.7
+        assert wire["top_p"] == 0.8
+        assert wire["top_k"] == 32
+        assert wire["custom_params"] == {"caller_option": "kept"}
+
+    def test_sampling_replay_can_be_disabled_per_request(self):
+        config = make_session_server_config(rollout_top_p=0.95, rollout_top_k=32)
+
+        wire, _ = resolve_request_args_by_config({"return_sampling_mask": False}, config)
+
+        assert wire["return_sampling_mask"] is False
+        assert "top_p" not in wire
+        assert "top_k" not in wire
+
     @pytest.mark.parametrize("field", ["input_ids", "routed_experts_start_len", "logprob_start_len", "lora_path"])
     def test_client_tito_control_fields_are_rejected(self, field):
         with pytest.raises(MessageValidationError, match=f"{field}="):
