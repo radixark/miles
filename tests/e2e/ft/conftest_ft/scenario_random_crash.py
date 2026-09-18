@@ -14,15 +14,17 @@ from tests.e2e.ft.conftest_ft.execution import (
     prepare,
     run_training,
 )
-from tests.e2e.ft.conftest_ft.fault_injection import (
+from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
     MEAN_INTERVAL_SECONDS,
     FaultInjectorHandle,
+    spawn_fault_injector,
+)
+from tests.e2e.ft.conftest_ft.fault_injection.views import (
     compute_cells_with_unfinished_recovery,
     compute_num_completed_recoveries,
     compute_num_injections,
     compute_states_of_cell_name,
-    spawn_fault_injector,
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
