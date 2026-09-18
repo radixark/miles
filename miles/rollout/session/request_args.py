@@ -19,9 +19,11 @@ from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 
+DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
+
 
 def filter_turn_args(
-    turn_args: dict[str, Any], *, drop_keys: tuple[str, ...] = ("input_ids", "messages")
+    turn_args: dict[str, Any], *, drop_keys: tuple[str, ...] = DEFAULT_TURN_ARGS_DROP_KEYS
 ) -> dict[str, Any]:
     """Copy turn args for metadata, omitting payloads before copying their values."""
     return deepcopy({key: value for key, value in turn_args.items() if key not in drop_keys})
