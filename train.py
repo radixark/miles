@@ -26,9 +26,9 @@ async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
+    init_tracking(args)
     _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
-    init_tracking(args)
 
     if args.colocate_memory_peak_device == "gpu":
         assert (
@@ -98,7 +98,7 @@ async def train(args):
             await save_training_model(actor_model)
         if args.use_critic:
             await save_training_model(critic_model)
-        await rollout_executor.save.remote(rollout_id)
+        await rollout_executor.save(rollout_id)
 
     if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
@@ -111,7 +111,7 @@ async def train(args):
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         await inference_controller.prepare_rollout(rollout_id)
-        rollout_data_pack = await rollout_executor.get.remote(rollout_id)
+        rollout_data_pack = await rollout_executor.get(rollout_id)
 
         if args.offload_rollout:
             if args.colocate_memory_peak_device == "gpu":
@@ -177,7 +177,7 @@ async def train(args):
             break
 
     await eval_dispatcher.drain()
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
     await actor_model.dispose()
     if critic_model is not None:
