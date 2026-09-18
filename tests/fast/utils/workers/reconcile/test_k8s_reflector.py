@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from tests.fast.utils.workers.reconcile.utils import (
     EventCollector,
@@ -17,6 +18,7 @@ from tests.fast.utils.workers.reconcile.utils import (
     make_pod_list,
     pod_cell,
     settle,
+    wire_pod,
 )
 
 from miles.utils.test_utils.clock import FakeClock
@@ -28,6 +30,12 @@ from miles.utils.workers.reconcile.source_event import DeleteEvent, ReplaceEvent
 
 def raw_event(event_type: str, obj: Any) -> PodWatchEvent:
     return PodWatchEvent.from_frame(event_type=event_type, obj=obj)
+
+
+def unreadable_pod_frame(event_type: str) -> BaseException:
+    with pytest.raises(ValidationError) as refusal:
+        raw_event(event_type, SimpleNamespace(metadata=SimpleNamespace(resource_version="5")))
+    return refusal.value
 
 
 def make_status(*, code: int, reason: str = "Expired") -> SimpleNamespace:
@@ -45,7 +53,7 @@ def _install_fake_kubernetes_asyncio(monkeypatch: Any) -> tuple[Any, dict[str, A
 
         def __aiter__(self) -> Any:
             async def _iterate() -> AsyncIterator[dict[str, Any]]:
-                yield dict(type="MODIFIED", object="pod-from-the-wire")
+                yield dict(type="MODIFIED", object=wire_pod("pod-from-the-wire"))
 
             return _iterate()
 
@@ -231,13 +239,14 @@ class TestWatchEvents:
         await collector.close()
 
     @pytest.mark.parametrize("event_type", ["ADDED", "MODIFIED", "DELETED"])
-    async def test_an_event_whose_key_cannot_be_read_is_skipped(self, event_type):
-        """A malformed watch event is dropped, and the events behind it are still delivered."""
+    async def test_an_event_whose_key_cannot_be_read_stops_the_watch(self, event_type):
+        """A pod frame miles cannot read is the apiserver breaking its contract, so the watch stops
+        instead of delivering a store that is silently short of a pod."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([], resource_version="1"))
         api.stream_scripts.append(
             [
-                raw_event(event_type, SimpleNamespace(metadata=SimpleNamespace(resource_version="5"))),
+                unreadable_pod_frame(event_type),
                 raw_event("ADDED", make_pod("pod-0", resource_version="6")),
             ]
         )
@@ -245,19 +254,17 @@ class TestWatchEvents:
         collector = EventCollector(make_reflector(api).watch())
         await settle()
 
-        assert [type(event) for event in collector.events] == [ReplaceEvent, UpsertEvent]
-        assert collector.events[1].key == "pod-0"
+        assert [type(event) for event in collector.events] == [ReplaceEvent]
         assert len(api.list_calls) == 1
         assert len(api.stream_calls) == 1
         await collector.close()
 
-    async def test_a_malformed_event_advances_the_cursor_past_itself(self):
-        """The cursor must clear a poison event, or every reconnect replays it forever."""
+    async def test_a_malformed_event_does_not_advance_the_cursor_past_itself(self):
+        """A frame that never parsed carries no progress, so reading a cursor out of it would skip
+        whatever the apiserver sent between the last good frame and this one."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([], resource_version="1"))
-        api.stream_scripts.append(
-            [raw_event("MODIFIED", SimpleNamespace(metadata=SimpleNamespace(resource_version="5")))]
-        )
+        api.stream_scripts.append([unreadable_pod_frame("MODIFIED")])
         api.stream_scripts.append(None)
         clock = FakeClock()
         collector = EventCollector(make_reflector(api, clock=clock, retry_delay=1.0).watch())
@@ -265,7 +272,7 @@ class TestWatchEvents:
         await clock.elapse(1.0)
         await settle()
 
-        assert [call["resource_version"] for call in api.stream_calls] == ["1", "5"]
+        assert [call["resource_version"] for call in api.stream_calls] == ["1", "1"]
         assert len(api.list_calls) == 1
         await collector.close()
 
@@ -287,10 +294,10 @@ class TestWatchEvents:
         assert [call["resource_version"] for call in api.stream_calls] == ["1", "9"]
         await collector.close()
 
-    async def test_pod_without_metadata_in_the_list_does_not_advance_the_cursor(self):
+    async def test_a_list_that_cannot_be_converted_does_not_advance_the_cursor(self):
         """A LIST that cannot be converted is retried as a LIST, not silently downgraded to a WATCH."""
         api = FakePodApi()
-        api.list_pages.append(make_pod_list([SimpleNamespace()], resource_version="1"))
+        api.list_pages.append(RuntimeError("a listed pod could not be converted"))
         api.list_pages.append(make_pod_list([make_pod("pod-0")], resource_version="2"))
         api.stream_scripts.append(None)
         clock = FakeClock()
@@ -673,13 +680,25 @@ class TestKubernetesAsyncioPodApi:
         class _CoreV1Api:
             async def list_namespaced_pod(self, **kwargs: Any) -> Any:
                 calls.append(kwargs)
-                return SimpleNamespace(items=["pod-0"], metadata=SimpleNamespace(resource_version="100"))
+                return SimpleNamespace(items=[wire_pod("pod-0")], metadata=SimpleNamespace(resource_version="100"))
 
         api = KubernetesAsyncioPodApi(core_v1_api=_CoreV1Api())
         page = await api.list_pods(namespace="ns", label_selector="a=b")
 
-        assert page == PodListPage(pods=["pod-0"], resource_version="100")
+        assert page == PodListPage(pods=[make_pod("pod-0")], resource_version="100")
         assert calls == [dict(namespace="ns", label_selector="a=b")]
+
+    async def test_list_pods_refuses_an_item_that_is_not_a_pod(self):
+        """A page miles cannot read must fail the LIST rather than reach the store half-converted."""
+
+        class _CoreV1Api:
+            async def list_namespaced_pod(self, **kwargs: Any) -> Any:
+                return SimpleNamespace(items=["not a pod"], metadata=SimpleNamespace(resource_version="100"))
+
+        api = KubernetesAsyncioPodApi(core_v1_api=_CoreV1Api())
+
+        with pytest.raises(ValidationError):
+            await api.list_pods(namespace="ns", label_selector="a=b")
 
     async def test_stream_pods_forwards_watch_options_and_closes_the_watch(self, monkeypatch):
         """The adapter drives kubernetes_asyncio's Watch and closes it, which has close() and no aclose()."""
@@ -702,7 +721,7 @@ class TestKubernetesAsyncioPodApi:
 
         assert len(events) == 1
         assert events[0].type == "MODIFIED"
-        assert events[0].obj == "pod-from-the-wire"
+        assert events[0].pod == make_pod("pod-from-the-wire")
         assert events[0].rejects_cursor is False
         assert state["func"] is list_namespaced_pod
         assert state["kwargs"] == dict(
