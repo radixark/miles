@@ -95,9 +95,7 @@ def prepare_token_ids_and_request_args(
     tito_tokenizer: TITOTokenizer,
     message_matcher: SessionMessageMatcher | None = None,
 ) -> tuple[PreparedChatRequest, TrajectoryNode | None]:
-    """Turn a parsed chat request into the outbound body with ``input_ids``,
-    plus the node it attaches under (the parent for ``commit_generation``).
-    """
+    """Return the prepared request with `body["input_ids"]` and its parent for `commit_generation`."""
     request_messages = client_args.get("messages", [])
     parent = attach_point_for_request(state, request_messages, message_matcher=message_matcher).node
     prepared = prepare_chat_request(client_args, tito_tokenizer, config=config, turn_args=None)

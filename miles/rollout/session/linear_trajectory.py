@@ -99,9 +99,9 @@ class LinearTrajectory:
         tito_tokenizer: TITOTokenizer,
         message_matcher: SessionMessageMatcher | None = None,
     ) -> PreparedChatRequest:
-        """Turn a parsed chat request into the outbound body with ``input_ids``.
+        """Return the prepared request with prompt token IDs in `body["input_ids"]`.
 
-        Must be called under ``self.lock``.
+        The caller must hold `self.lock`.
         """
         matcher = message_matcher if message_matcher is not None else strict_message_matches
         request_messages = client_args.get("messages", [])
