@@ -19,6 +19,6 @@ def test_stop_and_join_takes_one_last_snapshot_before_the_log_is_read() -> None:
             {"items": [staged("rollout-engine-0", SERVING)]}
         )
         handle.start()
-        handle.stop_and_join(timeout_seconds=5)
+        handle.stop_and_join()
 
     assert views.compute_states_of_cell_name(handle.event_log.events) == {"rollout-engine-0": [SERVING]}
