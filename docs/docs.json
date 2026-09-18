@@ -394,26 +394,6 @@
    "destination": "/user-guide/training-backend#fsdp"
   },
   {
-   "source": "/platforms/index",
-   "destination": "/hardware-platforms/overview",
-   "permanent": true
-  },
-  {
-   "source": "/platforms/nvidia",
-   "destination": "/hardware-platforms/nvidia-gpus",
-   "permanent": true
-  },
-  {
-   "source": "/platforms/amd",
-   "destination": "/hardware-platforms/amd-gpus",
-   "permanent": true
-  },
-  {
-   "source": "/getting-started/amd",
-   "destination": "/hardware-platforms/amd-gpus",
-   "permanent": true
-  },
-  {
    "source": "/advanced/fp8-low-precision",
    "destination": "/advanced/low-precision",
    "permanent": true
