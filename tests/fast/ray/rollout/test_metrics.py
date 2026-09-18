@@ -171,6 +171,24 @@ class TestComputeZeroStdMetrics:
         assert out["zero_std/all_zero_percentage"] == 0.0
         assert out["zero_std/all_one_percentage"] == 0.0
 
+    def test_non_scalar_reward_is_bucketed_instead_of_crashing(self):
+        """Non-scalar rewards must not reach round().
+
+        On-policy distillation stores the raw teacher response in the reward slot,
+        and this runs before --custom-reward-post-process-path rewrites it into the
+        scalar used for advantages. Custom reward functions can return other
+        objects for the same reason.
+        """
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        teacher_response = {"text": "42", "output_ids": [1, 2, 3]}
+        samples = make_samples_grouped(2, 4, rewards=[dict(teacher_response)] * 8)
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out["zero_std/count_non_scalar_dict"] == 2
+        assert out["zero_std/all_zero_percentage"] == 0.0
+        assert out["zero_std/all_one_percentage"] == 0.0
+
     def test_empty_samples_does_not_crash(self):
         args = make_args(advantage_estimator="grpo", reward_key=None)
         out = _compute_zero_std_metrics(args, [])
