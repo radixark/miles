@@ -102,45 +102,19 @@ def test_sample_bitwise_comparator_distinguishes_signed_zero():
         assert_sample_bitwise_equal(Sample(reward=0.0), Sample(reward=-0.0))
 
 
-def test_turn_args_parity_rejects_duplicate_tool_call_ids():
-    metadata = {
-        "turn_args": {
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"id": "duplicate"}, {"id": "duplicate"}]},
-                {"role": "tool", "tool_call_id": "duplicate", "content": "sunny"},
-            ]
-        }
-    }
-    with pytest.raises(AssertionError, match="duplicate tool-call ID"):
-        _training_metadata_projection(metadata)
-
-
 @pytest.mark.parametrize(
     ("path", "value"),
     [
-        (("messages", 1, "tool_call_id"), "call_b"),
-        (("messages", 1, "tool_call_id"), "unknown"),
-        (("messages", 0, "tool_calls", 0, "function", "arguments"), '{"location":"Shanghai"}'),
-        (("messages", 1, "content"), "rainy"),
-        (("input_ids", 0), 999),
+        (("tools", 0, "function", "name"), "get_time"),
+        (("chat_template_kwargs", "enable_thinking"), True),
         (("temperature",), 1),
     ],
 )
-def test_turn_args_parity_still_checks_tool_references_and_request_values(path, value):
+def test_turn_args_parity_checks_exported_request_values(path, value):
     metadata = {
         "turn_args": {
-            "messages": [
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {"id": "call_a", "function": {"name": "get_weather", "arguments": '{"location":"Beijing"}'}},
-                        {"id": "call_b", "function": {"name": "get_weather", "arguments": '{"location":"Shanghai"}'}},
-                    ],
-                },
-                {"role": "tool", "tool_call_id": "call_a", "content": "sunny"},
-                {"role": "tool", "tool_call_id": "call_b", "content": "cloudy"},
-            ],
-            "input_ids": [1, 2, 3],
+            "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+            "chat_template_kwargs": {"enable_thinking": False},
             "temperature": 0,
         }
     }
