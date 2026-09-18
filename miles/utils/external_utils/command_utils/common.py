@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import datetime
 import json
@@ -27,6 +29,36 @@ def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | 
 
 def rsync_cmd(path_src: str, path_dst: str) -> str:
     return f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}"
+
+
+def train_env_vars(
+    request: ExecuteTrainRequest, backend_env_vars: dict[str, str], *, config: ExecuteTrainConfig
+) -> dict[str, str]:
+    return {
+        # exported for the submitting client too, but only the runtime env reaches the ray workers
+        "PYTHONUNBUFFERED": "1",
+        # If setting this in FSDP, the computation communication overlapping may have issues
+        **(
+            {}
+            if request.train_backend_fsdp
+            else {
+                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+            }
+        ),
+        **backend_env_vars,
+        **(
+            {
+                "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
+                "CUDA_COREDUMP_SHOW_PROGRESS": "1",
+                "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
+                "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
+            }
+            if config.cuda_core_dump
+            else {}
+        ),
+        **request.extra_env_vars,
+        **_parse_extra_env_vars(config.extra_env_vars),
+    }
 
 
 def _parse_extra_env_vars(text: str):
@@ -131,6 +163,21 @@ OBJECT_STORE_BACKEND_FLAG = "--object-store-backend"
 MOONCAKE_BACKEND_NAME = "mooncake"
 MOONCAKE_INIT_KWARGS_FLAG = "--mooncake-store-init-kwargs"
 MOONCAKE_MASTER_ADDRESS_KEY = "master_server_address"
+
+
+def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
+    from miles.utils.workers.worker_provider.static import parse_host_and_port
+
+    declared = ArgvManipulator.get_effective(train_argv, MOONCAKE_INIT_KWARGS_FLAG)
+    if declared is None:
+        return MOONCAKE_MASTER_PORT
+
+    address = json.loads(declared).get(MOONCAKE_MASTER_ADDRESS_KEY)
+    if address is None:
+        return None
+
+    endpoint = parse_host_and_port(address)
+    return endpoint.port if endpoint.host in ("127.0.0.1", "0.0.0.0", "localhost", "[::1]") else None
 
 
 def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT) -> str:
