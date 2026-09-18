@@ -22,6 +22,7 @@ would only get a tiny aux-loss gradient (~1e-5).
 Supported model variants (HF checkpoint must be the native config,
 model_type=glm_moe_dsa / GlmMoeDsaForCausalLM):
   GLM-5.2          full 744B model (zai-org/GLM-5.2)
+  GLM-5.3          same architecture as GLM-5.2 (zai-org/GLM-5.3-BF16; zai-org/GLM-5.3 is the fp8 release)
   GLM-5.2_5layer   5-layer GLM-5.2 prune (Pinaster/GLM-5.2_5layer; 3 dense + 2 MoE)
 
 Usage:
@@ -55,11 +56,13 @@ app = typer.Typer()
 
 _HF_REPO = {
     "GLM-5.2": "zai-org/GLM-5.2",
+    "GLM-5.3": "zai-org/GLM-5.3-BF16",
     "GLM-5.2_5layer": "Pinaster/GLM-5.2_5layer",
 }
 
 _MEGATRON_MODEL_TYPE = {
     "GLM-5.2": "glm5.2-744B-A40B_lora",
+    "GLM-5.3": "glm5.2-744B-A40B_lora",  # same architecture and shapes as GLM-5.2
     "GLM-5.2_5layer": "glm5.2-744B-A40B_5layer_lora",
 }
 
@@ -74,6 +77,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_name: Literal[
         "GLM-5.2",
+        "GLM-5.3",
         "GLM-5.2_5layer",
     ] = "GLM-5.2_5layer"
     # dapo-math needs a larger --rollout-max-response-len; >2048 total seq makes the DSA indexer sparse
