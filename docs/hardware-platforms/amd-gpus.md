@@ -1,6 +1,6 @@
 ---
 title: AMD ROCm
-description: Run Miles on AMD MI350X / MI355X and MI300X / MI325X with the ROCm images. Docker is the recommended path.
+description: Run Miles on AMD MI350X / MI355X with the ROCm images. Docker is the recommended path.
 ---
 Miles runs on AMD GPUs through ROCm. The ROCm images ship SGLang, Megatron-LM, and Miles
 preinstalled, with `MILES_HARDWARE_PLATFORM=rocm` already set. The recipes and `train.py`
@@ -9,7 +9,7 @@ launcher path.
 
 ## Images
 
-The two `mi35x` images are built daily from `main` by the sgl-project/sglang nightly
+Both images are built daily from `main` by the sgl-project/sglang nightly
 workflows and published to Docker Hub under
 [`rocm/sgl-dev`](https://hub.docker.com/r/rocm/sgl-dev/tags?name=miles):
 
@@ -17,10 +17,13 @@ workflows and published to Docker Hub under
 |---|---|---|---|
 | `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 — the image the nightly tests run on |
 | `rocm/sgl-dev:miles-rocm720-mi35x` | 7.2 | MI350X / MI355X | Python 3.10 |
-| `rocm/sgl-dev:miles-rocm700-mi30x` | 7.0 | MI300X / MI325X | Not rebuilt daily — last built 2026-09-08 |
 
 Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
 `miles-rocm10-mi35x-20260916`) to pin one.
+
+ROCm 7.0 is retired: `sgl-project/sglang` dropped its ROCm 7.0 CI and image builds in
+[#38632](https://github.com/sgl-project/sglang/pull/38632), so the `miles-rocm700-mi30x`
+tag is frozen at its last build and no longer tracks Miles `main`.
 
 To build an image yourself, `docker/Dockerfile.rocm` holds the recipe:
 
