@@ -62,10 +62,12 @@ class RequestScheduler:
             if model_queue.queue and model_queue.queue[0].command.validation_error is not None
         ]
 
-    def schedule_next(self) -> BatchUnit | BarrierUnit | None:
+    def schedule_next(self, *, checkpoint_pending: bool = False) -> BatchUnit | BarrierUnit | None:
         """Arrival order selects the seed; compatible work may overtake intervening requests."""
         datums = self._ready_datums()
         barriers = self._ready_barriers()
+        if checkpoint_pending:
+            barriers = [(queue, pending) for queue, pending in barriers if pending.command.op != CommandOp.SAVE_STATE]
 
         datum_seed = min(datums, key=lambda ref: ref.arrival) if datums else None
         barrier_seed = min(barriers, key=lambda e: e[1].command.arrival) if barriers else None

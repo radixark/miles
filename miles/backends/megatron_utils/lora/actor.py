@@ -6,6 +6,7 @@ from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import build_lora_sync_config
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
+from miles.backends.training_utils.checkpoint_io import CheckpointIOError
 from miles.backends.training_utils.data import get_rollout_data
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import WeightPublisher
@@ -18,6 +19,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
     def _init_training_state(self) -> None:
         args = self.args
         self.slot_optimizers: dict[int, SlotOptimizer] = {}
+        self._checkpoint_save: lora_checkpoint.AsyncSlotSave | None = None
         iterator = get_hf_weight_iterator(
             args,
             self.model,
@@ -59,8 +61,24 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
 
     @with_logs
-    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> None:
-        lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
+    def start_slot_save(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
+        self._heartbeat.bump()
+        assert self._checkpoint_save is None, "only one checkpoint may be staged at a time"
+        try:
+            self._checkpoint_save = lora_checkpoint.AsyncSlotSave(
+                self.model, self.slot_optimizers[slot], path, metadata, async_strategy=self.args.async_strategy
+            )
+        except CheckpointIOError as error:
+            return {"error": str(error), "error_category": "server"}
+        return None
+
+    def poll_slot_save(self) -> dict | None:
+        self._heartbeat.bump()
+        assert self._checkpoint_save is not None
+        outcome = self._checkpoint_save.poll()
+        if outcome is not None:
+            self._checkpoint_save = None
+        return outcome
 
     @with_logs
     def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> None:

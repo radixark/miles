@@ -96,3 +96,11 @@ Training checkpoint names also point to immutable version directories. Overwriti
 atomically switches the link; older versions remain on disk for active readers.
 Legacy directory checkpoints can still be loaded; save under a new name instead
 of overwriting them.
+
+Training saves stage one adapter's weights and optimizer state before writing
+asynchronously with Megatron's checkpoint writer. Other models can run
+`forward_backward` and `optim_step` during the disk write. The saving model's
+later requests wait until publication, and its save future succeeds only then.
+Each trainer cell allows one save in flight; further saves wait without blocking
+training on other models. Staging and finalization still occupy the trainer.
+Sampler exports remain synchronous.
