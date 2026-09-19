@@ -118,7 +118,7 @@ SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 8
    --sglang-mem-fraction-static 0.7
    --sglang-ep-size 8
-   --sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128
+   --sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128
 
    # MTP speculative decoding
    --sglang-speculative-algorithm EAGLE
@@ -127,7 +127,7 @@ SGLANG_ARGS=(
    --sglang-speculative-num-draft-tokens 3
 
    --sglang-max-running-requests 256
-   --sglang-mamba-scheduler-strategy extra_buffer
+   --sglang-mamba-radix-cache-strategy extra_buffer
 )
 ```
 

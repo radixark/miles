@@ -111,11 +111,11 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-ep-size 8
   --sglang-router-policy consistent_hashing
   --sglang-kv-cache-dtype fp8_e4m3
-  --sglang-nsa-decode-backend flashmla_kv
-  --sglang-nsa-prefill-backend flashmla_sparse
+  --sglang-dsa-decode-backend flashmla_kv
+  --sglang-dsa-prefill-backend flashmla_sparse
   --sglang-attention-backend nsa
   --sglang-page-size 64
-  --sglang-cuda-graph-max-bs 32
+  --sglang-cuda-graph-max-bs-decode 32
   --sglang-max-running-requests 512
   --sglang-chunked-prefill-size 16384
   --sglang-watchdog-timeout 3600 

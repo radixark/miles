@@ -94,7 +94,7 @@ MODEL_ARGS_LINE="$(python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_ut
   --rollout-num-gpus 8
   --sglang-mem-fraction-static 0.7
   --sglang-ep-size 4
-  --sglang-cuda-graph-bs 1 2 4 8 16
+  --sglang-cuda-graph-bs-decode 1 2 4 8 16
   --sglang-enable-dp-attention
   --sglang-enable-dp-lm-head
   --sglang-remote-instance-weight-loader-start-seed-via-transfer-engine '--sglang-load-format dummy'

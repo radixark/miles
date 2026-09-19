@@ -205,7 +205,7 @@ def execute(args: ScriptArgs):
         f"--rollout-num-gpus-per-engine {args.recipe.rollout_num_gpus_per_engine} "
         "--sglang-mem-fraction-static 0.8 "
         f"--sglang-ep-size {args.recipe.sglang_ep_size} "
-        "--sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 "
+        "--sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 "
     )
     if args.recipe.enable_spec:
         sglang_args += (

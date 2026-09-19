@@ -270,7 +270,7 @@
 "8"
 "--sglang-server-concurrency"
 "1024"
-"--sglang-cuda-graph-bs"
+"--sglang-cuda-graph-bs-decode"
 "1"
 "2"
 "4"

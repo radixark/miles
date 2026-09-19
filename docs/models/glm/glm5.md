@@ -89,8 +89,8 @@ Always-on flags:
 
 # DSA / NSA attention
 --sglang-page-size 64
---sglang-nsa-decode-backend flashmla_sparse
---sglang-nsa-prefill-backend flashmla_sparse
+--sglang-dsa-decode-backend flashmla_sparse
+--sglang-dsa-prefill-backend flashmla_sparse
 --sglang-attention-backend nsa
 
 --sglang-max-running-requests 512

@@ -325,8 +325,8 @@ def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
             sglang_args = (
                 "--sglang-mem-fraction-static 0.8 "
                 "--sglang-attention-backend nsa "
-                "--sglang-nsa-decode-backend flashmla_sparse "
-                "--sglang-nsa-prefill-backend flashmla_sparse "
+                "--sglang-dsa-decode-backend flashmla_sparse "
+                "--sglang-dsa-prefill-backend flashmla_sparse "
                 "--sglang-kv-cache-dtype bf16 "
                 # NSA KV cache requires page_size=64 on CUDA.
                 "--sglang-page-size 64 "
@@ -348,7 +348,7 @@ def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
                     "--sglang-enable-dp-lm-head "
                     # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
                     # "--sglang-moe-dense-tp-size 1 "
                 )
 
@@ -401,7 +401,7 @@ matchers:
                     "--sglang-enable-dp-lm-head "
                     # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
                     # "--sglang-moe-dense-tp-size 1 "
                 )
         case _:

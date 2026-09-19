@@ -104,12 +104,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --log-probs-chunk-size 4096  
   --rollout-num-gpus-per-engine 8
   --sglang-mem-fraction-static 0.7
-  --sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256
+  --sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256
   --sglang-speculative-algorithm EAGLE
   --sglang-speculative-num-steps 2
   --sglang-speculative-eagle-topk 1
   --sglang-speculative-num-draft-tokens 3
-  --sglang-mamba-scheduler-strategy extra_buffer 
+  --sglang-mamba-radix-cache-strategy extra_buffer 
   --enable-mtp-training
   --mtp-num-layers 1
   --mtp-loss-scaling-factor 0.2 

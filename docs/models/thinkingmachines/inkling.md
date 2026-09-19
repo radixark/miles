@@ -139,7 +139,7 @@ SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 16
    --sglang-attention-backend fa4
    --sglang-moe-runner-backend triton
-   --sglang-mamba-scheduler-strategy extra_buffer
+   --sglang-mamba-radix-cache-strategy extra_buffer
    --sglang-enable-multimodal
    --sglang-context-length 8192
 
