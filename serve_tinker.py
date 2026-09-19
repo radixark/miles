@@ -8,18 +8,45 @@ from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
 from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
+from miles.tinker.core.prompt_renderer import PromptRenderer
 from miles.tinker.core.service import TinkerService
+from miles.tinker.core.tinker_session_server import TrajectoryCollector
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
+from miles.tinker.server.oai_routes import install_session_routes
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.hf_config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
+from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
+
+_SWEEP_INTERVAL_S = 60.0
+
+
+def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
+    """The collector over the running service: HF tokenizer + optional TITOTokenizer in a PromptRenderer, TTL flag."""
+    tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path)
+    tito_tokenizer = None
+    if args.tinker_tito_model is not None:
+        tito_tokenizer = get_tito_tokenizer(
+            tokenizer, args.tinker_tito_model, chat_template_kwargs=args.apply_chat_template_kwargs
+        )
+    renderer = PromptRenderer(tokenizer, args.apply_chat_template_kwargs, tito_tokenizer=tito_tokenizer)
+    return TrajectoryCollector(service, renderer, session_ttl_s=args.tinker_session_ttl_s)
+
+
+async def _sweep_collector(collector: TrajectoryCollector, interval_s: float) -> None:
+    """Every interval_s drop recorded sessions idle past their TTL; lives and dies with service.run()."""
+    while True:
+        await asyncio.sleep(interval_s)
+        if dropped := collector.sweep():
+            logger.info(f"swept {dropped} idle recorded session(s)")
 
 
 async def serve(args):
@@ -73,16 +100,31 @@ async def serve(args):
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
+    # --tinker-session-server off: no tokenizer, no /oai routes, no sweep; the gateway behaves exactly as before
+    collector = _build_collector(args, service) if args.tinker_session_server else None
 
     server = uvicorn.Server(
         uvicorn.Config(
             build_app(service), host=args.tinker_server_host, port=args.tinker_server_port, log_level="info"
         )
     )
+    if args.tinker_session_server:
+        # the four /oai/sessions routes ride on the app uvicorn holds; the Tinker routes are untouched
+        install_session_routes(
+            server.config.app,
+            collector,
+            max_body_bytes=args.tinker_session_max_body_bytes,
+            placeholder_keys=frozenset(args.tinker_session_placeholder_keys),
+        )
+        logger.info("recorded-session routes mounted at /oai/sessions/{sid} (--tinker-session-server)")
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
     # not keep answering /healthz while every training future pends forever
     service_task = asyncio.create_task(service.run())
+    if args.tinker_session_server:
+        # the sweep lives exactly as long as the dispatcher; nothing else needs to know about it
+        sweep_task = asyncio.create_task(_sweep_collector(collector, _SWEEP_INTERVAL_S))
+        service_task.add_done_callback(lambda _: sweep_task.cancel())
     server_task = asyncio.create_task(server.serve())
     try:
         done, _ = await asyncio.wait({service_task, server_task}, return_when=asyncio.FIRST_COMPLETED)
