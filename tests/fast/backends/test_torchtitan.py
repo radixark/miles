@@ -16,10 +16,10 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 def _args(**overrides) -> Namespace:
     base = dict(
         titan_model_name="qwen3",
-        titan_seq_len=8192,
-        titan_pipeline_parallel_degree=1,
-        titan_context_parallel_degree=1,
-        titan_expert_parallel_degree=1,
+        seq_length=8192,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+        expert_model_parallel_size=1,
         rollout_max_context_len=8192,
         rollout_max_response_len=4096,
         ref_update_interval=None,
@@ -43,19 +43,17 @@ def test_the_backend_needs_torch_213(monkeypatch):
 
 def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
-    with pytest.raises(ValueError, match="titan-seq-len"):
-        validate_torchtitan_args(_args(titan_seq_len=8192, rollout_max_context_len=16384))
+    with pytest.raises(ValueError, match="seq-length"):
+        validate_torchtitan_args(_args(seq_length=8192, rollout_max_context_len=16384))
     with pytest.raises(ValueError, match="no room for a prompt"):
-        validate_torchtitan_args(
-            _args(titan_seq_len=8192, rollout_max_context_len=None, rollout_max_response_len=8192)
-        )
-    validate_torchtitan_args(_args(titan_seq_len=16384, rollout_max_context_len=None, rollout_max_response_len=8192))
+        validate_torchtitan_args(_args(seq_length=8192, rollout_max_context_len=None, rollout_max_response_len=8192))
+    validate_torchtitan_args(_args(seq_length=16384, rollout_max_context_len=None, rollout_max_response_len=8192))
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
     with pytest.raises(ValueError, match="context parallelism"):
-        validate_torchtitan_args(_args(titan_model_name="qwen3_5", titan_context_parallel_degree=2))
+        validate_torchtitan_args(_args(titan_model_name="qwen3_5", context_parallel_size=2))
 
 
 def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
@@ -71,12 +69,12 @@ def _config_args(**overrides) -> Namespace:
         optimizer="adam",
         titan_model_name="qwen3",
         titan_model_flavor="0.6B",
-        titan_seq_len=4096,
-        titan_data_parallel_replicate_degree=1,
-        titan_tensor_parallel_degree=1,
-        titan_pipeline_parallel_degree=1,
-        titan_context_parallel_degree=1,
-        titan_expert_parallel_degree=1,
+        seq_length=4096,
+        dp_replicate_size=1,
+        tensor_model_parallel_size=1,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+        expert_model_parallel_size=1,
         global_batch_size=8,
         micro_batch_size=1,
         clip_grad=1.0,
@@ -121,7 +119,7 @@ def test_a_tied_checkpoint_is_refused_under_pipeline_parallelism(tmp_path):
     hf = _checkpoint_dir(tmp_path, tie_word_embeddings=True)
     with pytest.raises(ValueError, match="pipeline"):
         build_trainer_config(
-            _config_args(titan_pipeline_parallel_degree=2), hf_assets_path=hf, lr_total_steps=1, dump_subdir="x"
+            _config_args(pipeline_model_parallel_size=2), hf_assets_path=hf, lr_total_steps=1, dump_subdir="x"
         )
 
 

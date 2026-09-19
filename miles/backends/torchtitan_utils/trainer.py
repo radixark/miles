@@ -35,7 +35,7 @@ class TitanTrainer(Trainer):
             target = self.config.training.seq_len
             if n_tokens > target:
                 raise ValueError(
-                    f"packed microbatch of {n_tokens} tokens exceeds --titan-seq-len "
+                    f"packed microbatch of {n_tokens} tokens exceeds --seq-length "
                     f"{target}, which is the fixed shape PP stages exchange"
                 )
             return target

@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import miles.backends.training_utils.cp_utils as cp_utils_mod
-import miles.backends.training_utils.data as data_mod
-from miles.backends.training_utils.cp_utils import slice_with_cp
-from miles.backends.training_utils.data import get_batch
+import miles.backends.training_utils.data.context_parallel as cp_utils_mod
+import miles.backends.training_utils.data.rollout as data_mod
+from miles.backends.training_utils.data.context_parallel import slice_with_cp
+from miles.backends.training_utils.data.rollout import get_batch
 
 
 def _parallel_state(cp_rank: int, cp_size: int, tp_size: int = 1) -> SimpleNamespace:
@@ -59,7 +59,7 @@ def _stub_cuda(monkeypatch):
 
 
 def _patch_state(monkeypatch, state: SimpleNamespace) -> None:
-    # data.get_batch and cp_utils.slice_with_cp each resolve the state themselves.
+    # rollout.get_batch and context_parallel.slice_with_cp each resolve the state themselves.
     monkeypatch.setattr(data_mod, "get_parallel_state", lambda: state)
     monkeypatch.setattr(cp_utils_mod, "get_parallel_state", lambda: state)
 

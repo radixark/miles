@@ -6,7 +6,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .parallel import get_parallel_state
+from ..parallel import get_parallel_state
 
 try:
     from fla.ops.cp import build_cp_context as _fla_build_cp_context

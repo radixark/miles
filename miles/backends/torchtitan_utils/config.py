@@ -44,11 +44,11 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.optimizer!r}")
 
     ties_embeddings = load_hf_config(hf_assets_path).tie_word_embeddings
-    if ties_embeddings and args.titan_pipeline_parallel_degree > 1:
+    if ties_embeddings and args.pipeline_model_parallel_size > 1:
         raise ValueError(
             "the checkpoint ties lm_head to the embedding, which torchtitan cannot do across pipeline "
             "stages: it would train a separate lm_head that the HF export then has no tensor to ship "
-            "into. Use --titan-pipeline-parallel-degree 1 or an untied checkpoint."
+            "into. Use --pipeline-model-parallel-size 1 or an untied checkpoint."
         )
 
     config = Trainer.Config()
@@ -62,16 +62,16 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
         args.save or tempfile.mkdtemp(prefix="miles-torchtitan-"), "torchtitan", dump_subdir
     )
 
-    config.parallelism.data_parallel_replicate_degree = args.titan_data_parallel_replicate_degree
-    config.parallelism.tensor_parallel_degree = args.titan_tensor_parallel_degree
-    config.parallelism.pipeline_parallel_degree = args.titan_pipeline_parallel_degree
-    config.parallelism.context_parallel_degree = args.titan_context_parallel_degree
-    config.parallelism.expert_parallel_degree = args.titan_expert_parallel_degree
+    config.parallelism.data_parallel_replicate_degree = args.dp_replicate_size
+    config.parallelism.tensor_parallel_degree = args.tensor_model_parallel_size
+    config.parallelism.pipeline_parallel_degree = args.pipeline_model_parallel_size
+    config.parallelism.context_parallel_degree = args.context_parallel_size
+    config.parallelism.expert_parallel_degree = args.expert_model_parallel_size
     config.parallelism.pipeline_parallel_microbatch_size = 1
     parallel_dims = parallel_dims_from_config(config.parallelism)
     dp_size = parallel_dims.dp_replicate * parallel_dims.dp_shard
 
-    config.training.seq_len = args.titan_seq_len
+    config.training.seq_len = args.seq_length
     if parallel_dims.pp_enabled and args.global_batch_size % (dp_size * args.micro_batch_size):
         raise ValueError(
             f"--global-batch-size {args.global_batch_size} must be a multiple of dp * micro_batch_size "

@@ -2697,7 +2697,8 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
         if args.hf_checkpoint:
             args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
 
-        assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
+        if backend == "fsdp":
+            assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
     # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
     # locates the per-test record). No CLI flag: non-CI runs always stay False.

@@ -15,8 +15,8 @@ import torch
 
 from miles.utils.types import RolloutBatch
 
-from .cp_utils import all_gather_with_cp, slice_log_prob_with_cp
-from .parallel import get_parallel_state
+from ..parallel import get_parallel_state
+from .context_parallel import all_gather_with_cp, slice_log_prob_with_cp
 
 logger = logging.getLogger(__name__)
 

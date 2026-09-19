@@ -15,7 +15,7 @@ from miles_plugins.models.qwen3_vl import _natural_to_zigzag_slice, _reassemble_
 
 
 def _slice_with_cp(tokens, cp_size, cp_rank, pad_value=0):
-    """Reference copy of cp_utils.slice_with_cp's THD zigzag slicing (per sample)."""
+    """Reference copy of context_parallel.slice_with_cp's THD zigzag slicing (per sample)."""
     token_len = len(tokens)
     chunk = (token_len + 2 * cp_size - 1) // (2 * cp_size)
     pad = 2 * cp_size * chunk - token_len

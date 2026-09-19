@@ -34,8 +34,11 @@ class FSDPArgs:
     wandb_run_name: str | None = None
 
     # Precision
-    gradient_checkpointing: bool = False
+    bf16: bool = True
     fp16: bool = False
+    # Activation recompute: --recompute-granularity full is Megatron's spelling of the same switch
+    gradient_checkpointing: bool = False
+    recompute_granularity: str | None = None
     keep_fp32_master: bool = True
 
     # FSDP configuration
@@ -126,6 +129,12 @@ def load_args_from_parser(parser: argparse.ArgumentParser):
         parser.set_defaults(**data)
         args = parser.parse_args()
     args.bf16 = not args.fp16
+    if args.recompute_granularity is not None:
+        if args.recompute_granularity != "full":
+            raise ValueError(
+                f"--recompute-granularity {args.recompute_granularity!r}: this backend recomputes whole layers only; use full"
+            )
+        args.gradient_checkpointing = True
     return args
 
 

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils.loss_hub import losses as loss_utils
+from miles.backends.training_utils.loss.hub import losses as loss_utils
 
 
 def _make_args(*, use_rollout_logprobs: bool) -> Namespace:

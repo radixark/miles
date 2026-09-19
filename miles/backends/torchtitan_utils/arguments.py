@@ -11,15 +11,11 @@ class TorchtitanArgs(FSDPArgs):
     titan_model_name: str = "qwen3"
     titan_model_flavor: str = "0.6B"
 
-    # sizes torchtitan's rotary tables; must cover the longest prompt + response
-    titan_seq_len: int = 4096
+    seq_length: int = 4096
 
-    # torchtitan's ParallelismConfig fields, same names, defaults and semantics
-    titan_data_parallel_replicate_degree: int = 1
-    titan_tensor_parallel_degree: int = 1
-    titan_pipeline_parallel_degree: int = 1
-    titan_context_parallel_degree: int = 1
-    titan_expert_parallel_degree: int = 1
+    tensor_model_parallel_size: int = 1
+    pipeline_model_parallel_size: int = 1
+    expert_model_parallel_size: int = 1
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -34,19 +30,19 @@ def validate_torchtitan_args(args) -> None:
     torch_version = tuple(int(part) for part in torch.__version__.split(".")[:2])
     if torch_version < (2, 13):
         raise ValueError(f"the torchtitan backend needs torch>=2.13; this environment runs {torch.__version__}")
-    if args.titan_context_parallel_degree != 1 and args.titan_model_name == "qwen3_5":
+    if args.context_parallel_size != 1 and args.titan_model_name == "qwen3_5":
         raise ValueError("torchtitan does not support context parallelism for qwen3_5")
 
     if args.rollout_max_context_len is not None:
-        if args.titan_seq_len < args.rollout_max_context_len:
+        if args.seq_length < args.rollout_max_context_len:
             raise ValueError(
-                f"--titan-seq-len {args.titan_seq_len} is shorter than "
+                f"--seq-length {args.seq_length} is shorter than "
                 f"--rollout-max-context-len {args.rollout_max_context_len}: torchtitan builds its "
                 "rotary embeddings for the former, so a longer sequence would index past them"
             )
-    elif args.titan_seq_len <= args.rollout_max_response_len:
+    elif args.seq_length <= args.rollout_max_response_len:
         raise ValueError(
-            f"--titan-seq-len {args.titan_seq_len} leaves no room for a prompt ahead of "
+            f"--seq-length {args.seq_length} leaves no room for a prompt ahead of "
             f"--rollout-max-response-len {args.rollout_max_response_len}: torchtitan builds its "
             "rotary embeddings for the former, and a prompt-plus-response beyond them asserts "
             "inside the rope kernel"

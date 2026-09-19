@@ -15,7 +15,7 @@ import sys
 
 import torch
 import torch.distributed as dist
-import torch.distributed.nn  # cp_utils reaches for this submodule without importing it
+import torch.distributed.nn  # context_parallel reaches for this submodule without importing it
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 

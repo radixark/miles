@@ -38,10 +38,10 @@ from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
 from ...utils.misc import filter_keys
-from ..training_utils.ci_utils import check_grad_norm, check_kl
-from ..training_utils.data import DataIterator, get_batch
-from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
-from ..training_utils.loss import loss_function
+from ..training_utils.data.rollout import DataIterator, get_batch
+from ..training_utils.loss.checks import check_grad_norm, check_kl
+from ..training_utils.loss.objective import loss_function
+from ..training_utils.metrics.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
