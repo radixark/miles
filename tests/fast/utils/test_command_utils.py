@@ -2,6 +2,7 @@ import json
 import os
 import platform
 import shlex
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -41,6 +42,39 @@ class TestExecuteTrainConfig:
 
 
 class TestConvertCheckpoint:
+    @pytest.mark.parametrize("multinode", [False, True])
+    @pytest.mark.parametrize("directory", ["model cache", "model's cache", "model $HOME"])
+    def test_preserves_literal_paths_in_the_shell(self, monkeypatch, tmp_path, multinode, directory):
+        commands = []
+        repo = tmp_path / directory / "miles"
+        source = tmp_path / directory / "source"
+        destination = tmp_path / directory / "output"
+        monkeypatch.setattr(command_utils, "repo_base_dir", repo)
+        monkeypatch.setattr(command_utils, "exec_command_gpu", commands.append)
+        monkeypatch.setattr(command_utils, "exec_command_multi_node", lambda cmd, **kwargs: commands.append(cmd))
+
+        command_utils.convert_checkpoint(
+            model_name="Qwen3-4B",
+            megatron_model_type="qwen3-4B",
+            num_gpus_per_node=1,
+            multinode=multinode,
+            num_nodes=2,
+            dir_dst=str(destination),
+            hf_checkpoint=str(source),
+        )
+
+        # Capture the arguments after real shell parsing without launching a converter or requiring GPUs.
+        result = subprocess.run(
+            ["bash", "-c", "torchrun() { printf '%s\\0' \"$@\"; }; " + commands[0]],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        argv = result.stdout.rstrip("\0").split("\0")
+        assert str(repo / "tools/convert_hf_to_torch_dist.py") in argv
+        assert argv[argv.index("--hf-checkpoint") + 1] == str(source)
+        assert argv[argv.index("--save") + 1] == str(destination / "Qwen3-4B_torch_dist")
+
     def test_preserves_source_paths_on_the_pythonpath(self, monkeypatch, tmp_path):
         """The converter runs out-of-process, so miles and megatron must be on its PYTHONPATH."""
         commands = []
