@@ -9,9 +9,12 @@ import torch
 from miles.backends.training_utils import loss as loss_module
 from miles.backends.training_utils.loss_hub import tinker_losses
 
+from .loss_test_utils import make_parallel_state
+
 
 @pytest.mark.parametrize("recompute", [False, True], ids=["direct", "recomputed"])
 def test_loss_passes_return_independent_detached_outputs(monkeypatch, recompute):
+    make_parallel_state()
     parallel = SimpleNamespace(cp=SimpleNamespace(size=1), intra_dp=SimpleNamespace(size=1))
     monkeypatch.setattr(loss_module, "get_parallel_state", lambda: parallel)
     monkeypatch.setattr(loss_module, "get_sum_of_sample_mean", lambda *_args, **_kwargs: None)
@@ -54,6 +57,7 @@ def test_loss_passes_return_independent_detached_outputs(monkeypatch, recompute)
 
 @pytest.mark.parametrize("loss_fn", sorted(tinker_losses.TINKER_LOSS_FUNCTIONS))
 def test_a_zero_loss_mask_removes_the_datum_from_every_objective(monkeypatch, loss_fn):
+    make_parallel_state()
     logprobs = torch.tensor([-0.5, -0.25], requires_grad=True)
     monkeypatch.setattr(tinker_losses, "_target_logprobs", lambda _args, _batch, logits: [logits])
     batch = {
@@ -66,7 +70,7 @@ def test_a_zero_loss_mask_removes_the_datum_from_every_objective(monkeypatch, lo
         "response_lengths": [2],
         "sample_indices": [0],
     }
-    loss, _ = tinker_losses.TINKER_LOSS_FUNCTIONS[loss_fn](Namespace(), batch, logprobs, None)
+    loss, _ = tinker_losses.TINKER_LOSS_FUNCTIONS[loss_fn](Namespace(qkv_format="thd"), batch, logprobs, None)
     loss.backward()
     assert loss.item() == 0.0
     assert logprobs.grad.abs().sum().item() == 0.0, "a DP-padding datum must contribute no gradient"
@@ -97,6 +101,7 @@ def test_a_zero_loss_mask_removes_the_datum_from_every_objective(monkeypatch, lo
     ids=["is", "ppo-default", "ppo-override", "cispo-default", "cispo-override", "dro-default", "dro-override"],
 )
 def test_nonzero_objectives_and_gradients(monkeypatch, recompute, loss_fn, config, token_losses, gradients):
+    make_parallel_state()
     parallel = SimpleNamespace(cp=SimpleNamespace(size=1), intra_dp=SimpleNamespace(size=1))
     monkeypatch.setattr(loss_module, "get_parallel_state", lambda: parallel)
     monkeypatch.setattr(loss_module, "get_sum_of_sample_mean", lambda *_args, **_kwargs: None)
