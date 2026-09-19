@@ -22,11 +22,13 @@ from miles.utils.types import Sample
 
 
 @pytest.mark.asyncio
-async def test_create_reads_session_server_instance_id_from_args(monkeypatch):
+@pytest.mark.parametrize("create_kwargs", [{}, {"evaluation": False}, {"evaluation": True}])
+async def test_create_reads_session_server_instance_id_from_args(monkeypatch, create_kwargs):
     calls: list[tuple[str, str]] = []
 
     async def fake_post(url: str, payload: dict, action: str = "post"):
         calls.append((action, url))
+        assert payload == {"evaluation": create_kwargs.get("evaluation", False)}
         assert action == "post"
         assert url == "http://127.0.0.1:12345/sessions"
         return {"session_id": "session-123"}
@@ -37,7 +39,7 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch):
         session_server_addrs=["127.0.0.1:12345"],
         session_server_instance_ids={"127.0.0.1:12345": "server-instance-123"},
     )
-    tracer = await OpenAIEndpointTracer.create(args)
+    tracer = await OpenAIEndpointTracer.create(args, **create_kwargs)
 
     assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
     assert tracer.session_server_id == "127.0.0.1:12345"

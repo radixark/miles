@@ -53,24 +53,29 @@ def prepare_chat_request(
     *,
     config: SessionServerConfig,
     turn_args: dict[str, Any] | None,
+    evaluation: bool = False,
 ) -> PreparedChatRequest:
     """Resolve an owned request using server rules, model rules, and prior turn args.
 
     ``turn_args`` is the continued turn's full request; ``None`` starts a root.
     Client input and recorded history remain unchanged.
     """
-    request_args, client_stream = resolve_request_args_by_config(deepcopy(client_args), config)
+    request_args, client_stream = resolve_request_args_by_config(deepcopy(client_args), config, evaluation=evaluation)
     try:
         request_args = tito_tokenizer.resolve_request_args(request_args, turn_args=turn_args)
     except ValueError as e:
         raise MessageValidationError(str(e)) from e
+    if evaluation:
+        # Model rules must not re-enable training replay outputs for evaluation.
+        request_args.update(return_sampling_mask=False, return_routed_experts=False, return_indexer_topk=False)
+        request_args.pop("routed_experts_start_len", None)
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), client_stream=client_stream
     )
 
 
 def resolve_request_args_by_config(
-    request_args: dict[str, Any], config: SessionServerConfig
+    request_args: dict[str, Any], config: SessionServerConfig, *, evaluation: bool = False
 ) -> tuple[dict[str, Any], bool]:
     """Apply server constraints in place and return the same request and stream intent.
 
@@ -82,9 +87,9 @@ def resolve_request_args_by_config(
     # Must be False so stop-token text is trimmed from assistant content;
     # token IDs still come from logprobs below.
     request_args["no_stop_trim"] = False
-    # R3 replay follows the launch flags, on or off.
-    request_args["return_routed_experts"] = bool(config.use_rollout_routing_replay)
-    request_args["return_indexer_topk"] = bool(config.use_rollout_indexer_replay)
+    # Training replay follows the launch flags; eval never requests replay outputs.
+    request_args["return_routed_experts"] = not evaluation and bool(config.use_rollout_routing_replay)
+    request_args["return_indexer_topk"] = not evaluation and bool(config.use_rollout_indexer_replay)
 
     # The served adapter is selected by training; SGLang lets a ``base:adapter``
     # model parameter beat ``lora_path``, so that spelling is refused too.
@@ -108,7 +113,7 @@ def resolve_request_args_by_config(
             f"input_ids={value!r} is not accepted: TITO token ids are rendered by the session server"
         )
     request_args.pop("input_ids", None)
-    if (value := request_args.get("routed_experts_start_len")) is not None:
+    if not evaluation and (value := request_args.get("routed_experts_start_len")) is not None:
         raise MessageValidationError(
             f"routed_experts_start_len={value!r} is not accepted: R3 offsets are computed by the session server"
         )

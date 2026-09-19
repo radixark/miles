@@ -1,4 +1,8 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
+
+
+class CreateSessionRequest(BaseModel):
+    evaluation: StrictBool = False
 
 
 class SessionRecord(BaseModel):

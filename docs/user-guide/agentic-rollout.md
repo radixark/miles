@@ -133,6 +133,12 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 ### Choose the session behavior
 
+Session purpose is fixed at creation. `POST /sessions` accepts `{"evaluation": true}` for evaluation; omitting the body or field defaults to training. The field must be a boolean. The agentic generator passes `GenerateFnInput.evaluation` automatically, and the purpose survives v1 rollback and v2 branching.
+
+Evaluation sessions force `return_sampling_mask`, `return_routed_experts`, and `return_indexer_topk` to `false`, including when a request or model rule asks to enable them. They ignore `routed_experts_start_len`. Sampling defaults and override order stay unchanged, and temperature can vary between turns. TITO rendering, token IDs, logprobs, and template compatibility checks still apply; agentic evaluation still collects samples.
+
+Disabling replay outputs does not disable all internal capture work in a shared SGLang engine with capture enabled globally.
+
 History handling depends on the selected server version:
 
 - **v1 is linear.** Each request must extend the previous messages at the tail.
