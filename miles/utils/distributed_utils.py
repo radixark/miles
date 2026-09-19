@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
@@ -14,7 +15,7 @@ from torch.distributed.distributed_c10d import (
     rendezvous,
 )
 
-from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil, MultiPGUtil
 
 GLOO_GROUP = None
 
@@ -99,13 +100,15 @@ def distributed_masked_whiten(
     process_group: dist.ProcessGroup | None = None,
     shift_mean: bool = True,
     epsilon: float = 1e-8,
+    groups_inner_to_outer: Sequence[dist.ProcessGroup | None] | None = None,
 ):
     """
     Performs whitening on a tensor using global statistics from all participating GPUs.
 
-    It calculates the global mean and variance across all ranks in the default
-    process group (the WORLD) and uses these global statistics to normalize the
-    local data on each rank.
+    It calculates the global mean and variance across all ranks in the given
+    process group(s) and uses these global statistics to normalize the local
+    data on each rank. Empty local shards still join the aggregation,
+    contributing zero statistics.
 
     Args:
         values (torch.Tensor): The local tensor of values to whiten.
@@ -114,6 +117,10 @@ def distributed_masked_whiten(
                       If None, uses the default world group.
         shift_mean (bool): If True, the output is zero-mean. Defaults to True.
         epsilon (float): A small value for numerical stability.
+        groups_inner_to_outer: Nested groups (inner to outer, e.g. CP inner and
+            independent-DP outer) whose union is the full whitening set. Takes
+            precedence over `process_group`. A `None` entry is a trivial group
+            and communicates nothing.
 
     Returns:
         torch.Tensor: The locally whitened tensor using global statistics.
@@ -129,8 +136,15 @@ def distributed_masked_whiten(
         dtype=torch.float32,
     )
 
-    # Aggregate via all_reduce within the DP group
-    GeneralPGUtil.create(process_group).all_reduce(stats_tensor, process_group, op=dist.ReduceOp.SUM)
+    # Aggregate via all_reduce across every participating group. Every rank
+    # holding a shard of the whitening set contributes; a rank that skips the
+    # collective leaves the other members of its group waiting forever.
+    if groups_inner_to_outer is None:
+        GeneralPGUtil.create(process_group).all_reduce(stats_tensor, process_group, op=dist.ReduceOp.SUM)
+    else:
+        groups = [group for group in groups_inner_to_outer if group is not None]
+        if groups:
+            MultiPGUtil.all_reduce(stats_tensor, groups, op=dist.ReduceOp.SUM)
 
     # Calculate global stats from aggregated results
     global_sum, global_sum_sq, global_mask_sum = stats_tensor
