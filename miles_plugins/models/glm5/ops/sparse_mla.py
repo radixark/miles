@@ -1,6 +1,6 @@
 import torch
 
-from .tilelang_sparse_mla_bwd import sparse_mla_bwd
+from .tilelang_sparse_mla_bwd_opt import sparse_mla_bwd
 from .tilelang_sparse_mla_fwd import sparse_mla_fwd_interface
 
 
