@@ -1220,3 +1220,39 @@ def test_zero_grad_watchdog_rejects_configs_it_cannot_observe(isolated_modules, 
 def test_unobservable_configs_are_fine_while_the_watchdog_is_off(isolated_modules, overrides):
     args = SimpleNamespace(max_consecutive_zero_grad_steps=0, **overrides)
     isolated_modules.arguments.validate_rollout_sampling_budgets(args)
+
+
+@pytest.mark.parametrize(
+    "second_completed, expect_third_attempt",
+    [
+        # A couple of groups either way is ordinary sampling variance; a live 2-node run
+        # produced 31 then 29 and must keep its remaining attempt.
+        (29, True),
+        (31, True),
+        (33, True),
+        # Less than half is a collapse, not luck: stop and keep the diagnosis.
+        (15, False),
+    ],
+)
+async def test_only_a_collapse_between_attempts_cancels_the_remaining_budget(
+    env, monkeypatch, rollout, second_completed, expect_third_attempt
+):
+    env.args.rollout_max_attempts = 3
+    completed_per_attempt = {1: 31, 2: second_completed}
+    attempts = []
+
+    async def fake_collect(args, rollout_id, state, data_source, attempt=1):
+        attempts.append(attempt)
+        raise rollout.InsufficientRolloutBatch(
+            f"stub shortfall on attempt {attempt}",
+            reason="sampling deadline exceeded",
+            valid_groups=1,
+            completed_groups=completed_per_attempt.get(attempt, 31),
+            required_groups=args.rollout_batch_size,
+        )
+
+    monkeypatch.setattr(rollout, "_collect_rollout_samples", fake_collect)
+    monkeypatch.setattr(rollout, "abort", AsyncMock(return_value=[]))
+    with pytest.raises(rollout.InsufficientRolloutBatch):
+        await rollout._collect_rollout_samples_with_retries(env.args, 40, env.state, env.data_source)
+    assert attempts == ([1, 2, 3] if expect_third_attempt else [1, 2])
