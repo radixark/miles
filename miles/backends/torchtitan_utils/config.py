@@ -16,18 +16,28 @@ from miles.utils.hf_config import load_hf_config
 logger = logging.getLogger(__name__)
 
 
+_MODEL_PACKAGE_ROOTS = ("miles.backends.torchtitan_utils.models", "torchtitan.models")
+
+
+def _model_package(name: str):
+    for root in _MODEL_PACKAGE_ROOTS:
+        module_name = f"{root}.{name}"
+        try:
+            return importlib.import_module(module_name)
+        except ModuleNotFoundError as e:
+            if e.name != module_name:
+                raise
+    raise ValueError(
+        f"--titan-model-name {name!r} is neither a miles model package nor a torchtitan one "
+        f"(looked for {', '.join(f'{root}.{name}' for root in _MODEL_PACKAGE_ROOTS)})"
+    )
+
+
 def resolve_model_spec(args: Namespace):
-    module_name = f"torchtitan.models.{args.titan_model_name}"
-    try:
-        module = importlib.import_module(module_name)
-    except ModuleNotFoundError as e:
-        raise ValueError(
-            f"--titan-model-name {args.titan_model_name!r} does not resolve to a torchtitan "
-            f"model package ({module_name}). Check the pinned torchtitan checkout."
-        ) from e
+    module = _model_package(args.titan_model_name)
     registry = getattr(module, "model_registry", None)
     if registry is None:
-        raise ValueError(f"{module_name} exposes no model_registry(); cannot build a ModelSpec")
+        raise ValueError(f"{module.__name__} exposes no model_registry(); cannot build a ModelSpec")
     return registry(args.titan_model_flavor, attn_backend="flex")
 
 
