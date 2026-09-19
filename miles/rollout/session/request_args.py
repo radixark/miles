@@ -17,7 +17,7 @@ from typing import Any
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
-from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.lora import LORA_ADAPTER_NAME
 
 DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
 
@@ -88,7 +88,7 @@ def resolve_request_args_by_config(
 
     # The served adapter is selected by training; SGLang lets a ``base:adapter``
     # model parameter beat ``lora_path``, so that spelling is refused too.
-    lora_path = LORA_ADAPTER_NAME if lora_rollout_enabled(config) else None
+    lora_path = LORA_ADAPTER_NAME if config.lora_rank > 0 and not config.lora_train_only else None
     if (value := request_args.get("lora_path")) is not None and value != lora_path:
         raise MessageValidationError(
             f"lora_path={value!r} is not accepted: the served adapter is selected by training"

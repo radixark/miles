@@ -116,33 +116,35 @@ class TestLoraTargetModules:
 
         assert sorted(targets) == ["in_proj_ba", "in_proj_qkvz"]
 
-    def test_an_inkling_checkpoint_asks_sglang_to_discover_the_names(self, monkeypatch: pytest.MonkeyPatch):
-        """Inkling exposes module names the megatron-to-HF mapping cannot produce, so it is the
-        one family that hands SGLang the shorthand instead of naming its targets."""
-        monkeypatch.setattr(
-            "miles.backends.sglang_utils.sglang_engine.sglang_lora_target_all_sentinel", lambda _args: True
-        )
+    @staticmethod
+    def _inkling_checkpoint(tmp_path):
+        (tmp_path / "config.json").write_text('{"model_type": "inkling_mm_model"}')
+        return str(tmp_path)
 
-        targets = self._parsed_lora_targets(["layers.*.self_attention.linear_qkv"])
-
-        assert set(targets) == {"all"}
-
-    def test_a_multi_lora_inkling_launch_still_names_its_targets(self, monkeypatch: pytest.MonkeyPatch):
-        """Several adapters share one slot budget here, so discovering every compatible module
-        sizes that budget off the base model instead of off what the adapters fill."""
-        monkeypatch.setattr(
-            "miles.backends.sglang_utils.sglang_engine.sglang_lora_target_all_sentinel", lambda _args: True
-        )
+    def test_an_inkling_checkpoint_asks_sglang_to_discover_the_names(self, tmp_path):
+        """Inkling exposes module names the megatron-to-HF mapping cannot produce, so its spec
+        hands SGLang the shorthand instead of naming its targets."""
         args = make_engine_args(
-            lora_rank=16,
-            target_modules=["layers.*.self_attention.linear_qkv"],
-            multi_lora=True,
-            multi_lora_n_adapters=4,
+            lora_rank=16, target_modules=["wq_du"], hf_checkpoint=self._inkling_checkpoint(tmp_path)
         )
 
         targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
 
-        assert sorted(targets) == ["k_proj", "q_proj", "v_proj"]
+        assert set(targets) == {"all"}
+
+    def test_a_multi_lora_inkling_launch_is_refused(self, tmp_path):
+        """Multi-LoRA sizes per-slot buffers from named targets; a family that serves through
+        engine-detected names cannot provide them, so the launch fails closed toward bridge."""
+        args = make_engine_args(
+            lora_rank=16,
+            target_modules=["wq_du"],
+            multi_lora=True,
+            multi_lora_n_adapters=4,
+            hf_checkpoint=self._inkling_checkpoint(tmp_path),
+        )
+
+        with pytest.raises(AssertionError, match="multi-LoRA"):
+            _cmd(args=args)
 
     def test_asking_for_every_module_is_still_honoured(self):
         """SGLang accepts the shorthand as a target name, so a run that spelled it out itself

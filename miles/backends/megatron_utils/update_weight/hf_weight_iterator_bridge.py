@@ -88,7 +88,10 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
             return [(h, w) for h, w, _m in named_weights if is_lora_weight_name(h)]
 
     def _postprocess_and_quantize(self, named_weights, weight_type: str):
-        for hf_param_name, weight, megatron_param_name in named_weights:
+        for hf_param_name, weight, wrapped_megatron_name in named_weights:
+            # Bridge PEFT reports a wrapped module's base weight as <module>.to_wrap.weight;
+            # the quantizer regexes and megatron-name grouping expect unwrapped names.
+            megatron_param_name = wrapped_megatron_name.replace(".to_wrap.", ".")
             hf_name = hf_param_name.replace(".base_layer.", ".")
             weight = postprocess_hf_param(
                 args=self.args,

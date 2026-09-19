@@ -50,7 +50,7 @@ def compute_session_server_config(
         save_debug_trajectory_data=args.save_debug_trajectory_data,
         lora_rank=args.lora_rank,
         lora_adapter_path=args.lora_adapter_path,
-        lora_train_only=getattr(args, "lora_train_only", False),
+        lora_train_only=getattr(args, "debug_lora_train_only", False),
         use_session_server=getattr(args, "use_session_server", None),
         session_message_matcher=getattr(args, "session_message_matcher", "strict"),
         pause_generation_mode=getattr(args, "pause_generation_mode", None),

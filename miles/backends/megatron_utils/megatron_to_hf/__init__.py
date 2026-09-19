@@ -61,7 +61,7 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_mimo_to_hf(args, name, param)
     elif "kimivl" in model_name:
         converted_named_tensors = convert_kimivl_to_hf(args, name, param)
-    elif "kimi_k25" in model_name:
+    elif "kimi_k25" in model_name or "kimik25" in model_name:
         converted_named_tensors = convert_kimi_k25_to_hf(args, name, param)
     else:
         raise ValueError(f"Unsupported model: {model_name}")

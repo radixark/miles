@@ -62,9 +62,11 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
+        from ..lora.utils import resolve_lora_provider
 
-        return export_inkling_lora_hf_named(self.model)
+        provider = resolve_lora_provider(self.args)
+        export = getattr(provider, "export_lora_sglang_named", provider.export_lora_hf_named)
+        return export(self.model)
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:
