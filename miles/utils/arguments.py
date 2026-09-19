@@ -538,6 +538,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--overlap-model-initialization",
+                action="store_true",
+                default=False,
+                help="In train_async.py, initialize training models while separate inference GPUs load their models.",
+            )
+            parser.add_argument(
                 "--fully-async",
                 action="store_true",
                 default=False,

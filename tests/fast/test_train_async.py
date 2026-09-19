@@ -5,7 +5,12 @@ from typing import Any
 import pytest
 
 import train_async as train_async_driver
-from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRolloutExecutor, FakeTrainingModel
+from tests.fast.fixtures.driver_fakes import (
+    FakeInferenceController,
+    FakeRemoteMethod,
+    FakeRolloutExecutor,
+    FakeTrainingModel,
+)
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -29,6 +34,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         num_critic_only_steps=0,
         num_rollout=0,
         offload_train=False,
+        overlap_model_initialization=False,
         save_hf=None,
         save_interval=None,
         save_trigger_sentinel=None,
@@ -55,7 +61,10 @@ def _install_driver_fakes(
         api_server_calls=[],
     )
 
-    async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
+    async def create_rollout_components(
+        _args: SimpleNamespace, *, wait_for_inference_ready: bool = True
+    ) -> tuple[Any, Any, int]:
+        assert wait_for_inference_ready
         return components.inference_controller, components.rollout_executor, 4
 
     async def create_training_models(_args: SimpleNamespace, _controller: Any, _executor: Any) -> tuple[Any, Any]:
@@ -78,6 +87,117 @@ def _install_driver_fakes(
         train_async_driver, "start_api_server", lambda **kwargs: components.api_server_calls.append(kwargs)
     )
     return components
+
+
+def _install_initialization_gates(monkeypatch, args, events):
+    components = _install_driver_fakes(monkeypatch, args, events)
+    started = {role: asyncio.Event() for role in ["training", "inference"]}
+    released = {role: asyncio.Event() for role in started}
+    finished = {role: asyncio.Event() for role in started}
+    cancelled = {role: asyncio.Event() for role in started}
+    failures = {}
+
+    async def load(role):
+        started[role].set()
+        try:
+            await released[role].wait()
+            if role in failures:
+                raise failures[role]
+            finished[role].set()
+        except asyncio.CancelledError:
+            cancelled[role].set()
+            raise
+
+    async def wait_for_ready():
+        await load("inference")
+
+    async def bind_eval_fleet(fleet):
+        assert finished["inference"].is_set()
+        assert fleet is components.inference_controller.eval_fleet
+        events.append("eval_fleet_bound")
+
+    components.inference_controller.eval_fleet = object()
+    components.inference_controller.wait_for_ready = wait_for_ready
+    components.rollout_executor.set_eval_fleet = FakeRemoteMethod(bind_eval_fleet)
+
+    async def create_rollout_components(_args, *, wait_for_inference_ready=True):
+        if wait_for_inference_ready:
+            await wait_for_ready()
+            await bind_eval_fleet(components.inference_controller.eval_fleet)
+        return components.inference_controller, components.rollout_executor, 4
+
+    async def create_training_models(_args, _controller, _executor):
+        await load("training")
+        return components.actor_model, components.critic_model
+
+    monkeypatch.setattr(train_async_driver, "create_rollout_components", create_rollout_components)
+    monkeypatch.setattr(train_async_driver, "create_training_models", create_training_models)
+    return SimpleNamespace(
+        started=started, released=released, finished=finished, cancelled=cancelled, failures=failures
+    )
+
+
+class TestModelInitialization:
+    async def test_overlapping_loads_finish_before_weights_are_published(self, monkeypatch):
+        """The first weight update must wait for both models and a bound evaluation fleet."""
+        events = []
+        args = _make_args(overlap_model_initialization=True)
+        gates = _install_initialization_gates(monkeypatch, args, events)
+        driver = asyncio.create_task(train_async_driver.train(args))
+        await asyncio.wait_for(asyncio.gather(*(gate.wait() for gate in gates.started.values())), 3)
+        gates.released["training"].set()
+        await asyncio.wait_for(gates.finished["training"].wait(), 3)
+        assert not driver.done()
+        assert "eval_fleet_bound" not in events
+        assert "update_weights:None" not in events
+        gates.released["inference"].set()
+        await asyncio.wait_for(driver, 3)
+        assert events.index("eval_fleet_bound") < events.index("update_weights:None")
+
+    async def test_default_loading_stays_serial(self, monkeypatch):
+        """An unset optimization flag must preserve the original resource-loading order."""
+        events = []
+        args = _make_args()
+        gates = _install_initialization_gates(monkeypatch, args, events)
+        driver = asyncio.create_task(train_async_driver.train(args))
+        await asyncio.wait_for(gates.started["inference"].wait(), 3)
+        assert not gates.started["training"].is_set()
+        gates.released["inference"].set()
+        await asyncio.wait_for(gates.started["training"].wait(), 3)
+        assert "eval_fleet_bound" in events
+        assert "update_weights:None" not in events
+        gates.released["training"].set()
+        await asyncio.wait_for(driver, 3)
+
+    @pytest.mark.parametrize("failed", ["training", "inference"], ids=["training-fails", "inference-fails"])
+    async def test_failed_load_cancels_its_sibling_before_publication(self, monkeypatch, failed):
+        """A failed initialization must propagate its error without leaving the sibling coroutine running."""
+        events = []
+        args = _make_args(overlap_model_initialization=True)
+        gates = _install_initialization_gates(monkeypatch, args, events)
+        gates.failures[failed] = ValueError(f"{failed} load failed")
+        driver = asyncio.create_task(train_async_driver.train(args))
+        await asyncio.wait_for(asyncio.gather(*(gate.wait() for gate in gates.started.values())), 3)
+        gates.released[failed].set()
+        with pytest.raises(ValueError, match=f"{failed} load failed"):
+            await asyncio.wait_for(driver, 3)
+        other = "inference" if failed == "training" else "training"
+        assert gates.cancelled[other].is_set()
+        assert "eval_fleet_bound" not in events
+        assert "update_weights:None" not in events
+
+    async def test_caller_cancellation_drains_both_loads(self, monkeypatch):
+        """Cancelling startup must finish cancellation of both outstanding load coroutines."""
+        events = []
+        args = _make_args(overlap_model_initialization=True)
+        gates = _install_initialization_gates(monkeypatch, args, events)
+        driver = asyncio.create_task(train_async_driver.train(args))
+        await asyncio.wait_for(asyncio.gather(*(gate.wait() for gate in gates.started.values())), 3)
+        driver.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await driver
+        assert all(gate.is_set() for gate in gates.cancelled.values())
+        assert "update_weights:None" not in events
 
 
 class TestApiServer:

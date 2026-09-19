@@ -28,6 +28,11 @@ rollout API, and pass `--fully-async`:
 +   --fully-async
 ```
 
+To load training and inference models concurrently on their separate GPUs, add
+`--overlap-model-initialization`. The driver waits for both loads before the first
+weight update, evaluation, or training step. This startup option is off by default
+and applies to `train_async.py`; it does not change the rollout concurrency limit.
+
 ### Examples
 
 Four launch scripts show the mode end to end, from a single-node smoke test to a

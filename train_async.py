@@ -20,6 +20,21 @@ from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 logger = logging.getLogger(__name__)
 
 
+async def _initialize_models_concurrently(args, inference_controller, rollout_executor):
+    tasks = [
+        asyncio.create_task(create_training_models(args, inference_controller, rollout_executor)),
+        asyncio.create_task(inference_controller.wait_for_ready()),
+    ]
+    try:
+        models, _ = await asyncio.gather(*tasks)
+        return models
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
@@ -32,10 +47,18 @@ async def train(args):
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+    overlap_initialization = getattr(args, "overlap_model_initialization", False)
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
+        args, wait_for_inference_ready=not overlap_initialization
+    )
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
+    if overlap_initialization:
+        logger.info("Initializing training and inference models concurrently.")
+        actor_model, critic_model = await _initialize_models_concurrently(args, inference_controller, rollout_executor)
+        await rollout_executor.set_eval_fleet.remote(inference_controller.eval_fleet)
+    else:
+        actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
 
     if args.api_server_port:
         start_api_server(
