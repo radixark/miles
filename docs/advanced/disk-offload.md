@@ -20,9 +20,10 @@ does not fit, and disk offload is the alternative.
 Instead of a pinned host copy, the paused actor is streamed to per-rank files through a
 fixed-size pinned staging buffer, so host memory stays bounded by
 `--offload-train-disk-chunk-mb` regardless of how much is offloaded. Each rank writes to
-its own directory under `--offload-train-disk-dir` (defaults to
-`$SCRATCH/miles_train_offload_<uid>`), the files are overwritten in place every step, and
-they are removed when the actor exits.
+its own `<role>/cell<cell_index>_rank<rank>` directory under `--offload-train-disk-dir` (defaults to
+`$SCRATCH/miles_train_offload_<uid>`). Separating actor and critic roles, cells, and ranks
+prevents one worker's startup cleanup from removing another worker's backups. The files
+are overwritten in place every step and removed when the worker exits.
 
 Point the directory at real node-local NVMe. A tmpfs mount (including `/tmp` on many
 systems) keeps the backup in RAM and defeats the purpose.
@@ -32,8 +33,9 @@ systems) keeps the backup in RAM and defeats the purpose.
 This runs on [torch_memory_saver](https://github.com/fzyzcjy/torch_memory_saver), which
 hooks the allocator, so it does not care what the memory holds — weights, gradient
 buffers and optimizer state all move as one block when the actor is paused, and come back
-on resume. miles' part is choosing the per-rank directory, launching each actor with the
-matching `TMS_DISK_BACKUP_*` environment, and reclaiming the files at startup and exit.
+on resume. miles' part is choosing the role-, cell-, and rank-specific directory,
+launching each actor with the matching `TMS_DISK_BACKUP_*` environment, and reclaiming
+the files at startup and exit.
 
 Because pause and resume happen at phase boundaries, everything is resident again by the
 time the optimizer step runs. If the binding constraint is instead that the optimizer
