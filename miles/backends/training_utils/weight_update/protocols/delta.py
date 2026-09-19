@@ -68,11 +68,10 @@ def _safetensors_dtype(dtype: torch.dtype) -> str:
 
 class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     """
-    Delta weight sync over a shared filesystem. Source ranks diff each gathered HF tensor against
-    a CPU snapshot of the previous sync and publish the changes as a canonical HF checkpoint dir;
-    each engine's /pull_weights fans the apply out to every host it spans, then the engine reloads
-    the patched local checkpoint via the ordinary update_weights_from_disk path. miles only ever
-    talks to one endpoint per engine, so multi-node serving needs nothing extra.
+    Delta weight sync through durable filesystem artifacts. Source ranks diff each gathered HF
+    tensor against a CPU snapshot of the previous sync and publish the changes as a canonical HF
+    checkpoint dir. Connected engines pull and reload that artifact directly; without engine
+    handles, a post-write hook publishes it for an external consumer.
     """
 
     # The transport is asynchronous by design: the engine-side apply is serialized by a
@@ -107,6 +106,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
+        if rollout_engines and not self.args.update_weight_local_checkpoint_dir:
+            raise ValueError("Disk-delta engine reload requires --update-weight-local-checkpoint-dir.")
+
         # No NCCL groups: the transport is the shared filesystem. The engine lock the NCCL path
         # uses isn't needed either — the engine-side apply is serialized by a per-host flock
         # behind /pull_weights.
@@ -149,9 +151,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._pool = None
 
     def finalize(self, weight_version: int) -> None:
-        """Write this version as a canonical HF dir, have the engines pull and reload it."""
+        """Publish this version and reload any connected engines."""
         self._write_delta_files(weight_version)
-        self._reload_engines(weight_version)
+        self._publish_and_reload_engines(weight_version)
         self._record_metrics(weight_version)
 
     def _capture_baseline(self, iter_buckets) -> None:
@@ -374,13 +376,15 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             _atomic_write(os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode())
         dist.barrier(group=group)
 
-    def _reload_engines(self, weight_version: int) -> None:
+    def _publish_and_reload_engines(self, weight_version: int) -> None:
         """Commit the published files, have each engine pull the delta onto every host it spans
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
         if self._post_write_hook is not None:
             self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
+        if not self.rollout_engines:
+            return
         if dist.get_rank() == 0:
             pulls = async_utils.wait_futures(
                 [

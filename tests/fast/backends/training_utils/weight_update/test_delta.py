@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
 _DELTA_MODULE = "miles.backends.training_utils.weight_update.protocols.delta"
@@ -40,6 +41,55 @@ class TestPostWriteHookConstruction:
 
         load_function.assert_called_once_with("miles_plugins.example:upload_delta")
         assert protocol._post_write_hook is hook
+
+
+class TestConnectionOwnership:
+    @staticmethod
+    def _connect(protocol: UpdateWeightFromDiskDelta, engines) -> None:
+        with patch(f"{_DELTA_MODULE}.get_data_replica_rank_and_size", return_value=(0, 1)):
+            protocol.connect(
+                rollout_engines=engines,
+                engine_gpu_counts=None,
+                engine_gpu_offsets=None,
+                parallel_state=MagicMock(),
+                placement=WeightUpdatePlacement(gather_pp=False),
+                selector="all",
+            )
+
+    def test_artifact_writer_needs_no_engine_local_checkpoint_or_hook(self) -> None:
+        protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
+        protocol.args = Namespace(update_weight_local_checkpoint_dir=None)
+        protocol._post_write_hook = None
+
+        self._connect(protocol, [])
+
+        assert protocol.rollout_engines == []
+
+    def test_connected_engines_still_require_a_local_checkpoint(self) -> None:
+        protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
+        protocol.args = Namespace(update_weight_local_checkpoint_dir=None)
+        protocol._post_write_hook = MagicMock()
+
+        with pytest.raises(ValueError, match="local-checkpoint-dir"):
+            self._connect(protocol, [MagicMock()])
+
+
+def test_artifact_only_publish_calls_the_hook_without_engine_requests() -> None:
+    hook = MagicMock()
+    protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
+    protocol.args = Namespace()
+    protocol._post_write_hook = hook
+    protocol._version_dir = "/shared/delta/weight_v000007"
+    protocol.rollout_engines = []
+
+    with (
+        patch(f"{_DELTA_MODULE}.dist") as dist_mock,
+        patch(f"{_DELTA_MODULE}.get_gloo_group", return_value=MagicMock()),
+    ):
+        protocol._publish_and_reload_engines(7)
+
+    hook.assert_called_once_with(protocol.args, protocol._version_dir, [])
+    dist_mock.barrier.assert_called_once()
 
 
 class TestReloadEnginesFailureTransitions:
@@ -80,6 +130,6 @@ class TestReloadEnginesFailureTransitions:
         ):
             dist_mock.get_rank.return_value = 0
             with pytest.raises(RuntimeError, match="engine rejected the weights"):
-                protocol._reload_engines(7)
+                protocol._publish_and_reload_engines(7)
 
         assert [name for name, _kwargs in calls] == expected_calls
