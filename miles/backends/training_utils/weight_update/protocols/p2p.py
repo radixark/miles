@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
+from typing import NamedTuple
 
 import torch
 import torch.distributed as dist
@@ -32,6 +33,12 @@ from .p2p_transfer_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _ReplicaTarget(NamedTuple):
+    model_replica: torch.nn.Module
+    remote_weight_infos: list[RemoteWeightInfo]
+    parallelism_config: RankParallelismConfig
 
 
 class UpdateWeightP2P(WeightTransferProtocol):
@@ -91,15 +98,16 @@ class UpdateWeightP2P(WeightTransferProtocol):
         transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
 
         if transfer_ready_params and ready_hf_tensors:
-            last_idx = len(self._transfer_engine_meta_list) - 1
-            for i, (model_replica, remote_weight_infos) in enumerate(self._transfer_engine_meta_list):
-                model_replica.load_weights(ready_hf_tensors)
+            last_idx = len(self._replica_targets) - 1
+            for i, target in enumerate(self._replica_targets):
+                with ParallelismContext(target.parallelism_config):
+                    target.model_replica.load_weights(ready_hf_tensors)
 
                 is_last = i == last_idx
                 if is_last:
                     # Last engine rank: fire-and-forget all sessions to background,
                     # as the weight will no longer be overwritten
-                    for remote_session in remote_weight_infos:
+                    for remote_session in target.remote_weight_infos:
                         self.transfer_manager.submit(
                             self._do_p2p_write_one_session,
                             remote_session,
@@ -113,7 +121,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                             remote_session,
                             transfer_ready_params,
                         )
-                        for remote_session in remote_weight_infos
+                        for remote_session in target.remote_weight_infos
                     ]
                     for f in futures:
                         f.result()
@@ -160,10 +168,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             self._transfer_engine = create_transfer_engine()
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
-            # in self._transfer_engine_meta_list: tuple of
-            # - single CPU replica shared among all sessions
-            # - related remote weight info
-            self._transfer_engine_meta_list: list[tuple[torch.nn.Module, list[RemoteWeightInfo]]] = []
+            self._replica_targets: list[_ReplicaTarget] = []
             first_engine_rank = True
             for rank_targets in targets_grouped_by_engine_rank.values():
                 first_target = rank_targets[0]
@@ -194,7 +199,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     for t in rank_targets
                 ]
 
-                self._transfer_engine_meta_list.append((model_replica, remote_infos))
+                self._replica_targets.append(_ReplicaTarget(model_replica, remote_infos, parallelism_config))
 
     def _create_cpu_replica(
         self,

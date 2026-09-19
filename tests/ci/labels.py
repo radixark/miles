@@ -22,6 +22,7 @@ KNOWN_LABELS: dict[str, str] = {
     "model-scripts": "Model launch script smoke tests",
     "sglang": "SGLang patch / equivalence tests",
     "fsdp": "FSDP training tests",
+    "torchtitan": "torchtitan training tests",
     "short": "Short 8-GPU smoke tests",
     "long": "Long-running training tests",
     "ckpt": "Checkpoint save / load tests",
