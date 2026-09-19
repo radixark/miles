@@ -22,24 +22,12 @@ import torch
 from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant
 from tqdm import tqdm
 
+from miles.utils.hf_rollout_schema import MXFP8_SKIP_WEIGHT_SUBSTRINGS
 from miles.utils.mxfp8 import MXFP8_GROUP_SIZE
 from miles.utils.mxfp8 import mxfp8_quantize as quantize_mxfp8
 
 
-SKIP_WEIGHT_SUBSTRINGS = (
-    "layernorm",
-    "embed",
-    "router",
-    "mlp.gate.",
-    "norm",
-    "lm_head",
-    "eh_proj",
-    "weights_proj",
-    "head.",
-    "wo_a",
-    "ffn.gate.",
-    "compressor.",
-)
+SKIP_WEIGHT_SUBSTRINGS = MXFP8_SKIP_WEIGHT_SUBSTRINGS
 
 SOURCE_FP8_BLOCK_SIZE = [128, 128]
 TARGET_MXFP8_BLOCK_SIZE = [1, MXFP8_GROUP_SIZE]

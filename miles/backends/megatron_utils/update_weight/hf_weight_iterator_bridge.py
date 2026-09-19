@@ -1,18 +1,23 @@
 import dataclasses
 import itertools
 import json
+import logging
 import os
+from pathlib import Path
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
 )
 from miles.utils import megatron_bridge_utils
+from miles.utils.hf_parameter_names import get_param_name_remap
 from miles.utils.lora import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
+
+logger = logging.getLogger(__name__)
 
 
 class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
@@ -21,7 +26,13 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         from megatron.bridge import AutoBridge
 
-        self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+        bridge_checkpoint = _select_bridge_checkpoint(self.args)
+        self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
+        # Bridge may export official DSV4 checkpoint names, e.g. layers.0.attn.wq_a.weight,
+        # while SGLang's model uses model.layers.0.self_attn.wq_a.weight.
+        # Resolve the mapping once so postprocessing, quantization, and bucketing
+        # all use SGLang's model namespace.
+        self._remap_hf_name = _load_checkpoint_name_remap(bridge_checkpoint)
 
         if (
             self.quantization_config is not None
@@ -60,6 +71,10 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     pass
                 return
 
+            named_weights = (
+                (self._remap_hf_name(hf_name), weight, megatron_name)
+                for hf_name, weight, megatron_name in named_weights
+            )
             named_weights = self._postprocess_and_quantize(named_weights, "base")
             # One unit per megatron param: quantize emits weight + scales
             # consecutively, so grouping by source name keeps them together.
@@ -108,6 +123,20 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 yield hf_name, weight, megatron_param_name
 
 
+def _load_checkpoint_name_remap(checkpoint):
+    """Resolve export names from the checkpoint's architecture and tensor namespace."""
+    config_path = Path(checkpoint) / "config.json"
+    index_path = Path(checkpoint) / "model.safetensors.index.json"
+    if not config_path.is_file() or not index_path.is_file():
+        logger.warning(
+            "Checkpoint %s has no local config or safetensors index; preserving Bridge export names.", checkpoint
+        )
+        return lambda name: name
+    with index_path.open(encoding="utf-8") as index_file:
+        weight_map = json.load(index_file)["weight_map"]
+    return get_param_name_remap(str(config_path), weight_map)
+
+
 def _load_quantized_param_basenames(hf_checkpoint):
     """Base names of params stored packed (`<base>.weight_packed`) in the checkpoint, or None if unknown."""
     index_path = os.path.join(hf_checkpoint, "model.safetensors.index.json")
@@ -116,6 +145,17 @@ def _load_quantized_param_basenames(hf_checkpoint):
     with open(index_path) as f:
         names = json.load(f)["weight_map"]
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
+
+
+def _select_bridge_checkpoint(args):
+    """Use an HF trainer seed for export mappings when one is available."""
+    for candidate in (getattr(args, "load", None), getattr(args, "ref_load", None)):
+        if candidate is None:
+            continue
+        path = Path(candidate)
+        if (path / "model.safetensors.index.json").is_file() or any(path.glob("*.safetensors")):
+            return candidate
+    return args.hf_checkpoint
 
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):

@@ -24,6 +24,9 @@ ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
 
+# FlashMLA provides the sparse-attention forward used by Megatron's cuDNN DSA backend.
+ARG FLASH_MLA_COMMIT=b7643bd54521f563b839b98289b5cd048c062ba2
+
 ARG ENABLE_CUDA_13=1
 
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
@@ -39,9 +42,9 @@ WORKDIR /root/
 
 # ======================================== Apt dependencies =============================================
 
-RUN apt update
+RUN apt -o APT::Sandbox::User=root update
 # ethtool for network diagnostics
-RUN apt install -y nvtop rsync dnsutils ethtool tmux
+RUN apt -o APT::Sandbox::User=root install -y nvtop rsync dnsutils ethtool tmux
 
 # nccl-tests for diagnostics
 RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
@@ -88,6 +91,16 @@ RUN pip install flash-linear-attention==0.5.2
 # required for DeepSeek V4
 RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
 RUN pip install --no-deps tile_kernels==1.0.0
+# Megatron's cuDNN DSA backend uses FlashMLA for sparse-attention forward and
+# cuDNN Frontend for backward and indexer kernels. FlashMLA has no release wheel
+# in miles-wheels, so build the pinned nv_dev revision for SM90 and SM100.
+RUN git clone https://github.com/deepseek-ai/FlashMLA.git /tmp/FlashMLA && \
+    cd /tmp/FlashMLA && \
+    git checkout "${FLASH_MLA_COMMIT}" && \
+    git submodule update --init --recursive && \
+    CPLUS_INCLUDE_PATH=/usr/local/cuda/include/cccl \
+      MAX_JOBS=8 NVCC_THREADS=4 pip install -v --no-build-isolation . && \
+    rm -rf /tmp/FlashMLA
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
 # Prefer the prebuilt wheel; fall back to a source build while the current
@@ -192,6 +205,7 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
     pip install nvidia-cudnn-cu12==9.22.0.52; \
   fi
 
+RUN python3 -c "from flash_mla import flash_mla_sparse_fwd; import cudnn.deepseek_sparse_attention"
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
 
