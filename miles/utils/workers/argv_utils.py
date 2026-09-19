@@ -5,6 +5,8 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from typing import TypeVar
 
+import msgspec
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 CONFIG_JSON_FLAG = "--config-json"
@@ -59,7 +61,7 @@ def parse_config_argv(config_cls: type[_ConfigT], argv: list[str] | None) -> _Co
 
 
 def dataclass_to_values(args_obj: object) -> dict[str, object]:
-    return {field.name: getattr(args_obj, field.name) for field in dataclasses.fields(args_obj)}
+    return {field.name: getattr(args_obj, field.name) for field in _record_fields(args_obj)}
 
 
 def render_cli_argv(
@@ -106,10 +108,16 @@ def render_cli_argv(
     return argv
 
 
+def _record_fields(record):
+    if isinstance(record, msgspec.Struct):
+        return msgspec.structs.fields(record)
+    return dataclasses.fields(record)
+
+
 def _describe_mismatch(parsed: _ArgsT, wanted: _ArgsT, *, uncompared_fields: frozenset[str]) -> str:
     return ", ".join(
         f"{field.name}: parsed {getattr(parsed, field.name)!r} != wanted {getattr(wanted, field.name)!r}"
-        for field in dataclasses.fields(wanted)
+        for field in _record_fields(wanted)
         if field.name not in uncompared_fields and getattr(parsed, field.name) != getattr(wanted, field.name)
     )
 
