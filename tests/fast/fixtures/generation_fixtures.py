@@ -259,7 +259,7 @@ def with_session_server(
 
 @pytest.fixture
 def generation_env(request, variant):
-    # tests/conftest.py imports this fixture for every test; load the tokenizer-backed helper only when it is used.
+    # Load the tokenizer-backed helper only when the fixture is used, not during test collection.
     from miles.utils.test_utils import mock_tools
 
     SingletonMeta.clear_all_instances()
