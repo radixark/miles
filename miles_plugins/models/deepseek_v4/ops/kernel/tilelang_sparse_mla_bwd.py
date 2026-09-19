@@ -86,7 +86,8 @@ def postprocess(
 
 
 @tilelang.jit(
-    out_idx=[-3],
+    # dQ, now the second-to-last parameter: dAttnSink no longer comes back from the kernel.
+    out_idx=[-2],
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
@@ -153,13 +154,13 @@ def bwd(
         Delta: T.Tensor(delta_shape, accum_dtype),
         dQ: T.Tensor(q_shape, dtype),
         dKV: T.Tensor(kv_shape, accum_dtype),
-        dAttnSink: T.Tensor(attn_sink_shape, accum_dtype),
     ):
         with T.Kernel(S, B, NH, threads=threads) as (s_i, by, bz):
             Q_shared = T.alloc_shared([block_H, D], dtype)
             KV_shared = T.alloc_shared([BS, D], dtype)
             dO_shared = T.alloc_shared([block_H, D], dtype)
             mask = T.alloc_fragment([BS], "bool")
+            safe_index = T.alloc_fragment([BS], indices_dtype)
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
@@ -180,12 +181,19 @@ def bwd(
             for i_i in T.Pipelined(NS, num_stages=num_stages):
                 for bi_i in T.Parallel(BS):
                     mask[bi_i] = Indices[by, s_i, i_i * BS + bi_i] != -1
+                    # -1 marks a padded or non-causal slot. Indexing KV at -1 walks off the
+                    # front of this batch element, and off the whole allocation when by == 0.
+                    # The gemm below ACCUMULATES into acc_p, so an inf/NaN bit pattern in that
+                    # out-of-bounds memory would turn the -inf sentinel into NaN and propagate.
+                    # Clamp to a real row; the sentinel still drives P to exactly zero.
+                    # tilelang_indexer_bwd.py guards its own scatter the same way.
+                    safe_index[bi_i] = T.max(Indices[by, s_i, i_i * BS + bi_i], 0)
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
 
                 for bi_i, d_i in T.Parallel(BS, D):
-                    KV_shared[bi_i, d_i] = KV[by, Indices[by, s_i, i_i * BS + bi_i], d_i]
+                    KV_shared[bi_i, d_i] = KV[by, safe_index[bi_i], d_i]
 
                 T.gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
@@ -229,15 +237,28 @@ def bwd(
                         if bi_i < BS // split_store:
                             acc_dkv_shared[bi_i, d_i] = acc_dkv[bi_i + s * (BS // split_store), d_i]
 
+                    # Skip the -1 slots. Their contribution is exactly +0.0 because the
+                    # sentinel drove P to zero, so the write never changed a value - but it
+                    # did touch memory outside dKV, which is not something to keep doing.
+                    #
+                    # This stays a 4-wide FLOAT atomic, so dKV is still not bit-reproducible.
+                    # Fixed-point integer accumulation does fix that, and was measured to:
+                    # every output became bitwise identical across repeats at every collision
+                    # pressure. It is not kept because the 4-wide form has no integer
+                    # equivalent on HIP, and dropping to scalar atomics costs 7.6x on this
+                    # kernel's tiling (11.6x with the uint64 conversion on top). The residual
+                    # dKV noise is 3e-06 relative, below the bf16 this is about to be cast to,
+                    # and measurement showed it is not what limits gradient-precision work.
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
-                        T.atomic_addx4(
-                            dKV[
-                                by,
-                                Indices[by, s_i, i_i * BS + bi_i + s * (BS // split_store)],
-                                d_i * 4,
-                            ],
-                            acc_dkv_shared[bi_i, d_i * 4],
-                        )
+                        if mask[bi_i + s * (BS // split_store)]:
+                            T.atomic_addx4(
+                                dKV[
+                                    by,
+                                    Indices[by, s_i, i_i * BS + bi_i + s * (BS // split_store)],
+                                    d_i * 4,
+                                ],
+                                acc_dkv_shared[bi_i, d_i * 4],
+                            )
 
             # Store dQ
             if stage_dq_through_shared:
@@ -246,15 +267,11 @@ def bwd(
             else:
                 T.copy(acc_dq, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
 
-            # dAttnSink[h] = -sum_{b,s}( Delta[b,s,h] * p_sink[b,s,h] )
-            # where p_sink = exp(attn_sink[h]) / Z = exp2(attn_sink[h]*log2e - LSE)
-            # attn_sink is a pre-scaled logit, so only convert to log2 base (no sm_scale)
-            for h_i in T.Parallel(block_H):
-                T.atomic_add(
-                    dAttnSink[bz * block_H + h_i],
-                    -Delta[by, s_i, bz * block_H + h_i]
-                    * T.exp2(AttnSink[bz * block_H + h_i] * 1.44269504 - Lse[by, s_i, bz * block_H + h_i]),
-                )
+            # dAttnSink used to be accumulated here, with every (s_i, by) block atomically
+            # adding into the same H addresses - the worst contention pattern in the kernel,
+            # and the reason 7 of its 8 elements differed between identical runs. It depends
+            # only on Delta, AttnSink and Lse, all of which the host already holds, so it is
+            # now computed there in one reproducible reduction. See sparse_mqa_bwd_interface.
 
     return sparse_mqa_bwd_kernel
 
@@ -377,9 +394,19 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
     postprocess_kernel = postprocess(B, S_kv, D)
 
     delta = preprocess_kernel(o, do)
+
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    d_attn_sink = torch.zeros_like(attn_sink)
-    dq = bwd_kernel(q, kv, do, attn_sink, topk_idxs, lse, delta, dkv, d_attn_sink)
+    dq = bwd_kernel(q, kv, do, attn_sink, topk_idxs, lse, delta, dkv)
     dkv = postprocess_kernel(dkv)
+
+    # dAttnSink[h] = -sum_{b,s}( Delta[b,s,h] * p_sink[b,s,h] ),
+    # p_sink = exp(attn_sink[h]) / Z = exp2(attn_sink[h]*log2e - LSE).
+    # attn_sink is a pre-scaled logit, so only the log2 base conversion applies (no sm_scale).
+    # The kernel used to accumulate this with an atomic per (s_i, by) block into H addresses,
+    # which made it the least reproducible output it had. torch.sum over a fixed-shape
+    # contiguous tensor uses a fixed reduction tree, so this form is run-to-run identical.
+    d_attn_sink = -(
+        delta.float() * torch.exp2(attn_sink.float().view(1, 1, -1) * 1.44269504 - lse.float())
+    ).sum(dim=(0, 1)).to(attn_sink.dtype)
 
     return dq, dkv, d_attn_sink
