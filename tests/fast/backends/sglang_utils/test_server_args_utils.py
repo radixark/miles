@@ -26,6 +26,9 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "_speculative_draft_quantization_explicitly_set": (
         "Derived inside __post_init__ and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
+    "_radix_eviction_policy_explicitly_set": (
+        "Derived during resolution and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
     "grpc_worker_threads": (
         "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
