@@ -2,16 +2,17 @@ import importlib
 import sys
 from collections import Counter
 from contextlib import contextmanager
-from dataclasses import dataclass
 from types import ModuleType
 
+import msgspec
 import pytest
 
 _MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils"
 
 
-@dataclass
-class _FakeServerArgs:
+class _FakeServerArgs(msgspec.Struct):
+    """A Struct, like the real ServerArgs since sglang v0.5.20."""
+
     model_path: str | None = None
 
 
