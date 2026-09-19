@@ -17,7 +17,12 @@ from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
+from miles.rollout.session.errors import (
+    MessageValidationError,
+    SessionNotFoundError,
+    TokenizationError,
+    UpstreamResponseError,
+)
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import encode_samples
@@ -231,8 +236,14 @@ class SessionCore:
             body["session_server_instance_id"] = self.instance_id
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def create_session(self) -> Response:
-        session_id = self.registry.create_session()
+    async def create_session(self, body: bytes = b"") -> Response:
+        params = parse_chat_request(body)
+        if not isinstance(params, dict):
+            raise MessageValidationError("session creation body must be an object")
+        evaluation = params.get("evaluation", False)
+        if not isinstance(evaluation, bool):
+            raise MessageValidationError("evaluation must be a boolean")
+        session_id = self.registry.create_session(evaluation=evaluation)
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     def _session_metadata(self, session_id: str, session) -> dict:

@@ -49,6 +49,7 @@ class SessionStateV2:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
+    evaluation: bool = False
 
     def latest(self) -> TrajectoryNode | None:
         """The most recently committed generation (always a leaf), or ``None``
@@ -99,7 +100,11 @@ def prepare_token_ids_and_request_args(
     request_messages = client_args.get("messages", [])
     parent = attach_point_for_request(state, request_messages, message_matcher=message_matcher).node
     prepared = prepare_chat_request(
-        client_args, tito_tokenizer, config=config, turn_args=parent.turn_args if parent is not None else None
+        client_args,
+        tito_tokenizer,
+        config=config,
+        turn_args=parent.turn_args if parent is not None else None,
+        evaluation=state.evaluation,
     )
     prepared.body["input_ids"] = _render_token_ids(
         parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
@@ -209,9 +214,9 @@ class SessionRegistryV2(SessionRegistry):
 
     sessions: dict[str, SessionStateV2]
 
-    def create_session(self) -> str:
+    def create_session(self, *, evaluation: bool = False) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = SessionStateV2()
+        self.sessions[session_id] = SessionStateV2(evaluation=evaluation)
         return session_id
 
     def compute_mismatch(
