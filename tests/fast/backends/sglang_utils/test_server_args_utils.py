@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import functools
 import json
 from argparse import Namespace
 from typing import Any
 
+import msgspec
 import pytest
 from tests.fast.backends.sglang_utils.conftest import make_engine_args as _args
 from tests.fast.backends.sglang_utils.conftest import tiny_model_path
@@ -25,6 +25,9 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "uses_mamba_radix_cache": "Derived inside __post_init__; sglang registers no CLI option for it.",
     "_speculative_draft_quantization_explicitly_set": (
         "Derived inside __post_init__ and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
+    "_radix_eviction_policy_explicitly_set": (
+        "Derived during resolution and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
     "grpc_worker_threads": (
         "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
@@ -79,7 +82,7 @@ def _assert_roundtrips(server_args_dict: dict) -> None:
     wanted = ServerArgs(**{**server_args_dict, "device": device})
     differing = [
         field.name
-        for field in dataclasses.fields(wanted)
+        for field in msgspec.structs.fields(wanted)
         if getattr(parsed, field.name) != getattr(wanted, field.name)
     ]
     assert differing == []
@@ -223,7 +226,7 @@ class TestEveryServerArgsFieldIsRenderable:
                 if field.name in _FIELDS_WITHOUT_A_RENDERABLE_CLI
                 else pytest.param(field.name, id=field.name)
             )
-            for field in dataclasses.fields(ServerArgs)
+            for field in msgspec.structs.fields(ServerArgs)
         ],
     )
     def test_a_field_renders_to_argv_that_parses_back_to_the_same_value(self, field_name: str) -> None:

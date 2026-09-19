@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
+
+import msgspec
 
 import pytest
 
@@ -56,4 +57,4 @@ class TestAllocatorOwnedServerArgs:
 
     def test_the_skipped_launch_gate_port_names_a_real_server_args_field(self):
         """A renamed upstream field would leave the skip entry stale and quietly re-expose the flag."""
-        assert "gated_launch_port" in {field.name for field in dataclasses.fields(ServerArgs)}
+        assert "gated_launch_port" in {field.name for field in msgspec.structs.fields(ServerArgs)}

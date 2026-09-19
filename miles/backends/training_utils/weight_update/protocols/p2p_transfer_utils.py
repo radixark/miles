@@ -5,6 +5,7 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 
+import msgspec
 import ray
 import torch
 from sglang.srt.server_args import ServerArgs
@@ -178,7 +179,7 @@ class P2PTransferManager:
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
-    valid_fields = {f.name for f in dataclasses.fields(ServerArgs)}
+    valid_fields = {f.name for f in msgspec.structs.fields(ServerArgs)}
     filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
     return ServerArgs(**filtered_data)
 

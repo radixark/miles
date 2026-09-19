@@ -103,7 +103,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-top-p 1 
   --rollout-num-gpus-per-engine 8
   --sglang-mem-fraction-static 0.7
-  --sglang-cuda-graph-max-bs 512 
+  --sglang-cuda-graph-max-bs-decode 512 
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32

@@ -1,9 +1,10 @@
-import dataclasses
 import ipaddress
 import logging
 import os
 import shlex
 import sys
+
+import msgspec
 
 from sglang.srt.server_args import ServerArgs
 
@@ -177,7 +178,7 @@ def _compute_server_args(
         kwargs.update(sglang_overrides)
 
     unused_keys = set(kwargs.keys())
-    for attr in dataclasses.fields(ServerArgs):
+    for attr in msgspec.structs.fields(ServerArgs):
         if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
             continue
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:

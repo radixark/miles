@@ -101,7 +101,7 @@ def execute():
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.6 "
-        f"--sglang-cuda-graph-bs {' '.join(map(str, [1, 2, 4, 8] + list(range(16, 257, 8))))} "
+        f"--sglang-cuda-graph-bs-decode {' '.join(map(str, [1, 2, 4, 8] + list(range(16, 257, 8))))} "
     )
 
     fsdp_args = (

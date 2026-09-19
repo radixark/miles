@@ -189,7 +189,7 @@ def _train(args: ScriptArgs):
         "--sglang-max-total-tokens 327680 "
         "--sglang-attention-backend triton "
         "--sglang-moe-runner-backend triton "
-        "--sglang-mamba-scheduler-strategy extra_buffer "
+        "--sglang-mamba-radix-cache-strategy extra_buffer "
         "--sglang-enable-multimodal "
         f"--sglang-context-length {args.sglang_context_length} "
         "--sglang-disable-custom-all-reduce "

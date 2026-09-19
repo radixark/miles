@@ -103,7 +103,7 @@ def execute():
         "--rollout-num-gpus-per-engine 1 "
         f"--sglang-mem-fraction-static 0.6 "
         "--sglang-enable-metrics "
-        "--sglang-cuda-graph-max-bs 32 "
+        "--sglang-cuda-graph-max-bs-decode 32 "
         f"--sglang-config {config_path} "
     )
 

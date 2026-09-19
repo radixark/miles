@@ -78,7 +78,7 @@ _RECIPES: dict[str, _Recipe] = {
         0.7,
         True,
         num_rollout=5,
-        extra_sglang_args=f"--sglang-cuda-graph-bs {_QWEN3_32B_CUDA_GRAPH_BS} ",
+        extra_sglang_args=f"--sglang-cuda-graph-bs-decode {_QWEN3_32B_CUDA_GRAPH_BS} ",
     ),
     # SGLang TP>1 produces garbage output for Qwen3.5 on 0.5.9, which miles still pins
     # (https://github.com/sgl-project/sglang/issues/21039), hence one GPU per engine.
