@@ -38,7 +38,9 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
             rewards = [0.0 if r is None else r for r in rewards]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
         if (samples := data[key].get("samples")) is not None:
-            log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
+            # Agentic eval can return verdicts without collecting token trajectories.
+            if token_samples := [sample for sample in samples if sample.tokens]:
+                log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, token_samples), f"eval/{key}/")
         if "truncated" in data[key]:
             truncated = data[key]["truncated"]
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)

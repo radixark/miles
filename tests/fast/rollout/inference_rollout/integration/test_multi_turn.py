@@ -5,9 +5,9 @@ from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant, list
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 from tests.fast.rollout.inference_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_rollout
 
+from miles.utils.test_utils import mock_tools
 from miles.utils.test_utils.mock_tools import TwoTurnStub
 from miles.utils.types import Sample
-
 
 TWO_TURN_DATA_ROWS = [{"input": [{"role": "user", "content": TwoTurnStub.USER_QUESTION}], "label": "2008"}]
 
@@ -38,9 +38,11 @@ def _config_for_variant(variant: str) -> RolloutEnvConfig:
     indirect=["rollout_env"],
 )
 @pytest.mark.parametrize("test_type", ["train", "eval"])
-def test_rollout(rollout_env, variant, test_type):
+def test_rollout(rollout_env, variant, test_type, monkeypatch):
     env = rollout_env
     env.mock_server.process_fn = TwoTurnStub.process_fn
+    if test_type == "eval" and variant == "agentic_tool_call":
+        monkeypatch.setattr(mock_tools, "AGENTIC_RETURN_METADATA", {"reward": 1.0})
 
     out = load_and_call_rollout(env.args, env.data_source, mode=test_type)
 
@@ -51,7 +53,17 @@ def test_rollout(rollout_env, variant, test_type):
     else:
         assert "toy" in out.data
         samples = out.data["toy"]["samples"]
-        _verify_samples(variant, samples)
+        if variant == "agentic_tool_call":
+            assert out.data["toy"]["rewards"] == [1.0, 1.0]
+            assert len(samples) == 2
+            assert len(env.mock_server.request_log) == 4
+            for sample in samples:
+                assert sample.status == Sample.Status.COMPLETED
+                assert sample.tokens == []
+                assert sample.response == ""
+                assert "leaf" not in sample.metadata
+        else:
+            _verify_samples(variant, samples)
 
 
 def _verify_samples(variant: str, samples: list[Any]):

@@ -3,7 +3,7 @@ title: Agentic Rollout (TITO)
 description: Configure an OpenAI-compatible agent loop with Token-In-Token-Out trajectory assembly.
 ---
 
-Multi-turn agentic rollout in Miles runs through the Token-In-Token-Out (TITO)
+Multi-turn agentic training rollout in Miles runs through the Token-In-Token-Out (TITO)
 session server. Your agent exchanges OpenAI-compatible chat messages, while Miles
 preserves the exact token IDs, logprobs, and routed experts produced during
 inference and assembles them into training samples. For the design rationale, see
@@ -25,7 +25,7 @@ stateless `/generate` interface.
 
 Select `agentic_tool_call.generate` as the custom generate function. The wrapper
 registers `--custom-agent-function-path` and `--max-seq-len`, creates a TITO
-session for each rollout, invokes your agent, and collects the resulting samples.
+session for each training rollout, invokes your agent, and collects the resulting samples.
 
 ```bash
 AGENTIC_ARGS=(
@@ -61,7 +61,7 @@ async def run_agent(
     ...
 ```
 
-Send OpenAI-compatible chat requests to the session-scoped endpoint:
+Send OpenAI-compatible chat requests to the supplied endpoint:
 
 ```python
 from miles.utils.http_utils import post
@@ -73,18 +73,27 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     return None
 ```
 
-- `base_url` already includes `/sessions/<id>`; do not append the session path.
+- `base_url` points to the policy endpoint; append `/v1/chat/completions`. Training URLs already include `/sessions/<id>`, while evaluation URLs point directly to the inference router.
 - `prompt` is the input sample's OpenAI `messages` list.
 - `request_kwargs` contains the rollout sampling settings in
   `ChatCompletionRequest`-compatible form. For example, Miles maps
   `max_new_tokens` to `max_tokens`.
-- `metadata` contains the sample metadata, session identifiers, and configured
-  `max_seq_len`. Forward only the fields your environment needs.
+- `metadata` contains the sample metadata. Training also adds session identifiers and
+  configured `max_seq_len`. Forward only the fields your environment needs.
 - Return a dictionary to merge rewards, reports, or metrics into each output
-  sample's metadata, or return `None` when there is nothing to add.
+  sample's metadata, or return `None` when there is nothing to add. Evaluation requires
+  a reward in this dictionary, as described below.
 
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
+
+### Evaluation
+
+During evaluation, the wrapper calls the same agent directly against the configured inference router, including the separate eval fleet when enabled. It does not create a session or collect training samples. Each agent invocation returns one evaluation result, regardless of its internal branches or model calls.
+
+Return a dictionary containing `reward` (a scalar, or a dictionary selected by `--eval-reward-key`), plus any reports or metrics. The wrapper preserves this metadata and uses the reward directly. Returning `None`, omitting the reward, or raising an exception records an aborted trial with no reward; the standard eval logger reports its missing-reward ratio and counts it as zero. Evaluation does not run a response-based reward model on an uncollected transcript.
+
+Forward `request_kwargs` to the model API, including `chat_template_kwargs` and `lora_path` when supplied. Sampling settings retain their existing defaults and overrides, and stop-token text is trimmed from chat responses. Evaluation uses ordinary chat rendering rather than TITO token continuation. It does not inject training `max_seq_len` or session identifiers into agent metadata, and token-trajectory metrics are unavailable because no trajectory is collected. Agent-provided reports and metrics remain in the result metadata.
 
 
 ### Optional teardown hook

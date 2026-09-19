@@ -1,6 +1,9 @@
 """
 Generic agentic generate function for agent-environment RL training.
 
+Evaluation calls the agent directly against the inference router and returns
+one result from its reward and metadata, without collecting a TITO trajectory.
+
 The agent logic is fully encapsulated in a user-provided async function
 (--custom-agent-function-path). This generate function only handles:
   1. TITO session tracing (OpenAIEndpointTracer)
@@ -37,12 +40,16 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
+from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+    if input.evaluation:
+        return await _generate_eval(input)
+
     assert not input.args.partial_rollout, "Partial rollout is not supported"
     assert getattr(input.args, "session_server_addrs", None), (
         "agentic_tool_call.generate requires session_server_addrs. "
@@ -163,6 +170,39 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     (sample,) = samples
     sample.metadata.update(result.session_metadata)
+    return GenerateFnOutput(samples=sample)
+
+
+async def _generate_eval(input: GenerateFnInput) -> GenerateFnOutput:
+    args = input.args
+    agent = load_function(args.custom_agent_function_path)
+    assert agent is not None, f"Custom agent function {args.custom_agent_function_path} not found"
+    sample = deepcopy(input.sample)
+    request_kwargs = build_chat_request_kwargs(input.sampling_params)
+    request_kwargs["no_stop_trim"] = False
+    request_kwargs["chat_template_kwargs"] = {
+        **(args.apply_chat_template_kwargs or {}),
+        **(request_kwargs.get("chat_template_kwargs") or {}),
+    }
+    if lora_rollout_enabled(args):
+        request_kwargs["lora_path"] = LORA_ADAPTER_NAME
+
+    try:
+        agent_metadata = await agent(
+            base_url=f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
+            prompt=sample.prompt,
+            request_kwargs=request_kwargs,
+            metadata=sample.metadata,
+        )
+    except Exception:
+        logger.warning("Evaluation agent failed for sample %s", sample.index, exc_info=True)
+        agent_metadata = None
+
+    sample.metadata.update(agent_metadata or {})
+    sample.reward = (agent_metadata or {}).get("reward")
+    sample.status = Sample.Status.COMPLETED if sample.reward is not None else Sample.Status.ABORTED
+    if sample.reward is None:
+        logger.warning("Evaluation agent returned no reward for sample %s", sample.index)
     return GenerateFnOutput(samples=sample)
 
 
