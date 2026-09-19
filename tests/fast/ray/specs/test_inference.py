@@ -561,26 +561,77 @@ def _make_pin_args(*, pinned: bool):
 
 
 class TestInferenceEnginePortSchema:
-    def test_the_master_port_reserves_a_block_for_every_dp_rank(self, tmp_path):
-        """sglang needs a contiguous block behind dist_init, so the reservation must grow with dp size."""
+    def test_non_dp_attention_reserves_only_the_rendezvous_port(self, tmp_path):
+        """Single-node non-DP engines use IPC rather than TCP-derived channels."""
         config_path = tmp_path / "sglang.yaml"
         config_path.write_text(
             make_sglang_config_yaml(
                 server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
             )
         )
-        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4, sglang_dp_size=3)
+        args = make_args(
+            sglang_config=str(config_path),
+            rollout_num_gpus=4,
+            sglang_dp_size=3,
+            sglang_enable_dp_attention=False,
+        )
 
         ports = {info.name: info for info in specs_inference_engine(args)[0].port_infos}
 
         assert ports["dist_init"].mode == "master"
         assert ports["dist_init"].allow_dynamic is True
-        assert ports["dist_init"].num_consecutive == 33
+        assert ports["dist_init"].num_consecutive == 1
         assert {name for name, info in ports.items() if info.mode == "per_worker"} == {
             "primary",
             "nccl",
             "engine_info_bootstrap",
         }
+
+    def test_dp_attention_reserves_a_block_for_every_dp_rank(self, tmp_path):
+        """SGLang derives TCP channels from dist_init when DP attention is enabled."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(
+            sglang_config=str(config_path),
+            rollout_num_gpus=4,
+            sglang_dp_size=3,
+            sglang_enable_dp_attention=True,
+        )
+
+        ports = {info.name: info for info in specs_inference_engine(args)[0].port_infos}
+
+        assert ports["dist_init"].num_consecutive == 33
+
+    @pytest.mark.parametrize(
+        ("overrides", "expected"),
+        [
+            ({"enable_dp_attention": False, "dp_size": 7}, 1),
+            ({"enable_dp_attention": True, "dp_size": 7}, 37),
+        ],
+    )
+    def test_server_group_overrides_control_the_dist_port_span(self, overrides, expected):
+        """Per-group settings win over the global SGLang arguments used as defaults."""
+        args = make_args(
+            sglang_dp_size=2,
+            sglang_enable_dp_attention=not overrides["enable_dp_attention"],
+        )
+        model_cfg = _make_model_cfg("regular")
+        server_group = model_cfg.server_groups[0].model_copy(update={"overrides": overrides})
+
+        spec = inference_specs._compute_spec_inference_engine(
+            args,
+            model_idx=0,
+            group_index=0,
+            model_cfg=model_cfg,
+            server_group_config=server_group,
+        )
+        ports = {info.name: info for info in spec.port_infos}
+
+        assert ports["dist_init"].num_consecutive == expected
 
     def test_the_gate_port_is_allocated_once_per_cell(self, tmp_path):
         """The out-of-band launch gate lives on the cell's rank-0 engine, like dist_init."""
