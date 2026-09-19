@@ -74,14 +74,17 @@ def _resolve_rollout_functions(args) -> None:
     user_eval_path = args.eval_function_path
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
     if (
-        any(
-            getattr(args, name, None) is not None
-            for name in ("rollout_max_candidate_groups", "rollout_timeout_seconds")
+        (
+            any(
+                getattr(args, name, None) is not None
+                for name in ("rollout_max_candidate_groups", "rollout_timeout_seconds")
+            )
+            or (getattr(args, "rollout_max_attempts", 1) or 1) > 1
         )
         and args.rollout_function_path != "miles.rollout.sglang_rollout.generate_rollout"
     ):
         raise ValueError(
-            "--rollout-max-candidate-groups and --rollout-timeout-seconds require "
+            "--rollout-max-candidate-groups, --rollout-timeout-seconds and --rollout-max-attempts require "
             "--rollout-function-path miles.rollout.sglang_rollout.generate_rollout "
             "(or MILES_USE_LEGACY_ROLLOUT_V1=1); other rollout implementations do not enforce these budgets"
         )
@@ -690,9 +693,35 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "Maximum candidate prompt groups submitted per legacy sglang_rollout training rollout, "
-                    "including in-flight and filtered groups. None disables the limit. "
-                    "Already submitted groups may finish; fail if they cannot fill rollout_batch_size."
+                    "Maximum candidate prompt groups submitted per legacy sglang_rollout training rollout "
+                    "attempt, including in-flight and filtered groups. None disables the limit. "
+                    "Already submitted groups may finish; fail if they cannot fill rollout_batch_size. "
+                    "With --rollout-max-attempts N the per-rollout worst case is N times this."
+                ),
+            )
+            parser.add_argument(
+                "--max-consecutive-zero-grad-steps",
+                type=int,
+                default=0,
+                help=(
+                    "Exit after this many consecutive optimizer steps whose reduced gradient norm is "
+                    "exactly zero. Reward-variance filters do not guarantee a non-zero parameter "
+                    "gradient, so this is the separate protection for a silently dead backward. "
+                    "0 disables the check."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-max-attempts",
+                type=int,
+                default=1,
+                help=(
+                    "How many times one legacy sglang_rollout training rollout may re-sample after "
+                    "falling short of rollout_batch_size valid groups. 1 keeps the fail-fast behaviour. "
+                    "Only a shortfall is retried, and only when the failed attempt still completed at "
+                    "least rollout_batch_size candidate groups: an exhausted data source, or a "
+                    "throughput-bound attempt, fails immediately. Each attempt gets a FRESH "
+                    "--rollout-timeout-seconds deadline and --rollout-max-candidate-groups budget, so "
+                    "the worst case for one rollout is this many times each."
                 ),
             )
             parser.add_argument(
@@ -700,9 +729,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=None,
                 help=(
-                    "Wall-clock sampling deadline per legacy sglang_rollout training rollout, including waiting. "
-                    "None disables the deadline. An incomplete batch raises an error rather than training. "
-                    "Abort and cancellation have a separate bounded cleanup grace period."
+                    "Wall-clock sampling deadline per legacy sglang_rollout training rollout attempt, "
+                    "including waiting. None disables the deadline. An incomplete batch raises an error "
+                    "rather than training. Abort and cancellation have a separate bounded cleanup grace "
+                    "period. With --rollout-max-attempts N the per-rollout worst case is N times this."
                 ),
             )
             parser.add_argument(
@@ -2903,10 +2933,31 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
 def validate_rollout_sampling_budgets(args) -> None:
     max_groups = getattr(args, "rollout_max_candidate_groups", None)
     timeout = getattr(args, "rollout_timeout_seconds", None)
+    attempts = getattr(args, "rollout_max_attempts", 1)
     if max_groups is not None and (not isinstance(max_groups, int) or max_groups <= 0):
         raise ValueError("--rollout-max-candidate-groups must be a positive integer")
     if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("--rollout-timeout-seconds must be finite and positive")
+    # Bounded on purpose: an unbounded budget would turn a dead fleet into an idle loop.
+    if attempts is not None and (not isinstance(attempts, int) or not 1 <= attempts <= 10):
+        raise ValueError("--rollout-max-attempts must be an integer between 1 and 10")
+    zero_grad = getattr(args, "max_consecutive_zero_grad_steps", 0)
+    if zero_grad is not None and (not isinstance(zero_grad, int) or zero_grad < 0):
+        raise ValueError("--max-consecutive-zero-grad-steps must be a non-negative integer")
+    # Only the Megatron train loop observes the reduced grad norm; anywhere else the
+    # flag would read as protection the run does not actually have.
+    if zero_grad and getattr(args, "train_backend", "megatron") != "megatron":
+        raise ValueError(
+            "--max-consecutive-zero-grad-steps requires --train-backend megatron; "
+            "other training backends do not observe the reduced gradient norm"
+        )
+    # Megatron only computes a grad norm when it clips; without clipping the norm is a
+    # constant sentinel, which the watchdog would read as a permanently dead backward.
+    if zero_grad and getattr(args, "clip_grad", 1.0) <= 0:
+        raise ValueError(
+            "--max-consecutive-zero-grad-steps requires --clip-grad > 0; the optimizer only "
+            "reports a gradient norm when clipping is enabled"
+        )
 
 
 def validate_continuous_rollout(args) -> None:

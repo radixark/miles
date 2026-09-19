@@ -664,6 +664,55 @@ def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
     return config
 
 
+class _ZeroGradientWatchdog:
+    """Abort a run whose optimizer keeps receiving an all-zero gradient.
+
+    The rollout filters guarantee reward variance, not a non-zero parameter
+    gradient, so a silently dead backward would otherwise hold the GPUs until
+    someone notices. Counting uses the grad norm ``optimizer.step()`` returns,
+    which is already reduced across the model-parallel groups, so every rank
+    reaches the limit on the same step and no rank is left waiting.
+    """
+
+    def __init__(self) -> None:
+        self.streaks: dict[str, int] = {}
+
+    def observe(self, limit: int, role: str, grad_norm, rollout_id: int, step_id: int) -> None:
+        if limit <= 0:
+            return
+        # None means the optimizer never measured a norm (it only does so when
+        # clip_grad > 0); that is not evidence of a zero gradient either way.
+        if grad_norm is None:
+            return
+        value = float(grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm)
+        # A non-finite norm is a different failure and is handled on the optimizer path.
+        if not math.isfinite(value):
+            return
+        if value > 0.0:
+            self.streaks[role] = 0
+            return
+        streak = self.streaks.get(role, 0) + 1
+        self.streaks[role] = streak
+        logger.warning(
+            "%s rollout %s step %s produced a zero gradient norm (%s consecutive, limit %s)",
+            role,
+            rollout_id,
+            step_id,
+            streak,
+            limit,
+        )
+        if streak >= limit:
+            self.streaks[role] = 0
+            raise RuntimeError(
+                f"{role}: {streak} consecutive optimizer steps with a zero gradient norm "
+                f"(limit --max-consecutive-zero-grad-steps={limit}); last was rollout {rollout_id} "
+                f"step {step_id}. Training cannot make progress; exiting to preserve evidence."
+            )
+
+
+_zero_gradient_watchdog = _ZeroGradientWatchdog()
+
+
 def train(
     rollout_id: int,
     model: Sequence[DDP],
@@ -755,6 +804,16 @@ def train(
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
         )
+
+        if (not disable_optimizer) and train_step_outcome == TrainStepOutcome.NORMAL:
+            # Every rank observes the same reduced norm, so this trips in lockstep.
+            _zero_gradient_watchdog.observe(
+                getattr(args, "max_consecutive_zero_grad_steps", 0) or 0,
+                getattr(model[0], "role", "actor"),
+                grad_norm,
+                rollout_id,
+                step_id,
+            )
 
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent

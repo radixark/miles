@@ -13,7 +13,12 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import torch
 
-from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import (
+    RolloutDataInjectionUtil,
+    load_debug_rollout_data,
+    save_debug_rollout_data,
+    save_rollout_candidate_evidence,
+)
 from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.rollout.rm_hub.math_dapo_strict_utils import compute_score
 from miles.utils.types import Sample
@@ -847,3 +852,371 @@ async def test_abort_task_ignoring_cancel_cannot_block_forever(env, monkeypatch,
     finally:
         release.set()
         await asyncio.gather(*env.tasks, return_exceptions=True)
+
+
+def trace_retry_lifecycle(monkeypatch, rollout, state):
+    """Record, in order, every sampling attempt and the teardown steps around it.
+
+    The real abort still runs: a retry that skipped it would leave the previous
+    attempt's requests in flight against the same engines while the next attempt
+    submits more.
+    """
+    events = []
+    real_abort = rollout.abort
+    real_reset = state.reset
+    real_collect = rollout._collect_rollout_samples
+
+    async def traced_abort(args, rollout_id):
+        events.append("abort")
+        return await real_abort(args, rollout_id)
+
+    def traced_reset():
+        events.append("reset")
+        real_reset()
+
+    async def traced_collect(args, rollout_id, state_, data_source, attempt=1):
+        events.append(f"attempt{attempt}")
+        return await real_collect(args, rollout_id, state_, data_source, attempt=attempt)
+
+    monkeypatch.setattr(rollout, "abort", traced_abort)
+    monkeypatch.setattr(rollout, "_collect_rollout_samples", traced_collect)
+    monkeypatch.setattr(state, "reset", traced_reset)
+    return events
+
+
+async def test_retryable_shortfall_succeeds_on_later_attempt(env, monkeypatch, rollout, tmp_path):
+    env.args.rollout_max_attempts = 2
+    env.args.rollout_max_candidate_groups = 2
+    env.args.save_debug_rollout_data = str(tmp_path / "{rollout_id}.pt")
+    # Only the first attempt's candidates are rejected, so the second one fills the batch.
+    reject_groups(monkeypatch, rollout, predicate=lambda group: group[0].group_index < 2)
+    events = trace_retry_lifecycle(monkeypatch, rollout, env.state)
+    output, aborted = await rollout.generate_rollout_async(env.args, 20, env.data_source)
+    # The training batch is the retry's own groups; nothing from the failed attempt leaks in.
+    assert [group[0].group_index for group in output.samples] == [2, 3]
+    assert aborted == []
+    # A fresh gatherer per attempt: the retry must not inherit attempt 1's drop counters.
+    assert output.metrics == {}
+    assert env.requested == [2, 2]
+    assert events == ["reset", "attempt1", "abort", "reset", "attempt2", "abort", "reset"]
+    assert env.pbar.close.call_count == 2
+    assert sorted(p.name for p in (tmp_path / "candidates").iterdir()) == [
+        "20.attempt2.success.pt",
+        "20.failure.pt",
+    ]
+
+
+async def test_retry_budget_exhaustion_reports_final_attempt_numbers(env, monkeypatch, rollout, tmp_path):
+    env.args.rollout_max_attempts = 3
+    env.args.rollout_max_candidate_groups = 2
+    env.args.save_debug_rollout_data = str(tmp_path / "{rollout_id}.pt")
+    # The accept rate improves but never reaches the target, so the raised numbers
+    # identify which attempt actually gave up.
+    reject_groups(monkeypatch, rollout, predicate=lambda group: group[0].group_index != 5)
+    events = trace_retry_lifecycle(monkeypatch, rollout, env.state)
+    with pytest.raises(rollout.InsufficientRolloutBatch) as exc:
+        await rollout.generate_rollout_async(env.args, 21, env.data_source)
+    assert (exc.value.valid_groups, exc.value.completed_groups) == (1, 2)
+    assert exc.value.reason == "candidate group budget exhausted"
+    assert exc.value.retryable  # retryable, yet the bounded budget still stops the job
+    assert "insufficient valid groups (1/2)" in str(exc.value)
+    assert "completed_candidate_groups=2" in str(exc.value)
+    assert events == [
+        "reset",
+        "attempt1",
+        "abort",
+        "reset",
+        "attempt2",
+        "abort",
+        "reset",
+        "attempt3",
+        "abort",
+        "reset",
+    ]
+    assert env.requested == [2, 2, 2]
+    assert len(env.generated) == 12
+    # Each attempt keeps its own evidence; a later one cannot erase the earlier shortfall.
+    assert sorted(p.name for p in (tmp_path / "candidates").iterdir()) == [
+        "21.attempt2.failure.pt",
+        "21.attempt3.failure.pt",
+        "21.failure.pt",
+    ]
+
+
+async def test_exhausted_data_source_is_never_retried(env, monkeypatch, rollout):
+    env.args.rollout_max_attempts = 3
+    reject_groups(monkeypatch, rollout)
+    events = trace_retry_lifecycle(monkeypatch, rollout, env.state)
+    drained = []
+
+    def drying_source(count):
+        if drained:
+            return []
+        drained.append(count)
+        return env.data_source(count)
+
+    with pytest.raises(rollout.InsufficientRolloutBatch) as exc:
+        await rollout.generate_rollout_async(env.args, 22, drying_source)
+    assert exc.value.reason == "data source returned no groups"
+    # Candidates did complete, so the immediate failure is gated on the reason itself:
+    # re-sampling an empty source can only burn the budget.
+    assert exc.value.completed_groups == 2
+    assert not exc.value.retryable
+    assert events == ["reset", "attempt1", "abort", "reset"]
+    assert env.requested == [2]
+
+
+async def test_attempt_that_completes_nothing_is_never_retried(env, monkeypatch, rollout):
+    # A fleet that finishes no group at all is stalled, not unlucky; retrying would
+    # only hide it for another rollout_timeout_seconds per attempt.
+    env.args.rollout_max_attempts = 3
+    env.args.rollout_timeout_seconds = 0.02
+    events = trace_retry_lifecycle(monkeypatch, rollout, env.state)
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(rollout, "generate_and_rm", hang)
+    with pytest.raises(rollout.InsufficientRolloutBatch) as exc:
+        await asyncio.wait_for(rollout.generate_rollout_async(env.args, 23, env.data_source), timeout=1.0)
+    assert exc.value.reason in rollout.RETRYABLE_SHORTFALLS
+    assert exc.value.completed_groups == 0
+    assert not exc.value.retryable
+    assert events == ["reset", "attempt1", "abort", "reset"]
+
+
+@pytest.mark.parametrize("attempts", [None, 1])
+async def test_single_attempt_default_never_retries(env, monkeypatch, rollout, tmp_path, attempts):
+    # None is the legacy namespace that predates the flag; 1 is the parser default.
+    if attempts is not None:
+        env.args.rollout_max_attempts = attempts
+    env.args.rollout_max_candidate_groups = 2
+    env.args.save_debug_rollout_data = str(tmp_path / "{rollout_id}.pt")
+    reject_groups(monkeypatch, rollout)
+    events = trace_retry_lifecycle(monkeypatch, rollout, env.state)
+    with pytest.raises(rollout.InsufficientRolloutBatch) as exc:
+        await rollout.generate_rollout_async(env.args, 24, env.data_source)
+    assert isinstance(exc.value, RuntimeError)  # callers still catch the old type
+    assert exc.value.retryable  # classified retryable, but the default budget forbids it
+    assert events == ["reset", "attempt1", "abort", "reset"]
+    assert env.requested == [2]
+    # Attempt 1 keeps the historical filename that dashboards and existing tests key off.
+    assert [p.name for p in (tmp_path / "candidates").iterdir()] == ["24.failure.pt"]
+    assert env.pbar.close.call_count == 1
+
+
+@pytest.mark.parametrize("attempt_kwarg", [{}, {"attempt": 1}])
+def test_first_attempt_evidence_keeps_the_pre_existing_filename(tmp_path, attempt_kwarg):
+    # Dashboards and existing tests already know this path; a retry budget that
+    # is never exercised must not move it.
+    args = SimpleNamespace(save_debug_rollout_data=str(tmp_path / "rollout_data" / "{rollout_id}.pt"))
+    path = save_rollout_candidate_evidence(args, 7, [], [], [], {}, error="boom", **attempt_kwarg)
+    assert path == tmp_path / "rollout_data" / "candidates" / "7.failure.pt"
+    assert list(path.parent.iterdir()) == [path]  # no stray .tmp staging file survives
+
+
+@pytest.mark.parametrize("attempt,name", [(2, "7.attempt2.failure.pt"), (3, "7.attempt3.failure.pt")])
+def test_retried_attempt_evidence_gets_its_own_filename(tmp_path, attempt, name):
+    args = SimpleNamespace(save_debug_rollout_data=str(tmp_path / "rollout_data" / "{rollout_id}.pt"))
+    path = save_rollout_candidate_evidence(args, 7, [], [], [], {}, error="boom", attempt=attempt)
+    assert path == tmp_path / "rollout_data" / "candidates" / name
+    assert torch.load(path, weights_only=False)["outcome"] == "failure"
+
+
+def test_attempt_suffix_precedes_the_outcome_so_success_is_still_discoverable(tmp_path):
+    # The outcome must stay the last field: callers glob *.success.pt / *.failure.pt.
+    args = SimpleNamespace(save_debug_rollout_data=str(tmp_path / "{rollout_id}.pt"))
+    path = save_rollout_candidate_evidence(args, 4, [], [], [], {}, error=None, attempt=2)
+    assert path.name == "4.attempt2.success.pt"
+    assert list(tmp_path.glob("candidates/*.success.pt")) == [path]
+
+
+async def test_retries_never_overwrite_the_earlier_shortfalls_evidence(env, rollout, monkeypatch, tmp_path):
+    # Whoever debugs the morning after needs every attempt's candidates, not just
+    # the last one's: the accept rate across attempts is the actual signal.
+    env.args.rollout_max_attempts = 3
+    env.args.rollout_max_candidate_groups = 2
+    env.args.save_debug_rollout_data = str(tmp_path / "rollout_data" / "{rollout_id}.pt")
+    reject_groups(monkeypatch, rollout)
+    with pytest.raises(RuntimeError, match=r"insufficient valid groups \(0/2\).*candidate group budget exhausted"):
+        await rollout.generate_rollout_async(env.args, 13, env.data_source)
+    candidates = tmp_path / "rollout_data" / "candidates"
+    assert sorted(path.name for path in candidates.iterdir()) == [
+        "13.attempt2.failure.pt",
+        "13.attempt3.failure.pt",
+        "13.failure.pt",
+    ]
+    # Each file must hold its own attempt's groups, so a fresh data_source draw
+    # per attempt is what distinguishes them.
+    observed = {
+        path.name: sorted(
+            row["group_index"]
+            for group in torch.load(path, weights_only=False)["candidate_groups"]
+            for row in group["samples"]
+        )
+        for path in candidates.iterdir()
+    }
+    assert observed == {
+        "13.failure.pt": [0, 0, 1, 1],
+        "13.attempt2.failure.pt": [2, 2, 3, 3],
+        "13.attempt3.failure.pt": [4, 4, 5, 5],
+    }
+    assert env.requested == [2, 2, 2]
+    assert len(env.generated) == 12
+
+
+async def test_single_attempt_default_writes_only_the_unsuffixed_evidence(env, rollout, monkeypatch, tmp_path):
+    # The legacy namespace in the `env` fixture has no rollout_max_attempts at all.
+    env.args.rollout_max_candidate_groups = 2
+    env.args.save_debug_rollout_data = str(tmp_path / "rollout_data" / "{rollout_id}.pt")
+    reject_groups(monkeypatch, rollout)
+    with pytest.raises(RuntimeError, match="candidate group budget exhausted"):
+        await rollout.generate_rollout_async(env.args, 13, env.data_source)
+    assert [path.name for path in (tmp_path / "rollout_data" / "candidates").iterdir()] == ["13.failure.pt"]
+    assert env.requested == [2]
+
+
+@pytest.mark.parametrize("value", [1, 2, 3, 10])
+def test_accept_valid_rollout_attempt_budget(value, isolated_modules):
+    isolated_modules.arguments.validate_rollout_sampling_budgets(SimpleNamespace(rollout_max_attempts=value))
+
+
+@pytest.mark.parametrize("value", [0, 11, -1, 2.5, "3"])
+def test_reject_invalid_rollout_attempt_budget(value, isolated_modules):
+    with pytest.raises(ValueError, match="integer between 1 and 10"):
+        isolated_modules.arguments.validate_rollout_sampling_budgets(SimpleNamespace(rollout_max_attempts=value))
+
+
+@pytest.mark.parametrize("value", [0, 1, 3, 1000])
+def test_accept_valid_zero_grad_budget(value, isolated_modules):
+    isolated_modules.arguments.validate_rollout_sampling_budgets(
+        SimpleNamespace(max_consecutive_zero_grad_steps=value)
+    )
+
+
+@pytest.mark.parametrize("value", [-1, -10, 1.5, "3"])
+def test_reject_invalid_zero_grad_budget(value, isolated_modules):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        isolated_modules.arguments.validate_rollout_sampling_budgets(
+            SimpleNamespace(max_consecutive_zero_grad_steps=value)
+        )
+
+
+def test_retry_and_zero_grad_cli_defaults_are_the_fail_fast_behaviour(monkeypatch, isolated_modules):
+    monkeypatch.setattr("sys.argv", ["pytest"])
+    parser = isolated_modules.arguments.get_miles_extra_args_provider()(argparse.ArgumentParser())
+    defaults = parser.parse_args([])
+    assert defaults.rollout_max_attempts == 1
+    assert defaults.max_consecutive_zero_grad_steps == 0
+    isolated_modules.arguments.validate_rollout_sampling_budgets(defaults)
+    args = parser.parse_args(["--rollout-max-attempts", "3", "--max-consecutive-zero-grad-steps", "3"])
+    assert (args.rollout_max_attempts, args.max_consecutive_zero_grad_steps) == (3, 3)
+    isolated_modules.arguments.validate_rollout_sampling_budgets(args)
+
+
+@pytest.mark.parametrize("attempts,legacy", [(3, False), (3, True), (1, False)])
+def test_retry_budget_cannot_silently_use_unsupported_rollout(isolated_modules, monkeypatch, attempts, legacy):
+    # Only sglang_rollout implements the retry loop; any other rollout function
+    # would accept the flag and quietly ignore it.
+    monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
+    args = SimpleNamespace(
+        partial_rollout=False,
+        fully_async=False,
+        rollout_function_path="miles.rollout.sglang_rollout.generate_rollout" if legacy else None,
+        eval_function_path=None,
+        eval_num_gpus=0,
+        rollout_max_attempts=attempts,
+    )
+    if attempts > 1 and not legacy:
+        with pytest.raises(ValueError, match="--rollout-max-attempts require"):
+            isolated_modules.arguments._resolve_rollout_functions(args)
+    else:
+        isolated_modules.arguments._resolve_rollout_functions(args)
+        assert args.rollout_function_path == (
+            "miles.rollout.sglang_rollout.generate_rollout"
+            if legacy
+            else "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+        )
+
+
+async def test_throughput_bound_attempt_is_not_retried(env, monkeypatch, rollout):
+    # One completed candidate out of a batch of two is a fleet that cannot produce a
+    # batch at all. Re-drawing would burn another full deadline on the same bottleneck,
+    # so the shortfall must be classified unretryable however generous the budget is.
+    env.args.rollout_max_attempts = 3
+    env.args.rollout_max_candidate_groups = 1
+    reject_groups(monkeypatch, rollout)
+    events = trace_retry_lifecycle(monkeypatch, rollout, env.state)
+    with pytest.raises(rollout.InsufficientRolloutBatch) as exc:
+        await rollout.generate_rollout_async(env.args, 30, env.data_source)
+    assert exc.value.reason in rollout.RETRYABLE_SHORTFALLS
+    assert (exc.value.completed_groups, exc.value.required_groups) == (1, 2)
+    assert not exc.value.retryable
+    assert events == ["reset", "attempt1", "abort", "reset"]
+
+
+async def test_abort_failure_between_attempts_preserves_the_shortfall(env, monkeypatch, rollout):
+    # Cleanup is incidental. A router hiccup during the inter-attempt abort must not
+    # replace the diagnosed shortfall, nor silently consume the remaining attempts.
+    env.args.rollout_max_attempts = 2
+    env.args.rollout_max_candidate_groups = 2
+    reject_groups(monkeypatch, rollout)
+    attempts = []
+    real_collect = rollout._collect_rollout_samples
+
+    async def traced_collect(args, rollout_id, state, data_source, attempt=1):
+        attempts.append(attempt)
+        return await real_collect(args, rollout_id, state, data_source, attempt=attempt)
+
+    async def exploding_abort(_args, _rollout_id):
+        raise ConnectionError("router went away")
+
+    monkeypatch.setattr(rollout, "_collect_rollout_samples", traced_collect)
+    monkeypatch.setattr(rollout, "abort", exploding_abort)
+    with pytest.raises(rollout.InsufficientRolloutBatch) as exc:
+        await rollout.generate_rollout_async(env.args, 31, env.data_source)
+    # The second attempt still ran, and the surviving error is the sampling diagnosis.
+    assert attempts == [1, 2]
+    assert "insufficient valid groups" in str(exc.value)
+
+
+async def test_retry_returns_aborted_partial_groups_to_the_caller(env, monkeypatch, rollout):
+    # Under partial rollout the groups drained by an inter-attempt abort are owed to
+    # the data source exactly like the final abort's; dropping them would burn their
+    # prompts and their generated tokens with no record.
+    env.args.rollout_max_attempts = 2
+    env.args.rollout_max_candidate_groups = 2
+    env.args.partial_rollout = True
+    recovered = [[Sample(index=99, group_index=99)]]
+    calls = []
+
+    async def collecting_abort(_args, _rollout_id):
+        calls.append(1)
+        # Only the inter-attempt abort has anything to hand back in this fake.
+        return list(recovered) if len(calls) == 1 else []
+
+    reject_groups(monkeypatch, rollout, predicate=lambda group: group[0].group_index < 2)
+    monkeypatch.setattr(rollout, "abort", collecting_abort)
+    _output, aborted = await rollout.generate_rollout_async(env.args, 32, env.data_source)
+    assert [[sample.index for sample in group] for group in aborted] == [[99]]
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"train_backend": "fsdp"}, "requires --train-backend megatron"),
+        ({"clip_grad": 0.0}, "requires --clip-grad > 0"),
+    ],
+)
+def test_zero_grad_watchdog_rejects_configs_it_cannot_observe(isolated_modules, overrides, message):
+    # Only the Megatron loop reads the reduced norm, and Megatron only computes one
+    # when it clips. Either way the flag would read as protection the run lacks.
+    args = SimpleNamespace(max_consecutive_zero_grad_steps=3, **overrides)
+    with pytest.raises(ValueError, match=message):
+        isolated_modules.arguments.validate_rollout_sampling_budgets(args)
+
+
+@pytest.mark.parametrize("overrides", [{"train_backend": "fsdp"}, {"clip_grad": 0.0}])
+def test_unobservable_configs_are_fine_while_the_watchdog_is_off(isolated_modules, overrides):
+    args = SimpleNamespace(max_consecutive_zero_grad_steps=0, **overrides)
+    isolated_modules.arguments.validate_rollout_sampling_budgets(args)

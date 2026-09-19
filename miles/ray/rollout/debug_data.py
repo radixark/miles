@@ -167,7 +167,7 @@ def summarize_rollout_candidates(args, groups, filter_outputs) -> dict:
     )
 
 
-def save_rollout_candidate_evidence(args, rollout_id, groups, filter_outputs, selected, summary, *, error):
+def save_rollout_candidate_evidence(args, rollout_id, groups, filter_outputs, selected, summary, *, error, attempt=1):
     """Opt-in diagnostic sidecar; intentionally NOT the training/replay schema.
 
     Only lightweight text/grading evidence is serialized, never replay tensors.
@@ -177,8 +177,11 @@ def save_rollout_candidate_evidence(args, rollout_id, groups, filter_outputs, se
         return None
     training_path = Path(template.format(rollout_id=rollout_id))
     outcome = "failure" if error is not None else "success"
+    # Retried attempts get their own file so a later one cannot erase the
+    # evidence of the shortfall that caused it; attempt 1 keeps the plain name.
+    suffix = "" if attempt <= 1 else f".attempt{attempt}"
     # Keep non-numeric filenames outside rollout_data/*.pt dashboard discovery.
-    path = training_path.parent / "candidates" / f"{training_path.stem}.{outcome}.pt"
+    path = training_path.parent / "candidates" / f"{training_path.stem}{suffix}.{outcome}.pt"
     selected_ids = {id(group) for group in selected}
     candidates = []
     for group, output in zip(groups, filter_outputs, strict=True):
