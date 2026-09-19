@@ -98,5 +98,9 @@ class EvalDispatcher:
         self._exported.append(exported_dir)
         while len(self._exported) > self.args.eval_keep_snapshots:
             victim = self._exported.pop(0)
-            shutil.rmtree(victim, ignore_errors=True)
+            if os.path.islink(victim):
+                shutil.rmtree(os.path.realpath(victim))
+                os.unlink(victim)
+            else:
+                shutil.rmtree(victim, ignore_errors=True)
             logger.info(f"GC'd consumed eval snapshot {victim}")
