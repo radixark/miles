@@ -23,6 +23,7 @@ This lets us simulate 20 seconds of polling in <1ms of real time.
 
 import asyncio
 import inspect
+import json
 import multiprocessing
 import socket
 import subprocess
@@ -347,6 +348,80 @@ class TestWaitTcpReadyAsync:
                 await wait_tcp_ready_async("[::1]", 23456, timeout=0.01)
 
         assert connected == ["::1"]
+
+
+class TestWaitHttpOk:
+    @pytest.mark.parametrize("payload", [None, {"input_ids": [0]}])
+    async def test_healthy_probe_preserves_method_and_payload(self, payload):
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            return httpx.Response(200)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        with patch.object(http_utils.httpx, "AsyncClient", return_value=client):
+            await http_utils.wait_http_ok("http://eval.test/ready", json_payload=payload, timeout=1)
+
+        assert len(requests) == 1
+        assert requests[0].method == ("GET" if payload is None else "POST")
+        if payload is not None:
+            assert json.loads(requests[0].content) == payload
+        assert client.is_closed
+
+    async def test_total_deadline_cancels_an_unfinished_probe(self):
+        """A health request cannot extend the caller's entire readiness budget."""
+        cancelled = asyncio.Event()
+
+        async def handle(request):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        with patch.object(http_utils.httpx, "AsyncClient", return_value=client):
+            with pytest.raises(TimeoutError, match="not ready after 0.05s"):
+                await asyncio.wait_for(
+                    http_utils.wait_http_ok("http://eval.test/ready", timeout=0.05, request_timeout=60),
+                    timeout=1,
+                )
+
+        assert cancelled.is_set()
+        assert client.is_closed
+
+    async def test_total_deadline_interrupts_retry_sleep(self):
+        """A failed attempt must not schedule another request after the budget."""
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            return httpx.Response(503)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        with patch.object(http_utils.httpx, "AsyncClient", return_value=client):
+            with pytest.raises(TimeoutError, match="HTTP 503"):
+                await asyncio.wait_for(http_utils.wait_http_ok("http://eval.test/ready", timeout=0.05), timeout=1)
+
+        assert len(requests) == 1
+        assert client.is_closed
+
+    async def test_caller_cancellation_is_not_converted_to_timeout(self):
+        entered = asyncio.Event()
+
+        async def handle(request):
+            entered.set()
+            await asyncio.Event().wait()
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        with patch.object(http_utils.httpx, "AsyncClient", return_value=client):
+            task = asyncio.create_task(http_utils.wait_http_ok("http://eval.test/ready", timeout=10))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert client.is_closed
 
 
 class TestGeneralHttpClientProvider:
