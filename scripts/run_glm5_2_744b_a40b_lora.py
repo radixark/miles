@@ -44,6 +44,7 @@ train_rollout_kl ~0.058, flat across steps (constant weight-quantization offset)
 """
 
 import os
+import shlex
 from dataclasses import dataclass
 from typing import Literal
 
@@ -56,11 +57,13 @@ app = typer.Typer()
 _HF_REPO = {
     "GLM-5.2": "zai-org/GLM-5.2",
     "GLM-5.2_5layer": "Pinaster/GLM-5.2_5layer",
+    "GLM-5.3": "zai-org/GLM-5.3-BF16",
 }
 
 _MEGATRON_MODEL_TYPE = {
     "GLM-5.2": "glm5.2-744B-A40B_lora",
     "GLM-5.2_5layer": "glm5.2-744B-A40B_5layer_lora",
+    "GLM-5.3": "glm5.3-744B-A40B_lora",
 }
 
 # Standard attn + MLA + MLP/MoE, EXCLUDING the DSA indexer (wq_b/wk/weights_proj).
@@ -75,6 +78,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: Literal[
         "GLM-5.2",
         "GLM-5.2_5layer",
+        "GLM-5.3",
     ] = "GLM-5.2_5layer"
     # dapo-math needs a larger --rollout-max-response-len; >2048 total seq makes the DSA indexer sparse
     task: Literal["gsm8k", "dapo-math"] = "gsm8k"
@@ -119,8 +123,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     over_sampling_batch_size: int = 32  # used only when dapo_dynamic_sampling; should exceed rollout_batch_size
 
     # rollout engine
-    rollout_num_gpus_per_engine: int = 2  # rollout tp=2
-    sglang_mem_fraction_static: float = 0.5
+    rollout_num_gpus_per_engine: int = 0
+    sglang_mem_fraction_static: float | None = None
     # sglang's own default (csgmv) crashes the DSA MoE-LoRA rollout under dp-attention
     sglang_lora_backend: str = "triton"
     # serve from a pre-converted _fp8 ckpt (fits engine=8 / 1 node); train stays bf16
@@ -132,10 +136,30 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
 
     def __post_init__(self):
+        if self.num_nodes < 1 or self.num_gpus_per_node < 1:
+            raise ValueError("num_nodes and num_gpus_per_node must be positive")
         if self.hf_checkpoint is None:
-            self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
+            checkpoint_name = "GLM-5.3-BF16" if self.model_name == "GLM-5.3" else self.model_name
+            self.hf_checkpoint = f"{self.model_dir}/{checkpoint_name}"
         if self.fp8_rollout and self.fp8_rollout_checkpoint is None:
-            self.fp8_rollout_checkpoint = f"{self.hf_checkpoint}_fp8"
+            self.fp8_rollout_checkpoint = (
+                f"{self.model_dir}/GLM-5.3" if self.model_name == "GLM-5.3" else f"{self.hf_checkpoint}_fp8"
+            )
+        if self.rollout_num_gpus_per_engine == 0:
+            self.rollout_num_gpus_per_engine = (
+                (min(8, self.num_gpus_per_node) if self.fp8_rollout else self.total_gpus)
+                if self.model_name == "GLM-5.3"
+                else 2
+            )
+        if self.rollout_num_gpus_per_engine < 1 or self.total_gpus % self.rollout_num_gpus_per_engine != 0:
+            raise ValueError("The actor GPU count must be divisible by rollout_num_gpus_per_engine")
+        if self.sglang_mem_fraction_static is None:
+            if self.model_name == "GLM-5.2" and self.fp8_rollout:
+                self.sglang_mem_fraction_static = 0.9
+            elif self.model_name == "GLM-5.3":
+                self.sglang_mem_fraction_static = 0.8
+            else:
+                self.sglang_mem_fraction_static = 0.5
         if self.rollout_max_response_len == 0:
             self.rollout_max_response_len = 4096 if self.task == "dapo-math" else 512
         if self.seq_window == 0 and self.task == "dapo-math":
@@ -145,9 +169,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def megatron_model_type(self) -> str:
         return _MEGATRON_MODEL_TYPE[self.model_name]
 
+    @property
+    def total_gpus(self) -> int:
+        return self.num_nodes * self.num_gpus_per_node
+
 
 def _get_parallel_config(args: ScriptArgs) -> str:
-    """Single-node MoE layout: TP = EP = num_gpus_per_node, DP1 (mirrors run_glm5_744b_a40b).
+    """Keep attention TP within a node and distribute experts over all actor GPUs.
 
     The DSA kernel backend dictates the query layout; both forbid --use-dynamic-batch-size,
     hence --micro-batch-size 1: megatron needs bshd (the unfused megatron-core
@@ -158,7 +186,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     qkv_format = "thd" if args.dsa_attention_backend == "tilelang" else "bshd"
     return (
         f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 "
-        f"--context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 "
+        f"--context-parallel-size 1 --expert-model-parallel-size {args.total_gpus} --expert-tensor-parallel-size 1 "
         f"--qkv-format {qkv_format} --micro-batch-size 1 "
     )
 
@@ -175,13 +203,17 @@ def _prepare_download(args: ScriptArgs):
     U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
     repo = _HF_REPO.get(args.model_name)
     if repo is not None:
-        U.exec_command_cpu(f"hf download {repo} --local-dir {args.model_dir}/{args.model_name}")
+        U.exec_command_cpu(f"hf download {repo} --local-dir {shlex.quote(args.hf_checkpoint)}")
+    if args.model_name == "GLM-5.3" and args.fp8_rollout:
+        U.exec_command_cpu(f"hf download zai-org/GLM-5.3 --local-dir {shlex.quote(args.fp8_rollout_checkpoint)}")
     _download_dataset(args)
 
 
 def _train(args: ScriptArgs):
+    if args.num_nodes > 1 and not U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"):
+        raise ValueError("Join all nodes to Ray and set MILES_SCRIPT_EXTERNAL_RAY=1 before multi-node training")
     print(
-        f"[run] GLM-5.2 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
+        f"[run] GLM5 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.total_gpus} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
     )
     load_save_path = f"{args.save_dir}/{args.run_id}"
 
@@ -216,7 +248,7 @@ def _train(args: ScriptArgs):
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type math "
+        f"--rm-type {'dapo' if args.task == 'dapo-math' else 'math'} "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
@@ -229,6 +261,8 @@ def _train(args: ScriptArgs):
             rollout_args += f"--prompt-data {args.data_dir}/gsm8k/train.parquet --input-key messages "
         case "dapo-math":  # zhuzilin/dapo-math-17k ships {prompt, label} jsonl (prompt = chat messages)
             rollout_args += f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl --input-key prompt "
+            # DAPO prompts request Answer:, and the DAPO verifier returns a reward dict.
+            rollout_args += "--reward-key acc "
     if args.dapo_dynamic_sampling:
         rollout_args += (
             f"--over-sampling-batch-size {args.over_sampling_batch_size} "
@@ -253,8 +287,12 @@ def _train(args: ScriptArgs):
     if _is_full:
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
         # fits engine=min(8, ngpu) on one node
-        _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
-        _eng = min(8, args.num_gpus_per_node) if _fp8_full else args.rollout_num_gpus_per_engine
+        _fp8_full = args.fp8_rollout and args.model_name in {"GLM-5.2", "GLM-5.3"}
+        _eng = (
+            min(8, args.num_gpus_per_node)
+            if _fp8_full and args.model_name == "GLM-5.2"
+            else args.rollout_num_gpus_per_engine
+        )
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
         _cg = 256 if _fp8_full else 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
@@ -287,13 +325,13 @@ def _train(args: ScriptArgs):
                 "    update_weights: true\n"
                 "    server_groups:\n"
                 "      - worker_type: regular\n"
-                f"        num_gpus: {args.num_gpus_per_node}\n"
+                f"        num_gpus: {args.total_gpus}\n"
             )
         sglang_args += f"--sglang-config {sglang_config_path} "
 
     save_args = f"--save-interval 1 --save {load_save_path} "
 
-    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
+    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes {args.num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
 
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
