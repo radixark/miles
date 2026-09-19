@@ -13,6 +13,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
+from miles.ray.rollout.debug_data import save_rollout_candidate_evidence, summarize_rollout_candidates
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
@@ -476,14 +477,40 @@ def _insufficient_rollout_batch(args, rollout_id, state, valid_groups, reason) -
     )
 
 
+def _report_rollout_candidates(args, rollout_id, state, data, all_data, filter_outputs, *, error):
+    """Best-effort diagnostics must not replace the original sampling failure."""
+    try:
+        summary = summarize_rollout_candidates(args, all_data, filter_outputs)
+        summary.update(
+            valid_groups=len(data),
+            target_groups=args.rollout_batch_size,
+            submitted_candidate_groups=state.submitted_candidate_groups,
+            pending_groups=sum(not task.done() for task in state.pendings),
+        )
+        log = logger.error if error is not None else logger.info
+        # Emit the summary before optional filesystem I/O (e.g. a slow shared mount).
+        log("Rollout %s candidate summary=%s; error=%s", rollout_id, summary, error)
+        path = None
+        try:
+            path = save_rollout_candidate_evidence(
+                args, rollout_id, all_data, filter_outputs, data, summary, error=error
+            )
+        except Exception:
+            logger.warning("Rollout %s candidate evidence write failed", rollout_id, exc_info=True)
+        log("Rollout %s candidate evidence_file=%s", rollout_id, path)
+    except Exception:
+        logger.warning("Rollout %s candidate diagnostics failed", rollout_id, exc_info=True)
+
+
 async def _collect_rollout_samples(args, rollout_id, state, data_source):
-    data, all_data = [], []
+    data, all_data, filter_outputs = [], [], []
     metrics = MetricGatherer()
     timeout = getattr(args, "rollout_timeout_seconds", None)
     deadline = asyncio.get_running_loop().time() + timeout if timeout is not None else None
     collector = asyncio.create_task(
-        _fill_rollout_batch(args, rollout_id, state, data_source, data, all_data, metrics, deadline)
+        _fill_rollout_batch(args, rollout_id, state, data_source, data, all_data, filter_outputs, metrics, deadline)
     )
+    error = None
     try:
         # Unlike wait_for, wait does not wait indefinitely for cancellation handlers.
         done, _ = await asyncio.wait({collector}, timeout=timeout)
@@ -491,11 +518,28 @@ async def _collect_rollout_samples(args, rollout_id, state, data_source):
             raise _insufficient_rollout_batch(args, rollout_id, state, len(data), "sampling deadline exceeded")
         collector.result()
         return data, all_data, metrics
+    except BaseException as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
         await _cancel_rollout_tasks({collector})
+        # A deadline or sibling exception may leave completed results unconsumed.
+        # Record them without filtering again or admitting them to the train batch.
+        evidence_groups = list(all_data)
+        for task in state.pendings:
+            if task.done() and not task.cancelled() and task.exception() is None:
+                evidence_groups.append(task.result())
+                filter_outputs.append(None)
+        _report_rollout_candidates(args, rollout_id, state, data, evidence_groups, filter_outputs, error=error)
+        evidence_groups.clear()
+        filter_outputs.clear()
+        if error is not None:
+            # Do not pin candidate lists in a retained exception traceback.
+            data.clear()
+            all_data.clear()
 
 
-async def _fill_rollout_batch(args, rollout_id, state, data_source, data, all_data, metrics, deadline):
+async def _fill_rollout_batch(args, rollout_id, state, data_source, data, all_data, filter_outputs, metrics, deadline):
     def check_deadline():
         if deadline is not None and asyncio.get_running_loop().time() >= deadline:
             raise _insufficient_rollout_batch(args, rollout_id, state, len(data), "sampling deadline exceeded")
@@ -548,10 +592,13 @@ async def _fill_rollout_batch(args, rollout_id, state, data_source, data, all_da
                     do_print = False
                 assert len(group) == args.n_samples_per_prompt
                 all_data.append(group)
+                filter_outputs.append(None)
                 filter_output = apply_preput_filters(args, dynamic_filter, group)
-                check_deadline()
+                filter_outputs[-1] = filter_output
                 if not filter_output.keep:
                     metrics.on_dynamic_filter_drop(reason=filter_output.reason)
+                check_deadline()
+                if not filter_output.keep:
                     state.remaining_batch_size -= 1
                     continue
                 if len(data) < target:

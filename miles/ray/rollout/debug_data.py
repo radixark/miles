@@ -1,10 +1,13 @@
 import json
 import logging
-from collections import defaultdict
+import math
+from collections import Counter, defaultdict
+from numbers import Real
 from pathlib import Path
 
 import torch
 
+from miles.rollout.filter_hub.base_types import iter_samples
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -127,6 +130,101 @@ def save_debug_rollout_data(args, data, rollout_id, evaluation: bool, metadata: 
         torch.save(dict(rollout_id=rollout_id, metadata=metadata or {}, **dump_data), path)
 
 
+def summarize_rollout_candidates(args, groups, filter_outputs) -> dict:
+    """Summarize finished group tasks, not just accepted training inputs.
+
+    Invalid includes missing/nonfinite scores and strict-grader valid=False;
+    format_invalid counts only COMPLETED responses, separately from truncation.
+    """
+    statuses, rewards, reasons = Counter(), Counter(), Counter()
+    invalid = format_invalid = fully_completed = 0
+    for group in groups:
+        samples = list(iter_samples(group))
+        fully_completed += bool(samples) and all(s.status == Sample.Status.COMPLETED for s in samples)
+        for sample in samples:
+            statuses[sample.status.value] += 1
+            reward = sample.reward
+            value = reward.get(args.reward_key) if isinstance(reward, dict) and args.reward_key else reward
+            finite = isinstance(value, Real) and math.isfinite(value)
+            rewards[str(value) if finite else "missing_or_invalid"] += 1
+            invalid_grade = isinstance(reward, dict) and reward.get("valid") is False
+            invalid += not finite or invalid_grade
+            format_invalid += invalid_grade and sample.status == Sample.Status.COMPLETED
+    for output in filter_outputs:
+        if output is not None and not output.keep:
+            reasons[output.reason or "unspecified"] += 1
+    return dict(
+        complete_groups=len(groups),
+        fully_completed_groups=fully_completed,
+        rejected_groups=sum(reasons.values()),
+        unfiltered_groups=sum(output is None for output in filter_outputs),
+        status_counts=dict(statuses),
+        invalid_samples=invalid,
+        format_invalid_samples=format_invalid,
+        truncated_samples=statuses[Sample.Status.TRUNCATED.value],
+        rewards=dict(rewards),
+        filter_reason_counts=dict(reasons),
+    )
+
+
+def save_rollout_candidate_evidence(args, rollout_id, groups, filter_outputs, selected, summary, *, error):
+    """Opt-in diagnostic sidecar; intentionally NOT the training/replay schema.
+
+    Only lightweight text/grading evidence is serialized, never replay tensors.
+    Nothing is retained after the collector returns and no Sample is mutated.
+    """
+    if (template := getattr(args, "save_debug_rollout_data", None)) is None:
+        return None
+    training_path = Path(template.format(rollout_id=rollout_id))
+    outcome = "failure" if error is not None else "success"
+    # Keep non-numeric filenames outside rollout_data/*.pt dashboard discovery.
+    path = training_path.parent / "candidates" / f"{training_path.stem}.{outcome}.pt"
+    selected_ids = {id(group) for group in selected}
+    candidates = []
+    for group, output in zip(groups, filter_outputs, strict=True):
+        candidates.append(
+            dict(
+                selected_for_batch=id(group) in selected_ids,
+                filter_keep=bool(output.keep) if output is not None else None,
+                filter_reason=output.reason if output is not None else "not_processed",
+                samples=[
+                    dict(
+                        index=sample.index,
+                        group_index=sample.group_index,
+                        rollout_id=sample.rollout_id,
+                        prompt=sample.prompt,
+                        response=sample.response,
+                        response_length=sample.response_length,
+                        label=sample.label,
+                        status=sample.status.value,
+                        reward=sample.reward,
+                        remove_sample=sample.remove_sample,
+                        effective_response_length=sample.effective_response_length,
+                    )
+                    for sample in iter_samples(group)
+                ],
+            )
+        )
+    payload = dict(
+        kind="rollout_candidate_evidence",
+        schema_version=1,
+        diagnostic_only=True,
+        rollout_id=rollout_id,
+        outcome=outcome,
+        error=error,
+        summary=summary,
+        candidate_groups=candidates,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    try:
+        torch.save(payload, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
 class RolloutDataInjectionUtil:
     @classmethod
     def should_inject(cls, args, rollout_id: int) -> bool:
@@ -191,6 +289,8 @@ class RolloutDataInjectionUtil:
 
 def _load_rollout_data_file(path: Path) -> tuple[list[Sample], dict]:
     payload = torch.load(path, weights_only=False)
+    if payload.get("kind") == "rollout_candidate_evidence":
+        raise ValueError(f"Diagnostic candidate evidence is not training/replay input: {path}")
     data = [Sample.from_dict(sample) for sample in payload["samples"]]
     metadata = payload.get("metadata") or {}
     return data, metadata

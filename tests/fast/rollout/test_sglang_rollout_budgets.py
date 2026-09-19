@@ -2,15 +2,20 @@
 
 import argparse
 import asyncio
+import gc
 import importlib.util
 import sys
+import weakref
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+import torch
 
+from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.rollout.filter_hub.base_types import FilterOutput
+from miles.rollout.rm_hub.math_dapo_strict_utils import compute_score
 from miles.utils.types import Sample
 
 
@@ -402,6 +407,305 @@ async def test_successful_partial_rollout_still_collects_aborted_groups(env, mon
     assert all(sample.metadata["start_rollout_id"] == 8 for sample in partials[0])
 
 
+def configure_smoke_sampling(args):
+    args.n_samples_per_prompt = 4
+    args.over_sampling_batch_size = 8
+    args.rollout_max_candidate_groups = 32
+    args.rollout_timeout_seconds = 1800
+    args.reward_key = "score"
+    args.advantage_estimator = "grpo"
+    args.rewards_normalization = True
+    args.grpo_std_normalization = True
+    args.normalize_advantages = False
+    args.dynamic_sampling_filter_path = (
+        "miles.rollout.filter_hub.truncated_response_filters.mask_truncated_and_require_completed_reward_diversity"
+    )
+
+
+@pytest.mark.parametrize("oversampling,initial_requests", [(2, 8), (8, 32)])
+async def test_smoke_initial_fanout_uses_real_fill_loop(env, monkeypatch, rollout, oversampling, initial_requests):
+    configure_smoke_sampling(env.args)
+    env.args.over_sampling_batch_size = oversampling
+    env.args.rollout_timeout_seconds = 0.04
+    active = peak = 0
+
+    async def stall(*_args, **_kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(rollout, "generate_and_rm", stall)
+    with pytest.raises(RuntimeError, match="sampling deadline exceeded"):
+        await asyncio.wait_for(rollout.generate_rollout_async(env.args, 2, env.data_source), timeout=1)
+    assert env.requested == [oversampling]
+    assert peak == initial_requests
+    assert active == 0
+
+
+async def test_smoke_refill_bounds_32_groups_and_36_inflight_requests(env, monkeypatch, rollout):
+    configure_smoke_sampling(env.args)
+    total = active = peak = 0
+    release_straggler = asyncio.Event()
+    submissions = []
+    submit = env.state.submit_generate_tasks
+
+    def track_submission(groups):
+        submit(groups)
+        submissions.append((env.state.submitted_candidate_groups, len(env.state.pendings)))
+
+    async def all_wrong(_args, sample, _params, evaluation=False):
+        nonlocal total, active, peak
+        total += 1
+        active += 1
+        peak = max(peak, active)
+        if total == 32 * 4:
+            release_straggler.set()
+        try:
+            if sample.group_index == 0:
+                await release_straggler.wait()
+            else:
+                await asyncio.sleep(0)  # yield so all submitted sample tasks start
+            sample.status = Sample.Status.COMPLETED
+            sample.tokens = [1, 2, 3]
+            sample.response_length = 2
+            sample.response = "Answer: 0"
+            sample.label = "1"
+            sample.reward = compute_score(sample.response, sample.label)
+            return sample
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(env.state, "submit_generate_tasks", track_submission)
+    monkeypatch.setattr(rollout, "generate_and_rm", all_wrong)
+    with pytest.raises(RuntimeError, match="candidate group budget exhausted"):
+        await asyncio.wait_for(rollout.generate_rollout_async(env.args, 3, env.data_source), timeout=2)
+    assert env.requested == [8, 8, 8, 8]
+    assert max(count for count, _ in submissions) == 32
+    assert max(pending for _, pending in submissions) == 9
+    assert (total, peak, active) == (128, 36, 0)
+
+
+@pytest.fixture
+def strict_candidates(env, monkeypatch, rollout):
+    configure_smoke_sampling(env.args)
+    observed = []
+
+    async def generate(_args, sample, _params, evaluation=False):
+        sample.status = Sample.Status.COMPLETED
+        sample.tokens = [1, 2, 3]
+        sample.response_length = 2
+        sample.label = "1"
+        position = sample.index % 4
+        if sample.group_index == 0:  # all correct
+            sample.response = "Answer: 1"
+        elif sample.group_index == 1:  # all wrong
+            sample.response = "Answer: 0"
+        elif sample.group_index == 2:  # invalid format is NOT a mathematical error
+            sample.response = "I think it is 1" if position == 0 else "Answer: 1"
+        elif sample.group_index == 3:  # truncation cannot supply completed diversity
+            sample.response = "Answer: 1"
+            if position:
+                sample.status = Sample.Status.TRUNCATED
+        else:  # accepted only with completed correct + incorrect evidence
+            sample.response = f"Answer: {position % 2}"
+        sample.reward = compute_score(
+            sample.response, sample.label, is_complete=sample.status == Sample.Status.COMPLETED
+        )
+        observed.append(sample)
+        return sample
+
+    monkeypatch.setattr(rollout, "generate_and_rm", generate)
+    return SimpleNamespace(generate=generate, observed=observed)
+
+
+@pytest.mark.parametrize("dump", [False, True])
+@pytest.mark.parametrize("failure", ["budget", "deadline"])
+async def test_failure_evidence_and_summary_keep_rejected_candidates(
+    env, monkeypatch, rollout, strict_candidates, tmp_path, caplog, dump, failure
+):
+    template = str(tmp_path / "rollout_data" / "{rollout_id}.pt")
+    env.args.save_debug_rollout_data = template if dump else None
+    if failure == "budget":
+        env.args.rollout_max_candidate_groups = 4
+        message = "candidate group budget exhausted"
+    else:
+        env.args.rollout_timeout_seconds = 0.06
+        message = "sampling deadline exceeded"
+
+        async def stall_after_four(args, sample, params, evaluation=False):
+            if sample.group_index >= 4:
+                await asyncio.Event().wait()
+            return await strict_candidates.generate(args, sample, params, evaluation=evaluation)
+
+        monkeypatch.setattr(rollout, "generate_and_rm", stall_after_four)
+    with pytest.raises(RuntimeError, match=message):
+        await asyncio.wait_for(rollout.generate_rollout_async(env.args, 7, env.data_source), timeout=1)
+    log = next(record.message for record in caplog.records if "candidate summary=" in record.message)
+    for text in (
+        "'complete_groups': 4",
+        "'fully_completed_groups': 3",
+        "'invalid_samples': 4",
+        "'format_invalid_samples': 1",
+        "'truncated_samples': 3",
+        "'rewards':",
+        "'zero_reward_std': 2",
+        "'no_completed_reward_diversity': 2",
+        "'valid_groups': 0",
+    ):
+        assert text in log
+    path = tmp_path / "rollout_data" / "candidates" / "7.failure.pt"
+    assert f"evidence_file={path if dump else None}" in caplog.text
+    assert not (tmp_path / "rollout_data" / "7.pt").exists()
+    if not dump:
+        assert list(tmp_path.rglob("*")) == []
+        return
+    payload = torch.load(path, weights_only=False)
+    assert payload["outcome"] == "failure" and payload["diagnostic_only"]
+    assert message in payload["error"]
+    assert payload["summary"]["rewards"] == {"1.0": 8, "-1.0": 8}
+    assert len(payload["candidate_groups"]) == 4
+    assert "samples" not in payload  # incompatible with training/replay schema
+    for candidate in payload["candidate_groups"]:
+        assert candidate["filter_keep"] is False
+        assert candidate["selected_for_batch"] is False
+        for row in candidate["samples"]:
+            assert row["reward"] == compute_score(
+                row["response"], row["label"], is_complete=row["status"] == "completed"
+            )
+            assert "rollout_routed_experts" not in row and "tokens" not in row
+    load_args = SimpleNamespace(load_debug_rollout_data=str(path), load_debug_rollout_data_subsample=None)
+    with pytest.raises(ValueError, match="not training/replay input"):
+        load_debug_rollout_data(load_args, 7)
+    with pytest.raises(ValueError, match="not training/replay input"):
+        RolloutDataInjectionUtil.load(SimpleNamespace(ci_inject_rollout_data_path=str(path)), 7)
+
+
+async def test_success_evidence_contains_rejected_and_accepted_without_changing_training_dump(
+    env, rollout, strict_candidates, tmp_path, monkeypatch
+):
+    env.args.rollout_max_candidate_groups = 6
+    env.args.save_debug_rollout_data = str(tmp_path / "{rollout_id}.pt")
+    output, _ = await rollout.generate_rollout_async(env.args, 8, env.data_source)
+    assert [group[0].group_index for group in output.samples] == [4, 5]
+    payload = torch.load(tmp_path / "candidates" / "8.success.pt", weights_only=False)
+    assert len(payload["candidate_groups"]) == 6
+    assert sum(group["selected_for_batch"] for group in payload["candidate_groups"]) == 2
+    assert sum(group["filter_keep"] for group in payload["candidate_groups"]) == 2
+    assert payload["summary"]["filter_reason_counts"] == {
+        "zero_reward_std": 2,
+        "no_completed_reward_diversity": 2,
+    }
+    assert output.metrics == {
+        "rollout/dynamic_filter/drop_zero_reward_std": 2,
+        "rollout/dynamic_filter/drop_no_completed_reward_diversity": 2,
+    }
+    assert all(not sample.remove_sample for sample in strict_candidates.observed)
+    assert all(
+        sample.reward
+        == compute_score(sample.response, sample.label, is_complete=sample.status == Sample.Status.COMPLETED)
+        for sample in strict_candidates.observed
+    )
+    # The existing outer success saver still saves ONLY selected training inputs.
+    env.args.save_debug_trajectory_data = None
+    monkeypatch.setattr("miles.ray.rollout.debug_data.save_dashboard_columns", lambda *_: None)
+    save_debug_rollout_data(env.args, [s for group in output.samples for s in group], 8, evaluation=False)
+    train = torch.load(tmp_path / "8.pt", weights_only=False)
+    assert len(train["samples"]) == 8
+    assert {sample["group_index"] for sample in train["samples"]} == {4, 5}
+
+
+async def test_dump_io_error_preserves_sampling_failure_and_summary(env, rollout, monkeypatch, caplog):
+    env.args.rollout_max_candidate_groups = 2
+    reject_groups(monkeypatch, rollout)
+    monkeypatch.setattr(rollout, "save_rollout_candidate_evidence", Mock(side_effect=OSError("disk full")))
+    with pytest.raises(RuntimeError, match="candidate group budget exhausted"):
+        await rollout.generate_rollout_async(env.args, 9, env.data_source)
+    assert "candidate evidence write failed" in caplog.text
+    assert "'complete_groups': 2" in caplog.text and "'test_reject': 2" in caplog.text
+    assert "evidence_file=None" in caplog.text
+
+
+async def test_completed_unconsumed_siblings_are_evidence_not_training(env, rollout, monkeypatch, tmp_path):
+    env.args.save_debug_rollout_data = str(tmp_path / "fixed.pt")  # no template placeholder
+    original = ValueError("filter exploded")
+    monkeypatch.setattr(rollout, "apply_preput_filters", Mock(side_effect=original))
+    with pytest.raises(ValueError) as exc:
+        await rollout.generate_rollout_async(env.args, 10, env.data_source)
+    assert exc.value is original
+    payload = torch.load(tmp_path / "candidates" / "fixed.failure.pt", weights_only=False)
+    assert payload["summary"]["complete_groups"] == 2
+    assert payload["summary"]["unfiltered_groups"] == 2
+    assert len(payload["candidate_groups"]) == 2
+    assert not (tmp_path / "fixed.pt").exists()
+
+
+async def test_success_evidence_includes_valid_surplus_not_selected_for_training(
+    env, rollout, strict_candidates, tmp_path
+):
+    env.args.save_debug_rollout_data = str(tmp_path / "{rollout_id}.pt")
+    output, _ = await rollout.generate_rollout_async(env.args, 11, env.data_source)
+    payload = torch.load(tmp_path / "candidates" / "11.success.pt", weights_only=False)
+    assert len(payload["candidate_groups"]) == 8
+    assert sum(group["filter_keep"] for group in payload["candidate_groups"]) == 4
+    assert sum(group["selected_for_batch"] for group in payload["candidate_groups"]) == 2
+    assert len(output.samples) == 2
+
+
+async def test_preput_filter_reason_counts_are_in_failure_evidence(env, rollout, monkeypatch, tmp_path):
+    env.args.rollout_max_candidate_groups = 2
+    env.args.save_debug_rollout_data = str(tmp_path / "{rollout_id}.pt")
+
+    async def invalid(args, sample, params, evaluation=False):
+        await env.generate(args, sample, params, evaluation=evaluation)
+        if sample.group_index == 0:
+            sample.status = Sample.Status.ABORTED
+        else:
+            sample.reward = None
+        return sample
+
+    monkeypatch.setattr(rollout, "generate_and_rm", invalid)
+    with pytest.raises(RuntimeError, match="candidate group budget exhausted"):
+        await rollout.generate_rollout_async(env.args, 12, env.data_source)
+    payload = torch.load(tmp_path / "candidates" / "12.failure.pt", weights_only=False)
+    assert payload["summary"]["filter_reason_counts"] == {
+        "group_has_aborted": 1,
+        "group_has_missing_reward": 1,
+    }
+
+
+@pytest.mark.parametrize("dump", [False, True])
+async def test_failure_evidence_does_not_retain_candidates_across_rollouts(env, rollout, monkeypatch, tmp_path, dump):
+    env.args.rollout_max_candidate_groups = 2
+    env.args.save_debug_rollout_data = str(tmp_path / "{rollout_id}.pt") if dump else None
+    reject_groups(monkeypatch, rollout)
+    refs = []
+
+    async def tracked(*args, **kwargs):
+        sample = await env.generate(*args, **kwargs)
+        refs.append(weakref.ref(sample))
+        return sample
+
+    monkeypatch.setattr(rollout, "generate_and_rm", tracked)
+    for rollout_id in range(3):
+        try:
+            await rollout.generate_rollout_async(env.args, rollout_id, env.data_source)
+        except RuntimeError:
+            pass
+        else:
+            pytest.fail("all rejected candidates must fail")
+        # The fixture deliberately tracks tasks; release that test-only retention.
+        env.tasks.clear()
+        await asyncio.sleep(0)
+        gc.collect()
+        assert all(ref() is None for ref in refs)
+        assert env.state.submitted_candidate_groups == 0
+        assert not env.state.pendings
+
+
 def test_budget_cli_defaults_and_types(monkeypatch, isolated_modules):
     monkeypatch.setattr("sys.argv", ["pytest"])
     parser = isolated_modules.arguments.get_miles_extra_args_provider()(argparse.ArgumentParser())
@@ -412,6 +716,27 @@ def test_budget_cli_defaults_and_types(monkeypatch, isolated_modules):
     assert args.rollout_max_candidate_groups == 32
     assert args.rollout_timeout_seconds == 900.5
     isolated_modules.arguments.validate_rollout_sampling_budgets(args)
+
+
+def test_existing_dump_details_resolves_rollout_save_template(monkeypatch, isolated_modules, tmp_path):
+    monkeypatch.setattr("sys.argv", ["pytest"])
+    parser = isolated_modules.arguments.get_miles_extra_args_provider()(argparse.ArgumentParser())
+    args = parser.parse_args(
+        [
+            "--dump-details",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+            "--rollout-batch-size",
+            "2",
+            "--rollout-function-path",
+            "miles.rollout.sglang_rollout.generate_rollout",
+        ]
+    )
+    isolated_modules.arguments.miles_validate_args(args)
+    assert args.save_debug_rollout_data == f"{tmp_path}/rollout_data/{{rollout_id}}.pt"
+    assert args.load_debug_rollout_data is None
+    assert args.rollout_all_samples_process_path is None
 
 
 @pytest.mark.parametrize("value", [0, -1, 1.5])
