@@ -47,6 +47,9 @@ VARIANTS = {
         "build_args": {
             "ENABLE_CUDA_13": "0",
             "SGLANG_IMAGE_TAG": "v0.5.19-cu129",
+            # Frozen with the base image: sglang publishes no cu12 image from v0.5.20 on,
+            # so this variant cannot follow the branch the cu13 images track.
+            "SGLANG_BRANCH": "sglang-miles-v0.5.19-final",
             "WHEELS_TAG_X86": "cu129-x86_64",
         },
     },
