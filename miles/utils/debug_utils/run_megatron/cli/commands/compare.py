@@ -20,11 +20,14 @@ def compare_impl(args: CompareArgs) -> None:
     """Core compare logic, called by both ``compare`` command and ``run_and_compare``."""
     activation_passed = _run_activation_comparison(args)
 
-    logprob_passed = True
-    if args.baseline_logprob_dir is not None and args.target_logprob_dir is not None:
+    baseline_logprob_dir = args.baseline_logprob_dir
+    target_logprob_dir = args.target_logprob_dir
+    logprob_dirs = (baseline_logprob_dir, target_logprob_dir)
+    logprob_passed = all(directory is None for directory in logprob_dirs)
+    if baseline_logprob_dir is not None and target_logprob_dir is not None:
         logprob_passed = compare_logprobs(
-            baseline_dir=args.baseline_logprob_dir,
-            target_dir=args.target_logprob_dir,
+            baseline_dir=baseline_logprob_dir,
+            target_dir=target_logprob_dir,
             threshold=args.logprob_threshold if args.logprob_threshold is not None else 1e-3,
         )
 
