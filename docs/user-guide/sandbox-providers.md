@@ -63,10 +63,12 @@ under it. A Harbor recipe sizes that disk with `HARBOR_OVERRIDE_STORAGE_MB`.
 The credential is a token pair, kept in the config file Modal's CLI writes:
 
 ```bash
-uv tool install modal && modal token new     # writes ~/.modal.toml
+uv tool install 'modal>=1.5.4' && modal token new     # writes ~/.modal.toml
 ```
 
 `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` in the environment work as well; one
 half without the other is treated as missing. `MODAL_PROFILE` and
 `MODAL_ENVIRONMENT` pick the workspace when the profile's default is not the
-one you want.
+one you want. Miles defaults `MODAL_SANDBOX_V2=1`; Modal SDK 1.5.4 and newer
+honor that switch through the public `Sandbox.create` API. Set it to `0` only
+when temporarily diagnosing a V2-specific provider issue.
