@@ -86,6 +86,7 @@ _ARGS_DEFAULTS = dict(
     use_opd=False,
     opd_type=None,
     opd_kl_coef=1.0,
+    opd_score_centering_mode="combined",
     # policy_loss_function
     loss_type="policy_loss",
     eps_clip=0.2,
@@ -103,6 +104,8 @@ _ARGS_DEFAULTS = dict(
     use_opsm=False,
     opsm_delta=0.1,
     calculate_per_token_loss=False,
+    use_score_centering=False,
+    score_centering_top_k=128,
     # value_loss_function
     value_clip=0.2,
     # loss_function dispatcher

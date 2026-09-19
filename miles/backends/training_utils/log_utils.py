@@ -244,7 +244,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         if rollout_count_share is not None:
                             count = rollout_count_share
                     else:
-                        per_rank_sum = tensor.mean() * cp_size * count
+                        per_rank_sum = tensor.float().mean() * cp_size * count
                     log_dict[key] = (per_rank_sum.item(), count)
                 else:
                     # Flatten nested lists (e.g. list of lists from async rollout)

@@ -87,6 +87,8 @@ class Sample:
     loss_mask: list[int] | None = None
     weight_versions: list[WeightVersionsPerCall] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
+    rollout_top_logprob_ids: numpy.ndarray | None = None  # Sampler top-k token IDs, shape: (response, k)
+    rollout_top_logprobs: numpy.ndarray | None = None  # Sampler top-k logprobs, shape: (response, k)
     rollout_sampling_mask: RolloutSamplingMask | None = None
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
@@ -249,6 +251,18 @@ class Sample:
             assert (
                 len(self.rollout_log_probs) == self.response_length
             ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        if self.rollout_top_logprob_ids is not None or self.rollout_top_logprobs is not None:
+            assert (
+                self.rollout_top_logprob_ids is not None and self.rollout_top_logprobs is not None
+            ), "rollout top-k IDs and logprobs must be provided together"
+            assert self.rollout_top_logprob_ids.shape == self.rollout_top_logprobs.shape, (
+                "rollout top-k IDs/logprobs shape mismatch: "
+                f"{self.rollout_top_logprob_ids.shape} vs {self.rollout_top_logprobs.shape}"
+            )
+            assert self.rollout_top_logprob_ids.shape[0] == self.response_length, (
+                "rollout top-k length "
+                f"({self.rollout_top_logprob_ids.shape[0]}) != response_length ({self.response_length})"
+            )
         if self.rollout_sampling_mask is not None:
             assert len(self.rollout_sampling_mask) == self.response_length, (
                 f"rollout_sampling_mask length ({len(self.rollout_sampling_mask)}) "
@@ -296,6 +310,10 @@ class Sample:
         self.response_length -= n
         if self.rollout_log_probs is not None:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
+        if self.rollout_top_logprob_ids is not None:
+            self.rollout_top_logprob_ids = self.rollout_top_logprob_ids[:-n]
+        if self.rollout_top_logprobs is not None:
+            self.rollout_top_logprobs = self.rollout_top_logprobs[:-n]
         if self.rollout_sampling_mask is not None:
             self.rollout_sampling_mask = self.rollout_sampling_mask.prefix(self.response_length)
         if self.teacher_log_probs is not None:
@@ -333,6 +351,8 @@ class Sample:
         self.loss_mask = None
         self.weight_versions = []
         self.rollout_log_probs = None
+        self.rollout_top_logprob_ids = None
+        self.rollout_top_logprobs = None
         self.rollout_sampling_mask = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None

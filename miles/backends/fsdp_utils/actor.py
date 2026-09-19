@@ -182,8 +182,14 @@ class FSDPTrainRayActor(TrainRayActor):
                 eps=args.adam_eps,
                 weight_decay=args.weight_decay,
             )
+        elif args.optimizer == "sgd":
+            self.optimizer = torch.optim.SGD(
+                self.model.parameters(),
+                lr=args.lr,
+                weight_decay=args.weight_decay,
+            )
         else:
-            raise ValueError(f"Unsupported optimizer: {args.optimizer}. Supported options: 'adam'")
+            raise ValueError(f"Unsupported optimizer: {args.optimizer}. Supported options: 'adam', 'sgd'")
 
         # Initialize LR scheduler
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
@@ -523,6 +529,8 @@ class FSDPTrainRayActor(TrainRayActor):
                             "returns",
                             "ref_log_probs",
                             "rollout_log_probs",
+                            "rollout_top_logprob_ids",
+                            "rollout_top_logprobs",
                         ],
                         self.args.data_pad_size_multiplier,
                         self.args.qkv_format,

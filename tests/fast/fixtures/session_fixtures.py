@@ -18,6 +18,8 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         apply_chat_template_kwargs=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_score_centering=False,
+        score_centering_top_k=128,
         sglang_speculative_algorithm=None,
         num_layers=None,
         moe_router_topk=None,

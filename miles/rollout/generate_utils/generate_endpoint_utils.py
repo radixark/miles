@@ -69,6 +69,8 @@ def compute_request_payload(
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
     }
+    if getattr(args, "use_score_centering", False):
+        payload["top_logprobs_num"] = max(0, int(getattr(args, "score_centering_top_k", 128) or 0))
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
@@ -98,6 +100,18 @@ async def update_sample_from_response(
     if sample.rollout_log_probs is None:
         sample.rollout_log_probs = []
     sample.rollout_log_probs += new_response_log_probs
+
+    if getattr(args, "use_score_centering", False):
+        top_k = int(getattr(args, "score_centering_top_k", 128) or 0)
+        top_logprobs = get_score_centering_top_logprobs(output, top_k)
+        if top_logprobs is not None:
+            top_ids, top_values = top_logprobs
+            if sample.rollout_top_logprob_ids is None:
+                sample.rollout_top_logprob_ids = top_ids
+                sample.rollout_top_logprobs = top_values
+            else:
+                sample.rollout_top_logprob_ids = np.concatenate((sample.rollout_top_logprob_ids, top_ids), axis=0)
+                sample.rollout_top_logprobs = np.concatenate((sample.rollout_top_logprobs, top_values), axis=0)
 
     if update_loss_mask:
         if sample.loss_mask is None:
@@ -138,3 +152,22 @@ def get_indexer_topk_from_response(args, output, sample):
         "sglang-miles must include the layer count in meta_info."
     )
     return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)
+
+
+def get_score_centering_top_logprobs(output: dict, top_k: int) -> tuple[np.ndarray, np.ndarray] | None:
+    """Decode SGLang's per-generated-token top-k logprobs for score centering."""
+    if top_k <= 0:
+        return None
+    entries_per_token = output.get("meta_info", {}).get("output_top_logprobs")
+    if entries_per_token is None:
+        raise ValueError("score centering requires SGLang output_top_logprobs")
+
+    token_ids = np.full((len(entries_per_token), top_k), -1, dtype=np.int32)
+    logprobs = np.full((len(entries_per_token), top_k), -np.inf, dtype=np.float32)
+    for position, entries in enumerate(entries_per_token):
+        for rank, entry in enumerate((entries or [])[:top_k]):
+            if entry is None:
+                continue
+            logprobs[position, rank] = float(entry[0])
+            token_ids[position, rank] = int(entry[1])
+    return token_ids, logprobs

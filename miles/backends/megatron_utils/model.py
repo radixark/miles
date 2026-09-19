@@ -440,6 +440,8 @@ def run_forward_backward_pass(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "rollout_top_logprob_ids",
+                "rollout_top_logprobs",
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",

@@ -327,6 +327,15 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+def test_opd_score_centering_mode_rl_only_requires_opd_and_score_centering():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--opd-score-centering-mode", "rl-only", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(ValueError, match="requires both --use-opd and --use-score-centering"):
+        miles_validate_args(args)
+
+
 def test_shared_actor_critic_ppo_rejects_indep_dp():
     """Multi-cell PPO used to pass validation and fail only at the first training step's external-data assert."""
     parser = argparse.ArgumentParser()

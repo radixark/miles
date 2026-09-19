@@ -1,0 +1,10 @@
+use_tis: true
+use_rs: false
+tis_level: token
+tis_mode: mask
+tis_lower_bound: 0.5
+tis_upper_bound: 5.0
+tis_batch_normalize: false
+rs_lower_bound: null
+rs_upper_bound: null
+rs_veto_threshold: null

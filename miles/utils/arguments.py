@@ -1591,6 +1591,31 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Enable TIS from https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33.",
             )
             parser.add_argument(
+                "--use-score-centering",
+                action="store_true",
+                default=False,
+                help="Center trainer token scores using the sampler's top-k distribution.",
+            )
+            parser.add_argument(
+                "--score-centering-top-k",
+                type=int,
+                default=128,
+                help="Sampler top-k logprobs retained for score centering (default: 128).",
+            )
+            parser.add_argument(
+                "--opd-score-centering-mode",
+                type=str,
+                choices=["combined", "rl-only"],
+                default="combined",
+                help=(
+                    "How score centering composes with on-policy distillation (OPD) when both "
+                    "--use-score-centering and --use-opd are set. 'combined' (default) centers the "
+                    "RL+OPD advantage as one term, matching prior behavior. 'rl-only' centers only the "
+                    "RL advantage and adds the OPD reverse-KL term as an uncentered policy-gradient "
+                    "contribution, so centering cannot cancel the intended teacher-imitation drift."
+                ),
+            )
+            parser.add_argument(
                 "--tis-clip",
                 type=float,
                 default=2.0,
@@ -3158,6 +3183,15 @@ def miles_validate_args(args):
 
     if args.use_rollout_logprobs:
         assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."
+
+    if args.use_score_centering:
+        assert args.score_centering_top_k > 0, "--score-centering-top-k must be positive"
+        assert args.advantage_estimator != "gspo", "score centering does not support sequence-level GSPO yet"
+
+    if args.opd_score_centering_mode == "rl-only" and not (args.use_opd and args.use_score_centering):
+        raise ValueError(
+            "--opd-score-centering-mode=rl-only requires both --use-opd and --use-score-centering to be set."
+        )
 
     if args.get_mismatch_metrics:
         assert (

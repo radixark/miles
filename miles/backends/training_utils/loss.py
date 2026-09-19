@@ -110,6 +110,13 @@ def compute_advantages_and_returns(
     )
 
     # Apply on-policy distillation KL penalty to advantages (orthogonal to advantage estimator)
+    rl_only_score_centering = (
+        args.use_opd
+        and getattr(args, "use_score_centering", False)
+        and getattr(args, "opd_score_centering_mode", "combined") == "rl-only"
+    )
+    rl_only_advantages = list(advantages) if rl_only_score_centering else None
+
     if args.use_opd:
         apply_opd_kl_to_advantages(
             args=args,
@@ -120,9 +127,15 @@ def compute_advantages_and_returns(
 
     if args.normalize_advantages:
         advantages = normalize_advantages(args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens)
+        if rl_only_advantages is not None:
+            rl_only_advantages = normalize_advantages(
+                args, rl_only_advantages, loss_masks, total_lengths, response_lengths, max_seq_lens
+            )
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns
+    if rl_only_advantages is not None:
+        rollout_data["rl_only_advantages"] = rl_only_advantages
 
 
 def loss_function(

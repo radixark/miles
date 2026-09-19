@@ -118,6 +118,78 @@ def test_fixed_opd_inputs_are_detached_in_persistent_rollout_data(monkeypatch):
     assert teacher_source.grad is None
 
 
+def test_rl_only_score_centering_captures_pre_opd_advantages(monkeypatch):
+    make_parallel_state()
+    rollout_data = {
+        "log_probs": [torch.tensor([0.0, 1.0])],
+        "ref_log_probs": [torch.zeros(2)],
+        "teacher_log_probs": [torch.tensor([0.0, 0.0])],
+        "rewards": [0.0],
+        "values": None,
+        "response_lengths": [2],
+        "loss_masks": [torch.ones(2)],
+        "total_lengths": [2],
+    }
+    args = Namespace(
+        skip_actor_forward_only=False,
+        use_rollout_logprobs=False,
+        kl_coef=0.0,
+        use_opd=True,
+        opd_type="sglang",
+        opd_kl_coef=0.5,
+        use_score_centering=True,
+        opd_score_centering_mode="rl-only",
+        normalize_advantages=False,
+    )
+
+    def fake_compute_advantages(**kwargs):
+        return [torch.tensor([2.0, 2.0])], [torch.tensor([2.0, 2.0])]
+
+    monkeypatch.setattr(loss_utils, "compute_advantages", fake_compute_advantages)
+
+    loss_utils.compute_advantages_and_returns(args, rollout_data)
+
+    # RL-only advantages keep the pre-OPD value; the combined advantage still
+    # subtracts the OPD reverse-KL penalty (student - teacher = [0, 1]).
+    assert torch.allclose(rollout_data["rl_only_advantages"][0], torch.tensor([2.0, 2.0]))
+    assert torch.allclose(rollout_data["advantages"][0], torch.tensor([2.0, 1.5]))
+
+
+def test_combined_score_centering_does_not_capture_rl_only_advantages(monkeypatch):
+    make_parallel_state()
+    rollout_data = {
+        "log_probs": [torch.tensor([0.0, 1.0])],
+        "ref_log_probs": [torch.zeros(2)],
+        "teacher_log_probs": [torch.tensor([0.0, 0.0])],
+        "rewards": [0.0],
+        "values": None,
+        "response_lengths": [2],
+        "loss_masks": [torch.ones(2)],
+        "total_lengths": [2],
+    }
+    args = Namespace(
+        skip_actor_forward_only=False,
+        use_rollout_logprobs=False,
+        kl_coef=0.0,
+        use_opd=True,
+        opd_type="sglang",
+        opd_kl_coef=0.5,
+        use_score_centering=True,
+        opd_score_centering_mode="combined",
+        normalize_advantages=False,
+    )
+
+    def fake_compute_advantages(**kwargs):
+        return [torch.tensor([2.0, 2.0])], [torch.tensor([2.0, 2.0])]
+
+    monkeypatch.setattr(loss_utils, "compute_advantages", fake_compute_advantages)
+
+    loss_utils.compute_advantages_and_returns(args, rollout_data)
+
+    assert "rl_only_advantages" not in rollout_data
+    assert torch.allclose(rollout_data["advantages"][0], torch.tensor([2.0, 1.5]))
+
+
 def test_noop_when_student_log_probs_none():
     args = _args()
     advantages = [torch.tensor([1.0, 2.0])]

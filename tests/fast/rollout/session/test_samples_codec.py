@@ -44,6 +44,8 @@ def _computed_sample(**overrides) -> Sample:
     s.response_length = 2
     s.loss_mask = [1, 1]
     s.rollout_log_probs = [-0.5, -0.1234567891234567]
+    s.rollout_top_logprob_ids = np.array([[10, 7], [11, 4]], dtype=np.int32)
+    s.rollout_top_logprobs = np.array([[-0.5, -1.2], [-0.12, -1.5]], dtype=np.float32)
     s.rollout_sampling_mask = RolloutSamplingMask(ids=[10, 4, 11], offsets=[0, 2, 3])
     s.rollout_routed_experts = np.arange(24, dtype=np.int32).reshape(4, 3, 2)
     s.rollout_indexer_topk = None
@@ -90,6 +92,9 @@ class TestSamplesWireCodec:
         # computed fields overlaid, with exact types/values
         assert out.tokens == [1, 2, 3, 10, 11] and type(out.tokens) is list
         assert out.rollout_log_probs == [-0.5, -0.1234567891234567]
+        assert out.rollout_top_logprob_ids.dtype == np.int32
+        assert np.array_equal(out.rollout_top_logprob_ids, np.array([[10, 7], [11, 4]], dtype=np.int32))
+        assert np.allclose(out.rollout_top_logprobs, np.array([[-0.5, -1.2], [-0.12, -1.5]], dtype=np.float32))
         sampling_mask_ids, sampling_mask_offsets = out.rollout_sampling_mask._as_tensors()
         assert sampling_mask_ids.tolist() == [10, 4, 11]
         assert sampling_mask_offsets.tolist() == [0, 2, 3]
@@ -185,6 +190,8 @@ class TestSamplesWireCodec:
             "tokens.0",
             "loss_mask.0",
             "rollout_log_probs.0",
+            "rollout_top_logprob_ids.0",
+            "rollout_top_logprobs.0",
             "rollout_sampling_mask.ids.0",
             "rollout_sampling_mask.offsets.0",
             "rollout_routed_experts.0",
@@ -196,6 +203,8 @@ class TestSamplesWireCodec:
         (out,) = decode_samples_and_merge_input_sample(payload, Sample(), fields=_FIELDS_WITH_SAMPLING_MASK).samples
         assert out.tokens == sample.tokens and type(out.tokens) is list
         assert out.rollout_log_probs == sample.rollout_log_probs
+        assert np.array_equal(out.rollout_top_logprob_ids, sample.rollout_top_logprob_ids)
+        assert np.array_equal(out.rollout_top_logprobs, sample.rollout_top_logprobs)
         assert out.rollout_routed_experts.dtype == np.int32 and out.rollout_routed_experts.shape == (4, 3, 2)
         assert np.array_equal(out.rollout_routed_experts, routed)
         assert out.rollout_indexer_topk.dtype == np.int32 and np.array_equal(out.rollout_indexer_topk, indexer)

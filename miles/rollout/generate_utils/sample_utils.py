@@ -2,6 +2,8 @@ from copy import deepcopy
 from dataclasses import fields
 from typing import Any
 
+import numpy as np
+
 from miles.rollout.generate_utils.sampling_mask import merge_sampling_masks
 from miles.utils.types import Sample
 
@@ -59,6 +61,17 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         av = av if av is not None else [0.0] * a.response_length
         bv = bv if bv is not None else [0.0] * b.response_length
         return av + [0.0] * obs_len + bv
+
+    def _merge_optional_top_logprobs(field, fill_value):
+        av, bv = getattr(a, field), getattr(b, field)
+        if av is None and bv is None:
+            return None
+        assert av is not None and bv is not None, f"{field} must be present on both samples when merging"
+        assert (
+            av.shape[0] == a.response_length and bv.shape[0] == b.response_length
+        ), f"{field} response length mismatch during merge"
+        gap = np.full((obs_len, av.shape[1]), fill_value=fill_value, dtype=av.dtype)
+        return np.concatenate((av, gap, bv), axis=0)
 
     def _pop_opd_student_top_logprobs(metadata):
         if metadata is None:
@@ -162,6 +175,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
             weight_versions=a.weight_versions + b.weight_versions,
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
+            rollout_top_logprob_ids=_merge_optional_top_logprobs("rollout_top_logprob_ids", -1),
+            rollout_top_logprobs=_merge_optional_top_logprobs("rollout_top_logprobs", -float("inf")),
             rollout_sampling_mask=sampling_mask,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),

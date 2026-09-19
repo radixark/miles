@@ -38,6 +38,7 @@ from miles.utils.types import Sample
 from .generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     get_indexer_topk_from_response,
+    get_score_centering_top_logprobs,
     policy_uses_routing_key,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
@@ -181,6 +182,11 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
+    score_centering_top_k = (
+        getattr(args, "score_centering_top_k", 128) if getattr(args, "use_score_centering", False) else 0
+    )
+    if score_centering_top_k > 0:
+        payload["top_logprobs_num"] = max(payload.get("top_logprobs_num", 0), score_centering_top_k)
 
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
@@ -217,6 +223,17 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         if output_top_logprobs is not None:
             sample.metadata.setdefault("opd_student_top_logprobs", [])
             sample.metadata["opd_student_top_logprobs"].extend(output_top_logprobs)
+
+    if score_centering_top_k > 0:
+        top_logprobs = get_score_centering_top_logprobs(output, score_centering_top_k)
+        assert top_logprobs is not None
+        top_ids, top_values = top_logprobs
+        if sample.rollout_top_logprob_ids is None:
+            sample.rollout_top_logprob_ids = top_ids
+            sample.rollout_top_logprobs = top_values
+        else:
+            sample.rollout_top_logprob_ids = np.concatenate((sample.rollout_top_logprob_ids, top_ids), axis=0)
+            sample.rollout_top_logprobs = np.concatenate((sample.rollout_top_logprobs, top_values), axis=0)
 
     if "output_token_logprobs" in output["meta_info"]:
         new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]

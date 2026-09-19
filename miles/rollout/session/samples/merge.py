@@ -14,6 +14,7 @@ import numpy as np
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     get_indexer_topk_from_response,
     get_routed_experts_from_response,
+    get_score_centering_top_logprobs,
 )
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.types import SessionRecord
@@ -113,6 +114,12 @@ def _compute_sample_from_openai_record(
     sample = Sample()
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
+    if getattr(args, "use_score_centering", False):
+        top_logprobs = get_score_centering_top_logprobs(
+            {"meta_info": choice["meta_info"]}, int(getattr(args, "score_centering_top_k", 128) or 0)
+        )
+        if top_logprobs is not None:
+            sample.rollout_top_logprob_ids, sample.rollout_top_logprobs = top_logprobs
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)

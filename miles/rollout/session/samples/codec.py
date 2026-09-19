@@ -37,6 +37,8 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "response_length": ValueSpec("json"),
     "loss_mask": ValueSpec("tensor_list", np.dtype(np.uint8)),
     "rollout_log_probs": ValueSpec("tensor_list", np.dtype(np.float64)),
+    "rollout_top_logprob_ids": ValueSpec("tensor", np.dtype(np.int32), strict=True),
+    "rollout_top_logprobs": ValueSpec("tensor", np.dtype(np.float32), strict=True),
     "rollout_sampling_mask": ValueSpec("sampling_mask"),
     "rollout_routed_experts": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
@@ -241,6 +243,9 @@ def assert_input_sample_defaults(input_sample: Sample) -> None:
         "input sample must not carry teacher_log_probs/opd_reverse_kl; "
         "the legacy pipeline trimmed them per turn, the samples-wire overlay carries them verbatim"
     )
+    assert (
+        input_sample.rollout_top_logprob_ids is None and input_sample.rollout_top_logprobs is None
+    ), "input sample must not carry rollout top-k logprobs; the samples-wire overlay carries them verbatim"
     assert _OPD_STUDENT_TOP_LOGPROBS_KEY not in (input_sample.metadata or {}), (
         f"input sample metadata must not carry {_OPD_STUDENT_TOP_LOGPROBS_KEY!r}; "
         "merge_samples gives it per-token semantics that only hold for per-turn values"

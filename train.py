@@ -22,6 +22,11 @@ from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 logger = logging.getLogger(__name__)
 
 
+def _should_update_weights(args, rollout_id: int) -> bool:
+    """Return whether the rollout engine should receive the current actor weights."""
+    return (rollout_id + 1) % args.update_weights_interval == 0
+
+
 async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
     configure_logger(args, source=MainProcessIdentity())
@@ -156,7 +161,8 @@ async def train(args):
             await offload_train()
             if args.offload_rollout:
                 await inference_controller.onload_weights()
-        await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
+        if _should_update_weights(args, rollout_id):
+            await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
         if args.offload_rollout:
             await inference_controller.onload_kv()
 

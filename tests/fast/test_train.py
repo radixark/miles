@@ -31,6 +31,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         save_trigger_sentinel=None,
         skip_eval_before_train=False,
         start_rollout_id=0,
+        update_weights_interval=1,
         use_critic=False,
     )
     for key, value in overrides.items():
@@ -68,6 +69,14 @@ def _install_driver_fakes(
     monkeypatch.setattr(train_driver, "update_weights", update_weights)
     monkeypatch.setattr(train_driver, "remove_rollout_data_refs", lambda *_args, **_kwargs: None)
     return components
+
+
+def test_weight_updates_follow_the_configured_rollout_interval():
+    args = _make_args(update_weights_interval=64)
+
+    assert not train_driver._should_update_weights(args, rollout_id=62)
+    assert train_driver._should_update_weights(args, rollout_id=63)
+    assert not train_driver._should_update_weights(args, rollout_id=64)
 
 
 class TestEvalOnlyRun:
