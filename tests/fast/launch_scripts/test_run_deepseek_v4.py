@@ -536,6 +536,65 @@ def test_fp8_smoke_allows_run_length_and_log_overrides(monkeypatch, fp8_smoke_la
     assert argv[argv.index("--hf-checkpoint") + 1] == "/hf/full-model"
 
 
+@pytest.mark.parametrize(("profile", "expected"), [("192gb", "0.85"), ("288gb", "0.5")])
+def test_colocate_profile_still_picks_the_default_mem_fraction(monkeypatch, amd_launcher, profile, expected):
+    # The module-level fixture pins the profile resolver; point it at this case instead.
+    monkeypatch.setattr(amd_launcher, "_resolve_colocate_memory_profile", lambda _args: profile)
+    args = SimpleNamespace(colocate_memory_profile=profile, sglang_mem_fraction_static=None)
+    assert amd_launcher._resolve_sglang_mem_fraction_static(args) == expected
+
+
+def test_fp8_smoke_emits_the_profile_default_mem_fraction(monkeypatch, fp8_smoke_launcher):
+    recording = install_command_recorder(monkeypatch)
+    args = _fp8_smoke_args(
+        fp8_smoke_launcher,
+        num_nodes=2,
+        context_parallel_size=8,
+        colocate_memory_profile="192gb",
+        fp8_recipe="tensorwise",
+        skip_saving=True,
+    )
+    fp8_smoke_launcher._train(args)
+    argv = shlex.split(recording.commands[0])
+    assert argv[argv.index("--sglang-mem-fraction-static") + 1] == "0.85"
+
+
+def test_explicit_mem_fraction_overrides_the_colocate_profile(monkeypatch, fp8_smoke_launcher):
+    recording = install_command_recorder(monkeypatch)
+    args = _fp8_smoke_args(
+        fp8_smoke_launcher,
+        num_nodes=2,
+        context_parallel_size=8,
+        colocate_memory_profile="192gb",
+        fp8_recipe="tensorwise",
+        skip_saving=True,
+        sglang_mem_fraction_static=0.75,
+    )
+    fp8_smoke_launcher._train(args)
+    argv = shlex.split(recording.commands[0])
+    assert argv.count("--sglang-mem-fraction-static") == 1
+    assert argv[argv.index("--sglang-mem-fraction-static") + 1] == "0.75"
+    # The margin stays on the profile's value; only the split is overridden.
+    assert argv[argv.index("--train-memory-margin-bytes") + 1] == "1073741824"
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0, -0.1, 1.5])
+def test_out_of_range_mem_fraction_raises_before_any_command(monkeypatch, fp8_smoke_launcher, value):
+    recording = install_command_recorder(monkeypatch)
+    args = _fp8_smoke_args(
+        fp8_smoke_launcher,
+        num_nodes=2,
+        context_parallel_size=8,
+        colocate_memory_profile="192gb",
+        fp8_recipe="tensorwise",
+        skip_saving=True,
+        sglang_mem_fraction_static=value,
+    )
+    with pytest.raises(ValueError, match="strictly between 0 and 1"):
+        fp8_smoke_launcher._train(args)
+    assert not recording.commands
+
+
 @pytest.mark.parametrize(
     ("rewards", "keep"),
     [([-1.0, -1.0, -1.0, -1.0], False), ([1.0, 1.0, 1.0, 1.0], False), ([1.0, -1.0, 1.0, -1.0], True)],

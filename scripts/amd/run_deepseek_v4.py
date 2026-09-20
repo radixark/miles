@@ -141,6 +141,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     enable_mtp: bool = False
     colocate_memory_profile: Literal["auto", "192gb", "288gb"] = "auto"
+    # Escape hatch for the colocate split. The profile default is right for the pairs it was
+    # tuned on, but the training actors and the rollout engines share the card, and how much
+    # each holds when the engine sizes its KV cache is not fixed by the card capacity alone.
+    # Where the default is too generous to SGLang the engine dies during load with
+    # "Loaded weights leave no GPU memory for the KV cache under --mem-fraction-static=...".
+    sglang_mem_fraction_static: float | None = None
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -437,6 +443,18 @@ def _resolve_colocate_memory_profile(args: ScriptArgs) -> str:
     except Exception:
         return "288gb"
     return "288gb" if gib >= 256 else "192gb"
+
+
+def _resolve_sglang_mem_fraction_static(args: ScriptArgs) -> str:
+    """Explicit override wins over the profile default."""
+    if args.sglang_mem_fraction_static is not None:
+        if not 0.0 < args.sglang_mem_fraction_static < 1.0:
+            raise ValueError(
+                "--sglang-mem-fraction-static must be strictly between 0 and 1, "
+                f"got {args.sglang_mem_fraction_static}."
+            )
+        return f"{args.sglang_mem_fraction_static:g}"
+    return "0.5" if _resolve_colocate_memory_profile(args) == "288gb" else "0.85"
 
 
 def _is_gfx942() -> bool:
@@ -788,7 +806,7 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         f"--train-memory-margin-bytes {'3221225472' if _resolve_colocate_memory_profile(args) == '288gb' else '1073741824'} "
-        f"--sglang-mem-fraction-static {'0.5' if _resolve_colocate_memory_profile(args) == '288gb' else '0.85'} "
+        f"--sglang-mem-fraction-static {_resolve_sglang_mem_fraction_static(args)} "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--dsv4-impl miles "  # ROCm has no cudnn/flash_mla path for the megatron impl
