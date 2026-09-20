@@ -191,9 +191,7 @@ class DeepSeekV4Compressor(nn.Module):
         else:
             if self.use_fp8_qat:
                 kv = kv.clone()
-                kv[..., : self.nope_head_dim] = fp8_simulate_qat(
-                    kv[..., : self.nope_head_dim], 64, self.qat_scale_fmt
-                )
+                kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64, self.qat_scale_fmt)
 
         return kv
 
@@ -294,9 +292,7 @@ class DeepSeekV4Compressor(nn.Module):
         else:
             if self.use_fp8_qat:
                 kv = kv.clone()
-                kv[..., : self.nope_head_dim] = fp8_simulate_qat(
-                    kv[..., : self.nope_head_dim], 64, self.qat_scale_fmt
-                )
+                kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64, self.qat_scale_fmt)
 
         return kv
 

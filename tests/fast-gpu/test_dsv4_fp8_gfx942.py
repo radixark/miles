@@ -234,7 +234,7 @@ def test_tensorwise_linear_fp8_forward_backward(grouped, monkeypatch):
         "grouped": grouped,
         "out_rel_l2": error(out, ref),
         "dx_rel_l2": error(x.grad, ref_x),
-        "dw_rel_l2": [error(p.grad, reference) for p, reference in zip(model.parameters(), ref_w)],
+        "dw_rel_l2": [error(p.grad, reference) for p, reference in zip(model.parameters(), ref_w, strict=True)],
         "fp8_gemm_calls": len(calls),
     }
     print(json.dumps(metrics), flush=True)

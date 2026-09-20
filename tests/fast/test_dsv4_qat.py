@@ -137,18 +137,23 @@ def cpu_modules(monkeypatch):
         get_transformer_block_with_experimental_attention_variant_spec=lambda config, **kw: config,
     )
     monkeypatch.setattr(
-        sys.modules["megatron.core"], "parallel_state",
-        SimpleNamespace(get_context_parallel_world_size=lambda: 1), raising=False,
+        sys.modules["megatron.core"],
+        "parallel_state",
+        SimpleNamespace(get_context_parallel_world_size=lambda: 1),
+        raising=False,
     )
     stub(
         "miles.utils.replay_base",
         indexer_replay_manager=SimpleNamespace(
-            register_to_module=lambda *a, **kw: None, get_topk_fn=lambda fn, **kw: fn,
+            register_to_module=lambda *a, **kw: None,
+            get_topk_fn=lambda fn, **kw: fn,
         ),
     )
     stub("fast_hadamard_transform", hadamard_transform=_hadamard)
     stub(
-        "tilelang", set_log_level=lambda *a: None, jit=lambda **kw: lambda fn: fn,
+        "tilelang",
+        set_log_level=lambda *a: None,
+        jit=lambda **kw: lambda fn: fn,
         PassConfigKey=SimpleNamespace(TL_DISABLE_WARP_SPECIALIZED=1, TL_DISABLE_TMA_LOWER=2),
     )
     stub("tilelang.language")
@@ -182,13 +187,14 @@ def cpu_modules(monkeypatch):
 
     stub(
         f"{prefix}.kernel.tilelang_indexer_fwd",
-        _make_causal_cu_seqlens=causal, batched_indexer_fwd=index_score,
+        _make_causal_cu_seqlens=causal,
+        batched_indexer_fwd=index_score,
     )
     indexer = _load(f"{prefix}.v4_indexer", PLUGIN / "ops/v4_indexer.py", monkeypatch)
 
     def sparse_attn(q, kv, sink, topk, scale):
         captures["kv"] = kv
-        return kv[:, :q.shape[1], None, :].expand_as(q).clone()
+        return kv[:, : q.shape[1], None, :].expand_as(q).clone()
 
     stub(f"{prefix}.kernel.tilelang_sparse_mla", sparse_attn_tilelang=sparse_attn)
     model = _load("_dsv4_qat_cpu_model", PLUGIN / "deepseek_v4.py", monkeypatch)
@@ -197,11 +203,13 @@ def cpu_modules(monkeypatch):
     # GPU operation still fails through _lazy_init above.
     model.torch = SimpleNamespace(**torch.__dict__)
     model.torch.cuda = SimpleNamespace(current_device=lambda: "cpu")
+
     def window_indices(pos, *, window_size, cp_size, bsz):
         assert cp_size == bsz == 1
         return thd_utils.get_window_topk_idxs_thd(
             torch.tensor([0, pos.numel()], dtype=torch.int32),
-            window_size=window_size, total_tokens=pos.numel(),
+            window_size=window_size,
+            total_tokens=pos.numel(),
         )
 
     def compress_indices(pos, *, ratio, cp_size, bsz):
@@ -209,14 +217,22 @@ def cpu_modules(monkeypatch):
         return thd_utils.get_compress_topk_idxs_thd(
             torch.tensor([0, pos.numel()], dtype=torch.int32),
             torch.tensor([0, pos.numel() // ratio], dtype=torch.int32),
-            ratio=ratio, total_tokens=pos.numel(), max_n_compressed=pos.numel() // ratio,
+            ratio=ratio,
+            total_tokens=pos.numel(),
+            max_n_compressed=pos.numel() // ratio,
             kv_offset=pos.numel(),
         )
 
     monkeypatch.setattr(model, "get_window_topk_idxs_cp", window_indices)
     monkeypatch.setattr(model, "get_compress_topk_idxs_cp", compress_indices)
     return SimpleNamespace(
-        qat=qat, act=act, compressor=compressor, indexer=indexer, model=model, eav=eav, captures=captures,
+        qat=qat,
+        act=act,
+        compressor=compressor,
+        indexer=indexer,
+        model=model,
+        eav=eav,
+        captures=captures,
     )
 
 
@@ -228,14 +244,33 @@ def _config(fp8="e4m3", **policies):
             x.normal_(0, 0.1, generator=generator)
 
     return SimpleNamespace(
-        fp8=fp8, fp8_recipe="tensorwise", hidden_size=16, num_attention_heads=1,
-        tensor_model_parallel_size=1, q_lora_rank=16, o_lora_rank=1024, kv_lora_rank=512,
-        qk_pos_emb_head_dim=64, o_groups=1, csa_window_size=128, csa_compress_ratios=[0],
-        layernorm_epsilon=1e-6, sequence_parallel=False, params_dtype=torch.bfloat16,
-        init_method=init_method, csa_compress_rotary_base=160000, rotary_base=10000,
-        original_max_position_embeddings=65536, rotary_scaling_factor=4, beta_fast=32, beta_slow=1,
-        dsa_indexer_n_heads=2, dsa_indexer_head_dim=128, dsa_indexer_topk=2,
-        miles_dsa_topk_backend="torch", **policies,
+        fp8=fp8,
+        fp8_recipe="tensorwise",
+        hidden_size=16,
+        num_attention_heads=1,
+        tensor_model_parallel_size=1,
+        q_lora_rank=16,
+        o_lora_rank=1024,
+        kv_lora_rank=512,
+        qk_pos_emb_head_dim=64,
+        o_groups=1,
+        csa_window_size=128,
+        csa_compress_ratios=[0],
+        layernorm_epsilon=1e-6,
+        sequence_parallel=False,
+        params_dtype=torch.bfloat16,
+        init_method=init_method,
+        csa_compress_rotary_base=160000,
+        rotary_base=10000,
+        original_max_position_embeddings=65536,
+        rotary_scaling_factor=4,
+        beta_fast=32,
+        beta_slow=1,
+        dsa_indexer_n_heads=2,
+        dsa_indexer_head_dim=128,
+        dsa_indexer_topk=2,
+        miles_dsa_topk_backend="torch",
+        **policies,
     )
 
 
@@ -250,7 +285,9 @@ def _input(rows, dim=16, dtype=torch.bfloat16):
 
 def _layout(rows, ratio):
     return thd_utils.ThdLayout(
-        torch.tensor([0, rows], dtype=torch.int32), 0, rows,
+        torch.tensor([0, rows], dtype=torch.int32),
+        0,
+        rows,
         cu_seqlens_compressed=torch.tensor([0, rows // ratio], dtype=torch.int32),
     )
 
@@ -272,7 +309,8 @@ def test_policy_truth_table_and_te_config_unchanged(cpu_modules, fp8, kv_mode, i
     for is_indexer, mode in ((False, kv_mode), (True, index_mode)):
         expected_enabled = fp8 is not None if mode == "legacy" else mode != "off"
         assert cpu_modules.qat.resolve_fp8_qat(config, is_indexer=is_indexer) == (
-            expected_enabled, None if mode == "fp8_dynamic" else "ue8m0"
+            expected_enabled,
+            None if mode == "fp8_dynamic" else "ue8m0",
         )
     assert vars(config) == before
 
@@ -280,14 +318,16 @@ def test_policy_truth_table_and_te_config_unchanged(cpu_modules, fp8, kv_mode, i
 @pytest.mark.parametrize("fp8", [None, "e4m3", False])
 def test_missing_policy_uses_exact_legacy_condition(cpu_modules, fp8):
     for is_indexer in (False, True):
-        assert cpu_modules.qat.resolve_fp8_qat(_config(fp8), is_indexer=is_indexer) == (
-            fp8 is not None, "ue8m0"
-        )
+        assert cpu_modules.qat.resolve_fp8_qat(_config(fp8), is_indexer=is_indexer) == (fp8 is not None, "ue8m0")
 
 
-@pytest.mark.parametrize("name,value,is_indexer", [
-    ("dsv4_kv_qat", "fp8_dynamic", False), ("dsv4_index_qat", "unknown", True),
-])
+@pytest.mark.parametrize(
+    "name,value,is_indexer",
+    [
+        ("dsv4_kv_qat", "fp8_dynamic", False),
+        ("dsv4_index_qat", "unknown", True),
+    ],
+)
 def test_invalid_programmatic_policy_fails(cpu_modules, name, value, is_indexer):
     with pytest.raises(ValueError, match="Invalid"):
         cpu_modules.qat.resolve_fp8_qat(_config(**{name: value}), is_indexer=is_indexer)
@@ -298,7 +338,10 @@ def test_invalid_programmatic_policy_fails(cpu_modules, name, value, is_indexer)
 @pytest.mark.parametrize("index_mode", INDEX_MODES)
 def test_spec_passes_policies_without_changing_gemm(cpu_modules, fp8, kv_mode, index_mode):
     args = Namespace(
-        dsv4_impl="miles", dsv4_kv_qat=kv_mode, dsv4_index_qat=index_mode, miles_dsa_topk_backend="torch",
+        dsv4_impl="miles",
+        dsv4_kv_qat=kv_mode,
+        dsv4_index_qat=index_mode,
+        miles_dsa_topk_backend="torch",
     )
     config = _config(fp8)
     original_spec = cpu_modules.eav.get_experimental_attention_variant_module_spec
@@ -386,12 +429,13 @@ def test_module_policy_scopes_and_parameter_metadata(cpu_modules, fp8, kv_mode, 
     expected_index = fp8 is not None if index_mode == "legacy" else index_mode != "off"
     assert attn.use_fp8_qat == attn.core_attention.compressor.use_fp8_qat == expected_kv
     assert indexer.use_fp8_qat == indexer.compressor.use_fp8_qat == expected_index
-    assert indexer.qat_scale_fmt == indexer.compressor.qat_scale_fmt == (
-        None if index_mode == "fp8_dynamic" else "ue8m0"
+    assert (
+        indexer.qat_scale_fmt == indexer.compressor.qat_scale_fmt == (None if index_mode == "fp8_dynamic" else "ue8m0")
     )
     baseline_config = _config(fp8)
     baseline_config.csa_compress_ratios = [4]
     baseline = cpu_modules.model.DeepSeekV4Attention(baseline_config, pg_collection=_group())
+
     def metadata(module):
         return {n: (p.shape, p.dtype, p.requires_grad) for n, p in module.named_parameters()}
 
@@ -400,16 +444,26 @@ def test_module_policy_scopes_and_parameter_metadata(cpu_modules, fp8, kv_mode, 
 
 
 @pytest.mark.parametrize("layout_kind", ["raw", "thd", "thd_compact"])
-@pytest.mark.parametrize("ratio,rotate,fp8,mode", [
-    (ratio, rotate, fp8, mode)
-    for ratio, rotate in ((4, False), (128, False), (4, True))
-    for fp8, mode in ((None, "legacy"), ("e4m3", "legacy"), ("e4m3", "off"),
-                      (None, "fp8_ue8m0"), (None, "fp8_dynamic"))
-    if rotate or mode != "fp8_dynamic"
-])
+@pytest.mark.parametrize(
+    "ratio,rotate,fp8,mode",
+    [
+        (ratio, rotate, fp8, mode)
+        for ratio, rotate in ((4, False), (128, False), (4, True))
+        for fp8, mode in (
+            (None, "legacy"),
+            ("e4m3", "legacy"),
+            ("e4m3", "off"),
+            (None, "fp8_ue8m0"),
+            (None, "fp8_dynamic"),
+        )
+        if rotate or mode != "fp8_dynamic"
+    ],
+)
 def test_compressor_scope_and_gradient(cpu_modules, monkeypatch, layout_kind, ratio, rotate, fp8, mode):
     config = _config(
-        fp8, dsv4_kv_qat="off" if rotate else mode, dsv4_index_qat=mode if rotate else "off",
+        fp8,
+        dsv4_kv_qat="off" if rotate else mode,
+        dsv4_index_qat=mode if rotate else "off",
     )
     compressor = cpu_modules.compressor.DeepSeekV4Compressor(config, 128 if rotate else 512, ratio, rotate)
     _seed_compressor(compressor)
@@ -432,7 +486,9 @@ def test_compressor_scope_and_gradient(cpu_modules, monkeypatch, layout_kind, ra
     if enabled:
         value, block, scale_fmt = calls[0]
         assert (value.shape[-1], block, scale_fmt) == (
-            128 if rotate else 448, 128 if rotate else 64, None if mode == "fp8_dynamic" else "ue8m0"
+            128 if rotate else 448,
+            128 if rotate else 64,
+            None if mode == "fp8_dynamic" else "ue8m0",
         )
         got = output if rotate else output[..., :448]
         # raw quantizes BSHD, public forward returns SBHD.
@@ -466,9 +522,12 @@ def test_vanilla_kv_callsite_and_ste(cpu_modules, packed, mode):
     x = _input(8).requires_grad_(True)
     params = (
         SimpleNamespace(
-            qkv_format="thd", cu_seqlens_q=torch.tensor([0, 3, 8], dtype=torch.int32), max_seqlen_q=5,
+            qkv_format="thd",
+            cu_seqlens_q=torch.tensor([0, 3, 8], dtype=torch.int32),
+            max_seqlen_q=5,
         )
-        if packed else None
+        if packed
+        else None
     )
     attn(x, packed_seq_params=params)
     actual = cpu_modules.captures["kv"]
@@ -502,10 +561,12 @@ def test_kv_only_ab_preserves_indexer_and_matches_legacy_calls(cpu_modules, monk
     x = _input(2 * ratio).requires_grad_(True)
     params = (
         SimpleNamespace(
-            qkv_format="thd", cu_seqlens_q=torch.tensor([0, 2 * ratio], dtype=torch.int32),
+            qkv_format="thd",
+            cu_seqlens_q=torch.tensor([0, 2 * ratio], dtype=torch.int32),
             max_seqlen_q=2 * ratio,
         )
-        if packed else None
+        if packed
+        else None
     )
     attn(x, packed_seq_params=params)
     legacy_kv = cpu_modules.captures["kv"]
@@ -540,7 +601,10 @@ def test_kv_only_ab_preserves_indexer_and_matches_legacy_calls(cpu_modules, monk
     unquantized_kv = cpu_modules.captures["kv"]
     assert not torch.equal(legacy_kv[..., :448], unquantized_kv[..., :448])
     torch.testing.assert_close(
-        legacy_kv[..., :448], _reference(unquantized_kv[..., :448], 64, "ue8m0"), rtol=0, atol=0,
+        legacy_kv[..., :448],
+        _reference(unquantized_kv[..., :448], 64, "ue8m0"),
+        rtol=0,
+        atol=0,
     )
     torch.testing.assert_close(legacy_kv[..., 448:], unquantized_kv[..., 448:], rtol=0, atol=0)
     if ratio == 4:
