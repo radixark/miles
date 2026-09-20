@@ -94,11 +94,11 @@ def _sum_loss_and_outputs(
     log_probs: list[torch.Tensor],
     per_datum_losses: list[torch.Tensor],
 ) -> tuple[torch.Tensor, dict]:
-    if per_datum_losses:
+    if any(log_prob.numel() for log_prob in log_probs):
         loss = torch.stack(per_datum_losses).sum()
     else:
-        # a microbatch with no supervised tokens still needs the graph alive; fp32 sum avoids fp16 inf -> nan
-        loss = logits.sum(dtype=torch.float32) * 0
+        # Ranks without labels must still run backward. An empty view avoids reading the vocabulary tensor.
+        loss = logits[..., :0].sum(dtype=torch.float32)
     reported_losses, reported_logprobs = per_datum_losses, log_probs
     if per_datum_losses and get_parallel_state().cp.size > 1:
         reported_losses, reported_logprobs = _collect_response_reports(batch, log_probs, per_datum_losses)

@@ -24,14 +24,15 @@ def _zigzag_rows(values, rank, size):
     )
 
 
-def _exercise_partition(rank, size, port, *, recompute):
+def _exercise_partition(rank, size, port, *, recompute, single_label):
     init_gloo(rank, size, port=port)
     tp_group = [dist.new_group([member]) for member in range(size)][rank]
     generator = torch.Generator().manual_seed(73)
-    totals, responses = [13, 8, 3, 32], [11, 3, 1, 5]
+    totals, responses = ([9], [1]) if single_label else ([13, 8, 3, 32], [11, 3, 1, 5])
     masks = [torch.ones(length) for length in responses]
     masks[0][1::3] = 0
-    masks[1].zero_()  # A DP-padding datum must return scores but contribute no loss or gradient.
+    if not single_label:
+        masks[1].zero_()  # A DP-padding datum must return scores but contribute no loss or gradient.
     batch = {
         "unconcat_tokens": [torch.randint(0, 64, (length,), generator=generator) for length in totals],
         "target_tokens": [torch.randint(0, 64, (length,), generator=generator).tolist() for length in responses],
@@ -39,7 +40,7 @@ def _exercise_partition(rank, size, port, *, recompute):
         "advantages": [torch.randn(length, generator=generator).tolist() for length in responses],
         "rollout_log_probs": [torch.linspace(-5.5, -3.5, length) for length in responses],
         "loss_masks": masks,
-        "sample_indices": [7, 2, 19, 4],
+        "sample_indices": [7, 2, 19, 4][: len(totals)],
         "total_lengths": totals,
         "response_lengths": responses,
     }
@@ -104,5 +105,6 @@ def _exercise_partition(rank, size, port, *, recompute):
 
 @pytest.mark.parametrize("cp_size", [2, 4])
 @pytest.mark.parametrize("recompute", [False, True])
-def test_tinker_responses_and_gradients_match_unsharded(cp_size, recompute):
-    run_multiprocess(partial(_exercise_partition, recompute=recompute), world_size=cp_size)
+@pytest.mark.parametrize("single_label", [False, True], ids=["ragged", "empty_ranks"])
+def test_tinker_responses_and_gradients_match_unsharded(cp_size, recompute, single_label):
+    run_multiprocess(partial(_exercise_partition, recompute=recompute, single_label=single_label), world_size=cp_size)
