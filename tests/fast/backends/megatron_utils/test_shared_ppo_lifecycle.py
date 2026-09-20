@@ -181,6 +181,38 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     destroy_groups.assert_not_called()
 
 
+def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, monkeypatch):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        async_save=True,
+        custom_megatron_post_save_hook_path=None,
+        debug_rollout_only=False,
+        save_hf="/checkpoints/hf/{rollout_id}",
+    )
+    worker.role = "actor"
+    worker._heartbeat = Mock()
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    events = []
+
+    monkeypatch.setattr(actor_module, "save", lambda *_args: events.append("save"))
+
+    from megatron.training import async_utils
+    from miles.backends.megatron_utils import hf_export
+
+    monkeypatch.setattr(
+        async_utils,
+        "maybe_finalize_async_save",
+        lambda **_kwargs: events.append("finalize"),
+    )
+    monkeypatch.setattr(hf_export, "save_hf_model", lambda *_args: events.append("save_hf"))
+
+    worker.save_model(6, force_sync=True)
+
+    assert events == ["finalize", "save", "save_hf", "finalize"]
+
+
 @pytest.mark.parametrize("asleep", [False, True])
 def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep):
     """Weight update reloads and destroys temporary process groups only when the model is offloaded."""
