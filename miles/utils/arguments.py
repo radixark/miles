@@ -74,15 +74,12 @@ def _resolve_rollout_functions(args) -> None:
     user_eval_path = args.eval_function_path
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
     if (
-        (
-            any(
-                getattr(args, name, None) is not None
-                for name in ("rollout_max_candidate_groups", "rollout_timeout_seconds")
-            )
-            or (getattr(args, "rollout_max_attempts", 1) or 1) > 1
+        any(
+            getattr(args, name, None) is not None
+            for name in ("rollout_max_candidate_groups", "rollout_timeout_seconds")
         )
-        and args.rollout_function_path != "miles.rollout.sglang_rollout.generate_rollout"
-    ):
+        or (getattr(args, "rollout_max_attempts", 1) or 1) > 1
+    ) and args.rollout_function_path != "miles.rollout.sglang_rollout.generate_rollout":
         raise ValueError(
             "--rollout-max-candidate-groups, --rollout-timeout-seconds and --rollout-max-attempts require "
             "--rollout-function-path miles.rollout.sglang_rollout.generate_rollout "

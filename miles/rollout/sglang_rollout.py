@@ -637,10 +637,7 @@ async def _collect_rollout_samples_with_retries(args, rollout_id, state, data_so
             # deliberately far below "any decrease": sampling throughput varies by a few groups
             # between identical attempts, and treating that as degradation throws away the
             # retries the operator asked for.
-            if (
-                previous_completed is not None
-                and exc.completed_groups * 2 < previous_completed
-            ):
+            if previous_completed is not None and exc.completed_groups * 2 < previous_completed:
                 logger.error(
                     "Rollout %s attempt %s completed less than half the candidate groups of attempt %s "
                     "(%s < %s); the fleet is collapsing, not unlucky. Not retrying.",
@@ -653,8 +650,7 @@ async def _collect_rollout_samples_with_retries(args, rollout_id, state, data_so
                 raise
             previous_completed = exc.completed_groups
             logger.warning(
-                "Rollout %s attempt %s/%s fell short (%s/%s valid groups, %s completed candidates); "
-                "retrying: %s",
+                "Rollout %s attempt %s/%s fell short (%s/%s valid groups, %s completed candidates); " "retrying: %s",
                 rollout_id,
                 attempt,
                 attempts,

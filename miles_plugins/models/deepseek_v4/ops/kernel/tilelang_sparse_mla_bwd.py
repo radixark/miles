@@ -405,8 +405,10 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
     # The kernel used to accumulate this with an atomic per (s_i, by) block into H addresses,
     # which made it the least reproducible output it had. torch.sum over a fixed-shape
     # contiguous tensor uses a fixed reduction tree, so this form is run-to-run identical.
-    d_attn_sink = -(
-        delta.float() * torch.exp2(attn_sink.float().view(1, 1, -1) * 1.44269504 - lse.float())
-    ).sum(dim=(0, 1)).to(attn_sink.dtype)
+    d_attn_sink = (
+        -(delta.float() * torch.exp2(attn_sink.float().view(1, 1, -1) * 1.44269504 - lse.float()))
+        .sum(dim=(0, 1))
+        .to(attn_sink.dtype)
+    )
 
     return dq, dkv, d_attn_sink
