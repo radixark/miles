@@ -238,11 +238,6 @@ def create_task_sandbox(
             timeout=int(ttl_s),
             idle_timeout=int(idle_timeout_s),
             tags=sandbox_labels(task_dir),
-            # V2 create returns once the sandbox is scheduled, not once its
-            # entrypoint can serve traffic. Uvicorn opens this port only after
-            # application startup, so the probe is the provider-side readiness
-            # signal; the external /health request below also verifies the
-            # tunnel the OpenEnv client will actually use.
             readiness_probe=Probe.with_tcp(_ENV_SERVER_PORT),
             **task_resources(task_dir),
         )
