@@ -75,7 +75,7 @@ def attach_point_for_request(
         )
 
     if attach.node is not state.latest():
-        logger.info(
+        logger.debug(
             "Branching: request(%d msgs) attaches at node seq=%s "
             "(matched %d msgs, best overlap %d), tree has %d nodes",
             len(request_messages),

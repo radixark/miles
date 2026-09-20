@@ -196,7 +196,7 @@ class SessionCoreV2(SessionCore):
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
             if session.closing:
-                logger.warning(f"Session {session_id} closed during proxy, skipping state update")
+                logger.debug("Session %s closed during proxy, skipping state update", session_id)
                 return _chat_client_response(result, response, client_stream)
 
             record = SessionRecord(
