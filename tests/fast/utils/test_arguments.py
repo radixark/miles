@@ -914,6 +914,13 @@ class TestMultiLoRAValidation:
 
         miles_validate_args(args)
 
+    @pytest.mark.parametrize("cp_size", [2, 4])
+    def test_accepts_zigzag_context_parallelism(self, cp_size):
+        args = self._parse([])
+        args.context_parallel_size = cp_size
+        miles_validate_args(args)
+        assert args.multi_lora is True
+
     def test_rejects_pipeline_parallelism(self):
         # Adapter routing is not recompute-safe under a pipelined schedule.
         args = self._parse([])

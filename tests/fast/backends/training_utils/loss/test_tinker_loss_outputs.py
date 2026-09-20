@@ -5,9 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.backends.training_utils.loss.loss_test_utils import make_parallel_state
 
 from miles.backends.training_utils import loss as loss_module
 from miles.backends.training_utils.loss_hub import tinker_losses
+
+
+@pytest.fixture(autouse=True)
+def _single_rank_loss_state():
+    make_parallel_state()
 
 
 @pytest.mark.parametrize("recompute", [False, True], ids=["direct", "recomputed"])
