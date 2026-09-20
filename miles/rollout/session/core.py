@@ -17,7 +17,12 @@ from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
+from miles.rollout.session.errors import (
+    SessionNotFoundError,
+    TokenizationError,
+    UpstreamGenerationAbortedError,
+    UpstreamResponseError,
+)
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import encode_samples
@@ -159,6 +164,8 @@ def extract_completion(result: dict) -> tuple:
     """
     response = json.loads(result["response_body"])
     choice = response.get("choices", [{}])[0]
+    if choice.get("finish_reason") == "abort":
+        raise UpstreamGenerationAbortedError("upstream generation aborted before completion")
 
     meta_info = choice.get("meta_info")
     if not isinstance(meta_info, dict) or "output_token_logprobs" not in meta_info:

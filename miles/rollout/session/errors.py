@@ -7,7 +7,8 @@ SessionError (base)
 ├── MessageValidationError     → 400  messages structure/content invalid
 ├── TruncatedGenerationError   → 409  extending a length-truncated generation (v2)
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
-└── UpstreamResponseError      → 502  SGLang response invalid or unexpected
+├── UpstreamResponseError      → 502  SGLang response invalid or unexpected
+└── UpstreamGenerationAbortedError → 503  SGLang aborted the generation
 """
 
 
@@ -58,3 +59,9 @@ class UpstreamResponseError(SessionError):
     """
 
     status_code: int = 502
+
+
+class UpstreamGenerationAbortedError(SessionError):
+    """Raised when upstream aborts a generation without an HTTP error."""
+
+    status_code: int = 503

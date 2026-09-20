@@ -2,10 +2,12 @@ import uuid
 from copy import deepcopy
 
 import pytest
+import requests
 from tests.session_parity_utils import (
     SESSION_PARITY_SEED,
     V1,
     V2,
+    _serve_session,
     _training_metadata_projection,
     assert_agentic_retry_trajectory_parity,
     assert_sample_bitwise_equal,
@@ -64,6 +66,27 @@ _AGENT_RESPONSES = {
     ),
 }
 _SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w3", "w4", "w7", "w8"]
+
+
+@pytest.mark.parametrize("version", [V1, V2])
+def test_aborted_generation_is_not_committed(version):
+    def abort_generation(_prompt: str) -> ProcessResult:
+        return ProcessResult(text="partial response", finish_reason="abort")
+
+    with with_mock_server(model_name=_MODEL, process_fn=abort_generation) as backend:
+        with _serve_session(backend_url=backend.url, hf_checkpoint=_MODEL, version=version) as args:
+            session_url = f"http://{args.session_server_addrs[0]}"
+            session_id = requests.post(f"{session_url}/sessions", timeout=5.0).json()["session_id"]
+            response = requests.post(
+                f"{session_url}/sessions/{session_id}/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "hello"}]},
+                timeout=10.0,
+            )
+
+            assert response.status_code == 503
+            assert response.json() == {"error": "upstream generation aborted before completion"}
+            session = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()
+            assert session["records"] == []
 
 
 @pytest.mark.parametrize("random_tool_ids", [False, True])
