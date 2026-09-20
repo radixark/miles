@@ -50,12 +50,6 @@ class DataBufferInput:
     completed_at: float | None = None  # monotonic time when generation and reward finished
 
 
-@dataclass(frozen=True)
-class _BufferedEntry:
-    input: DataBufferInput
-    enqueued_at: float
-
-
 class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
@@ -109,7 +103,7 @@ class DefaultDataBuffer(DataBuffer):
         args = input.args
         self._args = args
 
-        self._buffer: list[_BufferedEntry] = []
+        self._buffer: list[DataBufferInput] = []
         assert args.async_data_buffer_capacity_factor > 0
         self._capacity = int(args.async_data_buffer_capacity_factor * args.rollout_batch_size)
         assert self._capacity >= 1
@@ -130,62 +124,31 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_samples = 0
         self._metric_selected_versioned_samples = 0
 
-        now = time.monotonic()
-        self._metric_window_started_at = now
-        self._last_state_change_at = now
-        self._metric_queue_size_time = 0.0
-        self._metric_queue_empty_time = 0.0
-        self._metric_queue_full_time = 0.0
-        self._metric_producer_blocked_time = 0.0
-        self._metric_consumer_wait_time = 0.0
-        self._metric_queue_high_watermark = 0
-        self._metric_producer_block_events = 0
-        self._metric_consumer_wait_events = 0
-        self._metric_selected_queue_residence: list[float] = []
-        self._metric_selected_ready_age: list[float] = []
-        self._metric_stale_ready_age: list[float] = []
-        self._metric_selected_group_tokens: list[int] = []
-        self._metric_filtered_group_tokens: list[int] = []
-        self._metric_selected_groups = 0
-
-        self._producer_waiters = 0
-        self._consumer_waiters = 0
-        self._pending_puts = 0
-        self._total_received_groups = 0
-        self._total_prebuffer_filtered_groups = 0
-        self._total_buffered_groups = 0
-        self._total_popped_groups = 0
-        self._total_selected_groups = 0
-        self._total_stale_filtered_groups = 0
+        self._metric_window_started_at = time.monotonic()
+        self._metric_producer_blocked_seconds = 0.0
+        self._metric_consumer_wait_seconds = 0.0
+        self._producer_blocked_since: float | None = None
+        self._consumer_waiting_since: float | None = None
+        self._metric_selected_group_ages: list[float] = []
+        self._metric_selected_response_tokens = 0
+        self._metric_filtered_response_tokens = 0
 
     async def put(self, input: DataBufferInput) -> None:
-        self._total_received_groups += 1
         if not self._preput_filter(input):
-            self._total_prebuffer_filtered_groups += 1
             return
 
-        self._pending_puts += 1
-        try:
-            async with self._cond:
-                if len(self._buffer) >= self._capacity:
-                    self._record_state(time.monotonic())
-                    self._producer_waiters += 1
-                    self._metric_producer_block_events += 1
-                    try:
-                        while len(self._buffer) >= self._capacity:
-                            await self._cond.wait()
-                    finally:
-                        self._record_state(time.monotonic())
-                        self._producer_waiters -= 1
+        async with self._cond:
+            self._producer_blocked_since = time.monotonic() if len(self._buffer) >= self._capacity else None
+            try:
+                while len(self._buffer) >= self._capacity:
+                    await self._cond.wait()
+            finally:
+                if self._producer_blocked_since is not None:
+                    self._metric_producer_blocked_seconds += time.monotonic() - self._producer_blocked_since
+                    self._producer_blocked_since = None
 
-                now = time.monotonic()
-                self._record_state(now)
-                self._buffer.append(_BufferedEntry(input=input, enqueued_at=now))
-                self._metric_queue_high_watermark = max(self._metric_queue_high_watermark, len(self._buffer))
-                self._total_buffered_groups += 1
-                self._cond.notify_all()
-        finally:
-            self._pending_puts -= 1
+            self._buffer.append(input)
+            self._cond.notify_all()
 
     def _preput_filter(self, input: DataBufferInput) -> bool:
         output = apply_aborted_filter(self._args, input.group)
@@ -214,19 +177,14 @@ class DefaultDataBuffer(DataBuffer):
         async with self._cond:
             while True:
                 while not self._buffer:
-                    self._record_state(time.monotonic())
-                    self._consumer_waiters += 1
-                    self._metric_consumer_wait_events += 1
+                    self._consumer_waiting_since = time.monotonic()
                     try:
                         await self._cond.wait()
                     finally:
-                        self._record_state(time.monotonic())
-                        self._consumer_waiters -= 1
+                        self._metric_consumer_wait_seconds += time.monotonic() - self._consumer_waiting_since
+                        self._consumer_waiting_since = None
                 now = time.monotonic()
-                self._record_state(now)
-                buffered = self._buffer.pop(0)
-                entry = buffered.input
-                self._total_popped_groups += 1
+                entry = self._buffer.pop(0)
                 self._cond.notify_all()  # wake producers blocked on a full buffer
 
                 version_stats = group_weight_version_stats(entry.group)
@@ -235,41 +193,22 @@ class DefaultDataBuffer(DataBuffer):
                     if self._args.max_weight_staleness is not None and staleness > self._args.max_weight_staleness:
                         logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
                         self._metric_stale_groups += 1
-                        self._total_stale_filtered_groups += 1
-                        self._record_ready_age(self._metric_stale_ready_age, entry, now)
                         self._record_filtered_group(entry.group)
                         self._unused_handler_fn(entry.prompt_group)
                         continue
                     self._metric_consumed_staleness.append(staleness)
                 self._record_selected_version_stats(version_stats, current_version)
-                self._metric_selected_groups += 1
-                self._total_selected_groups += 1
-                self._metric_selected_queue_residence.append(now - buffered.enqueued_at)
-                self._record_ready_age(self._metric_selected_ready_age, entry, now)
-                self._metric_selected_group_tokens.append(self._group_response_tokens(entry.group))
+                if entry.completed_at is not None:
+                    self._metric_selected_group_ages.append(now - entry.completed_at)
+                self._metric_selected_response_tokens += self._group_response_tokens(entry.group)
                 return entry
-
-    def _record_state(self, now: float) -> None:
-        elapsed = now - self._last_state_change_at
-        queue_size = len(self._buffer)
-        self._metric_queue_size_time += elapsed * queue_size
-        self._metric_queue_empty_time += elapsed * int(queue_size == 0)
-        self._metric_queue_full_time += elapsed * int(queue_size >= self._capacity)
-        self._metric_producer_blocked_time += elapsed * int(self._producer_waiters > 0)
-        self._metric_consumer_wait_time += elapsed * int(self._consumer_waiters > 0)
-        self._last_state_change_at = now
 
     @staticmethod
     def _group_response_tokens(group: Group) -> int:
         return sum(sample.response_length for sample in iter_samples(group))
 
     def _record_filtered_group(self, group: Group) -> None:
-        self._metric_filtered_group_tokens.append(self._group_response_tokens(group))
-
-    @staticmethod
-    def _record_ready_age(target: list[float], entry: DataBufferInput, now: float) -> None:
-        if entry.completed_at is not None:
-            target.append(now - entry.completed_at)
+        self._metric_filtered_response_tokens += self._group_response_tokens(group)
 
     def _record_selected_version_stats(
         self,
@@ -294,34 +233,22 @@ class DefaultDataBuffer(DataBuffer):
     def get_metrics(self) -> dict[str, float]:
         prefix = "rollout/fully_async/"
         now = time.monotonic()
-        self._record_state(now)
         window_seconds = now - self._metric_window_started_at
         metrics = {
             f"{prefix}queue_size": len(self._buffer),
-            f"{prefix}queue_capacity": self._capacity,
-            f"{prefix}queue_high_watermark": self._metric_queue_high_watermark,
-            f"{prefix}producer_block_events": self._metric_producer_block_events,
-            f"{prefix}consumer_wait_events": self._metric_consumer_wait_events,
             f"{prefix}aborted_groups_filtered": self._metric_aborted_groups,
             f"{prefix}stale_groups_filtered": self._metric_stale_groups,
-            f"{prefix}groups_received_total": self._total_received_groups,
-            f"{prefix}groups_prebuffer_filtered_total": self._total_prebuffer_filtered_groups,
-            f"{prefix}groups_buffered_total": self._total_buffered_groups,
-            f"{prefix}groups_popped_total": self._total_popped_groups,
-            f"{prefix}groups_selected_total": self._total_selected_groups,
-            f"{prefix}groups_stale_filtered_total": self._total_stale_filtered_groups,
-            f"{prefix}pending_puts": self._pending_puts,
             **self._metric_gatherer.collect(),
         }
         if window_seconds > 0:
-            metrics[f"{prefix}metrics_window_seconds"] = window_seconds
-            metrics[f"{prefix}avg_queue_size"] = self._metric_queue_size_time / window_seconds
-            metrics[f"{prefix}queue_occupancy_ratio"] = self._metric_queue_size_time / self._capacity / window_seconds
-            metrics[f"{prefix}queue_empty_time_ratio"] = self._metric_queue_empty_time / window_seconds
-            metrics[f"{prefix}queue_full_time_ratio"] = self._metric_queue_full_time / window_seconds
-            metrics[f"{prefix}producer_blocked_time_ratio"] = self._metric_producer_blocked_time / window_seconds
-            metrics[f"{prefix}consumer_wait_time_ratio"] = self._metric_consumer_wait_time / window_seconds
-            metrics[f"{prefix}selected_groups_per_second"] = self._metric_selected_groups / window_seconds
+            producer_blocked_time = self._metric_producer_blocked_seconds
+            consumer_wait_time = self._metric_consumer_wait_seconds
+            if self._producer_blocked_since is not None:
+                producer_blocked_time += now - self._producer_blocked_since
+            if self._consumer_waiting_since is not None:
+                consumer_wait_time += now - self._consumer_waiting_since
+            metrics[f"{prefix}producer_blocked_time_ratio"] = producer_blocked_time / window_seconds
+            metrics[f"{prefix}consumer_wait_time_ratio"] = consumer_wait_time / window_seconds
         if consumed := self._metric_consumed_staleness:
             metrics[f"{prefix}avg_staleness"] = sum(consumed) / len(consumed)
             metrics[f"{prefix}max_staleness"] = max(consumed)
@@ -339,17 +266,14 @@ class DefaultDataBuffer(DataBuffer):
             metrics[f"{prefix}weight_version_sample_coverage"] = (
                 self._metric_selected_versioned_samples / self._metric_selected_samples
             )
-        self._add_mean_max(metrics, f"{prefix}selected_queue_residence_seconds", self._metric_selected_queue_residence)
-        self._add_mean_max(metrics, f"{prefix}selected_ready_age_seconds", self._metric_selected_ready_age)
-        self._add_mean_max(metrics, f"{prefix}stale_filtered_ready_age_seconds", self._metric_stale_ready_age)
-        self._add_mean_max(metrics, f"{prefix}selected_group_response_tokens", self._metric_selected_group_tokens)
-        self._add_mean_max(metrics, f"{prefix}filtered_group_response_tokens", self._metric_filtered_group_tokens)
-        selected_tokens = sum(self._metric_selected_group_tokens)
-        filtered_tokens = sum(self._metric_filtered_group_tokens)
-        if decided_tokens := selected_tokens + filtered_tokens:
-            metrics[f"{prefix}filtered_response_token_ratio"] = filtered_tokens / decided_tokens
+        if ages := self._metric_selected_group_ages:
+            metrics[f"{prefix}avg_selected_group_age_seconds"] = sum(ages) / len(ages)
+            metrics[f"{prefix}max_selected_group_age_seconds"] = max(ages)
+        decided_tokens = self._metric_selected_response_tokens + self._metric_filtered_response_tokens
+        if decided_tokens:
+            metrics[f"{prefix}filtered_response_token_ratio"] = self._metric_filtered_response_tokens / decided_tokens
         buffered = [
-            s for entry in self._buffer if (s := group_staleness(entry.input.group, self._current_version)) is not None
+            s for entry in self._buffer if (s := group_staleness(entry.group, self._current_version)) is not None
         ]
         if buffered:
             metrics[f"{prefix}buffer_avg_staleness"] = sum(buffered) / len(buffered)
@@ -364,26 +288,14 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_samples = 0
         self._metric_selected_versioned_samples = 0
         self._metric_window_started_at = now
-        self._last_state_change_at = now
-        self._metric_queue_size_time = 0.0
-        self._metric_queue_empty_time = 0.0
-        self._metric_queue_full_time = 0.0
-        self._metric_producer_blocked_time = 0.0
-        self._metric_consumer_wait_time = 0.0
-        self._metric_queue_high_watermark = len(self._buffer)
-        self._metric_producer_block_events = 0
-        self._metric_consumer_wait_events = 0
-        self._metric_selected_queue_residence = []
-        self._metric_selected_ready_age = []
-        self._metric_stale_ready_age = []
-        self._metric_selected_group_tokens = []
-        self._metric_filtered_group_tokens = []
-        self._metric_selected_groups = 0
+        self._metric_producer_blocked_seconds = 0.0
+        self._metric_consumer_wait_seconds = 0.0
+        if self._producer_blocked_since is not None:
+            self._producer_blocked_since = now
+        if self._consumer_waiting_since is not None:
+            self._consumer_waiting_since = now
+        self._metric_selected_group_ages = []
+        self._metric_selected_response_tokens = 0
+        self._metric_filtered_response_tokens = 0
         self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics
-
-    @staticmethod
-    def _add_mean_max(metrics: dict[str, float], prefix: str, values: list[int | float]) -> None:
-        if values:
-            metrics[f"{prefix}/mean"] = sum(values) / len(values)
-            metrics[f"{prefix}/max"] = max(values)

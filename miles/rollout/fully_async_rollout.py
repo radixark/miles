@@ -83,6 +83,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._metric_completed_groups = 0
         self._metric_completed_response_tokens = 0
         self._total_completed_groups = 0
+        self._total_handed_off_groups = 0
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -148,6 +149,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             for task in done:
                 entry = self._collect_group_result(task, active.pop(task))
                 await self._output.put(entry)
+                self._total_handed_off_groups += 1
 
     def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
         if not task.cancelled():
@@ -231,22 +233,22 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             self._sample_filter(args, data)
 
         metrics = self._output.get_metrics()
-        metrics.update(self._collect_producer_metrics(metrics))
+        metrics.update(self._collect_producer_metrics())
         return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
-    def _collect_producer_metrics(self, buffer_metrics: dict[str, float]) -> dict[str, float]:
+    def _collect_producer_metrics(self) -> dict[str, float]:
         prefix = "rollout/fully_async/"
         now = time.monotonic()
         assert self._metric_window_started_at is not None
         window_seconds = now - self._metric_window_started_at
-        metrics = {f"{prefix}completed_groups_total": self._total_completed_groups}
+        metrics = {
+            f"{prefix}completed_groups_pending_buffer": self._total_completed_groups - self._total_handed_off_groups
+        }
         if window_seconds > 0:
             metrics[f"{prefix}completed_groups_per_second"] = self._metric_completed_groups / window_seconds
             metrics[f"{prefix}completed_response_tokens_per_second"] = (
                 self._metric_completed_response_tokens / window_seconds
             )
-        if (received := buffer_metrics.get(f"{prefix}groups_received_total")) is not None:
-            metrics[f"{prefix}completed_groups_pending_buffer"] = self._total_completed_groups - received
 
         self._metric_window_started_at = now
         self._metric_completed_groups = 0
