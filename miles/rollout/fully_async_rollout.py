@@ -18,6 +18,7 @@ rollout engines, pausing producer submissions for the duration of the
 
 import asyncio
 import logging
+import time
 from dataclasses import replace
 
 from miles.rollout.base_types import (
@@ -30,6 +31,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
 )
+from miles.rollout.filter_hub.base_types import iter_samples
 from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
     DataBufferConstructorInput,
@@ -77,6 +79,10 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
         self._output: DataBuffer | None = None
+        self._metric_window_started_at: float | None = None
+        self._metric_completed_groups = 0
+        self._metric_completed_response_tokens = 0
+        self._total_completed_groups = 0
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -86,6 +92,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             self._output = buffer_cls(
                 DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
             )
+            self._metric_window_started_at = time.monotonic()
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
         return await self._drain(input)
@@ -126,7 +133,9 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             evaluation=False,
             sample_done_callback=self._scheduler.sample_done_callback,
         )
-        return DataBufferInput(prompt_group=prompt_group, group=result)
+        entry = DataBufferInput(prompt_group=prompt_group, group=result, completed_at=time.monotonic())
+        self._record_completed_group(entry.group)
+        return entry
 
     async def _worker_loop(self) -> None:
         active: dict[asyncio.Task, list[Sample]] = {}
@@ -148,10 +157,18 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             "Rollout group was cancelled; marking samples aborted: indices=%s",
             [sample.index for sample in prompt_group],
         )
-        return DataBufferInput(
+        entry = DataBufferInput(
             prompt_group=prompt_group,
             group=[replace(sample, status=Sample.Status.ABORTED) for sample in prompt_group],
+            completed_at=time.monotonic(),
         )
+        self._record_completed_group(entry.group)
+        return entry
+
+    def _record_completed_group(self, group: Group) -> None:
+        self._metric_completed_groups += 1
+        self._metric_completed_response_tokens += sum(sample.response_length for sample in iter_samples(group))
+        self._total_completed_groups += 1
 
     # -------------------------- consumer --------------------------
 
@@ -213,7 +230,28 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         if self._sample_filter is not None:
             self._sample_filter(args, data)
 
-        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics())
+        metrics = self._output.get_metrics()
+        metrics.update(self._collect_producer_metrics(metrics))
+        return RolloutFnTrainOutput(samples=data, metrics=metrics)
+
+    def _collect_producer_metrics(self, buffer_metrics: dict[str, float]) -> dict[str, float]:
+        prefix = "rollout/fully_async/"
+        now = time.monotonic()
+        assert self._metric_window_started_at is not None
+        window_seconds = now - self._metric_window_started_at
+        metrics = {f"{prefix}completed_groups_total": self._total_completed_groups}
+        if window_seconds > 0:
+            metrics[f"{prefix}completed_groups_per_second"] = self._metric_completed_groups / window_seconds
+            metrics[f"{prefix}completed_response_tokens_per_second"] = (
+                self._metric_completed_response_tokens / window_seconds
+            )
+        if (received := buffer_metrics.get(f"{prefix}groups_received_total")) is not None:
+            metrics[f"{prefix}completed_groups_pending_buffer"] = self._total_completed_groups - received
+
+        self._metric_window_started_at = now
+        self._metric_completed_groups = 0
+        self._metric_completed_response_tokens = 0
+        return metrics
 
     def _recycle(self, prompt_group: list[Sample]) -> None:
         for sample in prompt_group:

@@ -117,6 +117,10 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     assert all(len(group) == N_SAMPLES_PER_PROMPT for group in output.samples)
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 0
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 0
+    assert output.metrics["rollout/fully_async/completed_groups_total"] >= 3
+    assert output.metrics["rollout/fully_async/completed_groups_per_second"] > 0
+    assert output.metrics["rollout/fully_async/completed_response_tokens_per_second"] > 0
+    assert output.metrics["rollout/fully_async/completed_groups_pending_buffer"] >= 0
 
     # The worker persists across calls; a second drain works on the same instance.
     output2 = await fn(RolloutFnTrainInput(rollout_id=1))
@@ -532,9 +536,9 @@ def make_buffer(max_groups=None, max_staleness=None):
     return buffer, unused
 
 
-async def put_group(buffer, group):
+async def put_group(buffer, group, *, completed_at=None):
     """These tests reuse one group as both the prompt group and the finished group."""
-    await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+    await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group, completed_at=completed_at))
 
 
 async def test_buffer_blocks_producer_when_full():
@@ -630,6 +634,92 @@ async def test_buffer_reports_missing_weight_version_coverage_without_inventing_
     metrics = buffer.get_metrics()
     assert "rollout/fully_async/weight_version_sample_coverage" not in metrics
     assert "rollout/fully_async/token_weighted_staleness" not in metrics
+
+
+async def test_buffer_time_weights_queue_state_and_lifecycle_age(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(data_buffer.time, "monotonic", lambda: now[0])
+    buffer, _ = make_buffer(max_groups=2)
+
+    now[0] = 2.0
+    await put_group(buffer, make_group(1), completed_at=1.0)
+    now[0] = 5.0
+    await put_group(buffer, make_group(2), completed_at=4.0)
+    now[0] = 9.0
+    await buffer.get()
+    now[0] = 10.0
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/queue_size"] == 1
+    assert metrics["rollout/fully_async/queue_high_watermark"] == 2
+    assert metrics["rollout/fully_async/avg_queue_size"] == 1.2
+    assert metrics["rollout/fully_async/queue_occupancy_ratio"] == 0.6
+    assert metrics["rollout/fully_async/queue_empty_time_ratio"] == 0.2
+    assert metrics["rollout/fully_async/queue_full_time_ratio"] == 0.4
+    assert metrics["rollout/fully_async/selected_queue_residence_seconds/mean"] == 7.0
+    assert metrics["rollout/fully_async/selected_ready_age_seconds/mean"] == 8.0
+    assert metrics["rollout/fully_async/selected_groups_per_second"] == 0.1
+
+
+async def test_buffer_reports_backpressure_starvation_and_conservation(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(data_buffer.time, "monotonic", lambda: now[0])
+    buffer, _ = make_buffer(max_groups=1)
+
+    await put_group(buffer, make_group(1))
+    blocked_put = asyncio.create_task(put_group(buffer, make_group(2)))
+    await asyncio.sleep(0)
+    assert not blocked_put.done()
+
+    now[0] = 3.0
+    await buffer.get()
+    await blocked_put
+    await buffer.get()
+
+    waiting_get = asyncio.create_task(buffer.get())
+    await asyncio.sleep(0)
+    assert not waiting_get.done()
+    now[0] = 5.0
+    await put_group(buffer, make_group(3))
+    await waiting_get
+
+    now[0] = 6.0
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/producer_block_events"] == 1
+    assert metrics["rollout/fully_async/consumer_wait_events"] == 1
+    assert metrics["rollout/fully_async/producer_blocked_time_ratio"] == 0.5
+    assert metrics["rollout/fully_async/consumer_wait_time_ratio"] == pytest.approx(2 / 6)
+    assert metrics["rollout/fully_async/groups_received_total"] == 3
+    assert metrics["rollout/fully_async/groups_prebuffer_filtered_total"] == 0
+    assert metrics["rollout/fully_async/groups_buffered_total"] == 3
+    assert metrics["rollout/fully_async/groups_popped_total"] == 3
+    assert metrics["rollout/fully_async/groups_selected_total"] == 3
+    assert metrics["rollout/fully_async/groups_stale_filtered_total"] == 0
+    assert metrics["rollout/fully_async/pending_puts"] == 0
+
+
+async def test_buffer_reports_filtered_response_tokens_and_group_conservation(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(data_buffer.time, "monotonic", lambda: now[0])
+    buffer, _ = make_buffer(max_groups=4, max_staleness=2)
+
+    await put_group(buffer, make_group(1, status=Sample.Status.ABORTED))
+    await put_group(buffer, make_group(2, weight_versions=["3"]))
+    await put_group(buffer, make_group(3, weight_versions=["9"]))
+    now[0] = 1.0
+    assert (await buffer.get(current_version=10)).group[0].group_index == 3
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/filtered_group_response_tokens/mean"] == 2
+    assert metrics["rollout/fully_async/selected_group_response_tokens/mean"] == 2
+    assert metrics["rollout/fully_async/filtered_response_token_ratio"] == pytest.approx(2 / 3)
+    assert metrics["rollout/fully_async/groups_received_total"] == 3
+    assert metrics["rollout/fully_async/groups_prebuffer_filtered_total"] == 1
+    assert metrics["rollout/fully_async/groups_buffered_total"] == 2
+    assert metrics["rollout/fully_async/groups_popped_total"] == 2
+    assert metrics["rollout/fully_async/groups_selected_total"] == 1
+    assert metrics["rollout/fully_async/groups_stale_filtered_total"] == 1
 
 
 class RecordingBuffer(data_buffer.DefaultDataBuffer):
