@@ -210,47 +210,38 @@ def all_gather_with_cp(
     if cp_size == 1:
         return tensor
 
-    _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
+    full_tensor = tensor.new_zeros((response_length, *tensor.shape[1:]))
+    copy_response_with_cp(tensor, full_tensor, total_length, qkv_format, max_seq_len)
+    # Even ranks without response tokens must participate in collective backward.
+    if torch.is_grad_enabled():
+        full_tensor.requires_grad_(True)
+    return dist.nn.all_reduce(full_tensor, group=cp_group)
+
+
+def copy_response_with_cp(
+    tensor: torch.Tensor,
+    response: torch.Tensor,
+    total_length: int,
+    qkv_format: str = "thd",
+    max_seq_len: int | None = None,
+) -> None:
+    """Copy local values into their positions in a zero-initialized full response."""
+    if get_parallel_state().cp.size == 1:
+        response.copy_(tensor)
+        return
+
+    response_length = response.shape[0]
+    _, _, _, token_ranges = get_logits_and_tokens_offset_with_cp(
         total_length, response_length, qkv_format, max_seq_len
     )
-
     prompt_length = total_length - response_length
-
-    chunk_0 = tensor[: logits_offset[0][1] - logits_offset[0][0]]
-    chunk_1 = tensor[logits_offset[0][1] - logits_offset[0][0] :]
-    assert chunk_1.shape[0] == logits_offset[1][1] - logits_offset[1][0]
-
-    def zero(len: int) -> torch.Tensor:
-        return torch.zeros(
-            [len] + list(tensor.shape[1:]),
-            dtype=tensor.dtype,
-            device=tensor.device,
-            requires_grad=True,
-        )
-
-    # logprob should be within the range of [prompt_length - 1, total_length - 1]
-    if chunk_0.shape[0] == 0 and chunk_1.shape[0] == 0:
-        # all empty
-        full_tensor = zero(response_length)
-    elif chunk_0.shape[0] != 0 and chunk_1.shape[0] == 0:
-        # only first chunk
-        left = zero(logits_offset[0][0] - (prompt_length - 1))
-        right = zero(total_length - 1 - logits_offset[0][1])
-        full_tensor = torch.cat([left, chunk_0, right], dim=0)
-    elif chunk_0.shape[0] == 0 and chunk_1.shape[0] != 0:
-        # only second chunk
-        left = zero(logits_offset[1][0] - (prompt_length - 1))
-        right = zero(total_length - 1 - logits_offset[1][1])
-        full_tensor = torch.cat([left, chunk_1, right], dim=0)
-    else:
-        left = zero(logits_offset[0][0] - (prompt_length - 1))
-        mid = zero(logits_offset[1][0] - logits_offset[0][1])
-        right = zero(total_length - 1 - logits_offset[1][1])
-        full_tensor = torch.cat([left, chunk_0, mid, chunk_1, right], dim=0)
-
-    assert full_tensor.shape[0] == response_length, f"Expected {response_length}, got {full_tensor.shape}"
-    full_tensor = dist.nn.all_reduce(full_tensor, group=cp_group)
-    return full_tensor
+    consumed = 0
+    for start, end in token_ranges:
+        width = end - start
+        if width:
+            response[start - prompt_length : end - prompt_length].copy_(tensor[consumed : consumed + width])
+        consumed += width
+    assert consumed == tensor.shape[0], "response does not match the local CP layout"
 
 
 def slice_with_cp(

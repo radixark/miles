@@ -10,7 +10,7 @@ from collections.abc import Callable
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.cp_utils import get_logits_and_tokens_offset_with_cp, slice_log_prob_with_cp
+from miles.backends.training_utils.cp_utils import copy_response_with_cp, slice_log_prob_with_cp
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
@@ -68,16 +68,8 @@ def _collect_response_reports(
     report = log_probs[0].new_zeros(count + sum(batch["response_lengths"]))
     report[:count].copy_(torch.stack(per_datum_losses))
     responses = report[count:].split(batch["response_lengths"])
-    for local, response, total_length in zip(log_probs, responses, batch["total_lengths"], strict=True):
-        prompt_length = total_length - response.numel()
-        _, _, _, token_ranges = get_logits_and_tokens_offset_with_cp(total_length, response.numel())
-        consumed = 0
-        for start, end in token_ranges:
-            width = end - start
-            if width:
-                response[start - prompt_length : end - prompt_length].copy_(local[consumed : consumed + width])
-            consumed += width
-        assert consumed == local.numel(), "response report does not match the local CP layout"
+    for local, response, total in zip(log_probs, responses, batch["total_lengths"], strict=True):
+        copy_response_with_cp(local, response, total)
     dist.all_reduce(report, group=get_parallel_state().cp.group)
     report = report.cpu()
     return report[:count], report[count:].split(batch["response_lengths"])
