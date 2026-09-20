@@ -89,9 +89,11 @@ def _validate_group(args: Namespace, samples: list[Sample | list[Sample]]) -> st
     # Match the train converter's rollout identity, without accepting segmented
     # siblings as independent reward samples. Missing IDs use distinct row keys.
     keys = [
-        sample.rollout_id
-        if sample.rollout_id is not None
-        else (sample.index if sample.index is not None else ("row", position))
+        (
+            sample.rollout_id
+            if sample.rollout_id is not None
+            else (sample.index if sample.index is not None else ("row", position))
+        )
         for position, sample in enumerate(samples)
     ]
     if len(set(keys)) != len(keys):

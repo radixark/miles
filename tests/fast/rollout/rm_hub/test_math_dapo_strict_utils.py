@@ -97,7 +97,7 @@ def test_complete_single_integer_formats(response):
         r"Answer: \(45$",
         r"Answer: \boxed{45",
         r"Answer: \boxed{45}{46}",
-        "Answer: \"45\"",
+        'Answer: "45"',
         "<think>Still working.\nAnswer: 45",
         "<think>Answer: 45</think>",
         "<think>Answer: 45</think>\nContinuing...",

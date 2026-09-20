@@ -21,8 +21,7 @@ _EOS = ("<｜end▁of▁sentence｜>", "<|im_end|>", "<|endoftext|>", "<|eot_id|
 _INTEGER = re.compile(r"[+-]?[0-9]+")
 _LABEL_INTEGER = re.compile(r"[+-]?[0-9]+(?:\.0+)?")
 _ANSWER_PREFIXES = (r"Answer[ \t]*:",) + tuple(
-    rf"{re.escape(marker)}Answer(?:[ \t]*:{re.escape(marker)}|{re.escape(marker)}[ \t]*:)"
-    for marker in _MARKDOWN
+    rf"{re.escape(marker)}Answer(?:[ \t]*:{re.escape(marker)}|{re.escape(marker)}[ \t]*:)" for marker in _MARKDOWN
 )
 _ANSWER_LINE = re.compile(r"(?:" + "|".join(_ANSWER_PREFIXES) + r")[ \t]*(.*)", re.IGNORECASE)
 _HEADING = re.compile(r"#{1,6}[ \t]+")
