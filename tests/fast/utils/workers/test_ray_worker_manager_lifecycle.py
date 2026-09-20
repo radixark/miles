@@ -81,7 +81,9 @@ def _spec(env, name, *, cells=1, workers=1, serve=False):
         name=name,
         port_infos=[],
         env_var=lambda _ctx: {},
-        scheduling=env.worker_spec.SchedulingSpec(num_cells=cells, num_workers_per_cell=workers, num_gpus_per_worker=0),
+        scheduling=env.worker_spec.SchedulingSpec(
+            num_cells=cells, num_workers_per_cell=workers, num_gpus_per_worker=0
+        ),
     )
     if serve:
         return env.worker_spec.ServeWorkerSpec(
@@ -317,5 +319,8 @@ def test_existing_process_group_teardown_signals_only_recorded_group(worker_life
     killpg = Mock()
     monkeypatch.setattr(env.process_utils.os, "killpg", killpg)
     env.process_utils.terminate_process_tree(process)
-    assert [call.args for call in killpg.call_args_list] == [(process.pid, signal.SIGTERM), (process.pid, signal.SIGKILL)]
+    assert [call.args for call in killpg.call_args_list] == [
+        (process.pid, signal.SIGTERM),
+        (process.pid, signal.SIGKILL),
+    ]
     assert process.wait.call_count == 2

@@ -835,7 +835,7 @@ async def test_abort_task_ignoring_cancel_cannot_block_forever(env, monkeypatch,
         except asyncio.CancelledError:
             ignored_cancel.set()
             await release.wait()
-            raise RuntimeError("late abort failure")
+            raise RuntimeError("late abort failure") from None
 
     monkeypatch.setattr(rollout, "get", stubborn_get)
     reject_groups(monkeypatch, rollout)

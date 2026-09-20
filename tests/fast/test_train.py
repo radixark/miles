@@ -574,7 +574,7 @@ async def test_timeout_advances_even_when_disposer_delays_cancellation(
         except asyncio.CancelledError:
             cancel_seen.set()
             await release.wait()
-            raise ValueError("late cleanup error")
+            raise ValueError("late cleanup error") from None
         finally:
             finished.set()
 

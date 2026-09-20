@@ -47,7 +47,9 @@ async def _dispose_component(name, component):
         await component.dispose()
 
 
-async def _dispose_training_components(rollout_executor, inference_controller, actor_model, critic_model, worker_manager):
+async def _dispose_training_components(
+    rollout_executor, inference_controller, actor_model, critic_model, worker_manager
+):
     """Release controllers, then the actual workers owned by this job."""
     first_error = None
     # Preserve the normal shutdown order: close the executor's data/eval
@@ -110,7 +112,9 @@ async def train(args):
         raise
     finally:
         cleanup_task = asyncio.create_task(
-            _dispose_training_components(rollout_executor, inference_controller, actor_model, critic_model, worker_manager)
+            _dispose_training_components(
+                rollout_executor, inference_controller, actor_model, critic_model, worker_manager
+            )
         )
         cancellation = None
         # Defer even repeated cancellation until each known component has had a
