@@ -38,7 +38,12 @@ def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
             tokenizer, args.tinker_tito_model, chat_template_kwargs=args.apply_chat_template_kwargs
         )
     renderer = PromptRenderer(tokenizer, args.apply_chat_template_kwargs, tito_tokenizer=tito_tokenizer)
-    return TrajectoryCollector(service, renderer, session_ttl_s=args.tinker_session_ttl_s)
+    return TrajectoryCollector(
+        service,
+        renderer,
+        session_ttl_s=args.tinker_session_ttl_s,
+        strict_truncation=args.tinker_session_strict_truncation,
+    )
 
 
 async def _sweep_collector(collector: TrajectoryCollector, interval_s: float) -> None:

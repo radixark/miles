@@ -47,6 +47,8 @@ class Turn:
     finish_reason: str  # "stop" | "length"
     created_at: float = field(default_factory=time.time)
     inherits: bool = False  # TITO: input_ids extend the previous turn's input_ids + output_ids
+    reset_reason: str | None = None  # why a full render opened a new segment: first, retry, rewrite, budget, no_tito
+    after_truncation: bool = False  # the harness continued past a reply that ended with finish_reason="length"
 
     def as_json(self) -> dict[str, Any]:
         """Plain lists for the trajectory export (what the client's turns_to_trajectory reads)."""
@@ -57,6 +59,8 @@ class Turn:
             "finish_reason": self.finish_reason,
             "created_at": self.created_at,
             "inherits": self.inherits,
+            "reset_reason": self.reset_reason,
+            "after_truncation": self.after_truncation,
         }
 
 
@@ -117,14 +121,16 @@ class TrajectoryCollector:
         clock: Callable[[], float] = time.time,
         max_sessions_per_tenant: int = 1024,
         max_turns_per_session: int = 1024,
+        strict_truncation: bool = False,
     ) -> None:
-        """Keep the service, the prompt renderer, the TTL, the clock and the per-tenant / per-session caps."""
+        """Keep the service, renderer, TTL, clock, caps and whether a truncated reply may be extended."""
         self.service = service
         self.renderer = renderer
         self.session_ttl_s = session_ttl_s
         self.clock = clock
         self.max_sessions_per_tenant = max_sessions_per_tenant
         self.max_turns_per_session = max_turns_per_session
+        self.strict_truncation = strict_truncation
         self.sessions: dict[str, TrajectorySession] = {}
 
     def bind(
@@ -227,7 +233,7 @@ class TrajectoryCollector:
         messages = request.messages
         max_new_tokens = max_new_tokens_of(request.sampling_params)
         # tokenizing is CPU work; keep it off the loop that serves every tenant's Tinker traffic
-        prompt_ids, inherits = await asyncio.to_thread(
+        prompt_ids, inherits, reset_reason = await asyncio.to_thread(
             self.renderer.render,
             session,
             messages,
@@ -236,6 +242,10 @@ class TrajectoryCollector:
             max_new_tokens=max_new_tokens,
             budget=self._tito_budget(session),
         )
+        # the harness kept going after a reply cut at max_tokens; miles session server v2 refuses this, v1 desyncs
+        after_truncation = inherits and bool(session.turns) and session.turns[-1].finish_reason == "length"
+        if after_truncation and self.strict_truncation:
+            raise UserInputError("cannot extend a reply that ended at max_tokens; resample it or start a new session")
         payload = {
             "model_path": session.model_path,
             "num_samples": 1,
@@ -256,6 +266,8 @@ class TrajectoryCollector:
             finish_reason="length" if sequence.get("stop_reason") == "length" else "stop",
             created_at=self.clock(),
             inherits=inherits,
+            reset_reason=reset_reason,
+            after_truncation=after_truncation,
         )
         session.turns.append(turn)
         session.last_seen = turn.created_at

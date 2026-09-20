@@ -22,6 +22,11 @@ turn's prompt inherits the previous turn's tokens (TITO), so a trajectory trains
 Status codes on the session routes: 400 bad input or missing key, 403 another tenant's session, 404 unknown session,
 429 per-tenant session cap or per-session turn cap, 502 engine failure (nothing recorded).
 
+Each exported turn carries `inherits`, `reset_reason` (`first`, `retry`, `rewrite`, `budget`, `no_tito`) and
+`after_truncation`; the client's `select_turns` drops retry-superseded attempts and continuations past a truncated
+reply, matching the miles session server v1/v2, and `--tinker-session-strict-truncation` refuses such continuations
+with 400 instead.
+
 ## Run
 
 1. **Gateway** (a node of the Ray cluster; see [`examples/multi_lora`](/examples/multi-lora) for the launcher):

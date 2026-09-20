@@ -45,6 +45,14 @@ def render_prompt(
     return ids
 
 
+def _resends_history(messages: Any, stored: list[dict[str, Any]]) -> bool:
+    """True when messages equal (role, content) a leading slice of the stored history: an earlier request re-sent."""
+    if not isinstance(messages, list) or not messages:
+        return False
+    pairs = zip(messages, stored[: len(messages)], strict=False)
+    return all(a.get("role") == b.get("role") and a.get("content") == b.get("content") for a, b in pairs)
+
+
 def tito_render_prompt(
     session: TrajectorySession,
     messages: list[dict[str, Any]],
@@ -53,12 +61,13 @@ def tito_render_prompt(
     *,
     max_new_tokens: int,
     budget: int | None,
-) -> list[int] | None:
-    """TITO: previous turn's ids + tokens of the appended messages (merge_tokens); None = full render, new segment."""
+) -> tuple[list[int] | None, str | None]:
+    """TITO: previous turn's ids + tokens of the appended messages (merge_tokens), or (None, why a full render)."""
     if session.tito_messages is None or session.tito_token_ids is None:
-        return None
+        return None, "first"
     if not isinstance(messages, list) or len(messages) <= len(session.tito_messages):
-        return None
+        # a re-sent earlier state is a retry (rollback); a shorter history with new content is a rewrite (compaction)
+        return None, "retry" if _resends_history(messages, session.tito_messages) else "rewrite"
     try:
         prompt = tito_tokenizer.merge_tokens(
             old_messages=session.tito_messages,
@@ -67,11 +76,11 @@ def tito_render_prompt(
             tools=tools,
         )
     except ValueError:  # the harness edited, reordered or summarized the history; a fresh render is still exact
-        return None
+        return None, "rewrite"
     prompt_ids = [int(token) for token in prompt]
     if budget is not None and len(prompt_ids) + max_new_tokens > budget:
-        return None
-    return prompt_ids
+        return None, "budget"
+    return prompt_ids, None
 
 
 def on_turn_committed(
@@ -100,17 +109,18 @@ class PromptRenderer:
         *,
         max_new_tokens: int,
         budget: int | None,
-    ) -> tuple[list[int], bool]:
-        """(prompt_ids, inherits): the TITO prefix when it applies, else apply_chat_template over the whole history."""
+    ) -> tuple[list[int], bool, str | None]:
+        """(prompt_ids, inherits, reset_reason): the TITO prefix when it applies, else a full render and why."""
         template_kwargs = self.template_kwargs(override)
+        reason: str | None = "no_tito"
         if self.tito_tokenizer is not None:
             tito_tokenizer = self.tito_tokenizer_for(override)
-            prompt_ids = tito_render_prompt(
+            prompt_ids, reason = tito_render_prompt(
                 session, messages, tools, tito_tokenizer, max_new_tokens=max_new_tokens, budget=budget
             )
             if prompt_ids is not None:
-                return prompt_ids, True
-        return render_prompt(messages, tools, template_kwargs, self.tokenizer), False
+                return prompt_ids, True, None
+        return render_prompt(messages, tools, template_kwargs, self.tokenizer), False, reason
 
     def committed(self, session: TrajectorySession, turn: Turn, messages: list[dict[str, Any]], text: str) -> None:
         """Remember the answered history for the next TITO merge; a no-op without a TITOTokenizer."""

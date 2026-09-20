@@ -50,6 +50,12 @@ def add_tinker_arguments(parser):
         default=None,
         help="TITO for recorded sessions: each turn's prompt inherits the previous turn's input + output tokens through this miles TITOTokenizer family, whose fixed chat template replaces --chat-template-path (default: off, full re-render every turn)",
     )
+    add_argument(
+        "session-strict-truncation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Refuse (400) a recorded chat turn that continues a reply cut at max_tokens, as the miles session server v2 does (default: off)",
+    )
     add_argument("train-attn", action=argparse.BooleanOptionalAction, default=True)
     add_argument("train-mlp", action=argparse.BooleanOptionalAction, default=True)
     add_argument("train-unembed", action=argparse.BooleanOptionalAction, default=True)

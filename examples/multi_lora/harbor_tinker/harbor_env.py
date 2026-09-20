@@ -155,6 +155,16 @@ class HarborDatasetBuilder(RLDatasetBuilder):
         return HarborDataset(task_ids, self.groups_per_batch, self.group_size, self.agent_name, self.epochs), None
 
 
+def select_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop retry-superseded attempts and continuations of a truncated reply, as the miles session server v1/v2 do."""
+    kept = []
+    for index, turn in enumerate(turns):
+        superseded = index + 1 < len(turns) and turns[index + 1].get("reset_reason") == "retry"
+        if not superseded and not turn.get("after_truncation"):
+            kept.append(turn)
+    return kept
+
+
 def truncate_turns(turns: list[dict[str, Any]], max_tokens: int | None) -> list[dict[str, Any]]:
     """Keep the leading turns whose prompt + output fit the per-datum cap; the first over-long turn ends the list."""
     if max_tokens is None:
@@ -284,10 +294,10 @@ class SessionRolloutStrategy(RolloutStrategy):
             except httpx.HTTPError as error:  # the gateway's TTL sweep is the fallback
                 logger.warning("could not delete session %s: %s", session_id, error)
         turns = exported.json()["turns"]
-        kept = truncate_turns(turns, self.max_datum_tokens)
+        kept = truncate_turns(select_turns(turns), self.max_datum_tokens)
         if len(kept) < len(turns):
             logger.warning(
-                "%s: %d of %d turns exceed %d tokens and are left out of the trajectory",
+                "%s: %d of %d turns left out (retry-superseded, after a truncated reply, or over %d tokens)",
                 env.task_id,
                 len(turns) - len(kept),
                 len(turns),
