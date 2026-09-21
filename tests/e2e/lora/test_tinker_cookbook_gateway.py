@@ -34,9 +34,7 @@ def prepare():
         )
     installed = {name: version(name) for name in packages}
     assert installed == expected, f"cookbook setup changed training dependencies: {expected=} {installed=}"
-    U.exec_command_cpu(
-        f"{shlex.quote(sys.executable)} -c 'from tinker_cookbook.recipes import sl_loop, rl_loop'"
-    )
+    U.exec_command_cpu(f"{shlex.quote(sys.executable)} -c 'from tinker_cookbook.recipes import sl_loop, rl_loop'")
 
 
 def execute():
