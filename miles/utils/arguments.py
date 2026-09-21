@@ -13,7 +13,12 @@ from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_arg
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
-from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.eval_config import (
+    EvalDatasetConfig,
+    build_eval_dataset_configs,
+    ensure_dataset_list,
+    resolve_eval_sampling_params,
+)
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
@@ -2740,9 +2745,9 @@ def parse_args_train_backend():
     return args_partial.train_backend
 
 
-def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
+def _resolve_eval_config(args) -> tuple[list[EvalDatasetConfig], dict[str, Any]]:
     """
-    Build evaluation dataset configurations from either --eval-config or --eval-prompt-data.
+    Resolve common sampling defaults and separate per-dataset request configurations.
     """
     datasets_config = []
     defaults: dict[str, Any] = {}
@@ -2774,13 +2779,14 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     else:
         datasets_config = []
 
+    sampling_params = resolve_eval_sampling_params(args, defaults)
     eval_datasets = build_eval_dataset_configs(args, datasets_config, defaults)
     if eval_datasets:
         args.eval_prompt_data = [item for dataset in eval_datasets for item in (dataset.name, dataset.path)]
     else:
         args.eval_prompt_data = None
 
-    return eval_datasets
+    return eval_datasets, sampling_params
 
 
 _FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
@@ -2869,7 +2875,7 @@ def miles_validate_args(args):
         "the eval fleet pins engine addresses once at startup, so a healed eval cell would make "
         "every later eval skip silently"
     )
-    args.eval_datasets = _resolve_eval_datasets(args)
+    args.eval_datasets, args.eval_sampling_params = _resolve_eval_config(args)
 
     if "train" in args.ft_components:
         args.indep_dp = True

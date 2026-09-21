@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import msgspec
 import pytest
 
+from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 
 
@@ -47,6 +49,16 @@ def compute(args: SimpleNamespace, **overrides: object) -> dict:
     )
     kwargs.update(overrides)
     return _compute_server_args(args, **kwargs)
+
+
+def test_unsupported_sglang_cannot_silently_discard_sampling_defaults(monkeypatch):
+    class OldServerArgs(msgspec.Struct):
+        model_path: str
+
+    monkeypatch.setattr(sglang_engine, "ServerArgs", OldServerArgs)
+
+    with pytest.raises(ValueError, match="does not support preferred_sampling_params"):
+        compute(make_args(), sglang_overrides={"preferred_sampling_params": {"temperature": 0.7}})
 
 
 class TestRandomSeed:

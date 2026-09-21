@@ -12,6 +12,7 @@ from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
+    _resolve_eval_config,
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
@@ -28,6 +29,72 @@ from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+
+
+class TestEvalSamplingDefaults:
+    @staticmethod
+    def _parse(*extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(REQUIRED_ARGS + list(extra))
+
+    def test_common_values_resolve_without_datasets(self):
+        args = self._parse(
+            "--rollout-temperature",
+            "0.8",
+            "--rollout-top-p",
+            "0.9",
+            "--rollout-top-k",
+            "32",
+            "--eval-temperature",
+            "0",
+        )
+
+        datasets, sampling_params = _resolve_eval_config(args)
+
+        assert datasets == []
+        assert sampling_params == {"temperature": 0, "top_p": 0.9, "top_k": 32}
+
+    def test_datasets_do_not_change_common_values(self, tmp_path):
+        path = tmp_path / "eval.json"
+        variants = [
+            [{"name": "a", "path": "a.jsonl", "temperature": 0.2, "top_k": 20}],
+            [
+                {"name": "b", "path": "b.jsonl", "temperature": 0.7, "top_p": 0.8},
+                {"name": "a", "path": "a.jsonl", "temperature": 0.6, "top_k": 50},
+            ],
+        ]
+        variants.append(list(reversed(variants[-1])))
+        for configured in variants:
+            path.write_text(
+                json.dumps(
+                    {
+                        "eval": {
+                            "defaults": {"temperature": 0, "top_k": -1},
+                            "datasets": configured,
+                        }
+                    }
+                )
+            )
+            args = self._parse(
+                "--eval-config",
+                str(path),
+                "--eval-temperature",
+                "0.9",
+                "--eval-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+            )
+
+            datasets, sampling_params = _resolve_eval_config(args)
+
+            assert sampling_params == {"temperature": 0, "top_p": 0.95, "top_k": -1}
+            for dataset, config in zip(datasets, configured, strict=True):
+                assert dataset.temperature == config["temperature"]
+                assert dataset.top_p == config.get("top_p", 0.95)
+                assert dataset.top_k == config.get("top_k", -1)
+
 
 _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
     "world_size": 8,

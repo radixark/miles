@@ -191,6 +191,8 @@ Sections mirror the launch-script argument groups.
 | `--rollout-stop` | str+ | – | Stop strings. |
 | `--rollout-stop-token-ids` | int+ | – | Stop token IDs. |
 
+Miles also installs the rollout `temperature`, `top_p`, and `top_k` as startup defaults on its primary rollout engines. Explicit `--sglang-preferred-sampling-params` fields override these defaults, and per-group YAML `preferred_sampling_params` fields override both. Fields merge individually. An explicit value in an inference request takes precedence over the engine default.
+
 ### Eval
 
 | Flag | Type | Default | Notes |
@@ -201,6 +203,7 @@ Sections mirror the launch-script argument groups.
 | `--eval-max-response-len` | int | – | Max eval response length. Inherits from rollout if unset. |
 | `--eval-temperature` | float | – | Eval temperature. Inherits from rollout if unset. |
 | `--eval-top-p` | float | – | Eval top-p. Inherits from rollout if unset. |
+| `--eval-top-k` | int | – | Eval top-k. Inherits from rollout if unset. |
 | `--eval-num-gpus` | int | `0` | Dedicated eval fleet size. `0` = shared-engine eval. Requires `train_async.py`. |
 | `--eval-num-gpus-per-engine` | int | `1` | Eval engine TP, independent of rollout TP. |
 | `--eval-hf-dir` | str | – | Staging dir for per-eval HF snapshots (tmpfs recommended). Unset + `--save-hf` = reuse mode. |
@@ -208,6 +211,12 @@ Sections mirror the launch-script argument groups.
 | `--eval-overflow-policy` | str | `backpressure` | At the cap: await the oldest eval, or `skip` the new point (logged as `eval/skipped_busy`). |
 | `--eval-keep-snapshots` | int | `2` | Retired snapshots kept under `--eval-hf-dir`; with `--eval-max-in-flight` this bounds the staging dir. `--save-hf` output is never deleted. |
 | `--eval-sglang-*` | – | – | Per-field override of any `--sglang-*` setting for the eval fleet only. Unset = inherit the rollout engines' value. Booleans take a `--no-` form (`--no-eval-sglang-enable-dp-attention`) so an inherited `True` can be turned off. `tp_size` is not exposed — use `--eval-num-gpus-per-engine`. |
+
+Dedicated eval engines receive common sampling defaults resolved per field from `eval.defaults`, then `--eval-*`, then the corresponding rollout value. Explicit engine configuration overrides those common defaults in this order: per-group YAML, `--eval-sglang-preferred-sampling-params`, `--sglang-preferred-sampling-params`.
+
+Dataset sampling configuration only affects requests; it never changes engine startup defaults. Agent harnesses must forward these values in their HTTP requests. Shared-engine eval also relies on request parameters for eval-specific values, since the shared engine keeps its rollout defaults. Harness-supplied values, including its own defaults, take precedence over engine defaults.
+
+OpenAI Chat requests require an SGLang build that merges `preferred_sampling_params` before filling omitted Chat fields from model or built-in defaults. Older builds that only merge preferred defaults in the tokenizer manager do not honor them for those Chat fields.
 
 ### Performance
 

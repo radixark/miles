@@ -18,6 +18,11 @@ def _make_args(**overrides) -> Namespace:
         prefill_num_servers=None,
         rollout_num_gpus=8,
         rollout_num_gpus_per_engine=1,
+        rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
+        eval_sampling_params={"temperature": 1.0, "top_p": 1.0, "top_k": -1},
+        sglang_preferred_sampling_params=None,
         num_gpus_per_node=8,
         eval_num_gpus=0,
         eval_num_gpus_per_engine=1,
@@ -44,6 +49,112 @@ def _resolve_yaml(tmp_path, yaml_text: str, **args_overrides):
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml_text)
     return resolve_sglang_config(_make_args(sglang_config=str(cfg_path), **args_overrides))
+
+
+class TestSamplingDefaults:
+    def test_primary_model_named_eval_without_a_dedicated_fleet_uses_rollout_defaults(self, tmp_path):
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n  - name: eval\n    server_groups:\n      - worker_type: regular\n        num_gpus: 8\n",
+            rollout_temperature=0.7,
+        )
+        assert cfg.models[0].server_groups[0].overrides["preferred_sampling_params"]["temperature"] == 0.7
+
+    def test_dataset_configuration_cannot_change_engine_defaults(self):
+        args = _make_args(eval_num_gpus=2, eval_sampling_params={"temperature": 0, "top_p": 1, "top_k": -1})
+        before = resolve_sglang_config(args)
+        for datasets in (
+            [{"temperature": 0.2, "top_k": 20}],
+            [{"temperature": 0.7}, {"temperature": 0.6, "top_k": 50}],
+            [{"temperature": 0.6, "top_k": 50}, {"temperature": 0.7}],
+            [],
+        ):
+            args.eval_datasets = datasets
+            assert resolve_sglang_config(args) == before
+        assert args.eval_sampling_params == {"temperature": 0, "top_p": 1, "top_k": -1}
+
+    def test_eval_only_job_uses_eval_defaults_for_its_first_model(self):
+        args = _make_args(
+            debug_train_only=True,
+            eval_num_gpus=2,
+            eval_sampling_params={"temperature": 0, "top_p": 0.8, "top_k": 20},
+        )
+
+        (evaluation,) = resolve_sglang_config(args).models
+
+        assert evaluation.name == "eval"
+        assert evaluation.server_groups[0].overrides["preferred_sampling_params"] == args.eval_sampling_params
+
+    @pytest.mark.parametrize("prefill_num_servers", [None, 1])
+    @pytest.mark.parametrize("preferred_flag_available", [True, False])
+    def test_rollout_and_eval_engines_receive_their_own_defaults(self, prefill_num_servers, preferred_flag_available):
+        args = _make_args(
+            prefill_num_servers=prefill_num_servers,
+            eval_num_gpus=2,
+            rollout_temperature=0.8,
+            rollout_top_p=0.95,
+            rollout_top_k=32,
+            eval_sampling_params={"temperature": 0, "top_p": 1, "top_k": -1},
+            sglang_preferred_sampling_params=None,
+        )
+        if not preferred_flag_available:
+            del args.sglang_preferred_sampling_params
+
+        rollout, evaluation = resolve_sglang_config(args).models
+
+        for group in rollout.server_groups:
+            assert group.overrides["preferred_sampling_params"] == {"temperature": 0.8, "top_p": 0.95, "top_k": 32}
+        assert evaluation.server_groups[0].overrides["preferred_sampling_params"] == {
+            "temperature": 0,
+            "top_p": 1,
+            "top_k": -1,
+        }
+
+    def test_yaml_and_cli_merge_sampling_fields_without_affecting_other_models(self, tmp_path):
+        cfg = _resolve_yaml(
+            tmp_path,
+            """sglang:
+  - name: actor
+    server_groups:
+      - worker_type: regular
+        num_gpus: 4
+        overrides:
+          preferred_sampling_params: {top_k: 64}
+  - name: ref
+    update_weights: false
+    server_groups:
+      - worker_type: regular
+        num_gpus: 4
+  - name: eval
+    server_groups:
+      - worker_type: regular
+        num_gpus: 2
+        overrides:
+          preferred_sampling_params: {top_k: 128}
+""",
+            eval_num_gpus=2,
+            rollout_temperature=0.8,
+            rollout_top_p=0.95,
+            rollout_top_k=32,
+            eval_sampling_params={"temperature": 0, "top_p": 1, "top_k": -1},
+            sglang_preferred_sampling_params={"top_p": 0.9, "min_p": 0.05},
+            eval_sglang_preferred_sampling_params={"top_p": 0.85},
+        )
+
+        actor, reference, evaluation = cfg.models
+        assert actor.server_groups[0].overrides["preferred_sampling_params"] == {
+            "temperature": 0.8,
+            "top_p": 0.9,
+            "top_k": 64,
+            "min_p": 0.05,
+        }
+        assert "preferred_sampling_params" not in reference.server_groups[0].overrides
+        assert evaluation.server_groups[0].overrides["preferred_sampling_params"] == {
+            "temperature": 0,
+            "top_p": 0.85,
+            "top_k": 128,
+            "min_p": 0.05,
+        }
 
 
 class TestNumGpusPerEnginePrecedence:

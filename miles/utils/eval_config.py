@@ -192,6 +192,20 @@ def _apply_dataset_field_overrides(
         dataset_cfg[field_name] = pick_from_args(args, spec["arg_attrs"])
 
 
+def resolve_eval_sampling_params(args: Any, defaults: dict[str, Any]) -> dict[str, Any]:
+    """Resolve common eval sampling defaults without consulting any dataset."""
+    params = {}
+    for name in ("temperature", "top_p", "top_k"):
+        spec = DATASET_RUNTIME_SPECS[name]
+        value = _first_not_missing(
+            _pick_from_mapping(defaults, spec["default_keys"]),
+            pick_from_args(args, spec["arg_attrs"]),
+        )
+        if value is not None:
+            params[name] = value
+    return params
+
+
 def build_eval_dataset_configs(
     args: Any,
     raw_config: Iterable[dict[str, Any]],

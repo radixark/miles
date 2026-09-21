@@ -5,10 +5,12 @@ import sys
 
 import pytest
 from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_model_path
+from tests.fast.backends.sglang_utils.test_sglang_config import _make_args as make_config_args
 
 pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
+from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 
 
@@ -17,6 +19,7 @@ def _cmd(
     worker_type: str = "regular",
     args=None,
     addr_overrides: dict | None = None,
+    sglang_overrides: dict | None = None,
     base_gpu_id: int = 0,
     random_seed: int = 0,
     **kwargs,
@@ -38,7 +41,7 @@ def _cmd(
         base_gpu_id=base_gpu_id,
         # ServerArgs probes the local accelerator when no device is given, which a CPU-only
         # CI runner cannot answer. Production resolves it to the engine's own device the same way.
-        sglang_overrides={"device": "cuda"},
+        sglang_overrides={"device": "cuda", **(sglang_overrides or {})},
         num_gpus_per_engine=1,
         dist_init_addr=addr_and_ports["dist_init_addr"],
         nccl_port=addr_and_ports["nccl_port"],
@@ -53,6 +56,29 @@ def _cmd(
 
 
 class TestComputeEngineLaunchCmd:
+    def test_role_defaults_reach_the_sglang_launch_parser(self):
+        args = make_engine_args(
+            **vars(
+                make_config_args(
+                    hf_checkpoint=str(tiny_model_path()),
+                    eval_num_gpus=2,
+                    rollout_temperature=0.7,
+                    rollout_top_p=0.9,
+                    rollout_top_k=32,
+                    eval_sampling_params={"temperature": 0, "top_p": 1, "top_k": -1},
+                )
+            )
+        )
+
+        for model, expected in zip(
+            resolve_sglang_config(args).models,
+            [{"temperature": 0.7, "top_p": 0.9, "top_k": 32}, args.eval_sampling_params],
+            strict=True,
+        ):
+            command = _cmd(args=args, sglang_overrides=model.server_groups[0].overrides)
+            parsed = parse_server_args_argv(shlex.split(command)[3:])
+            assert parsed.preferred_sampling_params == expected
+
     def test_the_command_launches_sglang_with_the_allocated_addressing(self):
         """The rendered launch_server command carries the addr map."""
         tokens = shlex.split(_cmd())

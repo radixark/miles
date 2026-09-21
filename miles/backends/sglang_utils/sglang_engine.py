@@ -185,6 +185,9 @@ def _compute_server_args(
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
         unused_keys.discard(attr.name)
 
+    if "preferred_sampling_params" in unused_keys and kwargs["preferred_sampling_params"]:
+        raise ValueError("This SGLang version does not support preferred_sampling_params; upgrade SGLang.")
+
     # for compatibility with old args
     if len(unused_keys) > 0:
         logger.info(f"Warning: The following arguments is not supported in the current sglang: {unused_keys}.")

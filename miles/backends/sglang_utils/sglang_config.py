@@ -287,7 +287,26 @@ class _OffsetCursor:
 def resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
     raw = _compute_raw_sglang_config(args)
+    if raw.models and not (args.eval_num_gpus > 0 and raw.models[0].name == "eval"):
+        sampling_params = {
+            "temperature": args.rollout_temperature,
+            "top_p": args.rollout_top_p,
+            "top_k": args.rollout_top_k,
+            **(getattr(args, "sglang_preferred_sampling_params", None) or {}),
+        }
+        primary = _with_sampling_defaults(raw.models[0], sampling_params)
+        raw = raw.model_copy(update={"models": [primary, *raw.models[1:]]})
     return SglangConfig.resolve(raw, args)
+
+
+def _with_sampling_defaults(raw: _RawModelConfig, sampling_params: dict) -> _RawModelConfig:
+    groups = []
+    for group in raw.server_groups:
+        preferred = sampling_params | (group.overrides.get("preferred_sampling_params") or {})
+        groups.append(
+            group.model_copy(update={"overrides": group.overrides | {"preferred_sampling_params": preferred}})
+        )
+    return raw.model_copy(update={"server_groups": groups})
 
 
 def _compute_raw_sglang_config(args) -> _RawSglangConfig:
@@ -363,7 +382,13 @@ def _eval_sglang_overrides(args) -> dict:
 def _compute_eval_raw_model(raw: _RawModelConfig, args) -> _RawModelConfig:
     """Fill the eval model from the ``--eval-*`` args: YAML > ``--eval-sglang-*`` > ``--sglang-*``."""
     overrides = _eval_sglang_overrides(args)
-    return raw.model_copy(
+    # Merge individual sampling fields before the outer overrides replace the dict.
+    sampling_params = {
+        **args.eval_sampling_params,
+        **(getattr(args, "sglang_preferred_sampling_params", None) or {}),
+        **(overrides.pop("preferred_sampling_params", None) or {}),
+    }
+    model = raw.model_copy(
         update=dict(
             # Never joins the training broadcast group; the fleet is synced by snapshot only.
             update_weights=False if raw.update_weights is None else raw.update_weights,
@@ -378,6 +403,7 @@ def _compute_eval_raw_model(raw: _RawModelConfig, args) -> _RawModelConfig:
             ],
         )
     )
+    return _with_sampling_defaults(model, sampling_params)
 
 
 def _compute_rollout_offset(args) -> int:
