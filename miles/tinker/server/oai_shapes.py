@@ -58,7 +58,7 @@ def parse_chat_request(body: dict[str, Any]) -> TurnRequest:
 
 
 def chat_completion_json(body: dict[str, Any], result: TurnResult) -> dict[str, Any]:
-    """TurnResult → OpenAI ChatCompletion JSON: one choice with message/finish_reason plus usage."""
+    """TurnResult → OpenAI ChatCompletion JSON: one choice (assistant message, finish_reason) plus usage."""
     prompt_tokens = len(result.turn.input_ids)
     completion_tokens = len(result.turn.output_ids)
     return {
@@ -69,7 +69,7 @@ def chat_completion_json(body: dict[str, Any], result: TurnResult) -> dict[str, 
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": result.text},
+                "message": dict(result.assistant_message),
                 "finish_reason": result.turn.finish_reason,
             }
         ],

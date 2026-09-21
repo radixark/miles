@@ -77,10 +77,10 @@ class TurnRequest:
 
 @dataclass(frozen=True)
 class TurnResult:
-    """The recorded Turn plus its decoded text; the server shapes this into the wire response."""
+    """The recorded Turn plus the unified assistant message; an API adapter shapes both into its wire response."""
 
     turn: Turn
-    text: str
+    assistant_message: dict[str, Any]  # OpenAI-style {role, content[, tool_calls]}: TITO stores it, adapters render it
 
 
 @dataclass
@@ -277,9 +277,9 @@ class TrajectoryCollector:
         )
         session.turns.append(turn)
         session.last_seen = turn.created_at
-        text = self.renderer.decode(turn.output_ids)
-        self.renderer.update_pretokenized_state(session, turn, request_messages, text)
-        return TurnResult(turn=turn, text=text)
+        message = self.renderer.assistant_message(turn)
+        self.renderer.update_pretokenized_state(session, turn, request_messages, message)  # the same dict, not a copy
+        return TurnResult(turn=turn, assistant_message=message)
 
     async def _sample(self, session: TrajectorySession, payload: dict[str, Any]) -> dict[str, Any]:
         """Sample through the gateway: submit_sample → retrieve_future → settled → sequences[0], or raise."""

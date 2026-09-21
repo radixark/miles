@@ -14,7 +14,7 @@ from miles.tinker.core.tinker_session_server import TrajectoryCollector
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
-from miles.tinker.server.oai_routes import setup_session_routes
+from miles.tinker.server.session_routes import setup_session_routes
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity

@@ -1,6 +1,7 @@
-"""The four recorded-session routes (bind, chat, turns, delete) beside the Tinker API; all but chat need the key."""
+"""Recorded-session routes: bind, export, delete (tenant key) plus one chat route per API adapter (OpenAI today)."""
 
 import json
+from collections.abc import Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -10,6 +11,8 @@ from miles.tinker.core.tinker_session_server import (
     SessionLimitError,
     SessionNotFoundError,
     TrajectoryCollector,
+    TurnRequest,
+    TurnResult,
 )
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.app import _tenant
@@ -43,8 +46,23 @@ async def _json_body(request: Request, max_body_bytes: int = MAX_BODY_BYTES) -> 
     return payload
 
 
+# chat dialects: path suffix -> (body -> TurnRequest, (body, TurnResult) -> JSON); Anthropic: /v1/messages
+CHAT_ADAPTERS: dict[str, tuple[Callable[[dict], TurnRequest], Callable[[dict, TurnResult], dict]]] = {
+    "/v1/chat/completions": (parse_chat_request, chat_completion_json),
+}
+
+
+def _mount_chat_route(app: FastAPI, collector: TrajectoryCollector, suffix: str, parse, render, max_body_bytes: int):
+    """POST /oai/sessions/{sid}{suffix}: one recorded Turn of a bound session; the session id is the credential."""
+
+    @app.post(f"/oai/sessions/{{session_id}}{suffix}")
+    async def session_chat(session_id: str, request: Request):
+        body = await _json_body(request, max_body_bytes)
+        return render(body, await collector.complete(session_id, parse(body)))
+
+
 def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_bytes: int = MAX_BODY_BYTES) -> None:
-    """Mount the four /oai/sessions routes (with the body cap) and their 404 / 429 / 502 handlers."""
+    """Mount bind/export/delete, one chat route per CHAT_ADAPTERS entry, and the 404 / 429 / 502 handlers."""
 
     @app.exception_handler(SessionNotFoundError)
     async def _session_not_found(request: Request, error: SessionNotFoundError):
@@ -73,12 +91,8 @@ def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_
         )
         return {"session_id": session.session_id, "model_path": session.model_path}
 
-    @app.post("/oai/sessions/{session_id}/v1/chat/completions")
-    async def session_chat_completions(session_id: str, request: Request):
-        """Chat completion recorded as one Turn of a bound session; the session id is the credential, no key read."""
-        body = await _json_body(request, max_body_bytes)
-        result = await collector.complete(session_id, parse_chat_request(body))
-        return chat_completion_json(body, result)
+    for suffix, (parse, render) in CHAT_ADAPTERS.items():
+        _mount_chat_route(app, collector, suffix, parse, render, max_body_bytes)
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):

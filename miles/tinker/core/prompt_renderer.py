@@ -129,15 +129,19 @@ class PromptRenderer:
         return render_prompt(request_messages, tools, template_kwargs, self.tokenizer), False, reason
 
     def update_pretokenized_state(
-        self, session: TrajectorySession, turn: Turn, request_messages: list[dict[str, Any]], text: str
+        self, session: TrajectorySession, turn: Turn, request_messages: list[dict[str, Any]], assistant_message: dict
     ) -> None:
-        """Remember the answered history for the next TITO merge; a no-op without a TITOTokenizer."""
+        """Remember the answered history + the assistant message for the next TITO merge; no-op without TITO."""
         if self.tito_tokenizer is not None:
-            _update_pretokenized_state(session, turn, request_messages, {"role": "assistant", "content": text})
+            _update_pretokenized_state(session, turn, request_messages, assistant_message)
 
     def decode(self, ids) -> str:
         """The reply text for the wire response, special tokens dropped."""
         return self.tokenizer.decode(list(ids), skip_special_tokens=True)
+
+    def assistant_message(self, turn: Turn) -> dict[str, Any]:
+        """The unified assistant message for a reply: text today; per-family tool_call parsing would plug in here."""
+        return {"role": "assistant", "content": self.decode(turn.output_ids)}
 
     def template_kwargs(self, override: dict[str, Any] | None) -> dict[str, Any]:
         """The gateway's chat_template_kwargs, overridden by the turn's chat_template_kwargs object."""
