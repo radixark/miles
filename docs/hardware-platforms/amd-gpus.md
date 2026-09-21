@@ -17,7 +17,6 @@ workflows and published to Docker Hub under
 |---|---|---|---|
 | `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 — the image the nightly tests run on |
 | `rocm/sgl-dev:miles-rocm720-mi35x` | 7.2 | MI350X / MI355X | Python 3.10 |
-| `rocm/sgl-dev:miles-rocm700-mi30x` | 7.0 | MI300X / MI325X | Not rebuilt daily — last built 2026-09-08 |
 
 Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
 `miles-rocm10-mi35x-20260916`) to pin one.
