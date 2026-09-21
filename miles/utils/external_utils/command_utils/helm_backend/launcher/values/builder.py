@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import pairing_config
@@ -30,23 +31,25 @@ from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, BaseSp
 _COLOCATE_PAIRING_COMPONENT = "colocate-pairing"
 
 
-def build_values(specs: list[BaseSpec], plan: LaunchPlan) -> MilesRunChartValues:
-    return MilesRunChartValues(run=_build_run_values(specs, plan), extra_manifests=plan.extra_manifests or None)
+def build_values(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig) -> MilesRunChartValues:
+    return MilesRunChartValues(
+        run=_build_run_values(specs, plan, scaling=scaling), extra_manifests=plan.extra_manifests or None
+    )
 
 
-def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan) -> RunValues:
+def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig) -> RunValues:
     assert bool(plan.orchestrator_command) == bool(plan.state_file), (
         "The orchestration script and the exit file it writes come together: a release carries both, or it carries "
         "neither and is a deployment of workers that outlives any one run"
     )
-    specs = _deployed_specs(specs)
+    specs = _deployed_specs(specs, scaling=scaling)
     for spec in specs:
         if isinstance(spec, BaseServeSpec):
-            _assert_worker_ports_fit(spec)
-    addresses = _compute_addresses(specs, plan.release)
-    static_connections = build_static_conn_config(specs=specs)
+            _assert_worker_ports_fit(spec, scaling=scaling)
+    addresses = _compute_addresses(specs, plan.release, scaling=scaling)
+    static_connections = build_static_conn_config(specs=specs, scaling=scaling)
 
-    colocate = _pairing_config(specs, plan)
+    colocate = _pairing_config(specs, plan, scaling=scaling)
     layout_of_pool = {pool.pool_id: pool.layout for pool in colocate.inference_pools} if colocate else {}
 
     entries: dict[str, list[PoolEntry]] = {
@@ -62,6 +65,7 @@ def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan) -> RunValues:
             addresses=addresses,
             pairing_layout=layout_of_pool.get(spec.name),
             static_connections=static_connections,
+            scaling=scaling,
         )
         assert section == STATIC_WORKERS_SECTION or entry.restart_at is None, (
             f"only the {STATIC_WORKERS_SECTION} template renders a restart stamp, so stamping {spec.name} in "
@@ -93,10 +97,10 @@ def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan) -> RunValues:
     )
 
 
-def _pairing_config(specs: list[BaseSpec], plan: LaunchPlan) -> PairingConfig | None:
+def _pairing_config(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig) -> PairingConfig | None:
     if not plan.colocate or not any(SECTION_OF_CATEGORY[spec.category] == INFERENCE_ENGINES_SECTION for spec in specs):
         return None
-    return pairing_config(specs, plan)
+    return pairing_config(specs, plan, scaling=scaling)
 
 
 def _object_names(release: str) -> ObjectNames:
@@ -111,11 +115,13 @@ def _object_names(release: str) -> ObjectNames:
     )
 
 
-def _deployed_specs(specs: list[BaseSpec]) -> list[BaseSpec]:
+def _deployed_specs(specs: list[BaseSpec], *, scaling: ScalingConfig) -> list[BaseSpec]:
     return [spec for spec in specs if spec.scheduling.num_cells > 0]
 
 
-def _compute_addresses(specs: list[BaseSpec], release: str) -> dict[str, dict[str, NamedHostAndPorts]]:
+def _compute_addresses(
+    specs: list[BaseSpec], release: str, *, scaling: ScalingConfig
+) -> dict[str, dict[str, NamedHostAndPorts]]:
     return {
         spec.name: {
             compute_cell_id(pool_id=spec.name, cell_index=cell_index): static_cell_addrs(
@@ -128,7 +134,7 @@ def _compute_addresses(specs: list[BaseSpec], release: str) -> dict[str, dict[st
     }
 
 
-def _assert_worker_ports_fit(spec: BaseServeSpec) -> None:
+def _assert_worker_ports_fit(spec: BaseServeSpec, *, scaling: ScalingConfig) -> None:
     workers_per_pod = spec.scheduling.workers_per_pod()
     rpc_port = next(port.static_port for port in spec.port_infos if port.name == RPC_PORT_NAME)
     for port in spec.port_infos:
