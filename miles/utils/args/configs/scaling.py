@@ -1,7 +1,9 @@
+from miles.backends.sglang_utils.sglang_config import SglangScalingConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 class ScalingConfig(BaseConfig):
+    sglang_scaling: SglangScalingConfig
     actor_num_nodes: A[int, Arg(help="Number of nodes for training actor")] = 1
     actor_num_gpus_per_node: A[int, Arg(help="Number of gpus per node for training actor")] = 8
     critic_num_nodes: A[int | None, Arg(help="Number of nodes for training actor")] = None
