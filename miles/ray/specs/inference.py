@@ -337,7 +337,6 @@ def _compute_spec_inference_engine(
         f"{args.num_gpus_per_node} gpus nor tiles whole nodes, so its ranks would never all be launched"
     )
 
-    envs = compute_inference_engine_env_vars(args)
     scheduling = SchedulingSpec(
         num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
         num_workers_per_cell=num_workers_per_cell,
@@ -378,7 +377,7 @@ def _compute_spec_inference_engine(
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
-        env_var=lambda _ctx: envs,
+        env_var=lambda _ctx: compute_inference_engine_env_vars(args),
         scheduling=scheduling,
         launch_command=_compute_launch_command,
         # TODO: reduce complexity around passing around configs later during arguments refactor
