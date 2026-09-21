@@ -46,7 +46,7 @@ def _as_tensor_like(values, reference: torch.Tensor) -> torch.Tensor:
     return torch.as_tensor(values, dtype=reference.dtype, device=reference.device)
 
 
-def _cp_token_sharding(args: Namespace, batch: RolloutBatch, values: list) -> list:
+def _per_datum_token_sharding_with_cp(args: Namespace, batch: RolloutBatch, values: list) -> list:
     """Shard each datum's per-response-token loss inputs to this CP rank without changing the batch."""
     max_seq_lens = batch.get("max_seq_lens")
     return [
@@ -60,13 +60,13 @@ def _cp_token_sharding(args: Namespace, batch: RolloutBatch, values: list) -> li
 
 
 @torch.no_grad()
-def _gather_response_outputs(
+def _gather_per_datum_outputs_with_cp(
     args: Namespace,
     batch: RolloutBatch,
     log_probs: list[torch.Tensor],
     per_datum_losses: list[torch.Tensor],
 ) -> list[dict]:
-    """Return complete detached scores and losses on every CP rank."""
+    """Gather each datum's detached response-token scores and total loss onto every CP rank."""
     if not per_datum_losses:
         return []
     losses = torch.stack(per_datum_losses)
@@ -124,7 +124,7 @@ def _sum_loss_and_outputs(
     else:
         # Ranks without labels must still run backward. An empty view avoids reading the vocabulary tensor.
         loss = logits[..., :0].sum(dtype=torch.float32)
-    per_datum = _gather_response_outputs(args, batch, log_probs, per_datum_losses)
+    per_datum = _gather_per_datum_outputs_with_cp(args, batch, log_probs, per_datum_losses)
     return loss, {"loss": loss.detach(), "per_datum": per_datum}
 
 
@@ -139,7 +139,7 @@ def cross_entropy_loss_function(
         -(_as_tensor_like(weights, log_prob) * log_prob * mask).sum()
         for log_prob, weights, mask in zip(
             log_probs,
-            _cp_token_sharding(args, batch, batch["loss_weights"]),
+            _per_datum_token_sharding_with_cp(args, batch, batch["loss_weights"]),
             _response_masks(args, batch, log_probs),
             strict=True,
         )
@@ -158,7 +158,7 @@ def importance_sampling_loss_function(
     for log_prob, sampling_log_prob, advantage, mask in zip(
         log_probs,
         batch["rollout_log_probs"],
-        _cp_token_sharding(args, batch, batch["advantages"]),
+        _per_datum_token_sharding_with_cp(args, batch, batch["advantages"]),
         _response_masks(args, batch, log_probs),
         strict=True,
     ):
@@ -181,7 +181,7 @@ def ppo_loss_function(
     for log_prob, sampling_log_prob, advantage, mask in zip(
         log_probs,
         batch["rollout_log_probs"],
-        _cp_token_sharding(args, batch, batch["advantages"]),
+        _per_datum_token_sharding_with_cp(args, batch, batch["advantages"]),
         _response_masks(args, batch, log_probs),
         strict=True,
     ):
@@ -206,7 +206,7 @@ def cispo_loss_function(
     for log_prob, sampling_log_prob, advantage, mask in zip(
         log_probs,
         batch["rollout_log_probs"],
-        _cp_token_sharding(args, batch, batch["advantages"]),
+        _per_datum_token_sharding_with_cp(args, batch, batch["advantages"]),
         _response_masks(args, batch, log_probs),
         strict=True,
     ):
@@ -229,7 +229,7 @@ def dro_loss_function(
     for log_prob, sampling_log_prob, advantage, mask in zip(
         log_probs,
         batch["rollout_log_probs"],
-        _cp_token_sharding(args, batch, batch["advantages"]),
+        _per_datum_token_sharding_with_cp(args, batch, batch["advantages"]),
         _response_masks(args, batch, log_probs),
         strict=True,
     ):
