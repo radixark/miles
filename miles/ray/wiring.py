@@ -30,10 +30,8 @@ async def shutdown_worker_manager(worker_manager_handle: ActorHandle | None) -> 
 
 
 def get_backend_capability(args: AllConfig) -> BackendCapability:
-    specs = compute_specs(args)
     return factory.get_backend_capability(
-        specs=specs,
-        static_connections=build_static_conn_config(specs=specs),
+        static_connections=build_static_conn_config(specs=compute_specs(args)),
         cluster_backend=ClusterBackend(args.cluster_backend),
     )
 

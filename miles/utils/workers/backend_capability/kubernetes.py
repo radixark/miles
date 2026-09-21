@@ -26,8 +26,6 @@ class KubernetesBackendCapability(BackendCapability):
         self._cell_operations = cell_operations
 
     def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
-        unknown = [name for name in pool_ids if name not in self._run.specs]
-        assert not unknown, f"{unknown} are not pool_ids of this run, which deploys {sorted(self._run.specs)}"
         return KubernetesWorkerProvider(run=self._run, pool_ids=list(pool_ids), resync_period=DEFAULT_RESYNC_PERIOD)
 
     def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
