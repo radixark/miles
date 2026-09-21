@@ -34,7 +34,6 @@ INPUT_GLOBS = (
     "docker/verify_transformer_engine.py",
     "docker/patch/*",
     "requirements.txt",
-    "examples/multi_lora/requirements.txt",
 )
 
 LABEL_KEY = "miles.image-inputs"

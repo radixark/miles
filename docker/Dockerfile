@@ -175,11 +175,8 @@ RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@40b930897717
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
-COPY examples/multi_lora/requirements.txt /tmp/requirements-multi-lora.txt
 COPY requirements.txt /tmp/requirements.txt
-RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
-    pip install -r /tmp/requirements-multi-lora.txt && \
-    pip install -r /tmp/requirements.txt
+RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
 
 # The apt copy shadows the pip one in ldconfig and the loader interleaves the two,
 # so transformer_engine gets a mixed set of libcudnn sub-libraries. The packages are
