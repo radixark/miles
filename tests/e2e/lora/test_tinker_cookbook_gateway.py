@@ -30,12 +30,11 @@ def prepare(client_env):
         f"--torch-backend cpu tinker==0.26.2 {shlex.quote(COOKBOOK_PIN)}"
     )
     U.exec_command_cpu(
-        f"{shlex.quote(str(client_env / 'bin/python'))} "
-        "-c 'from tinker_cookbook.recipes import sl_loop, rl_loop'"
+        f"{shlex.quote(str(client_env / 'bin/python'))} " "-c 'from tinker_cookbook.recipes import sl_loop, rl_loop'"
     )
-    assert {dist.metadata["Name"]: dist.version for dist in importlib.metadata.distributions()} == base_packages, (
-        "cookbook setup modified gateway Python packages"
-    )
+    assert {
+        dist.metadata["Name"]: dist.version for dist in importlib.metadata.distributions()
+    } == base_packages, "cookbook setup modified gateway Python packages"
 
 
 def execute(client_python):
