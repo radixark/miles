@@ -60,15 +60,16 @@ class ClusterConfig(BaseConfig):
         ),
     ] = None
     init_expected_num_cells: A[
-        int | None,
+        int | dict[str, int] | None,
         Arg(
+            type_parser=int,
             help=(
                 "How many engine cells per model this run waits for before it starts, when the engines are "
                 "deployed elsewhere and register themselves into it. The run cannot derive the number, because "
                 "the engine deployments are launched separately and may arrive late; declare here how many "
                 "cells the first rollout needs. It gates startup only, and the run keeps serving whatever "
                 "registers or leaves afterwards."
-            )
+            ),
         ),
     ] = None
     trainer_controller_addrs: A[

@@ -407,11 +407,13 @@ def parse_args_and_get_parser(
     resolve_custom_function_configs(args)
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
+    sglang = SglangConfig.parse_args(args)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
-        "sglang": SglangConfig.parse_args(args),
+        "sglang": sglang,
         "sglang_model_routers": None,
+        "init_expected_num_cells": _compute_init_expected_num_cells(args, sglang=sglang),
     }
     values.update(RouterConfig.from_args(args))
     return AllConfig.model_validate(values), parser
@@ -485,6 +487,14 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
         args.eval_prompt_data = None
 
     return eval_datasets
+
+
+def _compute_init_expected_num_cells(args: argparse.Namespace, *, sglang: SglangConfig) -> int | dict[str, int] | None:
+    if (declared := args.init_expected_num_cells) is not None:
+        return declared
+    if args.rollout_external or not DeployComponent(args.deploy_component).deploys_own_inference_engines():
+        return None
+    return {model.name: model.num_server_cells for model in sglang.models}
 
 
 def _compute_rollout_external(args: argparse.Namespace) -> bool:
