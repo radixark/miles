@@ -201,7 +201,7 @@ class TrainerSpec(BaseServeSpec):
     def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
         return dict(
             args=ctx.args,
-            world_size=_compute_trainer_world_size(ctx.args),
+            world_size=ctx.num_workers_per_cell,
             rank=ctx.worker_in_cell_index,
             role=ctx.args.trainer_role,
             cell_index=ctx.cell_index,
@@ -210,11 +210,6 @@ class TrainerSpec(BaseServeSpec):
 
 def compute_trainer_pool_id(trainer_id: str) -> str:
     return f"trainer-engine-{trainer_id}"
-
-
-def _compute_trainer_world_size(args: TrainerConfig) -> int:
-    total_gpus = compute_trainer_total_gpus(args, role=args.trainer_role)
-    return exact_div(total_gpus, compute_trainer_num_cells(args, total_gpus=total_gpus))
 
 
 def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
