@@ -34,7 +34,7 @@ INPUT_GLOBS = (
     "docker/verify_transformer_engine.py",
     "docker/patch/*",
     "requirements.txt",
-    "tests/ci/requirements-ci-cuda.txt",
+    "examples/multi_lora/requirements.txt",
 )
 
 LABEL_KEY = "miles.image-inputs"
