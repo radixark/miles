@@ -23,12 +23,14 @@ class KubernetesCellOperations(BaseCellOperations):
         self._namespace = namespace
         self._watching: asyncio.Task[StopWatchFn] | None = None
 
-    async def cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
+    async def cell_infos(self, *, pool_ids: list[str] | None, category: str | None) -> dict[str, CellInfo]:
         await self._ensure_watching()
 
-        wanted = set(pool_ids)
-        infos = (self._provider.cell_info(cell_id) for cell_id in self._provider.cell_ids())
-        return {info.cell_id: info for info in infos if info is not None and info.pool_id in wanted}
+        infos = (
+            self._provider.cell_info(cell_id)
+            for cell_id in self._provider.cell_ids(pool_ids=pool_ids, category=category)
+        )
+        return {info.cell_id: info for info in infos if info is not None}
 
     async def suspend(self, *, cell_id: str) -> None:
         await self._ensure_watching()
