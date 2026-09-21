@@ -1,13 +1,14 @@
-import dataclasses
 import ipaddress
 import logging
 import os
 import shlex
 import sys
 
+import msgspec
+
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
+from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
 from miles.utils.lora import (
     LORA_ADAPTER_NAME,
@@ -182,7 +183,7 @@ def _compute_server_args(
         kwargs.update(sglang_overrides)
 
     unused_keys = set(kwargs.keys())
-    for attr in dataclasses.fields(ServerArgs):
+    for attr in msgspec.structs.fields(ServerArgs):
         if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
             continue
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
@@ -194,5 +195,12 @@ def _compute_server_args(
         logger.info(f"Warning: The following arguments is not supported in the current sglang: {unused_keys}.")
         for key in unused_keys:
             kwargs.pop(key)
+
+    if is_multi_lora_enabled(args):
+        assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
+        if kwargs.get("max_loaded_loras") is None:
+            # use --sglang-max-loaded-loras to override
+            # TODO: dynamic allocation
+            kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
     return kwargs

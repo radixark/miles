@@ -48,6 +48,7 @@ TestFactory
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from unittest.mock import MagicMock
 
 import pytest
@@ -66,7 +67,11 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     DeepSeekV32TITOTokenizer,
     FixedTemplate,
     GLM47TITOTokenizer,
+    GLM53TITOTokenizer,
     InklingTITOTokenizer,
+    Kimi25TITOTokenizer,
+    Kimi26TITOTokenizer,
+    Nemotron3TITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
     Qwen36TITOTokenizer,
@@ -75,6 +80,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     TITOTokenizer,
     TITOTokenizerType,
     _build_dummy_assistant,
+    extract_template_args,
     get_tito_tokenizer,
 )
 from miles.utils.processing_utils import load_tokenizer
@@ -266,19 +272,379 @@ class TestConfig:
         assert tito.chat_template_kwargs["thinking"] is expected
 
     @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
-    def test_deepseek_request_thinking_overrides_startup_mode(self, tito_cls):
+    @pytest.mark.parametrize(
+        "startup_thinking, request_kwargs, expected",
+        [
+            pytest.param(False, {"thinking": True}, True, id="enable-via-thinking"),
+            pytest.param(True, {"enable_thinking": False}, False, id="disable-via-enable-thinking"),
+            pytest.param(True, {"thinking_mode": "chat"}, False, id="disable-via-mode"),
+            pytest.param(False, {}, False, id="omitted-alias-inherits"),
+            pytest.param(False, {"enable_thinking": None}, True, id="null-enable-thinking-replaces-base"),
+            pytest.param(False, {"thinking": None}, True, id="null-thinking-replaces-base"),
+            pytest.param(True, {"thinking_mode": None}, False, id="null-mode-replaces-base"),
+            pytest.param(
+                True,
+                {"enable_thinking": False, "thinking": True},
+                False,
+                id="request-enable-thinking-precedes-thinking",
+            ),
+            pytest.param(
+                False, {"thinking_mode": "thinking", "enable_thinking": False}, True, id="request-mode-precedes-toggle"
+            ),
+            pytest.param(
+                True, {"enable_thinking": None, "thinking": False}, False, id="null-toggle-falls-through-to-thinking"
+            ),
+        ],
+    )
+    def test_deepseek_request_aliases_override_startup_mode(
+        self, tito_cls, startup_thinking, request_kwargs, expected
+    ):
         tokenizer = MagicMock()
         tokenizer.convert_tokens_to_ids.return_value = 1
-        startup_tito = tito_cls(tokenizer, chat_template_kwargs={"enable_thinking": False})
+        startup_tito = tito_cls(
+            tokenizer, chat_template_kwargs={"enable_thinking": startup_thinking, "custom_option": "launch"}
+        )
+        original_kwargs = dict(request_kwargs)
 
-        request_tito = startup_tito.clone_with_chat_template_kwargs({"thinking": True})
+        request_args = startup_tito.resolve_request_args({"chat_template_kwargs": request_kwargs}, turn_args=None)
 
-        assert request_tito.chat_template_kwargs == {"drop_thinking": False, "thinking": True}
+        assert request_args == {
+            "chat_template_kwargs": {"drop_thinking": False, "thinking": expected, "custom_option": "launch"},
+            "tools": None,
+        }
+        assert startup_tito.chat_template_kwargs == {
+            "drop_thinking": False,
+            "thinking": startup_thinking,
+            "custom_option": "launch",
+        }
+        assert request_kwargs == original_kwargs
 
     def test_comparator_inherits_trailing_ids(self, qwen3_tito: Qwen3TITOTokenizer):
         """create_comparator propagates trailing_token_ids to the comparator's trim set."""
         comp = qwen3_tito.create_comparator()
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
+
+
+class TestResolveRequestArgs:
+    LAUNCH = {"enable_thinking": False}
+    TOOLS = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
+    OTHER_TOOLS = [{"type": "function", "function": {"name": "get_time"}}]
+
+    def test_new_root_merges_request_kwargs_over_the_launch_and_takes_the_request_tools(self):
+        launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)
+
+        args = launch.resolve_request_args(
+            {"chat_template_kwargs": {"enable_thinking": True}, "tools": self.TOOLS}, turn_args=None
+        )
+
+        assert args == {"chat_template_kwargs": {"enable_thinking": True}, "tools": self.TOOLS}
+
+    def test_request_without_kwargs_or_tools_renders_like_the_launch(self):
+        launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)
+        assert launch.resolve_request_args({"messages": []}, turn_args=None) == {
+            "messages": [],
+            "chat_template_kwargs": self.LAUNCH,
+            "tools": None,
+        }
+        assert launch.resolve_request_args({"chat_template_kwargs": None, "tools": []}, turn_args=None) == {
+            "chat_template_kwargs": self.LAUNCH,
+            "tools": None,
+        }
+
+    def test_continued_turn_inherits_omitted_kwargs_and_request_overrides_history(self):
+        launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)
+        recorded = {"chat_template_kwargs": {"enable_thinking": True}}
+
+        assert launch.resolve_request_args({}, turn_args=recorded) == {**recorded, "tools": None}
+        same = launch.resolve_request_args({"chat_template_kwargs": {"enable_thinking": True}}, turn_args=recorded)
+        assert same == {**recorded, "tools": None}
+        assert launch.resolve_request_args(
+            {"chat_template_kwargs": {"enable_thinking": False}}, turn_args=recorded
+        ) == {"chat_template_kwargs": {"enable_thinking": False}, "tools": None}
+        assert recorded == {"chat_template_kwargs": {"enable_thinking": True}}
+
+    def test_empty_history_keeps_defaults_but_does_not_allow_new_tools(self):
+        launch = TITOTokenizer(MagicMock(), chat_template_kwargs=self.LAUNCH)
+        assert launch.resolve_request_args({}, turn_args={}) == {"chat_template_kwargs": self.LAUNCH, "tools": None}
+        assert launch.resolve_request_args({"tools": self.TOOLS}, turn_args=None)["tools"] == self.TOOLS
+        with pytest.raises(ValueError, match="tools changed"):
+            launch.resolve_request_args({"tools": self.TOOLS}, turn_args={})
+
+    def test_continued_turn_tools_inherit_pass_or_are_refused(self):
+        launch = TITOTokenizer(MagicMock())
+        recorded = {"tools": self.TOOLS}
+
+        assert launch.resolve_request_args({}, turn_args=recorded) == {"chat_template_kwargs": {}, "tools": self.TOOLS}
+        bare = [tool["function"] for tool in self.TOOLS]  # the same tools in the other accepted spelling
+        assert launch.resolve_request_args({"tools": bare}, turn_args=recorded) == {
+            "chat_template_kwargs": {},
+            "tools": bare,
+        }
+        with pytest.raises(ValueError, match="tools changed on a continued turn"):
+            launch.resolve_request_args({"tools": self.OTHER_TOOLS}, turn_args=recorded)
+        with pytest.raises(ValueError, match="tools changed on a continued turn"):
+            launch.resolve_request_args({"tools": self.TOOLS}, turn_args={})  # the turn had none
+
+    def test_a_family_may_allow_tools_to_change_mid_session(self):
+        class _ToolsAtTheTailTITOTokenizer(TITOTokenizer):
+            def resolve_tools(self, request_args, *, request_source, turn_args):
+                tools = request_source.get("tools") or (turn_args or {}).get("tools")
+                if tools:
+                    request_args["tools"] = deepcopy(tools)
+
+        family = _ToolsAtTheTailTITOTokenizer(MagicMock())
+        args = family.resolve_request_args({"tools": self.OTHER_TOOLS}, turn_args={"tools": self.TOOLS})
+        assert args == {"chat_template_kwargs": {}, "tools": self.OTHER_TOOLS}
+
+    def test_family_constants_override_requested_values(self, qwen3_tito: Qwen3TITOTokenizer):
+        args = qwen3_tito.resolve_request_args({"chat_template_kwargs": {"enable_thinking": True}}, turn_args=None)
+        assert args == {"chat_template_kwargs": {"clear_thinking": False, "enable_thinking": True}, "tools": None}
+        assert qwen3_tito.resolve_request_args({"chat_template_kwargs": {"clear_thinking": True}}, turn_args=None) == {
+            "chat_template_kwargs": {"clear_thinking": False},
+            "tools": None,
+        }
+
+    @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
+    def test_deepseek_thinking_rule_uses_resolved_kwargs(self, tito_cls):
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        model = tito_cls(tokenizer, chat_template_kwargs={"thinking": False})
+        request_args = {
+            "chat_template_kwargs": {"thinking_mode": "thinking", "custom_option": "resolved"},
+            "temperature": 0.7,
+        }
+
+        model.resolve_thinking(
+            request_args,
+            request_source={"chat_template_kwargs": {"enable_thinking": False}},
+            turn_args={"chat_template_kwargs": {"thinking": False}},
+        )
+
+        assert request_args == {
+            "chat_template_kwargs": {"thinking": True, "custom_option": "resolved"},
+            "temperature": 0.7,
+        }
+
+    @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
+    def test_deepseek_recorded_mode_overrides_request_aliases(self, tito_cls):
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        launch = tito_cls(tokenizer, chat_template_kwargs={"enable_thinking": False})
+        assert launch.chat_template_kwargs == {"drop_thinking": False, "thinking": False}
+
+        recorded = launch.resolve_request_args({"chat_template_kwargs": {"thinking": True}}, turn_args=None)
+        assert recorded == {"chat_template_kwargs": {"drop_thinking": False, "thinking": True}, "tools": None}
+        same = launch.resolve_request_args({"chat_template_kwargs": {"enable_thinking": True}}, turn_args=recorded)
+        assert same == recorded
+        assert (
+            launch.resolve_request_args({"chat_template_kwargs": {"thinking_mode": "chat"}}, turn_args=recorded)
+            == recorded
+        )
+
+    def test_returns_the_same_full_request_without_inheriting_sampling_fields(self):
+        launch = TITOTokenizer(MagicMock())
+        turn_args = {"temperature": 0.2, "seed": 42, "chat_template_kwargs": {"enable_thinking": True}}
+        request_args = {"temperature": 0.8, "model": "m"}
+        result = launch.resolve_request_args(request_args, turn_args=turn_args)
+        assert result is request_args
+        assert result == {
+            "temperature": 0.8,
+            "model": "m",
+            "chat_template_kwargs": {"enable_thinking": True},
+            "tools": None,
+        }
+        assert turn_args["temperature"] == 0.2
+
+    def test_inherited_nested_values_are_owned_by_the_working_request(self):
+        launch = TITOTokenizer(MagicMock(), chat_template_kwargs={"options": {"labels": ["launch"]}})
+        request_args = launch.resolve_request_args({}, turn_args=None)
+        request_args["chat_template_kwargs"]["options"]["labels"].append("request")
+        assert launch.chat_template_kwargs == {"options": {"labels": ["launch"]}}
+
+        turn_args = {"chat_template_kwargs": {"options": {"labels": ["turn"]}}, "tools": self.TOOLS}
+        request_args = launch.resolve_request_args({}, turn_args=turn_args)
+        request_args["chat_template_kwargs"]["options"]["labels"].append("next")
+        request_args["tools"][0]["function"]["name"] = "changed"
+        assert turn_args["chat_template_kwargs"] == {"options": {"labels": ["turn"]}}
+        assert turn_args["tools"][0]["function"]["name"] == "get_weather"
+
+    def test_appended_rules_receive_original_sources_and_can_change_full_request(self):
+        class Model(TITOTokenizer):
+            def request_arg_rules(self):
+                rules = super().request_arg_rules()
+                rules.append(self.resolve_custom_args)
+                return rules
+
+            def resolve_custom_args(self, request_args, *, request_source, turn_args):
+                if "temperature" not in request_source:
+                    return
+                assert request_source["chat_template_kwargs"] == {"choice": "request"}
+                assert request_args["chat_template_kwargs"] == {"choice": "request", "from_launch": True}
+                request_args["temperature"] = 0.25
+                request_args["tool_choice"] = "auto"
+                request_args["tools"][0]["function"]["name"] = "rewritten"
+                request_args["chat_template_kwargs"]["choice"] = "model"
+                assert request_source["tools"][0]["function"]["name"] == "get_weather"
+
+        launch = {"choice": "launch", "from_launch": True}
+        model = Model(MagicMock(), chat_template_kwargs=launch)
+        original = {"temperature": 0.8, "tools": self.TOOLS, "chat_template_kwargs": {"choice": "request"}}
+        request_args = deepcopy(original)
+        assert model.resolve_request_args(request_args, turn_args=None) is request_args
+        assert request_args["temperature"] == 0.25
+        assert request_args["tool_choice"] == "auto"
+        assert request_args["tools"][0]["function"]["name"] == "rewritten"
+        assert request_args["chat_template_kwargs"]["choice"] == "model"
+        assert launch == {"choice": "launch", "from_launch": True}
+        assert len(TITOTokenizer(MagicMock()).request_arg_rules()) == 4
+        assert len(model.request_arg_rules()) == 5
+
+    @pytest.mark.parametrize("recorded_present", [True, False], ids=["recorded-value", "recorded-absence"])
+    @pytest.mark.parametrize(
+        "tito_cls, key, recorded_value, requested_value",
+        [
+            (Qwen35TITOTokenizer, "add_vision_id", True, False),
+            (Qwen36TITOTokenizer, "add_vision_id", True, False),
+            (Qwen38SmallTITOTokenizer, "add_vision_id", True, False),
+            (Qwen38SmallTITOTokenizer, "enable_thinking", True, False),
+            (Qwen38SmallTITOTokenizer, "reasoning_effort", "low", "medium"),
+            (GLM53TITOTokenizer, "reasoning_effort", "max", "low"),
+            (Nemotron3TITOTokenizer, "low_effort", True, False),
+            (Kimi25TITOTokenizer, "thinking", True, False),
+            (Kimi25TITOTokenizer, "tools_ts_str", "old declaration", "new declaration"),
+            (Kimi26TITOTokenizer, "tools_ts_str", "old declaration", "new declaration"),
+            (DeepSeekV32TITOTokenizer, "add_default_bos_token", True, False),
+            (DeepSeekV32TITOTokenizer, "context", [{"role": "system", "content": "old"}], []),
+            (DeepSeekV4TITOTokenizer, "reasoning_effort", "max", "high"),
+            (DeepSeekV4TITOTokenizer, "add_default_bos_token", True, False),
+            (DeepSeekV4TITOTokenizer, "context", [{"role": "system", "content": "old"}], []),
+            (InklingTITOTokenizer, "reasoning_effort", "high", "low"),
+        ],
+    )
+    def test_model_rules_keep_fields_that_affect_the_reused_prefix(
+        self, tito_cls, key, recorded_value, requested_value, recorded_present
+    ):
+        tokenizer = MagicMock()
+        tokenizer.encode.return_value = [1]
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        model = tito_cls(tokenizer, chat_template_kwargs={key: requested_value})
+        launch = deepcopy(model.chat_template_kwargs)
+        turn_kwargs = deepcopy(launch)
+        turn_kwargs.pop(key, None)
+        if recorded_present:
+            turn_kwargs[key] = deepcopy(recorded_value)
+        turn_args = {"chat_template_kwargs": turn_kwargs}
+        original_turn = deepcopy(turn_args)
+        request_args = {"chat_template_kwargs": {key: requested_value, "custom_option": "new"}}
+
+        result = model.resolve_request_args(request_args, turn_args=turn_args)
+
+        assert result is request_args
+        if recorded_present:
+            assert result["chat_template_kwargs"][key] == recorded_value
+            if key == "context":
+                result["chat_template_kwargs"][key][0]["content"] = "changed"
+        else:
+            assert key not in result["chat_template_kwargs"]
+        assert result["chat_template_kwargs"]["custom_option"] == "new"
+        assert turn_args == original_turn
+        assert model.chat_template_kwargs == launch
+
+    @pytest.mark.parametrize(
+        "tito_cls, key, old_value, new_value, content",
+        [
+            (InklingTITOTokenizer, "reasoning_effort", "high", "low", "hello"),
+            (Qwen38SmallTITOTokenizer, "enable_thinking", True, False, "hello"),
+            (Qwen38SmallTITOTokenizer, "reasoning_effort", "low", "medium", "hello"),
+            (
+                Qwen35TITOTokenizer,
+                "add_vision_id",
+                True,
+                False,
+                [{"type": "image", "image": "image"}, {"type": "text", "text": "describe"}],
+            ),
+        ],
+    )
+    def test_model_rules_preserve_rendered_prefix_when_request_changes_a_locked_field(
+        self, tito_cls, key, old_value, new_value, content
+    ):
+        tokenizer = MagicMock()
+        tokenizer.encode.return_value = [1]
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        model = tito_cls(tokenizer)
+        turn_args = model.resolve_request_args({"chat_template_kwargs": {key: old_value}}, turn_args=None)
+        requested = {"chat_template_kwargs": {key: new_value}}
+        resolved = model.resolve_request_args(requested, turn_args=turn_args)
+        template_text = (TEMPLATE_DIR / model.FIXED_TEMPLATE.template).read_text()
+        messages = [{"role": "user", "content": content}]
+        old_kwargs = extract_template_args(turn_args)
+        old_render = apply_chat_template_from_str(template_text, messages, add_generation_prompt=False, **old_kwargs)
+        changed_render = apply_chat_template_from_str(
+            template_text, messages, add_generation_prompt=False, **{**old_kwargs, key: new_value}
+        )
+        assert changed_render != old_render
+        assert (
+            apply_chat_template_from_str(
+                template_text, messages, add_generation_prompt=False, **extract_template_args(resolved)
+            )
+            == old_render
+        )
+
+    @pytest.mark.parametrize(
+        "launch_kwargs, request_kwargs, expected_effort",
+        [
+            ({}, {}, None),
+            ({"reasoning_effort": "low"}, {}, "low"),
+            ({"reasoning_effort": "low"}, {"reasoning_effort": "medium"}, "medium"),
+            ({"reasoning_effort": "medium"}, {"reasoning_effort": "low"}, "low"),
+            ({"reasoning_effort": "low"}, {"reasoning_effort": "xhigh"}, "xhigh"),
+        ],
+    )
+    def test_qwen38_new_root_selects_effort(self, launch_kwargs, request_kwargs, expected_effort):
+        tokenizer = MagicMock()
+        tokenizer.encode.return_value = [1]
+        model = Qwen38SmallTITOTokenizer(tokenizer, chat_template_kwargs=launch_kwargs)
+        result = model.resolve_request_args(
+            {"chat_template_kwargs": {**request_kwargs, "preserve_thinking": False}}, turn_args=None
+        )
+        expected = {"preserve_thinking": True}
+        if expected_effort is not None:
+            expected["reasoning_effort"] = expected_effort
+        assert result["chat_template_kwargs"] == expected
+
+    @pytest.mark.parametrize("turn_args", [None, {}, {"chat_template_kwargs": {"reasoning_effort": "low"}}])
+    def test_qwen38_effort_follows_history(self, turn_args):
+        tokenizer = MagicMock()
+        tokenizer.encode.return_value = [1]
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        model = Qwen38SmallTITOTokenizer(tokenizer, chat_template_kwargs={"reasoning_effort": "xhigh"})
+        original_turn = deepcopy(turn_args)
+        request_args = {"chat_template_kwargs": {"reasoning_effort": "medium"}}
+
+        assert model.resolve_request_args(request_args, turn_args=turn_args) is request_args
+
+        kwargs = request_args["chat_template_kwargs"]
+        if turn_args is None:
+            assert kwargs["reasoning_effort"] == "medium"
+        elif turn_args:
+            assert kwargs["reasoning_effort"] == "low"
+        else:
+            assert "reasoning_effort" not in kwargs
+        assert turn_args == original_turn
+
+    def test_qwen38_omitted_effort_uses_template_default(self):
+        tokenizer = MagicMock()
+        tokenizer.encode.return_value = [1]
+        model = Qwen38SmallTITOTokenizer(tokenizer)
+        result = model.resolve_request_args({}, turn_args=None)
+        kwargs = extract_template_args(result)
+        assert "reasoning_effort" not in kwargs
+        template_text = (TEMPLATE_DIR / model.FIXED_TEMPLATE.template).read_text()
+        messages = [{"role": "user", "content": "hello"}]
+        rendered = apply_chat_template_from_str(template_text, messages, add_generation_prompt=True, **kwargs)
+        assert rendered == apply_chat_template_from_str(
+            template_text, messages, add_generation_prompt=True, **{**kwargs, "reasoning_effort": "xhigh"}
+        )
 
 
 class TestCompletionPostprocess:
@@ -548,53 +914,87 @@ class TestMergeTokensBoundary:
 
     def test_qwen3_inserts_newline_after_im_end(self, qwen3_tito: Qwen3TITOTokenizer):
         """Model stops at <|im_end|> without trailing \\n; merge_tokens inserts it."""
-        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
         im_end = qwen3_tito._im_end_id
         nl = qwen3_tito._newline_id
 
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, im_end], _BND_TOOLS)
+        result = qwen3_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [100, 200, im_end], template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == [100, 200, im_end, nl] + incremental
 
     def test_qwen3_no_newline_otherwise(self, qwen3_tito: Qwen3TITOTokenizer):
         """No insertion when prefix does not end with <|im_end|>."""
-        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
+        result = qwen3_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [100, 200, 300], template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == [100, 200, 300] + incremental
 
     # -- GLM47: strip ambiguous boundary tokens --
 
     def test_glm47_strips_observation(self, glm47_tito: GLM47TITOTokenizer):
         """Model emits <|observation|> as stop token; merge_tokens strips the duplicate."""
-        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._observation_id], _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=glm47_tito.default_template_args(_BND_TOOLS)
+        )
+        result = glm47_tito.merge_tokens(
+            _BND_OLD,
+            _BND_NEW,
+            [100, 200, glm47_tito._observation_id],
+            template_args=glm47_tito.default_template_args(_BND_TOOLS),
+        )
         assert result == [100, 200] + incremental
 
     def test_glm47_strips_user(self, glm47_tito: GLM47TITOTokenizer):
         """<|user|> is also an ambiguous boundary — stripped the same way."""
-        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._user_id], _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=glm47_tito.default_template_args(_BND_TOOLS)
+        )
+        result = glm47_tito.merge_tokens(
+            _BND_OLD,
+            _BND_NEW,
+            [100, 200, glm47_tito._user_id],
+            template_args=glm47_tito.default_template_args(_BND_TOOLS),
+        )
         assert result == [100, 200] + incremental
 
     def test_glm47_no_strip_otherwise(self, glm47_tito: GLM47TITOTokenizer):
         """Non-boundary trailing token is preserved."""
-        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=glm47_tito.default_template_args(_BND_TOOLS)
+        )
+        result = glm47_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [100, 200, 300], template_args=glm47_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == [100, 200, 300] + incremental
 
     # -- Default: no boundary handling --
 
     def test_default_concatenates(self, default_tito: TITOTokenizer):
         """Base class does plain concatenation without any prefix modification."""
-        incremental = default_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = default_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        incremental = default_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=default_tito.default_template_args(_BND_TOOLS)
+        )
+        result = default_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [100, 200, 300], template_args=default_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == [100, 200, 300] + incremental
 
     # -- Edge case --
 
     def test_empty_prefix(self, qwen3_tito: Qwen3TITOTokenizer):
         """Empty prefix → no boundary handling, result is just incremental."""
-        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [], _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(
+            _BND_OLD, _BND_NEW, template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
+        result = qwen3_tito.merge_tokens(
+            _BND_OLD, _BND_NEW, [], template_args=qwen3_tito.default_template_args(_BND_TOOLS)
+        )
         assert result == incremental
 
 
@@ -621,7 +1021,9 @@ class TestTokenizeAdditional:
         TITO splits against every model tokenizer.
         """
         old_msgs, new_msgs, tools = _split_at(traj_cls, pos)
-        incremental = tito.tokenize_additional_messages(old_msgs, new_msgs, tools)
+        incremental = tito.tokenize_additional_messages(
+            old_msgs, new_msgs, template_args=tito.default_template_args(tools)
+        )
         assert len(incremental) > 0
 
     def test_complete_appendix_reaches_renderer_and_its_error_propagates(
@@ -635,8 +1037,8 @@ class TestTokenizeAdditional:
         ]
         calls = []
 
-        def reject_invalid_order(base_messages, appended_messages, *, tools=None, add_generation_prompt=False):
-            calls.append((base_messages, appended_messages, tools, add_generation_prompt))
+        def reject_invalid_order(base_messages, appended_messages, *, template_args=None, add_generation_prompt=False):
+            calls.append((base_messages, appended_messages, template_args, add_generation_prompt))
             if [message["role"] for message in appended_messages] == ["tool", "user", "tool"]:
                 raise ValueError("invalid tool ordering")
             return [1]
@@ -647,15 +1049,15 @@ class TestTokenizeAdditional:
             qwen3_tito.tokenize_additional_messages(
                 old_msgs,
                 old_msgs + appended,
-                SingleToolTrajectory.TOOLS,
+                template_args=qwen3_tito.default_template_args(SingleToolTrajectory.TOOLS),
             )
 
         assert len(calls) == 1
-        base_messages, rendered_appendix, tools, add_generation_prompt = calls[0]
+        base_messages, rendered_appendix, template_args, add_generation_prompt = calls[0]
         assert [message["role"] for message in base_messages] == ["system", "assistant"]
         assert base_messages[-1]["tool_calls"] == old_msgs[-1]["tool_calls"]
         assert rendered_appendix == appended
-        assert tools == SingleToolTrajectory.TOOLS
+        assert template_args == qwen3_tito.default_template_args(SingleToolTrajectory.TOOLS)
         assert add_generation_prompt is True
 
     def test_generation_prompt_is_appended_once_for_full_suffix(self, qwen3_tito: Qwen3TITOTokenizer):
@@ -666,12 +1068,16 @@ class TestTokenizeAdditional:
         ]
         tools = SingleToolThinkingTrajectory.TOOLS
 
-        incremental = qwen3_tito.tokenize_additional_messages(old_msgs, new_msgs, tools)
+        incremental = qwen3_tito.tokenize_additional_messages(
+            old_msgs, new_msgs, template_args=qwen3_tito.default_template_args(tools)
+        )
         decoded = qwen3_tito.tokenizer.decode(incremental)
         assert decoded.count(qwen3_tito._assistant_start_str) == 1
         assert decoded.endswith(
             qwen3_tito.tokenizer.decode(
-                qwen3_tito._tokenize_rendered_suffix(new_msgs, [], tools=tools, add_generation_prompt=True)
+                qwen3_tito._tokenize_rendered_suffix(
+                    new_msgs, [], template_args=qwen3_tito.default_template_args(tools), add_generation_prompt=True
+                )
             )
         )
 
@@ -702,7 +1108,9 @@ class TestTokenizeAdditional:
             add_generation_prompt=False,
             tools=tools,
         )
-        merged = qwen3_tito.merge_tokens(old_msgs, new_msgs, pretokenized, tools)
+        merged = qwen3_tito.merge_tokens(
+            old_msgs, new_msgs, pretokenized, template_args=qwen3_tito.default_template_args(tools)
+        )
         expected = apply_chat_template(
             new_msgs,
             tokenizer=qwen3_tito.tokenizer,

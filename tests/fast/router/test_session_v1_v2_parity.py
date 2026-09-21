@@ -1,14 +1,23 @@
+import uuid
+from copy import deepcopy
+
 import pytest
 from tests.session_parity_utils import (
     SESSION_PARITY_SEED,
     V1,
     V2,
+    _training_metadata_projection,
     assert_agentic_retry_trajectory_parity,
     assert_sample_bitwise_equal,
     run_agentic_retry_trajectories,
 )
 
-from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
+from miles.utils.test_utils.mock_sglang_server import (
+    MockSGLangServer,
+    ProcessResult,
+    ProcessResultMetaInfo,
+    with_mock_server,
+)
 from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     FORCE_FINAL_TEXT,
@@ -57,7 +66,20 @@ _AGENT_RESPONSES = {
 _SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w3", "w4", "w7", "w8"]
 
 
-def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise():
+@pytest.mark.parametrize("random_tool_ids", [False, True])
+def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise(random_tool_ids, monkeypatch):
+    if random_tool_ids:
+        original = MockSGLangServer._compute_chat_completions_response
+
+        def response_with_random_tool_ids(self, payload):
+            response = original(self, payload)
+            for choice in response["choices"]:
+                for call in choice["message"].get("tool_calls") or []:
+                    call["id"] = f"call_{uuid.uuid4().hex}"
+            return response
+
+        monkeypatch.setattr(MockSGLangServer, "_compute_chat_completions_response", response_with_random_tool_ids)
+
     v1_runs = _run_scripted_agents(V1)
     v2_runs = _run_scripted_agents(V2)
 
@@ -78,6 +100,33 @@ def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise():
 def test_sample_bitwise_comparator_distinguishes_signed_zero():
     with pytest.raises(AssertionError, match="sample.reward is not bitwise equal"):
         assert_sample_bitwise_equal(Sample(reward=0.0), Sample(reward=-0.0))
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("tools", 0, "function", "name"), "get_time"),
+        (("chat_template_kwargs", "enable_thinking"), True),
+        (("temperature",), 1),
+    ],
+)
+def test_turn_args_parity_checks_exported_request_values(path, value):
+    metadata = {
+        "turn_args": {
+            "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+            "chat_template_kwargs": {"enable_thinking": False},
+            "temperature": 0,
+        }
+    }
+    changed = deepcopy(metadata)
+    target = changed["turn_args"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    with pytest.raises(AssertionError):
+        assert_sample_bitwise_equal(
+            Sample(metadata=metadata), Sample(metadata=changed), metadata_projection=_training_metadata_projection
+        )
 
 
 def _run_scripted_agents(version: str):

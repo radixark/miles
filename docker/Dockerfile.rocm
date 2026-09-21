@@ -7,7 +7,7 @@
 #
 # 2. rocm10-mi35x   (gfx950, ROCm 10 / MI350 / MI355X, Python 3.12 base)
 #    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.18-rocm10-mi35x-20260831
-#                WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18  TE_USE_WHEEL=1   (cp312 shelf)
+#                WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1  NVRX_INSTALL=1   (cp312 shelf)
 
 ARG SGLANG_IMAGE_REPO=rocm/sgl-dev
 ARG SGLANG_IMAGE_TAG=v0.5.16-rocm720-mi35x-20260730

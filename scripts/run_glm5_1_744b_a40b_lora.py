@@ -248,9 +248,9 @@ def _train(args: ScriptArgs):
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
             f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
             "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
-            f"--sglang-attention-backend nsa --sglang-nsa-decode-backend {_decode} "
-            f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
-            f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
+            f"--sglang-attention-backend nsa --sglang-dsa-decode-backend {_decode} "
+            f"--sglang-dsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
+            f"--sglang-cuda-graph-max-bs-decode {_cg} --sglang-max-running-requests 512 "
             f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
             "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
             # required: without it sglang miscounts the gate_up slices -> engine-init crash
@@ -258,7 +258,7 @@ def _train(args: ScriptArgs):
             f"--sglang-lora-backend {args.sglang_lora_backend} "
         )
     else:
-        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
+        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs-decode 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
 
     save_args = f"--save-interval 1 --save {load_save_path} "
 

@@ -79,12 +79,16 @@ def test_unknown_provider_passes_through_with_a_notice(monkeypatch, capsys):
 def test_env_kwargs_and_server_knobs_are_forwarded_when_set(monkeypatch):
     monkeypatch.setenv("E2B_API_KEY", "e2b_x")  # worker-env key supply
     monkeypatch.setenv("HARBOR_RESPONSE_LENGTH_POLICY", "abort")
+    monkeypatch.setenv("HARBOR_OVERRIDE_CPUS", "2")
+    monkeypatch.setenv("HARBOR_CPU_ENFORCEMENT_POLICY", "request")
     monkeypatch.delenv("HARBOR_MAX_SEQ_LEN", raising=False)
 
     env = launch_common.harbor_env_vars(_args(harbor_env_kwargs='{"auto_snapshot": true}'))
 
     assert env["HARBOR_ENV_KWARGS"] == '{"auto_snapshot": true}'
     assert env["HARBOR_RESPONSE_LENGTH_POLICY"] == "abort"
+    assert env["HARBOR_OVERRIDE_CPUS"] == "2"
+    assert env["HARBOR_CPU_ENFORCEMENT_POLICY"] == "request"
     assert "HARBOR_MAX_SEQ_LEN" not in env
 
 

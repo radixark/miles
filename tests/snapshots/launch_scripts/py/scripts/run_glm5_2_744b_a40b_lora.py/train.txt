@@ -115,10 +115,10 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-moe-dense-tp-size 1
   --sglang-enable-dp-lm-head
   --sglang-attention-backend nsa
-  --sglang-nsa-decode-backend flashmla_sparse
-  --sglang-nsa-prefill-backend flashmla_sparse
+  --sglang-dsa-decode-backend flashmla_sparse
+  --sglang-dsa-prefill-backend flashmla_sparse
   --sglang-page-size 64
-  --sglang-cuda-graph-max-bs 64
+  --sglang-cuda-graph-max-bs-decode 64
   --sglang-max-running-requests 512
   --sglang-chunked-prefill-size 4096
   --sglang-watchdog-timeout 3600

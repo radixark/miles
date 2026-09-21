@@ -92,6 +92,9 @@ class TrainerController:
     def _cells(self) -> list[TrainerCell]:
         return sorted(self._cells_by_id.values(), key=lambda cell: cell.cell_index)
 
+    def has_errored_cell(self) -> bool:
+        return any(cell.is_errored for cell in self._cells)
+
     @property
     def cell_ids(self) -> list[str]:
         return [cell.cell_id for cell in self._cells]
@@ -388,8 +391,39 @@ class TrainerController:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("offload_grad_buffer")
 
-    async def reconcile_adapters(self) -> None:
-        await asyncio.gather(*[cell.execute("reconcile_adapters") for cell in self._cells])
+    # ------------------------ API :: multi-LoRA slot commands ------------------------
+
+    async def _execute_slots(self, fn_name: str, **kwargs) -> list:
+        (cell,) = self._cells
+        assert cell.is_alive, "the Tinker trainer cell is unavailable"
+        return await cell.execute(fn_name, **kwargs)
+
+    async def forward_backward(self, batch_id: int, data_ref) -> list:
+        return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
+
+    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> list:
+        return await self._execute_slots("optim_step", adam_params_by_slot=adam_params_by_slot)
+
+    async def forward_only(self, batch_id: int, data_ref) -> list:
+        return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
+
+    async def load_slot(
+        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+    ) -> list:
+        return await self._execute_slots(
+            "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
+        )
+
+    async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> list:
+        return await self._execute_slots("save_slot", slot=slot, path=path, metadata=metadata)
+
+    async def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> list:
+        return await self._execute_slots(
+            "export_slot", slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata
+        )
+
+    async def unload_slot(self, slot: int) -> list:
+        return await self._execute_slots("unload_slot", slot=slot)
 
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])

@@ -50,6 +50,20 @@ def test_the_built_config_is_a_valid_trial_config(tasks_dir, agent_name):
     assert cfg.environment.type == EnvironmentType.E2B
 
 
+def test_resource_enforcement_policy_uses_harbor_model(tasks_dir, monkeypatch):
+    monkeypatch.setenv("HARBOR_CPU_ENFORCEMENT_POLICY", "request")
+    monkeypatch.setenv("HARBOR_MEMORY_ENFORCEMENT_POLICY", "limit")
+
+    cfg = haf.build_trial_config(
+        {"instance_id": "task-1", "agent_name": "mini-swe-agent"},
+        "http://trainer:30000/sessions/s1/v1",
+        {},
+    )
+
+    assert cfg.environment.cpu_enforcement_policy.value == "request"
+    assert cfg.environment.memory_enforcement_policy.value == "limit"
+
+
 def test_the_trial_entrypoints_exist():
     assert callable(Trial.create) and callable(Trial.run)
 

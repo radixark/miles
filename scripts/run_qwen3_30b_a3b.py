@@ -308,7 +308,7 @@ matchers:
             sglang_args = (
                 f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 1 if args.rollout_int4 else 8} "
                 "--sglang-mem-fraction-static 0.7 "
-                "--sglang-cuda-graph-max-bs 512 "
+                "--sglang-cuda-graph-max-bs-decode 512 "
             )
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
@@ -337,7 +337,7 @@ matchers:
                     "--sglang-moe-a2a-backend deepep "
                     f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
                 )
             elif args.rollout_mxfp8:
                 sglang_world_size = 1
@@ -353,7 +353,7 @@ matchers:
                     # "--sglang-moe-a2a-backend deepep "
                     f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
                 )
             elif args.rollout_nvfp4:
                 sglang_world_size = 2
@@ -363,7 +363,7 @@ matchers:
                     "--sglang-moe-runner-backend flashinfer_trtllm_routed "
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-ep-size {sglang_world_size} "
-                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
                     "--sglang-kv-cache-dtype bf16 "
                 )
                 misc_env_vars |= {
@@ -377,7 +377,7 @@ matchers:
                     if "NVTE" in key or "FLASHINFER" in key or key == "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH"
                 }
             else:
-                sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs 512 "
+                sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs-decode 512 "
         case _:
             raise NotImplementedError
 

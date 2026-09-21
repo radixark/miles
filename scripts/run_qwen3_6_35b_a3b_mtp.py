@@ -158,14 +158,14 @@ def execute(args: ScriptArgs):
         f"--rollout-num-gpus-per-engine {args.num_gpus_per_node} "
         "--sglang-mem-fraction-static 0.7 "
         f"--sglang-ep-size {sglang_ep} "
-        "--sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 "
+        "--sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 "
         # mtp speculative decoding
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
         "--sglang-speculative-eagle-topk 1 "
         "--sglang-speculative-num-draft-tokens 3 "
         "--sglang-max-running-requests 256 "
-        "--sglang-mamba-scheduler-strategy extra_buffer "
+        "--sglang-mamba-radix-cache-strategy extra_buffer "
     )
 
     mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "

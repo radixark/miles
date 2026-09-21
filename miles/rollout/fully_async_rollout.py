@@ -18,6 +18,7 @@ rollout engines, pausing producer submissions for the duration of the
 
 import asyncio
 import logging
+from dataclasses import replace
 
 from miles.rollout.base_types import (
     BaseRolloutFn,
@@ -111,11 +112,11 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             return max(1, x // self.args.n_samples_per_prompt)
         return self.args.rollout_batch_size
 
-    def _submit_one_group(self) -> asyncio.Task:
+    def _submit_one_group(self) -> tuple[asyncio.Task, list[Sample]]:
         samples = self.data_source.get_samples(1)
         self._scheduler.on_submit(samples)
         [prompt_group] = samples
-        return asyncio.create_task(self._generate_group(prompt_group))
+        return asyncio.create_task(self._generate_group(prompt_group)), prompt_group
 
     async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         result = await generate_and_rm_group(
@@ -127,15 +128,30 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         )
         return DataBufferInput(prompt_group=prompt_group, group=result)
 
-    async def _worker_loop(self):
-        active: set[asyncio.Task] = set()
+    async def _worker_loop(self) -> None:
+        active: dict[asyncio.Task, list[Sample]] = {}
         while True:
             await self._producer_resumed.wait()
             while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
-                active.add(self._submit_one_group())
-            done, active = await self._scheduler.wait_for_progress(active)
+                task, prompt_group = self._submit_one_group()
+                active[task] = prompt_group
+            done, _ = await self._scheduler.wait_for_progress(set(active))
             for task in done:
-                await self._output.put(task.result())
+                entry = self._collect_group_result(task, active.pop(task))
+                await self._output.put(entry)
+
+    def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
+        if not task.cancelled():
+            return task.result()
+
+        logger.warning(
+            "Rollout group was cancelled; marking samples aborted: indices=%s",
+            [sample.index for sample in prompt_group],
+        )
+        return DataBufferInput(
+            prompt_group=prompt_group,
+            group=[replace(sample, status=Sample.Status.ABORTED) for sample in prompt_group],
+        )
 
     # -------------------------- consumer --------------------------
 

@@ -449,7 +449,9 @@ class TestDeepSeekV32TITOAlignWithSGLang:
             tokenizer_type=TITOTokenizerType.DEEPSEEKV32,
             chat_template_kwargs={"enable_thinking": thinking},
         )
-        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
+        actual = tito.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True, template_args=tito.default_template_args(self._TOOLS)
+        )
         assert actual == expected
 
     def test_absent_enable_thinking_defaults_to_thinking(self):
@@ -464,7 +466,9 @@ class TestDeepSeekV32TITOAlignWithSGLang:
             tokenizer_type=TITOTokenizerType.DEEPSEEKV32,
             chat_template_kwargs={},
         )
-        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
+        actual = tito.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True, template_args=tito.default_template_args(self._TOOLS)
+        )
         assert actual == expected
 
     @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
@@ -492,7 +496,9 @@ class TestDeepSeekV32TITOAlignWithSGLang:
             tokenizer_type=TITOTokenizerType.DEEPSEEKV32,
             chat_template_kwargs={"enable_thinking": thinking},
         )
-        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
+        actual = tito.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True, template_args=tito.default_template_args(self._TOOLS)
+        )
         assert actual == expected
 
 
@@ -526,7 +532,9 @@ class TestDeepSeekV4TITOAlignWithSGLang:
             chat_template_kwargs={"enable_thinking": thinking},
         )
 
-        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=tools, tokenize=True)
+        actual = tito.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True, template_args=tito.default_template_args(tools)
+        )
         assert actual == expected
 
     @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
@@ -573,7 +581,9 @@ class TestDeepSeekV4TITOAlignWithSGLang:
             chat_template_kwargs={"enable_thinking": thinking},
         )
 
-        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=tools, tokenize=True)
+        actual = tito.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True, template_args=tito.default_template_args(tools)
+        )
         assert actual == expected
 
 

@@ -355,6 +355,14 @@
      "blog/index",
      "subscribe"
     ]
+   },
+   {
+    "tab": "Hardware",
+    "pages": [
+     "hardware-platforms/overview",
+     "hardware-platforms/nvidia-gpus",
+     "hardware-platforms/amd-gpus"
+    ]
    }
   ]
  },
@@ -378,21 +386,6 @@
   {
    "source": "/developer/experimental-features",
    "destination": "/user-guide/training-backend#fsdp"
-  },
-  {
-   "source": "/platforms/index",
-   "destination": "/getting-started/installation",
-   "permanent": true
-  },
-  {
-   "source": "/platforms/nvidia",
-   "destination": "/getting-started/installation",
-   "permanent": true
-  },
-  {
-   "source": "/platforms/amd",
-   "destination": "/getting-started/installation",
-   "permanent": true
   },
   {
    "source": "/advanced/fp8-low-precision",

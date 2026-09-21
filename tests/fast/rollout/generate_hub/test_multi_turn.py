@@ -124,9 +124,17 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
         # Session server populates diagnostic metadata (token IDs,
-        # trim config, mismatch analysis, dashboard lifecycle timing) that
-        # varies with mock setup. Strip these before comparing structure.
-        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens", "lifecycle", "leaf"):
+        # trim config, mismatch analysis, dashboard lifecycle timing, the
+        # template kwargs the last turn recorded) that varies with mock setup.
+        # Strip these before comparing structure.
+        for key in (
+            "tito_session_mismatch",
+            "accumulated_token_ids",
+            "max_trim_tokens",
+            "lifecycle",
+            "leaf",
+            "turn_args",
+        ):
             actual_partial.metadata.pop(key, None)
         assert actual_partial == expected_item.partial_sample
 
@@ -162,6 +170,9 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "logprobs": True,
         "return_meta_info": True,
         "no_stop_trim": False,
+        # The R3 replay flags follow the launch flags and are always present.
+        "return_routed_experts": False,
+        "return_indexer_topk": False,
         "chat_template_kwargs": {"clear_thinking": False},
         **extra,
     }
@@ -557,15 +568,15 @@ class TestRoutedExpertsMultiTurn:
             )
             first_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_FIRST_TURN,
-                tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
+                template_args=tito.default_template_args(SAMPLE_TOOLS),
             )
             second_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
-                tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
+                template_args=tito.default_template_args(SAMPLE_TOOLS),
             )
         else:
             first_prompt_token_ids = S.FIRST_PROMPT_TOKEN_IDS

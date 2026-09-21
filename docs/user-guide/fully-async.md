@@ -156,6 +156,14 @@ both are decided on `put()`. Staleness depends on how long the group then sits i
 buffer, so it is decided on `get()`. Once the trainer has a full batch it sorts the
 groups by index and applies `--rollout-sample-filter-path` to the assembled batch.
 
+If a sample cancels itself (for example, a sandbox client raises `CancelledError`),
+its group is marked aborted after the sibling samples settle. The default buffer
+discards the entire group from training, counts it in
+`rollout/fully_async/aborted_groups_filtered`, and applies
+`--async-unused-samples-handler` to the original prompts. Other groups keep running.
+Cancelling the producer itself still propagates, and unexpected non-cancellation
+exceptions still fail the worker rather than being silently discarded.
+
 The buffer decouples the two loops. As long as it holds finished groups, the trainer
 never waits for generation. If it sits empty, rollout is still the bottleneck and async
 cannot hide it.

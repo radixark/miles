@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -724,11 +725,18 @@ class TestTitoFixedTemplateConfiguration:
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
 
     @pytest.mark.parametrize("family", ["qwen38small", "qwen4exp"])
-    def test_qwen38_families_resolve_default_template(self, family):
-        args = self._parse(["--use-session-server", "--tito-model", family])
+    @pytest.mark.parametrize("effort", [None, "low", "medium", "xhigh"])
+    def test_qwen38_families_resolve_default_template(self, family, effort):
+        extra = ["--use-session-server", "--tito-model", family]
+        if effort is not None:
+            extra += ["--apply-chat-template-kwargs", json.dumps({"reasoning_effort": effort})]
+        args = self._parse(extra)
         miles_validate_args(args)
         assert args.chat_template_path.endswith("/qwen3.8_small_and_flash_next_fixed.jinja")
-        assert args.apply_chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "xhigh"}
+        expected = {"preserve_thinking": True}
+        if effort is not None:
+            expected["reasoning_effort"] = effort
+        assert args.apply_chat_template_kwargs == expected
 
     def test_glm53_uses_native_template(self):
         args = self._parse(["--use-session-server", "--tito-model", "glm53"])
@@ -739,7 +747,7 @@ class TestTitoFixedTemplateConfiguration:
             "enable_thinking": True,
         }
 
-    def test_glm53_rejects_disabling_thinking(self):
+    def test_glm53_fixed_thinking_overrides_launch_value(self):
         args = self._parse(
             [
                 "--use-session-server",
@@ -749,8 +757,8 @@ class TestTitoFixedTemplateConfiguration:
                 '{"enable_thinking": false}',
             ]
         )
-        with pytest.raises(ValueError, match="enable_thinking=False conflicts"):
-            miles_validate_args(args)
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False, "enable_thinking": True}
 
     def test_named_family_rejects_custom_template(self):
         args = self._parse(
@@ -765,7 +773,7 @@ class TestTitoFixedTemplateConfiguration:
         with pytest.raises(ValueError, match="cannot override the template registered"):
             miles_validate_args(args)
 
-    def test_named_family_rejects_conflicting_registered_kwarg(self):
+    def test_named_family_fixed_kwargs_override_launch_values(self):
         args = self._parse(
             [
                 "--use-session-server",
@@ -775,8 +783,8 @@ class TestTitoFixedTemplateConfiguration:
                 '{"clear_thinking": true}',
             ]
         )
-        with pytest.raises(ValueError, match="clear_thinking=True conflicts"):
-            miles_validate_args(args)
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
     def test_named_family_accepts_same_registered_and_additional_kwargs(self):
         args = self._parse(
@@ -885,29 +893,6 @@ class TestMultiLoRAValidation:
         miles_validate_args(args)
 
         assert args.multi_lora is True
-
-    def test_defaults_rollout_fn_and_data_source_to_multi_lora(self):
-        args = self._parse([])
-
-        miles_validate_args(args)
-
-        assert args.rollout_function_path == "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-        assert args.data_source_path == "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
-        assert args.rollout_global_dataset is True
-
-    def test_keeps_user_supplied_rollout_fn_and_data_source(self):
-        args = self._parse(
-            ["--rollout-function-path", "my.custom.rollout_fn", "--data-source-path", "my.custom.DataSource"]
-        )
-
-        miles_validate_args(args)
-
-        assert args.rollout_function_path == "my.custom.rollout_fn"
-        assert args.data_source_path == "my.custom.DataSource"
-
-    def test_empty_wait_is_a_registered_argument(self):
-        assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
-        assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
 
     def test_rejects_non_adam_optimizer(self):
         # Per-slot optimizer isolation (state init, retirement cleanup, step

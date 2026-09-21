@@ -113,7 +113,7 @@ are themselves the cache key, so the first create for a task warms exactly
 what later creates hit.
 
 ```bash
-pip install modal
+pip install -e '<miles>[modal]'   # modal>=1.5.5
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
 OPENENV_SANDBOX_BACKEND=modal python run-openenv-tbench2.py
 ```
@@ -209,7 +209,7 @@ knobs — the ones shared by every backend (`<BACKEND>` is `DAYTONA`, `E2B`, or
 | Provider credential and endpoint variables (`*_API_KEY`, `*_API_KEY_FILE`, `E2B_API_URL`, `MODAL_*`, ...) | — | Read by the selected backend only; names, defaults and semantics are in [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md) |
 | `OPENENV_<BACKEND>_CREATE_CONCURRENCY` | `4` | Max in-flight creates. Size it to what the endpoint can host — one self-hosted AgentENV machine took 16; on Modal the ceiling above it is the plan's container concurrency |
 | `OPENENV_<BACKEND>_CREATE_MAX_RETRIES` | `8` | How many throttled creates to retry before giving up (the backoff curve itself is not tunable) |
-| `OPENENV_<BACKEND>_READY_TIMEOUT_S` | `300` | How long the env server has to answer /health after its sandbox exists |
+| `OPENENV_<BACKEND>_READY_TIMEOUT_S` | `300` | How long the env server has to become ready after its sandbox exists. Modal records a TCP readiness event first; every backend then verifies /health through the client-facing URL |
 | `OPENENV_E2B_SANDBOX_TTL_S` | `1800` | E2B sandbox TTL, re-armed by a keepalive thread while the creating process lives (Daytona's equivalent backstop is its own auto-stop/auto-delete, not a knob) |
 | `OPENENV_E2B_THROTTLE_PATTERNS` | — | Extra comma-separated lowercase substrings that count as retryable capacity errors. Exists for self-hosted AgentENV, which words "at capacity" however its operator deployed it |
 | `OPENENV_E2B_URL_SCHEME` | `https` | Scheme for the per-sandbox URL — set `http` for a plain-HTTP self-hosted AgentENV gateway |

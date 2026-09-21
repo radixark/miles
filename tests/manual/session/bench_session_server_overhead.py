@@ -155,12 +155,15 @@ def _completion_token_ids(
     assistant_message: dict[str, Any],
     tools: list[dict[str, Any]] | None,
 ):
-    prompt_text = tito_tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, tools=tools)
+    template_args = tito_tokenizer.default_template_args(tools)
+    prompt_text = tito_tokenizer.apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=False, template_args=template_args
+    )
     full_text = tito_tokenizer.apply_chat_template(
         messages + [assistant_message],
         add_generation_prompt=False,
         tokenize=False,
-        tools=tools,
+        template_args=template_args,
     )
     if not full_text.startswith(prompt_text):
         raise RuntimeError("assistant response does not extend the rendered prompt")
@@ -242,7 +245,7 @@ def _build_turn_specs(
             request_messages,
             add_generation_prompt=True,
             tokenize=True,
-            tools=tools,
+            template_args=tito_tokenizer.default_template_args(tools),
         )
         completion_token_ids = _completion_token_ids(
             tito_tokenizer, tokenizer, request_messages, assistant_message, tools
@@ -357,6 +360,7 @@ def _build_server_config(
         save_debug_trajectory_data=None,
         lora_rank=0,
         lora_adapter_path=None,
+        lora_train_only=False,
         timeout=600.0,
         backend_url=backend_url,
         host=ip,

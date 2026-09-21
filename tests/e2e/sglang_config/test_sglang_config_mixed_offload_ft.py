@@ -113,7 +113,7 @@ def execute():
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         f"--sglang-mem-fraction-static 0.7 "
-        "--sglang-cuda-graph-max-bs 32 "
+        "--sglang-cuda-graph-max-bs-decode 32 "
         f"--sglang-config {config_path} "
     )
 

@@ -8,7 +8,7 @@ Live site: https://miles.radixark.com/docs
 docs/
 ├── docs.json        # Mintlify config: navigation, theme, redirects
 ├── index.md         # Homepage
-├── getting-started/ models/ user-guide/ advanced/
+├── getting-started/ hardware-platforms/ models/ user-guide/ advanced/
 ├── examples/ blog/
 ├── developer/
 │   └── ci/

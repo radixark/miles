@@ -31,7 +31,7 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the SGLang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM at its branch default or caller-pinned commit, Miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`). `rocm720-mi35x` sets `APPLY_ROCR_VMMFIX=1` to install the rebuilt ROCr with the VMM-pause fix from its wheels release; ROCm 10 has the fix upstream. `rocm10-mi35x` uses its own cp312 wheels release (`rocm10-gfx950-v0.5.18`).
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). `rocm720-mi35x` sets `APPLY_ROCR_VMMFIX=1` to install the rebuilt ROCr with the VMM-pause fix from its wheels release; ROCm 10 has the fix upstream. `rocm10-mi35x` uses its own cp312 wheels release (`rocm10-gfx950-v0.5.18`) and sets `APEX_USE_PREBUILT=1` and `NVRX_INSTALL=1`.
 
 ## Build script
 
@@ -69,7 +69,7 @@ Dockerfile changes can be build-tested on the PR itself, before merge, by select
 
 So a rerun, or a push that touches only source files, reuses the image the PR already has instead of rebuilding an identical one. Non-docker PRs are untouched: no PR image, matrix on `dev`, as before.
 
-`docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds `pr-test-rocm.yml`, not the `cu13` image built here.
+`docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds the `rocm/sgl-dev` images, not the `cu13` image built here.
 
 To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label alongside a CUDA test request. The label does not select tests or make a PR whose build inputs match the base eligible. Once consumed by a build, it is removed so later runs can reuse the image.
 
@@ -120,7 +120,7 @@ All images push to **Docker Hub**. CUDA variants → `radixark/miles`; ROCm vari
 | --- | --- | --- |
 | `cu13` / `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` + `radixark/miles:dev-<YYYYMMDDHHMM>` | `radixark/miles:latest` |
 | `cu12-x86` | `radixark/miles:dev-cu12` (+ timestamped sibling) | `radixark/miles:latest-cu12` |
-| `rocm720-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi3xx` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm*-mi3xx` |
+| `rocm720-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm*-mi35x` |
 
 What **moves a shared tag**: `--image-tag dev` overwrites `:dev` (or `:dev-cu12`) and adds a timestamped sibling; on a **scheduled** run `latest`→`dev` *and* `latest-cu12`→`dev-cu12` both advance; pruning likewise runs **only on schedule**, keeping the newest 20 of **each** series — `dev-<ts>` and `dev-cu12-<ts>` independently. Any `workflow_dispatch` — **including** `simulate_schedule` — writes its own tag(s) but never moves `latest` or prunes; only the real cron mutates published tags. See the trigger table above.
 

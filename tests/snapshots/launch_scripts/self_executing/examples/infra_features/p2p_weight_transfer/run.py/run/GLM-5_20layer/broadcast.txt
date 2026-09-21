@@ -97,10 +97,10 @@ MODEL_ARGS_LINE="$(python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_ut
   --sglang-enable-dp-attention
   --sglang-enable-dp-lm-head
   --sglang-page-size 64
-  --sglang-nsa-decode-backend flashmla_sparse
-  --sglang-nsa-prefill-backend flashmla_sparse
+  --sglang-dsa-decode-backend flashmla_sparse
+  --sglang-dsa-prefill-backend flashmla_sparse
   --sglang-attention-backend nsa
-  --sglang-cuda-graph-max-bs 8
+  --sglang-cuda-graph-max-bs-decode 8
   --sglang-max-running-requests 512
   --sglang-chunked-prefill-size 32768
   --sglang-watchdog-timeout 3600

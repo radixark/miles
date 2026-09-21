@@ -132,11 +132,12 @@ def loss_function(
     logits: torch.Tensor,
     apply_megatron_loss_scaling: bool = False,
     num_rollouts: int | None = None,
-) -> tuple[torch.Tensor, int | torch.Tensor, dict[str, list[str] | torch.Tensor]]:
+) -> tuple[torch.Tensor, int | torch.Tensor, dict]:
     """Dispatch to the configured loss and rescale for Megatron integration.
 
     Selects one of "policy_loss", "value_loss", "sft_loss", or a custom loss
-    function based on `args.loss_type`, computes the loss and metrics, then
+    function based on `args.loss_type`, or the Tinker loss specified by
+    `batch["loss_fn"]`. Computes the loss and metrics, then
     rescales the loss by micro-batch and parallelism factors to integrate with
     Megatron's gradient accumulation.
 
@@ -157,6 +158,7 @@ def loss_function(
           `args.calculate_per_token_loss` is True, else `1` (int).
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
+          Tinker losses may also return "per_datum" outputs.
     """
     parallel_state = get_parallel_state()
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
@@ -172,7 +174,7 @@ def loss_function(
         denominators=batch.get("rollout_mask_sums", None),
     )
 
-    func = get_loss_function(args)
+    func = get_loss_function(args, batch.get("loss_fn"))
 
     if args.recompute_loss_function:
         loss, log = checkpoint(
@@ -196,11 +198,8 @@ def loss_function(
     else:
         assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
         global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
-    # Multi-LoRA: samples enter the gradient buffers with weight 1; per-adapter
-    # normalization (1/adapter_global_batch_size, a constant known in advance)
-    # is applied to the accumulated slot gradient at optimizer-step time.
-    if is_multi_lora_enabled(args):
-        global_batch_size = 1
+    # Tinker losses already carry the client's normalization
+    loss_normalizer = 1 if is_multi_lora_enabled(args) else global_batch_size
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
             loss_parallel_size = (
@@ -208,17 +207,19 @@ def loss_function(
                 if args.true_on_policy_mode and parallel_state.is_ulysses_cp
                 else parallel_state.intra_dp_cp.size
             )
-            loss = loss * num_microbatches / global_batch_size * loss_parallel_size
+            loss = loss * num_microbatches / loss_normalizer * loss_parallel_size
         else:
-            loss = loss / global_batch_size * parallel_state.intra_dp.size
+            loss = loss / loss_normalizer * parallel_state.intra_dp.size
     else:
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp.size
 
+    per_datum = log.pop("per_datum", None) if batch.get("loss_fn") is not None else None
     return (
         loss,
         torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
         {
+            **({"per_datum": per_datum} if per_datum is not None else {}),
             "keys": list(log.keys()),
             "values": torch.tensor(
                 [num_samples if not args.calculate_per_token_loss else num_tokens] + list(log.values()),

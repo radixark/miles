@@ -22,18 +22,21 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
     ```
 
   </Tab>
-  <Tab title="AMD MI300X / MI350X">
+  <Tab title="AMD">
 
     ```bash
-    docker pull rlsys/miles:MI350-355-latest    # or MI300-latest
+    docker pull rocm/sgl-dev:miles-rocm10-mi35x    # or miles-rocm720-mi35x
 
     docker run --rm \
-      --device /dev/dri --device /dev/kfd \
-      --group-add video --ipc=host --shm-size=32g \
-      --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
-      --privileged \
-      -it rlsys/miles:MI350-355-latest /bin/bash
+      --device /dev/kfd --device /dev/dri --group-add video --group-add render \
+      --cap-add SYS_PTRACE --security-opt seccomp=unconfined --privileged \
+      --shm-size 128G \
+      --ulimit memlock=-1 --ulimit stack=67108864 \
+      --network=host \
+      -it rocm/sgl-dev:miles-rocm10-mi35x /bin/bash
     ```
+
+    See [AMD ROCm](/hardware-platforms/amd-gpus) for more details.
 
   </Tab>
 
