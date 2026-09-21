@@ -44,6 +44,7 @@ from miles.utils.args.configs.rollout import RolloutRelatedConfig
 from miles.utils.args.configs.rollout_buffer import RolloutBufferConfig
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.configs.run_uuid import RunUuidConfig
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
@@ -198,6 +199,7 @@ def get_miles_extra_args_provider(
 
         RunUuidConfig.add_arguments(parser=parser)
         ClusterConfig.add_arguments(parser=parser)
+        ScalingConfig.add_arguments(parser=parser)
         TrainConfig.add_arguments(parser=parser)
         RolloutRelatedConfig.add_arguments(parser=parser)
         FaultToleranceConfig.add_arguments(parser=parser)

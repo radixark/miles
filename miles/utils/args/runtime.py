@@ -29,6 +29,7 @@ from miles.utils.args.configs.rollout import RolloutRelatedConfig
 from miles.utils.args.configs.rollout_buffer import RolloutBufferConfig
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.configs.run_uuid import RunUuidConfig
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
@@ -251,6 +252,7 @@ class AllConfig(
     TrainerBackendTraitConfig,
     RunUuidConfig,
     ClusterConfig,
+    ScalingConfig,
     TrainConfig,
     RolloutRelatedConfig,
     FaultToleranceConfig,
