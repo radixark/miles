@@ -83,7 +83,9 @@ async def configure_sglang(args: Namespace) -> None:
 async def _wait_registered_worker_urls(args: Namespace) -> list[str]:
     from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
 
-    expected_worker_count = args.sglang.models[0].num_server_cells
+    expected = args.init_expected_num_cells
+    expected_worker_count = expected[args.sglang.models[0].name] if isinstance(expected, dict) else expected
+    assert expected_worker_count is not None, "the dumper needs the run's own engines, but none are expected"
 
     async def _attempt(_remaining_seconds: float) -> list[str]:
         worker_urls = await get_worker_urls(args)
