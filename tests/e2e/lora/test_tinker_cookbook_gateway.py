@@ -1,11 +1,5 @@
 """Run the official cookbook SFT and RL recipes against a real Tinker gateway."""
 
-import shlex
-import sys
-import tempfile
-from importlib.metadata import version
-
-import torch
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.lora.tinker_gateway import BASE_MODEL, prepare_gateway, running_gateway
 
@@ -18,24 +12,6 @@ register_cuda_ci(
     hardware=["hopper"],
 )
 
-COOKBOOK_PIN = "tinker_cookbook[math-rl] @ git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2c"
-
-
-def prepare():
-    prepare_gateway()
-    packages = ("torch", "transformers", f"nvidia-cudnn-cu{torch.version.cuda.split('.')[0]}")
-    expected = {name: version(name) for name in packages}
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt") as overrides:
-        overrides.write("\n".join(f"{name}=={value}" for name, value in expected.items()))
-        overrides.flush()
-        U.exec_command_cpu(
-            f"uv pip install --python {shlex.quote(sys.executable)} --overrides {shlex.quote(overrides.name)} "
-            f"tinker==0.26.2 {shlex.quote(COOKBOOK_PIN)}"
-        )
-    installed = {name: version(name) for name in packages}
-    assert installed == expected, f"cookbook setup changed training dependencies: {expected=} {installed=}"
-    U.exec_command_cpu(f"{shlex.quote(sys.executable)} -c 'from tinker_cookbook.recipes import sl_loop, rl_loop'")
-
 
 def execute():
     with running_gateway() as base_url:
@@ -46,5 +22,5 @@ def execute():
 
 
 if __name__ == "__main__":
-    prepare()
+    prepare_gateway()
     execute()

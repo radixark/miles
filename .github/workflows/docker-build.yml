@@ -9,6 +9,7 @@ on:
       - 'docker/install-kube-tools.sh'
       - 'docker/verify_transformer_engine.py'
       - 'requirements.txt'
+      - 'tests/ci/requirements-ci-cuda.txt'
 
   schedule:
     # Every 12 hours: midnight and noon UTC
