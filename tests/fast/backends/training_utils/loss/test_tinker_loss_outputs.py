@@ -72,7 +72,7 @@ def test_a_zero_loss_mask_removes_the_datum_from_every_objective(monkeypatch, lo
         "response_lengths": [2],
         "sample_indices": [0],
     }
-    loss, _ = tinker_losses.TINKER_LOSS_FUNCTIONS[loss_fn](Namespace(), batch, logprobs, None)
+    loss, _ = tinker_losses.TINKER_LOSS_FUNCTIONS[loss_fn](Namespace(qkv_format="thd"), batch, logprobs, None)
     loss.backward()
     assert loss.item() == 0.0
     assert logprobs.grad.abs().sum().item() == 0.0, "a DP-padding datum must contribute no gradient"
