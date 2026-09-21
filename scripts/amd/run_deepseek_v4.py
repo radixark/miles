@@ -733,9 +733,13 @@ def _train(args: ScriptArgs, *, fp8_recipe: str | None = None):
         optimizer_args += (
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
-        if fp8_smoke:
+        if args.actor_num_nodes == 2:
             # HDO keeps FP32 masters/moments. Stream gradients rather than
             # holding a full FP32 CPU gradient copy alongside both moments.
+            #
+            # Keyed on the topology, not on --profile: at two actor nodes the model has to
+            # offload whichever recipe is running. fp8_smoke pins num_nodes=2 and
+            # rollout_num_nodes=0, so it already took this arm.
             optimizer_args += (
                 "--optimizer-offload-fraction 1.0 --offload-train "
                 "--optimizer-cpu-streaming-gradients --no-pin-cpu-grads --no-pin-cpu-params "
