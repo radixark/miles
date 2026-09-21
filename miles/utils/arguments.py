@@ -22,38 +22,8 @@ from miles.backends.sglang_utils.sglang_config import SglangConfig, SglangScalin
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
-from miles.utils.args.component_shared import SglangFieldsConfig
-from miles.utils.args.configs.algo import AlgoConfig, AlgoRolloutOnlyConfig
-from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
-from miles.utils.args.configs.ci import CiConfig, CiRolloutOnlyConfig
-from miles.utils.args.configs.cluster import ClusterConfig
-from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig, Dsv4MegatronPluginsConfig
-from miles.utils.args.configs.dashboard import DashboardConfig
-from miles.utils.args.configs.data import DataConfig
-from miles.utils.args.configs.debug import DebugConfig, DebugRolloutOnlyConfig
-from miles.utils.args.configs.eval import EvalConfig, EvalRolloutOnlyConfig
-from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT, FaultToleranceConfig
-from miles.utils.args.configs.lora import LoraConfig
-from miles.utils.args.configs.mlflow import MlflowConfig
-from miles.utils.args.configs.mtp_training import MtpTrainingConfig
-from miles.utils.args.configs.network import NetworkConfig
-from miles.utils.args.configs.on_policy_distillation import (
-    OnPolicyDistillationConfig,
-    OnPolicyDistillationRolloutOnlyConfig,
-)
-from miles.utils.args.configs.prefill_decode_disaggregation import PrefillDecodeDisaggregationConfig
-from miles.utils.args.configs.prometheus import PrometheusConfig
-from miles.utils.args.configs.reward_model import RewardModelConfig, RewardModelRolloutOnlyConfig
-from miles.utils.args.configs.rollout import RolloutRelatedConfig, RolloutRelatedRolloutOnlyConfig
-from miles.utils.args.configs.rollout_buffer import RolloutBufferConfig, RolloutBufferRolloutOnlyConfig
+from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
-from miles.utils.args.configs.run_uuid import RunUuidConfig
-from miles.utils.args.configs.scaling import ScalingConfig
-from miles.utils.args.configs.session import SessionConfig
-from miles.utils.args.configs.tensorboard import TensorboardConfig
-from miles.utils.args.configs.tinker import TinkerConfig
-from miles.utils.args.configs.train import TrainConfig, TrainRolloutOnlyConfig
-from miles.utils.args.configs.wandb import WandbConfig, WandbRolloutOnlyConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
 from miles.utils.args.runtime import AllConfig
 from miles.utils.args.schema import reset_arg
@@ -170,46 +140,7 @@ def get_miles_extra_args_provider(
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
-        RunUuidConfig.add_arguments(parser=parser)
-        ClusterConfig.add_arguments(parser=parser)
-        ScalingConfig.add_arguments(parser=parser)
-        TrainConfig.add_arguments(parser=parser)
-        TrainRolloutOnlyConfig.add_arguments(parser=parser)
-        RolloutRelatedConfig.add_arguments(parser=parser)
-        RolloutRelatedRolloutOnlyConfig.add_arguments(parser=parser)
-        FaultToleranceConfig.add_arguments(parser=parser)
-        DataConfig.add_arguments(parser=parser)
-        EvalConfig.add_arguments(parser=parser)
-        EvalRolloutOnlyConfig.add_arguments(parser=parser)
-        AlgoConfig.add_arguments(parser=parser)
-        AlgoRolloutOnlyConfig.add_arguments(parser=parser)
-        TrainerBackendTraitConfig.add_arguments(parser=parser)
-        OnPolicyDistillationConfig.add_arguments(parser=parser)
-        OnPolicyDistillationRolloutOnlyConfig.add_arguments(parser=parser)
-        LoraConfig.add_arguments(parser=parser)
-        WandbConfig.add_arguments(parser=parser)
-        WandbRolloutOnlyConfig.add_arguments(parser=parser)
-        MlflowConfig.add_arguments(parser=parser)
-        TensorboardConfig.add_arguments(parser=parser)
-        PrometheusConfig.add_arguments(parser=parser)
-        DashboardConfig.add_arguments(parser=parser)
-        RouterConfig.add_arguments(parser=parser)
-        DebugConfig.add_arguments(parser=parser)
-        DebugRolloutOnlyConfig.add_arguments(parser=parser)
-        SglangFieldsConfig.add_arguments(parser=parser)
-        SessionConfig.add_arguments(parser=parser)
-        NetworkConfig.add_arguments(parser=parser)
-        RewardModelConfig.add_arguments(parser=parser)
-        RewardModelRolloutOnlyConfig.add_arguments(parser=parser)
-        RolloutBufferConfig.add_arguments(parser=parser)
-        RolloutBufferRolloutOnlyConfig.add_arguments(parser=parser)
-        MtpTrainingConfig.add_arguments(parser=parser)
-        PrefillDecodeDisaggregationConfig.add_arguments(parser=parser)
-        CiConfig.add_arguments(parser=parser)
-        CiRolloutOnlyConfig.add_arguments(parser=parser)
-        CustomMegatronPluginsConfig.add_arguments(parser=parser)
-        Dsv4MegatronPluginsConfig.add_arguments(parser=parser)
-        TinkerConfig.add_arguments(parser=parser)
+        AllConfig.add_arguments(parser=parser)
         parser = add_user_provided_function_arguments(parser, modify_args=resolve_rollout_function_paths)
 
         reset_arg(
