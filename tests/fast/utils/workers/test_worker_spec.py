@@ -7,13 +7,13 @@ from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT,
     RPC_PORT_NAME,
-    BaseWorkerSpec,
-    CommandWorkerSpec,
+    BaseCommandSpec,
+    BaseServeSpec,
+    BaseSpec,
     HostAndPort,
     LaunchCommandContext,
     PortInfo,
     SchedulingSpec,
-    ServeWorkerSpec,
     WorkerCtorContext,
     WorkerLaunchContext,
 )
@@ -116,18 +116,18 @@ class TestPortInfoCellOffset:
         assert (port_info.static_port, port_info.offset_by_cell) == (5100, True)
 
 
-class TestBaseWorkerSpec:
+class TestBaseSpec:
     def test_the_all_selector_cannot_be_stored_as_a_pool_component(self) -> None:
         """A worker pool must name one concrete deployment component rather than the all-components selector."""
-        concrete = BaseWorkerSpec(**_make_base_kwargs(deploy_component=DeployComponent.TRAINER))
+        concrete = BaseSpec(**_make_base_kwargs(deploy_component=DeployComponent.TRAINER))
 
         assert concrete.deploy_component is DeployComponent.TRAINER
         with pytest.raises(ValidationError, match="must name the one component.*not the selector"):
-            BaseWorkerSpec(**_make_base_kwargs(deploy_component=DeployComponent.ALL))
+            BaseSpec(**_make_base_kwargs(deploy_component=DeployComponent.ALL))
 
     def test_constructs_and_exposes_fields(self):
         """A spec keeps its name, ports, and scheduling as provided."""
-        spec = BaseWorkerSpec(**_make_base_kwargs())
+        spec = BaseSpec(**_make_base_kwargs())
         assert spec.name == "demo-worker"
         assert spec.port_infos[0].static_port == 8080
         assert spec.scheduling.num_cells == 2
@@ -140,18 +140,18 @@ class TestBaseWorkerSpec:
             calls.append(1)
             return {"A": "b"}
 
-        spec = BaseWorkerSpec(**_make_base_kwargs(env_var=env_var))
+        spec = BaseSpec(**_make_base_kwargs(env_var=env_var))
         assert calls == []
         assert spec.env_var(_make_launch_context()) == {"A": "b"}
 
     def test_rejects_extra_field(self):
         """Unknown fields are forbidden."""
         with pytest.raises(ValidationError):
-            BaseWorkerSpec(**_make_base_kwargs(unknown_field=1))
+            BaseSpec(**_make_base_kwargs(unknown_field=1))
 
     def test_is_frozen(self):
         """Field assignment after construction is rejected."""
-        spec = BaseWorkerSpec(**_make_base_kwargs())
+        spec = BaseSpec(**_make_base_kwargs())
         with pytest.raises(ValidationError):
             spec.name = "other"
 
@@ -171,13 +171,13 @@ class TestLaunchCommandContext:
             LaunchCommandContext(**kwargs)
 
 
-class TestCommandWorkerSpec:
+class TestBaseCommandSpec:
     def test_constructs_with_launch_command(self):
         """A command spec carries the launch command callable besides base fields."""
-        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "python -m sglang.launch_server")
+        spec = BaseCommandSpec(**_make_base_kwargs(), launch_command=lambda ctx: "python -m sglang.launch_server")
         ctx = _make_launch_command_context()
         assert spec.launch_command(ctx) == "python -m sglang.launch_server"
-        assert isinstance(spec, BaseWorkerSpec)
+        assert isinstance(spec, BaseSpec)
 
     def test_launch_command_is_stored_uncalled(self):
         """The launch_command callable is only evaluated once a context is available."""
@@ -188,7 +188,7 @@ class TestCommandWorkerSpec:
             http = ctx.self_addrs["http"]
             return f"serve --host {http.host} --port {http.port}"
 
-        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=launch_command)
+        spec = BaseCommandSpec(**_make_base_kwargs(), launch_command=launch_command)
         assert calls == []
 
         ctx = _make_launch_command_context(self_addrs={"http": HostAndPort(host="10.0.0.1", port=9001)})
@@ -196,16 +196,16 @@ class TestCommandWorkerSpec:
         assert calls == [ctx]
 
 
-class TestServeWorkerSpec:
+class TestBaseServeSpec:
     def test_constructs_with_worker_class(self):
         """A serve spec carries the worker class path besides base fields."""
-        spec = ServeWorkerSpec(
+        spec = BaseServeSpec(
             **_make_base_kwargs(),
             worker_class="miles.ray.rollout.inference_controller.InferenceController",
             ctor_kwargs=lambda _ctx: {},
         )
         assert spec.worker_class == "miles.ray.rollout.inference_controller.InferenceController"
-        assert isinstance(spec, BaseWorkerSpec)
+        assert isinstance(spec, BaseSpec)
 
     def test_ctor_kwargs_is_stored_uncalled(self):
         """The ctor_kwargs callable is stored as-is and only evaluated on demand."""
@@ -215,7 +215,7 @@ class TestServeWorkerSpec:
             calls.append(1)
             return {"x": 1}
 
-        spec = ServeWorkerSpec(
+        spec = BaseServeSpec(
             **_make_base_kwargs(),
             worker_class="miles.demo.Worker",
             ctor_kwargs=ctor_kwargs,
@@ -224,9 +224,9 @@ class TestServeWorkerSpec:
         assert spec.ctor_kwargs(_make_ctor_context()) == {"x": 1}
 
 
-class TestServeWorkerSpecRpcPortInjection:
-    def _make_spec(self, **overrides) -> ServeWorkerSpec:
-        return ServeWorkerSpec(
+class TestBaseServeSpecRpcPortInjection:
+    def _make_spec(self, **overrides) -> BaseServeSpec:
+        return BaseServeSpec(
             **_make_base_kwargs(**overrides),
             worker_class="miles.demo.Worker",
             ctor_kwargs=lambda _ctx: {},
@@ -265,8 +265,8 @@ class TestServeWorkerSpecRpcPortInjection:
 
     def test_base_and_command_specs_get_no_rpc_port(self):
         """Only serve workers run the rpc server, so only they get the port."""
-        base = BaseWorkerSpec(**_make_base_kwargs())
-        command = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "sleep 1")
+        base = BaseSpec(**_make_base_kwargs())
+        command = BaseCommandSpec(**_make_base_kwargs(), launch_command=lambda ctx: "sleep 1")
         assert RPC_PORT_NAME not in [port_info.name for port_info in base.port_infos]
         assert RPC_PORT_NAME not in [port_info.name for port_info in command.port_infos]
 
@@ -395,7 +395,7 @@ class TestAssertRankPortsFit:
         _assert_worker_ports_fit(spec)
 
 
-def _serve_spec(*, num_gpus_per_node: int, **overrides) -> ServeWorkerSpec:
+def _serve_spec(*, num_gpus_per_node: int, **overrides) -> BaseServeSpec:
     scheduling = SchedulingSpec(
         num_cells=1,
         num_workers_per_cell=8,
@@ -403,17 +403,17 @@ def _serve_spec(*, num_gpus_per_node: int, **overrides) -> ServeWorkerSpec:
         num_gpu_slots_per_worker=1,
         num_gpus_per_node=num_gpus_per_node,
     )
-    return ServeWorkerSpec(
+    return BaseServeSpec(
         **_make_base_kwargs(scheduling=scheduling, **overrides),
         worker_class="miles.demo.Worker",
         ctor_kwargs=lambda _ctx: {},
     )
 
 
-class TestServeWorkerSpecExtraScheduling:
+class TestBaseServeSpecExtraScheduling:
     def test_concurrency_groups_default_to_absent(self):
         """Most workers need no concurrency groups, so the field stays optional."""
-        spec = ServeWorkerSpec(
+        spec = BaseServeSpec(
             **_make_base_kwargs(),
             worker_class="miles.demo.Worker",
             ctor_kwargs=lambda _ctx: {},
@@ -423,7 +423,7 @@ class TestServeWorkerSpecExtraScheduling:
 
     def test_concurrency_groups_are_carried_on_the_spec(self):
         """The trainer needs its heartbeat rpc served outside the default group."""
-        spec = ServeWorkerSpec(
+        spec = BaseServeSpec(
             **_make_base_kwargs(),
             worker_class="miles.demo.Worker",
             ctor_kwargs=lambda _ctx: {},
@@ -434,7 +434,7 @@ class TestServeWorkerSpecExtraScheduling:
 
     def test_ctor_kwargs_receive_the_worker_position(self):
         """Each worker needs its own rank, so the callable is per worker."""
-        spec = ServeWorkerSpec(
+        spec = BaseServeSpec(
             **_make_base_kwargs(),
             worker_class="miles.demo.Worker",
             ctor_kwargs=lambda ctx: {"rank": ctx.worker_in_cell_index, "gpu_ids": ctx.gpu_ids},
@@ -448,7 +448,7 @@ class TestServeWorkerSpecExtraScheduling:
 class TestLaunchCommandContextPoolAddrs:
     def test_a_launch_command_reads_a_peer_address_out_of_the_pool_keyed_map(self):
         """A command renders a peer's address by looking that peer's pool id up in pool_addrs."""
-        spec = CommandWorkerSpec(
+        spec = BaseCommandSpec(
             **_make_base_kwargs(),
             launch_command=lambda ctx: f"serve --backend {ctx.pool_addrs['inference-router-0'][0]['primary'].addr}",
         )

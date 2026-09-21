@@ -102,7 +102,7 @@ class WorkerCtorContext(WorkerLaunchContext):
 SpecMetaFn = Callable[[WorkerMetaContext], dict[str, Any]]
 
 
-class BaseWorkerSpec(FrozenStrictBaseModel):
+class BaseSpec(FrozenStrictBaseModel):
     name: str
     category: str | None = None
     port_infos: list[PortInfo]
@@ -113,7 +113,7 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     platform_access: PlatformAccess = PlatformAccess.NONE
 
     @model_validator(mode="after")
-    def _reject_selector_component(self) -> "BaseWorkerSpec":
+    def _reject_selector_component(self) -> "BaseSpec":
         assert (
             self.deploy_component is not DeployComponent.ALL
         ), f"pool {self.name} must name the one component it is deployed with, not the selector for all of them"
@@ -139,11 +139,11 @@ class LaunchCommandContext(WorkerLaunchContext):
     local_gpu_ids: list[int]
 
 
-class CommandWorkerSpec(BaseWorkerSpec):
+class BaseCommandSpec(BaseSpec):
     launch_command: Callable[[LaunchCommandContext], str]
 
 
-class ServeWorkerSpec(BaseWorkerSpec):
+class BaseServeSpec(BaseSpec):
     worker_class: str
     ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]]
     concurrency_groups: dict[str, int] | None = None

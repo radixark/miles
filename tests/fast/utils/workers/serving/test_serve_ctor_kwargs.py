@@ -12,7 +12,7 @@ from miles.utils.workers.serving import serve_inner
 from miles.utils.workers.serving.utils import compute_serve_worker_spec
 from miles.utils.workers.serving.worker_identity import SUBPROCESS_INDEX_ENV_VAR, read_worker_in_pod_index
 from miles.utils.workers.worker_provider.kubernetes.helm.env import NAMESPACE_ENV_VAR, RELEASE_ENV_VAR
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec
 
 SPECS_FN = "test:specs"
 WORKER_FN = "test:worker"
@@ -26,9 +26,9 @@ class KeywordOnlyWorker:
         self.args = args
 
 
-def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec]:
+def compute_specs(worker_argv: list[str]) -> list[BaseServeSpec]:
     return [
-        ServeWorkerSpec(
+        BaseServeSpec(
             name=POOL_ID,
             port_infos=[PortInfo(name="rpc", static_port=RPC_PORT)],
             env_var=lambda context: {},
@@ -121,12 +121,12 @@ class TestRpcPortOfARank:
         )
 
 
-def _capturing_spec(captured: dict[str, Any]) -> ServeWorkerSpec:
+def _capturing_spec(captured: dict[str, Any]) -> BaseServeSpec:
     def ctor_kwargs(context) -> dict[str, Any]:
         captured["capability"] = context.capability
         return dict(args="captured")
 
-    return ServeWorkerSpec(
+    return BaseServeSpec(
         name=POOL_ID,
         port_infos=[PortInfo(name="rpc", static_port=RPC_PORT)],
         env_var=lambda context: {},

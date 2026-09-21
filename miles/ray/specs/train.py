@@ -21,10 +21,10 @@ from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
 from miles.utils.workers.worker_spec import (
     MASTER_PORT_NAME,
+    BaseServeSpec,
     HostAndPort,
     PortInfo,
     SchedulingSpec,
-    ServeWorkerSpec,
     WorkerLaunchContext,
 )
 
@@ -43,7 +43,7 @@ _TRAINER_ACTOR_CLASSES = {
 _NUM_GPUS_PER_TRAINER_WORKER = 0.4
 
 
-def specs_trainer_controller(args: AllConfig) -> list[ServeWorkerSpec]:
+def specs_trainer_controller(args: AllConfig) -> list[BaseServeSpec]:
     specs = []
     for config in compute_trainer_configs(args):
         trainer_args = compute_trainer_config(args, config)
@@ -113,9 +113,9 @@ def _compute_spec_trainer_controller(
     config: MegatronTrainerConfig,
     with_ref: bool,
     with_opd_teacher: bool,
-) -> ServeWorkerSpec:
+) -> BaseServeSpec:
     trainer_id = config.trainer_id
-    return ServeWorkerSpec(
+    return BaseServeSpec(
         name=compute_trainer_controller_pool_id(trainer_id),
         deploy_component=DeployComponent.TRAINER,
         platform_access=PlatformAccess.READ_DELETE,
@@ -145,7 +145,7 @@ def _compute_spec_trainer_controller(
     )
 
 
-def specs_trainer(args: AllConfig) -> list[ServeWorkerSpec]:
+def specs_trainer(args: AllConfig) -> list[BaseServeSpec]:
     # TODO: support different sizes after the args refactor
     actor_gpus_per_instance = args.actor_num_nodes * args.actor_num_gpus_per_node
     specs = []
@@ -190,7 +190,7 @@ def _compute_spec_trainer(
     num_nodes: int,
     num_gpus_per_node: int,
     pg_slot_offset: int,
-) -> ServeWorkerSpec:
+) -> BaseServeSpec:
     trainer_id = config.trainer_id
     total_gpus = num_nodes * num_gpus_per_node
     num_cells = compute_trainer_num_cells(args, role=config.role)
@@ -203,7 +203,7 @@ def _compute_spec_trainer(
         else default_fp8_block_scaling_fp32_scales()
     )
 
-    return ServeWorkerSpec(
+    return BaseServeSpec(
         name=compute_trainer_pool_id(trainer_id),
         category=POOL_CATEGORY_TRAINER_ENGINE,
         deploy_component=DeployComponent.TRAINER,

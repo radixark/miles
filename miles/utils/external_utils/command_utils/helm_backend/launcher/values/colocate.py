@@ -7,10 +7,10 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     TRAINER_ENGINES_SECTION,
     LaunchPlan,
 )
-from miles.utils.workers.worker_spec import BaseWorkerSpec
+from miles.utils.workers.worker_spec import BaseSpec
 
 
-def pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingConfig:
+def pairing_config(specs: list[BaseSpec], plan: LaunchPlan) -> PairingConfig:
     inference_specs = [spec for spec in specs if SECTION_OF_CATEGORY[spec.category] == INFERENCE_ENGINES_SECTION]
     trainer_specs = [spec for spec in specs if SECTION_OF_CATEGORY[spec.category] == TRAINER_ENGINES_SECTION]
     assert len(trainer_specs) == 1, (
@@ -45,7 +45,7 @@ def pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingConf
     )
 
 
-def _compute_pairing_layout(*, inference: BaseWorkerSpec, trainer: BaseWorkerSpec) -> PairingLayout:
+def _compute_pairing_layout(*, inference: BaseSpec, trainer: BaseSpec) -> PairingLayout:
     _assert_colocate_supported(
         num_gpus_per_node=trainer.scheduling.num_gpus_per_node,
         gpus_per_inference_pod=inference.scheduling.gpus_per_pod(),

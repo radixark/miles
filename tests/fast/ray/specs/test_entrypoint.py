@@ -14,7 +14,7 @@ from miles.ray.specs.inference import INFERENCE_REGISTRATION_REPORTER_POOL_ID, c
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_helm_backend_capability
 from miles.utils.workers.worker_provider.kubernetes.helm.env import NAMESPACE_ENV_VAR, RELEASE_ENV_VAR
-from miles.utils.workers.worker_spec import BaseWorkerSpec, WorkerCtorContext
+from miles.utils.workers.worker_spec import BaseSpec, WorkerCtorContext
 
 
 def _unusable_capability():
@@ -146,7 +146,7 @@ class TestComputeSpecs:
         assert specs["session-server"].scheduling.num_cells == 0
 
 
-def _debug_train_only_specs(tmp_path) -> list[BaseWorkerSpec]:
+def _debug_train_only_specs(tmp_path) -> list[BaseSpec]:
     config_path = tmp_path / "sglang.yaml"
     config_path.write_text(
         make_sglang_config_yaml(server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}])
