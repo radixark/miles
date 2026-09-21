@@ -14,13 +14,13 @@ def compute_helm_backend_capability(*, specs: list[BaseSpec]) -> KubernetesBacke
         namespace=env.current_namespace(),
         label_selector=f"{env.INSTANCE_LABEL}={release}",
         label_keys=env.DEFAULT_LABEL_KEYS,
-        specs={spec.name: spec for spec in specs if _declares_dynamic_pool(spec)},
+        specs={spec.name: spec for spec in specs if spec.scheduling.declares_dynamic_pool()},
     )
 
     return KubernetesBackendCapability(
         run=run,
         release=release,
-        static_specs={spec.name: spec for spec in specs if not _declares_dynamic_pool(spec)},
+        static_specs={spec.name: spec for spec in specs if not spec.scheduling.declares_dynamic_pool()},
         cell_operations=KubernetesCellOperations(
             provider=KubernetesWorkerProvider(
                 run=run, pool_ids=sorted(run.specs), resync_period=DEFAULT_RESYNC_PERIOD
@@ -28,7 +28,3 @@ def compute_helm_backend_capability(*, specs: list[BaseSpec]) -> KubernetesBacke
             namespace=run.namespace,
         ),
     )
-
-
-def _declares_dynamic_pool(spec: BaseSpec) -> bool:
-    return spec.scheduling.gpus_per_cell() > 0
