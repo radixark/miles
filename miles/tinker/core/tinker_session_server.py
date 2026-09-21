@@ -95,6 +95,7 @@ class TrajectorySession:
     last_seen: float = field(default_factory=time.time)
     in_flight: int = 0  # samples running right now; the TTL sweep leaves such a session alone
     max_datum_tokens: int | None = None  # the client's per-datum cap from bind; a TITO chain never grows past it
+    sampling_session_id: str | None = None  # the Tinker sampling session bound at create; ties samples to its lease
     messages: list[dict[str, Any]] | None = None  # history the last recorded turn answered, its reply appended
     token_ids: Sequence[int] | None = None  # the last turn's input_ids + output_ids, inherited by the next turn
 
@@ -152,6 +153,12 @@ class TrajectoryCollector:
             if session.tenant != tenant:
                 raise OwnershipError("session does not belong to this tenant")
             self._check_same_version(session, model)
+            if sampling_session_id is not None:
+                bound_path = self.service.resolve_sampler_path(tenant, model, sampling_session_id)
+                if bound_path != session.model_path:
+                    raise UserInputError(
+                        f"session {session_id!r} is bound to {session.model_path!r}, not {bound_path!r}"
+                    )
             if max_datum_tokens is not None:
                 session.max_datum_tokens = max_datum_tokens
             session.last_seen = self.clock()
@@ -170,6 +177,7 @@ class TrajectoryCollector:
             created_at=now,
             last_seen=now,
             max_datum_tokens=max_datum_tokens,
+            sampling_session_id=sampling_session_id,
         )
         self.sessions[session_id] = session
         return session
@@ -256,7 +264,7 @@ class TrajectoryCollector:
         }
         session.in_flight += 1
         try:
-            sequence = await self._sample(session.tenant, payload)
+            sequence = await self._sample(session, payload)
         finally:
             session.in_flight -= 1
         turn = Turn(
@@ -275,9 +283,13 @@ class TrajectoryCollector:
         self.renderer.update_pretokenized_state(session, turn, request_messages, text)
         return TurnResult(turn=turn, text=text)
 
-    async def _sample(self, tenant: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _sample(self, session: TrajectorySession, payload: dict[str, Any]) -> dict[str, Any]:
         """Sample through the gateway: submit_sample → retrieve_future → settled → sequences[0], or raise."""
+        tenant = session.tenant
         request_id, _ = self.service.submit_sample(tenant, payload)
+        if session.sampling_session_id is not None:
+            # filed under the tenant's lease: _expire_sessions cancels it when the lease dies, so sweep() can reclaim
+            self.service.attach_sample_to_session(request_id, session.sampling_session_id)
         future = self.service.retrieve_future(tenant, request_id)
         assert future is not None, f"sampling future {request_id} vanished before it settled"
         await future.settled.wait()

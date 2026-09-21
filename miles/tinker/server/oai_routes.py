@@ -37,10 +37,18 @@ def _owner(request: Request, placeholder_keys: frozenset[str]) -> str:
 
 
 async def _json_body(request: Request, max_body_bytes: int = MAX_BODY_BYTES) -> dict:
-    """The JSON object body as a dict; bad JSON is a UserInputError (400); bodies over max_body_bytes are refused."""
-    body = await request.body()
-    if len(body) > max_body_bytes:
-        raise UserInputError(f"request body of {len(body)} bytes exceeds the {max_body_bytes}-byte limit")
+    """The JSON object body as a dict; bad JSON is a UserInputError (400); over-cap bodies are refused unbuffered."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > max_body_bytes:
+        raise UserInputError(f"request body of {declared} bytes exceeds the {max_body_bytes}-byte limit")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():  # stop reading at the cap instead of buffering the whole body first
+        size += len(chunk)
+        if size > max_body_bytes:
+            raise UserInputError(f"request body exceeds the {max_body_bytes}-byte limit")
+        chunks.append(chunk)
+    body = b"".join(chunks)
     if not body:
         return {}
     try:

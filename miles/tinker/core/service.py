@@ -125,6 +125,13 @@ class TinkerService:
         """True while the tenant still holds at least one Tinker session lease."""
         return any(record.tenant == tenant for record in self.sessions.values())
 
+    def attach_sample_to_session(self, request_id: str, sampling_session_id: str) -> None:
+        """File a sample task under the sampling session's Tinker session so a lease expiry cancels it too."""
+        record = self.sampling_sessions.get(sampling_session_id)
+        entry = self._sample_tasks.get(request_id)
+        if record is not None and entry is not None:
+            self._sample_tasks[request_id] = (entry[0], record.session_id)
+
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
         session = self._session_for(tenant, payload["session_id"])

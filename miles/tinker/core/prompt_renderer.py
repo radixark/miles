@@ -20,6 +20,15 @@ def _token_list(rendered) -> list[int]:
     return [int(token) for token in rendered]
 
 
+def validate_messages(request_messages: Any) -> None:
+    """A non-empty list of objects with a role, else UserInputError (400); runs before any render or TITO merge."""
+    if not isinstance(request_messages, list) or not request_messages:
+        raise UserInputError("messages must be a non-empty list")
+    for index, message in enumerate(request_messages):
+        if not isinstance(message, dict) or "role" not in message:
+            raise UserInputError(f"messages[{index}] must be an object with a role")
+
+
 def render_prompt(
     request_messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
@@ -27,11 +36,7 @@ def render_prompt(
     tokenizer,
 ) -> list[int]:
     """Validate the messages and render them with apply_chat_template(add_generation_prompt=True, tokenize=True)."""
-    if not isinstance(request_messages, list) or not request_messages:
-        raise UserInputError("messages must be a non-empty list")
-    for index, message in enumerate(request_messages):
-        if not isinstance(message, dict) or "role" not in message:
-            raise UserInputError(f"messages[{index}] must be an object with a role")
+    validate_messages(request_messages)
     kwargs = dict(chat_template_kwargs)
     if tools:
         kwargs["tools"] = tools
@@ -111,6 +116,7 @@ class PromptRenderer:
         budget: int | None,
     ) -> tuple[list[int], bool, str | None]:
         """(prompt_token_ids, inherits, reset_reason): the TITO prefix when it applies, else a full render and why."""
+        validate_messages(request_messages)  # the merge path calls into the TITO matcher, which assumes dict messages
         template_kwargs = self.template_kwargs(override)
         reason: str | None = "no_tito"
         if self.tito_tokenizer is not None:
