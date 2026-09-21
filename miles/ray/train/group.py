@@ -391,11 +391,34 @@ class TrainerController:
         """Broadcast weights to rollout engines and answer the version they now serve."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        weight_versions = await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
-            max_attempts=_RETRY_MAX_ATTEMPTS,
-        )
+        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one.
+        # NOTE: that recovery needs a second cell to fall back to. With a single cell --
+        # which is what compute_trainer_num_cells returns whenever indep_dp is off -- a
+        # failure here empties the only cell, _is_recoverable() goes false, and the
+        # NonRetryableError short-circuits retry() without spending a single attempt.
+        # Log that explicitly instead of letting the run look fault-tolerant when it is not.
+        try:
+            weight_versions = await retry(
+                lambda _: self._execute_first_alive("update_weights", info=info),
+                max_attempts=_RETRY_MAX_ATTEMPTS,
+            )
+        except NonRetryableError:
+            log_structured(
+                logger.error,
+                tag="ft",
+                op="update_weights",
+                phase="non_retryable",
+                rollout=rollout_id,
+                num_cells=len(self._cells),
+                alive_cells=sum(1 for c in self._cells if c.is_alive),
+                configured_max_attempts=_RETRY_MAX_ATTEMPTS,
+                hint=(
+                    "no cell left alive, so retry() gave up without exhausting "
+                    "max_attempts. A single cell means no weight-update fault tolerance -- "
+                    "enable indep_dp for a fallback cell."
+                ),
+            )
+            raise
         return weight_versions[0]
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
