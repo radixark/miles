@@ -793,3 +793,113 @@ class TestStartProfile:
 
 async def _noop_sleep(seconds):
     return None
+
+
+class _FailThenSucceed:
+    """Raises the queued exceptions on POST, then serves a normal response.
+
+    GET always succeeds: ``flush_cache`` runs ahead of some POST endpoints and has its own
+    retry loop, so letting it fail would mask which call the queued error actually lands on.
+    """
+
+    def __init__(self, errors: list[Exception], response: _FakeResponse | None = None):
+        self._errors = list(errors)
+        self._response = response if response is not None else _FakeResponse()
+        self.attempts = 0
+
+    def install(self, monkeypatch):
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: self)
+
+    async def get(self, url, **kwargs):
+        return _FakeResponse()
+
+    async def post(self, url, **kwargs):
+        i = self.attempts
+        self.attempts += 1
+        if i < len(self._errors):
+            raise self._errors[i]
+        return self._response
+
+
+class TestMakeRequestTransportRetry:
+    """A transient transport error on one rank used to kill that rank, and with it the job.
+
+    The rank died inside ``update_weights``; every other rank was waiting on the same gloo
+    collective, so all 16 followed, which emptied the only cell and turned a dropped socket
+    into ``NonRetryableError: All cells failed``.
+    """
+
+    async def test_an_idempotent_endpoint_survives_a_dropped_response(self, client, monkeypatch):
+        """ReadError means the response was lost, not that the server refused; replaying is safe here."""
+        http = _FailThenSucceed([httpx.ReadError("connection dropped")])
+        monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
+        http.install(monkeypatch)
+
+        assert await client.update_weights_from_tensor(["tensor"]) == {"ok": True}
+        assert http.attempts == 2
+
+    async def test_a_non_idempotent_endpoint_does_not_replay_a_lost_response(self, client, monkeypatch):
+        """begin_weight_update opens a session; replaying it onto an open one is not harmless."""
+        http = _FailThenSucceed([httpx.ReadError("connection dropped")])
+        http.install(monkeypatch)
+
+        with pytest.raises(httpx.ReadError):
+            await client.begin_weight_update()
+        assert http.attempts == 1
+
+    async def test_a_connect_failure_is_retried_even_when_not_idempotent(self, client, monkeypatch):
+        """The connection was never established, so the server cannot have run the handler."""
+        http = _FailThenSucceed([httpx.ConnectError("refused")])
+        monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
+        http.install(monkeypatch)
+
+        assert await client.begin_weight_update() == {"ok": True}
+        assert http.attempts == 2
+
+    async def test_a_status_error_is_never_retried(self, client, monkeypatch):
+        """A 5xx is an answer from the server; replaying it only multiplies load."""
+        http = _FailThenSucceed([], response=_FakeResponse(status_code=500, text="cuda oom"))
+        http.install(monkeypatch)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.update_weights_from_tensor(["tensor"])
+        assert http.attempts == 1
+
+    async def test_a_best_effort_call_fails_fast_instead_of_burning_the_budget(self, client, monkeypatch):
+        """destroy_weights_update_group is expected to fail on a fresh engine; waiting out the
+        retry budget to reach a swallowed exception would stall every teardown."""
+        http = _FailThenSucceed([httpx.ConnectError("no such group")] * 5)
+        http.install(monkeypatch)
+
+        assert await client.destroy_weights_update_group("group-0") is None
+        assert http.attempts == 1
+
+
+    @pytest.mark.parametrize(
+        ("call", "endpoint"),
+        [
+            (lambda c: c.release_memory_occupation(), "release_memory_occupation"),
+            (lambda c: c.resume_memory_occupation(), "resume_memory_occupation"),
+            (lambda c: c.begin_weight_update(), "begin_weight_update"),
+            (
+                lambda c: c.update_weights_from_distributed(["w"], ["float32"], [[1]], "g0"),
+                "update_weights_from_distributed",
+            ),
+        ],
+    )
+    async def test_endpoints_that_cannot_be_replayed_do_not_retry(self, client, monkeypatch, call, endpoint):
+        """A lost response on these must surface, not be replayed.
+
+        ``resume_memory_occupation`` runs ``self.offload_tags.remove(tag)`` in the scheduler
+        and ``set.remove`` raises once the tag is gone; ``release_memory_occupation``
+        re-exports the static state after the weights region is paused; the weight-update
+        session and the distributed rendezvous are single-shot by construction. Retrying any
+        of them converts a recoverable lost response into a hard failure.
+        """
+        monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
+        http = _FailThenSucceed([httpx.ReadError("connection dropped")])
+        http.install(monkeypatch)
+
+        with pytest.raises(httpx.ReadError):
+            await call(client)
+        assert http.attempts == 1, endpoint
