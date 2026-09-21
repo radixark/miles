@@ -113,7 +113,7 @@ are themselves the cache key, so the first create for a task warms exactly
 what later creates hit.
 
 ```bash
-pip install modal
+pip install -e '<miles>[modal]'   # modal>=1.5.5
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
 OPENENV_SANDBOX_BACKEND=modal python run-openenv-tbench2.py
 ```

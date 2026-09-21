@@ -141,9 +141,8 @@ def test_task_image_pulls_anonymously_by_default(fake_modal):
 
 
 def test_task_resources_floors_and_omits_disk(tmp_path):
-    """Modal is billed on max(request, actual) so the request tracks task.toml
-    (floored by the recipe); storage_mb has no Modal counterpart and must not
-    leak in as an unexpected kwarg."""
+    """Scalar requests track task.toml without adding a hard burst limit;
+    storage_mb has no Modal counterpart and must not leak into create."""
     (tmp_path / "task.toml").write_text("[environment]\ncpus = 4\nmemory_mb = 8192\nstorage_mb = 20480\n")
     assert sandbox.task_resources(tmp_path) == {"cpu": 4.0, "memory": 8192}
 

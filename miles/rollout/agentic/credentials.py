@@ -65,11 +65,11 @@ PROVIDER_CREDENTIALS = {
         "file_env_var": "MODAL_CONFIG_PATH",
         "arg_attr": "modal_config_file",
         "default_path": "~/.modal.toml",
-        "provision_hint": "uv tool install 'modal>=1.5.4' && modal token new  # writes ~/.modal.toml",
+        "provision_hint": "uv tool install 'modal>=1.5.5' && modal token new  # writes ~/.modal.toml",
         "sdk": "modal",
-        "sdk_hint": "pip install 'modal>=1.5.4'",
-        "sdk_min_version": "1.5.4",
-        # Modal SDK >=1.5.4 selects Sandbox V2 through this public switch while
+        "sdk_hint": "pip install -e '<miles>[modal]'",
+        "sdk_min_version": "1.5.5",
+        # Modal SDK >=1.5.5 selects Sandbox V2 through this public switch while
         # Harbor continues to call the documented Sandbox.create.aio API.
         "env_defaults": {"MODAL_SANDBOX_V2": "1"},
         "forward": ("MODAL_PROFILE", "MODAL_ENVIRONMENT", "OPENENV_MODAL_APP"),

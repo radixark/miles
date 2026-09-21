@@ -107,8 +107,10 @@ def task_resources(task_dir: Path) -> dict[str, float | int]:
     """Sandbox size from ``task.toml [environment]``.
 
     Modal bills per second on ``max(request, actual)``, so the request is the
-    task's stated requirement and nothing above it. There is no disk knob to
-    map ``storage_mb`` onto — Modal sizes sandbox disk itself.
+    task's stated requirement and nothing above it. Scalar CPU and memory
+    values set no hard limit, leaving the sandbox free to burst above that
+    request. There is no disk knob to map ``storage_mb`` onto — Modal sizes
+    sandbox disk itself.
     """
     cpus, memory_mb, _storage_mb = task_env_resources(task_dir)
     return {"cpu": float(cpus), "memory": memory_mb}

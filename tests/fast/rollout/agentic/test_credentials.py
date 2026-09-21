@@ -251,7 +251,7 @@ def test_modal_provisioning_uses_public_sandbox_v2_switch(monkeypatch, tmp_path)
     config = tmp_path / "modal.toml"
     config.write_text('[radixark]\ntoken_id = "ak-123"\ntoken_secret = "as-456"\n')
     monkeypatch.setitem(sys.modules, "modal", types.ModuleType("modal"))
-    monkeypatch.setattr(credentials.importlib.metadata, "version", lambda name: "1.5.4")
+    monkeypatch.setattr(credentials.importlib.metadata, "version", lambda name: "1.5.5")
     monkeypatch.delenv("MODAL_SANDBOX_V2", raising=False)
 
     env: dict[str, str] = {}
