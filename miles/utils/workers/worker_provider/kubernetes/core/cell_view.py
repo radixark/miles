@@ -10,13 +10,7 @@ from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
-from miles.utils.workers.worker_spec import (
-    RPC_PORT_NAME,
-    BaseServeSpec,
-    HostAndPort,
-    NamedHostAndPorts,
-    WorkerMetaContext,
-)
+from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, HostAndPort, NamedHostAndPorts
 
 if TYPE_CHECKING:
     from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo
@@ -148,7 +142,7 @@ def _has_all_pods(pods: list[pod_view.ParsedPod]) -> bool:
 
 
 def _spec_meta_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> dict[str, Any]:
-    return dict(run.specs[pod.pool_id].meta(WorkerMetaContext(cell_index=pod.cell_index)))
+    return run.specs[pod.pool_id].static_meta.resolve(cell_index=pod.cell_index)
 
 
 def _pod_meta_of_cell(pods: list[pod_view.ParsedPod]) -> dict[str, str]:

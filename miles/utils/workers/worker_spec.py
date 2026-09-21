@@ -79,9 +79,19 @@ class SchedulingSpec(FrozenStrictBaseModel):
         )
 
 
-# TODO: improve meta computation logic later
-class WorkerMetaContext(FrozenStrictBaseModel):
-    cell_index: int
+class StaticMeta(FrozenStrictBaseModel):
+    values: dict[str, Any] = {}
+    include_cell_index: bool = False
+    gpu_offset_base: int | None = None
+    gpu_offset_stride_per_cell: int = 0
+
+    def resolve(self, *, cell_index: int) -> dict[str, Any]:
+        meta = dict(self.values)
+        if self.include_cell_index:
+            meta["cell_index"] = cell_index
+        if self.gpu_offset_base is not None:
+            meta["gpu_offset"] = self.gpu_offset_base + cell_index * self.gpu_offset_stride_per_cell
+        return meta
 
 
 class WorkerLaunchContext(FrozenStrictBaseModel):
@@ -105,6 +115,7 @@ class BaseSpec(FrozenStrictBaseModel, ABC):
     category: str | None = None
     port_infos: list[PortInfo]
     scheduling: SchedulingSpec
+    static_meta: StaticMeta = StaticMeta()
     deploy_component: DeployComponent = DeployComponent.PRIMARY
     platform_access: PlatformAccess = PlatformAccess.NONE
 
@@ -115,9 +126,6 @@ class BaseSpec(FrozenStrictBaseModel, ABC):
     @classmethod
     @abstractmethod
     def create(cls, config: Any) -> Self | list[Self]: ...
-
-    def meta(self, ctx: WorkerMetaContext) -> dict[str, Any]:
-        return {}
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
         return {}
