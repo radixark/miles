@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from miles.utils.workers import env_vars as worker_env_vars
-from miles.utils.workers.worker_spec import BaseWorkerSpec
+from miles.utils.workers.worker_spec import BaseSpec
 
 RENDERED_CELL_INDEX = 0
 
@@ -28,14 +28,14 @@ _SUBSTITUTIONS = (
 )
 
 
-def real_or_sentinel_gpu_ids(spec: BaseWorkerSpec, *, is_sub_node: bool) -> list[int]:
+def real_or_sentinel_gpu_ids(spec: BaseSpec, *, is_sub_node: bool) -> list[int]:
     gpus_per_pod = max(1, spec.scheduling.gpus_per_pod())
     if is_sub_node:
         return [_BASE_GPU_ID_SENTINEL] * gpus_per_pod
     return list(range(gpus_per_pod))
 
 
-def sentinels_to_placeholders(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
+def sentinels_to_placeholders(argv: list[str], spec: BaseSpec) -> list[str]:
     for substitution in _SUBSTITUTIONS:
         sentinel = str(substitution.sentinel)
         _assert_sentinel_is_whole_token(argv, sentinel=sentinel, spec=spec, built_out_of=substitution.built_out_of)
@@ -43,13 +43,11 @@ def sentinels_to_placeholders(argv: list[str], spec: BaseWorkerSpec) -> list[str
     return argv
 
 
-def sentinel_to_placeholder(value: str, spec: BaseWorkerSpec) -> str:
+def sentinel_to_placeholder(value: str, spec: BaseSpec) -> str:
     return sentinels_to_placeholders([value], spec)[0]
 
 
-def _assert_sentinel_is_whole_token(
-    argv: list[str], *, sentinel: str, spec: BaseWorkerSpec, built_out_of: str
-) -> None:
+def _assert_sentinel_is_whole_token(argv: list[str], *, sentinel: str, spec: BaseSpec, built_out_of: str) -> None:
     embedded = [argument for argument in argv if sentinel in argument and argument != sentinel]
     assert not embedded, (
         f"Spec '{spec.name}' builds {embedded} out of its {built_out_of}; the value is substituted a whole "

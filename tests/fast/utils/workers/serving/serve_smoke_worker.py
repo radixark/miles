@@ -2,7 +2,7 @@ import os
 
 from tests.fast.utils.workers.import_probe import report_imported_top_level_modules
 
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec
 
 IMPORTED_MODULES_ENV_VAR = "MILES_SERVE_SMOKE_IMPORTED_MODULES"
 SMOKE_EXTRA_ENV_VAR = "MILES_SERVE_SMOKE_EXTRA_ENV_NAME"
@@ -24,9 +24,9 @@ class SmokeWorker:
         return os.environ.get(name)
 
 
-def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec]:
+def compute_specs(worker_argv: list[str]) -> list[BaseServeSpec]:
     return [
-        ServeWorkerSpec(
+        BaseServeSpec(
             name=POOL_ID,
             port_infos=[PortInfo(name="rpc", static_port=rpc_port_of(worker_argv))],
             env_var=lambda context: {

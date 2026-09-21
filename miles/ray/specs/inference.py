@@ -23,11 +23,11 @@ from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
 from miles.utils.workers.worker_spec import (
-    CommandWorkerSpec,
+    BaseCommandSpec,
+    BaseServeSpec,
     LaunchCommandContext,
     PortInfo,
     SchedulingSpec,
-    ServeWorkerSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,8 +43,8 @@ INFERENCE_REGISTRATION_REPORTER_POOL_ID = "inference-registration-reporter"
 INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS = "miles.utils.workers.registration.reporter.RegistrationReporterWorker"
 
 
-def spec_inference_controller(args) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def spec_inference_controller(args) -> BaseServeSpec:
+    return BaseServeSpec(
         name=INFERENCE_CONTROLLER_POOL_ID,
         platform_access=PlatformAccess.READ,
         port_infos=[],
@@ -65,12 +65,12 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
     )
 
 
-def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
+def specs_inference_registration_reporter(args) -> list[BaseServeSpec]:
     if DeployComponent(args.deploy_component) is not DeployComponent.INFERENCE:
         return []
 
     return [
-        ServeWorkerSpec(
+        BaseServeSpec(
             name=INFERENCE_REGISTRATION_REPORTER_POOL_ID,
             deploy_component=DeployComponent.INFERENCE,
             platform_access=PlatformAccess.READ,
@@ -150,7 +150,7 @@ def inference_controller_worker_name() -> str:
     return compute_worker_name(pool_id=INFERENCE_CONTROLLER_POOL_ID)
 
 
-def specs_router(args) -> list[CommandWorkerSpec]:
+def specs_router(args) -> list[BaseCommandSpec]:
     config = args.sglang  # TODO avoid resolve repeatedly
     return [
         _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
@@ -166,7 +166,7 @@ def compute_router_worker_name(model_idx: int) -> str:
     return compute_worker_name(pool_id=compute_router_pool_id(model_idx))
 
 
-def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> CommandWorkerSpec:
+def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> BaseCommandSpec:
     interpreter_prefix = python_argv_prefix()
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
@@ -198,7 +198,7 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
 
         return shlex.join(launch_argv)
 
-    return CommandWorkerSpec(
+    return BaseCommandSpec(
         name=compute_router_pool_id(model_idx),
         port_infos=[
             _compute_router_primary_port_info(args, model_idx=model_idx),
@@ -220,7 +220,7 @@ def _compute_router_primary_port_info(args, model_idx: int) -> PortInfo:
     return PortInfo(name="primary", static_port=args.sglang_router_port + model_idx)
 
 
-def spec_session_server(args) -> CommandWorkerSpec:
+def spec_session_server(args) -> BaseCommandSpec:
     config = args.sglang  # TODO avoid resolve repeatedly
     interpreter_prefix = python_argv_prefix()
 
@@ -237,7 +237,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
         launch_argv = [*interpreter_prefix, "-m", "miles.rollout.session.server", *config_to_argv(config)]
         return shlex.join(launch_argv)
 
-    return CommandWorkerSpec(
+    return BaseCommandSpec(
         name=SESSION_SERVER_POOL_ID,
         port_infos=[
             _compute_session_server_primary_port_info(args),
@@ -269,7 +269,7 @@ def compute_engine_pool_id(args, *, model_idx: int, group_index: int) -> str:
     return f"{ENGINE_POOL_ID_PREFIX}-{segment}-{model_idx}-{group_index}"
 
 
-def specs_inference_engine(args) -> list[CommandWorkerSpec]:
+def specs_inference_engine(args) -> list[BaseCommandSpec]:
     if args.rollout_external:
         return []
 
@@ -299,7 +299,7 @@ def _compute_spec_inference_engine(
     group_index: int,
     model_cfg: ModelConfig,
     server_group_config: ServerGroupConfig,
-) -> CommandWorkerSpec:
+) -> BaseCommandSpec:
     num_workers_per_cell = max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node)
     interpreter_prefix = python_argv_prefix()
 
@@ -356,7 +356,7 @@ def _compute_spec_inference_engine(
         f"remaining ranks"
     )
 
-    return CommandWorkerSpec(
+    return BaseCommandSpec(
         name=compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index),
         category=POOL_CATEGORY_INFERENCE_ENGINE,
         deploy_component=DeployComponent.INFERENCE,

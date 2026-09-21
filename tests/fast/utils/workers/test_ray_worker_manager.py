@@ -15,7 +15,7 @@ from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
 from miles.utils.workers.types import WorkerCommBackend
-from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
 
 @dataclass
@@ -49,8 +49,8 @@ def _make_spec(
     pg_name: str | None = None,
     pg_slot_offset: int = 0,
     pin_to_head: bool = False,
-) -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+) -> BaseCommandSpec:
+    return BaseCommandSpec(
         name=name,
         port_infos=(
             port_infos if port_infos is not None else [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
@@ -79,9 +79,7 @@ def _make_pgs(*, num_slots: int = 8, first_gpu_id: int = 0) -> dict[str, Placeme
     }
 
 
-async def _launch(
-    specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
-) -> RayWorkerManager:
+async def _launch(specs: list[BaseCommandSpec], pgs: dict[str, PlacementGroupInfo] | None = None) -> RayWorkerManager:
     manager = RayWorkerManager()
     await manager.init(
         worker_manager_args(), specs, pgs if pgs is not None else {}, comm_backend=WorkerCommBackend.RAY
@@ -511,7 +509,7 @@ class TestSpecEnvVars:
             calls.append(len(calls))
             return {"CALL_INDEX": str(len(calls))}
 
-        spec = CommandWorkerSpec(
+        spec = BaseCommandSpec(
             name="engine",
             port_infos=[PortInfo(name="primary", static_port=8000, allow_dynamic=True)],
             env_var=_env,
