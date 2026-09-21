@@ -150,22 +150,6 @@ class AlgoConfig(BaseConfig):
     gamma: A[float, Arg(help="PPO GAE gamma")] = 1.0
     lambd: A[float, Arg(help="PPO GAE lambd")] = 1.0
     normalize_advantages: A[bool, Arg()] = False
-    grpo_std_normalization: A[
-        bool,
-        Arg(
-            cli_name="--disable-grpo-std-normalization",
-            action="store_false",
-            help="from Dr.GRPO https://arxiv.org/pdf/2503.20783",
-        ),
-    ] = True
-    rewards_normalization: A[
-        bool,
-        Arg(
-            cli_name="--disable-rewards-normalization",
-            action="store_false",
-            help="Disable rewards normalization",
-        ),
-    ] = True
     use_rollout_entropy: A[
         bool,
         Arg(
@@ -273,3 +257,22 @@ class AlgoConfig(BaseConfig):
         float,
         Arg(help="The threshold for Off-Policy Sequence Masking (OPSM)."),
     ] = 1e-4
+
+
+class AlgoRolloutOnlyConfig(BaseConfig):
+    grpo_std_normalization: A[
+        bool,
+        Arg(
+            cli_name="--disable-grpo-std-normalization",
+            action="store_false",
+            help="from Dr.GRPO https://arxiv.org/pdf/2503.20783",
+        ),
+    ] = True
+    rewards_normalization: A[
+        bool,
+        Arg(
+            cli_name="--disable-rewards-normalization",
+            action="store_false",
+            help="Disable rewards normalization",
+        ),
+    ] = True
