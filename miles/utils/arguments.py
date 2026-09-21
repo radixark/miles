@@ -18,7 +18,7 @@ from miles.backends.megatron_utils.megatron_config import (
 )
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.backends.sglang_utils.sglang_config import SglangConfig
+from miles.backends.sglang_utils.sglang_config import SglangConfig, SglangScalingConfig
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -409,13 +409,16 @@ def parse_args_and_get_parser(
     resolve_custom_function_configs(args)
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
-    sglang = SglangConfig.parse_args(args)
+    sglang, sglang_scaling = SglangConfig.parse_args(args)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
         "sglang": sglang,
+        "sglang_scaling": sglang_scaling,
         "sglang_model_routers": None,
-        "init_expected_num_cells": _compute_init_expected_num_cells(args, sglang=sglang),
+        "init_expected_num_cells": _compute_init_expected_num_cells(
+            args, sglang=sglang, sglang_scaling=sglang_scaling
+        ),
     }
     values.update(RouterConfig.from_args(args))
     return AllConfig.model_validate(values), parser
@@ -491,12 +494,14 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
-def _compute_init_expected_num_cells(args: argparse.Namespace, *, sglang: SglangConfig) -> int | dict[str, int] | None:
+def _compute_init_expected_num_cells(
+    args: argparse.Namespace, *, sglang: SglangConfig, sglang_scaling: SglangScalingConfig
+) -> int | dict[str, int] | None:
     if (declared := args.init_expected_num_cells) is not None:
         return declared
     if args.rollout_external or not DeployComponent(args.deploy_component).deploys_own_inference_engines():
         return None
-    return {model.name: model.num_server_cells for model in sglang.models}
+    return {model.name: sglang_scaling.num_server_cells(model) for model in sglang.models}
 
 
 def _compute_rollout_external(args: argparse.Namespace) -> bool:
