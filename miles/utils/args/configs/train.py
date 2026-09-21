@@ -28,15 +28,6 @@ class TrainConfig(BaseConfig):
         Arg(choices=["torch", "flashinfer"], help="Top-k backend for Miles DSA indexer."),
     ] = "torch"
     true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
-    recompute_logprobs_via_prefill: A[
-        bool,
-        Arg(
-            help=(
-                "Recompute rollout logprobs via SGLang prefill instead of decode kernels. "
-                "Only needed for models whose prefill and decode paths are not numerically identical."
-            )
-        ),
-    ] = False
     train_env_vars: A[
         Any,
         Arg(
@@ -179,3 +170,15 @@ class TrainConfig(BaseConfig):
             )
         ),
     ] = None
+
+
+class TrainRolloutOnlyConfig(BaseConfig):
+    recompute_logprobs_via_prefill: A[
+        bool,
+        Arg(
+            help=(
+                "Recompute rollout logprobs via SGLang prefill instead of decode kernels. "
+                "Only needed for models whose prefill and decode paths are not numerically identical."
+            )
+        ),
+    ] = False

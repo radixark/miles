@@ -61,45 +61,12 @@ class RolloutRelatedConfig(BaseConfig):
             )
         ),
     ] = False
-    namespaced_radix_cache: A[
-        bool | None,
-        Arg(
-            action=argparse.BooleanOptionalAction,
-            help=(
-                "Whether every generation request carries a radix cache key naming the rollout call "
-                "the sample started under, so prefix KV computed under old weights cannot serve "
-                "samples of a later call. Defaults to true when --fully-async is combined with "
-                "--pause-generation-mode in_place, where the engine never flushes the cache and the "
-                "staleness of a shared prompt is otherwise unbounded; an explicit "
-                "--no-namespaced-radix-cache is respected."
-            ),
-        ),
-    ] = None
     rollout_temperature: A[
         float,
         Arg(help="the temperature for the inference engine during rollout."),
     ] = 1.0
     rollout_top_p: A[float, Arg(help="the top-p for the inference engine during rollout.")] = 1.0
     rollout_top_k: A[int, Arg(help="the top-k for the inference engine during rollout.")] = -1
-    rollout_max_context_len: A[
-        int | None,
-        Arg(
-            help=(
-                "The maximum context size for the inference engine during rollout."
-                "It should no exceed the `max_position_embeddinds` in Huggingface model's `config.json`"
-            )
-        ),
-    ] = None
-    rollout_max_prompt_len: A[
-        int | None,
-        Arg(
-            help=(
-                "The maximum length of the prompt for the inference engine during rollout. "
-                "If set, we will filter out the long prompts during initialization of the global dataset. "
-                "This is not recommended if the dataset is large."
-            )
-        ),
-    ] = None
     rollout_max_response_len: A[
         int | None,
         Arg(
@@ -109,51 +76,6 @@ class RolloutRelatedConfig(BaseConfig):
             )
         ),
     ] = None
-    rollout_skip_special_tokens: A[
-        bool,
-        Arg(
-            help=(
-                "Whether to skip special tokens in the response during rollout. "
-                "This is useful when you want to use the response as a prompt for the next rollout."
-            )
-        ),
-    ] = False
-    rollout_stop: A[
-        list[str] | None,
-        Arg(
-            type_parser=str,
-            nargs="+",
-            help=(
-                "The stop words for the inference engine during rollout. "
-                "It can be a list of strings or a single string. "
-                "It may be hard to pass special tokens in command line, in that case rollout_stop_token_ids can be used."
-            ),
-        ),
-    ] = None
-    rollout_stop_token_ids: A[
-        list[int] | None,
-        Arg(
-            type_parser=int,
-            nargs="+",
-            help=(
-                "The stop token ids for the inference engine during rollout. "
-                "It can be a list of integers or a single integer."
-            ),
-        ),
-    ] = None
-    rollout_shuffle: A[
-        bool,
-        Arg(help="Whether to shuffle the prompts during rollout."),
-    ] = False
-    rollout_seed: A[
-        int,
-        Arg(
-            help=(
-                "The seed for the random number generator during rollout. "
-                "This is used to shuffle the prompts and also for the random sampling of the prompts."
-            )
-        ),
-    ] = 42
     object_store_backend: A[
         str,
         Arg(
@@ -173,102 +95,7 @@ class RolloutRelatedConfig(BaseConfig):
         Arg(help="Number of Mooncake memory replicas for each stored object."),
     ] = 1
 
-    # sampling
-    over_sampling_batch_size: A[
-        int | None,
-        Arg(
-            help=(
-                "This defines the granularity of the sampling batch in the rollout function. "
-                "When the number of available samples falls below the target, a sampling "
-                "operation of size over_sampling_batch_size will be triggered."
-                "Regardless of whether partial rollout is used or filters are applied, "
-                "the sampling granularity is always determined by this value. "
-                "If this value is None, rollout_batch_size will be used as the default over_sampling_batch_size."
-            )
-        ),
-    ] = None
-    dynamic_sampling_filter_path: A[
-        str | None,
-        Arg(
-            help=(
-                "This is the filter function for dynamic sampling. "
-                "It should be able to judge whether the result of a prompt should be selected or not."
-                "We will do dynamic filter for sampling as in DAPO. e.g. not all correct or all wrong samples."
-                "You could use `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std` as an example."
-            )
-        ),
-    ] = None
-    rollout_submission_granularity: A[
-        str | None,
-        Arg(
-            choices=["group", "sample"],
-            help=(
-                "Granularity at which a completed unit frees rollout submission capacity. "
-                "`group` holds a slot until the whole prompt group returns; `sample` frees each "
-                "slot as its own sample finishes, so a replacement group goes out once "
-                "n_samples_per_prompt samples complete, whichever groups they came from. "
-                "Prompt groups are submitted whole either way. Unset picks the driver default: "
-                "`sample` under --fully-async, where groups completed beyond the batch are queued "
-                "for later steps; `group` otherwise, where they are aborted at the end of the step "
-                "and, without --partial-rollout, discarded."
-            ),
-        ),
-    ] = None
-
     # partial rollout
-    partial_rollout: A[
-        bool,
-        Arg(
-            help=(
-                "Whether to use partial rollout. "
-                "If set, the unfinished samples during dynamic sampling will be recycled back to data buffer. "
-                "This is useful for long responses."
-            )
-        ),
-    ] = False
-    mask_offpolicy_in_partial_rollout: A[
-        bool,
-        Arg(
-            help=(
-                "Whether to mask previous generation in partial rollout. "
-                "If set, only on-policy generated tokens will be used in training"
-            )
-        ),
-    ] = False
-    max_weight_staleness: A[
-        int | None,
-        Arg(
-            help=(
-                "Maximum allowed gap between a group's oldest weight version and the current "
-                "engine weight version. Groups exceeding this threshold are recycled back to "
-                "the data buffer instead of being sent to training. Only effective in fully "
-                "async mode. None (default) disables staleness filtering."
-            )
-        ),
-    ] = None
-    async_max_concurrent_samples: A[
-        int | None,
-        Arg(
-            help=(
-                "Maximum number of concurrently generating trajectories in fully async mode, "
-                "decoupling generation concurrency from the training batch size. None (default) "
-                "keeps the legacy bound of one training batch worth of trajectories "
-                "(rollout_batch_size groups, i.e. rollout_batch_size * n_samples_per_prompt)."
-            )
-        ),
-    ] = None
-    async_data_buffer_capacity_factor: A[
-        float,
-        Arg(
-            help=(
-                "Capacity of the finished-group data buffer between rollout production and "
-                "training consumption in fully async mode, as a multiple of rollout_batch_size "
-                "(floor(factor * rollout_batch_size) groups). When the buffer is full the "
-                "producer blocks until training consumes, so generation cannot run "
-                "unboundedly ahead of training."
-            )
-        ),
-    ] = 2.0
     async_unused_samples_handler: A[
         str,
         Arg(
@@ -282,17 +109,6 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = "drop"
-    custom_async_data_buffer_path: A[
-        str | None,
-        Arg(
-            help=(
-                "Path to a custom DataBuffer subclass replacing the fully async finished-group "
-                "data buffer (see miles/rollout/fully_async_data_buffer.py). Constructed with "
-                "DataBufferConstructorInput; it takes over dataflow/staleness control, so the "
-                "--async-data-buffer-* args apply only if the custom class reads them."
-            )
-        ),
-    ] = None
     custom_generate_function_path: A[
         CustomFunctionConfig | None,
         Arg(
@@ -302,37 +118,7 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = None
-    custom_rollout_log_function_path: A[
-        CustomFunctionConfig | None,
-        Arg(
-            help=(
-                "The custom function for logging rollout data. The signature of the functions is: "
-                "def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool. "
-                "The return value indicates whether to skip the default logging. "
-            ),
-        ),
-    ] = None
-    custom_eval_rollout_log_function_path: A[
-        CustomFunctionConfig | None,
-        Arg(
-            help=(
-                "The custom function for logging eval rollout data. "
-                "def log_eval_rollout_data(rollout_id, args, data, extra_metrics) -> bool. "
-                "The return value indicates whether to skip the default logging. "
-            ),
-        ),
-    ] = None
 
-    buffer_filter_path: A[
-        str | None,
-        Arg(
-            help=(
-                "Path to the buffer filter function. "
-                "It should be able to select the samples in the buffer. "
-                "The function should take list[list[Sample]] and return list[list[Sample]]."
-            )
-        ),
-    ] = None
     # update weight
     update_weight_buffer_size: A[
         int,
@@ -500,3 +286,220 @@ class RolloutRelatedConfig(BaseConfig):
         float,
         Arg(help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up."),
     ] = 600.0
+
+
+class RolloutRelatedRolloutOnlyConfig(BaseConfig):
+    namespaced_radix_cache: A[
+        bool | None,
+        Arg(
+            action=argparse.BooleanOptionalAction,
+            help=(
+                "Whether every generation request carries a radix cache key naming the rollout call "
+                "the sample started under, so prefix KV computed under old weights cannot serve "
+                "samples of a later call. Defaults to true when --fully-async is combined with "
+                "--pause-generation-mode in_place, where the engine never flushes the cache and the "
+                "staleness of a shared prompt is otherwise unbounded; an explicit "
+                "--no-namespaced-radix-cache is respected."
+            ),
+        ),
+    ] = None
+    rollout_max_context_len: A[
+        int | None,
+        Arg(
+            help=(
+                "The maximum context size for the inference engine during rollout."
+                "It should no exceed the `max_position_embeddinds` in Huggingface model's `config.json`"
+            )
+        ),
+    ] = None
+    rollout_max_prompt_len: A[
+        int | None,
+        Arg(
+            help=(
+                "The maximum length of the prompt for the inference engine during rollout. "
+                "If set, we will filter out the long prompts during initialization of the global dataset. "
+                "This is not recommended if the dataset is large."
+            )
+        ),
+    ] = None
+    rollout_skip_special_tokens: A[
+        bool,
+        Arg(
+            help=(
+                "Whether to skip special tokens in the response during rollout. "
+                "This is useful when you want to use the response as a prompt for the next rollout."
+            )
+        ),
+    ] = False
+    rollout_stop: A[
+        list[str] | None,
+        Arg(
+            type_parser=str,
+            nargs="+",
+            help=(
+                "The stop words for the inference engine during rollout. "
+                "It can be a list of strings or a single string. "
+                "It may be hard to pass special tokens in command line, in that case rollout_stop_token_ids can be used."
+            ),
+        ),
+    ] = None
+    rollout_stop_token_ids: A[
+        list[int] | None,
+        Arg(
+            type_parser=int,
+            nargs="+",
+            help=(
+                "The stop token ids for the inference engine during rollout. "
+                "It can be a list of integers or a single integer."
+            ),
+        ),
+    ] = None
+    rollout_shuffle: A[
+        bool,
+        Arg(help="Whether to shuffle the prompts during rollout."),
+    ] = False
+    rollout_seed: A[
+        int,
+        Arg(
+            help=(
+                "The seed for the random number generator during rollout. "
+                "This is used to shuffle the prompts and also for the random sampling of the prompts."
+            )
+        ),
+    ] = 42
+    # sampling
+    over_sampling_batch_size: A[
+        int | None,
+        Arg(
+            help=(
+                "This defines the granularity of the sampling batch in the rollout function. "
+                "When the number of available samples falls below the target, a sampling "
+                "operation of size over_sampling_batch_size will be triggered."
+                "Regardless of whether partial rollout is used or filters are applied, "
+                "the sampling granularity is always determined by this value. "
+                "If this value is None, rollout_batch_size will be used as the default over_sampling_batch_size."
+            )
+        ),
+    ] = None
+    dynamic_sampling_filter_path: A[
+        str | None,
+        Arg(
+            help=(
+                "This is the filter function for dynamic sampling. "
+                "It should be able to judge whether the result of a prompt should be selected or not."
+                "We will do dynamic filter for sampling as in DAPO. e.g. not all correct or all wrong samples."
+                "You could use `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std` as an example."
+            )
+        ),
+    ] = None
+    rollout_submission_granularity: A[
+        str | None,
+        Arg(
+            choices=["group", "sample"],
+            help=(
+                "Granularity at which a completed unit frees rollout submission capacity. "
+                "`group` holds a slot until the whole prompt group returns; `sample` frees each "
+                "slot as its own sample finishes, so a replacement group goes out once "
+                "n_samples_per_prompt samples complete, whichever groups they came from. "
+                "Prompt groups are submitted whole either way. Unset picks the driver default: "
+                "`sample` under --fully-async, where groups completed beyond the batch are queued "
+                "for later steps; `group` otherwise, where they are aborted at the end of the step "
+                "and, without --partial-rollout, discarded."
+            ),
+        ),
+    ] = None
+
+    partial_rollout: A[
+        bool,
+        Arg(
+            help=(
+                "Whether to use partial rollout. "
+                "If set, the unfinished samples during dynamic sampling will be recycled back to data buffer. "
+                "This is useful for long responses."
+            )
+        ),
+    ] = False
+    mask_offpolicy_in_partial_rollout: A[
+        bool,
+        Arg(
+            help=(
+                "Whether to mask previous generation in partial rollout. "
+                "If set, only on-policy generated tokens will be used in training"
+            )
+        ),
+    ] = False
+    max_weight_staleness: A[
+        int | None,
+        Arg(
+            help=(
+                "Maximum allowed gap between a group's oldest weight version and the current "
+                "engine weight version. Groups exceeding this threshold are recycled back to "
+                "the data buffer instead of being sent to training. Only effective in fully "
+                "async mode. None (default) disables staleness filtering."
+            )
+        ),
+    ] = None
+    async_max_concurrent_samples: A[
+        int | None,
+        Arg(
+            help=(
+                "Maximum number of concurrently generating trajectories in fully async mode, "
+                "decoupling generation concurrency from the training batch size. None (default) "
+                "keeps the legacy bound of one training batch worth of trajectories "
+                "(rollout_batch_size groups, i.e. rollout_batch_size * n_samples_per_prompt)."
+            )
+        ),
+    ] = None
+    async_data_buffer_capacity_factor: A[
+        float,
+        Arg(
+            help=(
+                "Capacity of the finished-group data buffer between rollout production and "
+                "training consumption in fully async mode, as a multiple of rollout_batch_size "
+                "(floor(factor * rollout_batch_size) groups). When the buffer is full the "
+                "producer blocks until training consumes, so generation cannot run "
+                "unboundedly ahead of training."
+            )
+        ),
+    ] = 2.0
+    custom_async_data_buffer_path: A[
+        str | None,
+        Arg(
+            help=(
+                "Path to a custom DataBuffer subclass replacing the fully async finished-group "
+                "data buffer (see miles/rollout/fully_async_data_buffer.py). Constructed with "
+                "DataBufferConstructorInput; it takes over dataflow/staleness control, so the "
+                "--async-data-buffer-* args apply only if the custom class reads them."
+            )
+        ),
+    ] = None
+    custom_rollout_log_function_path: A[
+        CustomFunctionConfig | None,
+        Arg(
+            help=(
+                "The custom function for logging rollout data. The signature of the functions is: "
+                "def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool. "
+                "The return value indicates whether to skip the default logging. "
+            ),
+        ),
+    ] = None
+    custom_eval_rollout_log_function_path: A[
+        CustomFunctionConfig | None,
+        Arg(
+            help=(
+                "The custom function for logging eval rollout data. "
+                "def log_eval_rollout_data(rollout_id, args, data, extra_metrics) -> bool. "
+                "The return value indicates whether to skip the default logging. "
+            ),
+        ),
+    ] = None
+    buffer_filter_path: A[
+        str | None,
+        Arg(
+            help=(
+                "Path to the buffer filter function. "
+                "It should be able to select the samples in the buffer. "
+                "The function should take list[list[Sample]] and return list[list[Sample]]."
+            )
+        ),
+    ] = None
