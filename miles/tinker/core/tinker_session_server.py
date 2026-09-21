@@ -95,7 +95,7 @@ class TrajectorySession:
     last_seen: float = field(default_factory=time.time)
     in_flight: int = 0  # samples running right now; the TTL sweep leaves such a session alone
     max_datum_tokens: int | None = None  # the client's per-datum cap from bind; a TITO chain never grows past it
-    sampling_session_id: str | None = None  # the Tinker sampling session bound at create; ties samples to its lease
+    sampling_session_id: str | None = None  # the Tinker sampling session bound at create: sampler version + lease
     messages: list[dict[str, Any]] | None = None  # history the last recorded turn answered, its reply appended
     token_ids: Sequence[int] | None = None  # the last turn's input_ids + output_ids, inherited by the next turn
 
@@ -138,27 +138,25 @@ class TrajectoryCollector:
         self,
         session_id: str,
         tenant: str,
-        model: str | None = None,
         sampling_session_id: str | None = None,
         max_datum_tokens: int | None = None,
     ) -> TrajectorySession:
-        """Create or re-bind a session pinned to a tinker:// path or sampling_session_id; caps and ownership apply."""
+        """Create or re-bind a session to a Tinker sampling session (its sampler version and its lease); caps apply."""
         validate_session_id(session_id)
         if not tenant:
             raise UserInputError("binding a session needs the tenant's API key")
+        if not sampling_session_id:
+            raise UserInputError("bind needs sampling_session_id: create a Tinker sampling session and pass its id")
         if max_datum_tokens is not None and (type(max_datum_tokens) is not int or max_datum_tokens < 1):
             raise UserInputError("max_datum_tokens must be a positive integer")
         session = self.sessions.get(session_id)
         if session is not None:
             if session.tenant != tenant:
                 raise OwnershipError("session does not belong to this tenant")
-            self._check_same_version(session, model)
-            if sampling_session_id is not None:
-                bound_path = self.service.resolve_sampler_path(tenant, model, sampling_session_id)
-                if bound_path != session.model_path:
-                    raise UserInputError(
-                        f"session {session_id!r} is bound to {session.model_path!r}, not {bound_path!r}"
-                    )
+            bound_path = self.service.resolve_sampler_path(tenant, sampling_session_id)
+            if bound_path != session.model_path:
+                raise UserInputError(f"session {session_id!r} is bound to {session.model_path!r}, not {bound_path!r}")
+            session.sampling_session_id = sampling_session_id  # same version, possibly a fresh lease
             if max_datum_tokens is not None:
                 session.max_datum_tokens = max_datum_tokens
             session.last_seen = self.clock()
@@ -173,7 +171,7 @@ class TrajectoryCollector:
         session = TrajectorySession(
             session_id=session_id,
             tenant=tenant,
-            model_path=self.service.resolve_sampler_path(tenant, model, sampling_session_id),
+            model_path=self.service.resolve_sampler_path(tenant, sampling_session_id),
             created_at=now,
             last_seen=now,
             max_datum_tokens=max_datum_tokens,
@@ -231,9 +229,9 @@ class TrajectoryCollector:
         cap = self.service.config.max_tokens_per_datum
         return cap if session.max_datum_tokens is None else min(cap, session.max_datum_tokens)
 
-    async def complete(self, session_id: str, tenant: str | None, request: TurnRequest) -> TurnResult:
-        """Record one turn: render the prompt off the loop, sample via the service, append and remember the Turn."""
-        session = self._session_for_request(session_id, tenant, request.model)
+    async def complete(self, session_id: str, request: TurnRequest) -> TurnResult:
+        """Record one turn on a bound session: render off the loop, sample under its lease, append the Turn."""
+        session = self._session_for_request(session_id, request.model)
         if len(session.turns) >= self.max_turns_per_session:
             raise SessionLimitError(
                 f"session {session_id!r} already holds {len(session.turns)} turns (cap {self.max_turns_per_session})"
@@ -286,10 +284,8 @@ class TrajectoryCollector:
     async def _sample(self, session: TrajectorySession, payload: dict[str, Any]) -> dict[str, Any]:
         """Sample through the gateway: submit_sample → retrieve_future → settled → sequences[0], or raise."""
         tenant = session.tenant
-        request_id, _ = self.service.submit_sample(tenant, payload)
-        if session.sampling_session_id is not None:
-            # filed under the tenant's lease: _expire_sessions cancels it when the lease dies, so sweep() can reclaim
-            self.service.attach_sample_to_session(request_id, session.sampling_session_id)
+        # refused once the lease behind the sampling session is gone; else filed under it so expiry cancels the task
+        request_id, _ = self.service.submit_recorded_sample(tenant, payload, session.sampling_session_id)
         future = self.service.retrieve_future(tenant, request_id)
         assert future is not None, f"sampling future {request_id} vanished before it settled"
         await future.settled.wait()
@@ -299,17 +295,10 @@ class TrajectoryCollector:
             raise SamplingBackendError(future.error or "sampling failed")
         return future.result["sequences"][0]
 
-    def _session_for_request(self, session_id: str, tenant: str | None, model: str | None) -> TrajectorySession:
-        """The session for this request: a known id (its owner, or anonymous) or a new id under a real tenant key."""
+    def _session_for_request(self, session_id: str, model: str | None) -> TrajectorySession:
+        """The bound session for a chat turn: the unguessable id is the credential; a tinker:// model must match."""
         validate_session_id(session_id)
-        anonymous = not tenant
-        session = self.sessions.get(session_id)
-        if session is None:
-            if anonymous:
-                raise SessionNotFoundError(f"unknown session {session_id!r}")
-            return self.create_session(session_id, tenant, model)
-        if not anonymous and tenant != session.tenant:
-            raise OwnershipError("session does not belong to this tenant")
+        session = self._get_session(session_id)
         self._check_same_version(session, model)
         session.last_seen = self.clock()
         return session

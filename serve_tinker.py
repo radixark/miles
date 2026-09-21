@@ -119,7 +119,6 @@ async def serve(args):
             server.config.app,
             collector,
             max_body_bytes=args.tinker_session_max_body_bytes,
-            placeholder_keys=frozenset(args.tinker_session_placeholder_keys),
         )
         logger.info("recorded-session routes mounted at /oai/sessions/{sid} (--tinker-session-server)")
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")

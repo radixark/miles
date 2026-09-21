@@ -125,12 +125,23 @@ class TinkerService:
         """True while the tenant still holds at least one Tinker session lease."""
         return any(record.tenant == tenant for record in self.sessions.values())
 
-    def attach_sample_to_session(self, request_id: str, sampling_session_id: str) -> None:
-        """File a sample task under the sampling session's Tinker session so a lease expiry cancels it too."""
+    def _lease_owner(self, tenant: str, sampling_session_id: str) -> str:
+        """The live Tinker session behind a sampling session; unknown or expired -> 400, another tenant's -> 403."""
         record = self.sampling_sessions.get(sampling_session_id)
-        entry = self._sample_tasks.get(request_id)
-        if record is not None and entry is not None:
-            self._sample_tasks[request_id] = (entry[0], record.session_id)
+        if record is None or record.session_id not in self.sessions:
+            raise UserInputError(f"sampling session {sampling_session_id!r} is unknown or its lease expired")
+        if record.tenant != tenant:
+            raise OwnershipError("sampling session does not belong to this tenant")
+        return record.session_id
+
+    def submit_recorded_sample(self, tenant: str, payload: dict, sampling_session_id: str) -> tuple[str, list[str]]:
+        """submit_sample for a recorded session: the lease is checked first and the task is filed under it at once."""
+        owner_session_id = self._lease_owner(tenant, sampling_session_id)  # refused before any future or task exists
+        request_id, sequence_ids = self.submit_sample(tenant, payload)
+        # no await between creation and filing, so neither the task nor _expire_sessions can run in between
+        task, _ = self._sample_tasks[request_id]
+        self._sample_tasks[request_id] = (task, owner_session_id)
+        return request_id, sequence_ids
 
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
@@ -457,18 +468,11 @@ class TinkerService:
             "model_path": session.model_path,
         }
 
-    def resolve_sampler_path(
-        self, tenant: str, model_path: str | None, sampling_session_id: str | None = None
-    ) -> str | None:
-        """None for the frozen base, else a tinker:// sampler path the tenant owns and that exists on disk."""
-        if sampling_session_id is not None:
-            model_path = self.get_sampler(tenant, sampling_session_id)["model_path"]
+    def resolve_sampler_path(self, tenant: str, sampling_session_id: str) -> str | None:
+        """The sampling session's sampler path (None = frozen base), owned by the tenant and present on disk."""
+        model_path = self.get_sampler(tenant, sampling_session_id)["model_path"]
         if model_path is None or model_path == self.config.base_model:
             return None
-        if not model_path.startswith("tinker://"):
-            raise UserInputError(
-                f"model must be {self.config.base_model!r} or a tinker://…/sampler_weights/… path, got {model_path!r}"
-            )
         resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
         return model_path
 
