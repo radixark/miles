@@ -375,6 +375,7 @@ class _BaseActorManager(Generic[SpecT]):
             args=self.spec.args,
             cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
+            num_workers_per_cell=self.spec.scheduling(self.manager.scaling).num_workers_per_cell,
             gpu_ids=self.gpu_ids,
         )
 
@@ -573,6 +574,7 @@ def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
         args=launch_context.args,
         cell_index=launch_context.cell_index,
         worker_in_cell_index=launch_context.worker_in_cell_index,
+        num_workers_per_cell=launch_context.num_workers_per_cell,
         gpu_ids=launch_context.gpu_ids,
         capability=DeferredBackendCapability(create=_create_ray_backend_capability),
     )

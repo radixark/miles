@@ -19,6 +19,7 @@ from miles.utils.workers.worker_spec import WorkerCtorContext
 class KubernetesWorkerIdentity:
     cell_index: int
     pod_in_cell_index: int
+    pods_per_cell: int
     worker_in_pod_index: int
     workers_per_pod: int
     gpu_slots_per_worker: int
@@ -26,6 +27,10 @@ class KubernetesWorkerIdentity:
     @property
     def worker_in_cell_index(self) -> int:
         return self.pod_in_cell_index * self.workers_per_pod + self.worker_in_pod_index
+
+    @property
+    def num_workers_per_cell(self) -> int:
+        return self.pods_per_cell * self.workers_per_pod
 
     @property
     def gpu_ids(self) -> list[int]:
@@ -37,6 +42,7 @@ class KubernetesWorkerIdentity:
             args=args,
             cell_index=self.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
+            num_workers_per_cell=self.num_workers_per_cell,
             gpu_ids=self.gpu_ids,
             capability=capability,
         )
@@ -84,6 +90,7 @@ def read_worker_identity(environ: Mapping[str, str]) -> KubernetesWorkerIdentity
     return KubernetesWorkerIdentity(
         cell_index=cell_index,
         pod_in_cell_index=pod_in_cell_index,
+        pods_per_cell=pods_per_cell,
         worker_in_pod_index=worker_in_pod_index,
         workers_per_pod=workers_per_pod,
         gpu_slots_per_worker=gpu_slots_per_worker,
