@@ -1,6 +1,6 @@
 ---
 title: "Harbor agents on the multi-LoRA Tinker gateway"
-description: "Harbor agents (terminus-2 on the AgentENV sandbox) trained through the multi-LoRA Tinker gateway with the unmodified tinker-cookbook RL loop."
+description: "Harbor agents (terminus-2 in sandboxes) trained through the multi-LoRA Tinker gateway with the unmodified tinker-cookbook RL loop."
 # Generated from examples/multi_lora/harbor_tinker/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
 Agentic RL on the gateway from [`examples/multi_lora`](/examples/multi-lora) without changing the Tinker wire format. The
