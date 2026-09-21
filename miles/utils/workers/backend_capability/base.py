@@ -11,7 +11,9 @@ if TYPE_CHECKING:
 
 class BackendCapability(abc.ABC):
     @abc.abstractmethod
-    def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider: ...
+    def dynamic_worker_provider(
+        self, *, pool_ids: Sequence[str] | None, category: str | None = None
+    ) -> BaseWorkerProvider: ...
 
     @abc.abstractmethod
     def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider: ...
@@ -25,8 +27,10 @@ class DeferredBackendCapability(BackendCapability):
         self._create = create
         self._inner: BackendCapability | None = None
 
-    def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
-        return self._resolve().dynamic_worker_provider(pool_ids=pool_ids)
+    def dynamic_worker_provider(
+        self, *, pool_ids: Sequence[str] | None, category: str | None = None
+    ) -> BaseWorkerProvider:
+        return self._resolve().dynamic_worker_provider(pool_ids=pool_ids, category=category)
 
     def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
         return self._resolve().static_worker_provider(pool_id=pool_id)
