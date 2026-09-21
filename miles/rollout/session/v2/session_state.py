@@ -50,6 +50,7 @@ class SessionStateV2:
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
     evaluation: bool = False
+    sampling_defaults: dict[str, Any] = field(default_factory=dict)
 
     def latest(self) -> TrajectoryNode | None:
         """The most recently committed generation (always a leaf), or ``None``
@@ -105,6 +106,7 @@ def prepare_token_ids_and_request_args(
         config=config,
         turn_args=parent.turn_args if parent is not None else None,
         evaluation=state.evaluation,
+        sampling_defaults=state.sampling_defaults,
     )
     prepared.body["input_ids"] = _render_token_ids(
         parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
@@ -214,9 +216,11 @@ class SessionRegistryV2(SessionRegistry):
 
     sessions: dict[str, SessionStateV2]
 
-    def create_session(self, *, evaluation: bool = False) -> str:
+    def create_session(self, *, evaluation: bool = False, sampling_defaults: dict[str, Any] | None = None) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = SessionStateV2(evaluation=evaluation)
+        self.sessions[session_id] = SessionStateV2(
+            evaluation=evaluation, sampling_defaults=dict(sampling_defaults or {})
+        )
         return session_id
 
     def compute_mismatch(

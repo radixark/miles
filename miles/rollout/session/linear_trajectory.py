@@ -89,6 +89,7 @@ class LinearTrajectory:
     num_assistant: int = 0
     turn_args_history: list[dict[str, Any]] = field(default_factory=list)
     evaluation: bool = False
+    sampling_defaults: dict[str, Any] = field(default_factory=dict)
 
     @property
     def turn_args(self) -> dict[str, Any]:
@@ -128,7 +129,12 @@ class LinearTrajectory:
         checkpoint_index = self._find_rollback_checkpoint(request_messages, matcher)
         turn_args = self.turn_args_history[checkpoint_index] if checkpoint_index >= 0 else None
         prepared = prepare_chat_request(
-            client_args, tito_tokenizer, config=config, turn_args=turn_args, evaluation=self.evaluation
+            client_args,
+            tito_tokenizer,
+            config=config,
+            turn_args=turn_args,
+            evaluation=self.evaluation,
+            sampling_defaults=self.sampling_defaults,
         )
         prepared.body["input_ids"] = self._render_token_ids(
             request_messages,
@@ -376,9 +382,11 @@ class SessionRegistry:
             message_matcher if message_matcher is not None else strict_message_matches
         )
 
-    def create_session(self, *, evaluation: bool = False) -> str:
+    def create_session(self, *, evaluation: bool = False, sampling_defaults: dict[str, Any] | None = None) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = LinearTrajectory(evaluation=evaluation)
+        self.sessions[session_id] = LinearTrajectory(
+            evaluation=evaluation, sampling_defaults=dict(sampling_defaults or {})
+        )
         return session_id
 
     def get_session(self, session_id: str) -> LinearTrajectory:

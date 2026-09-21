@@ -127,6 +127,10 @@ async def test_creation_selects_policy_and_defaults_to_training(env, body):
         b'{"evaluation": "false"}',
         b'{"evalution": true}',
         b'{"unexpected": 1}',
+        b'{"temperature": "0.6"}',
+        b'{"top_p": [0.9]}',
+        b'{"top_k": 20.5}',
+        b'{"top_k": true}',
     ],
 )
 async def test_invalid_creation_is_rejected_before_allocation(env, body, monkeypatch):
@@ -177,6 +181,38 @@ async def test_concurrent_train_and_eval_do_not_share_policy(env):
     await asyncio.gather(_chat(env, train, [USER]), _chat(env, evaluation, [USER]))
     assert sorted(request["return_routed_experts"] for request in env.backend.requests) == [False, True]
     assert sorted(request["return_indexer_topk"] for request in env.backend.requests) == [False, True]
+
+
+SAMPLING = {"temperature": 0.6, "top_p": 0.9, "top_k": 20}
+
+
+async def test_creation_sampling_defaults_fill_only_omitted_fields(env):
+    """A request without the field gets the session value; an explicit value wins; null counts as omitted."""
+    sid = await _create(env, json.dumps(SAMPLING).encode())
+    await _chat(env, sid, [USER])
+    await _chat(env, sid, [USER, ASSISTANT, TOOL], temperature=0.1, top_p=None)
+    omitted, explicit = env.backend.requests[-2:]
+    assert {key: omitted[key] for key in SAMPLING} == SAMPLING
+    assert {key: explicit[key] for key in SAMPLING} == {**SAMPLING, "temperature": 0.1}
+
+
+async def test_creation_without_sampling_defaults_leaves_omitted_fields_unset(env):
+    sid = await _create(env)
+    await _chat(env, sid, [USER])
+    assert not set(SAMPLING) & set(env.backend.requests[-1])
+
+
+async def test_an_integer_temperature_is_accepted_as_a_float_default(env):
+    sid = await _create(env, b'{"temperature": 0}')
+    await _chat(env, sid, [USER])
+    assert env.backend.requests[-1]["temperature"] == 0
+    assert "top_p" not in env.backend.requests[-1]
+
+
+async def test_concurrent_sessions_keep_their_own_sampling_defaults(env):
+    first, second = await asyncio.gather(_create(env, b'{"temperature": 0.2}'), _create(env, b'{"temperature": 0.8}'))
+    await asyncio.gather(_chat(env, first, [USER]), _chat(env, second, [USER]))
+    assert sorted(request["temperature"] for request in env.backend.requests) == [0.2, 0.8]
 
 
 @pytest.mark.parametrize("field", ["input_ids", "logprob_start_len", "lora_path"])

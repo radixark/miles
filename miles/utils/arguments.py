@@ -548,6 +548,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Requires train_async.py."
                 ),
             )
+            # Sampling values reach the engine per request only: the built-in generate path sends them
+            # itself and the session server fills fields an agent omits from its session's defaults.
+            # They are never engine launch arguments: an engine shared by rollout and eval has no single default.
             parser.add_argument(
                 "--rollout-temperature",
                 type=float,

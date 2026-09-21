@@ -13,6 +13,7 @@ from miles.rollout.session.samples.codec import (
     SamplesReply,
     decode_samples_and_merge_input_sample,
 )
+from miles.rollout.session.types import SESSION_SAMPLING_FIELDS
 from miles.utils.http_utils import post, post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -44,7 +45,7 @@ class OpenAIEndpointTracer:
         return self.router_url.removeprefix("http://")
 
     @staticmethod
-    async def create(args: Namespace, *, evaluation: bool = False):
+    async def create(args: Namespace, *, evaluation: bool = False, sampling_params: dict | None = None):
         session_addrs = getattr(args, "session_server_addrs", None)
         if not session_addrs:
             raise RuntimeError(
@@ -56,7 +57,12 @@ class OpenAIEndpointTracer:
         session_url = f"http://{session_addr}"
         instance_ids = getattr(args, "session_server_instance_ids", None) or {}
         session_server_instance_id = instance_ids.get(session_addr)
-        response = await post(f"{session_url}/sessions", {"evaluation": evaluation}, action="post")
+        body: dict = {"evaluation": evaluation}
+        # the session fills these into chat requests the agent sends without them
+        for key in SESSION_SAMPLING_FIELDS:
+            if (value := (sampling_params or {}).get(key)) is not None:
+                body[key] = value
+        response = await post(f"{session_url}/sessions", body, action="post")
         session_id = response["session_id"]
         use_v2 = getattr(args, "use_session_server", None) == "v2"
         return OpenAIEndpointTracer(

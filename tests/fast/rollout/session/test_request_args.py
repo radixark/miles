@@ -7,7 +7,12 @@ import pytest
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError
-from miles.rollout.session.request_args import filter_turn_args, prepare_chat_request, resolve_request_args_by_config
+from miles.rollout.session.request_args import (
+    apply_session_sampling_defaults,
+    filter_turn_args,
+    prepare_chat_request,
+    resolve_request_args_by_config,
+)
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -240,6 +245,38 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
     )
     assert "routed_experts_start_len" not in prepared.body
     assert client_args == original and history == original_history
+
+
+def test_session_sampling_defaults_fill_only_omitted_fields():
+    """Session values land before model rules, so the resolved request carries them; explicit values win."""
+    client_args = {"temperature": 0.1, "top_p": None}
+    original = deepcopy(client_args)
+    prepared = prepare_chat_request(
+        client_args,
+        TITOTokenizer(MagicMock()),
+        config=make_session_server_config(),
+        turn_args=None,
+        sampling_defaults={"temperature": 0.6, "top_p": 0.9, "top_k": 20},
+    )
+    assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
+        "temperature": 0.1,
+        "top_p": 0.9,
+        "top_k": 20,
+    }
+    assert client_args == original
+
+
+def test_without_session_sampling_defaults_omitted_fields_stay_unset():
+    prepared = prepare_chat_request(
+        {}, TITOTokenizer(MagicMock()), config=make_session_server_config(), turn_args=None
+    )
+    assert not {"temperature", "top_p", "top_k"} & set(prepared.body)
+
+
+def test_apply_session_sampling_defaults_treats_none_as_unset():
+    request_args = {"temperature": None, "top_k": -1}
+    apply_session_sampling_defaults(request_args, {"temperature": 0.6, "top_p": 0.9, "top_k": 20})
+    assert request_args == {"temperature": 0.6, "top_k": -1, "top_p": 0.9}
 
 
 @pytest.mark.parametrize("evaluation", [False, True])

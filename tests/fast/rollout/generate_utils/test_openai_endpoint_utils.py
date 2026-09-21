@@ -22,13 +22,25 @@ from miles.utils.types import Sample
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("create_kwargs", [{}, {"evaluation": False}, {"evaluation": True}])
-async def test_create_reads_session_server_instance_id_from_args(monkeypatch, create_kwargs):
+@pytest.mark.parametrize(
+    ("create_kwargs", "expected_payload"),
+    [
+        ({}, {"evaluation": False}),
+        ({"evaluation": False}, {"evaluation": False}),
+        ({"evaluation": True}, {"evaluation": True}),
+        # Only the sampling fields the session fills travel; None and other keys stay behind.
+        (
+            {"sampling_params": {"temperature": 0.6, "top_p": None, "top_k": 20, "max_new_tokens": 8}},
+            {"evaluation": False, "temperature": 0.6, "top_k": 20},
+        ),
+    ],
+)
+async def test_create_reads_session_server_instance_id_from_args(monkeypatch, create_kwargs, expected_payload):
     calls: list[tuple[str, str]] = []
 
     async def fake_post(url: str, payload: dict, action: str = "post"):
         calls.append((action, url))
-        assert payload == {"evaluation": create_kwargs.get("evaluation", False)}
+        assert payload == expected_payload
         assert action == "post"
         assert url == "http://127.0.0.1:12345/sessions"
         return {"session_id": "session-123"}

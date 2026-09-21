@@ -2,7 +2,8 @@
 
 ``prepare_chat_request`` owns a copy of the client's input. Config rules apply
 Session server constraints and retain the client's streaming preference. The
-TITO tokenizer then applies model rules to the same full request.
+session's sampling defaults fill the fields the client omitted. The TITO
+tokenizer then applies model rules to the same full request.
 
 After rendering and a successful generation, the session records the complete
 resolved request as ``turn_args``. A continuation supplies that history to the
@@ -54,13 +55,16 @@ def prepare_chat_request(
     config: SessionServerConfig,
     turn_args: dict[str, Any] | None,
     evaluation: bool = False,
+    sampling_defaults: dict[str, Any] | None = None,
 ) -> PreparedChatRequest:
-    """Resolve an owned request using server rules, model rules, and prior turn args.
+    """Resolve an owned request using server rules, session defaults, model rules, and prior turn args.
 
     ``turn_args`` is the continued turn's full request; ``None`` starts a root.
+    ``sampling_defaults`` are the session's values for sampling fields the client omits.
     Client input and recorded history remain unchanged.
     """
     request_args, client_stream = resolve_request_args_by_config(deepcopy(client_args), config, evaluation=evaluation)
+    apply_session_sampling_defaults(request_args, sampling_defaults or {})
     try:
         request_args = tito_tokenizer.resolve_request_args(request_args, turn_args=turn_args)
     except ValueError as e:
@@ -72,6 +76,17 @@ def prepare_chat_request(
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), client_stream=client_stream
     )
+
+
+def apply_session_sampling_defaults(request_args: dict[str, Any], sampling_defaults: dict[str, Any]) -> None:
+    """Fill in place the sampling fields the client left unset from the session's defaults.
+
+    A field the client sent with any value but ``None`` is kept; ``None`` counts as unset,
+    as it does for the engine's own chat defaults.
+    """
+    for key, value in sampling_defaults.items():
+        if request_args.get(key) is None:
+            request_args[key] = value
 
 
 def resolve_request_args_by_config(
