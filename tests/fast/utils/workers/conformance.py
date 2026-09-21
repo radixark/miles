@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from miles.utils.workers.rpc.client.misc import RpcWorkerCallError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec
 
 POOL_ID = "e2e-pool"
 RPC_PORT_FLAG = "--rpc-port"
@@ -44,12 +44,12 @@ class ConformanceWorker:
         raise RuntimeError(message)
 
 
-def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec]:
+def compute_specs(worker_argv: list[str]) -> list[BaseServeSpec]:
     return [compute_spec(rpc_port=_parse_rpc_port(worker_argv))]
 
 
-def compute_spec(*, rpc_port: int) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def compute_spec(*, rpc_port: int) -> BaseServeSpec:
+    return BaseServeSpec(
         name=POOL_ID,
         port_infos=[PortInfo(name="rpc", static_port=rpc_port, allow_dynamic=rpc_port == 0)],
         # prepend rather than replace: the inherited path is what carries sglang and megatron,
