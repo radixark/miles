@@ -152,10 +152,7 @@ class _RawSglangConfig(FrozenStrictBaseModel):
 
 class ServerGroupConfig(FrozenStrictBaseModel):
     worker_type: WorkerType
-    num_gpus: int = pydantic.Field(gt=0)
     num_gpus_per_engine: int = pydantic.Field(gt=0)
-    gpu_offset: int = pydantic.Field(ge=0)
-    engine_offset: int = pydantic.Field(ge=0)
     overrides: dict = pydantic.Field(default_factory=dict)
     needs_offload: bool
 
@@ -171,7 +168,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         default_gpus_per_engine: int,
         default_model_path: str,
         offset_cursor: "_OffsetCursor",
-    ) -> "ServerGroupConfig":
+    ) -> tuple["ServerGroupConfig", "ServerGroupScalingConfig"]:
         assert not ({"host", "port", "gated_launch_port", "disaggregation_mode"} & set(raw.overrides)), (
             f"sglang_overrides must not override host/port/disaggregation_mode ({raw.overrides=}): the rollout "
             f"process derives each engine's url from the addr allocator and its disaggregation_mode from "
@@ -193,19 +190,19 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             **raw.overrides,
         }
 
-        ans = cls(
+        config = cls(
             worker_type=raw.worker_type,
-            num_gpus=raw.num_gpus,
             num_gpus_per_engine=num_gpus_per_engine,
-            gpu_offset=gpu_offset,
-            engine_offset=offset_cursor.engine,
             overrides=overrides,
             needs_offload=needs_offload,
         )
+        scaling = ServerGroupScalingConfig(
+            num_gpus=raw.num_gpus, gpu_offset=gpu_offset, engine_offset=offset_cursor.engine
+        )
 
         offset_cursor.gpu += raw.num_gpus
-        offset_cursor.engine += raw.num_gpus // min(ans.num_gpus_per_engine, args.num_gpus_per_node)
-        return ans
+        offset_cursor.engine += raw.num_gpus // min(num_gpus_per_engine, args.num_gpus_per_node)
+        return config, scaling
 
 
 class ModelConfig(FrozenStrictBaseModel):
@@ -215,11 +212,13 @@ class ModelConfig(FrozenStrictBaseModel):
     update_weights: bool
 
     @classmethod
-    def resolve(cls, raw: _RawModelConfig, args, offset_cursor: "_OffsetCursor") -> "ModelConfig":
+    def resolve(
+        cls, raw: _RawModelConfig, args, offset_cursor: "_OffsetCursor"
+    ) -> tuple["ModelConfig", list["ServerGroupScalingConfig"]]:
         """Resolve per-group defaults from model-level then args-level values."""
         default_model_path = p if (p := raw.model_path) is not None else args.hf_checkpoint
         default_gpus_per_engine = n if (n := raw.num_gpus_per_engine) is not None else args.rollout_num_gpus_per_engine
-        server_groups = [
+        resolved = [
             ServerGroupConfig.resolve(
                 g,
                 args,
@@ -229,6 +228,7 @@ class ModelConfig(FrozenStrictBaseModel):
             )
             for g in raw.server_groups
         ]
+        server_groups = [config for config, _ in resolved]
 
         if server_groups:
             model_paths = {g.overrides["model_path"] for g in server_groups}
@@ -256,22 +256,35 @@ class ModelConfig(FrozenStrictBaseModel):
             else:
                 update_weights = True
 
-        return cls(
+        config = cls(
             name=raw.name,
             model_path=raw.model_path,
             server_groups=server_groups,
             update_weights=update_weights,
         )
+        return config, [scaling for _, scaling in resolved]
 
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(g.worker_type in (WorkerType.PREFILL, WorkerType.DECODE) for g in self.server_groups)
 
-    @property
-    def num_server_cells(self) -> int:
+
+class ServerGroupScalingConfig(FrozenStrictBaseModel):
+    num_gpus: int = pydantic.Field(gt=0)
+    gpu_offset: int = pydantic.Field(ge=0)
+    engine_offset: int = pydantic.Field(ge=0)
+
+
+class SglangScalingConfig(FrozenStrictBaseModel):
+    groups: dict[str, list[ServerGroupScalingConfig]]
+
+    def group(self, *, model_name: str, group_index: int) -> ServerGroupScalingConfig:
+        return self.groups[model_name][group_index]
+
+    def num_server_cells(self, model: ModelConfig) -> int:
         return sum(
-            group.num_gpus // group.num_gpus_per_engine
-            for group in self.server_groups
+            scaling.num_gpus // group.num_gpus_per_engine
+            for group, scaling in zip(model.server_groups, self.groups[model.name], strict=True)
             if group.worker_type != WorkerType.PLACEHOLDER
         )
 
@@ -281,7 +294,7 @@ class SglangConfig(FrozenStrictBaseModel):
     base_args: dict[str, Any]
 
     @classmethod
-    def parse_args(cls, args: Namespace) -> "SglangConfig":
+    def parse_args(cls, args: Namespace) -> tuple["SglangConfig", SglangScalingConfig]:
         base_args = _extract_base_args(args)
         if args.fp16:
             base_args["dtype"] = "float16"
@@ -329,12 +342,17 @@ class SglangConfig(FrozenStrictBaseModel):
         )
 
     @classmethod
-    def resolve(cls, raw: _RawSglangConfig, args: Namespace, *, base_args: dict[str, Any]) -> "SglangConfig":
+    def resolve(
+        cls, raw: _RawSglangConfig, args: Namespace, *, base_args: dict[str, Any]
+    ) -> tuple["SglangConfig", SglangScalingConfig]:
         offset_cursor = _OffsetCursor(gpu=0, engine=0)
-        model_configs = [ModelConfig.resolve(m, args, offset_cursor) for m in raw.models]
+        resolved = [ModelConfig.resolve(m, args, offset_cursor) for m in raw.models]
 
         assert offset_cursor.gpu == raw.total_num_gpus
-        return cls(models=model_configs, base_args=base_args)
+        return (
+            cls(models=[config for config, _ in resolved], base_args=base_args),
+            SglangScalingConfig(groups={config.name: scalings for config, scalings in resolved}),
+        )
 
     @property
     def has_pd_disaggregation(self) -> bool:
