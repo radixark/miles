@@ -46,8 +46,8 @@ def _as_tensor_like(values, reference: torch.Tensor) -> torch.Tensor:
     return torch.as_tensor(values, dtype=reference.dtype, device=reference.device)
 
 
-def _slice_response_inputs(args: Namespace, batch: RolloutBatch, values: list) -> list:
-    """Align client vectors with local logprobs without changing the shared batch."""
+def _cp_token_sharding(args: Namespace, batch: RolloutBatch, values: list) -> list:
+    """Shard each datum's per-response-token loss inputs to this CP rank without changing the batch."""
     max_seq_lens = batch.get("max_seq_lens")
     return [
         slice_log_prob_with_cp(
@@ -139,7 +139,7 @@ def cross_entropy_loss_function(
         -(_as_tensor_like(weights, log_prob) * log_prob * mask).sum()
         for log_prob, weights, mask in zip(
             log_probs,
-            _slice_response_inputs(args, batch, batch["loss_weights"]),
+            _cp_token_sharding(args, batch, batch["loss_weights"]),
             _response_masks(args, batch, log_probs),
             strict=True,
         )
@@ -158,7 +158,7 @@ def importance_sampling_loss_function(
     for log_prob, sampling_log_prob, advantage, mask in zip(
         log_probs,
         batch["rollout_log_probs"],
-        _slice_response_inputs(args, batch, batch["advantages"]),
+        _cp_token_sharding(args, batch, batch["advantages"]),
         _response_masks(args, batch, log_probs),
         strict=True,
     ):
@@ -181,7 +181,7 @@ def ppo_loss_function(
     for log_prob, sampling_log_prob, advantage, mask in zip(
         log_probs,
         batch["rollout_log_probs"],
-        _slice_response_inputs(args, batch, batch["advantages"]),
+        _cp_token_sharding(args, batch, batch["advantages"]),
         _response_masks(args, batch, log_probs),
         strict=True,
     ):
@@ -206,7 +206,7 @@ def cispo_loss_function(
     for log_prob, sampling_log_prob, advantage, mask in zip(
         log_probs,
         batch["rollout_log_probs"],
-        _slice_response_inputs(args, batch, batch["advantages"]),
+        _cp_token_sharding(args, batch, batch["advantages"]),
         _response_masks(args, batch, log_probs),
         strict=True,
     ):
@@ -229,7 +229,7 @@ def dro_loss_function(
     for log_prob, sampling_log_prob, advantage, mask in zip(
         log_probs,
         batch["rollout_log_probs"],
-        _slice_response_inputs(args, batch, batch["advantages"]),
+        _cp_token_sharding(args, batch, batch["advantages"]),
         _response_masks(args, batch, log_probs),
         strict=True,
     ):
