@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from typing import Any
 
 import yaml
@@ -2965,11 +2966,26 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
     return add_miles_arguments
 
 
-def parse_args(add_custom_arguments=None):
+def parse_args(
+    add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
+) -> argparse.Namespace:
+    args, _ = parse_args_and_get_parser(add_custom_arguments=add_custom_arguments)
+    return args
+
+
+def parse_args_and_get_parser(
+    add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
+) -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
 
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
+    parser: argparse.ArgumentParser | None = None
+
+    def add_miles_arguments_and_capture_parser(value: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        nonlocal parser
+        parser = add_miles_arguments(value)
+        return parser
 
     backend = parse_args_train_backend()
     if backend == "megatron":
@@ -2977,7 +2993,7 @@ def parse_args(add_custom_arguments=None):
         from miles.backends.megatron_utils.arguments import set_default_megatron_args
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
 
-        args = megatron_parse_args(extra_args_provider=add_miles_arguments)
+        args = megatron_parse_args(extra_args_provider=add_miles_arguments_and_capture_parser)
         args.compress_ratios = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
@@ -2995,7 +3011,7 @@ def parse_args(add_custom_arguments=None):
     else:
         from miles.backends.fsdp_utils.arguments import load_fsdp_args
 
-        args = load_fsdp_args(extra_args_provider=add_miles_arguments)
+        args = load_fsdp_args(extra_args_provider=add_miles_arguments_and_capture_parser)
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -3035,7 +3051,8 @@ def parse_args(add_custom_arguments=None):
 
     sglang_validate_args(args)
 
-    return args
+    assert parser is not None
+    return args, parser
 
 
 def parse_args_train_backend():
