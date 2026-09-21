@@ -22,6 +22,7 @@ from miles.backends.sglang_utils.sglang_config import SglangConfig, SglangScalin
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.utils.args.component_shared import SglangFieldsConfig
 from miles.utils.args.configs.algo import AlgoConfig, AlgoRolloutOnlyConfig
 from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
 from miles.utils.args.configs.ci import CiConfig, CiRolloutOnlyConfig
@@ -182,19 +183,6 @@ def get_miles_extra_args_provider(
         AlgoConfig.add_arguments(parser=parser)
         AlgoRolloutOnlyConfig.add_arguments(parser=parser)
         TrainerBackendTraitConfig.add_arguments(parser=parser)
-        reset_arg(parser=parser, name="--lr", type=float, default=1e-6)
-        reset_arg(parser=parser, name="--clip-grad", type=float, default=1.0)
-        reset_arg(parser=parser, name="--calculate-per-token-loss", action="store_true")
-        reset_arg(
-            parser=parser,
-            name="--no-save-optim",
-            action="store_true",
-            default=False,
-            help=(
-                "If set, do not save the optimizer state when saving checkpoints. "
-                "This reduces checkpoint size but disables training resumption from the saved checkpoint."
-            ),
-        )
         OnPolicyDistillationConfig.add_arguments(parser=parser)
         OnPolicyDistillationRolloutOnlyConfig.add_arguments(parser=parser)
         LoraConfig.add_arguments(parser=parser)
@@ -203,14 +191,11 @@ def get_miles_extra_args_provider(
         MlflowConfig.add_arguments(parser=parser)
         TensorboardConfig.add_arguments(parser=parser)
         PrometheusConfig.add_arguments(parser=parser)
-        DashboardConfig.add_arguments(parser=parser.add_argument_group("miles dashboard"))
+        DashboardConfig.add_arguments(parser=parser)
         RouterConfig.add_arguments(parser=parser)
         DebugConfig.add_arguments(parser=parser)
         DebugRolloutOnlyConfig.add_arguments(parser=parser)
-        SglangConfig.add_arguments(parser)
-        # required whenever expert projections are LoRA targets, inert otherwise
-        # (sglang's own default is False)
-        parser.set_defaults(sglang_lora_use_virtual_experts=True)
+        SglangFieldsConfig.add_arguments(parser=parser)
         SessionConfig.add_arguments(parser=parser)
         NetworkConfig.add_arguments(parser=parser)
         RewardModelConfig.add_arguments(parser=parser)
@@ -218,8 +203,6 @@ def get_miles_extra_args_provider(
         RolloutBufferConfig.add_arguments(parser=parser)
         RolloutBufferRolloutOnlyConfig.add_arguments(parser=parser)
         MtpTrainingConfig.add_arguments(parser=parser)
-        reset_arg(parser=parser, name="--mtp-num-layers", type=int, default=None)
-        reset_arg(parser=parser, name="--mtp-loss-scaling-factor", type=float, default=0.2)
         PrefillDecodeDisaggregationConfig.add_arguments(parser=parser)
         CiConfig.add_arguments(parser=parser)
         CiRolloutOnlyConfig.add_arguments(parser=parser)
