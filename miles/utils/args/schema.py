@@ -3,7 +3,7 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import UnionType
-from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
+from typing import Annotated, Any, Self, TypeVar, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.fields import FieldInfo
@@ -35,6 +35,12 @@ class Arg:
 # Adapted from sglang/srt/arg_groups/arg_utils.py:add_cli_args_from_dataclass.
 class BaseConfig(StrictBaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @classmethod
+    def slice_from(cls, source: "BaseConfig") -> Self:
+        missing = cls.model_fields.keys() - type(source).model_fields.keys()
+        assert not missing, f"{cls.__name__} cannot be sliced from {type(source).__name__}: it lacks {sorted(missing)}"
+        return cls.model_validate({name: value for name, value in source if name in cls.model_fields})
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
