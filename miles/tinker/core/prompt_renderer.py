@@ -21,22 +21,22 @@ def _token_list(rendered) -> list[int]:
 
 
 def render_prompt(
-    messages: list[dict[str, Any]],
+    request_messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     chat_template_kwargs: dict[str, Any],
     tokenizer,
 ) -> list[int]:
     """Validate the messages and render them with apply_chat_template(add_generation_prompt=True, tokenize=True)."""
-    if not isinstance(messages, list) or not messages:
+    if not isinstance(request_messages, list) or not request_messages:
         raise UserInputError("messages must be a non-empty list")
-    for index, message in enumerate(messages):
+    for index, message in enumerate(request_messages):
         if not isinstance(message, dict) or "role" not in message:
             raise UserInputError(f"messages[{index}] must be an object with a role")
     kwargs = dict(chat_template_kwargs)
     if tools:
         kwargs["tools"] = tools
     try:
-        rendered = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=True, **kwargs)
+        rendered = tokenizer.apply_chat_template(request_messages, add_generation_prompt=True, tokenize=True, **kwargs)
     except (TypeError, ValueError, KeyError) as error:
         raise UserInputError(f"cannot render messages with the chat template: {error}") from error
     ids = _token_list(rendered)
@@ -45,17 +45,17 @@ def render_prompt(
     return ids
 
 
-def _resends_history(messages: Any, stored: list[dict[str, Any]]) -> bool:
-    """True when messages equal (role, content) a leading slice of the stored history: an earlier request re-sent."""
-    if not isinstance(messages, list) or not messages:
+def _resends_history(request_messages: Any, stored: list[dict[str, Any]]) -> bool:
+    """True when request_messages match a leading slice of stored history by (role, content): an earlier request re-sent."""
+    if not isinstance(request_messages, list) or not request_messages:
         return False
-    pairs = zip(messages, stored[: len(messages)], strict=False)
+    pairs = zip(request_messages, stored[: len(request_messages)], strict=False)
     return all(a.get("role") == b.get("role") and a.get("content") == b.get("content") for a, b in pairs)
 
 
-def tito_render_prompt(
+def _try_merge_tokens(
     session: TrajectorySession,
-    messages: list[dict[str, Any]],
+    request_messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     tito_tokenizer,
     *,
@@ -63,32 +63,32 @@ def tito_render_prompt(
     budget: int | None,
 ) -> tuple[list[int] | None, str | None]:
     """TITO: previous turn's ids + tokens of the appended messages (merge_tokens), or (None, why a full render)."""
-    if session.tito_messages is None or session.tito_token_ids is None:
+    if session.messages is None or session.token_ids is None:
         return None, "first"
-    if not isinstance(messages, list) or len(messages) <= len(session.tito_messages):
+    if not isinstance(request_messages, list) or len(request_messages) <= len(session.messages):
         # a re-sent earlier state is a retry (rollback); a shorter history with new content is a rewrite (compaction)
-        return None, "retry" if _resends_history(messages, session.tito_messages) else "rewrite"
+        return None, "retry" if _resends_history(request_messages, session.messages) else "rewrite"
     try:
         prompt = tito_tokenizer.merge_tokens(
-            old_messages=session.tito_messages,
-            new_messages=messages,
-            pretokenized_token_ids=session.tito_token_ids,
+            old_messages=session.messages,
+            new_messages=request_messages,
+            pretokenized_token_ids=session.token_ids,
             tools=tools,
         )
     except ValueError:  # the harness edited, reordered or summarized the history; a fresh render is still exact
         return None, "rewrite"
-    prompt_ids = [int(token) for token in prompt]
-    if budget is not None and len(prompt_ids) + max_new_tokens > budget:
+    prompt_token_ids = [int(token) for token in prompt]
+    if budget is not None and len(prompt_token_ids) + max_new_tokens > budget:
         return None, "budget"
-    return prompt_ids, None
+    return prompt_token_ids, None
 
 
-def on_turn_committed(
-    session: TrajectorySession, turn: Turn, messages: list[dict[str, Any]], reply: dict[str, Any]
+def _update_pretokenized_state(
+    session: TrajectorySession, turn: Turn, request_messages: list[dict[str, Any]], assistant_message: dict[str, Any]
 ) -> None:
-    """TITO: remember the answered history + reply and this turn's ids as the prefix the next turn inherits."""
-    session.tito_messages = [*messages, reply]
-    session.tito_token_ids = array("i", [*turn.input_ids, *turn.output_ids])
+    """TITO: remember the answered history + assistant message and this turn's ids as the next turn's prefix."""
+    session.messages = [*request_messages, assistant_message]
+    session.token_ids = array("i", [*turn.input_ids, *turn.output_ids])
 
 
 class PromptRenderer:
@@ -100,32 +100,34 @@ class PromptRenderer:
         self.chat_template_kwargs = dict(chat_template_kwargs or {})
         self.tito_tokenizer = tito_tokenizer
 
-    def render(
+    def prepare_pretokenized(
         self,
         session: TrajectorySession,
-        messages: list[dict[str, Any]],
+        request_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         override: dict[str, Any] | None,
         *,
         max_new_tokens: int,
         budget: int | None,
     ) -> tuple[list[int], bool, str | None]:
-        """(prompt_ids, inherits, reset_reason): the TITO prefix when it applies, else a full render and why."""
+        """(prompt_token_ids, inherits, reset_reason): the TITO prefix when it applies, else a full render and why."""
         template_kwargs = self.template_kwargs(override)
         reason: str | None = "no_tito"
         if self.tito_tokenizer is not None:
             tito_tokenizer = self.tito_tokenizer_for(override)
-            prompt_ids, reason = tito_render_prompt(
-                session, messages, tools, tito_tokenizer, max_new_tokens=max_new_tokens, budget=budget
+            prompt_token_ids, reason = _try_merge_tokens(
+                session, request_messages, tools, tito_tokenizer, max_new_tokens=max_new_tokens, budget=budget
             )
-            if prompt_ids is not None:
-                return prompt_ids, True, None
-        return render_prompt(messages, tools, template_kwargs, self.tokenizer), False, reason
+            if prompt_token_ids is not None:
+                return prompt_token_ids, True, None
+        return render_prompt(request_messages, tools, template_kwargs, self.tokenizer), False, reason
 
-    def committed(self, session: TrajectorySession, turn: Turn, messages: list[dict[str, Any]], text: str) -> None:
+    def update_pretokenized_state(
+        self, session: TrajectorySession, turn: Turn, request_messages: list[dict[str, Any]], text: str
+    ) -> None:
         """Remember the answered history for the next TITO merge; a no-op without a TITOTokenizer."""
         if self.tito_tokenizer is not None:
-            on_turn_committed(session, turn, messages, {"role": "assistant", "content": text})
+            _update_pretokenized_state(session, turn, request_messages, {"role": "assistant", "content": text})
 
     def decode(self, ids) -> str:
         """The reply text for the wire response, special tokens dropped."""

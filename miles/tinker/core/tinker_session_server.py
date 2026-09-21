@@ -19,7 +19,7 @@ TINKER_PATH_PREFIX = "tinker://"
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
-class UnknownSessionError(Exception):
+class SessionNotFoundError(Exception):
     """No recorded session with this id."""
 
 
@@ -95,8 +95,8 @@ class TrajectorySession:
     last_seen: float = field(default_factory=time.time)
     in_flight: int = 0  # samples running right now; the TTL sweep leaves such a session alone
     max_datum_tokens: int | None = None  # the client's per-datum cap from bind; a TITO chain never grows past it
-    tito_messages: list[dict[str, Any]] | None = None  # history the last recorded turn answered, its reply appended
-    tito_token_ids: Sequence[int] | None = None  # the last turn's input_ids + output_ids, inherited by the next turn
+    messages: list[dict[str, Any]] | None = None  # history the last recorded turn answered, its reply appended
+    token_ids: Sequence[int] | None = None  # the last turn's input_ids + output_ids, inherited by the next turn
 
 
 def max_new_tokens_of(sampling_params: dict[str, Any]) -> int:
@@ -133,7 +133,7 @@ class TrajectoryCollector:
         self.strict_truncation = strict_truncation
         self.sessions: dict[str, TrajectorySession] = {}
 
-    def bind(
+    def create_session(
         self,
         session_id: str,
         tenant: str,
@@ -174,23 +174,23 @@ class TrajectoryCollector:
         self.sessions[session_id] = session
         return session
 
-    def get(self, session_id: str, tenant: str | None = None) -> TrajectorySession:
-        """Return the session; the tenant, when given, must own it; unknown ids raise UnknownSessionError."""
+    def _get_session(self, session_id: str, tenant: str | None = None) -> TrajectorySession:
+        """Return the session; the tenant, when given, must own it; unknown ids raise SessionNotFoundError."""
         session = self.sessions.get(session_id)
         if session is None:
-            raise UnknownSessionError(f"unknown session {session_id!r}")
+            raise SessionNotFoundError(f"unknown session {session_id!r}")
         if tenant is not None and session.tenant != tenant:
             raise OwnershipError("session does not belong to this tenant")
         return session
 
-    def delete(self, session_id: str, tenant: str) -> None:
+    def delete_session(self, session_id: str, tenant: str) -> None:
         """Drop a session and its turns; owner only."""
-        self.get(session_id, tenant)
+        self._get_session(session_id, tenant)
         del self.sessions[session_id]
 
-    def trajectory(self, session_id: str, tenant: str) -> dict[str, Any]:
+    def get_session(self, session_id: str, tenant: str) -> dict[str, Any]:
         """Export {session_id, model_path, turns} for the client's turns_to_trajectory; owner only."""
-        session = self.get(session_id, tenant)
+        session = self._get_session(session_id, tenant)
         return {
             "session_id": session.session_id,
             "model_path": session.model_path,
@@ -230,13 +230,13 @@ class TrajectoryCollector:
             raise SessionLimitError(
                 f"session {session_id!r} already holds {len(session.turns)} turns (cap {self.max_turns_per_session})"
             )
-        messages = request.messages
+        request_messages = request.messages
         max_new_tokens = max_new_tokens_of(request.sampling_params)
         # tokenizing is CPU work; keep it off the loop that serves every tenant's Tinker traffic
-        prompt_ids, inherits, reset_reason = await asyncio.to_thread(
-            self.renderer.render,
+        prompt_token_ids, inherits, reset_reason = await asyncio.to_thread(
+            self.renderer.prepare_pretokenized,
             session,
-            messages,
+            request_messages,
             request.tools,
             request.chat_template_kwargs,
             max_new_tokens=max_new_tokens,
@@ -249,7 +249,7 @@ class TrajectoryCollector:
         payload = {
             "model_path": session.model_path,
             "num_samples": 1,
-            "prompt_tokens": list(prompt_ids),
+            "prompt_tokens": list(prompt_token_ids),
             "sampling_params": dict(request.sampling_params),
             "prompt_logprobs": False,
             "topk_prompt_logprobs": 0,
@@ -260,7 +260,7 @@ class TrajectoryCollector:
         finally:
             session.in_flight -= 1
         turn = Turn(
-            input_ids=array("i", prompt_ids),
+            input_ids=array("i", prompt_token_ids),
             output_ids=array("i", (int(token) for token in sequence["tokens"])),
             logprobs=array("d", (float(value) for value in sequence["logprobs"])),
             finish_reason="length" if sequence.get("stop_reason") == "length" else "stop",
@@ -272,7 +272,7 @@ class TrajectoryCollector:
         session.turns.append(turn)
         session.last_seen = turn.created_at
         text = self.renderer.decode(turn.output_ids)
-        self.renderer.committed(session, turn, messages, text)
+        self.renderer.update_pretokenized_state(session, turn, request_messages, text)
         return TurnResult(turn=turn, text=text)
 
     async def _sample(self, tenant: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -294,8 +294,8 @@ class TrajectoryCollector:
         session = self.sessions.get(session_id)
         if session is None:
             if anonymous:
-                raise UnknownSessionError(f"unknown session {session_id!r}")
-            return self.bind(session_id, tenant, model)
+                raise SessionNotFoundError(f"unknown session {session_id!r}")
+            return self.create_session(session_id, tenant, model)
         if not anonymous and tenant != session.tenant:
             raise OwnershipError("session does not belong to this tenant")
         self._check_same_version(session, model)

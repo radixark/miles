@@ -8,8 +8,8 @@ from fastapi.responses import JSONResponse
 from miles.tinker.core.tinker_session_server import (
     SamplingBackendError,
     SessionLimitError,
+    SessionNotFoundError,
     TrajectoryCollector,
-    UnknownSessionError,
 )
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.app import _tenant
@@ -52,7 +52,7 @@ async def _json_body(request: Request, max_body_bytes: int = MAX_BODY_BYTES) -> 
     return payload
 
 
-def install_session_routes(
+def setup_session_routes(
     app: FastAPI,
     collector: TrajectoryCollector,
     max_body_bytes: int = MAX_BODY_BYTES,
@@ -60,8 +60,8 @@ def install_session_routes(
 ) -> None:
     """Mount the four /oai/sessions routes (body cap, harness placeholder keys) and their 404 / 429 / 502 handlers."""
 
-    @app.exception_handler(UnknownSessionError)
-    async def _unknown_session(request: Request, error: UnknownSessionError):
+    @app.exception_handler(SessionNotFoundError)
+    async def _session_not_found(request: Request, error: SessionNotFoundError):
         session_id = request.path_params.get("session_id", "{sid}")
         hint = f"bind it with POST /oai/sessions/{session_id} or send the tenant's bearer token"
         return JSONResponse(status_code=404, content={"error": f"{error}; {hint}"})
@@ -75,11 +75,11 @@ def install_session_routes(
         return JSONResponse(status_code=502, content={"error": str(error)})
 
     @app.post("/oai/sessions/{session_id}")
-    async def bind_session(session_id: str, request: Request):
+    async def create_session(session_id: str, request: Request):
         """Pin the session to a tinker:// path or sampling_session_id (optional max_datum_tokens); bearer required."""
         tenant = _owner(request, placeholder_keys)
         payload = await _json_body(request, max_body_bytes)
-        session = collector.bind(
+        session = collector.create_session(
             session_id,
             tenant,
             model=payload.get("model"),
@@ -99,10 +99,10 @@ def install_session_routes(
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
         """Export {session_id, model_path, turns: [ids, logprobs, finish_reason, inherits]}; owner only."""
-        return collector.trajectory(session_id, _owner(request, placeholder_keys))
+        return collector.get_session(session_id, _owner(request, placeholder_keys))
 
     @app.delete("/oai/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request):
         """Free the session and its turns; bearer must match the owner."""
-        collector.delete(session_id, _owner(request, placeholder_keys))
+        collector.delete_session(session_id, _owner(request, placeholder_keys))
         return {"session_id": session_id, "deleted": True}

@@ -14,7 +14,7 @@ from miles.tinker.core.tinker_session_server import TrajectoryCollector
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
-from miles.tinker.server.oai_routes import install_session_routes
+from miles.tinker.server.oai_routes import setup_session_routes
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -115,7 +115,7 @@ async def serve(args):
     )
     if args.tinker_session_server:
         # the four /oai/sessions routes ride on the app uvicorn holds; the Tinker routes are untouched
-        install_session_routes(
+        setup_session_routes(
             server.config.app,
             collector,
             max_body_bytes=args.tinker_session_max_body_bytes,
