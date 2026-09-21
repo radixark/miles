@@ -12,6 +12,7 @@ import yaml
 
 from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.megatron_args_utils import compute_trainer_num_cells
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
 from miles.utils.workers.naming import DNS_LABEL_PATTERN, TRAINER_ID_MAX_LENGTH
@@ -387,7 +388,23 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
     if trainer.model_id is not None:
         resolve_args_checkpoint_load(ans)
 
+    ans.trainer_init_expected_num_cells = _resolve_trainer_init_expected_num_cells(ans, base=args, trainer=trainer)
+
     return ans
+
+
+def _resolve_trainer_init_expected_num_cells(
+    ans: Namespace, *, base: Namespace, trainer: MegatronTrainerConfig
+) -> int:
+    from miles.utils.args.trainer_utils import compute_trainer_total_gpus
+
+    declared = base.trainer_init_expected_num_cells
+    if isinstance(declared, dict):
+        declared = declared[trainer.trainer_id]
+    if declared is not None:
+        return declared
+    total_gpus = compute_trainer_total_gpus(base, role=trainer.role)
+    return compute_trainer_num_cells(ans, total_gpus=total_gpus)
 
 
 def _apply_critical_derived_overrides(ans: Namespace, *, base: Namespace, trainer: MegatronTrainerConfig) -> None:
