@@ -4,8 +4,9 @@ description: "Harbor agents (terminus-2 on the AgentENV sandbox) trained through
 # Generated from examples/multi_lora/harbor_tinker/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
 Agentic RL on the gateway from [`examples/multi_lora`](/examples/multi-lora) without changing the Tinker wire format. The
-unmodified tinker-cookbook `rl/train.py` loop trains; Harbor harnesses (terminus-2) run their tasks on the AgentENV
-sandbox and chat with a recorded session on the gateway, which samples through the gateway's own token path
+unmodified tinker-cookbook `rl/train.py` loop trains; Harbor harnesses (terminus-2) run their tasks in sandboxes (any
+provider Harbor supports; the example uses an E2B-compatible endpoint) and chat with a recorded session on the
+gateway, which samples through the gateway's own token path
 (adapter `M@V`) and records every turn's `input_ids`, `output_ids` and `logprobs`. With `--tinker-tito-model` each
 turn's prompt inherits the previous turn's tokens (TITO), so a trajectory trains as one Datum.
 
@@ -50,7 +51,7 @@ with 400 instead.
      model; agent trajectories run to 10–30k tokens, so pass `--max-tokens-per-gpu 32768` (with recompute) and give the
      client the same cap as `max_datum_tokens`.
 
-2. **Client host** (on the tailnet that reaches the gateway and AgentENV):
+2. **Client host** (must reach the gateway and the sandbox API):
 
    ```bash
    pip install "tinker==0.26.2" tinker-cookbook "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
@@ -61,7 +62,7 @@ with 400 instead.
 3. **Train**:
 
    ```bash
-   HARBOR_ENV_TYPE=e2b E2B_API_URL=https://<agentenv> E2B_API_KEY_FILE=~/.config/e2b/api_key \
+   HARBOR_ENV_TYPE=e2b E2B_API_URL=https://<sandbox-api> E2B_API_KEY_FILE=~/.config/e2b/api_key \
    HARBOR_TASKS_DIR=~/.cache/terminal-bench-2 TINKER_API_KEY=tml-<key> \
    python examples/multi_lora/harbor_tinker/run_harbor_tinker.py \
        gateway=http://<gateway>:10613 model_name=Qwen/Qwen3-30B-A3B tasks_dir=~/.cache/terminal-bench-2 \

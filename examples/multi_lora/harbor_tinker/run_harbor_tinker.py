@@ -49,10 +49,10 @@ class HarborTinkerConfig:
 
 
 def preflight_sandbox() -> None:
-    """Fail fast before training: env vars, provider credential and SDK floor, and the AgentENV endpoint answering."""
+    """Fail fast before training: env vars, provider credential and SDK floor, the sandbox API endpoint answering."""
     env_type = os.environ.get("HARBOR_ENV_TYPE", "").strip().lower()
     if not env_type:
-        raise RuntimeError("set HARBOR_ENV_TYPE to the sandbox provider Harbor runs trials on (e2b for AgentENV)")
+        raise RuntimeError("set HARBOR_ENV_TYPE to the sandbox provider Harbor runs trials on (e.g. e2b)")
     if not os.environ.get("HARBOR_TASKS_DIR", "").strip():
         raise RuntimeError("set HARBOR_TASKS_DIR to the directory holding one Harbor task dir per task id (tasks_dir)")
     spec = PROVIDER_CREDENTIALS.get(env_type)
@@ -70,16 +70,16 @@ def preflight_sandbox() -> None:
     api_url = os.environ.get("E2B_API_URL", "").strip()
     if env_type == "e2b" and api_url:
         api_key = resolve_provider_api_key(spec["key_env_vars"][0], spec["file_env_var"], spec["default_path"])
-        _probe_agentenv(api_url, api_key)
+        _probe_sandbox_api(api_url, api_key)
 
 
-def _probe_agentenv(api_url: str, api_key: str) -> None:
-    """GET {E2B_API_URL}/sandboxes with the key: refused = cluster stopped or off the tailnet, 401 = wrong key."""
+def _probe_sandbox_api(api_url: str, api_key: str) -> None:
+    """GET {E2B_API_URL}/sandboxes with the key: refused = endpoint down or unreachable from here, 401 = wrong key."""
     try:
         response = httpx.get(f"{api_url.rstrip('/')}/sandboxes", headers={"X-API-Key": api_key}, timeout=10.0)
     except httpx.HTTPError as error:
         raise RuntimeError(
-            f"E2B_API_URL={api_url} is unreachable ({error}): is the AgentENV cluster running and this host on its tailnet?"
+            f"E2B_API_URL={api_url} is unreachable ({error}): check the endpoint is up and reachable from this host"
         ) from error
     if response.status_code == 401:
         raise RuntimeError(f"E2B_API_URL={api_url} rejected the key (401): check the E2B_API_KEY file")
