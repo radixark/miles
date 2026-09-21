@@ -1,6 +1,8 @@
+import argparse
+
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
-from miles.utils.args.schema import A, Arg, BaseConfig
+from miles.utils.args.schema import A, Arg, BaseConfig, reset_arg
 
 
 # TODO: Unify trainer descriptions after zhichen's training backend refactor
@@ -39,3 +41,20 @@ class TrainerBackendTraitConfig(BaseConfig):
 
     # from WandbConfig
     wandb_project: A[str | None, Arg(reset=True)] = None
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        super().add_arguments(parser=parser)
+        reset_arg(parser=parser, name="--lr", type=float, default=1e-6)
+        reset_arg(parser=parser, name="--clip-grad", type=float, default=1.0)
+        reset_arg(parser=parser, name="--calculate-per-token-loss", action="store_true")
+        reset_arg(
+            parser=parser,
+            name="--no-save-optim",
+            action="store_true",
+            default=False,
+            help=(
+                "If set, do not save the optimizer state when saving checkpoints. "
+                "This reduces checkpoint size but disables training resumption from the saved checkpoint."
+            ),
+        )
