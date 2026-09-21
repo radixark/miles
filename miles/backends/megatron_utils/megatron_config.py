@@ -212,14 +212,16 @@ class MegatronTrainerConfig(FrozenStrictBaseModel):
     trainer_id: str
     model_id: str | None
     role: TrainerRole
+    actor_index: int | None
     overrides: dict[str, Any]
 
     @classmethod
-    def resolve(cls, raw: _RawMegatronTrainerConfig) -> "MegatronTrainerConfig":
+    def resolve(cls, raw: _RawMegatronTrainerConfig, *, actor_index: int) -> "MegatronTrainerConfig":
         return cls(
             trainer_id=raw.trainer_id if raw.trainer_id is not None else f"{raw.model_id}-{raw.role}",
             model_id=raw.model_id,
             role=raw.role,
+            actor_index=actor_index,
             overrides=_resolve_overrides(raw.overrides, model_id=raw.model_id),
         )
 
@@ -275,10 +277,12 @@ def resolve_megatron_config(args: Namespace, *, base_args: dict[str, Any]) -> Me
 
 def _compute_trainers(args: Namespace) -> list[MegatronTrainerConfig]:
     if (raw := _resolve_raw_megatron_config(args.megatron_config)) is None:
-        trainers = [MegatronTrainerConfig(trainer_id=ACTOR_ROLE, model_id=None, role=ACTOR_ROLE, overrides={})]
+        trainers = [
+            MegatronTrainerConfig(trainer_id=ACTOR_ROLE, model_id=None, role=ACTOR_ROLE, actor_index=0, overrides={})
+        ]
     else:
         _assert_no_declared_critic(raw)
-        trainers = [MegatronTrainerConfig.resolve(raw=t) for t in raw.trainers]
+        trainers = [MegatronTrainerConfig.resolve(raw=t, actor_index=i) for i, t in enumerate(raw.trainers)]
         assert trainers, "--megatron-config must declare at least one trainer"
 
     if args.use_critic:
@@ -296,6 +300,7 @@ def _compute_critic_trainer(args: Namespace, *, policy: MegatronTrainerConfig) -
         trainer_id=CRITIC_ROLE if model_id is None else f"{model_id}-{CRITIC_ROLE}",
         model_id=model_id,
         role=CRITIC_ROLE,
+        actor_index=None,
         overrides={**policy.overrides, **_compute_critic_overrides(args)},
     )
 
@@ -354,6 +359,7 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
     ans.trainer_id = trainer.trainer_id
     ans.trainer_model_id = trainer.model_id
     ans.trainer_role = trainer.role
+    ans.trainer_actor_index = trainer.actor_index
 
     for key, value in trainer.overrides.items():
         assert hasattr(ans, key), (  # config-access-exempt: attribute selected at runtime from key

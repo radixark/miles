@@ -21,3 +21,4 @@ class TrainerOnlyConfig(BaseConfig):
         Discriminator(_backend_name),
     ]
     trainer_role: str
+    trainer_actor_index: int | None
