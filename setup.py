@@ -1,5 +1,5 @@
-import sys
 import platform
+import sys
 
 from setuptools import find_packages, setup
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
@@ -43,7 +43,10 @@ setup(
     version="0.1.0",
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
-    package_data={"miles.dashboard": ["static/*"]},
+    package_data={
+        "miles.dashboard": ["static/*"],
+        "miles_plugins.models.kda_chunk_train": ["csrc/*.h", "csrc/*/*.cu"],
+    },
     install_requires=_fetch_requirements("requirements.txt"),
     extras_require={
         "fsdp": [
