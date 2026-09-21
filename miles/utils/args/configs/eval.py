@@ -4,21 +4,7 @@ from miles.utils.eval_config import EvalDatasetConfig
 
 
 class EvalConfig(BaseConfig):
-    eval_datasets: list[EvalDatasetConfig]
     eval_uses_snapshots: bool
-
-    eval_function_path: A[
-        CustomFunctionConfig | None,
-        Arg(
-            help=(
-                "Path to the eval fn. Two kinds fit here. A rollout fn generates against the "
-                "engines the framework hands it: the training engines, or the dedicated fleet "
-                "when --eval-num-gpus is set. A CheckpointEvalFn subclass gets the snapshot "
-                "path instead and owns the rest itself — weight delivery, endpoint, generation. "
-                "If not set, defaults to --rollout-function-path."
-            ),
-        ),
-    ] = None
 
     eval_prompt_data: A[
         list[str] | None,
@@ -53,7 +39,6 @@ class EvalConfig(BaseConfig):
     eval_top_p: A[float | None, Arg()] = None
     eval_top_k: A[int | None, Arg()] = None
     eval_max_response_len: A[int | None, Arg()] = None
-    eval_max_prompt_len: A[int | None, Arg()] = None
     eval_min_new_tokens: A[int | None, Arg()] = None
     eval_max_context_len: A[int | None, Arg()] = None
     eval_hf_dir: A[
@@ -89,3 +74,21 @@ class EvalConfig(BaseConfig):
             )
         ),
     ] = 2
+
+
+class EvalRolloutOnlyConfig(BaseConfig):
+    eval_datasets: list[EvalDatasetConfig]
+    eval_function_path: A[
+        CustomFunctionConfig | None,
+        Arg(
+            help=(
+                "Path to the eval fn. Two kinds fit here. A rollout fn generates against the "
+                "engines the framework hands it: the training engines, or the dedicated fleet "
+                "when --eval-num-gpus is set. A CheckpointEvalFn subclass gets the snapshot "
+                "path instead and owns the rest itself — weight delivery, endpoint, generation. "
+                "If not set, defaults to --rollout-function-path."
+            ),
+        ),
+    ] = None
+
+    eval_max_prompt_len: A[int | None, Arg()] = None

@@ -27,6 +27,19 @@ class OnPolicyDistillationConfig(BaseConfig):
         float,
         Arg(help="On-policy distillation KL penalty coefficient. Default is 1.0."),
     ] = 1.0
+    opd_teacher_load: A[
+        str | None,
+        Arg(
+            help=(
+                "The checkpoint for OPD teacher model. Required when --opd-type=megatron. "
+                "The teacher model should have the same architecture as policy/ref model."
+            )
+        ),
+    ] = None
+    opd_teacher_ckpt_step: A[int | None, Arg(help="The checkpoint step for OPD teacher model.")] = None
+
+
+class OnPolicyDistillationRolloutOnlyConfig(BaseConfig):
     opd_log_prob_top_k: A[
         int,
         Arg(
@@ -87,13 +100,3 @@ class OnPolicyDistillationConfig(BaseConfig):
             )
         ),
     ] = "opd_teacher"
-    opd_teacher_load: A[
-        str | None,
-        Arg(
-            help=(
-                "The checkpoint for OPD teacher model. Required when --opd-type=megatron. "
-                "The teacher model should have the same architecture as policy/ref model."
-            )
-        ),
-    ] = None
-    opd_teacher_ckpt_step: A[int | None, Arg(help="The checkpoint step for OPD teacher model.")] = None
