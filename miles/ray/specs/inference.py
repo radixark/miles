@@ -359,10 +359,6 @@ class InferenceEngineSpec(BaseCommandSpec):
         )
 
 
-def compute_engine_pool_ids(args) -> list[str]:
-    return [spec.name for spec in InferenceEngineSpec.create(args)]
-
-
 def _compute_spec_inference_engine(
     args,
     model_idx: int,
