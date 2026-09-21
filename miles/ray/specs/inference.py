@@ -10,6 +10,7 @@ from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.args.runtime import InferenceControllerConfig
 from miles.utils.function_registry import load_function
@@ -58,15 +59,15 @@ class InferenceControllerSpec(BaseServeSpec):
 
     @classmethod
     def create(cls, config: InferenceControllerConfig) -> Self:
-        return cls(
-            args=config,
-            scheduling=SchedulingSpec(
-                num_cells=1,
-                num_workers_per_cell=1,
-                num_gpus_per_worker=0,
-                num_cpus_per_worker=1,
-                pin_to_head=config.pin_rollout_manager_to_head,
-            ),
+        return cls(args=config)
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0,
+            num_cpus_per_worker=1,
+            pin_to_head=self.args.pin_rollout_manager_to_head,
         )
 
     def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
@@ -94,15 +95,15 @@ class InferenceRegistrationReporterSpec(BaseServeSpec):
 
     @classmethod
     def create(cls, config: InferenceControllerConfig) -> Self:
-        return cls(
-            args=config,
-            scheduling=SchedulingSpec(
-                num_cells=1,
-                num_workers_per_cell=1,
-                num_gpus_per_worker=0,
-                num_cpus_per_worker=1,
-                pin_to_head=config.pin_rollout_manager_to_head,
-            ),
+        return cls(args=config)
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0,
+            num_cpus_per_worker=1,
+            pin_to_head=self.args.pin_rollout_manager_to_head,
         )
 
     def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
@@ -181,6 +182,13 @@ class RouterSpec(BaseCommandSpec):
             for model_idx, model_cfg in enumerate(config.sglang.models)
         ]
 
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return SchedulingSpec.single(
+            num_gpus_per_worker=0,
+            # TODO: refactor the flag
+            pin_to_head=self.args.pin_rollout_manager_to_head,
+        )
+
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
         model_cfg = self.model_cfg
@@ -231,11 +239,6 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Router
             _compute_router_primary_port_info(args, model_idx=model_idx),
             PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
         ],
-        scheduling=SchedulingSpec.single(
-            num_gpus_per_worker=0,
-            # TODO: refactor the flag
-            pin_to_head=args.pin_rollout_manager_to_head,
-        ),
     )
 
 
@@ -249,6 +252,16 @@ class SessionServerSpec(BaseCommandSpec):
     @classmethod
     def create(cls, config: Any) -> Self:
         return _compute_spec_session_server(config)
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        args = self.args
+        return SchedulingSpec(
+            num_cells=(args.session_server_workers if args.use_session_server and args.sglang.models else 0),
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0,
+            num_cpus_per_worker=0,
+            pin_to_head=True,
+        )
 
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
@@ -267,21 +280,12 @@ class SessionServerSpec(BaseCommandSpec):
 
 
 def _compute_spec_session_server(args: Any) -> SessionServerSpec:
-    config = args.sglang  # TODO avoid resolve repeatedly
-
     return SessionServerSpec(
         args=args,
         name=SESSION_SERVER_POOL_ID,
         port_infos=[
             _compute_session_server_primary_port_info(args),
         ],
-        scheduling=SchedulingSpec(
-            num_cells=(args.session_server_workers if args.use_session_server and config.models else 0),
-            num_workers_per_cell=1,
-            num_gpus_per_worker=0,
-            num_cpus_per_worker=0,
-            pin_to_head=True,
-        ),
     )
 
 
@@ -323,13 +327,16 @@ class InferenceEngineSpec(BaseCommandSpec):
             if server_group_config.worker_type != WorkerType.PLACEHOLDER
         ]
 
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return _compute_inference_engine_scheduling(self.args, server_group_config=self.server_group_config)
+
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
         return compute_inference_engine_env_vars(ctx.args)
 
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
         server_group_config = self.server_group_config
-        num_workers_per_cell = self.scheduling.num_workers_per_cell
+        num_workers_per_cell = self.scheduling(args).num_workers_per_cell
         interpreter_prefix = python_argv_prefix()
         dist_init = ctx.self_addrs["dist_init"]
         # TODO: only node 0's seed is used by sglang; node != 0 should get node 0's number
@@ -359,24 +366,10 @@ class InferenceEngineSpec(BaseCommandSpec):
         )
 
 
-def _compute_spec_inference_engine(
-    args,
-    model_idx: int,
-    group_index: int,
-    model_cfg: ModelConfig,
-    server_group_config: ServerGroupConfig,
-) -> InferenceEngineSpec:
-    num_workers_per_cell = max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node)
-
-    num_gpus_per_engine = server_group_config.num_gpus_per_engine
-    assert num_gpus_per_engine <= args.num_gpus_per_node or num_gpus_per_engine % args.num_gpus_per_node == 0, (
-        f"group '{server_group_config.worker_type.value}' wants {num_gpus_per_engine=} which neither fits in one node of "
-        f"{args.num_gpus_per_node} gpus nor tiles whole nodes, so its ranks would never all be launched"
-    )
-
-    scheduling = SchedulingSpec(
+def _compute_inference_engine_scheduling(args, *, server_group_config: ServerGroupConfig) -> SchedulingSpec:
+    return SchedulingSpec(
         num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
-        num_workers_per_cell=num_workers_per_cell,
+        num_workers_per_cell=max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node),
         # TODO: may need real num for k8s native mode
         num_gpus_per_worker=0.2,
         num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
@@ -384,6 +377,22 @@ def _compute_spec_inference_engine(
         pg_name="rollout",
         pg_slot_offset=server_group_config.gpu_offset,
     )
+
+
+def _compute_spec_inference_engine(
+    args,
+    model_idx: int,
+    group_index: int,
+    model_cfg: ModelConfig,
+    server_group_config: ServerGroupConfig,
+) -> InferenceEngineSpec:
+    num_gpus_per_engine = server_group_config.num_gpus_per_engine
+    assert num_gpus_per_engine <= args.num_gpus_per_node or num_gpus_per_engine % args.num_gpus_per_node == 0, (
+        f"group '{server_group_config.worker_type.value}' wants {num_gpus_per_engine=} which neither fits in one node of "
+        f"{args.num_gpus_per_node} gpus nor tiles whole nodes, so its ranks would never all be launched"
+    )
+
+    scheduling = _compute_inference_engine_scheduling(args, server_group_config=server_group_config)
 
     num_workers_total = server_group_config.num_gpus // scheduling.num_gpu_slots_per_worker
     assert num_workers_total % scheduling.num_workers_per_cell == 0, (
@@ -417,7 +426,6 @@ def _compute_spec_inference_engine(
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
-        scheduling=scheduling,
         # TODO: reduce complexity around passing around configs later during arguments refactor
         static_meta=StaticMeta(
             values=dict(

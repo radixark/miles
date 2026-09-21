@@ -3,6 +3,7 @@ from typing import Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, model_validator
 
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.math_utils import exact_div
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -117,7 +118,6 @@ class BaseSpec(FrozenStrictBaseModel, ABC):
     name: str
     category: str | None = None
     port_infos: list[PortInfo]
-    scheduling: SchedulingSpec
     static_meta: StaticMeta = StaticMeta()
     deploy_component: DeployComponent = DeployComponent.PRIMARY
     platform_access: PlatformAccess = PlatformAccess.NONE
@@ -129,6 +129,9 @@ class BaseSpec(FrozenStrictBaseModel, ABC):
     @classmethod
     @abstractmethod
     def create(cls, config: Any) -> Self | list[Self]: ...
+
+    @abstractmethod
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec: ...
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
         return {}
