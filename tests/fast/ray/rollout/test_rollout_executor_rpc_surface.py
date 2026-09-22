@@ -35,12 +35,6 @@ class TestWhatARolloutHandsToTheDriver:
         assert restored.data_ref == refs
         assert all(isinstance(ref, _MooncakeStoreObjectRef) for ref in restored.data_ref)
 
-    def test_an_empty_batch_timeout_arrives_as_a_field(self):
-        """The multi-LoRA driver reads this instead of catching a remote exception type."""
-        restored = _round_trip(RolloutDataPack(empty_batch_timeout=True))
-
-        assert restored.empty_batch_timeout is True and restored.data_refs == []
-
     def test_an_unknown_key_is_refused_rather_than_carried(self):
         """The pack is a contract between two processes; a key only one side knows is a silent mismatch."""
         with pytest.raises(ValidationError):

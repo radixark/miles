@@ -16,6 +16,7 @@ from tests.fast.source_scan import (
 EXCLUDED_DIRS = (REPO_ROOT / "tests",)
 
 RAY_USING_MODULES = {
+    "miles/utils/external_utils/ray_job.py": "launcher closure: submitting, following, and stopping launcher-owned ray jobs",
     "miles/ray/placement_group.py": "launcher closure: placement groups are how ray is asked to schedule",
     "miles/ray/wiring.py": "launcher closure: driver shutdown kills the manager it launched by ActorHandle",
     "miles/utils/ray_utils.py": "launcher closure: node lookup and pinning options for the launcher's own calls",
@@ -99,7 +100,7 @@ class TestTheScanReachesEveryProcessTheDriverIsPartOf:
         """The driver is where a ray-only exception handler hid, and miles/ alone never covered it."""
         scanned = relative_paths(_scanned_modules())
 
-        assert {"train.py", "train_async.py", "train_multi_lora_async.py"} <= set(scanned)
+        assert {"train.py", "train_async.py"} <= set(scanned)
 
     def test_a_driver_script_that_reaches_for_ray_would_be_reported(self):
         """A check that only ever looks under miles/ passes on the very file that broke under rpc."""

@@ -38,7 +38,6 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
-from miles.utils.multi_lora import EmptyBatchTimeoutError
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
@@ -153,14 +152,9 @@ class RolloutExecutor:
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
-            try:
-                data, metadata, metrics = await self._get_rollout_data(
-                    rollout_id=rollout_id, trainer_model_id=trainer_model_id
-                )
-            except EmptyBatchTimeoutError as e:
-                assert self.args.multi_lora, "only the multi-LoRA rollout waits for a non-empty batch"
-                logger.warning(f"Rollout {rollout_id} produced no trainable group before the empty-wait timeout: {e}")
-                return RolloutDataPack(empty_batch_timeout=True)
+            data, metadata, metrics = await self._get_rollout_data(
+                rollout_id=rollout_id, trainer_model_id=trainer_model_id
+            )
         save_debug_rollout_data(
             self.args,
             data,

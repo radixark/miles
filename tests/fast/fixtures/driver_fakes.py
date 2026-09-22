@@ -57,9 +57,7 @@ class FakeRolloutExecutor:
             self.events.append(f"generate_failed:{rollout_id}")
             raise error
         pack = self.generation_packs.pop(0) if self.generation_packs else RolloutDataPack()
-        self.events.append(
-            f"generate_empty:{rollout_id}" if pack.empty_batch_timeout else f"generate_done:{rollout_id}"
-        )
+        self.events.append(f"generate_done:{rollout_id}")
         return pack
 
     async def _eval(self, rollout_id: int, **_kwargs: Any) -> None:
