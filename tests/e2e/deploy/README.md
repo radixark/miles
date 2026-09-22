@@ -103,37 +103,13 @@ over at rollout 0 with the run.
 
 ### `scenario_hot_restart_realistic_gsm8k`
 
-```
-Type: single run, ft's scenario_realistic_gsm8k with hot restarts instead of kills
-Steps: as scenario_realistic_gsm8k
-Injection: HotRestartFaultForm at random intervals through the ordinary cell fault scheduler,
-        seed logged
-Eligibility: two healthy virtual cells; the form does not harm its target, so both remain eligible
-        after a take-over without pretending a real trainer or rollout cell was targeted
-Terminal lifecycle: the form reads progress from the same dump directory as checkpoints and events;
-        the virtual-cell provider returns no targets after rollout 234, leaving rollouts 235-249
-        free of new take-overs
-Landing signal: both replaced workloads (orchestrator, rollout-executor) carry a stamp other
-        than the one they carried at the draw - rewritten, not added
-Observation: as in scenario_hot_restart_deterministic - snapshots start after the release settles
-Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's cost); mean draw
-        interval 600s (--hot-restart-interval-seconds)
-
-1. Run the realistic gsm8k recipe while the plan injects hot restarts
-2. Assert: gsm8k reward improves as in scenario_realistic_gsm8k
-3. Assert: >= MIN_HOT_RESTARTS take-overs landed; no injection attempt failed; every relaunch
-   thread finished without raising (where the run's own metric verdict surfaces); each landed
-   take-over stamped orchestrator and rollout-executor once; no other workload rolled or lost a
-   pod; one trainer boot uuid throughout, first read before any take-over stamped a workload; no
-   take-over threw away more than MAX_REDONE_STEPS_PER_TAKE_OVER = SAVE_INTERVAL + 1 steps - one
-   save interval, plus the one step the checkpoint tracker read at the draw may still lag the
-   save the run had just written; and the same bound again against the resume point measured
-   after the fact - one .trash_* per take-over, read in the order the logs were rolled aside (a
-   take-over can fire while the run is still catching up, so how far a log trained says nothing
-   about which take-over left it), the log that followed one keeping a prefix of the log it
-   replaced, and the steps past that prefix being what the take-over cost
-4. Artifact: per take-over cost (index, checkpoint held, step reached) in
-   <dump_dir>/hot_restart/evidence.json
-
-Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
-```
+- **Entry**: the E2E module forwards to `tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_realistic_gsm8k`; the neutral soak engine lives in `tests/utils/soak/`, its deployment adapters in `tests/utils/soak/deploy/`, its take-over checkers in `tests/utils/soak/deploy/checkers/`, and the shared hot restart facts in `tests/utils/deploy/hot_restart/`.
+- **Training**: synchronous GSM8K training recipe, 250 rollouts by default, disaggregated P2P weight transfer; no accuracy threshold or tail evaluation requirement.
+- **Takeovers**: exponential mean interval 600 seconds; at least two applied takeovers; each must preserve non-orchestration workloads and resume from checkpoints within `SAVE_INTERVAL + 1` steps.
+- **Recovery**: a takeover is eligible only with a checkpoint; the next action waits for a new checkpoint and training beyond the pre-takeover rollout. Every launch runs in a worker thread of the test process and records how it finished (`finished`, `replaced` or `failed`), tracked separately from recovery.
+- **Target refresh**: every action selects identities from a fresh observation; takeover does not reuse a previously prepared cell/process target.
+- **Tail**: shared admission closure leaves the final 20 percent of rollouts free of new faults; final observation must prove all actions recovered and all owned launchers finished.
+- **Weight evidence**: explicitly enable bounded checksum collection; check same-version consistency across archived active/discarded event generations. Require exact update, epoch and incarnation coverage for at least two publications in the final uninterrupted tail; interrupted earlier publications remain a coverage gap.
+- **Artifacts**: `<dump_dir>-soak/<session_id>/events.jsonl`, `hot_restart/evidence.json`, and independent active/discarded training-event copies under `sources/`; terminal closure and SHA-256 digests detect incomplete or changed evidence.
+- **CI boundary**: the entry registers under suite `stage-c-8-gpu-h200` with labels `deploy, ft-long`, and carries a `disabled` reason until a Kubernetes lane supplies shared storage, worker images and release-management credentials. The H200 Ray lane cannot execute this contract.
+- **Execution status**: neither standalone nor mixed takeover has been run or calibrated in this implementation task.

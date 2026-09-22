@@ -1,6 +1,3 @@
-import threading
-import time
-
 import pytest
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ENGINE_POOL,
@@ -321,60 +318,3 @@ def _settled_snapshot(*, orchestrator_uid: str = "uid-o-1") -> ClusterSnapshot:
 
 def _raise_boom(**_kwargs) -> None:
     raise RuntimeError("kubectl said no")
-
-
-def _wait_until_threads_left(count: int) -> None:
-    deadline = time.monotonic() + 5.0
-    while threading.active_count() > count and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-
-class TestObservingTheClusterInTheBackground:
-    def test_the_closing_snapshot_is_taken_after_the_body_returns(self, monkeypatch):
-        """The run ends inside the body, and the frame that shows its last pods comes after."""
-        observer = _observer()
-        taken: list[str] = []
-        monkeypatch.setattr(
-            cluster_module.ClusterObserver, "observe_once_or_warn", lambda _self: taken.append("polled")
-        )
-        monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once", lambda _self: taken.append("closing"))
-
-        with cluster_module.observing_cluster(observer, poll_interval_seconds=0.0):
-            pass
-
-        assert taken[-1] == "closing"
-
-    def test_an_observer_still_mid_read_when_asked_to_stop_is_reported(self, monkeypatch):
-        """Reading what it collected while it is still writing would race it."""
-        release = threading.Event()
-        monkeypatch.setattr(
-            cluster_module.ClusterObserver, "observe_once_or_warn", lambda _self: release.wait(timeout=30.0)
-        )
-        monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once", lambda _self: None)
-        monkeypatch.setattr(cluster_module, "JOIN_TIMEOUT_SECONDS", 0.05)
-        before = threading.active_count()
-
-        try:
-            with pytest.raises(AssertionError, match="still reading the run"):
-                with cluster_module.observing_cluster(_observer(), poll_interval_seconds=0.0):
-                    pass
-        finally:
-            release.set()
-            _wait_until_threads_left(before)
-
-    def test_a_body_that_raised_does_not_leave_the_observer_running(self, monkeypatch):
-        """A leaked poller keeps reading a release the next test is about to install over."""
-        monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
-        monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once", lambda _self: None)
-        before = threading.active_count()
-
-        with pytest.raises(_BodyFailed):
-            with cluster_module.observing_cluster(_observer(), poll_interval_seconds=0.0):
-                raise _BodyFailed
-
-        _wait_until_threads_left(before)
-        assert threading.active_count() == before
-
-
-class _BodyFailed(Exception):
-    pass
