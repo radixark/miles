@@ -34,7 +34,7 @@ from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
-from miles_plugins.models.inkling.lora import resolve_inkling_adapter_targets
+from miles_plugins.models.inkling.lora import validate_inkling_lora_targets
 
 logger = logging.getLogger(__name__)
 
@@ -3188,7 +3188,8 @@ def miles_validate_args(args):
             "inkling_mm_model",
             "inkling_text",
         ):
-            args.lora_adapter_targets = resolve_inkling_adapter_targets(hf_config.to_dict(), args.hf_lora_targets)
+            validate_inkling_lora_targets(hf_config.to_dict(), args.hf_lora_targets)
+            args.lora_adapter_targets = "all-linear"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

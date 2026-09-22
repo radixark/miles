@@ -10,42 +10,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.lora_targets import resolve_hf_lora_targets
 
 logger = logging.getLogger(__name__)
 
 
-_HF_TO_ADAPTER_MODULES = {
-    "self_attn.q_proj": ("attn.wq_du",),
-    "self_attn.k_proj": ("attn.wk_dv",),
-    "self_attn.v_proj": ("attn.wv_dv",),
-    "self_attn.r_proj": ("attn.wr_du",),
-    "self_attn.o_proj": ("attn.wo_ud",),
-    "mlp.gate_proj": ("mlp.gate_up_proj",),
-    "mlp.up_proj": ("mlp.gate_up_proj",),
-    "mlp.down_proj": ("mlp.down_proj",),
-    "mlp.experts.gate_up_proj": ("mlp.experts.w1", "mlp.experts.w3"),
-    "mlp.experts.down_proj": ("mlp.experts.w2",),
-    "mlp.shared_experts.gate_proj": ("mlp.shared_experts.w1",),
-    "mlp.shared_experts.up_proj": ("mlp.shared_experts.w3",),
-    "mlp.shared_experts.down_proj": ("mlp.shared_experts.w2",),
-}
-
-
-def resolve_inkling_adapter_targets(hf_config, targets):
+def validate_inkling_lora_targets(hf_config, targets):
     expected = resolve_hf_lora_targets(hf_config)
     assert set(targets) == set(
         expected
     ), "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
-    adapter_targets = set()
-    for target in targets:
-        if target == "lm_head":
-            adapter_targets.add("language_model.lm_head")
-        else:
-            _, module = target.split(".layers.*.", 1)
-            adapter_targets.update(f"language_model.layers.*.{name}" for name in _HF_TO_ADAPTER_MODULES[module])
-    return sorted(adapter_targets)
 
 
 class InklingLoRAAdapter(nn.Module):
@@ -464,8 +438,6 @@ def apply_inkling_lora(model, args):
 
 def wrap_model_provider_with_inkling_lora(provider_func, args):
     """Wrap a miles model provider so every built chunk gets LoRA before DDP wrap."""
-
-    resolve_inkling_adapter_targets(load_hf_config(args.hf_checkpoint).to_dict(), args.hf_lora_targets)
 
     def wrapped(*provider_args, **provider_kwargs):
         return apply_inkling_lora(provider_func(*provider_args, **provider_kwargs), args)

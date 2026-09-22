@@ -8,6 +8,7 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_mod
 
 pytest.importorskip("sglang")
 
+from miles.utils.lora import build_lora_config
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 
@@ -103,18 +104,21 @@ class TestLoraTargetModules:
         [
             [f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
             [f"model.layers.*.linear_attn.in_proj_{projection}" for projection in ("qkv", "z", "b", "a")],
-            [f"language_model.layers.*.attn.{projection}" for projection in ("wq_du", "wk_dv", "wv_dv", "wr_du")],
+            "all-linear",
         ],
         ids=["qkv", "gdn", "inkling"],
     )
     @pytest.mark.parametrize("multi_lora", [False, True], ids=["single", "multi"])
-    def test_adapter_paths_survive_the_engine_cli(self, adapter_targets, multi_lora):
+    def test_adapter_selection_reaches_engine_and_sync_config(self, adapter_targets, multi_lora):
         args = make_engine_args(
             lora_rank=16,
+            lora_alpha=32,
+            lora_dropout=0.0,
             lora_adapter_targets=adapter_targets,
             hf_lora_targets=["model.language_model.layers.*.self_attn.q_proj"],
             multi_lora=multi_lora,
             multi_lora_n_adapters=4,
         )
         targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
-        assert set(targets) == set(adapter_targets)
+        assert set(targets) == ({"all"} if adapter_targets == "all-linear" else set(adapter_targets))
+        assert build_lora_config(args, target_modules=adapter_targets)["target_modules"] == adapter_targets

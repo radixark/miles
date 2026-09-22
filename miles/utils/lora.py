@@ -44,7 +44,7 @@ def build_lora_config(args, *, target_modules):
         "peft_type": "LORA",
         "r": args.lora_rank,
         "lora_alpha": args.lora_alpha,
-        "target_modules": list(target_modules),
+        "target_modules": target_modules if isinstance(target_modules, str) else list(target_modules),
         "lora_dropout": args.lora_dropout,
         "bias": "none",
         "task_type": "CAUSAL_LM",
