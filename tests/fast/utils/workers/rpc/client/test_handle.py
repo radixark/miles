@@ -179,6 +179,7 @@ async def _handle_over(
     transport: httpx.AsyncBaseTransport,
     worker_cls: type = _Worker,
     require_stable_boot_uuid: bool = False,
+    expected_boot_uuid: str | None = None,
     call_timeout_seconds: float = 3600.0,
     ready_timeout_seconds: float = rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS,
     follow_redirects: bool = False,
@@ -188,10 +189,17 @@ async def _handle_over(
             worker_cls,
             server_url="http://testserver",
             require_stable_boot_uuid=require_stable_boot_uuid,
+            expected_boot_uuid=expected_boot_uuid,
             call_timeout_seconds=call_timeout_seconds,
             ready_timeout_seconds=ready_timeout_seconds,
             http_client=http_client,
         )
+
+
+async def _boot_uuid_of(app: Any) -> str:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+        response = await client.get(f"http://testserver{HEALTH_PATH}")
+    return response.headers[BOOT_UUID_HEADER]
 
 
 class TestRepresentation:
@@ -1045,6 +1053,47 @@ class TestBootUuid:
 
                 assert handle._boot_uuid_pin.expected != pinned
                 assert handle._boot_uuid_pin.needs_handshake() is False
+
+
+class TestExpectedBootUuid:
+    async def test_a_handle_targeting_an_observed_boot_calls_without_a_handshake(self) -> None:
+        """A pre-pinned handle goes straight to the call and fences it with the observed boot uuid."""
+        worker = _Worker()
+        async with _running_app(worker) as app:
+            boot_uuid = await _boot_uuid_of(app)
+            transport = _HookTransport(app)
+            async with _handle_over(transport, expected_boot_uuid=boot_uuid) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        assert all(HEALTH_PATH not in str(request.url) for request in transport.seen)
+        assert {request.headers[EXPECTED_BOOT_UUID_HEADER] for request in transport.seen} == {boot_uuid}
+        assert worker.calls == 1
+
+    async def test_the_first_call_to_a_replacement_of_the_observed_boot_never_runs(self) -> None:
+        """A handle built from an observation refuses a replaced process on its very first request."""
+        replacement = _Worker()
+        async with _running_app(_Worker()) as observed_app, _running_app(replacement) as replacement_app:
+            boot_uuid = await _boot_uuid_of(observed_app)
+            async with _handle_over(_HookTransport(replacement_app), expected_boot_uuid=boot_uuid) as handle:
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_default_arg(a=1, b=2)
+                with pytest.raises(ServerRestartedError):
+                    await handle.submit_without_result("demo_default_arg", a=1)
+
+        assert replacement.calls == 0
+
+    async def test_a_handle_targeting_an_observed_boot_cannot_follow_a_replacement(self) -> None:
+        """Waiting for a replacement is refused and leaves the handle fenced to the observed boot."""
+        replacement = _Worker()
+        async with _running_app(_Worker()) as observed_app, _running_app(replacement) as replacement_app:
+            boot_uuid = await _boot_uuid_of(observed_app)
+            async with _handle_over(_HookTransport(replacement_app), expected_boot_uuid=boot_uuid) as handle:
+                with pytest.raises(ValueError):
+                    await handle.wait_ready(timeout=5.0, allow_server_uuid_change=True)
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_default_arg(a=1, b=2)
+
+        assert replacement.calls == 0
 
 
 class TestWaitReady:
