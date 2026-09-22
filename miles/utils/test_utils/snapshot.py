@@ -15,6 +15,7 @@ import yaml
 from pydantic import BaseModel
 
 SNAPSHOT_UPDATE_ENV_VAR = "MILES_UPDATE_SNAPSHOTS"
+SNAPSHOT_RECORD_DIR_ENV_VAR = "MILES_SNAPSHOT_RECORD_DIR"
 
 
 def dump_snapshot(value: Any) -> str:
