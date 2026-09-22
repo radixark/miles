@@ -10,14 +10,16 @@ from tests.utils.soak.core import archive
 from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
+    SoakActionAppliedEvent,
     SoakActionRequestedEvent,
+    SoakActionResultEvent,
     SoakAdmissionClosedEvent,
     SoakEvent,
     SoakObservationEvent,
 )
 from tests.utils.soak.core.scheduler import POLL_INTERVAL_SECONDS, SoakActionScheduler
 from tests.utils.soak.core.sut_events import SutEventFeed
-from tests.utils.soak.core.types import SoakActionRequest, SoakForms, SoakObserver
+from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest, SoakForms, SoakObserver, find_form
 from tests.utils.soak.core.views import admission_closed, trainer_step_ends
 
 logger = logging.getLogger(__name__)
@@ -108,4 +110,27 @@ class SoakRunner:
             self.event_log.append(SoakAdmissionClosedEvent())
 
     async def _execute(self, request: SoakActionRequest) -> None:
-        raise NotImplementedError
+        reported = False
+
+        def report_applied(evidence: SoakActionEvidence) -> None:
+            nonlocal reported
+            assert not reported, f"Action reported its effect twice: {request.request_id}"
+            reported = True
+            self.event_log.append(SoakActionAppliedEvent(request_id=request.request_id, evidence=evidence))
+
+        try:
+            await find_form(self.forms, kind=request.target.kind, name=request.form_name).execute(
+                request, report_applied=report_applied
+            )
+        except asyncio.CancelledError as error:
+            self.event_log.append(
+                SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
+            )
+            raise
+        except Exception as error:
+            logger.info("Action %s failed", request.request_id, exc_info=True)
+            self.event_log.append(
+                SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
+            )
+        else:
+            self.event_log.append(SoakActionResultEvent(request_id=request.request_id, returned=True))
