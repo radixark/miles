@@ -783,6 +783,17 @@ class TestUpdateWeightsLockWindow:
         assert not controller.context_lock.locked
 
     @pytest.mark.asyncio
+    async def test_abort_update_weights_closes_the_window_without_marking_weights_ready(self):
+        """A sync that failed on the trainer must release the lock while leaving every cell pending."""
+        controller = _make_controller({})
+
+        await controller.start_update_weights()
+        assert controller.context_lock.locked
+
+        await controller.abort_update_weights()
+        assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
     async def test_reconcile_waits_while_the_update_weights_window_is_open(self):
         """A concurrent reconcile must not mutate the engine set mid weight update."""
         controller = _make_controller({})
