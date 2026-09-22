@@ -5,6 +5,7 @@ import logging
 
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
@@ -66,21 +67,31 @@ class KubernetesCellOperations(BaseCellOperations):
             pod_uid=health.pod_uid,
         )
 
-    async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
+    async def inject_fault(
+        self,
+        *,
+        cell_id: str,
+        mode: FailureMode,
+        sub_index: int,
+        expected_target: FaultTarget | None = None,
+    ) -> None:
         await self._ensure_watching()
+
+        if expected_target is not None and expected_target != await self.observe_fault_target(
+            cell_id=cell_id, sub_index=sub_index
+        ):
+            raise StaleFaultTargetError(f"Cell {cell_id} no longer matches the observed fault target")
 
         (infos,) = self._provider.get_worker_infos(cell_ids=[cell_id])
         assert (
             0 <= sub_index < len(infos)
         ), f"sub_index {sub_index} is out of range for cell {cell_id}, which has {len(infos)} workers"
 
-        worker_name = infos[sub_index].name
-        handles = self._provider.get_handles_of_worker_infos(infos)
-        assert (
-            worker_name in handles
-        ), f"{worker_name} is not served over rpc, so no call can reach the process to crash it"
-
-        await _inject_fault_over_rpc(handle=handles[worker_name], mode=mode, worker_name=worker_name)
+        info = infos[sub_index]
+        handle = build_rpc_handle_of_worker_info(
+            info, expected_boot_uuid=expected_target.boot_uuid if expected_target is not None else None
+        )
+        await _inject_fault_over_rpc(handle=handle, mode=mode, worker_name=info.name)
 
     async def _ensure_watching(self) -> None:
         if self._watching is None:
@@ -97,6 +108,8 @@ async def _inject_fault_over_rpc(*, handle: BaseWorkerHandle, mode: FailureMode,
         await asyncio.wait_for(
             handle.submit_without_result("inject_fault", mode=mode.value), timeout=INJECT_FAULT_TIMEOUT_SECONDS
         )
+    except ServerRestartedError as error:
+        raise StaleFaultTargetError(f"Worker {worker_name} changed its boot identity") from error
     except (WorkerUnreachableError, TimeoutError, asyncio.TimeoutError):
         logger.info("Injecting %s into %s left it unreachable, which is what was asked for", mode.value, worker_name)
 

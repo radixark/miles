@@ -9,6 +9,7 @@ from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.rpc.common.protocol import ServerHealth
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_info import WorkerInfo
@@ -510,3 +511,143 @@ class TestObserveFaultTarget:
 
         with pytest.raises(StaleFaultTargetError, match="no worker at index 0"):
             await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
+
+
+class TestInjectFaultRejectsAChangedTarget:
+    async def test_a_new_cell_hash_is_refused_without_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cell whose membership moved on since the observation must not receive the fault."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider._infos["engine-0"] = _identity_info("engine-0", ("engine-0-0",), workers_hash="h2")
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await operations.inject_fault(
+                cell_id="engine-0",
+                mode=FailureMode.SIGKILL,
+                sub_index=0,
+                expected_target=FaultTarget(
+                    cell_id="engine-0",
+                    sub_index=0,
+                    workers_hash="h",
+                    boot_uuid="boot-engine-0-0",
+                    pod_uid="uid-engine-0-0",
+                ),
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_restarted_process_is_refused_without_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A new boot uuid in the same pod means the observed process is gone."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.healths["engine-0-0"] = ServerHealth(boot_uuid="boot-new", pod_uid="uid-engine-0-0")
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await operations.inject_fault(
+                cell_id="engine-0",
+                mode=FailureMode.SIGKILL,
+                sub_index=0,
+                expected_target=FaultTarget(
+                    cell_id="engine-0",
+                    sub_index=0,
+                    workers_hash="h",
+                    boot_uuid="boot-engine-0-0",
+                    pod_uid="uid-engine-0-0",
+                ),
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_same_named_replacement_pod_is_refused_without_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pod recreated under the old name answers with a new uid and must not take the old target."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.healths["engine-0-0"] = ServerHealth(boot_uuid="boot-engine-0-0", pod_uid="uid-new")
+        operations._provider.listed_pod_uids["engine-0"] = ["uid-new"]
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await operations.inject_fault(
+                cell_id="engine-0",
+                mode=FailureMode.SIGKILL,
+                sub_index=0,
+                expected_target=FaultTarget(
+                    cell_id="engine-0",
+                    sub_index=0,
+                    workers_hash="h",
+                    boot_uuid="boot-engine-0-0",
+                    pod_uid="uid-engine-0-0",
+                ),
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_worker_moved_to_another_rank_is_refused_without_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The observed process now sitting at another rank is not what the target names."""
+        operations = _identity_operations(
+            monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0", "engine-0-1"))}
+        )
+        operations._provider._infos["engine-0"] = _identity_info("engine-0", ("engine-0-1", "engine-0-0"))
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await operations.inject_fault(
+                cell_id="engine-0",
+                mode=FailureMode.SIGKILL,
+                sub_index=1,
+                expected_target=FaultTarget(
+                    cell_id="engine-0",
+                    sub_index=1,
+                    workers_hash="h",
+                    boot_uuid="boot-engine-0-1",
+                    pod_uid="uid-engine-0-1",
+                ),
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_vanished_cell_is_refused_without_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cell deleted after the observation has no worker to send the fault to."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        del operations._provider._infos["engine-0"]
+
+        with pytest.raises(StaleFaultTargetError):
+            await operations.inject_fault(
+                cell_id="engine-0",
+                mode=FailureMode.SIGKILL,
+                sub_index=0,
+                expected_target=FaultTarget(
+                    cell_id="engine-0",
+                    sub_index=0,
+                    workers_hash="h",
+                    boot_uuid="boot-engine-0-0",
+                    pod_uid="uid-engine-0-0",
+                ),
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_restart_caught_by_the_pinned_call_is_reported_stale(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A replacement racing the final check is refused by the boot pin and surfaces as a stale target."""
+        operations = _identity_operations(
+            monkeypatch,
+            {"engine-0": _identity_info("engine-0", ("engine-0-0",))},
+            handle_effect=ServerRestartedError("boot uuid mismatch"),
+        )
+
+        with pytest.raises(StaleFaultTargetError, match="changed its boot identity"):
+            await operations.inject_fault(
+                cell_id="engine-0",
+                mode=FailureMode.SIGKILL,
+                sub_index=0,
+                expected_target=FaultTarget(
+                    cell_id="engine-0",
+                    sub_index=0,
+                    workers_hash="h",
+                    boot_uuid="boot-engine-0-0",
+                    pod_uid="uid-engine-0-0",
+                ),
+            )
+
+        assert operations._provider.boot_pins == [None, "boot-engine-0-0"]
