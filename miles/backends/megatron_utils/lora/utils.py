@@ -431,7 +431,10 @@ def save_lora_checkpoint(
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             }
 
-        publisher.write_adapter(None, checkpoint_dir)
+        try:
+            publisher.write_adapter(None, checkpoint_dir)
+        except Exception:
+            logger.warning("HF adapter export failed; saving native checkpoint only", exc_info=True)
         torch.save(adapter_state, checkpoint_dir / f"adapter_megatron_rank{global_rank}.pt")
         if training_state is not None:
             torch.save(training_state, checkpoint_dir / f"training_state_rank{global_rank}.pt")
