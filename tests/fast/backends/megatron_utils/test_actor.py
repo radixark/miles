@@ -1,6 +1,5 @@
 import importlib
 import sys
-from argparse import Namespace
 from collections.abc import Iterator
 from types import ModuleType
 from unittest.mock import Mock
