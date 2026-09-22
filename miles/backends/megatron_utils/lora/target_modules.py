@@ -1,8 +1,7 @@
 import re
-from fnmatch import fnmatchcase
 
-from miles.utils.hf_utils.lora_targets import matches_hf_lora_target
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+from miles.utils.lora import matches_lora_target
 
 _CANONICAL_PROJECTIONS = {
     "q_proj": "linear_q",
@@ -11,10 +10,6 @@ _CANONICAL_PROJECTIONS = {
     "gate_proj": "linear_fc1_gate",
     "up_proj": "linear_fc1_up",
 }
-
-
-def _matches_megatron_target(module, target):
-    return fnmatchcase(module if "." in target else module.rsplit(".", 1)[-1], target)
 
 
 def _canonical_adapter_module(module, checkpoint_parameter):
@@ -34,14 +29,14 @@ def _select_checkpoint_parameters(checkpoint_parameters, targets, *, hf_mapping,
         checkpoint_parameter
         for checkpoint_parameter, hf_parameter in hf_parameters.items()
         if (not hf_mapping.parameter_names or hf_parameter in hf_mapping.parameter_names)
-        and any(matches_hf_lora_target(hf_parameter.removesuffix(".weight"), target) for target in targets)
+        and any(matches_lora_target(hf_parameter.removesuffix(".weight"), target) for target in targets)
     }
     return {
         checkpoint_parameter
         for checkpoint_parameter in selected
         if not any(
-            matches_hf_lora_target(hf_parameters[checkpoint_parameter].removesuffix(".weight"), target)
-            or _matches_megatron_target(megatron_module, target)
+            matches_lora_target(hf_parameters[checkpoint_parameter].removesuffix(".weight"), target)
+            or matches_lora_target(megatron_module, target)
             for target in exclude_modules
         )
     }
@@ -123,11 +118,11 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
         for checkpoint_parameter in _checkpoint_parameters(mapping):
             hf_module = hf_mapping.model_parameter(checkpoint_parameter).removesuffix(".weight")
             if hf_mapping.parameter_names and not any(
-                matches_hf_lora_target(name.removesuffix(".weight"), hf_module) for name in hf_mapping.parameter_names
+                matches_lora_target(name.removesuffix(".weight"), hf_module) for name in hf_mapping.parameter_names
             ):
                 continue
             for target in target_modules:
-                matches = matches_hf_lora_target(hf_module, target) or _matches_megatron_target(
+                matches = matches_lora_target(hf_module, target) or matches_lora_target(
                     megatron_module, target
                 )
                 if (
@@ -135,14 +130,14 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
                     and megatron_module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1")
                     and ".experts." not in megatron_module
                 ):
-                    matches |= _matches_megatron_target(
+                    matches |= matches_lora_target(
                         _canonical_adapter_module(megatron_module, checkpoint_parameter), target
                     )
                 if matches:
                     matched_targets.add(target)
                     if not any(
-                        matches_hf_lora_target(hf_module, exclude)
-                        or _matches_megatron_target(megatron_module, exclude)
+                        matches_lora_target(hf_module, exclude)
+                        or matches_lora_target(megatron_module, exclude)
                         for exclude in exclude_modules
                     ):
                         selected_hf_modules.add(hf_module)

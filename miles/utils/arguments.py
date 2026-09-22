@@ -22,13 +22,12 @@ from miles.utils.hf_utils.lora_targets import (
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
     get_hf_lora_targets,
-    matches_hf_lora_target,
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.logging_utils import configure_logger_raw
-from miles.utils.lora import is_lora_enabled
+from miles.utils.lora import is_lora_enabled, matches_lora_target
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
@@ -3167,7 +3166,7 @@ def miles_validate_args(args):
         hf_mapping = HfWeightMapping.from_config(hf_config)
         hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_names]
         if all(
-            any(matches_hf_lora_target(module, target) for module in hf_modules)
+            any(matches_lora_target(module, target) for module in hf_modules)
             for target in args.target_modules + args.exclude_modules
         ):
             args.hf_lora_targets = list(args.target_modules)
@@ -3175,7 +3174,7 @@ def miles_validate_args(args):
                 selected = [
                     module
                     for module in hf_modules
-                    if any(matches_hf_lora_target(module, target) for target in args.target_modules)
+                    if any(matches_lora_target(module, target) for target in args.target_modules)
                 ]
                 args.hf_lora_targets = exclude_hf_lora_targets(selected, args.exclude_modules)
         elif args.megatron_to_hf_mode == "bridge":

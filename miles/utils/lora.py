@@ -1,8 +1,13 @@
 import json
 from argparse import Namespace
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 LORA_ADAPTER_NAME = "miles_lora"
+
+
+def matches_lora_target(module: str, target: str) -> bool:
+    return fnmatchcase(module if "." in target else module.rsplit(".", 1)[-1], target)
 
 
 def is_lora_weight_name(name: str) -> bool:

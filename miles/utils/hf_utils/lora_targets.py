@@ -2,7 +2,8 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from fnmatch import fnmatchcase
+
+from miles.utils.lora import matches_lora_target
 
 
 @dataclass(frozen=True)
@@ -256,13 +257,9 @@ def parse_lora_targets(value: str | list[str] | None) -> list[str] | None:
     return list(dict.fromkeys(targets))
 
 
-def matches_hf_lora_target(module: str, target: str) -> bool:
-    return fnmatchcase(module if "." in target else module.rsplit(".", 1)[-1], target)
-
-
 def exclude_hf_lora_targets(targets: list[str], exclusions: list[str]) -> list[str]:
     selected = [
-        target for target in targets if not any(matches_hf_lora_target(target, pattern) for pattern in exclusions)
+        target for target in targets if not any(matches_lora_target(target, pattern) for pattern in exclusions)
     ]
     assert selected, "LoRA target selection is empty after --exclude-modules"
     return selected
@@ -272,6 +269,6 @@ def expand_hf_lora_targets(targets: list[str], layout: HfLoraTargets) -> list[st
     available = layout.attention + layout.mlp + layout.unembed
     for target in targets:
         assert any(
-            matches_hf_lora_target(module, target) for module in available
+            matches_lora_target(module, target) for module in available
         ), f"LoRA target {target!r} is not an HF target of this model"
-    return [module for module in available if any(matches_hf_lora_target(module, target) for target in targets)]
+    return [module for module in available if any(matches_lora_target(module, target) for target in targets)]
