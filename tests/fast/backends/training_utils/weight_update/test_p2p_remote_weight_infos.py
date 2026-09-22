@@ -1,3 +1,4 @@
+import dataclasses
 import importlib
 import sys
 from collections import Counter
@@ -112,6 +113,19 @@ def _make_targets(module, pairs: list[tuple[int, int]]) -> list:
 
 def _query(module, engines: list[_FakeRolloutEngine], pairs: list[tuple[int, int]]):
     return module.query_remote_weight_infos(engines, _make_targets(module, pairs))
+
+
+@pytest.mark.parametrize(
+    "record_factory", [dataclasses.make_dataclass, msgspec.defstruct], ids=["dataclass", "msgspec"]
+)
+def test_server_args_from_remote_info_filters_unknown_fields(p2p_transfer_utils, monkeypatch, record_factory):
+    server_args_type = record_factory("ServerArgs", [("model_path", str)])
+    monkeypatch.setattr(p2p_transfer_utils, "ServerArgs", server_args_type)
+
+    result = p2p_transfer_utils.create_server_args_from_dict({"model_path": "/model", "unknown_field": True})
+
+    assert isinstance(result, server_args_type)
+    assert result.model_path == "/model"
 
 
 class TestQueryRemoteWeightInfos:

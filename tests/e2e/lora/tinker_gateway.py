@@ -18,7 +18,6 @@ SERVE_TIMEOUT_S = 1200
 def prepare_gateway():
     U.exec_command_cpu("mkdir -p /root/models")
     U.exec_command_cpu(f"hf download {BASE_MODEL} --local-dir /root/models/{MODEL_NAME}")
-    U.exec_command_cpu("pip install tinker==0.26.2")
 
 
 def _wait_for_gateway(server: subprocess.Popen) -> None:

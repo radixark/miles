@@ -51,6 +51,8 @@ def make_engine_args(**overrides: Any) -> Namespace:
         lora_rank=0,
         sglang_api_key=None,
         lora_adapter_path=None,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
         multi_lora=False,
         colocate=False,
     )

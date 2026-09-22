@@ -12,16 +12,6 @@ register_cuda_ci(
     hardware=["hopper"],
 )
 
-COOKBOOK_PIN = "git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2c"
-# Cookbook deps the image lacks; --no-deps keeps its transformers<=5.5.4 pin from downgrading the image's transformers.
-COOKBOOK_DEPS = "chz>=0.4.0 termcolor>=2.0.0 tml-renderers>=0.0.1"
-
-
-def prepare():
-    prepare_gateway()
-    U.exec_command_cpu(f"pip install tinker==0.26.2 {COOKBOOK_DEPS}")
-    U.exec_command_cpu(f"pip install --no-deps {COOKBOOK_PIN}")
-
 
 def execute():
     with running_gateway() as base_url:
@@ -32,5 +22,5 @@ def execute():
 
 
 if __name__ == "__main__":
-    prepare()
+    prepare_gateway()
     execute()

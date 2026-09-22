@@ -92,6 +92,8 @@ def tasks_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("E2B_API_KEY", "test-key")
     monkeypatch.delenv("MILES_ROUTER_EXTERNAL_HOST", raising=False)
     monkeypatch.delenv("HARBOR_ENV_KWARGS", raising=False)
+    monkeypatch.delenv("HARBOR_CPU_ENFORCEMENT_POLICY", raising=False)
+    monkeypatch.delenv("HARBOR_MEMORY_ENFORCEMENT_POLICY", raising=False)
     return tmp_path
 
 
@@ -157,17 +159,36 @@ def test_reclaim_timers_are_daytona_only(tasks_dir, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "var, field",
-    [("HARBOR_OVERRIDE_MEMORY_MB", "override_memory_mb"), ("HARBOR_OVERRIDE_STORAGE_MB", "override_storage_mb")],
+    "var, field, value",
+    [
+        ("HARBOR_OVERRIDE_CPUS", "override_cpus", 2),
+        ("HARBOR_OVERRIDE_MEMORY_MB", "override_memory_mb", 20480),
+        ("HARBOR_OVERRIDE_STORAGE_MB", "override_storage_mb", 10240),
+    ],
 )
-def test_resource_overrides_reach_harbor_and_reject_nonpositive(tasks_dir, monkeypatch, var, field):
-    monkeypatch.setenv(var, "20480")
+def test_resource_overrides_reach_harbor_and_reject_nonpositive(tasks_dir, monkeypatch, var, field, value):
+    monkeypatch.setenv(var, str(value))
     cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
-    assert getattr(cfg.environment, field) == 20480
+    assert getattr(cfg.environment, field) == value
 
     monkeypatch.setenv(var, "0")
     with pytest.raises(ValueError, match=var):
         haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+
+
+@pytest.mark.parametrize(
+    "var, field",
+    [
+        ("HARBOR_CPU_ENFORCEMENT_POLICY", "cpu_enforcement_policy"),
+        ("HARBOR_MEMORY_ENFORCEMENT_POLICY", "memory_enforcement_policy"),
+    ],
+)
+def test_resource_enforcement_policies_reach_harbor(tasks_dir, monkeypatch, var, field):
+    monkeypatch.setenv(var, "request")
+
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+
+    assert getattr(cfg.environment, field) == "request"
 
 
 def test_unknown_environment_type_is_an_error_not_docker(tasks_dir, monkeypatch):

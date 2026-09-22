@@ -3,15 +3,9 @@ from collections.abc import Callable
 
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 import torch.nn.functional as F
 
 from .parallel import get_parallel_state
-
-try:
-    from fla.ops.cp import build_cp_context as _fla_build_cp_context
-except ImportError:
-    _fla_build_cp_context = None
 
 logger = logging.getLogger(__name__)
 
@@ -470,30 +464,3 @@ def assemble_log_prob_from_cp(
             taken += width
         assert taken == len(chunk), f"cp rank {cp_rank}: consumed {taken} of {len(chunk)} values"
     return out
-
-
-def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: torch.device):
-    """Build fla CP context for a GatedDeltaNet module from packed sequence boundaries.
-
-    Args:
-        module: GDN module with ``cp_group`` / ``cp_world_size`` / ``conv_kernel_size``.
-        cu_seqlens: Global packed sequence boundaries (e.g. ``packed_seq_params.cu_seqlens_q``).
-        device: Target device.
-
-    Returns ``None`` when CP is not configured on the module (``cp_group`` not set).
-    Raises ``RuntimeError`` if hybrid CP is configured but ``fla.ops.cp`` is missing.
-    """
-    cp_group = getattr(module, "cp_group", None)
-    if cp_group is None:
-        return None
-    if _fla_build_cp_context is None:
-        raise RuntimeError(
-            "Hybrid CP requires fla.ops.cp (flash-linear-attention >= 0.4.2) " "but it could not be imported."
-        )
-    if cu_seqlens is None or cu_seqlens.numel() < 2:
-        raise ValueError(f"Hybrid CP requires valid cu_seqlens (at least 2 elements) but got {cu_seqlens}")
-    return _fla_build_cp_context(
-        cu_seqlens=cu_seqlens.to(device=device, dtype=torch.int32),
-        group=cp_group,
-        conv1d_kernel_size=module.conv_kernel_size,
-    )
