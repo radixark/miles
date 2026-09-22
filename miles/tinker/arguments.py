@@ -1,13 +1,7 @@
 import argparse
 
 from miles.utils.hf_utils.config import load_hf_config
-from miles.utils.hf_utils.lora_targets import (
-    exclude_hf_lora_targets,
-    expand_hf_lora_targets,
-    get_hf_lora_targets,
-    parse_lora_targets,
-    resolve_hf_lora_targets,
-)
+from miles.utils.hf_utils.lora_targets import resolve_hf_lora_targets
 
 
 def add_tinker_arguments(parser):
@@ -34,24 +28,12 @@ def add_tinker_arguments(parser):
 
 def configure_tinker_args(args):
     assert args.train_backend == "megatron", "Tinker requires the Megatron backend"
-    hf_config = load_hf_config(args.hf_checkpoint).to_dict()
-    layout = get_hf_lora_targets(hf_config)
-    requested_targets = resolve_hf_lora_targets(
-        hf_config,
-        target_modules=parse_lora_targets(args.target_modules),
+    assert (
+        args.target_modules is None and args.exclude_modules is None
+    ), "Tinker uses --tinker-train-attn/mlp/unembed; --target-modules and --exclude-modules are not supported"
+    args.target_modules = resolve_hf_lora_targets(
+        load_hf_config(args.hf_checkpoint).to_dict(),
         train_attn=args.tinker_train_attn,
         train_mlp=args.tinker_train_mlp,
         train_unembed=args.tinker_train_unembed,
     )
-    targets = expand_hf_lora_targets(requested_targets, layout)
-    targets = exclude_hf_lora_targets(targets, parse_lora_targets(args.exclude_modules) or [])
-    for name, group in (("attn", layout.attention), ("mlp", layout.mlp), ("unembed", layout.unembed)):
-        selected = set(targets).intersection(group)
-        assert not selected or selected == set(group), (
-            f"Tinker targets must select the whole {name} group or none of it; "
-            "the SDK cannot describe a partial training group"
-        )
-        setattr(args, f"tinker_train_{name}", bool(selected))
-    args.target_modules = targets
-    # Exclusions must be applied before advertising the SDK training groups.
-    args.exclude_modules = None

@@ -106,8 +106,8 @@ Omitting `--target-modules` or passing `all-linear` uses the model defaults from
 `miles/utils/hf_utils/lora_targets.py`: attention + MLP, with model-specific exclusions
 and output-head defaults. Multi-LoRA without explicit targets selects all three
 training groups; Tinker controls them with `--tinker-train-attn/mlp/unembed`.
-An explicit target list overrides the default selection. `all-linear` always
-means the ordinary model defaults, including when explicitly passed to Tinker.
+An explicit target list overrides the default selection in ordinary Miles LoRA.
+Tinker accepts only the three training-group flags.
 
 ### Core arguments
 
@@ -163,7 +163,7 @@ packing, and checkpoint names are unchanged. The pinned Transformers version doe
 not yet include native Inkling, so its HF structure is not covered by the native
 meta-model tests. A layout entry is not a backend support claim.
 
-Ordinary LoRA and Tinker both use this selection policy. HF targets retain their
+Ordinary LoRA and Tinker share these HF target groups. HF targets retain their
 meaning throughout training and serving. `miles/utils/hf_utils/weight_mapping.py`
 uses Transformers conversion rules and a meta model's parameter names to relate
 checkpoint keys to the current HF model namespace, without loading base weights.
@@ -178,10 +178,9 @@ within a registry template are not implemented and are rejected.
 Standard LoRA requires all projections of a fused weight together;
 `canonical_lora` supports individual Q/K/V and dense gate/up selections.
 
-Tinker accepts explicit HF targets and exclusions only when the resulting layout
-consists of complete attention, MLP, and output-head groups. It derives the SDK
-training flags from that final selection; partial groups are rejected because
-the SDK cannot describe them.
+Tinker selects complete attention, MLP, and output-head groups through
+`--tinker-train-attn/mlp/unembed`, which default to enabled. Client SDK flags must
+match these server settings. `--target-modules` and `--exclude-modules` are rejected.
 
 For Bridge, SGLang receives the selected HF paths and normalizes them into buffer types
 (for example, Q/K/V become `qkv_proj`); it does not own the selection policy.
