@@ -1,17 +1,27 @@
+import asyncio
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from tests.utils.soak.core.events import SoakEvent, SoakObservationEvent
 from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest
 from tests.utils.soak.ft.actions.base import BaseCellFaultForm
 from tests.utils.soak.ft.types import CellTarget, PodDetails
 from tests.utils.soak.k8s_utils.pod_manipulation import SoakPodTarget, delete_observed_pod
+from tests.utils.soak.k8s_utils.process_target import ProcessSignalReceipt
 
+from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
+from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS
 from miles.utils.workers.types import DeployComponent
 
 DELETE_POD_FORM_NAME: str = "delete_pod"
+EXEC_SIGKILL_FORM_NAME: str = "exec_sigkill"
+EXEC_SIGSTOP_FORM_NAME: str = "exec_sigstop"
+
+ENGINE_CONTAINER_NAME: str = "engine"
+SGLANG_PROCESS_PATTERN: str = "sglang::"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -67,3 +77,67 @@ class DeletePodFaultForm(BasePodFaultForm):
         self, request: SoakActionRequest, *, report_applied: Callable[[SoakActionEvidence], None]
     ) -> None:
         report_applied(await delete_observed_pod(self._read_pod(request)))
+
+
+class ExecSigkillFaultForm(BasePodFaultForm):
+    @property
+    def name(self) -> str:
+        return EXEC_SIGKILL_FORM_NAME
+
+    @property
+    def process_patterns(self) -> dict[str, str]:
+        return {ENGINE_CONTAINER_NAME: SGLANG_PROCESS_PATTERN}
+
+    async def execute(
+        self, request: SoakActionRequest, *, report_applied: Callable[[SoakActionEvidence], None]
+    ) -> None:
+        report_applied(await self._execute_signal(request=request, operation="kill"))
+
+    async def _execute_signal(
+        self, *, request: SoakActionRequest, operation: Literal["kill", "stop"]
+    ) -> ProcessSignalReceipt:
+        pod = self._read_pod(request)
+        target = pod.process_targets[ENGINE_CONTAINER_NAME]
+        assert target.pod_uid == pod.uid and target.pattern == SGLANG_PROCESS_PATTERN
+        result = await asyncio.to_thread(
+            run_process,
+            [
+                "kubectl",
+                "exec",
+                "--stdin",
+                "--namespace",
+                pod.namespace,
+                pod.name,
+                "--container",
+                ENGINE_CONTAINER_NAME,
+                "--",
+                "python3",
+                "-m",
+                "tests.utils.soak.k8s_utils.process_target",
+                operation,
+                request.request_id,
+            ],
+            capture_output=True,
+            check=False,
+            input=target.model_dump_json(),
+            timeout=KUBECTL_TIMEOUT_SECONDS,
+        )
+        assert result.returncode == 0, (
+            f"No process matching {SGLANG_PROCESS_PATTERN!r} was confirmed {operation} inside {pod.name} (exit "
+            f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}. A crash nobody caused would "
+            f"otherwise be counted as one that happened"
+        )
+        receipt = ProcessSignalReceipt.model_validate_json(result.stdout)
+        receipt.validate_for(request_id=request.request_id, target=target, operation=operation)
+        return receipt
+
+
+class ExecSigstopFaultForm(ExecSigkillFaultForm):
+    @property
+    def name(self) -> str:
+        return EXEC_SIGSTOP_FORM_NAME
+
+    async def execute(
+        self, request: SoakActionRequest, *, report_applied: Callable[[SoakActionEvidence], None]
+    ) -> None:
+        report_applied(await self._execute_signal(request=request, operation="stop"))
