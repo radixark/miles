@@ -112,7 +112,9 @@ def execute():
         "--rollout-num-gpus-per-engine 2 " "--sglang-mem-fraction-static 0.7 " "--sglang-max-running-requests 256 "
     )
 
-    ci_args = "--ci-test "
+    # Qwen3.5 is a VLM: the SGLang engines hold the ``visual.*`` tower, which text-only Megatron training never
+    # updates, so the post-update equality check (enabled by --ci-test) only asserts on the language-model tensors.
+    ci_args = "--ci-test --check-weight-update-skip-list visual. "
 
     misc_args = (
         # default dropout in megatron is 0.1
