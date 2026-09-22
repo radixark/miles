@@ -48,15 +48,15 @@ def _select_checkpoint_parameters(checkpoint_parameters, targets, *, hf_mapping,
 
 
 def _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, *, canonical):
-    if canonical and len(checkpoint_parameters) > 1 and ".experts." not in megatron_module:
-        assert megatron_module.rsplit(".", 1)[-1] in (
-            "linear_qkv",
-            "linear_fc1",
-        ), f"CanonicalLoRA does not define split adapters for {megatron_module!r}"
+    if (
+        canonical
+        and len(checkpoint_parameters) > 1
+        and ".experts." not in megatron_module
+        and megatron_module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1")
+    ):
         return list(dict.fromkeys(_canonical_adapter_module(megatron_module, name) for name in selected))
     assert selected == checkpoint_parameters, (
-        f"LoRA on fused module {megatron_module!r} requires all HF targets; "
-        "use canonical_lora to select individual projections"
+        f"LoRA on fused module {megatron_module!r} requires all HF targets with this adapter"
     )
     if canonical and ".experts." in megatron_module and megatron_module.endswith(".linear_fc1"):
         # CanonicalLoRA requires split aliases even for fused expert adapters.
