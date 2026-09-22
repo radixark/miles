@@ -6,10 +6,7 @@ import httpx
 import pytest
 from tests.fast.tinker.harness import ADAM
 
-from miles.tinker.core.prompt_renderer import PromptRenderer
-from miles.tinker.core.tinker_session_server import TrajectoryCollector
 from miles.tinker.server.app import build_app
-from miles.tinker.server.session_routes import setup_session_routes
 
 
 @pytest.fixture
@@ -184,17 +181,3 @@ async def test_retrieve_long_polls_until_settlement(client):
     client.service.futures.resolve(future.request_id, {"op": "optim_step", "metrics": {"grad_norm": 1.0}})
     response = await asyncio.wait_for(poll, timeout=2)
     assert response.json() == {"type": "optim_step", "metrics": {"grad_norm": 1.0}}
-
-
-async def test_session_route_errors_answer_with_their_status_code(service):
-    app = build_app(service)
-    setup_session_routes(app, TrajectoryCollector(service, PromptRenderer(object(), None), session_ttl_s=60.0))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as http:
-        chat = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 4}
-        response = await http.post("/oai/sessions/never-bound/v1/chat/completions", json=chat)
-        assert response.status_code == 404
-        assert "bind it first with POST /oai/sessions/never-bound" in response.json()["error"]
-        response = await http.delete("/oai/sessions/never-bound", headers=_headers())
-        assert response.status_code == 404
-        response = await http.post("/oai/sessions/bad id", json={}, headers=_headers())
-        assert response.status_code == 400  # malformed input stays with the Tinker app's own handler

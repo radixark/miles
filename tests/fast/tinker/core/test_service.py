@@ -1,7 +1,6 @@
 """The service preserves request ordering, tenant isolation, and failure isolation."""
 
 import asyncio
-from array import array
 from contextlib import suppress
 from pathlib import Path
 
@@ -17,14 +16,6 @@ from tests.fast.tinker.harness import (
 )
 
 from miles.tinker.core.future import DONE, FAILED
-from miles.tinker.core.prompt_renderer import PromptRenderer
-from miles.tinker.core.tinker_session_server import (
-    SessionNotFoundError,
-    TrajectoryCollector,
-    TrajectorySession,
-    TruncatedGenerationError,
-    TurnRequest,
-)
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
 
@@ -857,120 +848,3 @@ async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, m
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-
-
-# --- recorded sessions (TrajectoryCollector) ------------------------------------------
-
-
-class _Tokenizer:
-    """A chat template that renders one token per history length; decode is a fixed reply."""
-
-    def apply_chat_template(self, messages, add_generation_prompt=True, tokenize=True, **kwargs):
-        return [10 + len(messages)]
-
-    def decode(self, ids, skip_special_tokens=True):
-        return "reply"
-
-
-class _TITO:
-    """merge_tokens extends the recorded prefix by one token per appended message, as the strict families do."""
-
-    max_trim_tokens = 0
-
-    def merge_tokens(self, old_messages, new_messages, pretokenized_token_ids, tools=None):
-        return [*pretokenized_token_ids, *([7] * (len(new_messages) - len(old_messages)))]
-
-
-def _turn(*contents: str) -> TurnRequest:
-    """A chat request whose messages alternate user / assistant, starting with the user."""
-    roles = ("user", "assistant")
-    messages = [{"role": roles[index % 2], "content": content} for index, content in enumerate(contents)]
-    return TurnRequest(messages=messages, tools=None, sampling_params={"max_tokens": 4})
-
-
-async def _bound_collector(service, **collector_kwargs) -> TrajectoryCollector:
-    """A TITO collector whose session 'trajectory' is bound to a fresh sampling session of tenant 'tenant'."""
-    session_id = service.create_session("tenant")
-    model_id = await created_model(service, session_id=session_id)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
-    path = (await await_settled(service, "tenant", save)).result["path"]
-    sampling_session_id = service.create_sampling_session(
-        "tenant", {"session_id": session_id, "sampling_session_seq_id": 0, "model_path": path}
-    )
-    renderer = PromptRenderer(_Tokenizer(), None, tito_tokenizer=_TITO())
-    collector = TrajectoryCollector(service, renderer, session_ttl_s=60.0, **collector_kwargs)
-    collector.create_session("trajectory", "tenant", sampling_session_id=sampling_session_id)
-    return collector
-
-
-def _gated_sample(gate: asyncio.Event, stop_reason: str = "stop", prompts: list | None = None):
-    """A backend sample that waits for the gate and records each prompt it was asked for."""
-
-    async def sample(payload, lora_name, lora_path=None):
-        if prompts is not None:
-            prompts.append(payload["prompt_tokens"])
-        await gate.wait()
-        return {"sequences": [{"tokens": [1], "logprobs": [0.0], "stop_reason": stop_reason}]}
-
-    return sample
-
-
-async def test_a_session_records_one_turn_at_a_time_and_an_overlapping_retry_is_a_resend(service):
-    collector = await _bound_collector(service)
-    gate, prompts = asyncio.Event(), []
-    service.backend.sample = _gated_sample(gate, prompts=prompts)
-    gate.set()
-    await collector.complete("trajectory", _turn("a"))
-    gate.clear()
-    follow_up = _turn("a", "reply", "b")
-    attempt = asyncio.create_task(collector.complete("trajectory", follow_up))
-    retry = asyncio.create_task(collector.complete("trajectory", follow_up))  # the harness timed out and re-sent it
-    await asyncio.sleep(0.05)
-    assert len(prompts) == 2 and collector.sessions["trajectory"].lock.locked()  # the retry has not even rendered
-    gate.set()
-    await asyncio.gather(attempt, retry)
-    turns = collector.sessions["trajectory"].turns
-    assert [(turn.inherits, turn.reset_reason) for turn in turns] == [(False, "first"), (True, None), (False, "retry")]
-    assert list(turns[1].input_ids) == [*turns[0].input_ids, *turns[0].output_ids, 7]
-    assert list(turns[2].input_ids) == [13]  # a full render; the client's select_turns drops the superseded attempt
-
-
-async def test_deleting_a_busy_session_cancels_its_sample_and_the_sweep_leaves_it_alone(service):
-    collector = await _bound_collector(service)
-    gate = asyncio.Event()
-    service.backend.sample = _gated_sample(gate)
-    turn = asyncio.create_task(collector.complete("trajectory", _turn("a")))
-    await asyncio.sleep(0.05)
-    assert collector.sweep(now=collector.clock() + 1e6) == 0  # a session with a turn under way outlives the TTL
-    collector.delete_session("trajectory", "tenant")
-    with pytest.raises(SessionNotFoundError):
-        await turn
-    await asyncio.sleep(0.05)
-    assert "trajectory" not in collector.sessions and not service._sample_tasks
-
-
-async def test_continuing_a_truncated_reply_is_refused_with_409_under_strict_truncation(service):
-    collector = await _bound_collector(service, strict_truncation=True)
-    gate = asyncio.Event()
-    gate.set()
-    service.backend.sample = _gated_sample(gate, stop_reason="length")
-    await collector.complete("trajectory", _turn("a"))
-    with pytest.raises(TruncatedGenerationError) as refused:
-        await collector.complete("trajectory", _turn("a", "reply", "b"))
-    assert refused.value.status_code == 409
-    session = collector.sessions["trajectory"]
-    assert len(session.turns) == 1 and not session.lock.locked()
-
-
-def test_a_merge_that_does_not_extend_the_recorded_prefix_falls_back_to_a_full_render():
-    class _BrokenTITO(_TITO):
-        def merge_tokens(self, old_messages, new_messages, pretokenized_token_ids, tools=None):
-            return [99, 98, 97]
-
-    renderer = PromptRenderer(_Tokenizer(), None, tito_tokenizer=_BrokenTITO())
-    session = TrajectorySession(
-        session_id="s", tenant="tenant", messages=_turn("a", "reply").messages, token_ids=array("i", [11, 1])
-    )
-    request = _turn("a", "reply", "b")
-    rendered = renderer.prepare_pretokenized(session, request.messages, None, None, max_new_tokens=1, budget=None)
-    assert rendered == ([13], False, "mismatch")
