@@ -36,3 +36,30 @@ class ConfigSnapshotRecord(FrozenStrictBaseModel):
     context: ConfigSnapshotContext
     point: ConfigSnapshotPoint
     config: JsonValue
+
+
+# ============================ Converted snapshots =============================
+
+
+class ConfigSnapshotProcess(FrozenStrictBaseModel):
+    """Represent equivalent ranks using one base sample and per-stage diffs."""
+
+    ranks: list[int]
+    base: JsonValue
+    diffs: dict[str, str]
+
+
+class ConfigSnapshotCase(FrozenStrictBaseModel):
+    """Collect all logical process snapshots for one test case."""
+
+    processes: dict[str, ConfigSnapshotProcess]
+
+
+# =============================== Test attempts ================================
+
+
+class ConfigSnapshotTestAttempt(FrozenStrictBaseModel):
+    """Record the test identity and whether its execution completed successfully."""
+
+    test: str
+    completed: bool
