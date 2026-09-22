@@ -8,6 +8,14 @@ This test compares:
 
 import pytest
 import torch
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+pytest.importorskip(
+    "sglang.srt.layers.moe.fused_moe_triton.fused_moe", reason="the fused MoE kernel needs sglang's Triton fused_moe"
+)
 
 # ============================================================================
 # Python Reference Implementation (Pure PyTorch)
@@ -260,8 +268,8 @@ class DownProjFunctionPython(torch.autograd.Function):
 # Import Triton Implementation
 # ============================================================================
 
-from miles.backends.fsdp_utils.kernels.fused_experts import DownProjFunction as DownProjFunctionTriton
-from miles.backends.fsdp_utils.kernels.fused_experts import GateUpProjFunction as GateUpProjFunctionTriton
+from miles.kernels.moe.fused_experts import DownProjFunction as DownProjFunctionTriton
+from miles.kernels.moe.fused_experts import GateUpProjFunction as GateUpProjFunctionTriton
 
 # ============================================================================
 # Test Fixtures and Utilities

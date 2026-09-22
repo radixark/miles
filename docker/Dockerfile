@@ -258,7 +258,7 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
 
-# int4_qat
+# int4 fake-quant extension (source: miles/kernels/quant/int4_fake)
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
 
 # ====================================== Install sgl-model-gateway ============================================

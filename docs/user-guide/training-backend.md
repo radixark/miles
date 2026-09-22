@@ -414,7 +414,7 @@ Specs ship today for `qwen3`, `qwen3_moe`, `qwen3_5`, `glm4_moe_lite` (GLM-4.7-F
 `nemotron_h`; `adaptations/specs/__init__.py` is the source of truth for that list.
 
 MoE is part of this backend rather than an exception to it: expert layers use the fused
-Triton kernels in `fsdp_utils/kernels/`, the weight bridge unfuses batched experts at sync
+Triton kernels in `miles/kernels/moe/`, the weight bridge unfuses batched experts at sync
 time, and `--use-rollout-routing-replay` (R3) works through per-architecture routing
 adapters.
 
