@@ -118,10 +118,24 @@ def _sink_or_disabled(attn_sink: torch.Tensor | None, heads: int, device) -> tor
     return attn_sink.to(torch.float32).contiguous()
 
 
-def _flat_attention_forward(q, kv, indices, sink, sm_scale, d_v):
+def _flat_attention_forward(q, kv, indices, sink, sm_scale, d_v, meta: RowMeta):
+    """Run the flat forward; return ``(o_flat, lse_flat, o_layout)``.
+
+    ``o_layout`` is the output in the model layout and is the tensor the wrapper hands back.  For batched
+    layouts it is allocated here in layout shape and the kernel writes through a flat view of it, so the
+    returned tensor is a fresh allocation rather than a view of an intermediate (callers such as the
+    DeepSeek-V4 attention apply the inverse RoPE in place on the output, which autograd rejects for views
+    produced inside a custom Function).
+    """
     from . import _kernels as weave
 
-    return weave.dsa_attention_forward(q, kv, indices, sink, float(sm_scale), d_v=d_v)
+    out = None
+    o_layout = None
+    if meta.layout != "thd":
+        o_layout = torch.empty(meta.batch, meta.seq_len, q.shape[1], d_v, dtype=q.dtype, device=q.device)
+        out = o_layout.view(q.shape[0], q.shape[1], d_v)
+    o_flat, lse_flat = weave.dsa_attention_forward(q, kv, indices, sink, float(sm_scale), d_v=d_v, out=out)
+    return o_flat, lse_flat, (o_layout if o_layout is not None else o_flat)
 
 
 def _flat_attention_backward(q, kv, o, do, indices, lse, sink, sm_scale, d_v, workspace_bytes):
@@ -187,8 +201,8 @@ def sparse_attention_forward(
     if sm_scale is None:
         sm_scale = q_flat.shape[-1] ** -0.5
     sink = _sink_or_disabled(attn_sink, q_flat.shape[1], q_flat.device)
-    o_flat, lse_flat = _flat_attention_forward(q_flat, kv_flat, idx_flat, sink, sm_scale, d_v)
-    return meta.rows_to_layout(o_flat), meta.rows_to_layout(lse_flat)
+    _o_flat, lse_flat, o_layout = _flat_attention_forward(q_flat, kv_flat, idx_flat, sink, sm_scale, d_v, meta)
+    return o_layout, meta.rows_to_layout(lse_flat)
 
 
 def sparse_attention_backward(
@@ -232,7 +246,7 @@ class SparseAttentionFunction(torch.autograd.Function):
             sm_scale = q_flat.shape[-1] ** -0.5
         has_sink = attn_sink is not None
         sink = _sink_or_disabled(attn_sink, q_flat.shape[1], q_flat.device)
-        o_flat, lse_flat = _flat_attention_forward(q_flat, kv_flat, idx_flat, sink, sm_scale, d_v)
+        o_flat, lse_flat, o_layout = _flat_attention_forward(q_flat, kv_flat, idx_flat, sink, sm_scale, d_v, meta)
         ctx.save_for_backward(q_flat, kv_flat, idx_flat, o_flat, lse_flat, sink)
         ctx.meta = meta
         ctx.sm_scale = float(sm_scale)
@@ -240,7 +254,7 @@ class SparseAttentionFunction(torch.autograd.Function):
         ctx.workspace_bytes = workspace_bytes
         ctx.has_sink = has_sink
         ctx.kv_had_group_dim = layout == "thd" and kv.dim() == 3
-        return meta.rows_to_layout(o_flat)
+        return o_layout
 
     @staticmethod
     def backward(ctx, grad_output):

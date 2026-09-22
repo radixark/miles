@@ -274,6 +274,18 @@ def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(
             assert err < 1e-2, name
 
 
+def test_dsv4_sparse_attention_output_allows_inplace_rope_before_backward():
+    """DeepSeek-V4 applies the inverse RoPE in place on the attention output before the output projection."""
+    loom = _loom()
+    q, kv, indices, sink, do, sm_scale = _dsv4_attention_inputs(2, 128, 16, 64, "cuda")
+    q_ = q.clone().requires_grad_(True)
+    out = loom.sparse_attention(q_, kv, indices, sm_scale=sm_scale, attn_sink=sink, layout="bshd")
+    assert out.shape == q.shape and out._base is None, "the output must be a fresh layout-shaped tensor, not a view"
+    out[..., -64:].mul_(-1.0)  # in-place on a slice, as apply_rotary_emb(o[..., -rd:], ..., inverse=True) does
+    out.backward(do)
+    assert q_.grad is not None and torch.isfinite(q_.grad).all()
+
+
 def test_dsv4_batched_indexer_logits_match_reference_and_tilelang():
     loom = _loom()
     device = "cuda"

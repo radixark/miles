@@ -89,11 +89,18 @@ def attention_geometry(q, kv, indices, d_v: int) -> AttentionGeometry:
     return AttentionGeometry(heads, d_v, d_qk - d_v, block_h, attention_head_blocks(heads), topk)
 
 
-def dsa_attention_forward(q, kv, indices, sink, sm_scale: float, *, d_v: int = 512):
-    """Flat-contract forward: ``(out[num_rows, heads, d_v] BF16, lse[num_rows, heads] FP32 base-2)``."""
+def dsa_attention_forward(q, kv, indices, sink, sm_scale: float, *, d_v: int = 512, out=None):
+    """Flat-contract forward: ``(out[num_rows, heads, d_v] BF16, lse[num_rows, heads] FP32 base-2)``.
+
+    ``out`` may be a caller-owned contiguous ``[num_rows, heads, d_v]`` buffer (for example a flat view of a
+    layout-shaped tensor); it is allocated here otherwise.
+    """
     geo = attention_geometry(q, kv, indices, d_v)
     num_rows = q.shape[0]
-    out = torch.empty(num_rows, geo.heads, geo.d_v, dtype=q.dtype, device=q.device)
+    if out is None:
+        out = torch.empty(num_rows, geo.heads, geo.d_v, dtype=q.dtype, device=q.device)
+    elif out.shape != (num_rows, geo.heads, geo.d_v) or out.dtype != q.dtype or not out.is_contiguous():
+        raise ValueError(f"out must be a contiguous [{num_rows}, {geo.heads}, {geo.d_v}] {q.dtype} tensor")
     lse = torch.empty(num_rows, geo.heads, dtype=torch.float32, device=q.device)
     if num_rows == 0:
         return out, lse
