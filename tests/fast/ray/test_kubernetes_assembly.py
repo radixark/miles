@@ -166,9 +166,6 @@ class FakeTrainerController:
     async def clear_memory(self) -> None:
         return None
 
-    async def reconcile_adapters(self) -> None:
-        return None
-
     async def get_train_parallel_config(self) -> dict[str, Any]:
         return {"dp_size": 2}
 
@@ -464,6 +461,7 @@ class TestKubernetesDriverAssembly:
             num_rollout=None,
             num_epoch=3,
             debug_train_only=True,
+            eval_num_gpus=0,
         )
         monkeypatch.setattr(placement_group, "get_backend_capability", lambda _args: capability)
 

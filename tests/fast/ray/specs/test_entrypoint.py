@@ -138,7 +138,6 @@ class TestComputeSpecs:
 
         assert list(specs) == [
             "rollout-executor",
-            "multi-lora-controller",
             "inference-controller",
             "session-server",
             "trainer-controller-actor",
