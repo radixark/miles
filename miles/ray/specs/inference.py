@@ -4,7 +4,7 @@ import shlex
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd, resolve_sglang_args
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
@@ -156,6 +156,9 @@ def _compute_spec_inference_engine(
     server_group_config: ServerGroupConfig,
 ) -> CommandWorkerSpec:
     num_workers_per_cell = max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node)
+    sglang_args = resolve_sglang_args(
+        args, sglang_overrides=server_group_config.overrides, worker_type=server_group_config.worker_type
+    )
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         dist_init = ctx.self_addrs["dist_init"]
@@ -217,7 +220,9 @@ def _compute_spec_inference_engine(
                 static_port=9000,
                 mode="master",
                 allow_dynamic=True,
-                num_consecutive=30 + args.sglang_dp_size,
+                # Without DP attention SGLang keeps its internal channels on IPC, so only the
+                # TCP rendezvous endpoint needs a port.
+                num_consecutive=(30 + sglang_args["dp_size"]) if sglang_args.get("enable_dp_attention") else 1,
             ),
             PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
             *(

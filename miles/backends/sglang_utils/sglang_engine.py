@@ -178,7 +178,24 @@ def _compute_server_args(
                 "the trainer will skip per-step base weight sync."
             )
 
-    # Last, so a per-group override wins over every args-derived default above.
+    kwargs = resolve_sglang_args(args, defaults=kwargs, sglang_overrides=sglang_overrides, worker_type=worker_type)
+
+    if is_multi_lora_enabled(args):
+        assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
+        if kwargs.get("max_loaded_loras") is None:
+            # use --sglang-max-loaded-loras to override
+            # TODO: dynamic allocation
+            kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
+
+    return kwargs
+
+
+def resolve_sglang_args(
+    args, *, sglang_overrides: dict | None, worker_type: str, defaults: dict | None = None
+) -> dict:
+    """Merge global SGLang args, derived defaults, and finally per-group overrides."""
+    kwargs = dict(defaults or {})
+    # Last, so a per-group override wins over every args-derived default.
     if sglang_overrides:
         kwargs.update(sglang_overrides)
 
@@ -195,12 +212,5 @@ def _compute_server_args(
         logger.info(f"Warning: The following arguments is not supported in the current sglang: {unused_keys}.")
         for key in unused_keys:
             kwargs.pop(key)
-
-    if is_multi_lora_enabled(args):
-        assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
-        if kwargs.get("max_loaded_loras") is None:
-            # use --sglang-max-loaded-loras to override
-            # TODO: dynamic allocation
-            kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
     return kwargs
