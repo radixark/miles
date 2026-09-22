@@ -16,6 +16,7 @@ from tests.fast.utils.workers.rpc.client.fake_transports import PollWindowRecord
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers import worker_handle as worker_handle_module
+from miles.utils.workers.env_vars import POD_UID_ENV_VAR
 from miles.utils.workers.rpc.client import call as rpc_client_module
 from miles.utils.workers.rpc.client import handle as rpc_handle_module
 from miles.utils.workers.rpc.client import misc as rpc_misc_module
@@ -27,6 +28,8 @@ from miles.utils.workers.rpc.common.protocol import (
     EXPECTED_BOOT_UUID_HEADER,
     HEALTH_PATH,
     IN_FLIGHT_PATH,
+    POD_UID_HEADER,
+    ServerHealth,
 )
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.worker_handle import WorkerStillBusyError, WorkerUnreachableError
@@ -1094,6 +1097,88 @@ class TestExpectedBootUuid:
                     await handle.demo_default_arg(a=1, b=2)
 
         assert replacement.calls == 0
+
+
+class TestReadHealth:
+    async def test_health_reports_the_boot_uuid_and_the_pod_uid_of_the_answering_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pod uid from the environment and the process boot uuid both reach the caller."""
+        monkeypatch.setenv(POD_UID_ENV_VAR, "pod-uid-1")
+        async with _running_app(_Worker()) as app:
+            boot_uuid = await _boot_uuid_of(app)
+            async with _handle_over(_HookTransport(app)) as handle:
+                health = await handle.read_health()
+
+        assert health == ServerHealth(boot_uuid=boot_uuid, pod_uid="pod-uid-1")
+
+    async def test_a_process_outside_a_pod_reports_no_pod_uid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without the downward-api variable the health carries no pod uid rather than a made-up one."""
+        monkeypatch.delenv(POD_UID_ENV_VAR, raising=False)
+        async with _running_app(_Worker()) as app:
+            async with _handle_over(_HookTransport(app)) as handle:
+                health = await handle.read_health()
+
+        assert health.pod_uid is None
+        assert health.boot_uuid is not None
+
+    async def test_every_rpc_response_carries_the_same_pod_uid_as_health(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordinary call responses echo the pod uid too, so any response identifies the pod."""
+        monkeypatch.setenv(POD_UID_ENV_VAR, "pod-uid-1")
+        pod_uids: list[str | None] = []
+
+        class _PodUidRecordingTransport(_HookTransport):
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                response = await super().handle_async_request(request)
+                pod_uids.append(response.headers.get(POD_UID_HEADER))
+                return response
+
+        async with _running_app(_Worker()) as app:
+            async with _handle_over(_PodUidRecordingTransport(app)) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        assert len(pod_uids) >= 2 and set(pod_uids) == {"pod-uid-1"}
+
+    async def test_health_of_a_replacement_of_the_observed_boot_is_refused(self) -> None:
+        """Reading health through a pre-pinned handle cannot report a replaced process as the target."""
+        async with _running_app(_Worker()) as observed_app, _running_app(_Worker()) as replacement_app:
+            boot_uuid = await _boot_uuid_of(observed_app)
+            async with _handle_over(_HookTransport(replacement_app), expected_boot_uuid=boot_uuid) as handle:
+                with pytest.raises(ServerRestartedError):
+                    await handle.read_health()
+
+    async def test_health_of_the_observed_boot_reports_that_boot(self) -> None:
+        """A pre-pinned handle reads the health of the process it targets without any handshake."""
+        async with _running_app(_Worker()) as app:
+            boot_uuid = await _boot_uuid_of(app)
+            transport = _HookTransport(app)
+            async with _handle_over(transport, expected_boot_uuid=boot_uuid) as handle:
+                health = await handle.read_health()
+
+        assert health.boot_uuid == boot_uuid
+        assert transport.requests == 1
+
+    async def test_an_unhealthy_answer_is_raised_rather_than_read_as_an_identity(self) -> None:
+        """A 5xx health answer surfaces as an error instead of a health without identity."""
+
+        def fail_health(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, text="down", request=request)
+
+        async with _running_app(_Worker()) as app:
+            async with _handle_over(_HookTransport(app, hook=fail_health)) as handle:
+                with pytest.raises(rpc_misc_module.RetryableResponseError):
+                    await handle.read_health()
+
+    async def test_a_health_probe_is_bounded_by_the_health_timeout(self) -> None:
+        """A health read never waits on the long call timeout of the handle."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                await handle.read_health()
+
+        assert transport.seen[0].extensions["timeout"]["read"] == rpc_handle_module._HEALTH_TIMEOUT_SECONDS
 
 
 class TestWaitReady:

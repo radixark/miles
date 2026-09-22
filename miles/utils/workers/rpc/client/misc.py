@@ -55,6 +55,10 @@ class RpcTransport:
     async def request(
         self, method: str, path: str, *, seconds: float, response_model: type[_ResponseT], **kwargs: Any
     ) -> _ResponseT:
+        response = await self.send(method, path, seconds=seconds, **kwargs)
+        return response_model.model_validate(response.json())
+
+    async def send(self, method: str, path: str, *, seconds: float, **kwargs: Any) -> httpx.Response:
         headers = dict(kwargs.pop("headers", {}))
         if self._boot_uuid_pin.expected is not None:
             headers[EXPECTED_BOOT_UUID_HEADER] = self._boot_uuid_pin.expected
@@ -81,7 +85,7 @@ class RpcTransport:
             )
 
         self._boot_uuid_pin.verify(response)
-        return response_model.model_validate(response.json())
+        return response
 
     @property
     def _client(self) -> httpx.AsyncClient:
