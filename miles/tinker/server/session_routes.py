@@ -7,8 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from miles.tinker.core.tinker_session_server import (
-    SamplingBackendError,
-    SessionLimitError,
+    SessionError,
     SessionNotFoundError,
     TrajectoryCollector,
     TurnRequest,
@@ -62,21 +61,15 @@ def _mount_chat_route(app: FastAPI, collector: TrajectoryCollector, suffix: str,
 
 
 def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_bytes: int = MAX_BODY_BYTES) -> None:
-    """Mount bind/export/delete, one chat route per CHAT_ADAPTERS entry, and the 404 / 429 / 502 handlers."""
+    """Mount bind/export/delete, one chat route per CHAT_ADAPTERS entry, and the SessionError handler (its status)."""
 
-    @app.exception_handler(SessionNotFoundError)
-    async def _session_not_found(request: Request, error: SessionNotFoundError):
-        session_id = request.path_params.get("session_id", "{sid}")
-        hint = f"bind it first with POST /oai/sessions/{session_id} (tenant key + sampling_session_id)"
-        return JSONResponse(status_code=404, content={"error": f"{error}; {hint}"})
-
-    @app.exception_handler(SessionLimitError)
-    async def _session_limit(request: Request, error: SessionLimitError):
-        return JSONResponse(status_code=429, content={"error": str(error)})
-
-    @app.exception_handler(SamplingBackendError)
-    async def _backend_error(request: Request, error: SamplingBackendError):
-        return JSONResponse(status_code=502, content={"error": str(error)})
+    @app.exception_handler(SessionError)
+    async def _session_error(request: Request, error: SessionError):
+        hint = ""
+        if isinstance(error, SessionNotFoundError):
+            session_id = request.path_params.get("session_id", "{sid}")
+            hint = f"; bind it first with POST /oai/sessions/{session_id} (tenant key + sampling_session_id)"
+        return JSONResponse(status_code=error.status_code, content={"error": f"{error}{hint}"})
 
     @app.post("/oai/sessions/{session_id}")
     async def create_session(session_id: str, request: Request):
@@ -96,11 +89,11 @@ def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
-        """Export {session_id, model_path, turns: [ids, logprobs, finish_reason, inherits]}; owner only."""
+        """Export {session_id, model_path, max_trim_tokens, turns: [ids, logprobs, finish_reason, ...]}; owner only."""
         return collector.get_session(session_id, _tenant(request))
 
     @app.delete("/oai/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request):
-        """Free the session and its turns; bearer must match the owner."""
+        """Free the session and its turns, cancelling a sample still running; bearer must match the owner."""
         collector.delete_session(session_id, _tenant(request))
         return {"session_id": session_id, "deleted": True}

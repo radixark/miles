@@ -21,13 +21,18 @@ turn's prompt inherits the previous turn's tokens (TITO), so a trajectory trains
 | client `run_harbor_tinker.py` | `HarborTinkerConfig` → cookbook `train.Config` → `train.main`, with a sandbox preflight |
 
 Status codes on the session routes: 400 bad input, missing key, or bind without `sampling_session_id`, 403 another
-tenant's session, 404 chat on an unbound session (the session id is the chat route's only credential),
-429 per-tenant session cap or per-session turn cap, 502 engine failure (nothing recorded).
+tenant's session, 404 chat on an unbound or deleted session (the session id is the chat route's only credential),
+409 a continuation past a truncated reply under `--tinker-session-strict-truncation`, 429 per-tenant session cap or
+per-session turn cap, 502 engine failure (nothing recorded).
 
-Each exported turn carries `inherits`, `reset_reason` (`first`, `retry`, `rewrite`, `budget`, `no_tito`) and
+A session records one turn at a time: render, sample and commit run under the session's lock, so a retry that
+overlaps its first attempt waits and is then recorded as a resend; `DELETE` cancels a sample still running. Each
+exported turn carries `inherits`, `reset_reason` (`first`, `retry`, `rewrite`, `budget`, `mismatch`, `no_tito`) and
 `after_truncation`; the client's `select_turns` drops retry-superseded attempts and continuations past a truncated
 reply, matching the miles session server v1/v2, and `--tinker-session-strict-truncation` refuses such continuations
-with 400 instead.
+with 409 instead. The export also carries `max_trim_tokens`, the boundary tokens the TITO family may drop when it
+extends a prefix (GLM: 1): with a non-zero value consecutive turns are not strict prefixes and the cookbook keeps
+them as separate Datums.
 
 API adapters: a chat dialect is one pair of functions, body → `TurnRequest` and (body, `TurnResult`) → response JSON,
 registered under its path suffix in `session_routes.CHAT_ADAPTERS`; the collector, TITO and sampling only ever see the

@@ -48,7 +48,7 @@ def add_tinker_arguments(parser):
         "session-strict-truncation",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Refuse (400) a recorded chat turn that continues a reply cut at max_tokens, as the miles session server v2 does (default: off)",
+        help="Refuse (409) a recorded chat turn that continues a reply cut at max_tokens, as the miles session server v2 does (default: off)",
     )
     add_argument("train-attn", action=argparse.BooleanOptionalAction, default=True)
     add_argument("train-mlp", action=argparse.BooleanOptionalAction, default=True)

@@ -1,4 +1,4 @@
-"""Recorded-session collector: sessions, ownership, caps and turns; PromptRenderer renders, TinkerService samples."""
+"""Recorded-session collector: one turn at a time per session; every turn is kept, reset_reason marks segments."""
 
 from __future__ import annotations
 
@@ -19,16 +19,34 @@ TINKER_PATH_PREFIX = "tinker://"
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
-class SessionNotFoundError(Exception):
+class SessionError(Exception):
+    """Base of the recorded-session errors; status_code is what the session routes answer with."""
+
+    status_code = 500
+
+
+class SessionNotFoundError(SessionError):
     """No recorded session with this id."""
 
+    status_code = 404
 
-class SamplingBackendError(Exception):
+
+class TruncatedGenerationError(SessionError):
+    """The harness continued past a reply cut at max_tokens and strict truncation refuses to extend it."""
+
+    status_code = 409
+
+
+class SessionLimitError(SessionError):
+    """The tenant's open sessions or the session's turns hit the collector's cap."""
+
+    status_code = 429
+
+
+class SamplingBackendError(SessionError):
     """The engine failed the sample; nothing was recorded for the turn."""
 
-
-class SessionLimitError(Exception):
-    """The tenant's open sessions or the session's turns hit the collector's cap."""
+    status_code = 502
 
 
 def validate_session_id(session_id: str) -> None:
@@ -47,7 +65,7 @@ class Turn:
     finish_reason: str  # "stop" | "length"
     created_at: float = field(default_factory=time.time)
     inherits: bool = False  # TITO: input_ids extend the previous turn's input_ids + output_ids
-    reset_reason: str | None = None  # why a full render opened a new segment: first, retry, rewrite, budget, no_tito
+    reset_reason: str | None = None  # why a full render opened a segment: first/retry/rewrite/budget/mismatch/no_tito
     after_truncation: bool = False  # the harness continued past a reply that ended with finish_reason="length"
 
     def as_json(self) -> dict[str, Any]:
@@ -93,7 +111,8 @@ class TrajectorySession:
     turns: list[Turn] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
-    in_flight: int = 0  # samples running right now; the TTL sweep leaves such a session alone
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # held for a whole turn: render, sample and commit as one
+    pending_request_id: str | None = None  # the sample running under the lock; DELETE cancels it
     max_datum_tokens: int | None = None  # the client's per-datum cap from bind; a TITO chain never grows past it
     sampling_session_id: str | None = None  # the Tinker sampling session bound at create: sampler version + lease
     messages: list[dict[str, Any]] | None = None  # history the last recorded turn answered, its reply appended
@@ -190,16 +209,19 @@ class TrajectoryCollector:
         return session
 
     def delete_session(self, session_id: str, tenant: str) -> None:
-        """Drop a session and its turns; owner only."""
-        self._get_session(session_id, tenant)
+        """Drop a session and its turns; owner only; a sample still running under its lock is cancelled."""
+        session = self._get_session(session_id, tenant)
         del self.sessions[session_id]
+        if session.pending_request_id is not None:
+            self.service.cancel(tenant, session.pending_request_id)
 
     def get_session(self, session_id: str, tenant: str) -> dict[str, Any]:
-        """Export {session_id, model_path, turns} for the client's turns_to_trajectory; owner only."""
+        """Export {session_id, model_path, max_trim_tokens, turns} for the client's turns_to_trajectory; owner only."""
         session = self._get_session(session_id, tenant)
         return {
             "session_id": session.session_id,
             "model_path": session.model_path,
+            "max_trim_tokens": self.renderer.max_trim_tokens,
             "turns": [turn.as_json() for turn in session.turns],
         }
 
@@ -210,7 +232,7 @@ class TrajectoryCollector:
         expired = [
             sid
             for sid, session in self.sessions.items()
-            if session.in_flight == 0
+            if not session.lock.locked()
             and (
                 now - session.last_seen >= self.session_ttl_s
                 or (now - session.last_seen >= lease_grace and not self._tenant_alive(session.tenant))
@@ -230,41 +252,77 @@ class TrajectoryCollector:
         return cap if session.max_datum_tokens is None else min(cap, session.max_datum_tokens)
 
     async def complete(self, session_id: str, request: TurnRequest) -> TurnResult:
-        """Record one turn on a bound session: render off the loop, sample under its lease, append the Turn."""
+        """Record one turn on a bound session under its lock: render off the loop, sample under the lease, commit."""
         session = self._session_for_request(session_id, request.model)
-        if len(session.turns) >= self.max_turns_per_session:
-            raise SessionLimitError(
-                f"session {session_id!r} already holds {len(session.turns)} turns (cap {self.max_turns_per_session})"
-            )
-        request_messages = request.messages
         max_new_tokens = max_new_tokens_of(request.sampling_params)
-        # tokenizing is CPU work; keep it off the loop that serves every tenant's Tinker traffic
-        prompt_token_ids, inherits, reset_reason = await asyncio.to_thread(
-            self.renderer.prepare_pretokenized,
-            session,
-            request_messages,
-            request.tools,
-            request.chat_template_kwargs,
-            max_new_tokens=max_new_tokens,
-            budget=self._tito_budget(session),
-        )
-        # the harness kept going after a reply cut at max_tokens; miles session server v2 refuses this, v1 desyncs
-        after_truncation = inherits and bool(session.turns) and session.turns[-1].finish_reason == "length"
-        if after_truncation and self.strict_truncation:
-            raise UserInputError("cannot extend a reply that ended at max_tokens; resample it or start a new session")
-        payload = {
+        async with session.lock:  # a retry that overlaps its first attempt waits here and is then seen as a resend
+            if self.sessions.get(session_id) is not session:
+                raise SessionNotFoundError(f"session {session_id!r} was deleted")
+            if len(session.turns) >= self.max_turns_per_session:
+                cap = self.max_turns_per_session
+                raise SessionLimitError(f"session {session_id!r} already holds {len(session.turns)} turns (cap {cap})")
+            # tokenizing is CPU work; keep it off the loop that serves every tenant's Tinker traffic
+            prompt_token_ids, inherits, reset_reason = await asyncio.to_thread(
+                self.renderer.prepare_pretokenized,
+                session,
+                request.messages,
+                request.tools,
+                request.chat_template_kwargs,
+                max_new_tokens=max_new_tokens,
+                budget=self._tito_budget(session),
+            )
+            # the harness continued past a reply cut at max_tokens; miles session server v2 refuses, v1 desyncs
+            last = session.turns[-1] if session.turns else None
+            after_truncation = inherits and last is not None and last.finish_reason == "length"
+            if after_truncation and self.strict_truncation:
+                raise TruncatedGenerationError("cannot extend a reply that ended at max_tokens; resample it or rebind")
+            sequence = await self._sample(session, self._payload(session, prompt_token_ids, request.sampling_params))
+            return self._commit_generation(
+                session, request.messages, prompt_token_ids, sequence, inherits, reset_reason, after_truncation
+            )
+
+    @staticmethod
+    def _payload(session: TrajectorySession, prompt_token_ids: list[int], sampling_params: dict) -> dict[str, Any]:
+        """The Tinker sample body for one turn: the pinned sampler path, this prompt, the turn's sampling params."""
+        return {
             "model_path": session.model_path,
             "num_samples": 1,
             "prompt_tokens": list(prompt_token_ids),
-            "sampling_params": dict(request.sampling_params),
+            "sampling_params": dict(sampling_params),
             "prompt_logprobs": False,
             "topk_prompt_logprobs": 0,
         }
-        session.in_flight += 1
+
+    async def _sample(self, session: TrajectorySession, payload: dict[str, Any]) -> dict[str, Any]:
+        """Sample through the gateway under the session's lease; the request id stays on the session for DELETE."""
+        # refused once the lease behind the sampling session is gone; else filed under it so expiry cancels the task
+        request_id, _ = self.service.submit_recorded_sample(session.tenant, payload, session.sampling_session_id)
+        future = self.service.retrieve_future(session.tenant, request_id)
+        assert future is not None, f"sampling future {request_id} vanished before it settled"
+        session.pending_request_id = request_id
         try:
-            sequence = await self._sample(session, payload)
+            await future.settled.wait()
         finally:
-            session.in_flight -= 1
+            session.pending_request_id = None
+        if future.state == FAILED:
+            if self.sessions.get(session.session_id) is not session:
+                raise SessionNotFoundError(f"session {session.session_id!r} was deleted while sampling")
+            if future.error_category == "user":
+                raise UserInputError(future.error or "sampling rejected")
+            raise SamplingBackendError(future.error or "sampling failed")
+        return future.result["sequences"][0]
+
+    def _commit_generation(
+        self,
+        session: TrajectorySession,
+        request_messages: list[dict[str, Any]],
+        prompt_token_ids: list[int],
+        sequence: dict[str, Any],
+        inherits: bool,
+        reset_reason: str | None,
+        after_truncation: bool,
+    ) -> TurnResult:
+        """Build the Turn and its assistant message first, then write turns, last_seen and the TITO state together."""
         turn = Turn(
             input_ids=array("i", prompt_token_ids),
             output_ids=array("i", (int(token) for token in sequence["tokens"])),
@@ -275,25 +333,11 @@ class TrajectoryCollector:
             reset_reason=reset_reason,
             after_truncation=after_truncation,
         )
+        message = self.renderer.assistant_message(turn)
         session.turns.append(turn)
         session.last_seen = turn.created_at
-        message = self.renderer.assistant_message(turn)
         self.renderer.update_pretokenized_state(session, turn, request_messages, message)  # the same dict, not a copy
         return TurnResult(turn=turn, assistant_message=message)
-
-    async def _sample(self, session: TrajectorySession, payload: dict[str, Any]) -> dict[str, Any]:
-        """Sample through the gateway: submit_sample → retrieve_future → settled → sequences[0], or raise."""
-        tenant = session.tenant
-        # refused once the lease behind the sampling session is gone; else filed under it so expiry cancels the task
-        request_id, _ = self.service.submit_recorded_sample(tenant, payload, session.sampling_session_id)
-        future = self.service.retrieve_future(tenant, request_id)
-        assert future is not None, f"sampling future {request_id} vanished before it settled"
-        await future.settled.wait()
-        if future.state == FAILED:
-            if future.error_category == "user":
-                raise UserInputError(future.error or "sampling rejected")
-            raise SamplingBackendError(future.error or "sampling failed")
-        return future.result["sequences"][0]
 
     def _session_for_request(self, session_id: str, model: str | None) -> TrajectorySession:
         """The bound session for a chat turn: the unguessable id is the credential; a tinker:// model must match."""

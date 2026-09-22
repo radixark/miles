@@ -51,7 +51,7 @@ def render_prompt(
 
 
 def _resends_history(request_messages: Any, stored: list[dict[str, Any]]) -> bool:
-    """True when request_messages match a leading slice of stored history by (role, content): an earlier request re-sent."""
+    """True when request_messages are a leading slice of the stored history by (role, content): a re-sent request."""
     if not isinstance(request_messages, list) or not request_messages:
         return False
     pairs = zip(request_messages, stored[: len(request_messages)], strict=False)
@@ -83,6 +83,9 @@ def _try_merge_tokens(
     except ValueError:  # the harness edited, reordered or summarized the history; a fresh render is still exact
         return None, "rewrite"
     prompt_token_ids = [int(token) for token in prompt]
+    kept = len(session.token_ids) - getattr(tito_tokenizer, "max_trim_tokens", 0)
+    if kept > 0 and prompt_token_ids[:kept] != list(session.token_ids[:kept]):
+        return None, "mismatch"  # the merge did not extend the recorded prefix: never sample it, re-render instead
     if budget is not None and len(prompt_token_ids) + max_new_tokens > budget:
         return None, "budget"
     return prompt_token_ids, None
@@ -134,6 +137,11 @@ class PromptRenderer:
         """Remember the answered history + the assistant message for the next TITO merge; no-op without TITO."""
         if self.tito_tokenizer is not None:
             _update_pretokenized_state(session, turn, request_messages, assistant_message)
+
+    @property
+    def max_trim_tokens(self) -> int:
+        """Trailing tokens the TITO family may drop when it extends a prefix (GLM: 1); 0 without TITO."""
+        return getattr(self.tito_tokenizer, "max_trim_tokens", 0)
 
     def decode(self, ids) -> str:
         """The reply text for the wire response, special tokens dropped."""
