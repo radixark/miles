@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import torch
+import transformer_engine.pytorch as te
 
 _seen = set()
 _registered = False
@@ -29,7 +30,7 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler) -> None:
     count = 0
     for chunk in model:
         for module_name, module in chunk.named_modules():
-            if "decoder.layers" in module_name and module.__class__.__module__.startswith("transformer_engine.") and module.__class__.__name__ in ("Linear", "LayerNormLinear", "LayerNormMLP"):
+            if "decoder.layers" in module_name and isinstance(module, (te.Linear, te.LayerNormLinear, te.LayerNormMLP)):
                 module.register_forward_hook(record_fp8)
                 count += 1
     assert count > 0, "No Transformer Engine projection found"

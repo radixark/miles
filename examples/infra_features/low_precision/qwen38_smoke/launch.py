@@ -1,10 +1,8 @@
 """Prepare and submit a reproducible Qwen FP8 reasoning smoke test."""
 import hashlib
 import json
-import os
 import shlex
 import subprocess
-import sys
 from pathlib import Path
 
 from datasets import load_dataset
