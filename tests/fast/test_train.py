@@ -101,7 +101,7 @@ class TestEvalBeforeTrain:
         args = _make_args(num_rollout=2, eval_interval=1)
         _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert events.index("eval:0") < events.index("prepare_rollout:0")
 
@@ -113,7 +113,7 @@ class TestEvalBeforeTrain:
         args = _make_args(num_rollout=5, eval_interval=1, start_rollout_id=3)
         _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert events.index("eval:2") < events.index("prepare_rollout:3")
         assert "eval:3" not in events[: events.index("prepare_rollout:3")]
@@ -128,7 +128,7 @@ class TestFinalEval:
         args = _make_args(num_rollout=3, eval_interval=2)
         _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert [event for event in events if event.startswith("eval:")] == ["eval:0", "eval:1", "eval:2"]
 

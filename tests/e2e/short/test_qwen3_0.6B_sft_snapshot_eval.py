@@ -15,7 +15,7 @@ import pandas as pd
 from tests.ci.ci_register import register_cuda_ci
 from transformers import AutoTokenizer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=600,
@@ -53,6 +53,7 @@ def _write_datasets():
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
@@ -60,6 +61,7 @@ def prepare():
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/models/{MODEL_NAME} "
 
     sft_args = (
@@ -132,7 +134,7 @@ def execute():
         f"{ckpt_args} "
         f"{sft_args} "
         f"{optimizer_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{ci_args} "
