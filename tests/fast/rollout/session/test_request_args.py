@@ -249,6 +249,8 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
 
 @pytest.mark.parametrize("evaluation", [False, True])
 def test_session_sampling_defaults_fill_only_omitted_fields(evaluation):
+    # Training defaults stay unbounded; see SAMPLING in tests/fast/router/test_session_evaluation.py.
+    defaults = {"temperature": 0.6, "top_p": 0.9 if evaluation else 1.0, "top_k": 20 if evaluation else -1}
     temperature = 0.1 if evaluation else 0.6
     client_args = {"temperature": temperature, "top_p": None, "top_k": -1}
     original = deepcopy(client_args)
@@ -258,11 +260,11 @@ def test_session_sampling_defaults_fill_only_omitted_fields(evaluation):
         config=make_session_server_config(),
         turn_args=None,
         evaluation=evaluation,
-        sampling_defaults={"temperature": 0.6, "top_p": 0.9, "top_k": 20},
+        sampling_defaults=defaults,
     )
     assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
         "temperature": temperature,
-        "top_p": 0.9,
+        "top_p": defaults["top_p"],
         "top_k": -1,
     }
     assert client_args == original
