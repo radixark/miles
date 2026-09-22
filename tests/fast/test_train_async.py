@@ -178,7 +178,7 @@ class TestPipelinedGeneration:
         args = _make_args(fully_async=True, num_rollout=2, update_weights_interval=1)
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_async_driver.train(args)
+        await with_disposer(train_async_driver.train, args)
 
         assert events.index("actor_train:0") < events.index("update_weights:0")
         assert events.index("update_weights:0") < events.index("generate_start:1")
@@ -191,7 +191,7 @@ class TestPipelinedGeneration:
         args = _make_args(fully_async=True, num_rollout=3, update_weights_interval=2)
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_async_driver.train(args)
+        await with_disposer(train_async_driver.train, args)
 
         assert events.index("generate_start:1") < events.index("actor_train:0")
         assert events.index("actor_train:1") < events.index("update_weights:1")

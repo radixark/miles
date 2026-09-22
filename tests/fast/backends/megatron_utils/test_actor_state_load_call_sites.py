@@ -8,6 +8,7 @@ _SOURCE = FRAMEWORK_ROOT / "backends" / "megatron_utils" / "actor.py"
 _CORE_METHOD = "_load_state_core"
 _LOAD_FUNCTION = "load_model_state"
 _INIT_METHOD = "init"
+_TRAINING_STATE_METHOD = "_init_training_state"
 _SLEEP_METHOD = "sleep"
 _WEIGHT_UPDATER_ATTRIBUTE = "weight_updater"
 
@@ -68,15 +69,20 @@ def _attribute_assignment_lines(function_name: str, attribute: str) -> list[int]
 
 
 class TestWhenTheTrainerBuildsItsWeightUpdater:
+    def test_the_weight_updater_is_built_where_init_says_it_is(self):
+        """The ordering below reads init, so the build has to stay in the one call init makes for it."""
+        assert _attribute_assignment_lines(_INIT_METHOD, _WEIGHT_UPDATER_ATTRIBUTE) == []
+        assert len(_attribute_assignment_lines(_TRAINING_STATE_METHOD, _WEIGHT_UPDATER_ATTRIBUTE)) == 1
+
     def test_the_weight_updater_is_built_after_the_state_load(self):
         """The checkpoint load lifts expert_bias back to fp32, so a snapshot taken before it records a stale dtype."""
-        (built,) = _attribute_assignment_lines(_INIT_METHOD, _WEIGHT_UPDATER_ATTRIBUTE)
+        (built,) = _method_call_lines(_INIT_METHOD, _TRAINING_STATE_METHOD)
 
         assert max(_method_call_lines(_INIT_METHOD, _CORE_METHOD)) < built
 
     def test_the_trainer_only_offloads_once_the_weight_updater_exists(self):
         """Building it needs a live cuda context and live process groups, which the offload sleep tears down."""
-        (built,) = _attribute_assignment_lines(_INIT_METHOD, _WEIGHT_UPDATER_ATTRIBUTE)
+        (built,) = _method_call_lines(_INIT_METHOD, _TRAINING_STATE_METHOD)
 
         assert max(_method_call_lines(_INIT_METHOD, _SLEEP_METHOD)) > built
 
