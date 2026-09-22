@@ -90,8 +90,8 @@ def test_fused_selection_cannot_silently_expand():
     targets = ["model.layers.*.self_attn.q_proj"]
     with pytest.raises(AssertionError, match="requires all HF targets"):
         _resolve(targets, [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"])
-    candidates = _resolve(targets, [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"], canonical=True)
-    assert list(candidates) == ["decoder.layers.*.self_attention.linear_q"]
+    adapter_modules = _resolve(targets, [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"], canonical=True)
+    assert list(adapter_modules) == ["decoder.layers.*.self_attention.linear_q"]
 
 
 @pytest.mark.parametrize("grouped", [True, False], ids=["grouped", "sequential"])
@@ -120,11 +120,10 @@ def test_missing_hf_mapping_is_not_a_megatron_passthrough():
 def test_one_to_one_mapping_keeps_bridge_module_name():
     target = "model.layers.*.self_attn.o_proj"
     mapping = _mapping("decoder.layers.*.self_attention.output_projection.weight", target + ".weight")
-    candidates = _resolve(
+    adapter_modules = _resolve(
         [target], [mapping], ["decoder.layers.0.self_attention.output_projection.weight"], canonical=True
     )
-    assert list(candidates) == ["decoder.layers.*.self_attention.output_projection"]
-    assert next(iter(candidates.values())).checkpoint_parameters == {"model.layers.0.self_attn.o_proj.weight"}
+    assert list(adapter_modules) == ["decoder.layers.*.self_attention.output_projection"]
 
 
 def test_absent_fused_alternative_does_not_reject_selection():
