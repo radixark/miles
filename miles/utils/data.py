@@ -323,7 +323,6 @@ def process_rollout_data(
 class RolloutDataPack(StrictBaseModel):
     sample_indices: list[int] | None = None
     data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None = None
-    empty_batch_timeout: bool = False
 
     @property
     def data_refs(self) -> list[object_store.StoreObjectRef]:

@@ -83,7 +83,7 @@ class TestRemoveRolloutDataRefs:
         assert store.removed == refs
 
     def test_a_pack_that_carries_no_data_never_reaches_the_store(self, store: _RecordingStore):
-        """An empty-batch timeout ships no object, and asking the store to free None would raise."""
-        remove_rollout_data_refs(None, rollout_data_pack=RolloutDataPack(empty_batch_timeout=True))
+        """A pack without a data ref ships no object, and asking the store to free None would raise."""
+        remove_rollout_data_refs(None, rollout_data_pack=RolloutDataPack())
 
         assert store.removed == []
