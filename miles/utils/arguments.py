@@ -3121,17 +3121,19 @@ def miles_validate_args(args):
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
-    if is_lora_enabled(args):
+    is_lora = is_lora_enabled(args)
+    if is_lora:
         assert (
             args.train_backend == "megatron"
         ), "LoRA injection is not implemented for FSDP; use --train-backend megatron"
         assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
+        hf_config = load_hf_config(args.hf_checkpoint)
         targets = parse_lora_targets(args.target_modules)
         if targets is None or targets == ["all-linear"]:
             # Non-Tinker multi-LoRA uses the same all-enabled group defaults as the gateway.
             multi_lora_defaults = args.multi_lora_n_adapters > 0 and targets is None
             targets = resolve_hf_lora_targets(
-                load_hf_config(args.hf_checkpoint).to_dict(),
+                hf_config.to_dict(),
                 target_modules=targets,
                 train_attn=True if multi_lora_defaults else None,
                 train_mlp=True if multi_lora_defaults else None,
@@ -3159,8 +3161,7 @@ def miles_validate_args(args):
     # Sets args.multi_lora, then validates/defaults the multi-LoRA arg surface
     # (adapter configs themselves are loaded later by the controller).
     validate_multi_lora_args(args)
-    if is_lora_enabled(args):
-        hf_config = load_hf_config(args.hf_checkpoint)
+    if is_lora:
         hf_mapping = HfWeightMapping.from_config(hf_config)
         hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_names]
         if all(
