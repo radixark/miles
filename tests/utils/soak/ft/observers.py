@@ -1,3 +1,5 @@
+import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -10,9 +12,13 @@ from tests.utils.soak.ft.types import ROLLOUT_CELL_TYPE, CellTarget
 from tests.utils.soak.k8s_utils.pod_manipulation import SoakPodTarget
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
+from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS, compute_release_selector
 from miles.utils.workers.cell_operations.base import FaultTarget
+from miles.utils.workers.naming import parse_cell_id
 from miles.utils.workers.types import ClusterBackend, DeployComponent
+from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
 
 def cell_type_of(cell: dict) -> str:
@@ -58,11 +64,16 @@ class CellObserver(SoakObserver):
         observed_at = datetime.now(timezone.utc)
         errors: dict[str, str] = {}
 
-        cells = await self._observe_cells(errors=errors)
+        cells, pods = await asyncio.gather(self._observe_cells(errors=errors), self._read_pods(errors=errors))
+        pods_of_cell = self._create_pod_targets(cells=cells, pods=pods, errors=errors)
 
         return SoakObservationEvent(
             timestamp=observed_at,
-            targets=None if cells is None else [create_cell_target(cell, pods=[]) for cell in cells],
+            targets=(
+                None
+                if cells is None
+                else [create_cell_target(cell, pods=pods_of_cell.get(cell["metadata"]["name"], [])) for cell in cells]
+            ),
             errors=errors,
         )
 
@@ -74,6 +85,62 @@ class CellObserver(SoakObserver):
                 response.raise_for_status()
                 cells = [cell for cell in response.json()["items"] if cell_type_of(cell) in self.cell_types]
         return cells
+
+    async def _read_pods(self, *, errors: dict[str, str]) -> list[dict] | None:
+        if self.release is None:
+            return None
+        assert self.namespace, "A release observation needs a namespace"
+
+        pods: list[dict] | None = None
+        with recording_error(errors, "pods"):
+            pods = await self._read_release_pods()
+        return pods
+
+    def _create_pod_targets(
+        self, *, cells: list[dict] | None, pods: list[dict] | None, errors: dict[str, str]
+    ) -> dict[str, list[SoakPodTarget]]:
+        if pods is None:
+            return {}
+        assert self.namespace and self.release, "A release observation needs a namespace"
+
+        pods_of_cell: dict[str, list[SoakPodTarget]] = {}
+        with recording_error(errors, "pods"):
+            for cell in cells or []:
+                name = cell["metadata"]["name"]
+                parsed = parse_cell_id(name)
+                pods_of_cell[name] = [
+                    SoakPodTarget(
+                        namespace=self.namespace,
+                        release=self.release,
+                        name=pod["metadata"]["name"],
+                        uid=pod["metadata"]["uid"],
+                    )
+                    for pod in pods
+                    if pod["metadata"].get("labels", {}).get(DEFAULT_LABEL_KEYS.pool_id) == parsed.pool_id
+                    and pod["metadata"].get("labels", {}).get(DEFAULT_LABEL_KEYS.cell_index) == str(parsed.cell_index)
+                ]
+            return pods_of_cell
+        return {}
+
+    async def _read_release_pods(self) -> list[dict]:
+        result = await asyncio.to_thread(
+            run_process,
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "--namespace",
+                self.namespace,
+                "--selector",
+                compute_release_selector(release=self.release),
+                "--output",
+                "json",
+            ],
+            capture_output=True,
+            check=True,
+            timeout=KUBECTL_TIMEOUT_SECONDS,
+        )
+        return json.loads(result.stdout)["items"]
 
 
 def create_cell_observer(
