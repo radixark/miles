@@ -118,5 +118,15 @@ def read_step_events(events_dir: Path) -> dict[int, list[str]]:
     return dict(sorted(events_of_rollout_id.items()))
 
 
+def read_finished_steps_once(events_dir: Path, *, what: str) -> dict[int, str]:
+    logged = read_step_events(events_dir)
+    repeated = {rollout_id: len(events) for rollout_id, events in logged.items() if len(events) != 1}
+    assert not repeated, (
+        f"{what} describes the step(s) {repeated} more than once; a take-over rolls the log back before redoing "
+        f"anything, so one log covers each step exactly once"
+    )
+    return {rollout_id: events[0] for rollout_id, events in logged.items()}
+
+
 def read_discarded_event_dirs(dump_dir: str) -> list[Path]:
     return sorted(Path(dump_dir).glob(DISCARDED_EVENTS_GLOB))
