@@ -133,4 +133,5 @@ jobs:
         shell: bash
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MILES_SNAPSHOT_RECORD_DIR: ${{ github.workspace }}/snapshot-records
         run: ${{ inputs.execute_command }}

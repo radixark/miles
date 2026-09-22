@@ -182,4 +182,6 @@ jobs:
 
       - name: Run tests
         shell: bash
+        env:
+          MILES_SNAPSHOT_RECORD_DIR: ${{ github.workspace }}/snapshot-records
         run: ${{ inputs.execute_command }}
