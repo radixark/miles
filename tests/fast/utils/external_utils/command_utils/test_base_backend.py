@@ -206,7 +206,7 @@ class TestExecuteTrainConfigSelection:
         monkeypatch.setattr(
             RayCommandBackend,
             "_execute_train_inner",
-            lambda self, *, request, config: recorded.append((request, config)),
+            lambda self, *, request, config, guard: recorded.append((request, config)),
         )
         backend_config = ExecuteTrainConfig()
         launch_config = ExecuteTrainConfig(deploy_component=DeployComponent.TRAINER)
@@ -226,7 +226,7 @@ class TestExecuteTrainConfigSelection:
         monkeypatch.setattr(
             RayCommandBackend,
             "_execute_train_inner",
-            lambda self, *, request, config: recorded.append((request, config)),
+            lambda self, *, request, config, guard: recorded.append((request, config)),
         )
         config = ExecuteTrainConfig(deploy_component=DeployComponent.TRAINER)
 
@@ -247,7 +247,7 @@ class TestExecuteTrainConfigSelection:
 def _launched_train_argv(monkeypatch, *, train_args: str, config: ExecuteTrainConfig) -> list[str]:
     recorded: list[ExecuteTrainRequest] = []
     monkeypatch.setattr(
-        RayCommandBackend, "_execute_train_inner", lambda self, *, request, config: recorded.append(request)
+        RayCommandBackend, "_execute_train_inner", lambda self, *, request, config, guard: recorded.append(request)
     )
 
     config.create_backend().execute_train(train_args=train_args, num_gpus_per_node=8, megatron_model_type=None)
