@@ -55,9 +55,9 @@ def _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, *
         and megatron_module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1")
     ):
         return list(dict.fromkeys(_canonical_adapter_module(megatron_module, name) for name in selected))
-    assert selected == checkpoint_parameters, (
-        f"LoRA on fused module {megatron_module!r} requires all HF targets with this adapter"
-    )
+    assert (
+        selected == checkpoint_parameters
+    ), f"LoRA on fused module {megatron_module!r} requires all HF targets with this adapter"
     if canonical and ".experts." in megatron_module and megatron_module.endswith(".linear_fc1"):
         # CanonicalLoRA requires split aliases even for fused expert adapters.
         return [f"{megatron_module}_gate", f"{megatron_module}_up"]
