@@ -12,7 +12,10 @@ Muon specifics:
 - The Adam CPU-offload / precision-aware / fp16-state flags of the regular case require
   Megatron's distributed optimizer, which miles enables only for Adam; the Muon block offloads
   optimizer state between steps with ``--chunked-optimizer-state-offload`` instead.
-- lr 1e-5 follows tests/e2e/megatron/test_qwen3_4B_muon_offload_disk.py.
+- lr 1e-6, the Adam CI runs' value. The first attempt used 1e-5 (the 2-step Muon smoke test's
+  value) and collapsed: reward 0.45 -> 0.69 at rollout 10, then a monotone slide to 0 by rollout
+  60 while responses grew from 3.5k to 7.2k tokens (run 35719130821); train/rollout |dlogp| stayed
+  at 0.001-0.005 throughout, so the drift was optimisation, not weight sync.
 
 The per-step weight-equality check is off: with 100 updates it would add a full-model compare
 to every step; the per-step train/rollout log-prob checker still guards weight-sync drift.
@@ -30,7 +33,7 @@ register_cuda_ci(est_time=17000, suite="stage-c-8-gpu-h200", labels=["long"], ha
 
 MUON_OPTIMIZER_ARGS = (
     "--optimizer dist_muon "
-    "--lr 1e-5 "
+    "--lr 1e-6 "
     "--lr-decay-style constant "
     "--weight-decay 0.1 "
     "--adam-beta1 0.9 "
