@@ -1,10 +1,19 @@
+import argparse
+import importlib
+import shlex
 from fnmatch import fnmatchcase
 
 import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, PretrainedConfig
 
-from miles.utils.hf_utils.lora_targets import _HF_LORA_MODELS, get_hf_lora_targets, resolve_hf_lora_targets
+from miles.utils.hf_utils.lora_targets import (
+    _HF_LORA_MODELS,
+    exclude_hf_lora_targets,
+    get_hf_lora_targets,
+    parse_lora_targets,
+    resolve_hf_lora_targets,
+)
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 
 
@@ -152,6 +161,35 @@ def test_targets_match_native_hf_model(model_type, overrides):
     assert set(defaults) == set(layout.attention + layout.mlp)
     all_groups = resolve_hf_lora_targets(config.to_dict(), train_attn=True, train_mlp=True, train_unembed=True)
     assert set(all_groups) == set(layout.attention + layout.mlp + layout.unembed)
+
+
+@pytest.mark.parametrize("launcher", ["run_glm5_1_744b_a40b_lora", "run_glm5_2_744b_a40b_lora"])
+def test_glm_launcher_ablation_selects_only_attention(monkeypatch, launcher):
+    module = importlib.import_module(f"scripts.{launcher}")
+    train_commands = []
+    monkeypatch.setenv("KEEP_MOE_LORA", "0")
+    monkeypatch.delenv("MOE_LORA_LAYERS", raising=False)
+    monkeypatch.setattr(module.U, "execute_train", lambda **kwargs: train_commands.append(kwargs["train_args"]))
+    module._train(module.ScriptArgs(enable_wandb=False))
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target-modules")
+    parser.add_argument("--exclude-modules")
+    assert len(train_commands) == 1
+    args, _ = parser.parse_known_args(shlex.split(train_commands[0]))
+    config = _small_config("glm_moe_dsa", {})
+    selected = exclude_hf_lora_targets(
+        resolve_hf_lora_targets(config.to_dict(), target_modules=parse_lora_targets(args.target_modules)),
+        parse_lora_targets(args.exclude_modules) or [],
+    )
+    assert set(selected) == set(get_hf_lora_targets(config.to_dict()).attention)
+    selected_parameters = {
+        name
+        for name in HfWeightMapping.from_config(config).parameter_names
+        if any(fnmatchcase(name.removesuffix(".weight"), target) for target in selected)
+    }
+    assert selected_parameters
+    assert all(".self_attn." in name and ".indexer." not in name for name in selected_parameters)
 
 
 def test_remote_config_with_native_class_name():

@@ -188,7 +188,7 @@ def _train(args: ScriptArgs):
         f'--target-modules "{args.target_modules}" '
     )
     if not _keep_moe_lora:
-        lora_args += "--exclude-modules gate_proj,up_proj,down_proj "
+        lora_args += "--exclude-modules gate_proj,up_proj,gate_up_proj,down_proj "
     if _keep_moe_lora and args.experts_shared_outer_loras:
         lora_args += "--experts-shared-outer-loras "
     if _is_full:
