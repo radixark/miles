@@ -865,7 +865,7 @@ class TestMultiLoRAValidation:
     def _bridge_selector(self, monkeypatch):
         monkeypatch.setattr(
             "miles.utils.arguments.HfWeightMapping.from_config",
-            lambda config: SimpleNamespace(parameter_shapes={}),
+            lambda config: SimpleNamespace(parameter_names=frozenset()),
         )
         monkeypatch.setattr(
             "miles.utils.arguments.load_hf_config",
@@ -897,7 +897,7 @@ class TestMultiLoRAValidation:
     def test_hf_selection_does_not_resolve_through_bridge(self, monkeypatch):
         monkeypatch.setattr(
             "miles.utils.arguments.HfWeightMapping.from_config",
-            lambda config: SimpleNamespace(parameter_shapes={"model.layers.0.self_attn.q_proj.weight": (8, 8)}),
+            lambda config: SimpleNamespace(parameter_names=frozenset({"model.layers.0.self_attn.q_proj.weight"})),
         )
 
         def unexpected_bridge(*args, **kwargs):

@@ -136,8 +136,8 @@ def test_targets_match_native_hf_model(model_type, overrides):
     assert projections
     assert all(param.is_meta for param in model.parameters())
     hf_mapping = HfWeightMapping.from_config(config)
-    assert hf_mapping.parameter_shapes == {
-        name: tuple(param.shape)
+    assert hf_mapping.parameter_names == {
+        name
         for name, param in model.named_parameters(remove_duplicate=False)
         if param.ndim in (2, 3)
     }
@@ -164,6 +164,6 @@ def test_remote_config_with_native_class_name():
     remote_config = remote_config_class(**remote_fields)
 
     assert (
-        HfWeightMapping.from_config(remote_config).parameter_shapes
-        == HfWeightMapping.from_config(config).parameter_shapes
+        HfWeightMapping.from_config(remote_config).parameter_names
+        == HfWeightMapping.from_config(config).parameter_names
     )

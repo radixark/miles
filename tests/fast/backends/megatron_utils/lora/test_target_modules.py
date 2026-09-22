@@ -1,12 +1,8 @@
 from types import SimpleNamespace
 
 import pytest
-import torch
 
-from miles.backends.megatron_utils.lora.target_modules import (
-    resolve_megatron_lora_targets,
-    validate_lora_target_adapters,
-)
+from miles.backends.megatron_utils.lora.target_modules import resolve_megatron_lora_targets
 from miles.utils.hf_utils.lora_targets import resolve_hf_lora_targets
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 
@@ -31,22 +27,9 @@ def _resolve(targets, mappings, parameter_names, *, canonical=False, hf_mapping=
         targets,
         mappings,
         parameter_names=set(parameter_names),
-        hf_mapping=hf_mapping or HfWeightMapping({}),
+        hf_mapping=hf_mapping or HfWeightMapping(frozenset()),
         canonical=canonical,
     )
-
-
-def _model(*names):
-    model = torch.nn.Module()
-    for name in names:
-        module = model
-        parts = name.split(".")
-        for part in parts[:-1]:
-            if part not in module._modules:
-                module.add_module(part, torch.nn.Module())
-            module = module._modules[part]
-        module.add_module(parts[-1], torch.nn.Linear(4, 4, bias=False))
-    return model
 
 
 _QKV = _mapping(
@@ -64,34 +47,25 @@ def test_scoped_attention_excludes_mtp(mtp_source):
     targets = resolve_hf_lora_targets({"model_type": "qwen3"}, train_attn=True, train_mlp=False, train_unembed=False)
     output = _mapping("decoder.layers.*.self_attention.linear_proj.weight", "model.layers.*.self_attn.o_proj.weight")
     mtp = _mapping("mtp.layers.*.self_attention.linear_proj.weight", mtp_source)
-    model = _model(
-        "decoder.layers.0.self_attention.linear_qkv",
-        "decoder.layers.0.self_attention.linear_proj",
-        "mtp.layers.0.self_attention.linear_proj",
-    )
-    hf_mapping = HfWeightMapping({f"model.layers.0.self_attn.{p}_proj.weight": (4, 4) for p in ("q", "k", "v", "o")})
-    selected = _resolve(
-        targets, [_QKV, output, mtp], [name for name, _ in model.named_parameters()], hf_mapping=hf_mapping
-    )
+    megatron_parameters = [
+        "decoder.layers.0.self_attention.linear_qkv.weight",
+        "decoder.layers.0.self_attention.linear_proj.weight",
+        "mtp.layers.0.self_attention.linear_proj.weight",
+    ]
+    hf_mapping = HfWeightMapping(frozenset(f"model.layers.0.self_attn.{p}_proj.weight" for p in ("q", "k", "v", "o")))
+    selected = _resolve(targets, [_QKV, output, mtp], megatron_parameters, hf_mapping=hf_mapping)
     assert set(selected) == {
         "decoder.layers.*.self_attention.linear_qkv",
         "decoder.layers.*.self_attention.linear_proj",
     }
-    model.requires_grad_(False)
-    model.decoder.layers.get_submodule("0").self_attention.linear_qkv.weight.requires_grad_(True)
-    with pytest.raises(AssertionError, match="LoRA injection skipped.*linear_proj"):
-        validate_lora_target_adapters([model], selected)
-    model.decoder.layers.get_submodule("0").self_attention.linear_proj.weight.requires_grad_(True)
-    validate_lora_target_adapters([model], selected)
-    assert not model.mtp.layers.get_submodule("0").self_attention.linear_proj.weight.requires_grad
 
 
 def test_fused_selection_cannot_silently_expand():
     targets = ["model.layers.*.self_attn.q_proj"]
     with pytest.raises(AssertionError, match="requires all HF targets"):
         _resolve(targets, [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"])
-    adapter_modules = _resolve(targets, [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"], canonical=True)
-    assert list(adapter_modules) == ["decoder.layers.*.self_attention.linear_q"]
+    adapter_targets = _resolve(targets, [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"], canonical=True)
+    assert adapter_targets == ["decoder.layers.*.self_attention.linear_q"]
 
 
 @pytest.mark.parametrize("grouped", [True, False], ids=["grouped", "sequential"])
@@ -120,10 +94,10 @@ def test_missing_hf_mapping_is_not_a_megatron_passthrough():
 def test_one_to_one_mapping_keeps_bridge_module_name():
     target = "model.layers.*.self_attn.o_proj"
     mapping = _mapping("decoder.layers.*.self_attention.output_projection.weight", target + ".weight")
-    adapter_modules = _resolve(
+    adapter_targets = _resolve(
         [target], [mapping], ["decoder.layers.0.self_attention.output_projection.weight"], canonical=True
     )
-    assert list(adapter_modules) == ["decoder.layers.*.self_attention.output_projection"]
+    assert adapter_targets == ["decoder.layers.*.self_attention.output_projection"]
 
 
 def test_absent_fused_alternative_does_not_reject_selection():

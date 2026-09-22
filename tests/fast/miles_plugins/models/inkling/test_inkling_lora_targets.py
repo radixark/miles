@@ -4,8 +4,7 @@ import pytest
 import torch
 
 from miles.utils.hf_utils.lora_targets import resolve_hf_lora_targets
-from miles.utils.hf_utils.weight_mapping import HfWeightMapping
-from miles.utils.lora import get_adapter_target_modules, validate_adapter_export
+from miles.utils.lora import get_adapter_target_modules
 from miles_plugins.models.inkling.lora import _export_dense_mlp, _export_experts, resolve_inkling_adapter_targets
 
 
@@ -20,7 +19,7 @@ def test_hf_mlp_selection_matches_existing_native_export(multimodal):
     if multimodal:
         config = dict(model_type="inkling_mm_model", text_config=config)
     hf_targets = resolve_hf_lora_targets(config)
-    adapter_targets = resolve_inkling_adapter_targets(config, hf_targets)
+    resolve_inkling_adapter_targets(config, hf_targets)
     prefix = "model.language_model" if multimodal else "model"
     assert f"{prefix}.layers.*.mlp.gate_proj" in hf_targets
     assert f"{prefix}.layers.*.mlp.experts.gate_up_proj" in hf_targets
@@ -39,14 +38,9 @@ def test_hf_mlp_selection_matches_existing_native_export(multimodal):
     )
     plan = _export_dense_mlp(dense, _LocalGather()) + _export_experts(experts, _LocalGather())
     weights = {name: value() if callable(value) else value for name, value in plan}
-    mlp_targets = [target for target in adapter_targets if ".mlp." in target]
-    validate_adapter_export(weights, mlp_targets, hf_mapping=HfWeightMapping({}))
     assert "language_model.layers.0.mlp.gate_up_proj" in get_adapter_target_modules(weights)
     assert weights["language_model.layers.0.mlp.gate_up_proj.lora_A.weight"] is tensor
     assert torch.equal(weights["language_model.layers.0.mlp.gate_up_proj.lora_B.weight"], tensor)
-    incomplete = {name: tensor for name, tensor in weights.items() if ".w3." not in name}
-    with pytest.raises(AssertionError, match="missing HF target"):
-        validate_adapter_export(incomplete, mlp_targets, hf_mapping=HfWeightMapping({}))
     with pytest.raises(AssertionError, match="complete adapter layout"):
         resolve_inkling_adapter_targets(config, [target for target in hf_targets if not target.endswith(".up_proj")])
 

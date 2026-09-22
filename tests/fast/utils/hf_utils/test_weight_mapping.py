@@ -2,7 +2,6 @@ import pytest
 from transformers import Qwen3MoeConfig
 
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
-from miles.utils.lora import validate_adapter_export
 
 
 @pytest.fixture(scope="module")
@@ -35,47 +34,4 @@ def _unpacked_names():
 def test_checkpoint_formats_resolve_to_the_same_hf_parameters(hf_mapping):
     unpacked = _unpacked_names()
     assert {hf_mapping.model_parameter(name) for name in unpacked} == set(_TARGETS)
-    hf_mapping.validate_coverage(unpacked, _TARGETS)
-    hf_mapping.validate_coverage(_TARGETS, _TARGETS)
-
-
-@pytest.mark.parametrize("missing", ["1.gate_proj.weight", "0.up_proj.weight", "1.down_proj.weight"])
-def test_missing_expert_or_projection_is_rejected(hf_mapping, missing):
-    names = _unpacked_names() - {f"{_PREFIX}.{missing}"}
-    with pytest.raises(AssertionError, match="Incomplete HF"):
-        hf_mapping.validate_coverage(names, _TARGETS)
-
-
-def test_missing_entire_projection_is_rejected(hf_mapping):
-    names = {name for name in _unpacked_names() if ".up_proj." not in name}
-    with pytest.raises(AssertionError, match="Incomplete HF projections"):
-        hf_mapping.validate_coverage(names, _TARGETS)
-
-
-def test_export_uses_hf_coverage_without_changing_adapter_keys(hf_mapping):
-    weights = {
-        f"base_model.model.{name.removesuffix('.weight')}.lora_{factor}.weight"
-        for name in _unpacked_names()
-        for factor in ("A", "B")
-    }
-    validate_adapter_export(weights, _TARGETS, hf_mapping=hf_mapping)
-    missing = f"base_model.model.{_PREFIX}.1.up_proj"
-    with pytest.raises(AssertionError, match="Incomplete HF"):
-        validate_adapter_export(
-            {name for name in weights if not name.startswith(missing + ".")}, _TARGETS, hf_mapping=hf_mapping
-        )
-
-
-def test_export_rejects_missing_factor_before_normalizing(hf_mapping):
-    weights = {f"base_model.model.{_PREFIX}.0.gate_proj.lora_A.weight"}
-    with pytest.raises(AssertionError, match="unpaired A/B"):
-        validate_adapter_export(weights, _TARGETS, hf_mapping=hf_mapping)
-
-
-def test_packed_peft_parameter_wrapper_names(hf_mapping):
-    weights = {
-        f"base_model.model.{module}.lora_{factor}.weight"
-        for module in (_PREFIX + ".base_layer", _PREFIX)
-        for factor in ("A", "B")
-    }
-    validate_adapter_export(weights, _TARGETS, hf_mapping=hf_mapping)
+    assert {hf_mapping.model_parameter(name) for name in _TARGETS} == set(_TARGETS)

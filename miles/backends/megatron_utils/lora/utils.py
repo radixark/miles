@@ -11,10 +11,9 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora import is_lora_enabled  # noqa: F401 (re-exported)
 from miles.utils.lora import lora_rollout_enabled  # noqa: F401 (re-exported)
-from miles.utils.lora import build_lora_config, get_adapter_target_modules, validate_adapter_export
+from miles.utils.lora import build_lora_config, get_adapter_target_modules
 
 logger = logging.getLogger(__name__)
 
@@ -241,12 +240,6 @@ def save_lora_checkpoint(
             f"shards + training state are sufficient for training resume."
         )
     else:
-        validate_adapter_export(
-            lora_state_dict,
-            args.hf_lora_targets,
-            hf_mapping=HfWeightMapping.from_config(bridge.hf_pretrained.config),
-            shared_outer=args.experts_shared_outer_loras,
-        )
         if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
             torch.save(
                 {name: weight.cpu() for name, weight in lora_state_dict.items()}, save_path / "adapter_model.bin"

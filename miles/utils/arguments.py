@@ -3154,7 +3154,7 @@ def miles_validate_args(args):
     if is_lora_enabled(args):
         hf_config = load_hf_config(args.hf_checkpoint)
         hf_mapping = HfWeightMapping.from_config(hf_config)
-        hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_shapes]
+        hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_names]
         if all(
             any(matches_hf_lora_target(module, target) for module in hf_modules)
             for target in args.target_modules + args.exclude_modules

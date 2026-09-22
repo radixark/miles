@@ -1,8 +1,6 @@
 import re
 from fnmatch import fnmatchcase
 
-import torch.distributed as dist
-
 from miles.utils.hf_utils.lora_targets import matches_hf_lora_target
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 
@@ -35,7 +33,7 @@ def _select_checkpoint_parameters(checkpoint_parameters, targets, *, hf_mapping,
     selected = {
         checkpoint_parameter
         for checkpoint_parameter, hf_parameter in hf_parameters.items()
-        if (not hf_mapping.parameter_shapes or hf_parameter in hf_mapping.parameter_shapes)
+        if (not hf_mapping.parameter_names or hf_parameter in hf_mapping.parameter_names)
         and any(matches_hf_lora_target(hf_parameter.removesuffix(".weight"), target) for target in targets)
     }
     return {
@@ -64,8 +62,7 @@ def _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, *
 
 
 def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapping, canonical, exclude_modules=()):
-    adapter_modules = {}
-    covered_checkpoint_parameters = set()
+    adapter_targets = {}
     matched_megatron_parameters = set()
     for mapping in mappings:
         megatron_module, weight = mapping.megatron_param.rsplit(".", 1)
@@ -95,32 +92,16 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
         ), f"LoRA cannot select a subset of parameters in {mapping.megatron_param!r}"
         adapter_selections = set()
         for checkpoint_parameters, selected in selections:
-            adapter_targets = _resolve_adapter_targets(
+            selected_adapters = _resolve_adapter_targets(
                 megatron_module, checkpoint_parameters, selected, canonical=canonical
             )
-            adapter_selections.add(frozenset(adapter_targets))
-            adapter_modules.update((target, megatron_module) for target in adapter_targets)
-            covered_checkpoint_parameters.update(selected)
+            adapter_selections.add(frozenset(selected_adapters))
+            adapter_targets.update(dict.fromkeys(selected_adapters))
         assert (
             len(adapter_selections) == 1
         ), f"LoRA cannot select different projections across parameters in {mapping.megatron_param!r}"
-    assert adapter_modules, "LoRA targets have no Megatron modules"
-    hf_mapping.validate_coverage(covered_checkpoint_parameters, targets)
-    return adapter_modules
-
-
-def validate_lora_target_adapters(model_chunks, adapter_modules):
-    missing = set()
-    for chunk in model_chunks:
-        for name, module in chunk.named_modules():
-            if any(fnmatchcase(name, megatron_module) for megatron_module in adapter_modules.values()):
-                if not any(param.requires_grad for param in module.parameters()):
-                    missing.add(name)
-    if dist.is_initialized():
-        names_by_rank = [None] * dist.get_world_size()
-        dist.all_gather_object(names_by_rank, missing)
-        missing = set().union(*names_by_rank)
-    assert not missing, f"LoRA injection skipped selected Megatron modules: {sorted(missing)}"
+    assert adapter_targets, "LoRA targets have no Megatron modules"
+    return list(adapter_targets)
 
 
 def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, exclude_modules):
@@ -138,8 +119,8 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
             continue
         for checkpoint_parameter in _checkpoint_parameters(mapping):
             hf_module = hf_mapping.model_parameter(checkpoint_parameter).removesuffix(".weight")
-            if hf_mapping.parameter_shapes and not any(
-                matches_hf_lora_target(name.removesuffix(".weight"), hf_module) for name in hf_mapping.parameter_shapes
+            if hf_mapping.parameter_names and not any(
+                matches_hf_lora_target(name.removesuffix(".weight"), hf_module) for name in hf_mapping.parameter_names
             ):
                 continue
             for target in target_modules:

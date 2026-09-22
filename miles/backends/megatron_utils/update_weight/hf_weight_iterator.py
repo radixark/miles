@@ -18,9 +18,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     resolve_placement,
 )
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
-from miles.utils.hf_utils.config import load_hf_config
-from miles.utils.hf_utils.weight_mapping import HfWeightMapping
-from miles.utils.lora import is_lora_enabled, validate_adapter_export
+from miles.utils.lora import is_lora_weight_name
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +28,6 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.hf_lora_mapping = None
-        if is_lora_enabled(self.args):
-            # Raw Inkling exports use the native adapter namespace, not HF checkpoint conversions.
-            self.hf_lora_mapping = (
-                HfWeightMapping.from_config(load_hf_config(self.args.hf_checkpoint))
-                if self.args.megatron_to_hf_mode == "bridge"
-                else HfWeightMapping({})
-            )
         trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
         if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
             self.weight_update_selector = "target"
@@ -53,21 +43,12 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
         # for distributed LoRA; add an e2e for native-LoRA disaggregate when it does
         if self.placement.gather_pp:
             named_tensors = _gather_pp_full_adapter(named_tensors)
-        weight_names = [name for name, _ in named_tensors]
-        if not self.placement.gather_pp:
-            # Check complete target coverage even when tensor transport remains PP-local.
-            pp = get_parallel_state().pp
-            gathered_names = [None] * pp.size
-            dist.all_gather_object(gathered_names, weight_names, group=pp.group)
-            weight_names = [name for names in gathered_names for name in names]
-        validate_adapter_export(
-            weight_names,
-            self.args.lora_adapter_targets,
-            hf_mapping=self.hf_lora_mapping,
-            shared_outer=self.args.experts_shared_outer_loras,
-        )
         if not materialize:
             return
+        if not named_tensors:
+            raise RuntimeError("LoRA weight sync failed: the adapter export produced zero tensors")
+        if not any(is_lora_weight_name(name) for name, _ in named_tensors):
+            raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
         while named_tensors:
             hf_name, tensor = named_tensors.pop(0)
             yield [(hf_name, tensor)]

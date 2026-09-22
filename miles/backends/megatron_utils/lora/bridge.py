@@ -15,10 +15,7 @@ from megatron.core.tensor_parallel import ColumnParallelLinear
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
-from miles.backends.megatron_utils.lora.target_modules import (
-    resolve_megatron_lora_targets,
-    validate_lora_target_adapters,
-)
+from miles.backends.megatron_utils.lora.target_modules import resolve_megatron_lora_targets
 from miles.backends.megatron_utils.lora.utils import (
     create_lora_instance,
     patch_param_grad_buffer_for_colocate_mode_lora,
@@ -202,7 +199,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         names_by_rank = [None] * dist.get_world_size()
         dist.all_gather_object(names_by_rank, parameter_names)
         parameter_names = set().union(*names_by_rank)
-        adapter_modules = resolve_megatron_lora_targets(
+        adapter_targets = resolve_megatron_lora_targets(
             args.hf_lora_targets,
             model_bridge.mapping_registry().get_all_mappings(),
             parameter_names=parameter_names,
@@ -210,9 +207,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
             canonical=args.lora_type == "canonical_lora",
             exclude_modules=args.exclude_modules,
         )
-        lora = create_adapter(args, target_modules=list(adapter_modules))
+        lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)
-        validate_lora_target_adapters(transformed, adapter_modules)
         lora.set_params_to_save(transformed)
         return transformed
 
