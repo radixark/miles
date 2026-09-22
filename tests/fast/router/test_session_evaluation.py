@@ -186,20 +186,49 @@ async def test_concurrent_train_and_eval_do_not_share_policy(env):
 SAMPLING = {"temperature": 0.6, "top_p": 0.9, "top_k": 20}
 
 
-async def test_creation_sampling_defaults_fill_only_omitted_fields(env):
-    """A request without the field gets the session value; an explicit value wins; null counts as omitted."""
-    sid = await _create(env, json.dumps(SAMPLING).encode())
+@pytest.mark.parametrize("evaluation", [False, True])
+async def test_creation_sampling_defaults_fill_only_omitted_fields(env, evaluation):
+    sid = await _create(env, json.dumps({**SAMPLING, "evaluation": evaluation}).encode())
     await _chat(env, sid, [USER])
-    await _chat(env, sid, [USER, ASSISTANT, TOOL], temperature=0.1, top_p=None)
+    temperature = 0.1 if evaluation else SAMPLING["temperature"]
+    await _chat(env, sid, [USER, ASSISTANT, TOOL], temperature=temperature, top_p=None, top_k=-1)
     omitted, explicit = env.backend.requests[-2:]
     assert {key: omitted[key] for key in SAMPLING} == SAMPLING
-    assert {key: explicit[key] for key in SAMPLING} == {**SAMPLING, "temperature": 0.1}
+    assert {key: explicit[key] for key in SAMPLING} == {**SAMPLING, "temperature": temperature, "top_k": -1}
+
+
+@pytest.mark.parametrize("saved,requested", [(0.6, 0.1), (0.6, 0.0), (0.0, 0.6)])
+async def test_training_temperature_mismatch_is_rejected_before_forwarding(env, saved, requested):
+    sid = await _create(env, json.dumps({**SAMPLING, "temperature": saved}).encode())
+    turns = [[USER], [USER, ASSISTANT, TOOL], [USER, ASSISTANT, TOOL]]
+    for messages in turns:
+        request_count = len(env.backend.requests)
+        response = await env.client.post(
+            f"/sessions/{sid}/v1/chat/completions",
+            json={"messages": messages, "temperature": requested},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == (
+            f"temperature={requested!r} does not match the training session temperature={saved!r}"
+        )
+        assert len(env.backend.requests) == request_count
+        await _chat(env, sid, messages, temperature=saved, top_p=0.5, top_k=-1)
+        wire = env.backend.requests[-1]
+        assert (wire["temperature"], wire["top_p"], wire["top_k"]) == (saved, 0.5, -1)
+
+
+async def test_training_null_temperature_uses_registered_value(env):
+    sid = await _create(env, json.dumps(SAMPLING).encode())
+    await _chat(env, sid, [USER], temperature=None)
+    assert env.backend.requests[-1]["temperature"] == SAMPLING["temperature"]
 
 
 async def test_creation_without_sampling_defaults_leaves_omitted_fields_unset(env):
     sid = await _create(env)
     await _chat(env, sid, [USER])
     assert not set(SAMPLING) & set(env.backend.requests[-1])
+    await _chat(env, sid, [USER, ASSISTANT, TOOL], temperature=0.4)
+    assert env.backend.requests[-1]["temperature"] == 0.4
 
 
 async def test_an_integer_temperature_is_accepted_as_a_float_default(env):

@@ -57,8 +57,11 @@ class OpenAIEndpointTracer:
         session_url = f"http://{session_addr}"
         instance_ids = getattr(args, "session_server_instance_ids", None) or {}
         session_server_instance_id = instance_ids.get(session_addr)
-        # the request model keeps the sampling fields the session fills into agent requests
-        body = CreateSessionRequest.model_validate({**(sampling_params or {}), "evaluation": evaluation})
+        # Drop engine-only sampling fields before validating the session creation body.
+        session_params = {
+            key: value for key, value in (sampling_params or {}).items() if key in CreateSessionRequest.model_fields
+        }
+        body = CreateSessionRequest.model_validate({**session_params, "evaluation": evaluation})
         response = await post(f"{session_url}/sessions", body.model_dump(exclude_none=True), action="post")
         session_id = response["session_id"]
         use_v2 = getattr(args, "use_session_server", None) == "v2"

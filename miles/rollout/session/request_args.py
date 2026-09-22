@@ -64,7 +64,7 @@ def prepare_chat_request(
     Client input and recorded history remain unchanged.
     """
     request_args, client_stream = resolve_request_args_by_config(deepcopy(client_args), config, evaluation=evaluation)
-    apply_session_sampling_defaults(request_args, sampling_defaults or {})
+    apply_session_sampling_defaults(request_args, sampling_defaults or {}, evaluation=evaluation)
     try:
         request_args = tito_tokenizer.resolve_request_args(request_args, turn_args=turn_args)
     except ValueError as e:
@@ -78,15 +78,21 @@ def prepare_chat_request(
     )
 
 
-def apply_session_sampling_defaults(request_args: dict[str, Any], sampling_defaults: dict[str, Any]) -> None:
+def apply_session_sampling_defaults(
+    request_args: dict[str, Any], sampling_defaults: dict[str, Any], *, evaluation: bool = False
+) -> None:
     """Fill in place the sampling fields the client left unset from the session's defaults.
 
-    A field the client sent with any value but ``None`` is kept; ``None`` counts as unset,
-    as it does for the engine's own chat defaults.
+    ``None`` counts as unset. Explicit values are kept, except a training temperature
+    mismatch raises ``MessageValidationError`` to keep rollout and training aligned.
     """
     for key, value in sampling_defaults.items():
         if request_args.get(key) is None:
             request_args[key] = value
+        elif not evaluation and key == "temperature" and request_args[key] != value:
+            raise MessageValidationError(
+                f"temperature={request_args[key]!r} does not match the training session temperature={value!r}"
+            )
 
 
 def resolve_request_args_by_config(

@@ -247,21 +247,23 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
     assert client_args == original and history == original_history
 
 
-def test_session_sampling_defaults_fill_only_omitted_fields():
-    """Session values land before model rules, so the resolved request carries them; explicit values win."""
-    client_args = {"temperature": 0.1, "top_p": None}
+@pytest.mark.parametrize("evaluation", [False, True])
+def test_session_sampling_defaults_fill_only_omitted_fields(evaluation):
+    temperature = 0.1 if evaluation else 0.6
+    client_args = {"temperature": temperature, "top_p": None, "top_k": -1}
     original = deepcopy(client_args)
     prepared = prepare_chat_request(
         client_args,
         TITOTokenizer(MagicMock()),
         config=make_session_server_config(),
         turn_args=None,
+        evaluation=evaluation,
         sampling_defaults={"temperature": 0.6, "top_p": 0.9, "top_k": 20},
     )
     assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
-        "temperature": 0.1,
+        "temperature": temperature,
         "top_p": 0.9,
-        "top_k": 20,
+        "top_k": -1,
     }
     assert client_args == original
 
