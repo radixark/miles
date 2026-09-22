@@ -1,6 +1,6 @@
 import argparse
 
-from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
+from miles.utils.chat_template_utils import TITOTokenizerType, configure_fixed_chat_template
 from miles.utils.hf_config import load_hf_config
 
 
@@ -80,21 +80,7 @@ def _configure_tito(args):
         raise ValueError(
             "--tinker-tito-model requires --tinker-session-server; TITO only applies to recorded sessions"
         )
-    if args.chat_template_path is not None:
-        raise ValueError(
-            f"--chat-template-path cannot override the template registered for --tinker-tito-model={args.tinker_tito_model}"
-        )
-    template_path, fixed_kwargs = resolve_fixed_chat_template(args.tinker_tito_model)
-    if template_path is not None:
-        args.chat_template_path = template_path
-    kwargs = dict(args.apply_chat_template_kwargs or {})
-    for key, value in fixed_kwargs.items():
-        if key in kwargs and kwargs[key] != value:
-            raise ValueError(
-                f"--apply-chat-template-kwargs {key}={kwargs[key]!r} conflicts with --tinker-tito-model={args.tinker_tito_model}: {value!r}"
-            )
-        kwargs[key] = value
-    args.apply_chat_template_kwargs = kwargs
+    configure_fixed_chat_template(args, args.tinker_tito_model, option="--tinker-tito-model")
 
 
 def _resolve_target_modules(hf_config, *, train_attn, train_mlp, train_unembed):
