@@ -12,7 +12,7 @@ from tap import Tap
 
 class Args(Tap):
     phase: str
-    root: str = "/scratch/260922-de0b2498"
+    root: str = "/scratch/260922-a225affe"
 
 
 def main() -> None:

@@ -1,8 +1,8 @@
 {
-  "run_id": "260922-de0b2498",
+  "run_id": "260922-a225affe",
   "command": [
     "/opt/sglang/bin/python3",
-    "/scratch/260922-de0b2498/miles/train.py",
+    "/scratch/260922-a225affe/miles/train.py",
     "--spec",
     "miles_plugins.models.qwen3_5",
     "get_qwen3_5_spec",
@@ -111,7 +111,6 @@
     "flash",
     "--loss-type",
     "policy_loss",
-    "--use-rollout-logprobs",
     "--disable-grpo-std-normalization",
     "--calculate-per-token-loss",
     "--rollout-top-p",
@@ -177,17 +176,17 @@
     "--save-interval",
     "3",
     "--save",
-    "/scratch/260922-de0b2498/checkpoints",
+    "/scratch/260922-a225affe/checkpoints",
     "--load",
-    "/scratch/260922-de0b2498/checkpoints",
+    "/scratch/260922-a225affe/checkpoints",
     "--prompt-data",
-    "/scratch/260922-de0b2498/prompts.jsonl",
+    "/scratch/260922-a225affe/prompts.jsonl",
     "--wandb-group",
-    "260922-de0b2498-qwen38-27b-fp8-dapo-smoke",
+    "260922-a225affe-qwen38-27b-fp8-dapo-smoke",
     "--wandb-dir",
-    "/scratch/260922-de0b2498/wandb",
+    "/scratch/260922-a225affe/wandb",
     "--dump-details",
-    "/scratch/260922-de0b2498/traces",
+    "/scratch/260922-a225affe/traces",
     "--pause-generation-mode",
     "retract",
     "--update-weights-interval",
@@ -208,16 +207,16 @@
   ],
   "runtime_env": {
     "env_vars": {
-      "PYTHONPATH": "/scratch/260922-de0b2498/miles:/scratch/260922-de0b2498/miles/examples/infra_features/low_precision/qwen38_smoke:/root/Megatron-LM",
+      "PYTHONPATH": "/scratch/260922-a225affe/miles:/scratch/260922-a225affe/miles/examples/infra_features/low_precision/qwen38_smoke:/root/Megatron-LM",
       "PYTHONUNBUFFERED": "1",
       "CUDA_DEVICE_MAX_CONNECTIONS": "1",
       "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
       "NCCL_NVLS_ENABLE": "1",
-      "WANDB_RUN_ID": "260922de0b2498",
+      "WANDB_RUN_ID": "260922a225affe",
       "WANDB_RESUME": "never",
-      "FP8_SMOKE_ROOT": "/scratch/260922-de0b2498",
-      "HF_HOME": "/scratch/260922-de0b2498/hf-cache",
-      "HF_HUB_CACHE": "/scratch/260922-de0b2498/hf-cache/hub"
+      "FP8_SMOKE_ROOT": "/scratch/260922-a225affe",
+      "HF_HOME": "/scratch/260922-a225affe/hf-cache",
+      "HF_HUB_CACHE": "/scratch/260922-a225affe/hf-cache/hub"
     }
   }
 }
