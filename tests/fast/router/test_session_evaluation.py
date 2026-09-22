@@ -125,6 +125,8 @@ async def test_creation_selects_policy_and_defaults_to_training(env, body):
         b'{"evaluation": 0}',
         b'{"evaluation": 1}',
         b'{"evaluation": "false"}',
+        b'{"evalution": true}',
+        b'{"unexpected": 1}',
     ],
 )
 async def test_invalid_creation_is_rejected_before_allocation(env, body, monkeypatch):

@@ -1,7 +1,9 @@
 from pydantic import BaseModel, Field, StrictBool
 
+from miles.utils.pydantic_utils import StrictBaseModel
 
-class CreateSessionRequest(BaseModel):
+
+class CreateSessionRequest(StrictBaseModel):
     evaluation: StrictBool = False
 
 
