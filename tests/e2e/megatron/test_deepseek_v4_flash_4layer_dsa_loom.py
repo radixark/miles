@@ -62,6 +62,7 @@ def _args() -> ScriptArgs:
             model_dir=f"{ROOT}/models",
             save_dir=f"{ROOT}/models",
             debug_data_root=f"{ROOT}/shared_data",
+            output_dir=f"{ROOT}/shared_data",
             megatron_path=os.environ.get("MILES_E2E_MEGATRON_PATH", "/root/Megatron-LM"),
         )
     return ScriptArgs(

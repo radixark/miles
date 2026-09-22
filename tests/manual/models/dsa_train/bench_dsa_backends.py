@@ -199,7 +199,7 @@ def bench_indexer(shape, timer, backends):
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--rows", type=int, nargs="+", default=[2048, 4096], help="query rows per rank")
-    parser.add_argument("--glm-index-heads", type=int, default=64, help="GLM-5.2 index_n_heads (checkpoint config)")
+    parser.add_argument("--glm-index-heads", type=int, default=32, help="GLM-5.2 index_n_heads (32 in the checkpoint config)")
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iters", type=int, default=10)
     parser.add_argument("--backends", default="loom,tilelang")

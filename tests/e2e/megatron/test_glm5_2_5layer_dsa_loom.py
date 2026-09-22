@@ -69,8 +69,12 @@ def _args() -> ScriptArgs:
             data_dir=f"{ROOT}/datasets",
             model_dir=f"{ROOT}/models",
             model_local_dir=f"{ROOT}/models",
+            output_dir=f"{ROOT}/shared_data",
             megatron_path=os.environ.get("MILES_E2E_MEGATRON_PATH", "/root/Megatron-LM"),
         )
+    if os.environ.get("MILES_E2E_NO_DEEPEP") == "1":
+        # Megatron's DeepEP does not run on GB300 (see scripts/run_glm5_2_744b_a40b.py).
+        kwargs.update(use_deepep=False, megatron_use_deepep=False)
     return ScriptArgs(
         model_name="GLM-5.2_5layer",
         num_nodes=1,
