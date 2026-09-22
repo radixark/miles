@@ -89,9 +89,7 @@ def run_gh_command(args: list[str], max_retries: int = 10) -> dict:
     raise Exception(f"gh api failed after {max_retries} attempts: {last_err[:300]}")
 
 
-def get_workflow_runs(
-    repo: str, since: datetime, max_pages: int = 400
-) -> tuple[list[dict], bool]:
+def get_workflow_runs(repo: str, since: datetime, max_pages: int = 400) -> tuple[list[dict], bool]:
     """Get workflow runs created after `since`.
 
     Returns (runs, truncated). `truncated` is True when the safety cap cut
@@ -130,8 +128,7 @@ def get_workflow_runs(
         while True:
             data = run_gh_command(
                 [
-                    f"repos/{repo}/actions/runs"
-                    f"?per_page=100&page={page}&created={created_q}",
+                    f"repos/{repo}/actions/runs" f"?per_page=100&page={page}&created={created_q}",
                 ]
             )
             pages_used += 1
@@ -162,9 +159,7 @@ def get_workflow_runs(
             break
         # More results exist below the 1000-result cap: move the upper
         # bound down to the oldest run fetched in this chunk and re-query.
-        chunk_created = [
-            parse_time(r.get("created_at")) for r in chunk if r.get("created_at")
-        ]
+        chunk_created = [parse_time(r.get("created_at")) for r in chunk if r.get("created_at")]
         if not new_runs or not chunk_created:
             truncated = True  # cursor can't advance; avoid looping forever
             break
@@ -197,8 +192,7 @@ def get_jobs_for_run(repo: str, run_id: int) -> list[dict]:
     while True:
         data = run_gh_command(
             [
-                f"repos/{repo}/actions/runs/{run_id}/jobs"
-                f"?per_page=100&page={page}&filter=all",
+                f"repos/{repo}/actions/runs/{run_id}/jobs" f"?per_page=100&page={page}&filter=all",
             ]
         )
         jobs.extend(data.get("jobs", []))
@@ -216,9 +210,7 @@ def get_runners(repo: str, online_only: bool = True) -> list[dict]:
         all_runners = []
         page = 1
         while True:
-            data = run_gh_command(
-                [f"repos/{repo}/actions/runners?per_page=100&page={page}"]
-            )
+            data = run_gh_command([f"repos/{repo}/actions/runners?per_page=100&page={page}"])
             runners = data.get("runners", [])
             all_runners.extend(runners)
             if len(runners) < 100:
@@ -311,12 +303,7 @@ def classify_job(job: dict, now: datetime):
     elif status == "in_progress" and started_at is not None:
         # Running now: the wait is final and it still occupies the runner.
         queue_end, start, end = started_at, started_at, now
-    elif (
-        status == "completed"
-        and started_at is not None
-        and completed_at is not None
-        and runner_name
-    ):
+    elif status == "completed" and started_at is not None and completed_at is not None and runner_name:
         queue_end, start, end = started_at, started_at, completed_at
     else:
         # Skipped, cancelled before start, or missing timestamps: never
@@ -328,11 +315,7 @@ def classify_job(job: dict, now: datetime):
 
     queue_time = max(0.0, (queue_end - created_at).total_seconds())
     duration = (end - start).total_seconds() if start is not None else 0.0
-    labels = [
-        label
-        for label in job.get("labels", [])
-        if label not in DEFAULT_LABELS_TO_IGNORE | GITHUB_HOSTED_LABELS
-    ]
+    labels = [label for label in job.get("labels", []) if label not in DEFAULT_LABELS_TO_IGNORE | GITHUB_HOSTED_LABELS]
 
     # Human-facing outcome bucket used by the report's status breakdown.
     if status == "queued":
@@ -340,9 +323,7 @@ def classify_job(job: dict, now: datetime):
     elif status == "in_progress":
         outcome = "running"
     else:  # completed and actually ran
-        outcome = {"success": "pass", "cancelled": "cancel"}.get(
-            job.get("conclusion"), "fail"
-        )
+        outcome = {"success": "pass", "cancelled": "cancel"}.get(job.get("conclusion"), "fail")
 
     return {
         "start": start,
@@ -436,9 +417,7 @@ def calculate_concurrency_metrics(
         "peak_concurrent": peak_running,
         "avg_concurrent": avg_concurrent,
         "saturation_seconds": saturation_seconds,
-        "saturation_pct": (
-            (saturation_seconds / window_seconds * 100) if window_seconds > 0 else 0
-        ),
+        "saturation_pct": ((saturation_seconds / window_seconds * 100) if window_seconds > 0 else 0),
         "peak_queue": peak_queue,
     }
 
@@ -583,10 +562,7 @@ def calculate_utilization(
     window_start_precheck = fetch_start - timedelta(hours=hours)
     since = fetch_start - timedelta(hours=hours + lookback_hours)
 
-    print(
-        f"Fetching workflow runs from last {hours}h "
-        f"(+{lookback_hours:.1f}h lookback for long-queued jobs)..."
-    )
+    print(f"Fetching workflow runs from last {hours}h " f"(+{lookback_hours:.1f}h lookback for long-queued jobs)...")
     all_runs, truncated = get_workflow_runs(repo, since)
 
     runs = []
@@ -605,11 +581,7 @@ def calculate_utilization(
             # always kept: their updated_at can be stale while a job is
             # still running.
             updated_at = parse_time(r.get("updated_at"))
-            if (
-                r.get("status") == "completed"
-                and updated_at
-                and updated_at < window_start_precheck
-            ):
+            if r.get("status") == "completed" and updated_at and updated_at < window_start_precheck:
                 skipped_lookback += 1
                 continue
         runs.append(r)
@@ -626,17 +598,12 @@ def calculate_utilization(
     # single-digit utilization.
     coverage_hours = hours
     if truncated and all_runs:
-        oldest_created = min(
-            parse_time(r["created_at"]) for r in all_runs if r.get("created_at")
-        )
+        oldest_created = min(parse_time(r["created_at"]) for r in all_runs if r.get("created_at"))
         coverage_hours = min(
             hours,
             (datetime.now(timezone.utc) - oldest_created).total_seconds() / 3600,
         )
-        print(
-            f"Shrinking analysis window: {coverage_hours:.1f}h covered of "
-            f"{hours}h requested."
-        )
+        print(f"Shrinking analysis window: {coverage_hours:.1f}h covered of " f"{hours}h requested.")
 
     # Try to get online runners from API
     print("Fetching online runners...")
@@ -695,10 +662,7 @@ def calculate_utilization(
         for future in as_completed(futures):
             completed += 1
             if completed % 100 == 0:
-                print(
-                    f"Fetched jobs for {completed}/{total_runs} runs "
-                    f"({len(failed_runs)} failed so far)..."
-                )
+                print(f"Fetched jobs for {completed}/{total_runs} runs " f"({len(failed_runs)} failed so far)...")
             run_id, jobs, err = future.result()
             if err:
                 failed_runs.append((run_id, err))
@@ -746,9 +710,7 @@ def calculate_utilization(
         # pollute job counts / queue stats — drop them. A job is entirely
         # pre-window when both its busy interval and its queue wait ended
         # before window_start.
-        latest_activity = max(
-            t for t in (job_info["end"], job_info["queue_end"]) if t is not None
-        )
+        latest_activity = max(t for t in (job_info["end"], job_info["queue_end"]) if t is not None)
         if latest_activity < window_start:
             continue
         all_job_infos.append(job_info)
@@ -769,11 +731,7 @@ def calculate_utilization(
     # Prefer API count (online runners) when available
     # Include labels seen only on still-queued jobs (no online runner, no
     # completed job under them yet) so a fully-backed-up pool still reports.
-    all_labels = (
-        set(api_label_runners.keys())
-        | set(job_label_runners.keys())
-        | set(label_jobs.keys())
-    )
+    all_labels = set(api_label_runners.keys()) | set(job_label_runners.keys()) | set(label_jobs.keys())
 
     # Filter labels if specified
     if runner_filter:
@@ -805,9 +763,7 @@ def calculate_utilization(
         # job under it during the window. The union catches hosts that
         # went offline mid-window (their busy time is still real
         # capacity consumed) and hosts that came online late.
-        hosts = api_label_runners.get(label, set()) | job_label_runners.get(
-            label, set()
-        )
+        hosts = api_label_runners.get(label, set()) | job_label_runners.get(label, set())
         num_runners = len(hosts) if hosts else 1
 
         # Pool busy time: sum of busy time across the hosts that could
@@ -820,9 +776,7 @@ def calculate_utilization(
         # capacity buckets.
         active_seconds = sum(host_busy_seconds.get(h, 0.0) for h in hosts)
         capacity_seconds = num_runners * window_seconds
-        utilization = (
-            (active_seconds / capacity_seconds * 100) if capacity_seconds > 0 else 0
-        )
+        utilization = (active_seconds / capacity_seconds * 100) if capacity_seconds > 0 else 0
 
         # Job count + queue stats stay label-specific (only jobs that
         # were dispatched under THIS label).
@@ -839,16 +793,10 @@ def calculate_utilization(
         # Concurrency / saturation / queue-depth metrics. Use observed
         # peak as effective capacity if it's lower than the API count
         # (e.g. for autoscaling pools where most listeners sit idle).
-        conc_initial = calculate_concurrency_metrics(
-            jobs, window_start, window_end, num_runners
-        )
-        effective_runners = (
-            min(num_runners, conc_initial["peak_concurrent"]) or num_runners
-        )
+        conc_initial = calculate_concurrency_metrics(jobs, window_start, window_end, num_runners)
+        effective_runners = min(num_runners, conc_initial["peak_concurrent"]) or num_runners
         if effective_runners < num_runners and effective_runners > 0:
-            conc = calculate_concurrency_metrics(
-                jobs, window_start, window_end, effective_runners
-            )
+            conc = calculate_concurrency_metrics(jobs, window_start, window_end, effective_runners)
         else:
             conc = conc_initial
 
@@ -931,9 +879,7 @@ def format_report(
         ]
     )
     for r in results:
-        bar = "█" * int(r["utilization_pct"] / 10) + "░" * (
-            10 - int(r["utilization_pct"] / 10)
-        )
+        bar = "█" * int(r["utilization_pct"] / 10) + "░" * (10 - int(r["utilization_pct"] / 10))
         lines.append(
             f"| {r['label']} | {r['num_runners']} | {r['num_jobs']} | "
             f"{r['total_active_hours']:.1f} | "
@@ -965,10 +911,7 @@ def format_report(
             name = j.get("job_name", "job")
             url = j.get("html_url", "")
             job_cell = f"[{name}]({url})" if url else name
-            lines.append(
-                f"| {j['queue_time'] / 60:.0f}m | {emoji} {status} | "
-                f"{label} | {job_cell} |"
-            )
+            lines.append(f"| {j['queue_time'] / 60:.0f}m | {emoji} {status} | " f"{label} | {job_cell} |")
 
     # Concurrency Analysis section
     lines.extend(
@@ -983,11 +926,7 @@ def format_report(
     for r in results:
         effective = r["effective_runners"]
         avg_pct = (r["avg_concurrent"] / effective * 100) if effective > 0 else 0
-        runner_str = (
-            f"{r['num_runners']}/{effective}"
-            if effective != r["num_runners"]
-            else str(r["num_runners"])
-        )
+        runner_str = f"{r['num_runners']}/{effective}" if effective != r["num_runners"] else str(r["num_runners"])
         lines.append(
             f"| {r['label']} | {runner_str} | "
             f"{r['peak_concurrent']} | "
@@ -1019,8 +958,7 @@ def format_report(
             has_recs = True
         elif avg_pct < 30 and r["num_jobs"] > 0:
             lines.append(
-                f"💡 **{label}**: Low average utilization ({avg_pct:.0f}%). "
-                f"Runner pool may be oversized."
+                f"💡 **{label}**: Low average utilization ({avg_pct:.0f}%). " f"Runner pool may be oversized."
             )
             has_recs = True
         else:
@@ -1034,9 +972,7 @@ def format_report(
 def main():
     parser = argparse.ArgumentParser(description="Generate runner utilization report")
     parser.add_argument("--repo", default="radixark/miles", help="GitHub repo")
-    parser.add_argument(
-        "--hours", type=float, default=24, help="Time window in hours (fractional ok)"
-    )
+    parser.add_argument("--hours", type=float, default=24, help="Time window in hours (fractional ok)")
     parser.add_argument(
         "--lookback-hours",
         type=float,
@@ -1046,9 +982,7 @@ def main():
             "may still execute inside it (default: min(12, hours/2))"
         ),
     )
-    parser.add_argument(
-        "--filter", type=str, help="Filter runner labels (e.g., '5090', 'h200')"
-    )
+    parser.add_argument("--filter", type=str, help="Filter runner labels (e.g., '5090', 'h200')")
     parser.add_argument("--output", type=str, help="Output file (default: stdout)")
     parser.add_argument(
         "--queue-series-out",
