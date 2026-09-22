@@ -7,7 +7,12 @@ import pytest
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError
-from miles.rollout.session.request_args import filter_turn_args, prepare_chat_request, resolve_request_args_by_config
+from miles.rollout.session.request_args import (
+    apply_session_sampling_defaults,
+    filter_turn_args,
+    prepare_chat_request,
+    resolve_request_args_by_config,
+)
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -210,3 +215,79 @@ def test_filter_turn_args_accepts_an_explicit_drop_list():
     turn_args = {"input_ids": [1], "messages": [{"role": "user", "content": "hi"}], "seed": 42}
     assert filter_turn_args(turn_args, drop_keys=("input_ids",)) == {"messages": turn_args["messages"], "seed": 42}
     assert filter_turn_args(turn_args, drop_keys=()) == turn_args
+
+
+@pytest.mark.parametrize("sampling", [{}, {"temperature": 0.0}, {"temperature": 1.2, "top_p": 0.8, "top_k": 16}])
+def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
+    class Model(TITOTokenizer):
+        def resolve_request_args(self, request_args, *, turn_args):
+            request_args = super().resolve_request_args(request_args, turn_args=turn_args)
+            request_args.setdefault("temperature", 0.7)
+            request_args.setdefault("top_p", 0.9)
+            request_args.setdefault("top_k", 32)
+            request_args.update(return_sampling_mask=True, return_routed_experts=True, return_indexer_topk=True)
+            request_args["routed_experts_start_len"] = 7
+            return request_args
+
+    config = make_session_server_config(use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
+    client_args = {**sampling, "return_sampling_mask": True, "routed_experts_start_len": 99}
+    history = {"temperature": 0.3, "chat_template_kwargs": {}}
+    original, original_history = deepcopy(client_args), deepcopy(history)
+    prepared = prepare_chat_request(client_args, Model(MagicMock()), config=config, turn_args=history, evaluation=True)
+    assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 32,
+        **sampling,
+    }
+    assert all(
+        prepared.body[key] is False for key in ("return_sampling_mask", "return_routed_experts", "return_indexer_topk")
+    )
+    assert "routed_experts_start_len" not in prepared.body
+    assert client_args == original and history == original_history
+
+
+@pytest.mark.parametrize("evaluation", [False, True])
+def test_session_sampling_defaults_fill_only_omitted_fields(evaluation):
+    temperature = 0.1 if evaluation else 0.6
+    client_args = {"temperature": temperature, "top_p": None, "top_k": -1}
+    original = deepcopy(client_args)
+    prepared = prepare_chat_request(
+        client_args,
+        TITOTokenizer(MagicMock()),
+        config=make_session_server_config(),
+        turn_args=None,
+        evaluation=evaluation,
+        sampling_defaults={"temperature": 0.6, "top_p": 0.9, "top_k": 20},
+    )
+    assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
+        "temperature": temperature,
+        "top_p": 0.9,
+        "top_k": -1,
+    }
+    assert client_args == original
+
+
+def test_without_session_sampling_defaults_omitted_fields_stay_unset():
+    prepared = prepare_chat_request(
+        {}, TITOTokenizer(MagicMock()), config=make_session_server_config(), turn_args=None
+    )
+    assert not {"temperature", "top_p", "top_k"} & set(prepared.body)
+
+
+def test_apply_session_sampling_defaults_treats_none_as_unset():
+    request_args = {"temperature": None, "top_k": -1}
+    apply_session_sampling_defaults(request_args, {"temperature": 0.6, "top_p": 0.9, "top_k": 20})
+    assert request_args == {"temperature": 0.6, "top_k": -1, "top_p": 0.9}
+
+
+@pytest.mark.parametrize("evaluation", [False, True])
+def test_template_compatibility_applies_to_train_and_eval(evaluation):
+    with pytest.raises(MessageValidationError, match="tools changed"):
+        prepare_chat_request(
+            {"tools": [{"type": "function", "function": {"name": "new_tool"}}]},
+            TITOTokenizer(MagicMock()),
+            config=make_session_server_config(),
+            turn_args={"chat_template_kwargs": {}},
+            evaluation=evaluation,
+        )

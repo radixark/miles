@@ -11,6 +11,7 @@ import pytest
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
+    FULLY_ASYNC_ROLLOUT_PATH,
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
@@ -197,6 +198,71 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
 
     override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
     assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
+
+
+def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
+    """A namespace shaped like the parsed args `_resolve_rollout_functions` reads."""
+    defaults = dict(
+        fully_async=False,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=False,
+        partial_rollout=False,
+        mask_offpolicy_in_partial_rollout=False,
+        pause_generation_mode="retract",
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+    )
+    return SimpleNamespace(**(defaults | overrides))
+
+
+def test_naming_the_fully_async_class_enables_the_mode():
+    """--rollout-function-path FullyAsyncRolloutFn selects what --fully-async selects, so it
+    must reach the same validation and driver scheduling instead of passing as a plugin."""
+    args = _fully_async_candidate_args(rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH)
+
+    _resolve_rollout_functions(args)
+
+    assert args.fully_async is True
+    assert args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH
+    assert args.eval_function_path == FULLY_ASYNC_ROLLOUT_PATH
+
+
+def test_naming_the_fully_async_class_enforces_the_mode_constraints():
+    """The class alone cannot keep generating through a colocated weight update; before the
+    mode was inferred, this combination started and only failed later, in training."""
+    args = _fully_async_candidate_args(rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH, colocate=True)
+
+    with pytest.raises(AssertionError, match="cannot colocate"):
+        _resolve_rollout_functions(args)
+
+
+def test_the_flag_and_a_matching_path_agree():
+    """Both spellings of one selection is redundant, not a conflict."""
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH)
+
+    _resolve_rollout_functions(args)
+
+    assert args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH
+
+
+def test_the_flag_still_rejects_a_different_rollout_function():
+    """Two different selections remain a misconfiguration."""
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path="pkg.CustomRolloutFn")
+
+    with pytest.raises(AssertionError, match="pass only one"):
+        _resolve_rollout_functions(args)
+
+
+def test_an_ordinary_rollout_function_path_stays_untouched():
+    args = _fully_async_candidate_args(rollout_function_path="pkg.CustomRolloutFn")
+
+    _resolve_rollout_functions(args)
+
+    assert args.fully_async is False
+    assert args.rollout_function_path == "pkg.CustomRolloutFn"
 
 
 def test_fully_async_rejects_abort_pause_mode():

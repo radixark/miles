@@ -50,7 +50,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     )
     use_v2 = getattr(input.args, "use_session_server", None) == "v2"
     collect_spec_metrics = use_v2 and input.args.sglang_speculative_algorithm is not None
-    tracer = await OpenAIEndpointTracer.create(input.args)
+    tracer = await OpenAIEndpointTracer.create(
+        input.args, evaluation=input.evaluation, sampling_params=input.sampling_params
+    )
 
     custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
     assert (

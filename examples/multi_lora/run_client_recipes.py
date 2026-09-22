@@ -3,9 +3,9 @@
 The cookbook's sl_loop (SFT) and rl_loop (GRPO) are the executable definition
 of the Tinker wire contract; passing them is the gateway's acceptance bar.
 
-Requires, next to the pinned SDK (tinker==0.26.2):
+Install the client dependencies:
 
-    pip install git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2c
+    pip install -r examples/multi_lora/requirements.txt
 
 ``--base-model`` must be both the name this gateway serves (--tinker-base-model)
 and a HuggingFace name the cookbook can resolve a tokenizer and renderer for.

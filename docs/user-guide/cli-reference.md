@@ -201,6 +201,7 @@ Sections mirror the launch-script argument groups.
 | `--eval-max-response-len` | int | – | Max eval response length. Inherits from rollout if unset. |
 | `--eval-temperature` | float | – | Eval temperature. Inherits from rollout if unset. |
 | `--eval-top-p` | float | – | Eval top-p. Inherits from rollout if unset. |
+| `--eval-top-k` | int | – | Eval top-k. Inherits from rollout if unset. |
 | `--eval-num-gpus` | int | `0` | Dedicated eval fleet size. `0` = shared-engine eval. Requires `train_async.py`. |
 | `--eval-num-gpus-per-engine` | int | `1` | Eval engine TP, independent of rollout TP. |
 | `--eval-hf-dir` | str | – | Staging dir for per-eval HF snapshots (tmpfs recommended). Unset + `--save-hf` = reuse mode. |
