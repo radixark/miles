@@ -267,10 +267,11 @@ def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(
         s_t = sink.clone().requires_grad_(True)
         out_t = sparse_attn_tilelang(q_t, kv_t, s_t, indices, sm_scale)
         out_t.backward(do)
-        # The pinned DeepSeek-V4 TileLang kernel is compared loosely: its forward is not self-consistent
-        # under recent TileLang releases (documented in the kernel generator's design notes).
+        # Measured on GB300 with TileLang 0.1.9: o 2.4e-3, dq 2.1e-3, dkv 4.2e-3, dsink 5.0e-4 (BF16-level).
         for name, ours, theirs in (("o", out, out_t), ("dq", dq, q_t.grad), ("dkv", dkv, kv_t.grad), ("dsink", dsink, s_t.grad)):
-            print(f"dsv4 attention {name}: loom vs tilelang rel err {_rel_err(ours, theirs):.3e}")
+            err = _rel_err(ours, theirs)
+            print(f"dsv4 attention {name}: loom vs tilelang rel err {err:.3e}")
+            assert err < 1e-2, name
 
 
 def test_dsv4_batched_indexer_logits_match_reference_and_tilelang():
