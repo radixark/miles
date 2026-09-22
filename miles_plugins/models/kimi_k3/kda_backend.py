@@ -74,6 +74,24 @@ def deterministic_backward_applies(
 
 
 _fallback_warned = False
+_chunk_kda_backward = None
+
+
+def _deterministic_chunk_backward():
+    """:func:`miles_plugins.models.kda_chunk_train.chunk_kda_backward`, imported on first use and
+    cached (the import statement itself costs a few microseconds per backward when repeated)."""
+    global _chunk_kda_backward
+    if _chunk_kda_backward is None:
+        from miles_plugins.models.kda_chunk_train import chunk_kda_backward
+
+        _chunk_kda_backward = chunk_kda_backward
+    return _chunk_kda_backward
+
+
+def _as_dtype(t: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    """``t.to(dtype)`` without the dispatcher round trip when ``t`` already has ``dtype`` (``Tensor.to``
+    returns ``t`` itself in that case)."""
+    return t if t.dtype == dtype else t.to(dtype)
 
 
 def _warn_fallback_once(reason: str) -> None:
@@ -141,10 +159,9 @@ class _ChunkKDADeterministicBackward(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, do):
-        from miles_plugins.models.kda_chunk_train import chunk_kda_backward
-
         q_norm, k_norm, q_rstd, k_rstd, v, g, beta, A_log, dt_bias, Aqk, Akk, cu_seqlens = ctx.saved_tensors
-        grads = chunk_kda_backward(
+        # chunk_kda_backward makes the row view of ``do`` contiguous itself
+        grads = _deterministic_chunk_backward()(
             q_norm=q_norm,
             k_norm=k_norm,
             q_rstd=q_rstd,
@@ -157,20 +174,20 @@ class _ChunkKDADeterministicBackward(torch.autograd.Function):
             dt_bias=dt_bias,
             Aqk=Aqk,
             Akk=Akk,
-            do=do.contiguous(),
+            do=do,
             scale=ctx.scale,
             lower_bound=ctx.lower_bound,
             cu_seqlens=cu_seqlens,
             cu_seqlens_cpu=ctx.cu_seqlens_cpu,
         )
         return (
-            grads["dq"].to(q_norm.dtype),
-            grads["dk"].to(k_norm.dtype),
-            grads["dv"].to(v.dtype),
-            grads["dg"].to(g.dtype),
-            grads["dbeta"].to(beta.dtype),
-            grads["dA_log"].to(A_log.dtype),
-            grads["dt_bias"].to(dt_bias.dtype),
+            _as_dtype(grads["dq"], q_norm.dtype),
+            _as_dtype(grads["dk"], k_norm.dtype),
+            _as_dtype(grads["dv"], v.dtype),
+            _as_dtype(grads["dg"], g.dtype),
+            _as_dtype(grads["dbeta"], beta.dtype),
+            _as_dtype(grads["dA_log"], A_log.dtype),
+            _as_dtype(grads["dt_bias"], dt_bias.dtype),
             None,
             None,
         )
