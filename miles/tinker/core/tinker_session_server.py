@@ -235,16 +235,12 @@ class TrajectoryCollector:
             if not session.lock.locked()
             and (
                 now - session.last_seen >= self.session_ttl_s
-                or (now - session.last_seen >= lease_grace and not self._tenant_alive(session.tenant))
+                or (now - session.last_seen >= lease_grace and not self.service.tenant_alive(session.tenant))
             )
         ]
         for sid in expired:
             del self.sessions[sid]
         return len(expired)
-
-    def _tenant_alive(self, tenant: str) -> bool:
-        """True while the tenant still holds a Tinker session lease; asked of the service, not read off its state."""
-        return self.service.tenant_alive(tenant)
 
     def _tito_budget(self, session: TrajectorySession) -> int:
         """TITO chain budget: the gateway per-datum cap, lowered to the client's bind-time max_datum_tokens."""
