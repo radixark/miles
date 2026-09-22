@@ -63,7 +63,10 @@ CASE = CaseConfig(
     # miles has no VLM/vision implementation on the training side; kept for parity with the
     # regular case even though the per-step weight check is disabled below.
     check_weight_update_skip_list=("visual",),
-    extra_args="--ci-disable-weight-update-checker ",
+    # Chunked log-prob/entropy computation (the production DeepSeek-V3.2 / GLM-5 scripts use
+    # 1024 too): the fp32 [tokens, vocab/tp] logits of one ~4.7k-token micro-batch are ~2 GiB,
+    # and run 35722840158 OOMed on exactly that allocation with ~48 GB of Muon state resident.
+    extra_args="--ci-disable-weight-update-checker --log-probs-chunk-size 1024 ",
 )
 
 
