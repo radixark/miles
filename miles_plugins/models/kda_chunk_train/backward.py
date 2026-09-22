@@ -290,6 +290,15 @@ _SM_COUNT: dict[int, int] = {}
 SLICE_BLOCKS = 4  # fwdh/dhu *_slices kernels: one 32-column value slice per CTA
 
 
+def _sm_count(device) -> int:
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    sm = _SM_COUNT.get(index)
+    if sm is None:
+        sm = int(torch.cuda.get_device_properties(index).multi_processor_count)
+        _SM_COUNT[index] = sm
+    return sm
+
+
 def _serial_walk_stage(stage, pairs, device):
     """Pick the two-half (``stage``) or four-slice (``stage + "_slices"``) kernel for the serial chunk walks.
 
@@ -297,11 +306,7 @@ def _serial_walk_stage(stage, pairs, device):
     only while every CTA runs in one wave (``pairs * 4 <= SM count``, measured on B200: b1 t8192
     199/236 -> 153/175 us; b4 t2048 dhu 68 -> 100 us and rlpack 8x2688 133/192 -> 157/276 us once a
     second wave appears).  Returns ``(stage name, grid x)``."""
-    index = device.index if device.index is not None else torch.cuda.current_device()
-    sm = _SM_COUNT.get(index)
-    if sm is None:
-        sm = int(torch.cuda.get_device_properties(index).multi_processor_count)
-        _SM_COUNT[index] = sm
+    sm = _sm_count(device)
     if pairs * SLICE_BLOCKS <= sm:
         return stage + "_slices", pairs * SLICE_BLOCKS
     return stage, pairs * 2
@@ -384,8 +389,9 @@ def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, lay
     db = torch.empty(rows, hv, dtype=torch.float32, device=dev)
     dAkk = torch.empty(rows, hv, CHUNK, dtype=torch.float32, device=dev)
     dv = torch.empty(layout.rows_external, hv, HEAD_DIM, dtype=torch.bfloat16, device=dev)
+    # dqkg is persistent: grid-stride over the nc * hv (chunk, value head) items, one CTA per SM
     kernel("dqkg", arch).launch(
-        grid=(nc, hv, 1),
+        grid=(min(nc * hv, _sm_count(dev)), 1, 1),
         do_tma=do,
         vn_tma=v_new,
         dv2_tma=dv2,
@@ -407,6 +413,7 @@ def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, lay
         dAkk_out=dAkk,
         dv_out=dv,
         num_heads=hv,
+        num_items=nc * hv,
         chunk_bos=layout.chunk_bos,
         chunk_len=layout.chunk_len,
         scale=float(scale),
@@ -442,6 +449,42 @@ def _launch_intra(arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_f, 
     return dq, dk, dg, db
 
 
+def _launch_intra_qk(arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_f, *, num_chunks, hq, q_rstd, k_rstd, layout):
+    """intra with the q/k l2norm epilogue folded in (one q/k head per value head): returns bf16 dq / dk already in
+    the external (FLA) rows, plus fp32 dg / db in the internal layout; the qk epilogue kernel is then skipped."""
+    rows, hv, _ = gk.shape
+    if hq != hv:
+        raise ValueError("_launch_intra_qk requires one q/k head per value head")
+    rows_ext = layout.rows_external
+    dq, dk = torch.empty(2, rows_ext, hq, HEAD_DIM, dtype=torch.bfloat16, device=gk.device).unbind(0)
+    dg = torch.empty(rows, hv, HEAD_DIM, dtype=torch.float32, device=gk.device)
+    db = torch.empty_like(db_f)
+    kernel("intra_qk", arch).launch(
+        grid=(num_chunks, hv, 1),
+        dAqk=dAqk,
+        dAkk=dAkk,
+        gk=gk,
+        k_e=k_e,
+        q_e=q_e,
+        beta=beta,
+        dq_f=dq_f,
+        dk_f=dk_f,
+        dg_f=dg_f,
+        db_f=db_f,
+        q_rstd=q_rstd,
+        k_rstd=k_rstd,
+        chunk_bos=layout.chunk_bos,
+        chunk_len=layout.chunk_len,
+        dq_ext=dq,
+        dk_ext=dk,
+        dg_out=dg,
+        db_out=db,
+        num_heads=hv,
+        num_qk_heads=hq,
+        group=hv // hq,
+    )
+    return dq, dk, dg, db
+
 def _launch_epilogue(
     arch,
     dq_intra,
@@ -459,6 +502,7 @@ def _launch_epilogue(
     dt_bias,
     layout,
     lower_bound,
+    qk_done=None,
 ):
     rows, hv, kd = dg_intra.shape
     h = q_norm.shape[1]
@@ -468,8 +512,11 @@ def _launch_epilogue(
     dg_out = torch.empty(rows_ext, hv, kd, dtype=bf, device=dev)
     dbeta = torch.empty(rows_ext, hv, dtype=bf, device=dev)
     dA_part, dbias_part = torch.empty(2, nc, hv, kd, dtype=torch.float32, device=dev).unbind(0)
-    dq_out = torch.empty(rows_ext, h, kd, dtype=bf, device=dev)
-    dk_out = torch.empty(rows_ext, h, kd, dtype=bf, device=dev)
+    if qk_done is None:
+        dq_out = torch.empty(rows_ext, h, kd, dtype=bf, device=dev)
+        dk_out = torch.empty(rows_ext, h, kd, dtype=bf, device=dev)
+    else:
+        dq_out, dk_out = qk_done  # bf16 external rows from the folded intra epilogue
     dA_log = torch.empty(hv, dtype=torch.float32, device=dev)
     dt_bias_grad = torch.empty(hv * kd, dtype=torch.float32, device=dev)
     kernel("gate_epilogue", arch).launch(
@@ -489,22 +536,23 @@ def _launch_epilogue(
         num_heads=hv,
         lower_bound=float(lower_bound),
     )
-    kernel("qk_epilogue", arch).launch(
-        grid=(nc, h, 1),
-        dq_intra=dq_intra,
-        dk_intra=dk_intra,
-        q_norm=q_norm,
-        k_norm=k_norm,
-        q_rstd=q_rstd,
-        k_rstd=k_rstd,
-        chunk_bos=layout.chunk_bos,
-        chunk_len=layout.chunk_len,
-        dq_out=dq_out,
-        dk_out=dk_out,
-        num_qk_heads=h,
-        num_v_heads=hv,
-        group=hv // h,
-    )
+    if qk_done is None:
+        kernel("qk_epilogue", arch).launch(
+            grid=(nc, h, 1),
+            dq_intra=dq_intra,
+            dk_intra=dk_intra,
+            q_norm=q_norm,
+            k_norm=k_norm,
+            q_rstd=q_rstd,
+            k_rstd=k_rstd,
+            chunk_bos=layout.chunk_bos,
+            chunk_len=layout.chunk_len,
+            dq_out=dq_out,
+            dk_out=dk_out,
+            num_qk_heads=h,
+            num_v_heads=hv,
+            group=hv // h,
+        )
     kernel("finalize", arch).launch(
         grid=(hv, 1, 1),
         dA_part=dA_part,
@@ -635,20 +683,44 @@ def chunk_kda_backward(
         layout=layout,
         scale=scale,
     )
-    dq_i, dk_i, dg_i, db_i = _launch_intra(
-        arch,
-        dAqk,
-        dAkk,
-        pre["gk"],
-        pre["ke"],
-        pre["qe"],
-        pre["beta"],
-        dq_f,
-        dk_f,
-        dg_f,
-        db_f,
-        num_chunks=layout.num_chunks,
-    )
+    if hv == h:   # one q/k head per value head (GVA batches keep the two-kernel path)
+        # one q/k head per value head: intra applies the l2norm backward itself and writes bf16 dq / dk into
+        # the external rows; the qk epilogue kernel is skipped
+        dq_i, dk_i, dg_i, db_i = _launch_intra_qk(
+            arch,
+            dAqk,
+            dAkk,
+            pre["gk"],
+            pre["ke"],
+            pre["qe"],
+            pre["beta"],
+            dq_f,
+            dk_f,
+            dg_f,
+            db_f,
+            num_chunks=layout.num_chunks,
+            hq=h,
+            q_rstd=qr,
+            k_rstd=kr,
+            layout=layout,
+        )
+        qk_done = (dq_i, dk_i)
+    else:
+        dq_i, dk_i, dg_i, db_i = _launch_intra(
+            arch,
+            dAqk,
+            dAkk,
+            pre["gk"],
+            pre["ke"],
+            pre["qe"],
+            pre["beta"],
+            dq_f,
+            dk_f,
+            dg_f,
+            db_f,
+            num_chunks=layout.num_chunks,
+        )
+        qk_done = None
     dq, dk, dg, dbeta, dA_log_grad, dt_bias_grad = _launch_epilogue(
         arch,
         dq_i,
@@ -665,6 +737,7 @@ def chunk_kda_backward(
         dt_bias=dt_bias,
         layout=layout,
         lower_bound=lower_bound,
+        qk_done=qk_done,
     )
     # every gradient below is a fresh contiguous kernel output (or an index_select of one): view, not reshape
     return {
