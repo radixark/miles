@@ -196,15 +196,12 @@ on the Kimi K3 head geometry. Pass it through the launcher with
 The kernel ships as generated CUDA sources and builds on first use as a torch CUDA extension
 (`nvcc` and `ninja` from the image; cached under `TORCH_EXTENSIONS_DIR`, so the first backward
 of a fresh cache pays a few minutes of compilation). It covers `K = V = 128` and no context
-parallelism. The kernel itself consumes fixed-length or equal-length packed batches whose
-sequence length is a multiple of 128; any other layout -- the variable-length `thd` packs RL
-batches produce -- is repacked for the backward only: each sequence gets an equal-length
-128-multiple slot, pads carry zero q/k/v/beta/dO (so they add nothing to the real tokens'
-gradients in the causal recurrence), and the gradients are gathered back. The repack costs
-the padding ratio of the batch (about 20% for 8 sequences of 350-510 tokens). Calls outside
-the domain -- CP shards, other GPUs, other head sizes -- fall back to FLA's backward for that
-call and warn once per process, so the run always trains; only the determinism guarantee is
-then limited to the covered calls.
+parallelism, for any sequence length and for the variable-length `thd` packs RL batches
+produce: the packed `cu_seqlens` go straight to the kernel, which chunks every sequence
+from its own first token exactly as FLA does (no host-side repacking or padding copies).
+Calls outside the domain -- CP shards, other GPUs, other head sizes -- fall back to FLA's
+backward for that call and warn once per process, so the run always trains; only the
+determinism guarantee is then limited to the covered calls.
 
 ## 6. Pairs Well With
 

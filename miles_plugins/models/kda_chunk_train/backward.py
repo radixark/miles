@@ -19,9 +19,17 @@ The forward pass is not part of this module: :func:`chunk_kda_backward`
 consumes the tensors the reference forward saves for backward (normalized
 q/k with their inverse norms, sigmoid(beta), and the per-chunk ``Aqk`` /
 ``Akk`` matrices).
+
+Any sequence length and any ``cu_seqlens`` packing are accepted: the stages
+run on a chunk-aligned internal row layout (:class:`ChunkLayout`) in which
+every sequence starts on a 64-token chunk boundary, the first stage gathers
+the token rows into it and the last stages scatter the gradients back, so no
+host-side repacking or padding copies are needed.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 
@@ -47,22 +55,158 @@ def _rows(x: torch.Tensor, rows: int) -> torch.Tensor:
 
 
 # --------------------------------------------------------------------------- #
+# chunk-aligned internal layout
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class ChunkLayout:
+    """Row layout the stages run on: every sequence starts on a 64-token chunk boundary.
+
+    The chunked algorithm chunks each sequence from its own first token (only a sequence's last
+    chunk can be partial), so a sequence of ``L`` tokens owns ``ceil(L / 64)`` chunks.  Internally
+    every chunk is a full 64-row tile; the tail rows of a partial chunk are zero pads that the
+    stages gate off (they never touch a real token's gradient, and their own gradients are exact
+    zeros or dropped).  A trailing all-zero chunk keeps the count even for the pair-tiled stages.
+
+    ``chunk_bos[c]``: first input row of chunk ``c``; ``chunk_len[c]``: its valid tokens (0 for the
+    trailing pad chunk); ``seq_chunk_start[n]``: first chunk of sequence ``n`` (``N + 1`` entries);
+    ``internal_rows[r]``: internal row of input row ``r``.
+    """
+
+    lengths: tuple[int, ...]
+    offsets: tuple[int, ...]
+    rows_external: int
+    seq_chunk_start_cpu: tuple[int, ...]
+    chunk_bos: torch.Tensor
+    chunk_len: torch.Tensor
+    seq_chunk_start: torch.Tensor
+    internal_rows: torch.Tensor
+
+    @property
+    def num_sequences(self) -> int:
+        return len(self.lengths)
+
+    @property
+    def num_chunks(self) -> int:
+        return self.seq_chunk_start_cpu[-1]
+
+    @property
+    def num_chunks_padded(self) -> int:
+        return -(-self.num_chunks // 2) * 2
+
+    @property
+    def rows(self) -> int:
+        return self.num_chunks_padded * CHUNK
+
+    @property
+    def has_pad_chunk(self) -> bool:
+        return self.num_chunks_padded != self.num_chunks
+
+    @property
+    def identity(self) -> bool:
+        """Input rows and internal rows coincide (64-multiple lengths laid out back to back, even chunk count)."""
+        return (
+            self.rows == self.rows_external
+            and not self.has_pad_chunk
+            and all(length % CHUNK == 0 for length in self.lengths)
+            and all(offset == sum(self.lengths[:i]) for i, offset in enumerate(self.offsets))
+        )
+
+    def scatter(self, x: torch.Tensor) -> torch.Tensor:
+        """Internal ``[rows, ...]`` -> input ``[rows_external, ...]`` (pads dropped)."""
+        return x if self.identity else x.index_select(0, self.internal_rows)
+
+
+def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
+    lengths = tuple(int(x) for x in lengths)
+    offsets = tuple(int(x) for x in offsets)
+    _check(len(lengths) == len(offsets) and bool(lengths), "sequence lengths and offsets must be non-empty and equally long")
+    _check(all(length > 0 for length in lengths), "every packed sequence must have at least one token")
+    _check(sum(lengths) == rows_external, "the packed sequences must cover the token rows exactly once")
+    starts = [0]
+    for length in lengths:
+        starts.append(starts[-1] + -(-length // CHUNK))
+    nc = starts[-1]
+    nc_pad = -(-nc // 2) * 2
+    bos = torch.zeros(nc_pad, dtype=torch.int32)
+    clen = torch.zeros(nc_pad, dtype=torch.int32)
+    internal = torch.empty(rows_external, dtype=torch.int64)
+    for n, (length, offset) in enumerate(zip(lengths, offsets, strict=True)):
+        c0 = starts[n]
+        for i in range(starts[n + 1] - c0):
+            bos[c0 + i] = offset + i * CHUNK
+            clen[c0 + i] = min(CHUNK, length - i * CHUNK)
+        internal[offset : offset + length] = torch.arange(c0 * CHUNK, c0 * CHUNK + length, dtype=torch.int64)
+    return ChunkLayout(
+        lengths=lengths,
+        offsets=offsets,
+        rows_external=int(rows_external),
+        seq_chunk_start_cpu=tuple(starts),
+        chunk_bos=bos.to(device),
+        chunk_len=clen.to(device),
+        seq_chunk_start=torch.tensor(starts, dtype=torch.int32).to(device),
+        internal_rows=internal.to(device),
+    )
+
+
+_LAYOUT_CACHE: dict[tuple, ChunkLayout] = {}
+_LAYOUT_CACHE_LIMIT = 256
+
+
+def chunk_layout(batch: int, seq_len: int, cu_seqlens: torch.Tensor | None, device) -> ChunkLayout:
+    """Layout of a ``[batch, seq_len]`` input, or of ``cu_seqlens``-packed sequences (``batch == 1``).
+
+    Layouts are cached per (lengths, device): a training run repeats a few packing shapes and the
+    tables otherwise cost a handful of small host-to-device copies per backward.
+    """
+    if cu_seqlens is None:
+        key = ("fixed", int(batch), int(seq_len), str(device))
+        lengths, offsets = [seq_len] * batch, [b * seq_len for b in range(batch)]
+    else:
+        _check(batch == 1, f"packed input must have batch 1, got {batch}")
+        cu = [int(x) for x in cu_seqlens.tolist()]
+        _check(len(cu) >= 2 and cu[0] == 0 and cu[-1] == seq_len, f"cu_seqlens must run from 0 to the token count {seq_len}")
+        key = ("packed", tuple(cu), str(device))
+        lengths, offsets = [b - a for a, b in zip(cu[:-1], cu[1:], strict=True)], cu[:-1]
+    layout = _LAYOUT_CACHE.get(key)
+    if layout is None:
+        layout = _build_layout(lengths, offsets, batch * seq_len, device)
+        if len(_LAYOUT_CACHE) >= _LAYOUT_CACHE_LIMIT:
+            _LAYOUT_CACHE.clear()
+        _LAYOUT_CACHE[key] = layout
+    return layout
+
+
+# --------------------------------------------------------------------------- #
 # stage launchers (thin host wrappers over the generated kernels)
 # --------------------------------------------------------------------------- #
-def _launch_prep(arch, g_raw, q_norm, k_norm, v, beta, A_log, dt_bias, aqk, *, lower_bound):
-    rows, hv, kd = g_raw.shape
+def _launch_prep(arch, g_raw, q_norm, k_norm, v, beta, A_log, dt_bias, aqk, akk, do, *, layout, lower_bound):
+    rows_ext, hv, kd = g_raw.shape
     h = q_norm.shape[1]
     _check(
-        kd == HEAD_DIM and rows % CHUNK == 0 and hv % h == 0 and tuple(aqk.shape) == (rows, hv, CHUNK),
-        "prep: expected [R,HV,128] g/v, [R,H,128] q/k, [R,HV,64] Aqk, R % 64 == 0",
+        kd == HEAD_DIM
+        and hv % h == 0
+        and rows_ext == layout.rows_external
+        and tuple(aqk.shape) == (rows_ext, hv, CHUNK)
+        and tuple(akk.shape) == (rows_ext, hv, CHUNK),
+        "prep: expected [R,HV,128] g/v/do, [R,H,128] q/k, [R,HV,64] Aqk/Akk over the layout's token rows",
     )
     dev, bf = g_raw.device, torch.bfloat16
+    rows = layout.rows
     out = {"gk": torch.empty(rows, hv, HEAD_DIM, dtype=torch.float32, device=dev)}
     for name in ("vb", "kb", "qg", "kg", "ke", "qe"):
         out[name] = torch.empty(rows, hv, HEAD_DIM, dtype=bf, device=dev)
     out["aqk_tril"] = torch.empty(rows, hv, CHUNK, dtype=bf, device=dev)
+    if layout.identity:
+        out["akk"], out["do"], out["v"], out["beta"] = akk, do, v, beta
+        copy_inputs = 0
+    else:
+        out["akk"] = torch.empty(rows, hv, CHUNK, dtype=bf, device=dev)
+        out["do"] = torch.empty(rows, hv, HEAD_DIM, dtype=bf, device=dev)
+        out["v"] = torch.empty(rows, hv, HEAD_DIM, dtype=bf, device=dev)
+        out["beta"] = torch.empty(rows, hv, dtype=torch.float32, device=dev)
+        copy_inputs = 1
     kernel("prep", arch).launch(
-        grid=(rows // CHUNK, hv, 1),
+        grid=(layout.num_chunks_padded, hv, 1),
         g_raw=g_raw,
         q_norm=q_norm,
         k_norm=k_norm,
@@ -71,6 +215,10 @@ def _launch_prep(arch, g_raw, q_norm, k_norm, v, beta, A_log, dt_bias, aqk, *, l
         A_log=A_log,
         dt_bias=dt_bias,
         aqk=aqk,
+        akk=akk,
+        do=do,
+        chunk_bos=layout.chunk_bos,
+        chunk_len=layout.chunk_len,
         gk_out=out["gk"],
         vb_out=out["vb"],
         kb_out=out["kb"],
@@ -79,9 +227,14 @@ def _launch_prep(arch, g_raw, q_norm, k_norm, v, beta, A_log, dt_bias, aqk, *, l
         ke_out=out["ke"],
         qe_out=out["qe"],
         aqk_tril=out["aqk_tril"],
+        akk_int=out["akk"],
+        do_int=out["do"],
+        v_int=out["v"],
+        beta_int=out["beta"],
         num_qk_heads=h,
         num_heads=hv,
         group=hv // h,
+        copy_inputs=copy_inputs,
         lower_bound=float(lower_bound),
     )
     return out
@@ -104,13 +257,15 @@ def _launch_wy(arch, akk, vb, kb):
     return u, w
 
 
-def _launch_fwdh(arch, w, kg, u, gk, *, batch, seq_len):
+def _launch_fwdh(arch, w, kg, u, gk, *, layout):
     rows, hv, _ = w.shape
-    nt = seq_len // CHUNK
-    h_out = torch.empty(batch, nt, hv, HEAD_DIM, HEAD_DIM, dtype=torch.bfloat16, device=w.device)
+    nc = layout.num_chunks
+    h_out = torch.empty(nc, hv, HEAD_DIM, HEAD_DIM, dtype=torch.bfloat16, device=w.device)
     v_new = torch.empty(rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=w.device)
+    if layout.has_pad_chunk:
+        v_new[nc * CHUNK :].zero_()
     kernel("fwdh", arch).launch(
-        grid=(batch * hv * 2, 1, 1),
+        grid=(layout.num_sequences * hv * 2, 1, 1),
         w_tma=w,
         kg_tma=kg,
         u=u,
@@ -118,8 +273,7 @@ def _launch_fwdh(arch, w, kg, u, gk, *, batch, seq_len):
         h_out=h_out,
         v_new=v_new,
         num_heads=hv,
-        seq_len=seq_len,
-        num_chunks=nt,
+        seq_chunk_start=layout.seq_chunk_start,
     )
     return h_out, v_new
 
@@ -141,13 +295,15 @@ def _launch_dav(arch, do, v_new, aqk_tril, *, scale):
     return dAqk, dv1
 
 
-def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, batch, seq_len, scale):
+def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, layout, scale):
     rows, hv, _ = kg.shape
-    nt = seq_len // CHUNK
-    dh_out = torch.empty(batch, nt, hv, HEAD_DIM, HEAD_DIM, dtype=torch.bfloat16, device=kg.device)
+    nc = layout.num_chunks
+    dh_out = torch.empty(nc, hv, HEAD_DIM, HEAD_DIM, dtype=torch.bfloat16, device=kg.device)
     dv2 = torch.empty(rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=kg.device)
+    if layout.has_pad_chunk:
+        dv2[nc * CHUNK :].zero_()
     kernel("dhu", arch).launch(
-        grid=(batch * hv * 2, 1, 1),
+        grid=(layout.num_sequences * hv * 2, 1, 1),
         kg_tma=kg,
         qg_tma=qg,
         w_tma=w,
@@ -157,27 +313,26 @@ def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, batch, seq_len, scale):
         dh_out=dh_out,
         dv2=dv2,
         num_heads=hv,
-        seq_len=seq_len,
-        num_chunks=nt,
+        seq_chunk_start=layout.seq_chunk_start,
         scale=float(scale),
     )
     return dh_out, dv2
 
 
-def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, batch, seq_len, scale):
+def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, layout, scale):
     rows, hv, _ = do.shape
-    nt = seq_len // CHUNK
+    nc = layout.num_chunks
     dev = do.device
-    h2 = h.reshape(batch * nt * hv * HEAD_DIM, HEAD_DIM)
-    dh2 = dh.reshape(batch * nt * hv * HEAD_DIM, HEAD_DIM)
+    h2 = h.reshape(nc * hv * HEAD_DIM, HEAD_DIM)
+    dh2 = dh.reshape(nc * hv * HEAD_DIM, HEAD_DIM)
     dq = torch.empty(rows, hv, HEAD_DIM, dtype=torch.float32, device=dev)
     dk = torch.empty_like(dq)
     dg = torch.empty_like(dq)
     db = torch.empty(rows, hv, dtype=torch.float32, device=dev)
     dAkk = torch.empty(rows, hv, CHUNK, dtype=torch.float32, device=dev)
-    dv = torch.empty(rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=dev)
+    dv = torch.empty(layout.rows_external, hv, HEAD_DIM, dtype=torch.bfloat16, device=dev)
     kernel("dqkg", arch).launch(
-        grid=(rows // CHUNK, hv, 1),
+        grid=(nc, hv, 1),
         do_tma=do,
         vn_tma=v_new,
         dv2_tma=dv2,
@@ -199,18 +354,19 @@ def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, bat
         dAkk_out=dAkk,
         dv_out=dv,
         num_heads=hv,
-        num_chunks=nt,
+        chunk_bos=layout.chunk_bos,
+        chunk_len=layout.chunk_len,
         scale=float(scale),
     )
     return dq, dk, dg, db, dAkk, dv
 
 
-def _launch_intra(arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_f):
+def _launch_intra(arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_f, *, num_chunks):
     rows, hv, _ = gk.shape
     hq = k_e.shape[1]
     dq, dk, dg, db = (torch.empty_like(t) for t in (dq_f, dk_f, dg_f, db_f))
     kernel("intra", arch).launch(
-        grid=(rows // CHUNK, hv, 1),
+        grid=(num_chunks, hv, 1),
         dAqk=dAqk,
         dAkk=dAkk,
         gk=gk,
@@ -247,18 +403,20 @@ def _launch_epilogue(
     beta_raw,
     A_log,
     dt_bias,
+    layout,
     lower_bound,
 ):
     rows, hv, kd = dg_intra.shape
     h = q_norm.shape[1]
-    nc = rows // CHUNK
+    nc = layout.num_chunks
+    rows_ext = layout.rows_external
     dev, bf = dg_intra.device, torch.bfloat16
-    dg_out = torch.empty(rows, hv, kd, dtype=bf, device=dev)
-    dbeta = torch.empty(rows, hv, dtype=bf, device=dev)
+    dg_out = torch.empty(rows_ext, hv, kd, dtype=bf, device=dev)
+    dbeta = torch.empty(rows_ext, hv, dtype=bf, device=dev)
     dA_part = torch.empty(nc, hv, kd, dtype=torch.float32, device=dev)
     dbias_part = torch.empty(nc, hv, kd, dtype=torch.float32, device=dev)
-    dq_out = torch.empty(rows, h, kd, dtype=bf, device=dev)
-    dk_out = torch.empty(rows, h, kd, dtype=bf, device=dev)
+    dq_out = torch.empty(rows_ext, h, kd, dtype=bf, device=dev)
+    dk_out = torch.empty(rows_ext, h, kd, dtype=bf, device=dev)
     dA_log = torch.empty(hv, dtype=torch.float32, device=dev)
     dt_bias_grad = torch.empty(hv * kd, dtype=torch.float32, device=dev)
     kernel("gate_epilogue", arch).launch(
@@ -269,6 +427,8 @@ def _launch_epilogue(
         beta_raw=beta_raw,
         A_log=A_log,
         dt_bias=dt_bias,
+        chunk_bos=layout.chunk_bos,
+        chunk_len=layout.chunk_len,
         dg_out=dg_out,
         dbeta=dbeta,
         dA_part=dA_part,
@@ -284,6 +444,8 @@ def _launch_epilogue(
         k_norm=k_norm,
         q_rstd=q_rstd,
         k_rstd=k_rstd,
+        chunk_bos=layout.chunk_bos,
+        chunk_len=layout.chunk_len,
         dq_out=dq_out,
         dk_out=dk_out,
         num_qk_heads=h,
@@ -340,33 +502,21 @@ def chunk_kda_backward(
     - ``Aqk``, ``Akk``: bf16 ``[B, T, HV, 64]`` per-chunk matrices saved by the forward.
     - ``do``: bf16 ``[B, T, HV, 128]`` output gradient; ``scale``: attention scale;
       ``lower_bound``: the safe-gate lower bound (negative).
-    - ``cu_seqlens``: optional int32 ``[N + 1]`` packed-sequence offsets; all packed
-      sequences must share one length that is a multiple of 128 (``B`` must be 1).
+    - ``cu_seqlens``: optional int32 ``[N + 1]`` packed-sequence offsets (``B`` must be 1); the
+      sequences may have any lengths, as in the reference's varlen convention.
 
-    ``T`` must be a multiple of 128.  ``HV`` must be a positive multiple of ``H``
-    (grouped value heads).  Returns ``dq``/``dk`` bf16 ``[B, T, H, 128]``, ``dv`` bf16
-    ``[B, T, HV, 128]``, ``dbeta`` bf16 ``[B, T, HV]``, ``dg`` bf16 ``[B, T, HV, 128]``,
-    ``dA_log`` fp32 ``[HV]``, ``dt_bias`` fp32 ``[HV * 128]``.  Repeated calls on identical
-    inputs are bit-identical.
+    Any ``T`` is accepted.  ``HV`` must be a positive multiple of ``H`` (grouped value heads).
+    Returns ``dq``/``dk`` bf16 ``[B, T, H, 128]``, ``dv`` bf16 ``[B, T, HV, 128]``, ``dbeta`` bf16
+    ``[B, T, HV]``, ``dg`` bf16 ``[B, T, HV, 128]``, ``dA_log`` fp32 ``[HV]``, ``dt_bias`` fp32
+    ``[HV * 128]``.  Repeated calls on identical inputs are bit-identical.
     """
     arch = device_arch(v.device)
     batch0, seq0, h, kd = q_norm.shape
     hv = v.shape[2]
     _check(kd == HEAD_DIM and v.shape[-1] == HEAD_DIM, "K = V = 128 is required")
     _check(hv % h == 0, "HV must be a multiple of H")
-    if cu_seqlens is not None:
-        _check(batch0 == 1, "packed sequences require B == 1")
-        lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
-        seq_len = int(lengths[0])
-        _check(
-            all(int(x) == seq_len for x in lengths) and seq_len % PAIR_ROWS == 0,
-            "packed sequences must share one length that is a multiple of 128",
-        )
-        batch = len(lengths)
-    else:
-        batch, seq_len = batch0, seq0
-    _check(seq_len % PAIR_ROWS == 0, "T must be a multiple of 128")
-    rows = batch * seq_len
+    layout = chunk_layout(batch0, seq0, cu_seqlens, q_norm.device)
+    rows = layout.rows_external
     bf, f32 = torch.bfloat16, torch.float32
 
     qn = _contiguous("q_norm", _rows(q_norm, rows), bf)
@@ -388,37 +538,27 @@ def chunk_kda_backward(
     A_log = A_log.contiguous().float()
     dt_bias = dt_bias.contiguous().float()
 
-    pre = _launch_prep(arch, g_r, qn, kn, v_r, beta_s, A_log, dt_bias, aqk, lower_bound=lower_bound)
-    u, w = _launch_wy(arch, akk, pre["vb"], pre["kb"])
-    h_state, v_new = _launch_fwdh(arch, w, pre["kg"], u, pre["gk"], batch=batch, seq_len=seq_len)
-    dAqk, dv1 = _launch_dav(arch, do_r, v_new, pre["aqk_tril"], scale=scale)
-    dh_state, dv2 = _launch_dhu(
-        arch,
-        pre["kg"],
-        pre["qg"],
-        w,
-        do_r,
-        dv1,
-        pre["gk"],
-        batch=batch,
-        seq_len=seq_len,
-        scale=scale,
-    )
+    # prep gathers the token rows into the internal layout; every stage below runs there, and dqkg /
+    # the epilogue scatter the gradients back to the token rows.
+    pre = _launch_prep(arch, g_r, qn, kn, v_r, beta_s, A_log, dt_bias, aqk, akk, do_r, layout=layout, lower_bound=lower_bound)
+    u, w = _launch_wy(arch, pre["akk"], pre["vb"], pre["kb"])
+    h_state, v_new = _launch_fwdh(arch, w, pre["kg"], u, pre["gk"], layout=layout)
+    dAqk, dv1 = _launch_dav(arch, pre["do"], v_new, pre["aqk_tril"], scale=scale)
+    dh_state, dv2 = _launch_dhu(arch, pre["kg"], pre["qg"], w, pre["do"], dv1, pre["gk"], layout=layout, scale=scale)
     dq_f, dk_f, dg_f, db_f, dAkk, dv = _launch_dqkg(
         arch,
-        do_r,
+        pre["do"],
         v_new,
         dv2,
-        v_r,
+        pre["v"],
         pre["ke"],
         pre["qe"],
         h_state,
         dh_state,
-        akk,
+        pre["akk"],
         pre["gk"],
-        beta_s,
-        batch=batch,
-        seq_len=seq_len,
+        pre["beta"],
+        layout=layout,
         scale=scale,
     )
     dq_i, dk_i, dg_i, db_i = _launch_intra(
@@ -428,11 +568,12 @@ def chunk_kda_backward(
         pre["gk"],
         pre["ke"],
         pre["qe"],
-        beta_s,
+        pre["beta"],
         dq_f,
         dk_f,
         dg_f,
         db_f,
+        num_chunks=layout.num_chunks,
     )
     dq, dk, dg, dbeta, dA_log_grad, dt_bias_grad = _launch_epilogue(
         arch,
@@ -448,6 +589,7 @@ def chunk_kda_backward(
         beta_raw=beta_raw,
         A_log=A_log,
         dt_bias=dt_bias,
+        layout=layout,
         lower_bound=lower_bound,
     )
     return {
@@ -457,7 +599,7 @@ def chunk_kda_backward(
         "dbeta": (
             dbeta.reshape(batch0, seq0, hv)
             if beta_logits is not None
-            else db_i.reshape(batch0, seq0, hv).to(beta.dtype)
+            else layout.scatter(db_i).reshape(batch0, seq0, hv).to(beta.dtype)
         ),
         "dg": dg.reshape(batch0, seq0, hv, kd),
         "dA_log": dA_log_grad,
@@ -465,4 +607,4 @@ def chunk_kda_backward(
     }
 
 
-__all__ = ["chunk_kda_backward", "CHUNK", "HEAD_DIM"]
+__all__ = ["ChunkLayout", "chunk_kda_backward", "chunk_layout", "CHUNK", "HEAD_DIM"]
