@@ -5,17 +5,17 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
-    compute_hot_restart_workloads,
-    read_restart_stamp_of_workload,
-)
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     compute_hot_restart_config,
     compute_release_of_config,
     is_replaced_launch_exit,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, read_run_progress
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import BaseFaultForm
+from tests.utils.deploy.hot_restart.cluster_observer import (
+    compute_hot_restart_workloads,
+    read_restart_stamp_of_workload,
+)
+from tests.utils.deploy.hot_restart.evidence import HotRestartRecord, read_run_progress
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 

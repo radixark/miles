@@ -1,16 +1,12 @@
 from collections.abc import Iterable, Sequence
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_process import (
+from tests.utils.deploy.hot_restart.assert_process import (
     assert_baseline_read_before_first_take_over,
     assert_run_watched_closely,
     assert_trainer_not_rebooted,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
-    ClusterSnapshot,
-    compute_hot_restart_workloads,
-)
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
-
+from tests.utils.deploy.hot_restart.cluster_observer import ClusterSnapshot, compute_hot_restart_workloads
+from tests.utils.deploy.hot_restart.evidence import HotRestartEvidence
 
 # ============================ what a take-over rolls ==========================
 

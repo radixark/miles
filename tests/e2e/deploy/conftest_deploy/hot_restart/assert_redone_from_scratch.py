@@ -9,7 +9,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint 
     read_step_events,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, read_last_saved_iteration
+from tests.utils.deploy.hot_restart.evidence import HotRestartRecord, read_last_saved_iteration
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 
