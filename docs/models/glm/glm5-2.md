@@ -133,6 +133,7 @@ Adam, `--lr 1e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 -
 
 The launcher exposes these as flags:
 
+- `--dsa-attention-backend {tilelang,loom}` — DSA indexer + sparse-attention kernels on the training side (default `tilelang`, the fused TileLang `SparseMLA` / `lighting_indexer`). `loom` selects the generated deterministic kernels in `miles_plugins/models/dsa_train` (Blackwell SM100a / SM103a): bit-identical forward and backward across calls (no floating-point atomics; key-side gradients reduced in a fixed order), same `thd` contract, replay-manager top-k and cross-layer index sharing unchanged. The kernels build on first use as torch CUDA extensions (`TORCH_EXTENSIONS_DIR`); `tests/e2e/megatron/test_glm5_2_5layer_dsa_loom.py` runs the 5-layer smoke test on either backend (`MILES_DSA_BACKEND`).
 - `--fp8-rollout` — runs `tools/convert_hf_to_fp8.py --strategy block --block-size 128 128` and feeds the FP8 directory to SGLang (Megatron stays BF16). Combined with `--use-deepep` it also switches SGLang's MoE all-to-all to DeepEP (`--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto`).
 - `--enable-mtp` — adds SGLang EAGLE speculative decoding with `--sglang-speculative-draft-attention-backend nsa`; `low-latency` drafts deeper (num-steps 5, draft-tokens 6) than `balanced` (1, 2). Full model only — the MTP layer is pruned away in the 5-layer variant.
 - `--enable-pd` (default `True`, forced off on 1 node) — enables prefill/decode disaggregation.

@@ -33,6 +33,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_window_topk_idxs_cp,
 )
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
+from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
@@ -180,6 +181,9 @@ class DeepSeekV4Attention(MegatronModule):
         )
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        # ``tilelang``: sparse_attn_tilelang; ``loom``: the generated deterministic kernels in
+        # miles_plugins/models/dsa_train (bshd contract, FP32 sink, batched indexer in one launch).
+        self.attention_backend = resolve_dsa_attention_backend(getattr(config, "dsa_attention_backend", None))
 
         if self.compress_ratio:
             self.core_attention.compressor = DeepSeekV4Compressor(
@@ -409,7 +413,12 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
 
-        o = sparse_attn_tilelang(q, kv, self.core_attention.attn_sink, topk_idxs, self.softmax_scale)
+        if self.attention_backend == "loom":
+            o = loom_dsa_ops().sparse_attention(
+                q, kv, topk_idxs, sm_scale=self.softmax_scale, attn_sink=self.core_attention.attn_sink, layout="bshd"
+            )
+        else:
+            o = sparse_attn_tilelang(q, kv, self.core_attention.attn_sink, topk_idxs, self.softmax_scale)
 
         apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
 
@@ -452,6 +461,7 @@ def get_dsv4_spec(args, config, vp_stage):
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.dsa_attention_backend = resolve_dsa_attention_backend(getattr(args, "dsa_attention_backend", None))
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

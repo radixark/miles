@@ -417,15 +417,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--dsa-attention-backend",
-                choices=["megatron", "tilelang"],
+                choices=["megatron", "tilelang", "loom"],
                 default="tilelang",
                 help=(
-                    "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
-                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
-                    "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
-                    "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
-                    "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
-                    "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
+                    "DSA indexer + sparse-attention kernel backend. Plugin specs (GLM-5 get_glm5_spec, "
+                    "DeepSeek-V4 get_dsv4_spec with --dsv4-impl miles): 'tilelang' (default) uses the fused "
+                    "TileLang kernels vendored per model; 'loom' uses the generated deterministic kernels in "
+                    "miles_plugins/models/dsa_train (SM100a/SM103a: bit-deterministic backward, batched "
+                    "DeepSeek-V4 indexer in one launch). Under --megatron-to-hf-mode bridge (GLM LoRA): "
+                    "'tilelang' or 'megatron' (portable unfused megatron-core kernels); 'tilelang' requires "
+                    "--qkv-format thd. No effect on non-DSA models."
                 ),
             )
             parser.add_argument(

@@ -27,6 +27,8 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig
 from miles.utils.hf_config import load_hf_config
 
 from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
+from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
 from .ops.sparse_mla import SparseMLA
@@ -89,6 +91,7 @@ class DSAMultiLatentAttention(Attention):
         attn_mask_type: AttnMaskType,
         attention_type: str,
         topk_backend: str = "torch",
+        attention_backend: str = "tilelang",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -166,6 +169,9 @@ class DSAMultiLatentAttention(Attention):
         if topk_backend not in ("torch", "flashinfer"):
             raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
         self.topk_backend = topk_backend
+        # ``tilelang``: SparseMLA + lighting_indexer (vendored TileLang); ``loom``: the generated
+        # deterministic kernels in miles_plugins/models/dsa_train (same thd contract).
+        self.attention_backend = resolve_dsa_attention_backend(attention_backend)
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
         # Cross-layer index sharing (optional). When the HF config provides
@@ -249,15 +255,29 @@ class DSAMultiLatentAttention(Attention):
                 ends_block = ends[start:end]
                 starts_block = starts_block.to(torch.int32)
                 ends_block = ends_block.to(torch.int32)
-                indexer_topk_scores_block, topk_indices_block = lighting_indexer(
-                    index_q_block,
-                    index_k,
-                    w_block,
-                    starts_block,
-                    ends_block,
-                    self.index_topk,
-                    topk_backend=self.topk_backend,
-                )
+                if self.attention_backend == "loom":
+                    indexer_topk_scores_block, topk_indices_block = loom_dsa_ops().lightning_indexer(
+                        index_q_block,
+                        index_k,
+                        w_block.squeeze(-1),
+                        starts_block,
+                        ends_block,
+                        self.index_topk,
+                        layout="thd",
+                        topk_backend=indexer_replay_manager.get_topk_fn(
+                            get_dsa_topk_fn(self.topk_backend), return_probs=False
+                        ),
+                    )
+                else:
+                    indexer_topk_scores_block, topk_indices_block = lighting_indexer(
+                        index_q_block,
+                        index_k,
+                        w_block,
+                        starts_block,
+                        ends_block,
+                        self.index_topk,
+                        topk_backend=self.topk_backend,
+                    )
 
                 indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
                 indexer_topk_scores.append(indexer_topk_scores_block)
@@ -306,7 +326,10 @@ class DSAMultiLatentAttention(Attention):
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
             _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
-        core_attn_out, _ = SparseMLA.apply(q, kv, topk_indices, self.softmax_scale)
+        if self.attention_backend == "loom":
+            core_attn_out = loom_dsa_ops().sparse_attention(q, kv, topk_indices, sm_scale=self.softmax_scale, layout="thd")
+        else:
+            core_attn_out, _ = SparseMLA.apply(q, kv, topk_indices, self.softmax_scale)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
 
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
@@ -337,6 +360,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
         topk_backend: str = "torch",
+        attention_backend: str = "tilelang",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -350,6 +374,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             attn_mask_type=attn_mask_type,
             attention_type="self",
             topk_backend=topk_backend,
+            attention_backend=attention_backend,
             is_mtp_layer=is_mtp_layer,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=model_comm_pgs,
@@ -792,6 +817,7 @@ def get_glm5_spec(args, config, vp_stage):
         params={
             "attn_mask_type": AttnMaskType.causal,
             "topk_backend": args.miles_dsa_topk_backend,
+            "attention_backend": getattr(args, "dsa_attention_backend", "tilelang"),
         },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),
