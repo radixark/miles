@@ -20,6 +20,7 @@ from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
+from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
@@ -101,6 +102,12 @@ class RayWorkerManager:
     async def shutdown(self) -> None:
         async with self._membership_lock:
             await asyncio.gather(*[cell.stop() for cell in self._all_cells()])
+
+    def observe_fault_target(self, cell_id: str, *, sub_index: int) -> FaultTarget:
+        cell = self._find_cell(cell_id)
+        if not cell.alive or not 0 <= sub_index < len(cell.actors):
+            raise StaleFaultTargetError(f"Cell {cell_id} has no live worker at index {sub_index}")
+        return FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash=cell.get_info().workers_hash)
 
     def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
         cell = self._find_cell(cell_id)
