@@ -21,12 +21,32 @@ from miles.utils.external_utils.command_utils.common import (
     repo_base_dir,
     run_shell_command,
 )
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.typer_utils import dataclass_from_env
 from miles.utils.workers.types import ClusterBackend, DeployComponent, HotRestartComponent, parse_hot_restart
 
 logger = logging.getLogger(__name__)
+
+
+class LaunchGuard:
+    def before_defuse(
+        self, release: str, *, namespace: str, superseded_state_file: Path | None, state_file: Path | None
+    ) -> None:
+        pass
+
+    def delete_uninstall_job(self, name: str, *, namespace: str, check: bool = False) -> None:
+        Kubectl.delete_job(name, namespace=namespace, check=check)
+
+    def upgrade(
+        self, *, release: str, namespace: str, chart: str | Path, values_files: list[str | Path], ci_run: bool
+    ) -> None:
+        Helm.upgrade(release=release, namespace=namespace, chart=chart, values_files=values_files, ci_run=ci_run)
+
+    def get_manifest(self, release: str, namespace: str) -> Manifest | None:
+        return Helm.get_manifest(release, namespace)
 
 
 @dataclass
@@ -128,6 +148,7 @@ class BaseCommandBackend(ABC):
         prepare_cmd: dict[str, str] | None = None,
         extra_manifests: list[str] | None = None,
         config: ExecuteTrainConfig | None = None,
+        guard: LaunchGuard | None = None,
     ) -> None:
         if config is None:
             assert isinstance(
@@ -179,6 +200,7 @@ class BaseCommandBackend(ABC):
                 extra_manifests=extra_manifests if extra_manifests is not None else [],
             ),
             config=config,
+            guard=guard,
         )
 
     def convert_checkpoint(
@@ -275,7 +297,9 @@ class BaseCommandBackend(ABC):
         return "localhost"
 
     @abstractmethod
-    def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None: ...
+    def _execute_train_inner(
+        self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig, guard: LaunchGuard | None
+    ) -> None: ...
 
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
         return self._exec_command_cpu_inner(cmd, capture_output=capture_output)

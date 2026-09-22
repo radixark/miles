@@ -6,6 +6,7 @@ from miles.utils.external_utils.command_utils.base_backend import (
     BaseCommandBackend,
     ExecuteTrainConfig,
     ExecuteTrainRequest,
+    LaunchGuard,
 )
 from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
 from miles.utils.external_utils.command_utils.helm_backend import command_job
@@ -17,8 +18,10 @@ _HOSTNAME_LABEL = "kubernetes.io/hostname"
 
 
 class KubernetesCommandBackend(BaseCommandBackend):
-    def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
-        entrypoint.execute_train(request=request, config=config)
+    def _execute_train_inner(
+        self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig, guard: LaunchGuard | None
+    ) -> None:
+        entrypoint.execute_train(request=request, config=config, guard=guard)
 
     def _exec_command_gpu_inner(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
