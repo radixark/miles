@@ -9,8 +9,9 @@ A/B reference.  Needs Blackwell (SM100a/SM103a) GPUs for the loom backend.
 
 ``MILES_E2E_MODE`` selects ``live`` (default: rollouts + training), ``record`` (live, additionally dumps every
 rollout batch to ``MILES_E2E_DEBUG_DIR``) or ``replay`` (``--debug-train-only`` on the recorded batches, saving
-the per-step grad norm under ``MILES_E2E_RUN_TAG``).  Two ``replay`` runs of the loom backend on the same
-recorded batches must produce bit-identical grad norms; ``fla`` replays give the non-deterministic reference.
+the per-step grad norm and the per-rank train data, incl. the trainer log-probs, under ``MILES_E2E_RUN_TAG``).
+Two ``replay`` runs of the loom backend on the same recorded batches must produce bit-identical grad norms and
+log-probs; ``fla`` replays give the non-deterministic reference.
 
 Paths default to the CI layout (``/root/models``, ``/root/datasets``, ``/root``); set
 ``MILES_E2E_ROOT`` to relocate all three under one directory (out-of-CI runs on scratch storage).
@@ -145,6 +146,7 @@ def execute():
             f"--load-debug-rollout-data {DEBUG_DIR}/rollout_{{rollout_id}}.pt "
             "--debug-train-only "
             f"--ci-save-grad-norm {DEBUG_DIR}/grad_norm_{RUN_TAG}_{{rollout_id}}_{{step_id}}.pt "
+            f"--save-debug-train-data {DEBUG_DIR}/train_{RUN_TAG}_{{rollout_id}}_{{rank}}.pt "
         )
     elif MODE != "live":
         raise ValueError(f"MILES_E2E_MODE must be live, record or replay, got {MODE!r}")
