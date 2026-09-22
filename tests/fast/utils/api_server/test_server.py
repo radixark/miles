@@ -4,11 +4,11 @@ import socket
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
-
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
@@ -17,6 +17,7 @@ from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 from .conftest import (
@@ -725,3 +726,91 @@ class TestOperationsSelection:
 
         assert "RayWorkerManager" not in source
         assert "cell_operations: BaseCellOperations" in source
+
+
+# ======================== fault target identity ========================
+
+
+class _IdentityHandler(MockHandler):
+    def __init__(self, cell_type: str) -> None:
+        super().__init__(cell_type)
+        self.observe_error: Exception | None = None
+        self.targeted_injections: list[tuple[str, int, FaultTarget | None]] = []
+
+    async def observe_fault_target(self, cell_id: str, *, sub_index: int) -> FaultTarget:
+        if self.observe_error is not None:
+            raise self.observe_error
+        return FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash=self.cells[cell_id].workers_hash)
+
+    async def inject_fault(
+        self, cell_id: str, *, mode: Any, sub_index: int, expected_target: FaultTarget | None = None
+    ) -> None:
+        if self.inject_fault_error is not None:
+            raise self.inject_fault_error
+        self.targeted_injections.append((cell_id, sub_index, expected_target))
+
+
+def _targeted_injection(*, cell_id: str, sub_index: int = 0) -> dict[str, Any]:
+    target = FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash="pseudo-hash-1")
+    return {"mode": "sigkill", "sub_index": sub_index, "expected_target": target.model_dump(mode="json")}
+
+
+class TestFaultTargetIdentity:
+    @pytest.fixture
+    def rollout_handler(self) -> _IdentityHandler:
+        return _IdentityHandler("rollout")
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_rank_is_the_rank_observed(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """The rank in the query picks the worker, rather than always observing worker zero."""
+        rollout_handler.add("rollout-engine-0")
+
+        resp = await async_client.get("/api/v1/cells/rollout-engine-0/fault-target", params={"sub_index": 2})
+
+        assert resp.status_code == 200
+        assert resp.json()["sub_index"] == 2
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_cell_has_neither_a_target_nor_an_injection(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A cell that is not registered answers 404 on both fault routes."""
+        observed = await async_client.get("/api/v1/cells/rollout-engine-9/fault-target")
+        written = await async_client.post(
+            "/api/v1/cells/rollout-engine-9/inject-fault", json=_targeted_injection(cell_id="rollout-engine-9")
+        )
+
+        assert (observed.status_code, written.status_code) == (404, 404)
+        assert rollout_handler.targeted_injections == []
+
+    @pytest.mark.asyncio
+    async def test_a_stale_observation_answers_precondition_failed(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A worker that cannot prove its identity is a 412 the caller retries, not a server error."""
+        rollout_handler.add("rollout-engine-0")
+        rollout_handler.observe_error = StaleFaultTargetError("reports no boot or pod identity")
+
+        resp = await async_client.get("/api/v1/cells/rollout-engine-0/fault-target")
+
+        assert resp.status_code == 412
+        assert resp.json()["reason"] == "PreconditionFailed"
+        assert resp.json()["message"] == "reports no boot or pod identity"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_target_answers_precondition_failed_without_a_fault(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A target whose incarnation moved on is refused as 412 and records no fault."""
+        rollout_handler.inject_fault_error = StaleFaultTargetError("no longer matches the observed fault target")
+        rollout_handler.add("rollout-engine-0")
+
+        resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/inject-fault", json=_targeted_injection(cell_id="rollout-engine-0")
+        )
+
+        assert resp.status_code == 412
+        assert resp.json()["reason"] == "PreconditionFailed"
+        assert rollout_handler.targeted_injections == []
