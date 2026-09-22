@@ -8,7 +8,8 @@ Needs Blackwell (SM100a / SM103a) GPUs for the loom backend.
 
 ``MILES_E2E_MODE`` selects ``live`` (default: rollouts + training), ``record`` (live, additionally dumps every
 rollout batch to ``MILES_E2E_DEBUG_DIR``) or ``replay`` (``--debug-train-only`` on the recorded batches, saving
-the per-step grad norm and the per-rank train data, incl. the trainer log-probs, under ``MILES_E2E_RUN_TAG``).
+the per-step grad norm and the per-rank train data, incl. the trainer log-probs, under ``MILES_E2E_RUN_TAG``; ``MILES_E2E_REPLAY_LOSS_ARGS`` defaults to ``--entropy-coef 0.001`` so the
+backward carries non-zero gradients although the truncated smoke responses give zero advantages).
 Two ``replay`` runs of the loom backend on the same recorded batches must produce bit-identical grad norms and
 log-probs; ``tilelang`` replays give the non-deterministic reference.
 
@@ -58,6 +59,9 @@ def _mode_args() -> str:
             "--debug-train-only "
             f"--ci-save-grad-norm {DEBUG_DIR}/grad_norm_{RUN_TAG}_{{rollout_id}}_{{step_id}}.pt "
             f"--save-debug-train-data {DEBUG_DIR}/train_{RUN_TAG}_{{rollout_id}}_{{rank}}.pt "
+            # The smoke recipes truncate every response, so all advantages (and the policy gradient) are zero;
+            # a small entropy term keeps the backward non-trivial so the replayed grad norms compare real kernels.
+            + os.environ.get("MILES_E2E_REPLAY_LOSS_ARGS", "--entropy-coef 0.001 ")
         )
     raise ValueError(f"MILES_E2E_MODE must be live, record or replay, got {MODE!r}")
 
