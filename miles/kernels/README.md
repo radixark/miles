@@ -7,7 +7,8 @@ Every hand-written training kernel in miles, filed by the op it computes.
 ```
 miles/kernels/
 ├── attention/
-│   ├── dsa/          DeepSeek Sparse Attention: lightning indexer, top-k, sparse attention
+│   ├── dsa/          DeepSeek Sparse Attention: lightning indexer, top-k, sparse attention, GLM-5.3
+│   │                 kpool indexer (pooled keys + pool-to-token top-k)
 │   │   └── tilelang/     one kernel pair; RoPE tail (GLM-5, DSv3.2) and attention sink (DSv4) are
 │   │                     compile-time parameters
 │   ├── delta_rule/   GDN / KDA kernel selection (FLA, FlashQLA)

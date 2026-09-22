@@ -1,9 +1,12 @@
+"""GLM-5.3 kpool indexer: the lightning indexer scores softmax-pooled groups of ``kpool`` keys, the top
+``index_topk // kpool`` pools of each query expand back to token indices, and the query's unfinished
+last pool is appended whole. Pools never cross a packed-sequence boundary."""
+
 import torch
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
-from miles.utils.replay_base import indexer_replay_manager
 from miles.kernels.attention.dsa.tilelang.indexer_fwd import indexer_fwd_interface
 
 SPARSE_MLA_BLOCK = 64
@@ -255,10 +258,14 @@ def kpool_select_topk(
     pooled_k: torch.Tensor,
     head_weights: torch.Tensor,
     cu_seqlens: torch.Tensor,
-    pool_cu_seqlens: torch.Tensor,
     index_topk: int,
     kpool: int,
+    wrap_topk=None,
 ) -> torch.Tensor:
+    """Token indices ``[T, 1, W]`` (int32, -1 padded) for ``pooled_k`` from :func:`build_pooled_keys`.
+    ``wrap_topk`` wraps the pool-to-token top-k function (rollout routing replay); the unfinished last
+    pool is appended after it either way."""
+    pool_cu_seqlens = pool_boundaries(cu_seqlens, kpool)
     num_tokens = index_q.shape[0]
     device = index_q.device
     token_ids = torch.arange(num_tokens, device=device)
@@ -281,11 +288,8 @@ def kpool_select_topk(
     else:
         pool_logits = torch.full((num_tokens, 1), float("-inf"), dtype=torch.float32, device=device)
 
-    if indexer_replay_manager.enabled:
-        topk_fn = indexer_replay_manager.get_topk_fn(
-            _pool_topk_to_token_fn(seq_token_base, pool_base, local_positions, kpool),
-            return_probs=False,
-        )
+    if wrap_topk is not None:
+        topk_fn = wrap_topk(_pool_topk_to_token_fn(seq_token_base, pool_base, local_positions, kpool))
         tokens = topk_fn(pool_logits, index_topk)
         shortcut = (local_positions + 1) <= index_topk
         tokens = append_tail_and_pad(tokens, seq_token_base, local_positions, shortcut, kpool)

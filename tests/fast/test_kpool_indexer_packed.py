@@ -14,7 +14,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from miles_plugins.models.glm5_next.ops.kpool_indexer import pool_boundaries  # noqa: E402
+from miles.kernels.attention.dsa.kpool import pool_boundaries  # noqa: E402
 
 KPOOL = 4
 LENS = [37, 13, 22]  # none is a multiple of KPOOL

@@ -1,3 +1,5 @@
+import functools
+
 import torch
 import torch.nn.functional as F
 from megatron.core import parallel_state
@@ -6,10 +8,9 @@ from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction
 
-from miles.kernels.attention.dsa import sparse_attention
+from miles.kernels.attention.dsa import build_pooled_keys, kpool_select_topk, sparse_attention
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.glm5.glm5 import DSAMLASelfAttention
-from miles_plugins.models.glm5_next.ops.kpool_indexer import build_pooled_keys, kpool_select_topk, pool_boundaries
 
 
 class Glm5NextDSAAttention(DSAMLASelfAttention):
@@ -134,22 +135,12 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         if parallel_state.get_context_parallel_world_size() > 1:
             raise NotImplementedError("GLM-5.3 kpool indexer selection does not support context parallelism yet.")
         cu_seqlens = packed_seq_params.cu_seqlens_kv
-        pool_cu_seqlens = pool_boundaries(cu_seqlens, self.index_kpool)
-        pooled_k = build_pooled_keys(
-            index_k,
-            gate_score,
-            self.index_kpool_compress_ape,
-            cu_seqlens,
-            self.index_kpool,
-        )
+        pooled_k = build_pooled_keys(index_k, gate_score, self.index_kpool_compress_ape, cu_seqlens, self.index_kpool)
+        wrap_topk = None
+        if indexer_replay_manager.enabled:
+            wrap_topk = functools.partial(indexer_replay_manager.get_topk_fn, return_probs=False)
         return kpool_select_topk(
-            index_q=index_q,
-            pooled_k=pooled_k,
-            head_weights=head_weights,
-            cu_seqlens=cu_seqlens,
-            pool_cu_seqlens=pool_cu_seqlens,
-            index_topk=self.index_topk,
-            kpool=self.index_kpool,
+            index_q, pooled_k, head_weights, cu_seqlens, self.index_topk, self.index_kpool, wrap_topk=wrap_topk
         )
 
     def forward(
