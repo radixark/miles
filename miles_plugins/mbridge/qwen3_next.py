@@ -68,7 +68,9 @@ class Qwen3NextBridge(Qwen2MoEBridge):
             from miles_plugins.models.gdn_attention import hf_to_megatron_linear_attn
 
             assert len(hf_weights) == 1
-            return hf_to_megatron_linear_attn(self._gdn_layout(), linear_attn_name, super()._weight_to_mcore_format(mcore_weights_name, hf_weights))
+            return hf_to_megatron_linear_attn(
+                self._gdn_layout(), linear_attn_name, super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+            )
 
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             # merge qkv

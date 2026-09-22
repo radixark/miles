@@ -62,7 +62,11 @@ class Attention(HuggingfaceAttention):
         self.hf_config._attn_implementation = "flash_attention_2"
 
         self.linear_attn = Qwen3_5GatedDeltaNet(
-            self.hf_config, self.hf_layer_idx, args=args, mp_config=config, tp_group=mpu.get_tensor_model_parallel_group()
+            self.hf_config,
+            self.hf_layer_idx,
+            args=args,
+            mp_config=config,
+            tp_group=mpu.get_tensor_model_parallel_group(),
         )
         self.tp_sharded_compute = self.linear_attn.tp_sharded
 

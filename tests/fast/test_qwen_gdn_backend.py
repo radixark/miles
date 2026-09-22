@@ -159,7 +159,9 @@ def test_fla_loom_equivalence_and_determinism(use_cu):
     if not use_cu:
         # equal-length batch of 2 sequences instead of the packed varlen layout
         total = query.shape[1] // 2 * 2
-        query, key, value, g, beta = (t[:, :total].reshape(2, total // 2, *t.shape[2:]) for t in (query, key, value, g, beta))
+        query, key, value, g, beta = (
+            t[:, :total].reshape(2, total // 2, *t.shape[2:]) for t in (query, key, value, g, beta)
+        )
     beta = beta.to(torch.bfloat16)  # as the model feeds it: sigmoid(b) in the activation dtype
     inputs = (query, key, value, g, beta)
 

@@ -167,7 +167,12 @@ def deinterleave_qkv_rows(layout: GdnLayout, interleaved: torch.Tensor) -> torch
     grouped = interleaved.reshape(layout.num_k_heads, layout.rows_per_k_head, *trailing)
     q, k, v = torch.split(grouped, [layout.head_k_dim, layout.head_k_dim, layout.group * layout.head_v_dim], dim=1)
     return torch.cat(
-        [q.reshape(layout.key_dim, *trailing), k.reshape(layout.key_dim, *trailing), v.reshape(layout.value_dim, *trailing)], dim=0
+        [
+            q.reshape(layout.key_dim, *trailing),
+            k.reshape(layout.key_dim, *trailing),
+            v.reshape(layout.value_dim, *trailing),
+        ],
+        dim=0,
     ).contiguous()
 
 
@@ -201,16 +206,26 @@ def merge_linear_attn_param(name: str, shards: list[torch.Tensor]) -> torch.Tens
     return torch.cat(shards, dim=dim)
 
 
-def hf_linear_attn_to_local(layout: GdnLayout, hf: dict[str, torch.Tensor], *, tp_rank: int, tp_size: int) -> dict[str, torch.Tensor]:
+def hf_linear_attn_to_local(
+    layout: GdnLayout, hf: dict[str, torch.Tensor], *, tp_rank: int, tp_size: int
+) -> dict[str, torch.Tensor]:
     """Slice one HF ``linear_attn`` state dict into this rank's parameters (Megatron order)."""
     if layout.num_k_heads % tp_size:
         raise ValueError("linear_num_key_heads must be divisible by the TP size")
-    return {name: shard_linear_attn_param(name, hf_to_megatron_linear_attn(layout, name, value), tp_rank, tp_size) for name, value in hf.items()}
+    return {
+        name: shard_linear_attn_param(name, hf_to_megatron_linear_attn(layout, name, value), tp_rank, tp_size)
+        for name, value in hf.items()
+    }
 
 
 def local_to_hf_linear_attn(layout: GdnLayout, shards: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     """Assemble the HF ``linear_attn`` state dict from all TP ranks' local parameters."""
-    return {name: megatron_to_hf_linear_attn(layout, name, merge_linear_attn_param(name, [shard[name] for shard in shards])) for name in shards[0]}
+    return {
+        name: megatron_to_hf_linear_attn(
+            layout, name, merge_linear_attn_param(name, [shard[name] for shard in shards])
+        )
+        for name in shards[0]
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -226,7 +241,9 @@ class _ShardedShortConvolution(ShortConvolution if ShortConvolution is not None 
         if self.bias is not None:
             set_tensor_model_parallel_attributes(self.bias, True, 0, 1)
 
-    def sharded_state_dict(self, prefix: str = "", sharded_offsets: tuple = (), metadata: dict | None = None) -> ShardedStateDict:
+    def sharded_state_dict(
+        self, prefix: str = "", sharded_offsets: tuple = (), metadata: dict | None = None
+    ) -> ShardedStateDict:
         metadata = ensure_metadata_has_dp_cp_group(metadata)
         return make_sharded_tensors_for_checkpoint(
             self.state_dict(prefix="", keep_vars=True),
@@ -251,13 +268,25 @@ class _TPReplicatedRMSNormGated(FusedRMSNormGated if FusedRMSNormGated is not No
         super().__init__(*args, **kwargs)
         self.tp_group = tp_group
 
-    def forward(self, x: torch.Tensor, g: torch.Tensor, residual=None, prenorm: bool = False, residual_in_fp32: bool = False):
+    def forward(
+        self, x: torch.Tensor, g: torch.Tensor, residual=None, prenorm: bool = False, residual_in_fp32: bool = False
+    ):
         from fla.modules.fused_norm_gate import rms_norm_gated
 
         weight = self.weight
         if self.tp_group is not None and self.tp_group.size() > 1 and weight is not None:
             weight = copy_to_tensor_model_parallel_region(weight, group=self.tp_group)
-        return rms_norm_gated(x, g, weight, self.bias, self.activation, residual=residual, eps=self.eps, prenorm=prenorm, residual_in_fp32=residual_in_fp32)
+        return rms_norm_gated(
+            x,
+            g,
+            weight,
+            self.bias,
+            self.activation,
+            residual=residual,
+            eps=self.eps,
+            prenorm=prenorm,
+            residual_in_fp32=residual_in_fp32,
+        )
 
 
 class _Linear(nn.Linear):
@@ -337,7 +366,9 @@ class GatedDeltaRuleAttentionCore(MegatronModule):
             self._linear_config.sequence_parallel = False
 
         if layout.hf_layout == "qwen3_next":
-            self.in_proj_qkvz = self._column(layout.num_k_heads * (2 * layout.head_k_dim + 2 * layout.group * layout.head_v_dim))
+            self.in_proj_qkvz = self._column(
+                layout.num_k_heads * (2 * layout.head_k_dim + 2 * layout.group * layout.head_v_dim)
+            )
             self.in_proj_ba = self._column(layout.num_k_heads * 2 * layout.group)
         else:
             self.in_proj_qkv = self._column(layout.conv_dim)
@@ -407,7 +438,9 @@ class GatedDeltaRuleAttentionCore(MegatronModule):
         )
 
     # -- checkpointing ---------------------------------------------------------------------------
-    def sharded_state_dict(self, prefix: str = "", sharded_offsets: tuple = (), metadata: dict | None = None) -> ShardedStateDict:
+    def sharded_state_dict(
+        self, prefix: str = "", sharded_offsets: tuple = (), metadata: dict | None = None
+    ) -> ShardedStateDict:
         sharded_state_dict = super().sharded_state_dict(prefix, sharded_offsets, metadata)
         metadata = ensure_metadata_has_dp_cp_group(metadata)
         sharded_state_dict.update(
@@ -434,14 +467,21 @@ class GatedDeltaRuleAttentionCore(MegatronModule):
             qkvz = qkvz.reshape(batch, seq_len, lk, 2 * hk + 2 * g * hv)
             qkv, z = torch.split(qkvz, [2 * hk + g * hv, g * hv], dim=3)
             b, a = torch.split(ba.reshape(batch, seq_len, lk, 2 * g), [g, g], dim=3)
-            return qkv.reshape(batch, seq_len, self.local_conv_dim), z.reshape(batch, seq_len, -1), b.reshape(batch, seq_len, -1), a.reshape(batch, seq_len, -1)
+            return (
+                qkv.reshape(batch, seq_len, self.local_conv_dim),
+                z.reshape(batch, seq_len, -1),
+                b.reshape(batch, seq_len, -1),
+                a.reshape(batch, seq_len, -1),
+            )
         qkv, _ = self.in_proj_qkv(hidden_states)
         z, _ = self.in_proj_z(hidden_states)
         b, _ = self.in_proj_b(hidden_states)
         a, _ = self.in_proj_a(hidden_states)
         return qkv, z, b, a
 
-    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor | None = None, cp_context: Any = None) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor | None = None, cp_context: Any = None
+    ) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
         layout = self.layout
         lk, g = self.local_num_k_heads, layout.group
@@ -451,7 +491,9 @@ class GatedDeltaRuleAttentionCore(MegatronModule):
         # Depthwise conv over the head-interleaved channels (conv1d.weight rows use the same order).
         conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
         mixed_qkv, _ = self.conv1d(x=mixed_qkv, cu_seqlens=conv_cu_seqlens, cp_context=cp_context)
-        query, key, value = torch.split(mixed_qkv.reshape(batch, seq_len, lk, layout.rows_per_k_head), [hk, hk, g * hv], dim=3)
+        query, key, value = torch.split(
+            mixed_qkv.reshape(batch, seq_len, lk, layout.rows_per_k_head), [hk, hk, g * hv], dim=3
+        )
         query = query.reshape(batch, seq_len, lk, hk)
         key = key.reshape(batch, seq_len, lk, hk)
         value = value.reshape(batch, seq_len, lk * g, hv)
@@ -467,15 +509,32 @@ class GatedDeltaRuleAttentionCore(MegatronModule):
 
         if cp_context is not None:
             if self.gdn_backend not in ("fla", "loom"):
-                raise NotImplementedError(f"GDN context parallelism requires the 'fla' or 'loom' backend, got {self.gdn_backend!r}.")
+                raise NotImplementedError(
+                    f"GDN context parallelism requires the 'fla' or 'loom' backend, got {self.gdn_backend!r}."
+                )
             core_attn_out, _ = self.chunk_gated_delta_rule(
-                query, key, value, g=gate, beta=beta, use_qk_l2norm_in_kernel=True, cu_seqlens=cp_context.cu_seqlens, cp_context=cp_context
+                query,
+                key,
+                value,
+                g=gate,
+                beta=beta,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cp_context.cu_seqlens,
+                cp_context=cp_context,
             )
         else:
             if self.gdn_backend == "flashqla":
                 query, key, value, gate, beta = (t.contiguous() for t in (query, key, value, gate, beta))
             core_attn_out, _ = self.chunk_gated_delta_rule(
-                query, key, value, g=gate, beta=beta, initial_state=None, output_final_state=False, use_qk_l2norm_in_kernel=True, cu_seqlens=cu_seqlens
+                query,
+                key,
+                value,
+                g=gate,
+                beta=beta,
+                initial_state=None,
+                output_final_state=False,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cu_seqlens,
             )
 
         core_attn_out = self.norm(core_attn_out.reshape(-1, hv), z.reshape(-1, hv))

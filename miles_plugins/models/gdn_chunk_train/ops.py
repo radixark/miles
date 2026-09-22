@@ -33,7 +33,13 @@ import torch
 
 from ._jit import MODULES, device_arch, kernel
 
-__all__ = ["ChunkGatedDeltaRuleFunction", "ChunkMeta", "chunk_gated_delta_rule", "gdn_chunk_backward", "gdn_chunk_forward"]
+__all__ = [
+    "ChunkGatedDeltaRuleFunction",
+    "ChunkMeta",
+    "chunk_gated_delta_rule",
+    "gdn_chunk_backward",
+    "gdn_chunk_forward",
+]
 
 CHUNK = 64
 HEAD_DIM = 128
@@ -135,7 +141,9 @@ def _scan_record(kind: str, vb: int, ks: int, arch: str) -> dict:
     return MODULES[f"{kind}_r{vb}k{ks}"][arch]
 
 
-def choose_register_scan_config(kind: str, num_seqs: int, num_v_heads: int, device_index: int, arch: str) -> tuple[int, int]:
+def choose_register_scan_config(
+    kind: str, num_seqs: int, num_v_heads: int, device_index: int, arch: str
+) -> tuple[int, int]:
     """Register-scan (value rows per CTA, K split) whose grid is fully co-resident on the device.
 
     The preferred configuration (32 rows, K split in two -> four warps) has the shortest per-chunk
@@ -161,7 +169,9 @@ def _scan_stage(kind: str, num_seqs: int, num_v_heads: int, device: torch.device
     _sm_count, smem_optin, major = _device_props(device_index)
     record = _scan_record(kind, vb, ks, arch)
     if major < 9 or int(record["scan"]["select_smem_bytes"]) > smem_optin:
-        raise NotImplementedError(f"the register-resident {kind} scan does not fit device {device_index} (only Blackwell is supported)")
+        raise NotImplementedError(
+            f"the register-resident {kind} scan does not fit device {device_index} (only Blackwell is supported)"
+        )
     return f"{kind}_r{vb}k{ks}", vb
 
 
@@ -189,12 +199,16 @@ def _launch_wy(arch, kn, v, g_cs, beta32, A, meta: ChunkMeta, num_heads: int, nu
     return w, u
 
 
-def _launch_fwd_h(arch, kn, w, u, g_cs, initial_state, meta: ChunkMeta, num_heads: int, num_v_heads: int, *, store_final_state: bool):
+def _launch_fwd_h(
+    arch, kn, w, u, g_cs, initial_state, meta: ChunkMeta, num_heads: int, num_v_heads: int, *, store_final_state: bool
+):
     device = kn.device
     h = torch.empty(meta.num_chunks, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=kn.dtype, device=device)
     v_new = torch.empty_like(u)
     # The kernel writes every element of ``final_state`` when requested; no fill kernel is needed.
-    final_state = torch.empty(meta.num_seqs if store_final_state else 0, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device)
+    final_state = torch.empty(
+        meta.num_seqs if store_final_state else 0, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device
+    )
     h0 = initial_state.contiguous().float() if initial_state is not None else final_state
     stage, vb = _scan_stage("fwd_h", meta.num_seqs, num_v_heads, device, arch)
     kernel(stage, arch).launch(
@@ -218,7 +232,9 @@ def _launch_fwd_h(arch, kn, w, u, g_cs, initial_state, meta: ChunkMeta, num_head
     return h, v_new, final_state
 
 
-def gdn_chunk_forward_stage1(q, k, v, g, beta, *, meta: ChunkMeta, scale: float | None = None, normalize_qk: bool = True) -> dict[str, Any]:
+def gdn_chunk_forward_stage1(
+    q, k, v, g, beta, *, meta: ChunkMeta, scale: float | None = None, normalize_qk: bool = True
+) -> dict[str, Any]:
     """Prep (l2norm, gate cumsum) and WY (A, w, u); no state is touched yet."""
     total_tokens, num_heads, key_dim = q.shape
     num_v_heads, value_dim = v.shape[1], v.shape[2]
@@ -284,13 +300,17 @@ def gdn_chunk_forward_stage1(q, k, v, g, beta, *, meta: ChunkMeta, scale: float 
     }
 
 
-def gdn_chunk_forward_stage2(stage1: dict[str, Any], *, initial_state=None, output_final_state: bool = False) -> dict[str, Any]:
+def gdn_chunk_forward_stage2(
+    stage1: dict[str, Any], *, initial_state=None, output_final_state: bool = False
+) -> dict[str, Any]:
     """State scan and output; extends the stage-1 dict in place."""
     arch = stage1["arch"]
     meta: ChunkMeta = stage1["meta"]
     kn, qn, w, u, g_cs, v = (stage1[name] for name in ("kn", "qn", "w", "u", "g_cs", "v"))
     num_heads, num_v_heads = stage1["num_heads"], stage1["num_v_heads"]
-    h, v_new, final_state = _launch_fwd_h(arch, kn, w, u, g_cs, initial_state, meta, num_heads, num_v_heads, store_final_state=output_final_state)
+    h, v_new, final_state = _launch_fwd_h(
+        arch, kn, w, u, g_cs, initial_state, meta, num_heads, num_v_heads, store_final_state=output_final_state
+    )
     o = torch.empty_like(v)
     kernel("fwd_o", arch).launch(
         grid=(meta.num_chunks, num_v_heads, 1),
@@ -306,11 +326,31 @@ def gdn_chunk_forward_stage2(stage1: dict[str, Any], *, initial_state=None, outp
         num_v_heads=num_v_heads,
         scale=float(stage1["scale"]),
     )
-    stage1.update({"output": o, "final_state": final_state if output_final_state else None, "initial_state": initial_state, "h": h, "v_new": v_new})
+    stage1.update(
+        {
+            "output": o,
+            "final_state": final_state if output_final_state else None,
+            "initial_state": initial_state,
+            "h": h,
+            "v_new": v_new,
+        }
+    )
     return stage1
 
 
-def gdn_chunk_forward(q, k, v, g, beta, *, meta: ChunkMeta, scale: float | None = None, initial_state=None, output_final_state: bool = False, normalize_qk: bool = True) -> dict[str, Any]:
+def gdn_chunk_forward(
+    q,
+    k,
+    v,
+    g,
+    beta,
+    *,
+    meta: ChunkMeta,
+    scale: float | None = None,
+    initial_state=None,
+    output_final_state: bool = False,
+    normalize_qk: bool = True,
+) -> dict[str, Any]:
     """Run the deterministic chunked forward; returns outputs and the tape ``gdn_chunk_backward`` needs."""
     stage1 = gdn_chunk_forward_stage1(q, k, v, g, beta, meta=meta, scale=scale, normalize_qk=normalize_qk)
     return gdn_chunk_forward_stage2(stage1, initial_state=initial_state, output_final_state=output_final_state)
@@ -319,7 +359,9 @@ def gdn_chunk_forward(q, k, v, g, beta, *, meta: ChunkMeta, scale: float | None 
 # --------------------------------------------------------------------------- #
 # backward
 # --------------------------------------------------------------------------- #
-def gdn_chunk_backward(forward: dict[str, Any], do, dht=None, *, initial_state=None, dht_from_dv_local=None, dbeta_dtype=None) -> dict[str, Any]:
+def gdn_chunk_backward(
+    forward: dict[str, Any], do, dht=None, *, initial_state=None, dht_from_dv_local=None, dbeta_dtype=None
+) -> dict[str, Any]:
     """Run the deterministic chunked backward from the (possibly pruned) forward tape.
 
     ``forward`` must carry ``arch``, ``qn``, ``kn``, ``rstd_q``, ``rstd_k``, ``v``, ``g_cs``, ``beta32``,
@@ -349,7 +391,9 @@ def gdn_chunk_backward(forward: dict[str, Any], do, dht=None, *, initial_state=N
     else:
         w, u = forward["w"], forward["u"]
     if forward.get("h") is None or forward.get("v_new") is None:
-        h, v_new, _ = _launch_fwd_h(arch, kn, w, u, g_cs, initial_state, meta, num_heads, num_v_heads, store_final_state=False)
+        h, v_new, _ = _launch_fwd_h(
+            arch, kn, w, u, g_cs, initial_state, meta, num_heads, num_v_heads, store_final_state=False
+        )
     else:
         h, v_new = forward["h"], forward["v_new"]
 
@@ -373,7 +417,9 @@ def gdn_chunk_backward(forward: dict[str, Any], do, dht=None, *, initial_state=N
     dh = torch.empty_like(h)
     dv2 = torch.empty_like(v)
     # Written in full by the scan when requested; no fill kernel.
-    dh0 = torch.empty(meta.num_seqs if has_initial_state else 0, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device)
+    dh0 = torch.empty(
+        meta.num_seqs if has_initial_state else 0, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device
+    )
     dht32 = dht.contiguous().float() if dht is not None else dh0
     scan_stage, vb = _scan_stage("dhu", meta.num_seqs, num_v_heads, device, arch)
     kernel(scan_stage, arch).launch(
@@ -427,7 +473,9 @@ def gdn_chunk_backward(forward: dict[str, Any], do, dht=None, *, initial_state=N
     dv = torch.empty_like(v)
     # ``dbeta`` is produced directly in the caller's dtype (BF16 or FP32); no cast kernel follows.
     dbeta_bf16 = dbeta_dtype == torch.bfloat16
-    dbeta = torch.empty(total_tokens, num_v_heads, dtype=torch.bfloat16 if dbeta_bf16 else torch.float32, device=device)
+    dbeta = torch.empty(
+        total_tokens, num_v_heads, dtype=torch.bfloat16 if dbeta_bf16 else torch.float32, device=device
+    )
     dg2 = torch.empty(total_tokens, num_v_heads, dtype=torch.float32, device=device)
     kernel("wy_bwd_bf16" if dbeta_bf16 else "wy_bwd", arch).launch(
         grid=(meta.num_chunks, num_v_heads, 1),
@@ -471,7 +519,14 @@ def gdn_chunk_backward(forward: dict[str, Any], do, dht=None, *, initial_state=N
         num_v_heads=num_v_heads,
         normalize_qk=1 if forward.get("normalize_qk", True) else 0,
     )
-    return {"dq": dq, "dk": dk, "dv": dv, "dg": dg, "dbeta": dbeta, "dinitial_state": dh0 if has_initial_state else None}
+    return {
+        "dq": dq,
+        "dk": dk,
+        "dv": dv,
+        "dg": dg,
+        "dbeta": dbeta,
+        "dinitial_state": dh0 if has_initial_state else None,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -549,7 +604,9 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         fwd: dict[str, Any]
         if use_cp:
             fwd_h_pre, _bwd_pre, compress_h0, _expand_h0 = _cp_modules()
-            fwd = gdn_chunk_forward_stage1(q_flat, k_flat, v_flat, g_flat, beta_flat, meta=meta, scale=scale, normalize_qk=use_qk_l2norm_in_kernel)
+            fwd = gdn_chunk_forward_stage1(
+                q_flat, k_flat, v_flat, g_flat, beta_flat, meta=meta, scale=scale, normalize_qk=use_qk_l2norm_in_kernel
+            )
             initial_state = fwd_h_pre(
                 k=fwd["kn"].unsqueeze(0),
                 w=fwd["w"].unsqueeze(0),
@@ -578,7 +635,18 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
             )
             saved_state = initial_state
 
-        ctx.save_for_backward(fwd["qn"], fwd["kn"], fwd["rstd_q"], fwd["rstd_k"], fwd["v"], fwd["g_cs"], fwd["beta32"], fwd["A"], saved_state, cu_seqlens)
+        ctx.save_for_backward(
+            fwd["qn"],
+            fwd["kn"],
+            fwd["rstd_q"],
+            fwd["rstd_k"],
+            fwd["v"],
+            fwd["g_cs"],
+            fwd["beta32"],
+            fwd["A"],
+            saved_state,
+            cu_seqlens,
+        )
         ctx.meta = meta
         ctx.arch = arch
         ctx.scale = float(scale)
@@ -638,7 +706,9 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
                 )
                 return dht_local
 
-        grads = gdn_chunk_backward(tape, do_flat, dht, initial_state=initial_state, dht_from_dv_local=dht_hook, dbeta_dtype=beta_dtype)
+        grads = gdn_chunk_backward(
+            tape, do_flat, dht, initial_state=initial_state, dht_from_dv_local=dht_hook, dbeta_dtype=beta_dtype
+        )
         dq = grads["dq"].reshape(batch, seq_len, num_heads, key_dim)
         dk = grads["dk"].reshape(batch, seq_len, num_heads, key_dim)
         dv = grads["dv"].reshape(batch, seq_len, num_v_heads, value_dim)
@@ -674,7 +744,9 @@ def chunk_gated_delta_rule(
     """
     for name, value in unsupported.items():
         if value not in (None, False):
-            raise NotImplementedError(f"chunk_gated_delta_rule: {name}={value!r} is not supported by the deterministic kernels")
+            raise NotImplementedError(
+                f"chunk_gated_delta_rule: {name}={value!r} is not supported by the deterministic kernels"
+            )
     if chunk_size != CHUNK:
         raise NotImplementedError(f"chunk_gated_delta_rule: chunk_size must be {CHUNK}")
     if q.dtype != torch.bfloat16 or k.dtype != torch.bfloat16 or v.dtype != torch.bfloat16:

@@ -37,7 +37,9 @@ def _hf_state(layout, gen):
         "out_proj.weight": rn(layout.hidden_size, layout.value_dim),
     }
     if layout.hf_layout == "qwen3_next":
-        hf["in_proj_qkvz.weight"] = rn(layout.num_k_heads * (2 * layout.head_k_dim + 2 * layout.group * layout.head_v_dim), layout.hidden_size)
+        hf["in_proj_qkvz.weight"] = rn(
+            layout.num_k_heads * (2 * layout.head_k_dim + 2 * layout.group * layout.head_v_dim), layout.hidden_size
+        )
         hf["in_proj_ba.weight"] = rn(layout.num_k_heads * 2 * layout.group, layout.hidden_size, s=0.05)
     else:
         hf["in_proj_qkv.weight"] = rn(2 * layout.key_dim + layout.value_dim, layout.hidden_size)
@@ -74,7 +76,16 @@ def run_case(tp: int, cp: int, backend: str, hf_layout: str, seq_lens: list[int]
     tp_group, cp_group = ps.get_tensor_model_parallel_group(), ps.get_context_parallel_group()
     tp_rank, cp_rank = ps.get_tensor_model_parallel_rank(), ps.get_context_parallel_rank()
 
-    layout = GdnLayout(hidden_size=512, num_k_heads=4, num_v_heads=8, head_k_dim=128, head_v_dim=128, conv_kernel_size=4, rms_norm_eps=1e-6, hf_layout=hf_layout)
+    layout = GdnLayout(
+        hidden_size=512,
+        num_k_heads=4,
+        num_v_heads=8,
+        head_k_dim=128,
+        head_v_dim=128,
+        conv_kernel_size=4,
+        rms_norm_eps=1e-6,
+        hf_layout=hf_layout,
+    )
     config = TransformerConfig(
         num_layers=1,
         hidden_size=layout.hidden_size,
@@ -89,9 +100,22 @@ def run_case(tp: int, cp: int, backend: str, hf_layout: str, seq_lens: list[int]
         sequence_parallel=False,
     )
     hf = _hf_state(layout, torch.Generator(device="cpu").manual_seed(1234))
-    sharded = GatedDeltaRuleAttentionCore(layout, gdn_backend=backend, mp_config=config, tp_group=tp_group, params_dtype=torch.bfloat16).cuda()
+    # bf16 parameters throughout (Megatron's Float16Module does this in training); A_log included on both sides
+    sharded = (
+        GatedDeltaRuleAttentionCore(
+            layout, gdn_backend=backend, mp_config=config, tp_group=tp_group, params_dtype=torch.bfloat16
+        )
+        .cuda()
+        .to(torch.bfloat16)
+    )
     _load(sharded, layout, hf, tp_rank, tp)
-    reference = GatedDeltaRuleAttentionCore(layout, gdn_backend="fla", mp_config=None, tp_group=None, params_dtype=torch.bfloat16).cuda()
+    reference = (
+        GatedDeltaRuleAttentionCore(
+            layout, gdn_backend="fla", mp_config=None, tp_group=None, params_dtype=torch.bfloat16
+        )
+        .cuda()
+        .to(torch.bfloat16)
+    )
     _load(reference, layout, hf, 0, 1)
 
     total = sum(seq_lens)
@@ -103,7 +127,9 @@ def run_case(tp: int, cp: int, backend: str, hf_layout: str, seq_lens: list[int]
     x_ref = x_full.clone().requires_grad_(True)
     y_ref = reference(x_ref, cu_seqlens=cu_global)
     y_ref.backward(dy_full)
-    ref_grads = local_to_hf_linear_attn(layout, [{name: p.grad.detach().float() for name, p in _linear_attn_params(reference).items()}])
+    ref_grads = local_to_hf_linear_attn(
+        layout, [{name: p.grad.detach().float() for name, p in _linear_attn_params(reference).items()}]
+    )
 
     if cp > 1:
         from miles_plugins.models.cp_utils import build_gdn_cp_context
@@ -126,7 +152,11 @@ def run_case(tp: int, cp: int, backend: str, hf_layout: str, seq_lens: list[int]
     if backend == "loom":
         # bit determinism of the deterministic path: a second identical pass reproduces output and gradients
         x_again = x_loc.detach().clone().requires_grad_(True)
-        y_again = sharded(x_again, cu_seqlens=cu_global) if cp == 1 else sharded(x_again, cu_seqlens=cp_context.cu_seqlens, cp_context=cp_context)
+        y_again = (
+            sharded(x_again, cu_seqlens=cu_global)
+            if cp == 1
+            else sharded(x_again, cu_seqlens=cp_context.cu_seqlens, cp_context=cp_context)
+        )
         assert torch.equal(y_again, y), "loom forward is not bit-deterministic"
         grads_before = {name: p.grad.detach().clone() for name, p in _linear_attn_params(sharded).items()}
         for p in _linear_attn_params(sharded).values():
@@ -165,7 +195,9 @@ def run_case(tp: int, cp: int, backend: str, hf_layout: str, seq_lens: list[int]
     failed = torch.tensor([0 if ok_all else 1], device="cuda")
     dist.all_reduce(failed)
     if rank == 0 or not ok_all:
-        print(f"[rank {rank} tp_rank {tp_rank} cp_rank {cp_rank}] TP={tp} CP={cp} backend={backend} layout={hf_layout} seq_lens={seq_lens}")
+        print(
+            f"[rank {rank} tp_rank {tp_rank} cp_rank {cp_rank}] TP={tp} CP={cp} backend={backend} layout={hf_layout} seq_lens={seq_lens}"
+        )
         print("\n".join("  " + line for line in lines))
         print("  RESULT:", "PASS" if failed.item() == 0 else "FAIL", flush=True)
     dist.barrier()

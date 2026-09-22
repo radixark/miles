@@ -56,7 +56,11 @@ class Attention(HuggingfaceAttention):
             raise ImportError("Please install transformers>=4.35.0 to use Qwen3NextAttention.")
 
         self.linear_attn = Qwen3NextGatedDeltaNet(
-            self.hf_config, self.hf_layer_idx, args=args, mp_config=config, tp_group=mpu.get_tensor_model_parallel_group()
+            self.hf_config,
+            self.hf_layer_idx,
+            args=args,
+            mp_config=config,
+            tp_group=mpu.get_tensor_model_parallel_group(),
         )
         self.tp_sharded_compute = self.linear_attn.tp_sharded
         self.input_layernorm = Qwen3NextRMSNorm(self.hf_config.hidden_size, eps=self.hf_config.rms_norm_eps)

@@ -52,7 +52,9 @@ def _hf_state(layout: GdnLayout, gen: torch.Generator) -> dict[str, torch.Tensor
         "out_proj.weight": rn(layout.hidden_size, layout.value_dim),
     }
     if layout.hf_layout == "qwen3_next":
-        hf["in_proj_qkvz.weight"] = rn(layout.num_k_heads * (2 * layout.head_k_dim + 2 * layout.group * layout.head_v_dim), layout.hidden_size)
+        hf["in_proj_qkvz.weight"] = rn(
+            layout.num_k_heads * (2 * layout.head_k_dim + 2 * layout.group * layout.head_v_dim), layout.hidden_size
+        )
         hf["in_proj_ba.weight"] = rn(layout.num_k_heads * 2 * layout.group, layout.hidden_size)
     else:
         hf["in_proj_qkv.weight"] = rn(layout.conv_dim, layout.hidden_size)
@@ -91,14 +93,27 @@ def test_hf_local_round_trip_and_head_sharding(hf_layout, tp_size):
     lk, lv = layout.num_k_heads // tp_size, layout.num_v_heads // tp_size
     for r, shard in enumerate(shards):
         assert shard["A_log"].tolist() == hf["A_log"][r * lv : (r + 1) * lv].tolist()
-        assert torch.equal(shard["out_proj.weight"], hf["out_proj.weight"][:, r * lv * layout.head_v_dim : (r + 1) * lv * layout.head_v_dim])
+        assert torch.equal(
+            shard["out_proj.weight"],
+            hf["out_proj.weight"][:, r * lv * layout.head_v_dim : (r + 1) * lv * layout.head_v_dim],
+        )
         conv = shard["conv1d.weight"].reshape(lk, layout.rows_per_k_head, 1, -1)
-        q_full, k_full, v_full = torch.split(hf["conv1d.weight"], [layout.key_dim, layout.key_dim, layout.value_dim], dim=0)
+        q_full, k_full, v_full = torch.split(
+            hf["conv1d.weight"], [layout.key_dim, layout.key_dim, layout.value_dim], dim=0
+        )
         for i in range(lk):
             h = r * lk + i
-            assert torch.equal(conv[i, : layout.head_k_dim], q_full[h * layout.head_k_dim : (h + 1) * layout.head_k_dim])
-            assert torch.equal(conv[i, layout.head_k_dim : 2 * layout.head_k_dim], k_full[h * layout.head_k_dim : (h + 1) * layout.head_k_dim])
-            assert torch.equal(conv[i, 2 * layout.head_k_dim :], v_full[h * layout.group * layout.head_v_dim : (h + 1) * layout.group * layout.head_v_dim])
+            assert torch.equal(
+                conv[i, : layout.head_k_dim], q_full[h * layout.head_k_dim : (h + 1) * layout.head_k_dim]
+            )
+            assert torch.equal(
+                conv[i, layout.head_k_dim : 2 * layout.head_k_dim],
+                k_full[h * layout.head_k_dim : (h + 1) * layout.head_k_dim],
+            )
+            assert torch.equal(
+                conv[i, 2 * layout.head_k_dim :],
+                v_full[h * layout.group * layout.head_v_dim : (h + 1) * layout.group * layout.head_v_dim],
+            )
         assert torch.equal(shard["norm.weight"], hf["norm.weight"])
 
 
@@ -141,7 +156,9 @@ def test_direct_converter_restores_hf_row_order(monkeypatch, module_name, hf_lay
     converter = importlib.import_module(module_name)
     layout = _layout(hf_layout)
     monkeypatch.setattr(converter, "_gdn_layout", lambda hf_checkpoint: layout)
-    args = SimpleNamespace(hf_checkpoint="/nonexistent", kv_channels=16, hidden_size=64, num_attention_heads=4, num_query_groups=2)
+    args = SimpleNamespace(
+        hf_checkpoint="/nonexistent", kv_channels=16, hidden_size=64, num_attention_heads=4, num_query_groups=2
+    )
     convert = converter.convert_qwen3_5_to_hf if hf_layout == "qwen3_5" else converter.convert_qwen3_next_to_hf
     hf = _hf_state(layout, torch.Generator().manual_seed(2))
     for name, value in hf.items():
