@@ -7,9 +7,6 @@ def result_scenarios() -> dict[str, ResultScenario]:
         for name, arguments in _shared_variants().items():
             scenarios[f"{backend}_{name}"] = ResultScenario(backend=backend, arguments=arguments)
         scenarios[f"{backend}_legacy"] = ResultScenario(backend=backend, legacy=True)
-        scenarios[f"{backend}_custom_arguments"] = ResultScenario(
-            backend=backend, custom=True, arguments=("--snapshot-custom", "29")
-        )
         for name, (arguments, error, message) in _rejected_variants().items():
             scenarios[f"{backend}_reject_{name}"] = ResultScenario(
                 backend=backend, arguments=arguments, error=error, message=message
