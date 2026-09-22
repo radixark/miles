@@ -131,7 +131,10 @@ class ChunkLayout:
 def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
     lengths = tuple(int(x) for x in lengths)
     offsets = tuple(int(x) for x in offsets)
-    _check(len(lengths) == len(offsets) and bool(lengths), "sequence lengths and offsets must be non-empty and equally long")
+    _check(
+        len(lengths) == len(offsets) and bool(lengths),
+        "sequence lengths and offsets must be non-empty and equally long",
+    )
     _check(all(length > 0 for length in lengths), "every packed sequence must have at least one token")
     _check(sum(lengths) == rows_external, "the packed sequences must cover the token rows exactly once")
     starts = [0]
@@ -197,7 +200,10 @@ def chunk_layout(
             lengths, offsets = [seq_len] * batch, [b * seq_len for b in range(batch)]
         else:
             cu = [int(x) for x in cu]
-            _check(len(cu) >= 2 and cu[0] == 0 and cu[-1] == seq_len, f"cu_seqlens must run from 0 to the token count {seq_len}")
+            _check(
+                len(cu) >= 2 and cu[0] == 0 and cu[-1] == seq_len,
+                f"cu_seqlens must run from 0 to the token count {seq_len}",
+            )
             lengths, offsets = [b - a for a, b in zip(cu[:-1], cu[1:], strict=True)], cu[:-1]
         layout = _build_layout(lengths, offsets, batch * seq_len, device)
         if len(_LAYOUT_CACHE) >= _LAYOUT_CACHE_LIMIT:
@@ -399,7 +405,7 @@ def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, lay
         h_tma=h2,
         dh_tma=dh2,
         akk_tma=akk,
-        gk_tma=gk,      # v8: gk / k / q are staged into shared memory by TMA for the drains; h / dh / v are read from their tiles
+        gk_tma=gk,  # v8: gk / k / q are staged into shared memory by TMA for the drains; h / dh / v are read from their tiles
         k_tma=k_e,
         q_tma=q_e,
         beta=beta,
@@ -446,7 +452,9 @@ def _launch_intra(arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_f, 
     return dq, dk, dg, db
 
 
-def _launch_intra_qk(arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_f, *, num_chunks, hq, q_rstd, k_rstd, layout):
+def _launch_intra_qk(
+    arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_f, *, num_chunks, hq, q_rstd, k_rstd, layout
+):
     """intra with the q/k l2norm epilogue folded in (one q/k head per value head): returns bf16 dq / dk already in
     the external (FLA) rows, plus fp32 dg / db in the internal layout; the qk epilogue kernel is then skipped."""
     rows, hv, _ = gk.shape
@@ -481,6 +489,7 @@ def _launch_intra_qk(arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_
         group=hv // hq,
     )
     return dq, dk, dg, db
+
 
 def _launch_epilogue(
     arch,
@@ -659,7 +668,9 @@ def chunk_kda_backward(
 
     # prep gathers the token rows into the internal layout; every stage below runs there, and dqkg /
     # the epilogue scatter the gradients back to the token rows.
-    pre = _launch_prep(arch, g_r, qn, kn, v_r, beta_s, A_log, dt_bias, aqk, akk, do_r, layout=layout, lower_bound=lower_bound)
+    pre = _launch_prep(
+        arch, g_r, qn, kn, v_r, beta_s, A_log, dt_bias, aqk, akk, do_r, layout=layout, lower_bound=lower_bound
+    )
     u, w = _launch_wy(arch, pre["akk"], pre["vb"], pre["kb"])
     h_state, v_new = _launch_fwdh(arch, w, pre["kg"], u, pre["gk"], layout=layout)
     dAqk, dv1 = _launch_dav(arch, pre["do"], v_new, pre["aqk_tril"], scale=scale)
@@ -680,7 +691,7 @@ def chunk_kda_backward(
         layout=layout,
         scale=scale,
     )
-    if hv == h:   # one q/k head per value head (GVA batches keep the two-kernel path)
+    if hv == h:  # one q/k head per value head (GVA batches keep the two-kernel path)
         # one q/k head per value head: intra applies the l2norm backward itself and writes bf16 dq / dk into
         # the external rows; the qk epilogue kernel is skipped
         dq_i, dk_i, dg_i, db_i = _launch_intra_qk(
