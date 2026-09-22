@@ -37,6 +37,10 @@ MUON_OPTIMIZER_ARGS = (
     "--adam-beta2 0.98 "
     "--chunked-optimizer-state-offload "
     "--optimizer-state-offload-fraction 1.0 "
+    # Bounded staging chunks, not the default 0 (= restore every offloaded tensor state for
+    # one full GPU update): with ~4.6B local params the full-restore Muon step OOMed on
+    # 8x80GB (run 35721309836, 73.7 GiB in use at the momentum init).
+    "--optimizer-state-offload-chunk-size-mb 1024 "
 )
 
 CASE = CaseConfig(
