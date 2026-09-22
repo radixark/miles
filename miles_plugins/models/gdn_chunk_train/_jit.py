@@ -76,6 +76,30 @@ def load(stage, arch):
     )
 
 
+@cache
+def prebuild(arch, max_workers=None):
+    """Build every stage for ``arch`` up front, in parallel, and return the wall time in seconds.
+
+    The stages build lazily on first use otherwise; with the register-scan variants selected by shape,
+    a new (num_seqs, heads) combination seen mid-training would compile a stage inside a training step
+    (about a minute per stage, serially).  Called once from ``chunk_gated_delta_rule`` on its first call
+    on a device; ``MILES_GDN_CHUNK_TRAIN_PREBUILD=0`` disables it.
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    stages = [stage for stage, per_arch in MODULES.items() if arch in per_arch]
+    t0 = time.perf_counter()
+    workers = max_workers or min(len(stages), max(1, (os.cpu_count() or 8) // 2))
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(lambda stage: load(stage, arch), stages))
+    except Exception:  # a concurrent build failure is not fatal: fall back to the serial, cached path
+        for stage in stages:
+            load(stage, arch)
+    return time.perf_counter() - t0
+
+
 class NativeKernel:
     """One generated stage; named bindings are mapped onto the exported argument plan.
 

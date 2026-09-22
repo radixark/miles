@@ -25,13 +25,14 @@ unchanged.  Those helpers are only imported when a ``cp_context`` is supplied.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
 
 import torch
 
-from ._jit import MODULES, device_arch, kernel
+from ._jit import MODULES, device_arch, kernel, prebuild
 
 __all__ = [
     "ChunkGatedDeltaRuleFunction",
@@ -586,6 +587,8 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         batch, seq_len, num_heads, key_dim = q.shape
         num_v_heads, value_dim = v.shape[2], v.shape[3]
         arch = device_arch(q.device)
+        if os.environ.get("MILES_GDN_CHUNK_TRAIN_PREBUILD", "1") == "1":
+            prebuild(arch)  # cached: builds all stages once so no stage compiles inside a later step
 
         def flat(t, heads, dim):
             return t.reshape(batch * seq_len, heads, dim)
