@@ -77,7 +77,7 @@ __device__ __forceinline__ float approx_rcp(float x) {
 extern "C" {
 
 __global__ __launch_bounds__(1024) void
-kernel_cake_kda_chunk_train_740981d1a5d02c735ef1(__nv_bfloat16* __restrict__ g_raw, __nv_bfloat16* __restrict__ q_norm, __nv_bfloat16* __restrict__ k_norm, __nv_bfloat16* __restrict__ v, float* __restrict__ beta, float* __restrict__ A_log, float* __restrict__ dt_bias, __nv_bfloat16* __restrict__ aqk, __nv_bfloat16* __restrict__ akk, __nv_bfloat16* __restrict__ do_, int* __restrict__ chunk_bos, int* __restrict__ chunk_len, float* __restrict__ gk_out, __nv_bfloat16* __restrict__ vb_out, __nv_bfloat16* __restrict__ kb_out, __nv_bfloat16* __restrict__ qg_out, __nv_bfloat16* __restrict__ kg_out, __nv_bfloat16* __restrict__ ke_out, __nv_bfloat16* __restrict__ qe_out, __nv_bfloat16* __restrict__ aqk_tril, __nv_bfloat16* __restrict__ akk_int, __nv_bfloat16* __restrict__ do_int, __nv_bfloat16* __restrict__ v_int, float* __restrict__ beta_int, int num_qk_heads, int num_heads, int group, int copy_inputs, float lower_bound)
+kernel_cake_kda_chunk_train_ff540e4f27805de6a473(__nv_bfloat16* __restrict__ g_raw, __nv_bfloat16* __restrict__ q_norm, __nv_bfloat16* __restrict__ k_norm, __nv_bfloat16* __restrict__ v, float* __restrict__ beta, float* __restrict__ A_log, float* __restrict__ dt_bias, __nv_bfloat16* __restrict__ aqk, __nv_bfloat16* __restrict__ akk, __nv_bfloat16* __restrict__ do_, int* __restrict__ chunk_bos, int* __restrict__ chunk_len, float* __restrict__ gk_out, __nv_bfloat16* __restrict__ vb_out, __nv_bfloat16* __restrict__ kb_out, __nv_bfloat16* __restrict__ qg_out, __nv_bfloat16* __restrict__ kg_out, __nv_bfloat16* __restrict__ ke_out, __nv_bfloat16* __restrict__ qe_out, __nv_bfloat16* __restrict__ aqk_tril, __nv_bfloat16* __restrict__ akk_int, __nv_bfloat16* __restrict__ do_int, __nv_bfloat16* __restrict__ v_int, float* __restrict__ beta_int, int num_qk_heads, int num_heads, int group, int copy_inputs, float lower_bound)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -85,7 +85,8 @@ kernel_cake_kda_chunk_train_740981d1a5d02c735ef1(__nv_bfloat16* __restrict__ g_r
 
     extern __shared__ __align__(1024) char smem_raw[];
     int smem;
-    smem = (int)(unsigned long long)__cvta_generic_to_shared(smem_raw);
+    asm volatile("{ .reg .u64 smem_ptr; cvta.to.shared.u64 smem_ptr, %1; cvt.u32.u64 %0, smem_ptr; }" : "=r"(smem) : "l"(smem_raw));
+    smem = make_warp_uniform(smem);
 
     const int bid = blockIdx.x;
     const int num_bids = gridDim.x;
@@ -103,6 +104,10 @@ kernel_cake_kda_chunk_train_740981d1a5d02c735ef1(__nv_bfloat16* __restrict__ g_r
     long long ext0 = (long long)chunk_bos[chunk];
     int clen = chunk_len[chunk];
     long long int0 = (long long)chunk * 64;
+    int clast = clen - 1;
+    if (clast < 0) {
+        clast = 0;
+    }
     float _expf_0 = __expf(A_log[head]);
     float rate = _expf_0;
     float bias = dt_bias[head * 128 + dim];
@@ -110,13 +115,18 @@ kernel_cake_kda_chunk_train_740981d1a5d02c735ef1(__nv_bfloat16* __restrict__ g_r
     #pragma unroll
     for (int u = 0; u < 8; u++) {
         int t_u = tgrp * 8 + u;
+        int t_c = t_u;
+        if (t_u > clast) {
+            t_c = clast;
+        }
+        long long idx_u = ((ext0 + (long long)t_c) * (long long)num_heads + (long long)head) * 128 + (long long)dim;
+        float x_u = (float)g_raw[idx_u] + bias;
+        float _expf_1 = __expf(-(rate * x_u));
+        float _rcp_0 = approx_rcp(1.0f + _expf_1);
+        float gate_l = lower_bound * _rcp_0;
         float gate_u = 0.0f;
         if (t_u < clen) {
-            long long idx_u = ((ext0 + (long long)t_u) * (long long)num_heads + (long long)head) * 128 + (long long)dim;
-            float x_u = (float)g_raw[idx_u] + bias;
-            float _expf_1 = __expf(-(rate * x_u));
-            float _rcp_0 = approx_rcp(1.0f + _expf_1);
-            gate_u = lower_bound * _rcp_0;
+            gate_u = gate_l;
         }
         gates[u] = gate_u;
     }
@@ -145,28 +155,32 @@ kernel_cake_kda_chunk_train_740981d1a5d02c735ef1(__nv_bfloat16* __restrict__ g_r
     #pragma unroll
     for (int u_2 = 0; u_2 < 8; u_2++) {
         int t_u_1 = tgrp * 8 + u_2;
+        int t_c_1 = t_u_1;
+        if (t_u_1 > clast) {
+            t_c_1 = clast;
+        }
         long long irow = int0 + (long long)t_u_1;
         long long iidx = (irow * (long long)num_heads + (long long)head) * 128 + (long long)dim;
         float gkt = (offset + gates[u_2]) * 1.4426950408889634f;
         gk_out[iidx] = gkt;
         float _exp2_0 = approx_exp2(gkt);
         float e_g = _exp2_0;
+        long long erow = ext0 + (long long)t_c_1;
+        long long eidx = (erow * (long long)num_heads + (long long)head) * 128 + (long long)dim;
+        long long qk_u = (erow * (long long)num_qk_heads + (long long)qk_head) * 128 + (long long)dim;
+        float bt_l = beta[erow * (long long)num_heads + (long long)head];
+        float kv_l = (float)k_norm[qk_u];
+        float qv_l = (float)q_norm[qk_u];
+        float vv_l = (float)v[eidx];
         float bt = 0.0f;
         float kv = 0.0f;
         float qv = 0.0f;
         float vv = 0.0f;
-        float dov = 0.0f;
         if (t_u_1 < clen) {
-            long long erow = ext0 + (long long)t_u_1;
-            long long eidx = (erow * (long long)num_heads + (long long)head) * 128 + (long long)dim;
-            long long qk_u = (erow * (long long)num_qk_heads + (long long)qk_head) * 128 + (long long)dim;
-            bt = beta[erow * (long long)num_heads + (long long)head];
-            kv = (float)k_norm[qk_u];
-            qv = (float)q_norm[qk_u];
-            vv = (float)v[eidx];
-            if (copy_inputs != 0) {
-                dov = (float)do_[eidx];
-            }
+            bt = bt_l;
+            kv = kv_l;
+            qv = qv_l;
+            vv = vv_l;
         }
         __nv_bfloat16 _cvt_bf16_0 = __float2bfloat16(vv * bt);
         vb_out[iidx] = _cvt_bf16_0;
@@ -183,13 +197,36 @@ kernel_cake_kda_chunk_train_740981d1a5d02c735ef1(__nv_bfloat16* __restrict__ g_r
         ke_out[iidx] = _cvt_bf16_5;
         __nv_bfloat16 _cvt_bf16_6 = __float2bfloat16(qv);
         qe_out[iidx] = _cvt_bf16_6;
-        if (copy_inputs != 0) {
-            __nv_bfloat16 _cvt_bf16_7 = __float2bfloat16(vv);
-            v_int[iidx] = _cvt_bf16_7;
-            __nv_bfloat16 _cvt_bf16_8 = __float2bfloat16(dov);
-            do_int[iidx] = _cvt_bf16_8;
+    }
+    if (copy_inputs != 0) {
+        #pragma unroll
+        for (int u_3 = 0; u_3 < 8; u_3++) {
+            int t_u_2 = tgrp * 8 + u_3;
+            int t_c_2 = t_u_2;
+            if (t_u_2 > clast) {
+                t_c_2 = clast;
+            }
+            long long irow_1 = int0 + (long long)t_u_2;
+            long long iidx_1 = (irow_1 * (long long)num_heads + (long long)head) * 128 + (long long)dim;
+            long long erow_1 = ext0 + (long long)t_c_2;
+            long long eidx_1 = (erow_1 * (long long)num_heads + (long long)head) * 128 + (long long)dim;
+            float vc_l = (float)v[eidx_1];
+            float do_l = (float)do_[eidx_1];
+            float bc_l = beta[erow_1 * (long long)num_heads + (long long)head];
+            float vc = 0.0f;
+            float dc = 0.0f;
+            float bc = 0.0f;
+            if (t_u_2 < clen) {
+                vc = vc_l;
+                dc = do_l;
+                bc = bc_l;
+            }
+            __nv_bfloat16 _cvt_bf16_7 = __float2bfloat16(vc);
+            v_int[iidx_1] = _cvt_bf16_7;
+            __nv_bfloat16 _cvt_bf16_8 = __float2bfloat16(dc);
+            do_int[iidx_1] = _cvt_bf16_8;
             if (dim == 0) {
-                beta_int[irow * (long long)num_heads + (long long)head] = bt;
+                beta_int[irow_1 * (long long)num_heads + (long long)head] = bc;
             }
         }
     }
@@ -198,23 +235,41 @@ kernel_cake_kda_chunk_train_740981d1a5d02c735ef1(__nv_bfloat16* __restrict__ g_r
         int e = r * 1024 + tid;
         int t_a = e / 64;
         int s_a = e - t_a * 64;
+        int t_ac = t_a;
+        if (t_a > clast) {
+            t_ac = clast;
+        }
         long long iidx_a = ((int0 + (long long)t_a) * (long long)num_heads + (long long)head) * 64 + (long long)s_a;
+        long long eidx_a = ((ext0 + (long long)t_ac) * (long long)num_heads + (long long)head) * 64 + (long long)s_a;
+        __nv_bfloat16 raw = aqk[eidx_a];
         __nv_bfloat16 _cvt_bf16_9 = __float2bfloat16(0.0f);
         __nv_bfloat16 val = _cvt_bf16_9;
-        __nv_bfloat16 _cvt_bf16_10 = __float2bfloat16(0.0f);
-        __nv_bfloat16 valk = _cvt_bf16_10;
         if (t_a < clen) {
-            long long eidx_a = ((ext0 + (long long)t_a) * (long long)num_heads + (long long)head) * 64 + (long long)s_a;
             if (s_a <= t_a) {
-                val = aqk[eidx_a];
-            }
-            if (copy_inputs != 0) {
-                valk = akk[eidx_a];
+                val = raw;
             }
         }
         aqk_tril[iidx_a] = val;
-        if (copy_inputs != 0) {
-            akk_int[iidx_a] = valk;
+    }
+    if (copy_inputs != 0) {
+        #pragma unroll
+        for (int r_1 = 0; r_1 < 4; r_1++) {
+            int e_1 = r_1 * 1024 + tid;
+            int t_a_1 = e_1 / 64;
+            int s_a_1 = e_1 - t_a_1 * 64;
+            int t_ac_1 = t_a_1;
+            if (t_a_1 > clast) {
+                t_ac_1 = clast;
+            }
+            long long iidx_a_1 = ((int0 + (long long)t_a_1) * (long long)num_heads + (long long)head) * 64 + (long long)s_a_1;
+            long long eidx_a_1 = ((ext0 + (long long)t_ac_1) * (long long)num_heads + (long long)head) * 64 + (long long)s_a_1;
+            __nv_bfloat16 rawk = akk[eidx_a_1];
+            __nv_bfloat16 _cvt_bf16_10 = __float2bfloat16(0.0f);
+            __nv_bfloat16 valk = _cvt_bf16_10;
+            if (t_a_1 < clen) {
+                valk = rawk;
+            }
+            akk_int[iidx_a_1] = valk;
         }
     }
 }
