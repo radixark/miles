@@ -63,10 +63,13 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ORCHESTRATOR, "generation": 2},
+                    "metadata": {"name": ORCHESTRATOR, "uid": "uid-o", "generation": 2},
                     "spec": {"template": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}}},
                 },
-                {"metadata": {"name": TRAINER, "generation": 1}, "spec": {"template": {"metadata": {}}}},
+                {
+                    "metadata": {"name": TRAINER, "uid": "uid-t", "generation": 1},
+                    "spec": {"template": {"metadata": {}}},
+                },
             ]
         }
 
@@ -92,7 +95,7 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ENGINE_POOL, "generation": 3},
+                    "metadata": {"name": ENGINE_POOL, "uid": "uid-e", "generation": 3},
                     "spec": {
                         "leaderWorkerTemplate": {
                             "workerTemplate": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}}
@@ -117,7 +120,7 @@ class TestParseWorkloadFacts:
         first = {
             "items": [
                 {
-                    "metadata": {"name": TRAINER, "generation": 1},
+                    "metadata": {"name": TRAINER, "uid": "uid-t", "generation": 1},
                     "spec": {"template": {"metadata": {"labels": {"a": "1", "b": "2"}}, "spec": {}}},
                 }
             ]
@@ -125,7 +128,7 @@ class TestParseWorkloadFacts:
         second = {
             "items": [
                 {
-                    "metadata": {"generation": 2, "name": TRAINER},
+                    "metadata": {"generation": 2, "name": TRAINER, "uid": "uid-t"},
                     "spec": {"template": {"spec": {}, "metadata": {"labels": {"b": "2", "a": "1"}}}},
                 }
             ]
@@ -142,7 +145,7 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ENGINE_POOL, "generation": 3},
+                    "metadata": {"name": ENGINE_POOL, "uid": "uid-e", "generation": 3},
                     "spec": {
                         "leaderWorkerTemplate": {
                             "leaderTemplate": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}},
@@ -277,7 +280,7 @@ class TestClusterObserver:
             observer.observe_once()
 
         assert observer.snapshots == [_settled_snapshot()]
-        assert observer._settled_workloads == frozenset({ORCHESTRATOR, TRAINER})
+        assert observer.recorder._settled_workloads == frozenset({ORCHESTRATOR, TRAINER})
 
     def test_a_partial_listing_of_a_settled_release_is_not_recorded(self, monkeypatch):
         """A missing workload leaves an empty pod set, which reads as a healthy pod having been replaced."""
