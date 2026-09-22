@@ -20,7 +20,6 @@ DRIVEN_METHODS = (
     "onload",
     "offload",
     "clear_memory",
-    "reconcile_adapters",
     "dispose",
 )
 
