@@ -20,3 +20,11 @@ def get_chunk_gated_delta_rule(backend: str):
         return chunk_gated_delta_rule
 
     raise ValueError(f"Unsupported Qwen GDN backend: {backend}")
+
+
+def get_chunk_kda():
+    try:
+        from fla.ops.kda import chunk_kda
+    except ImportError as exc:
+        raise ImportError("KDA requires flash-linear-attention >= 0.5 (fla.ops.kda).") from exc
+    return chunk_kda

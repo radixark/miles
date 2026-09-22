@@ -199,15 +199,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 args, role, checkpointing_context=checkpointing_context
             )
 
-        parallel_state = get_parallel_state()
-        if parallel_state.cp.size > 1:
-            from miles_plugins.models.cp_utils import detect_and_setup_hybrid_cp
-
-            for model_chunk in self.model:
-                detect_and_setup_hybrid_cp(
-                    model_chunk, parallel_state.cp.group, parallel_state.cp.rank, parallel_state.cp.size
-                )
-
         verify_megatron_parallel_state(self.model)
 
         start_rollout_id = loaded_rollout_id + 1

@@ -2,6 +2,9 @@ import re
 
 import torch
 
+from miles.backends.megatron_utils.megatron_to_hf.gdn_layout import gdn_heads_of
+from miles_plugins.models.layers.delta_rule_layout import qkv_group_major_to_flat
+
 
 def convert_qwen3_next_to_hf(args, name, param):
     if name == "module.module.embedding.word_embeddings.weight":
@@ -118,11 +121,17 @@ def convert_qwen3_next_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.q_norm.weight", param)]
         elif rest == "self_attention.k_layernorm.weight":
             return [(f"model.layers.{layer_idx}.self_attn.k_norm.weight", param)]
+        elif rest == "self_attention.linear_attn.conv1d.weight":
+            return [
+                (
+                    f"model.layers.{layer_idx}.linear_attn.conv1d.weight",
+                    qkv_group_major_to_flat(param, gdn_heads_of(args.hf_checkpoint)),
+                )
+            ]
         elif rest.startswith("self_attention.") and rest[len("self_attention.") :] in [
             "input_layernorm.weight",
             # linear attn
             "linear_attn.A_log",
-            "linear_attn.conv1d.weight",
             "linear_attn.dt_bias",
             "linear_attn.in_proj_ba.weight",
             "linear_attn.in_proj_qkvz.weight",

@@ -3,7 +3,6 @@ from collections.abc import Callable
 
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 import torch.nn.functional as F
 
 from .parallel import get_parallel_state
@@ -472,20 +471,8 @@ def assemble_log_prob_from_cp(
     return out
 
 
-def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: torch.device):
-    """Build fla CP context for a GatedDeltaNet module from packed sequence boundaries.
-
-    Args:
-        module: GDN module with ``cp_group`` / ``cp_world_size`` / ``conv_kernel_size``.
-        cu_seqlens: Global packed sequence boundaries (e.g. ``packed_seq_params.cu_seqlens_q``).
-        device: Target device.
-
-    Returns ``None`` when CP is not configured on the module (``cp_group`` not set).
-    Raises ``RuntimeError`` if hybrid CP is configured but ``fla.ops.cp`` is missing.
-    """
-    cp_group = getattr(module, "cp_group", None)
-    if cp_group is None:
-        return None
+def build_fla_cp_context(cu_seqlens: torch.Tensor, cp_group, conv_kernel_size: int, device: torch.device):
+    """fla CP context for a rank of ``cp_group`` from the global packed boundaries ``cu_seqlens``."""
     if _fla_build_cp_context is None:
         raise RuntimeError(
             "Hybrid CP requires fla.ops.cp (flash-linear-attention >= 0.4.2) " "but it could not be imported."
@@ -495,5 +482,5 @@ def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: to
     return _fla_build_cp_context(
         cu_seqlens=cu_seqlens.to(device=device, dtype=torch.int32),
         group=cp_group,
-        conv1d_kernel_size=module.conv_kernel_size,
+        conv1d_kernel_size=conv_kernel_size,
     )

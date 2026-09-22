@@ -23,6 +23,8 @@ def add_conversion_args(parser):
     """Add conversion arguments, plus the plugin arguments the model scripts pass through."""
     add_dsv4_arguments(parser)
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
+    parser.add_argument("--linear-attention-backend", choices=["fla", "flashqla"], default="fla")
+    parser.add_argument("--allgather-cp", action="store_true")
     parser.add_argument(
         "--megatron-to-hf-mode",
         choices=["raw", "bridge"],

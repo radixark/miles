@@ -38,9 +38,24 @@ per kernel.
    copies on a GPU box. Flag unification (`--dsv4-impl`, `--dsa-attention-backend`,
    `--dsa-kernel-backend`) touches the Megatron provider and launch scripts and is left for a
    later change.
-3. **Delta-rule unification.** One head-sharded module (Kimi-K3 layout) in
-   `miles_plugins/models/layers/` selecting `chunk_gated_delta_rule` or `chunk_kda`; Qwen3.5,
-   Qwen3-Next, Kimi-K3, GLM-5.3-flash point at it. Depends on `kimi-k3` landing.
+3. **Delta-rule unification** (branch `zhichen/kernels-delta-rule`, stacked on phase 2).
+   `miles_plugins/models/layers/delta_rule_attention.py` holds one head-sharded implementation for
+   GDN and KDA. `LinearAttentionLayer` owns the HF input norm, one TP collective in and one out
+   (Megatron's attention pattern, all-gather / reduce-scatter under SP) and the CP zigzag relayout.
+   `DeltaRuleAttention` runs this rank's heads: the model's projections, one conv over the
+   group-major q/k/v, the fla kernel picked by `GatedDeltaRule` / `KimiDeltaRule` (fla groups value
+   heads natively, so q/k are not repeated), a gated RMSNorm, `out_proj`. Subclasses declare the
+   projections under their HF names, one plain bf16 linear per contiguous output:
+   `Qwen3_5GatedDeltaNet` (Qwen3.5 / 3.6 / 3.8), `Qwen3NextGatedDeltaNet`, `KimiDeltaAttention`
+   (Kimi-K3 / GLM-5.3-flash, no consumer on main yet). Only the q/k/v projection and the conv change
+   layout (group-major, TP-independent, `delta_rule_layout.py`); the bridges and exporters permute
+   exactly those. The conv runs in channel chunks past fla's int32 indexing limit. Megatron
+   checkpoints of these layers saved before this change cannot be resumed.
+
+   Design history worth keeping: one TE linear per projection was CPU-bound below 8k tokens; one
+   fused `in_proj` fixed the CPU cost but its sliced outputs cost a copy each forward and a cat in
+   backward (~9% of KDA layer GPU time); plain linears per contiguous output avoid both. TE was
+   dropped because under `--fp8` it would silently train these projections in FP8.
 
 ## File map, phase 1
 
