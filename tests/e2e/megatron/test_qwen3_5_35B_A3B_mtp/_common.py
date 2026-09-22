@@ -47,6 +47,16 @@ class CaseConfig:
     # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
     # implementation on the training side, so those weights are never synced.
     check_weight_update_skip_list: tuple[str, ...] = ()
+    # Number of rollout steps (--num-rollout). The regular e2e cases run 2; long-run
+    # cases raise it.
+    num_rollout: int = 2
+    # Full optimizer argument block. None -> the default Adam + CPU-offload block below.
+    # Non-Adam optimizers (e.g. dist_muon) pass their own block, because the CPU-offload and
+    # precision-aware flags in the default block are Adam-only.
+    optimizer_args: str | None = None
+    # --rematerialize-param-from-master-weight requires Megatron's distributed optimizer,
+    # which miles enables only for Adam; Muon cases turn it off.
+    rematerialize_param_from_master_weight: bool = True
     extra_args: str = ""
 
 
@@ -74,7 +84,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 2 "
+        f"--num-rollout {case.num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
@@ -115,7 +125,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--eps-clip-high 0.28 "
     )
 
-    optimizer_args = (
+    optimizer_args = case.optimizer_args or (
         "--optimizer adam "
         "--lr 1e-6 "
         "--lr-decay-style constant "
@@ -167,8 +177,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
         "--colocate "
         "--moe-token-dispatcher-type flex "
-        "--rematerialize-param-from-master-weight "
     )
+    if case.rematerialize_param_from_master_weight:
+        misc_args += "--rematerialize-param-from-master-weight "
 
     train_args = (
         f"{ckpt_args} "
