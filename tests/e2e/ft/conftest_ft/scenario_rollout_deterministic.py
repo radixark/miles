@@ -23,9 +23,13 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     spawn_fault_injector,
 )
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
-from tests.e2e.ft.conftest_ft.fault_injection.views import compute_injection_times, compute_num_injections
+from tests.e2e.ft.conftest_ft.fault_injection.views import (
+    compute_cells_not_serving_after_injection,
+    compute_injection_times,
+    compute_num_injections,
+    compute_states_of_cell_name,
+)
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
-from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_rollout_cells_served_after_injection
 from tests.utils.soak.ft.checkers.reconfigure import assert_min_soak_injections
 
 from miles.utils.external_utils import command_utils
@@ -183,6 +187,28 @@ app, run_ci = create_comparison_app_and_run_ci(
     compare_fn=_compare,
     target_side_context=_inject_rollout_faults,
 )
+
+
+def assert_rollout_cells_served_after_injection(injector: FaultInjectorHandle) -> None:
+    events = injector.event_log.events
+    num_injections: int = compute_num_injections(events, cell_type=ROLLOUT_CELL_TYPE)
+    offenders: dict[str, list[str]] = compute_cells_not_serving_after_injection(events, cell_type=ROLLOUT_CELL_TYPE)
+    observed: dict[str, list[str]] = {
+        name: [state.value for state in states] for name, states in compute_states_of_cell_name(events).items()
+    }
+
+    assert not offenders, (
+        f"Rollout recovery witness failed: {sorted(offenders)} were never observed healthy and Serving on a "
+        f"reading fresh enough to outlast the stale-status window after their last accepted injection, so the "
+        f"run may have ended with a permanently missing replica ({num_injections} accepted injection(s); "
+        f"observed states: {observed})"
+    )
+
+    print(
+        f"Rollout recovery witness assertion passed: every injected cell was observed healthy and Serving on a "
+        f"fresh reading after its last of {num_injections} accepted injection(s)"
+    )
+
 
 if __name__ == "__main__":
     app()
