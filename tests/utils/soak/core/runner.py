@@ -20,7 +20,7 @@ from tests.utils.soak.core.events import (
 from tests.utils.soak.core.scheduler import POLL_INTERVAL_SECONDS, SoakActionScheduler
 from tests.utils.soak.core.sut_events import SutEventFeed
 from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest, SoakForms, SoakObserver, find_form
-from tests.utils.soak.core.views import admission_closed, trainer_step_ends
+from tests.utils.soak.core.views import admission_closed, project_actions, trainer_step_ends
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,12 @@ class SoakRunner:
 
     async def finish(self) -> None:
         await self._observe_and_record(timeout_seconds=self.config.timeouts.final_observation_seconds)
+        events = self.event_log.events
+        for request_id, action in project_actions(events).items():
+            request = action.requested.request
+            form = find_form(self.forms, kind=request.target.kind, name=request.form_name)
+            assert action.result is not None and action.result.returned, f"Action did not finish: {request_id}"
+            assert form.is_recovered(action=action, events=events), f"Action did not recover: {request_id}"
 
     async def _run(self, *, training: Coroutine[Any, Any, Any]) -> None:
         stopped = asyncio.Event()
