@@ -1,5 +1,3 @@
-from typing import Any
-
 from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt
 
 # Chat request fields a session fills when a request omits them.
@@ -14,10 +12,6 @@ class CreateSessionRequest(StrictBaseModel):
     temperature: StrictFloat | None = None
     top_p: StrictFloat | None = None
     top_k: StrictInt | None = None
-
-    def sampling_defaults(self) -> dict[str, Any]:
-        """The sampling fields this request provides, keyed like a chat completion request."""
-        return {key: value for key in SESSION_SAMPLING_FIELDS if (value := getattr(self, key)) is not None}
 
 
 class SessionRecord(BaseModel):
