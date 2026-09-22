@@ -135,6 +135,8 @@ class _ChunkKDADeterministicBackward(torch.autograd.Function):
         ctx.save_for_backward(q_norm, k_norm, q_rstd, k_rstd, v, g, beta, A_log, dt_bias, Aqk, Akk, cu_seqlens)
         ctx.scale = scale
         ctx.lower_bound = lower_bound
+        # the backward keys its layout tables on the host copy: no device-to-host copy per call
+        ctx.cu_seqlens_cpu = tuple(int(x) for x in cu_seqlens_cpu.tolist()) if cu_seqlens_cpu is not None else None
         return o.type_as(q)
 
     @staticmethod
@@ -159,6 +161,7 @@ class _ChunkKDADeterministicBackward(torch.autograd.Function):
             scale=ctx.scale,
             lower_bound=ctx.lower_bound,
             cu_seqlens=cu_seqlens,
+            cu_seqlens_cpu=ctx.cu_seqlens_cpu,
         )
         return (
             grads["dq"].to(q_norm.dtype),
