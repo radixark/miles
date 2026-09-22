@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
+from tests.utils.soak.ft.checkers.reconfigure import assert_reconfigure_events
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.test_utils.comparisons.dumps import (
@@ -17,7 +18,6 @@ from miles.utils.test_utils.comparisons.metrics import (
     assert_metrics_classified,
     compare_metrics,
 )
-from miles.utils.test_utils.reconfigure_assertions import assert_reconfigure_events
 
 COMPARED_METRIC_PREFIXES: tuple[str, ...] = ("train/", "rollout/")
 UNCOMPARED_METRIC_PREFIXES: tuple[str, ...] = ("perf/",)

@@ -26,11 +26,11 @@ from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TY
 from tests.e2e.ft.conftest_ft.fault_injection.views import compute_injection_times, compute_num_injections
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_rollout_cells_served_after_injection
+from tests.utils.soak.ft.checkers.reconfigure import assert_min_soak_injections
 
 from miles.utils.external_utils import command_utils
 from miles.utils.misc import MutableBox
 from miles.utils.test_utils.comparisons.metrics import read_rollout_completion_times
-from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections
 from miles.utils.workers.types import ClusterBackend
 
 TEST_NAME: str = "rollout_deterministic"
