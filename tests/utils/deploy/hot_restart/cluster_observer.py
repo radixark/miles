@@ -70,6 +70,12 @@ class ClusterSnapshot(FrozenStrictBaseModel):
         return not self.pods or not self.workloads
 
 
+@dataclass(frozen=True)
+class ClusterRead:
+    snapshot: ClusterSnapshot
+    payload_of_kind: dict[str, dict | None]
+
+
 # ============================== observing a run ===============================
 
 
@@ -93,13 +99,16 @@ class ClusterObserver:
             logger.warning("Failed to observe the cluster of a run being hot restarted", exc_info=True)
 
     def observe_once(self) -> None:
-        snapshot = read_cluster_snapshot(
+        read = read_cluster_snapshot(
             release=self.release,
             namespace=self.namespace,
             trainer_rpc_url=compute_trainer_rpc_url(
                 release=self.release, namespace=self.namespace, trainer_id=self.trainer_id
             ),
         )
+        self.record_snapshot(read.snapshot)
+
+    def record_snapshot(self, snapshot: ClusterSnapshot) -> None:
         if not snapshot.describes_whole_release:
             self._record_failed_read()
             logger.warning(
@@ -183,7 +192,7 @@ def compute_trainer_rpc_url(*, release: str, namespace: str, trainer_id: str) ->
     return f"http://{host}:{DEFAULT_RPC_PORT}{HEALTH_PATH}"
 
 
-def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str) -> ClusterSnapshot:
+def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str) -> ClusterRead:
     boot_uuid = read_boot_uuid(trainer_rpc_url)
     payload_of_kind = {
         kind: _read_objects(kind=kind, release=release, namespace=namespace) for kind in (POD_KIND, *WORKLOAD_KINDS)
@@ -196,12 +205,13 @@ def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str)
         if (payload := payload_of_kind[kind]) is not None
         for fact in parse_workload_facts(payload, kind=kind)
     )
-    return ClusterSnapshot(
+    snapshot = ClusterSnapshot(
         pods=parse_pod_facts(pods) if pods is not None else (),
         workloads=tuple(sorted(workloads, key=lambda one: (one.kind, one.name))),
         trainer_boot_uuid=boot_uuid,
         reads_missing=tuple(kind for kind, payload in payload_of_kind.items() if payload is None),
     )
+    return ClusterRead(snapshot=snapshot, payload_of_kind=payload_of_kind)
 
 
 def compute_hot_restart_workloads(release: str) -> frozenset[str]:

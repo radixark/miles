@@ -164,7 +164,11 @@ def _observer() -> ClusterObserver:
 class TestClusterObserver:
     def _install_reader(self, monkeypatch, snapshots: list[ClusterSnapshot]) -> None:
         remaining = list(snapshots)
-        monkeypatch.setattr(cluster_module, "read_cluster_snapshot", lambda **_kwargs: remaining.pop(0))
+        monkeypatch.setattr(
+            cluster_module,
+            "read_cluster_snapshot",
+            lambda **_kwargs: cluster_module.ClusterRead(snapshot=remaining.pop(0), payload_of_kind={}),
+        )
 
     def test_a_read_that_could_not_see_the_whole_release_is_counted_not_recorded(self, monkeypatch):
         """A verdict read off two lucky observations of a run nobody could reach proves nothing."""
@@ -216,7 +220,7 @@ class TestClusterObserver:
 
         snapshot = cluster_module.read_cluster_snapshot(
             release=RELEASE, namespace=NAMESPACE, trainer_rpc_url="http://x"
-        )
+        ).snapshot
 
         assert snapshot.reads_missing == (POD_KIND,) and not snapshot.describes_whole_release
 
