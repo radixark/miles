@@ -465,7 +465,14 @@ def run_unittest_files(
         output_lines = []
         output_tail: deque = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
-        def run_one_file(filename, capture_output=False, record_dir=None, _i=i, _estimated_time=estimated_time):
+        def run_one_file(
+            filename: str,
+            capture_output: bool = False,
+            record_dir: str | None = None,
+            _i: int = i,
+            _estimated_time: float = estimated_time,
+            env: dict[str, str] | None = None,
+        ) -> int:
             nonlocal process, output_lines, output_tail
             output_tail = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
@@ -473,11 +480,10 @@ def run_unittest_files(
             logger.info(f".\n.\nBegin ({_i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n")
             file_tic = time.perf_counter()
 
-            child_env = None
+            child_env = (os.environ if env is None else env).copy()
             if record_dir is not None:
                 # Point the training process at this attempt's own record dir.
                 os.makedirs(record_dir, exist_ok=True)
-                child_env = os.environ.copy()
                 child_env[CI_GATE_RECORD_DIR_ENV] = record_dir
 
             if capture_output:
