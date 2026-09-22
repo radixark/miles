@@ -135,3 +135,10 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MILES_SNAPSHOT_RECORD_DIR: ${{ github.workspace }}/snapshot-records
         run: ${{ inputs.execute_command }}
+
+      - name: Upload snapshot records
+        if: always()
+        uses: ./.github/actions/upload-snapshot-records
+        with:
+          execute_command: ${{ inputs.execute_command }}
+          path: ${{ github.workspace }}/snapshot-records
