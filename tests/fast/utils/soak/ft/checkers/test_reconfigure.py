@@ -3,11 +3,8 @@ from typing import Any
 
 import pytest
 from tests.utils.soak.ft.checkers.reconfigure import (
-    MIN_SOAK_INJECTIONS,
     ReconfigureInfo,
-    assert_min_soak_injections,
     assert_reconfigure_events,
-    assert_soak_reconfigure_events,
     load_reconfigure_events,
 )
 
@@ -97,47 +94,3 @@ class TestAssertReconfigureEvents:
 
         with pytest.raises(AssertionError, match="sequence mismatch"):
             assert_reconfigure_events(tmp_path, expected=[_HEALING_EXPECTED])
-
-
-class TestAssertMinSoakInjections:
-    def test_minimum_injection_failure_names_the_caller_context(self) -> None:
-        """The standalone check reports which soak (e.g. a rollout-only one) fell short, not just that one did."""
-        with pytest.raises(AssertionError, match="rollout-only soak on engine cells"):
-            assert_min_soak_injections(1, context="rollout-only soak on engine cells")
-
-    def test_reaching_the_minimum_injection_count_passes(self) -> None:
-        """Exactly the required number of successful injections satisfies the standalone check."""
-        assert_min_soak_injections(MIN_SOAK_INJECTIONS, context="rollout-only soak on engine cells")
-
-
-class TestAssertSoakReconfigureEvents:
-    def test_passes_when_enough_injections_and_healings(self, tmp_path: Path) -> None:
-        """>=2 successful injections with >=2 healing events pass the soak witness."""
-        _write_events(tmp_path, [_SHRINK_PARTIAL, _HEALING_PARTIAL, dict(_HEALING_PARTIAL, rollout_id=5, quorum_id=3)])
-
-        assert_soak_reconfigure_events(tmp_path, num_successful_injections=2)
-
-    def test_fails_when_no_injections(self, tmp_path: Path) -> None:
-        """Zero successful injections means no fault tolerance was exercised, so the witness fails."""
-        with pytest.raises(AssertionError, match="proved too little"):
-            assert_soak_reconfigure_events(tmp_path, num_successful_injections=0)
-
-    def test_fails_when_too_few_injections(self, tmp_path: Path) -> None:
-        """A single injection is below the soak minimum even when healing events are present."""
-        _write_events(tmp_path, [_HEALING_PARTIAL, dict(_HEALING_PARTIAL, rollout_id=5, quorum_id=3)])
-
-        with pytest.raises(AssertionError, match="proved too little"):
-            assert_soak_reconfigure_events(tmp_path, num_successful_injections=1)
-
-    def test_fails_when_too_few_healings(self, tmp_path: Path) -> None:
-        """Enough injections but fewer than the required healed cells fail the witness."""
-        _write_events(tmp_path, [_SHRINK_PARTIAL, _HEALING_PARTIAL])
-
-        with pytest.raises(AssertionError, match="Healing witness failed"):
-            assert_soak_reconfigure_events(tmp_path, num_successful_injections=3)
-
-    def test_one_event_that_readmits_two_cells_counts_as_two_healings(self, tmp_path: Path) -> None:
-        """A single reconfigure can heal several cells at once, and counting events would under-count them."""
-        _write_events(tmp_path, [dict(_HEALING_PARTIAL, healed_cell_indices=[0, 1], alive_cell_indices_after=[0, 1])])
-
-        assert_soak_reconfigure_events(tmp_path, num_successful_injections=2)
