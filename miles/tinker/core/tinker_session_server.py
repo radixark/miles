@@ -296,7 +296,9 @@ class TrajectoryCollector:
     async def _sample(self, session: TrajectorySession, payload: dict[str, Any]) -> dict[str, Any]:
         """Sample through the gateway under the session's lease; the request id stays on the session for DELETE."""
         # refused once the lease behind the sampling session is gone; else filed under it so expiry cancels the task
-        request_id, _ = self.service.submit_recorded_sample(session.tenant, payload, session.sampling_session_id)
+        request_id, _ = self.service.submit_sample(
+            session.tenant, payload, lease_sampling_session_id=session.sampling_session_id
+        )
         future = self.service.retrieve_future(session.tenant, request_id)
         assert future is not None, f"sampling future {request_id} vanished before it settled"
         session.pending_request_id = request_id

@@ -134,15 +134,6 @@ class TinkerService:
             raise OwnershipError("sampling session does not belong to this tenant")
         return record.session_id
 
-    def submit_recorded_sample(self, tenant: str, payload: dict, sampling_session_id: str) -> tuple[str, list[str]]:
-        """submit_sample for a recorded session: the lease is checked first and the task is filed under it at once."""
-        owner_session_id = self._lease_owner(tenant, sampling_session_id)  # refused before any future or task exists
-        request_id, sequence_ids = self.submit_sample(tenant, payload)
-        # no await between creation and filing, so neither the task nor _expire_sessions can run in between
-        task, _ = self._sample_tasks[request_id]
-        self._sample_tasks[request_id] = (task, owner_session_id)
-        return request_id, sequence_ids
-
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
         session = self._session_for(tenant, payload["session_id"])
@@ -476,7 +467,15 @@ class TinkerService:
         resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
         return model_path
 
-    def submit_sample(self, tenant: str, payload: dict) -> tuple[str, list[str]]:
+    def submit_sample(
+        self, tenant: str, payload: dict, *, lease_sampling_session_id: str | None = None
+    ) -> tuple[str, list[str]]:
+        """Sample now; a recorded session passes its lease, checked before any future exists and owning the task."""
+        session_id = None
+        if lease_sampling_session_id is not None:
+            if payload.get("sampling_session_id"):
+                raise ValueError("a sample is filed under the payload's sampling session or the lease, not both")
+            session_id = self._lease_owner(tenant, lease_sampling_session_id)
         base_model = payload.get("base_model")
         if base_model is not None and base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
@@ -507,7 +506,8 @@ class TinkerService:
         future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
         task = asyncio.create_task(self._run_sample(future.request_id, sequence_ids, payload, lora_name, lora_path))
-        session_id = sampling_session.session_id if sampling_session is not None else None
+        if session_id is None and sampling_session is not None:
+            session_id = sampling_session.session_id
         self._sample_tasks[future.request_id] = (task, session_id)
         task.add_done_callback(lambda _t, rid=future.request_id: self._sample_tasks.pop(rid, None))
         task.add_done_callback(self._observe_background_task)
