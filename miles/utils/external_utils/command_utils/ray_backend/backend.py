@@ -69,6 +69,7 @@ class RayCommandBackend(BaseCommandBackend):
                     entrypoint=f"python3 {shlex.quote(request.train_script)} {model_args} {request.train_args}",
                     runtime_env={"env_vars": runtime_env_vars},
                     job_lifetime=request.job_lifetime,
+                    submission_id=config.ray_submission_id,
                 )
             finally:
                 if request.job_lifetime == "launcher" and not external_ray:
