@@ -416,7 +416,7 @@ class DeepSeekV4Attention(MegatronModule):
             attn_sink=self.core_attention.attn_sink,
         )
 
-        apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
+        o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
         o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
         wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)
