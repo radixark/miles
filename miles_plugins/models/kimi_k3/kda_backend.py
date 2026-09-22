@@ -80,10 +80,35 @@ def _round_up(value: int) -> int:
     return max(-(-value // _SEQ_MULTIPLE) * _SEQ_MULTIPLE, _SEQ_MULTIPLE)
 
 
+_PLAN_CACHE: dict[tuple, Repack] = {}
+_PLAN_CACHE_LIMIT = 256
+
+
 def plan_repack(cu_seqlens: torch.Tensor | None, batch: int, seq_len: int, device) -> Repack | None:
-    """``None`` when the kernel takes the layout as is; otherwise the padded layout to run it in."""
-    if packed_lengths_supported(cu_seqlens, seq_len):
-        return None
+    """``None`` when the kernel takes the layout as is; otherwise the padded layout to run it in.
+
+    Plans are cached per (lengths, device): RL batches repeat a few packing shapes, and the
+    index construction otherwise costs a handful of small kernels per backward.
+    """
+    lengths_key = None if cu_seqlens is None else tuple(cu_seqlens.tolist())
+    if lengths_key is None:
+        if seq_len % _SEQ_MULTIPLE == 0:
+            return None
+    else:
+        lengths = [b - a for a, b in zip(lengths_key[:-1], lengths_key[1:], strict=True)]
+        if lengths and lengths[0] % _SEQ_MULTIPLE == 0 and all(x == lengths[0] for x in lengths):
+            return None
+    key = (lengths_key, batch, seq_len, str(device))
+    plan = _PLAN_CACHE.get(key)
+    if plan is None:
+        plan = _build_repack(cu_seqlens, batch, seq_len, device)
+        if len(_PLAN_CACHE) >= _PLAN_CACHE_LIMIT:
+            _PLAN_CACHE.clear()
+        _PLAN_CACHE[key] = plan
+    return plan
+
+
+def _build_repack(cu_seqlens: torch.Tensor | None, batch: int, seq_len: int, device) -> Repack:
     if cu_seqlens is None:
         length = _round_up(seq_len)
         rows = torch.arange(batch, device=device).unsqueeze(1) * length + torch.arange(seq_len, device=device)
@@ -103,16 +128,17 @@ def plan_repack(cu_seqlens: torch.Tensor | None, batch: int, seq_len: int, devic
 
 
 def pad_rows(t: torch.Tensor, plan: Repack) -> torch.Tensor:
-    """Scatter ``t`` (``[B, T, ...]``) into the zero-filled padded layout ``[plan.batch, plan.length, ...]``."""
+    """Copy the rows of ``t`` (``[B, T, ...]``) into the zero-filled padded layout ``[plan.batch, plan.length, ...]``."""
     batch, seq_len = t.shape[:2]
     out = t.new_zeros((plan.batch, plan.length, *t.shape[2:]))
-    out.view(plan.batch * plan.length, *t.shape[2:])[plan.index] = t.reshape(batch * seq_len, *t.shape[2:])
+    out.view(plan.batch * plan.length, -1).index_copy_(0, plan.index, t.reshape(batch * seq_len, -1))
     return out
 
 
 def unpad_rows(t: torch.Tensor, plan: Repack, batch: int, seq_len: int) -> torch.Tensor:
     """Gather the real rows of a padded-layout tensor back into ``[batch, seq_len, ...]``."""
-    return t.reshape(plan.batch * plan.length, *t.shape[2:])[plan.index].view(batch, seq_len, *t.shape[2:])
+    rows = t.reshape(plan.batch * plan.length, -1).index_select(0, plan.index)
+    return rows.view(batch, seq_len, *t.shape[2:])
 
 
 def deterministic_backward_applies(
