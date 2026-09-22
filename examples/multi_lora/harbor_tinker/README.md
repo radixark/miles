@@ -23,13 +23,15 @@ tenant's session, 404 chat on an unbound or deleted session (the session id is t
 per-session turn cap, 502 engine failure (nothing recorded).
 
 A session records one turn at a time: render, sample and commit run under the session's lock, so a retry that
-overlaps its first attempt waits and is then recorded as a resend; `DELETE` cancels a sample still running. Each
-exported turn carries `inherits`, `reset_reason` (`first`, `retry`, `rewrite`, `budget`, `mismatch`, `no_tito`) and
-`after_truncation`; the client's `select_turns` drops retry-superseded attempts and continuations past a truncated
-reply, matching the miles session server v1/v2, and `--tinker-session-strict-truncation` refuses such continuations
-with 409 instead. The export also carries `max_trim_tokens`, the boundary tokens the TITO family may drop when it
-extends a prefix (GLM: 1): with a non-zero value consecutive turns are not strict prefixes and the cookbook keeps
-them as separate Datums.
+overlaps its first attempt waits and is then attached where it belongs; `DELETE` cancels a sample still running.
+The turns form a tree: each exported turn carries `parent` (the turn whose history its request continues, matched
+message by message with the miles strict matcher; `null` for a new root), `inherits` (its ids extend the parent's),
+`reset_reason` (`first`, `retry`, `rewrite`, `budget`, `mismatch`, `no_tito`) and `after_truncation` (an ancestor's
+reply was cut at `max_tokens`). The client's `select_turns` applies the miles v2 `drop_retries` rule to that tree:
+a leaf with a later sibling is a superseded attempt, every other leaf's path trains, and nothing below a truncated
+reply does; `--tinker-session-strict-truncation` refuses such continuations with 409 instead. The export also
+carries `max_trim_tokens`, the boundary tokens the TITO family may drop when it extends a prefix (GLM: 1): with a
+non-zero value consecutive turns are not strict prefixes and the cookbook keeps them as separate Datums.
 
 API adapters: a chat dialect is one pair of functions, body → `TurnRequest` and (body, `TurnResult`) → response JSON,
 registered under its path suffix in `session_routes.CHAT_ADAPTERS`; the collector, TITO and sampling only ever see the

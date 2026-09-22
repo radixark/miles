@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
-from array import array
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from miles.tinker.core.types import UserInputError
 
 if TYPE_CHECKING:
     from miles.tinker.core.tinker_session_server import TrajectorySession, Turn
+
+MessageMatcher = Callable[[dict[str, Any], dict[str, Any]], bool]  # (stored message, request message) -> same?
+
+
+def _same_role_and_content(stored: dict[str, Any], new: dict[str, Any]) -> bool:
+    """The fallback matcher, role and content only; serve_tinker injects the miles strict matcher instead."""
+    return stored.get("role") == new.get("role") and stored.get("content") == new.get("content")
+
+
+@dataclass(frozen=True)
+class Rendered:
+    """One turn's prompt: its ids, whether they inherit the parent's, why not, the resolved args, the parent turn."""
+
+    prompt_token_ids: list[int]
+    inherits: bool
+    reset_reason: str | None
+    request_args: dict[str, Any] | None
+    parent: int | None
 
 
 def _token_list(rendered) -> list[int]:
@@ -65,16 +84,38 @@ def _template_args(request_args: dict[str, Any]) -> dict[str, Any]:
     return args
 
 
-def _resends_history(request_messages: Any, stored: list[dict[str, Any]]) -> bool:
-    """True when request_messages are a leading slice of the stored history by (role, content): a re-sent request."""
-    if not isinstance(request_messages, list) or not request_messages:
-        return False
-    pairs = zip(request_messages, stored[: len(request_messages)], strict=False)
-    return all(a.get("role") == b.get("role") and a.get("content") == b.get("content") for a, b in pairs)
+def _is_prefix(history: list[dict[str, Any]], request_messages: list[dict[str, Any]], matcher: MessageMatcher) -> bool:
+    """True when the history matches the leading messages of a longer request, message by message."""
+    return len(history) < len(request_messages) and all(
+        matcher(stored, new) for stored, new in zip(history, request_messages, strict=False)
+    )
+
+
+def attach_point(
+    turns: list[Turn], request_messages: list[dict[str, Any]], matcher: MessageMatcher
+) -> tuple[int | None, str | None]:
+    """The turn this request continues (longest history prefixing it, latest on ties), or (None, why not)."""
+    best: int | None = None
+    for index, turn in enumerate(turns):
+        if turn.messages is None or not _is_prefix(turn.messages, request_messages, matcher):
+            continue
+        if best is None or len(turn.messages) >= len(turns[best].messages):
+            best = index
+    if best is not None:
+        return best, None
+    if not turns:
+        return None, "first"
+    for turn in turns:  # the request repeats a recorded turn's own request: a retry, not an edited history
+        history = turn.messages or []
+        if len(history) - 1 == len(request_messages) and all(
+            matcher(stored, new) for stored, new in zip(history, request_messages, strict=False)
+        ):
+            return None, "retry"
+    return None, "rewrite"
 
 
 def _try_merge_tokens(
-    session: TrajectorySession,
+    parent: Turn,
     request_messages: list[dict[str, Any]],
     tito_tokenizer,
     template_args: dict[str, Any],
@@ -82,24 +123,20 @@ def _try_merge_tokens(
     max_new_tokens: int,
     budget: int | None,
 ) -> tuple[list[int] | None, str | None]:
-    """TITO: previous turn's ids + tokens of the appended messages (merge_tokens), or (None, why a full render)."""
-    if session.messages is None or session.token_ids is None:
-        return None, "first"
-    if not isinstance(request_messages, list) or len(request_messages) <= len(session.messages):
-        # a re-sent earlier state is a retry (rollback); a shorter history with new content is a rewrite (compaction)
-        return None, "retry" if _resends_history(request_messages, session.messages) else "rewrite"
+    """TITO: the parent's ids + tokens of the appended messages (merge_tokens), or (None, why a full render)."""
+    prefix_ids = [*parent.input_ids, *parent.output_ids]
     try:
         prompt = tito_tokenizer.merge_tokens(
-            old_messages=session.messages,
+            old_messages=parent.messages,
             new_messages=request_messages,
-            pretokenized_token_ids=session.token_ids,
+            pretokenized_token_ids=prefix_ids,
             template_args=template_args,
         )
-    except ValueError:  # the harness edited, reordered or summarized the history; a fresh render is still exact
+    except ValueError:  # the appended messages cannot extend this family's template (e.g. a disallowed role)
         return None, "rewrite"
     prompt_token_ids = [int(token) for token in prompt]
-    kept = len(session.token_ids) - getattr(tito_tokenizer, "max_trim_tokens", 0)
-    if kept > 0 and prompt_token_ids[:kept] != list(session.token_ids[:kept]):
+    kept = len(prefix_ids) - getattr(tito_tokenizer, "max_trim_tokens", 0)
+    if kept > 0 and prompt_token_ids[:kept] != prefix_ids[:kept]:
         return None, "mismatch"  # the merge did not extend the recorded prefix: never sample it, re-render instead
     if budget is not None and len(prompt_token_ids) + max_new_tokens > budget:
         return None, "budget"
@@ -107,13 +144,20 @@ def _try_merge_tokens(
 
 
 class PromptRenderer:
-    """A session's history as prompt ids: a TITO merge when the history extends the last turn, else a full render."""
+    """A session's history as prompt ids: a TITO merge from the turn it continues, else a full render."""
 
-    def __init__(self, tokenizer, chat_template_kwargs: dict[str, Any] | None, tito_tokenizer=None) -> None:
-        """Keep the HF tokenizer, the gateway's chat_template_kwargs and the optional injected TITOTokenizer."""
+    def __init__(
+        self,
+        tokenizer,
+        chat_template_kwargs: dict[str, Any] | None,
+        tito_tokenizer=None,
+        message_matcher: MessageMatcher | None = None,
+    ) -> None:
+        """Keep the HF tokenizer, the gateway's chat_template_kwargs, the optional TITOTokenizer and matcher."""
         self.tokenizer = tokenizer
         self.chat_template_kwargs = dict(chat_template_kwargs or {})
         self.tito_tokenizer = tito_tokenizer
+        self.message_matcher = message_matcher or _same_role_and_content
 
     def prepare_pretokenized(
         self,
@@ -124,65 +168,50 @@ class PromptRenderer:
         *,
         max_new_tokens: int,
         budget: int | None,
-    ) -> tuple[list[int], bool, str | None, dict[str, Any] | None]:
-        """(prompt_token_ids, inherits, reset_reason, request_args): TITO merge when it applies, else a full render."""
-        validate_messages(request_messages)  # the merge path calls into the TITO matcher, which assumes dict messages
+    ) -> Rendered:
+        """Find the turn the request continues, then a TITO merge from it when it applies, else a full render."""
+        validate_messages(request_messages)
+        parent, reason = attach_point(session.turns, request_messages, self.message_matcher)
         if self.tito_tokenizer is None:
-            return (
-                render_prompt(request_messages, tools, self.template_kwargs(override), self.tokenizer),
-                False,
-                "no_tito",
-                None,
-            )
-        request_args, continued = self._resolve_request_args(session, tools, override)
+            ids = render_prompt(request_messages, tools, self.template_kwargs(override), self.tokenizer)
+            return Rendered(ids, False, "no_tito", None, parent)
+        parent_turn = session.turns[parent] if parent is not None else None
+        request_args, continued = self._resolve_request_args(parent_turn, tools, override)
         template_args = _template_args(request_args)
-        reason = "rewrite"  # the request cannot continue the recorded turn (its tools changed): a new segment
-        if continued:
-            prompt_token_ids, reason = _try_merge_tokens(
-                session,
-                request_messages,
-                self.tito_tokenizer,
-                template_args,
-                max_new_tokens=max_new_tokens,
-                budget=budget,
-            )
-            if prompt_token_ids is not None:
-                return prompt_token_ids, True, None, request_args
+        if parent_turn is not None:
+            reason = "rewrite"  # the parent's prefix cannot be reused: its tools changed, or the merge refused
+            if continued:
+                ids, reason = _try_merge_tokens(
+                    parent_turn,
+                    request_messages,
+                    self.tito_tokenizer,
+                    template_args,
+                    max_new_tokens=max_new_tokens,
+                    budget=budget,
+                )
+                if ids is not None:
+                    return Rendered(ids, True, None, request_args, parent)
         tito = self.tito_tokenizer
         ids = _rendered_ids(
             lambda: tito.apply_chat_template(
                 request_messages, add_generation_prompt=True, tokenize=True, template_args=template_args
             )
         )
-        return ids, False, reason, request_args
+        return Rendered(ids, False, reason, request_args, parent)
 
     def _resolve_request_args(
-        self, session: TrajectorySession, tools: list[dict[str, Any]] | None, override: dict[str, Any] | None
+        self, parent: Turn | None, tools: list[dict[str, Any]] | None, override: dict[str, Any] | None
     ) -> tuple[dict[str, Any], bool]:
         """The TITO family's resolved (chat_template_kwargs, tools) for this turn; False when it cannot continue."""
         if override is not None and not isinstance(override, dict):
             raise UserInputError("chat_template_kwargs must be an object")
         request = {"chat_template_kwargs": dict(override or {}), "tools": tools}
-        if session.request_args is not None:
-            try:  # omitted fields inherit the recorded turn's; tools that changed cannot reuse its prefix
-                return self.tito_tokenizer.resolve_request_args(dict(request), turn_args=session.request_args), True
+        if parent is not None and parent.request_args is not None:
+            try:  # omitted fields inherit the parent turn's; tools that changed cannot reuse its prefix
+                return self.tito_tokenizer.resolve_request_args(dict(request), turn_args=parent.request_args), True
             except ValueError:
                 return self.tito_tokenizer.resolve_request_args(dict(request), turn_args=None), False
         return self.tito_tokenizer.resolve_request_args(dict(request), turn_args=None), True
-
-    def update_pretokenized_state(
-        self,
-        session: TrajectorySession,
-        turn: Turn,
-        request_messages: list[dict[str, Any]],
-        assistant_message: dict,
-        request_args: dict[str, Any] | None,
-    ) -> None:
-        """Remember the answered history, the assistant message and the resolved args for the next TITO merge."""
-        if self.tito_tokenizer is not None:
-            session.messages = [*request_messages, assistant_message]
-            session.token_ids = array("i", [*turn.input_ids, *turn.output_ids])
-            session.request_args = request_args
 
     @property
     def max_trim_tokens(self) -> int:

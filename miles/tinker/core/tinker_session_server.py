@@ -1,4 +1,4 @@
-"""Recorded-session collector: one turn at a time per session; every turn is kept, reset_reason marks segments."""
+"""Recorded-session collector: one turn at a time per session; turns form a tree by parent, the client prunes it."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.tinker.core.future import FAILED
-from miles.tinker.core.prompt_renderer import PromptRenderer
+from miles.tinker.core.prompt_renderer import PromptRenderer, Rendered
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import OwnershipError, UserInputError
 
@@ -64,9 +64,12 @@ class Turn:
     logprobs: Sequence[float]
     finish_reason: str  # "stop" | "length"
     created_at: float = field(default_factory=time.time)
-    inherits: bool = False  # TITO: input_ids extend the previous turn's input_ids + output_ids
+    inherits: bool = False  # TITO: input_ids extend the parent turn's input_ids + output_ids (up to max_trim_tokens)
     reset_reason: str | None = None  # why a full render opened a segment: first/retry/rewrite/budget/mismatch/no_tito
-    after_truncation: bool = False  # the harness continued past a reply that ended with finish_reason="length"
+    after_truncation: bool = False  # an ancestor's reply was cut at max_tokens and the harness continued past it
+    parent: int | None = None  # the turn this prompt continues (the tree edge the client prunes by); None: a root
+    messages: list[dict[str, Any]] | None = field(default=None, repr=False)  # request + reply, for attach points
+    request_args: dict[str, Any] | None = field(default=None, repr=False)  # resolved TITO args a child inherits
 
     def as_json(self) -> dict[str, Any]:
         """Plain lists for the trajectory export (what the client's turns_to_trajectory reads)."""
@@ -79,6 +82,7 @@ class Turn:
             "inherits": self.inherits,
             "reset_reason": self.reset_reason,
             "after_truncation": self.after_truncation,
+            "parent": self.parent,
         }
 
 
@@ -103,7 +107,7 @@ class TurnResult:
 
 @dataclass
 class TrajectorySession:
-    """Per-trajectory state: owning tenant, pinned sampler path, recorded turns, and the TITO prefix state."""
+    """Per-trajectory state: owning tenant, pinned sampler path, and the recorded turns (a tree by Turn.parent)."""
 
     session_id: str
     tenant: str
@@ -115,9 +119,15 @@ class TrajectorySession:
     pending_request_id: str | None = None  # the sample running under the lock; DELETE cancels it
     max_datum_tokens: int | None = None  # the client's per-datum cap from bind; a TITO chain never grows past it
     sampling_session_id: str | None = None  # the Tinker sampling session bound at create: sampler version + lease
-    messages: list[dict[str, Any]] | None = None  # history the last recorded turn answered, its reply appended
-    token_ids: Sequence[int] | None = None  # the last turn's input_ids + output_ids, inherited by the next turn
-    request_args: dict[str, Any] | None = None  # the last turn's resolved TITO args (kwargs, tools) it may inherit
+
+
+def lineage_truncated(turns: list[Turn], parent: int | None) -> bool:
+    """True when any turn on the path from the root to `parent` ended at max_tokens (finish_reason "length")."""
+    while parent is not None:
+        if turns[parent].finish_reason == "length":
+            return True
+        parent = turns[parent].parent
+    return False
 
 
 def max_new_tokens_of(sampling_params: dict[str, Any]) -> int:
@@ -249,7 +259,7 @@ class TrajectoryCollector:
         return cap if session.max_datum_tokens is None else min(cap, session.max_datum_tokens)
 
     async def complete(self, session_id: str, request: TurnRequest) -> TurnResult:
-        """Record one turn on a bound session under its lock: render off the loop, sample under the lease, commit."""
+        """Record one turn on a bound session under its lock: attach + render off the loop, sample, commit."""
         session = self._session_for_request(session_id, request.model)
         max_new_tokens = max_new_tokens_of(request.sampling_params)
         async with session.lock:  # a retry that overlaps its first attempt waits here and is then seen as a resend
@@ -259,7 +269,7 @@ class TrajectoryCollector:
                 cap = self.max_turns_per_session
                 raise SessionLimitError(f"session {session_id!r} already holds {len(session.turns)} turns (cap {cap})")
             # tokenizing is CPU work; keep it off the loop that serves every tenant's Tinker traffic
-            prompt_token_ids, inherits, reset_reason, request_args = await asyncio.to_thread(
+            rendered = await asyncio.to_thread(
                 self.renderer.prepare_pretokenized,
                 session,
                 request.messages,
@@ -269,21 +279,12 @@ class TrajectoryCollector:
                 budget=self._tito_budget(session),
             )
             # the harness continued past a reply cut at max_tokens; miles session server v2 refuses, v1 desyncs
-            last = session.turns[-1] if session.turns else None
-            after_truncation = inherits and last is not None and last.finish_reason == "length"
+            after_truncation = lineage_truncated(session.turns, rendered.parent)
             if after_truncation and self.strict_truncation:
                 raise TruncatedGenerationError("cannot extend a reply that ended at max_tokens; resample it or rebind")
-            sequence = await self._sample(session, self._payload(session, prompt_token_ids, request.sampling_params))
-            return self._commit_generation(
-                session,
-                request.messages,
-                prompt_token_ids,
-                sequence,
-                inherits,
-                reset_reason,
-                after_truncation,
-                request_args,
-            )
+            payload = self._payload(session, rendered.prompt_token_ids, request.sampling_params)
+            sequence = await self._sample(session, payload)
+            return self._commit_generation(session, request.messages, rendered, sequence, after_truncation)
 
     @staticmethod
     def _payload(session: TrajectorySession, prompt_token_ids: list[int], sampling_params: dict) -> dict[str, Any]:
@@ -322,28 +323,27 @@ class TrajectoryCollector:
         self,
         session: TrajectorySession,
         request_messages: list[dict[str, Any]],
-        prompt_token_ids: list[int],
+        rendered: Rendered,
         sequence: dict[str, Any],
-        inherits: bool,
-        reset_reason: str | None,
         after_truncation: bool,
-        request_args: dict[str, Any] | None,
     ) -> TurnResult:
-        """Build the Turn and its assistant message first, then write turns, last_seen and the TITO state together."""
+        """Build the Turn with its history and assistant message, then append it: the tree grows by one node."""
         turn = Turn(
-            input_ids=array("i", prompt_token_ids),
+            input_ids=array("i", rendered.prompt_token_ids),
             output_ids=array("i", (int(token) for token in sequence["tokens"])),
             logprobs=array("d", (float(value) for value in sequence["logprobs"])),
             finish_reason="length" if sequence.get("stop_reason") == "length" else "stop",
             created_at=self.clock(),
-            inherits=inherits,
-            reset_reason=reset_reason,
+            inherits=rendered.inherits,
+            reset_reason=rendered.reset_reason,
             after_truncation=after_truncation,
+            parent=rendered.parent,
+            request_args=rendered.request_args,
         )
         message = self.renderer.assistant_message(turn)
+        turn.messages = [*request_messages, message]  # the same dict the adapter renders: a child matches it later
         session.turns.append(turn)
         session.last_seen = turn.created_at
-        self.renderer.update_pretokenized_state(session, turn, request_messages, message, request_args)  # same dict
         return TurnResult(turn=turn, assistant_message=message)
 
     def _session_for_request(self, session_id: str, model: str | None) -> TrajectorySession:

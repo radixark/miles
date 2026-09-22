@@ -19,6 +19,7 @@ from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.chat_template_utils import get_tito_tokenizer
+from miles.utils.chat_template_utils.message_matcher_hub import strict_message_matches
 from miles.utils.hf_config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
@@ -37,7 +38,12 @@ def _build_collector(args, service: TinkerService) -> TrajectoryCollector:
         tito_tokenizer = get_tito_tokenizer(
             tokenizer, args.tinker_tito_model, chat_template_kwargs=args.apply_chat_template_kwargs
         )
-    renderer = PromptRenderer(tokenizer, args.apply_chat_template_kwargs, tito_tokenizer=tito_tokenizer)
+    renderer = PromptRenderer(
+        tokenizer,
+        args.apply_chat_template_kwargs,
+        tito_tokenizer=tito_tokenizer,
+        message_matcher=strict_message_matches,
+    )
     return TrajectoryCollector(
         service,
         renderer,

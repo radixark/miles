@@ -156,13 +156,18 @@ class HarborDatasetBuilder(RLDatasetBuilder):
 
 
 def select_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop retry-superseded attempts and continuations of a truncated reply, as the miles session server v1/v2 do."""
-    kept = []
+    """miles v2 drop_retries on the exported tree: leaves without a later sibling train, nothing past a cut reply."""
+    children: dict[int | None, list[int]] = {}
     for index, turn in enumerate(turns):
-        superseded = index + 1 < len(turns) and turns[index + 1].get("reset_reason") == "retry"
-        if not superseded and not turn.get("after_truncation"):
-            kept.append(turn)
-    return kept
+        children.setdefault(turn.get("parent"), []).append(index)
+    kept: set[int] = set()
+    for index, turn in enumerate(turns):
+        if index in children or any(sibling > index for sibling in children[turn.get("parent")]):
+            continue  # not a leaf, or an attempt that a later sibling superseded
+        while index is not None:  # the leaf's whole path trains
+            kept.add(index)
+            index = turns[index].get("parent")
+    return [turn for index, turn in enumerate(turns) if index in kept and not turn.get("after_truncation")]
 
 
 def truncate_turns(turns: list[dict[str, Any]], max_tokens: int | None) -> list[dict[str, Any]]:

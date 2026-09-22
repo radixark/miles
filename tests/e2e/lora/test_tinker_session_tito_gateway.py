@@ -4,6 +4,7 @@ import asyncio
 import uuid
 
 import httpx
+from examples.multi_lora.harbor_tinker.harbor_env import select_turns
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.lora.tinker_gateway import (
     BASE_MODEL,
@@ -141,13 +142,17 @@ async def linear_chain(http: httpx.AsyncClient, tenant: Tenant, render: FullRend
             )
         token_identical += turn["input_ids"] == full
     print(f"[{tenant.api_key}] chain: 3 turns inherit; {token_identical}/3 prompts token-identical to a full render")
-    await chat(http, session_id, histories[-1])  # the harness re-sent the same request: a retry
+    fixed = [*histories[-1][:-1], {"role": "user", "content": "Name the third one."}]  # the last request, edited
+    await chat(http, session_id, fixed)  # a rollback: it continues turn 1 again, so turn 2 is a superseded leaf
+    await chat(http, session_id, histories[-1])  # the same request re-sent: a retry, another child of turn 1
     edited = [{"role": "user", "content": FIRST_QUESTION.replace("color", "colour")}, *histories[-1][1:]]
-    await chat(http, session_id, edited)  # an edited history (compaction): a rewrite
-    resets = [
-        (turn["inherits"], turn["reset_reason"]) for turn in (await export(http, tenant, session_id))["turns"][3:]
-    ]
-    assert resets == [(False, "retry"), (False, "rewrite")], resets
+    await chat(http, session_id, edited)  # an edited history (compaction): a new root
+    turns = (await export(http, tenant, session_id))["turns"]
+    tree = [(turn["parent"], turn["inherits"], turn["reset_reason"]) for turn in turns]
+    expected = [(None, False, "first"), (0, True, None), (1, True, None), (1, True, None), (1, True, None)]
+    assert tree == [*expected, (None, False, "rewrite")], tree
+    kept = select_turns(turns)
+    assert [index for index, turn in enumerate(turns) if any(turn is k for k in kept)] == [0, 1, 4, 5], tree
     await delete(http, tenant, session_id)
     return turns
 
@@ -165,15 +170,19 @@ async def budget_reset(http: httpx.AsyncClient, tenant: Tenant, first_prompt_len
 
 
 async def truncated_reply(http: httpx.AsyncClient, tenant: Tenant) -> None:
-    """Continuing past a reply cut at max_tokens is recorded with after_truncation (strict truncation is off)."""
+    """Every turn below a reply cut at max_tokens carries after_truncation and is left out of training."""
     session_id = f"cut-{uuid.uuid4().hex}"
     (await bind(http, tenant, session_id)).raise_for_status()
     history = [{"role": "user", "content": FIRST_QUESTION}]
     reply, finish_reason = await chat(http, session_id, history, max_tokens=1)
     assert finish_reason == "length", finish_reason
-    await chat(http, session_id, [*history, reply, {"role": "user", "content": FOLLOW_UPS[0]}])
+    continued = [*history, reply, {"role": "user", "content": FOLLOW_UPS[0]}]
+    reply2, _ = await chat(http, session_id, continued)
+    await chat(http, session_id, [*continued, reply2, {"role": "user", "content": FOLLOW_UPS[1]}])
     turns = (await export(http, tenant, session_id))["turns"]
-    assert turns[0]["finish_reason"] == "length" and turns[1]["after_truncation"] is True, turns
+    assert turns[0]["finish_reason"] == "length" and [turn["parent"] for turn in turns] == [None, 0, 1], turns
+    assert [turn["after_truncation"] for turn in turns] == [False, True, True], turns  # the whole lineage is flagged
+    assert len(select_turns(turns)) == 1  # nothing below the cut reply trains
     await delete(http, tenant, session_id)
 
 
