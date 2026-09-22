@@ -147,6 +147,10 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.recompute_modules = args.recompute_modules
     provider.distribute_saved_activations = args.distribute_saved_activations
     provider.attention_backend = args.attention_backend
+    provider.apply_rope_fusion = args.apply_rope_fusion
+    provider.bias_activation_fusion = args.bias_swiglu_fusion
+    provider.moe_router_dtype = args.moe_router_dtype
+    provider.moe_router_use_torch_mm = args.moe_router_use_torch_mm
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
