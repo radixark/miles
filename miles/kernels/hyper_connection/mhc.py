@@ -1,10 +1,6 @@
-import os
-
 import torch
 import triton
 import triton.language as tl
-
-FUSED = os.environ.get("MILES_DSV41_HC_FUSED", "0") == "1"
 
 
 @triton.jit
@@ -117,17 +113,9 @@ class _HCMix(torch.autograd.Function):
         )
 
 
-def hc_mix(x, original_residual, h_res, h_post, n):
+def mhc_mix(x, original_residual, h_res, h_post, n):
     """`h_post * x + einsum("sbij,sbid->sbjd", h_res, residual)`, flattened back to [s, b, n*d]."""
     return _HCMix.apply(x, original_residual, h_res, h_post, n)
-
-
-def hc_mix_reference(x, original_residual, h_res, h_post, n):
-    s, b, _ = original_residual.shape
-    residual = original_residual.view(s, b, n, -1).float()
-    mixed = torch.einsum("sbij,sbid->sbjd", h_res.float(), residual)
-    out = h_post.float().unsqueeze(-1) * x.float().unsqueeze(2) + mixed
-    return out.view(s, b, -1).to(original_residual.dtype)
 
 
 @triton.jit
@@ -192,6 +180,6 @@ class _Aggregate(torch.autograd.Function):
         return gx.view(s, b, n * d).to(x_dt), gpre.view(s, b, n).to(pre_dt), None
 
 
-def aggregate(x, pre, n):
+def mhc_aggregate(x, pre, n):
     """`(pre.unsqueeze(-1) * x.view(s, b, n, d)).sum(dim=2)` in fp32, without the [s, b, n, d] temporary."""
     return _Aggregate.apply(x, pre, n)

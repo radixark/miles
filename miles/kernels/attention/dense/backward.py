@@ -336,7 +336,7 @@ def _bwd_kernel_dq(
     tl.store(dq_ptrs, dq.to(q.dtype), mask=mask_m[:, None] & mask_d[None, :])
 
 
-def triton_attention_backward(q, k, v, o, do, B, S, sm_scale=None):
+def dense_attention_backward(q, k, v, o, do, B, S, sm_scale=None):
     """Triton backward for causal self-attention (two-pass with LSE).
 
     Args:

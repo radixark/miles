@@ -10,63 +10,7 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-
-@triton.jit(do_not_specialize=["T"])
-def _grouped_rmsnorm_fwd_kernel(
-    x_ptr,
-    w_ptr,
-    normed_ptr,  # fp32 out [T, n*C]
-    rstd_ptr,  # fp32 out [T, n]
-    T,
-    N: tl.constexpr,  # streams
-    C: tl.constexpr,  # per-stream hidden
-    EPS: tl.constexpr,
-    BLOCK_C: tl.constexpr,
-):
-    pid = tl.program_id(0).to(tl.int64)
-    t = pid // N
-    c = pid % N
-    if t >= T:
-        return
-    offs = tl.arange(0, BLOCK_C)
-    mask = offs < C
-    base = t * (N * C) + c * C
-    x = tl.load(x_ptr + base + offs, mask=mask, other=0.0).to(tl.float32)
-    var = tl.sum(x * x, axis=0) / C
-    rstd = 1.0 / tl.sqrt(var + EPS)
-    w = tl.load(w_ptr + c * C + offs, mask=mask, other=0.0).to(tl.float32)
-    tl.store(normed_ptr + base + offs, x * rstd * (1.0 + w), mask=mask)
-    tl.store(rstd_ptr + t * N + c, rstd)
-
-
-@triton.jit(do_not_specialize=["T"])
-def _grouped_rmsnorm_bwd_kernel(
-    x_ptr,
-    w_ptr,
-    rstd_ptr,
-    dnormed_ptr,  # fp32 in [T, n*C]
-    dx_ptr,  # out, x dtype
-    T,
-    N: tl.constexpr,
-    C: tl.constexpr,
-    BLOCK_C: tl.constexpr,
-):
-    pid = tl.program_id(0).to(tl.int64)
-    t = pid // N
-    c = pid % N
-    if t >= T:
-        return
-    offs = tl.arange(0, BLOCK_C)
-    mask = offs < C
-    base = t * (N * C) + c * C
-    x = tl.load(x_ptr + base + offs, mask=mask, other=0.0).to(tl.float32)
-    w = tl.load(w_ptr + c * C + offs, mask=mask, other=0.0).to(tl.float32)
-    dy = tl.load(dnormed_ptr + base + offs, mask=mask, other=0.0)
-    rstd = tl.load(rstd_ptr + t * N + c)
-    g = dy * (1.0 + w)
-    dot = tl.sum(g * x, axis=0)
-    dx = rstd * g - x * (rstd * rstd * rstd) * (dot / C)
-    tl.store(dx_ptr + base + offs, dx.to(dx_ptr.dtype.element_ty), mask=mask)
+from miles.kernels.norm.grouped_rmsnorm import block_c, grouped_rmsnorm_bwd_kernel, grouped_rmsnorm_fwd
 
 
 @triton.jit(do_not_specialize=["T"])
@@ -173,20 +117,6 @@ def _combine_bwd_kernel(
     tl.store(dy_ptr + t * C + offs, dy.to(dy_ptr.dtype.element_ty), mask=mask)
 
 
-def _block_c(C: int) -> int:
-    return triton.next_power_of_2(C)
-
-
-def _norm_fwd(x2d: torch.Tensor, weight: torch.Tensor, n: int, eps: float):
-    T, W = x2d.shape
-    C = W // n
-    normed = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
-    rstd = torch.empty(T, n, dtype=torch.float32, device=x2d.device)
-    if T > 0:
-        _grouped_rmsnorm_fwd_kernel[(T * n,)](x2d, weight, normed, rstd, T, N=n, C=C, EPS=eps, BLOCK_C=_block_c(C))
-    return normed, rstd
-
-
 def _gate_chain_fwd(normed, w_down, w_up, n):
     """fp32 gate = sigmoid(Wup silu(Wdown N / n)). Returns (gate, z1) fp32."""
     z1 = F.linear(normed, w_down.float()) / n
@@ -201,11 +131,11 @@ class _HCMixInject(torch.autograd.Function):
     def forward(ctx, x2d, weight, w_down, w_up, w_inject, n, eps):
         T, W = x2d.shape
         C = W // n
-        normed, rstd = _norm_fwd(x2d, weight, n, eps)
+        normed, rstd = grouped_rmsnorm_fwd(x2d, weight, n, eps)
         gate, _ = _gate_chain_fwd(normed, w_down, w_up, n)
         mixed = torch.empty(T, C, dtype=x2d.dtype, device=x2d.device)
         if T > 0:
-            _gate_mul_mean_fwd_kernel[(T,)](gate, normed, mixed, T, N=n, C=C, BLOCK_C=_block_c(C))
+            _gate_mul_mean_fwd_kernel[(T,)](gate, normed, mixed, T, N=n, C=C, BLOCK_C=block_c(C))
         if w_inject is not None:
             h_post = 2.0 * torch.sigmoid(F.linear(normed, w_inject.float()) / n)
         else:
@@ -220,7 +150,7 @@ class _HCMixInject(torch.autograd.Function):
         n, eps = ctx.n, ctx.eps
         T, W = x2d.shape
         C = W // n
-        normed, _ = _norm_fwd(x2d, weight, n, eps)
+        normed, _ = grouped_rmsnorm_fwd(x2d, weight, n, eps)
         gate, z1 = _gate_chain_fwd(normed, w_down, w_up, n)
         s1 = F.silu(z1)
 
@@ -228,7 +158,7 @@ class _HCMixInject(torch.autograd.Function):
         dgate = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
         dnormed = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
         if T > 0:
-            _gate_mul_mean_bwd_kernel[(T,)](dmixed, gate, normed, dgate, dnormed, T, N=n, C=C, BLOCK_C=_block_c(C))
+            _gate_mul_mean_bwd_kernel[(T,)](dmixed, gate, normed, dgate, dnormed, T, N=n, C=C, BLOCK_C=block_c(C))
 
         dz2 = dgate * gate * (1.0 - gate)
         dw_up = dz2.t() @ s1
@@ -253,7 +183,7 @@ class _HCMixInject(torch.autograd.Function):
 
         dx = torch.empty_like(x2d)
         if T > 0:
-            _grouped_rmsnorm_bwd_kernel[(T * n,)](x2d, weight, rstd, dnormed, dx, T, N=n, C=C, BLOCK_C=_block_c(C))
+            grouped_rmsnorm_bwd_kernel[(T * n,)](x2d, weight, rstd, dnormed, dx, T, N=n, C=C, BLOCK_C=block_c(C))
         return (
             dx,
             dweight,
@@ -276,7 +206,7 @@ class _HCCombine(torch.autograd.Function):
         h_post = h_post.float().contiguous()
         out = torch.empty_like(residual2d)
         if T > 0:
-            _combine_fwd_kernel[(T * n,)](residual2d, y2d, h_post, out, T, N=n, C=C, BLOCK_C=_block_c(C))
+            _combine_fwd_kernel[(T * n,)](residual2d, y2d, h_post, out, T, N=n, C=C, BLOCK_C=block_c(C))
         ctx.save_for_backward(y2d, h_post)
         ctx.n = n
         return out
@@ -291,11 +221,11 @@ class _HCCombine(torch.autograd.Function):
         dy = torch.empty_like(y2d)
         dh_post = torch.empty(T, n, dtype=torch.float32, device=dout.device)
         if T > 0:
-            _combine_bwd_kernel[(T,)](dout, y2d, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=_block_c(C))
+            _combine_bwd_kernel[(T,)](dout, y2d, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=block_c(C))
         return dout, dy, dh_post.to(ctx.h_post_dtype), None
 
 
-def hc_mix_inject_triton(x, weight, w_down, w_up, w_inject, n: int, eps: float):
+def hc_mix_inject(x, weight, w_down, w_up, w_inject, n: int, eps: float):
     """Fused (grouped_gemma_rmsnorm -> hc_mix, hc_inject_gate)."""
     lead = x.shape[:-1]
     x2d = x.reshape(-1, x.shape[-1]).contiguous()
@@ -306,7 +236,7 @@ def hc_mix_inject_triton(x, weight, w_down, w_up, w_inject, n: int, eps: float):
     return mixed, h_post
 
 
-def hc_combine_triton(residual, block_output, h_post, n: int):
+def hc_combine(residual, block_output, h_post, n: int):
     """``X'_c = X_c + a_c * y`` -- fused elementwise."""
     lead = residual.shape[:-1]
     r2d = residual.reshape(-1, residual.shape[-1]).contiguous()

@@ -12,8 +12,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import hc_combine_triton, hc_mix_inject_triton
-from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import ple_gate_conv_triton
+from miles.kernels.embedding.ple_gate_conv import ple_gate_conv
+from miles.kernels.hyper_connection.hc import hc_combine, hc_mix_inject
 from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton
 from miles_plugins.models.qwen3_8_next.ops.ple import ngram_hash_ids, shift_right_ignore_eos
 
@@ -38,7 +38,7 @@ def hc_inject_gate(normed, w_inject, n):
     return 2 * torch.sigmoid(F.linear(normed, w_inject.to(normed.dtype)) / n)
 
 
-def hc_combine(residual, block_output, h_post, n, hidden):
+def hc_combine_reference(residual, block_output, h_post, n, hidden):
     out_dtype = residual.dtype
     R = residual.float().unflatten(-1, (n, hidden))
     injection = block_output.float().unsqueeze(-2) * h_post.float().unsqueeze(-1)
@@ -216,7 +216,7 @@ def test_hc_mix_inject(T, C, n, R, dtype, tol_mix, tol_comb, with_inject):
     for p in params:
         p.grad = None
 
-    mix_tri, hp_tri = hc_mix_inject_triton(x, weight, w_down, w_up, w_inj if with_inject else None, n, eps)
+    mix_tri, hp_tri = hc_mix_inject(x, weight, w_down, w_up, w_inj if with_inject else None, n, eps)
     if with_inject:
         torch.autograd.backward([mix_tri, hp_tri], [dmix, dhp])
         assert rel_err(hp_tri, hp_ref) < tol_mix
@@ -238,13 +238,13 @@ def test_hc_combine(T, C, n, R, dtype, tol_mix, tol_comb):
     hp = torch.rand(T, n, device="cuda", dtype=torch.float32, generator=g).mul(2).requires_grad_()
     dout = torch.randn(T, W, device="cuda", dtype=dtype, generator=g)
 
-    out_ref = hc_combine(res, y, hp, n, C)
+    out_ref = hc_combine_reference(res, y, hp, n, C)
     out_ref.backward(dout)
     ref_grads = [t.grad.clone() for t in (res, y, hp)]
     for t in (res, y, hp):
         t.grad = None
 
-    out_tri = hc_combine_triton(res, y, hp, n)
+    out_tri = hc_combine(res, y, hp, n)
     out_tri.backward(dout)
     assert rel_err(out_tri, out_ref) < tol_comb
     for name, r, t in zip(["dres", "dy", "dhpost"], ref_grads, (res, y, hp), strict=False):
@@ -256,7 +256,7 @@ def test_hc_mix_inject_3d_leading_shape():
     g = torch.Generator(device="cuda").manual_seed(99)
     x3 = torch.randn(17, 2, 4 * 64, device="cuda", dtype=torch.float32, generator=g)
     weight, w_down, w_up, w_inj = _hc_params(4 * 64, 16, 4, torch.float32, g)
-    m3, hp3 = hc_mix_inject_triton(x3, weight, w_down, w_up, w_inj, 4, 1e-6)
+    m3, hp3 = hc_mix_inject(x3, weight, w_down, w_up, w_inj, 4, 1e-6)
     assert m3.shape == (17, 2, 64) and hp3.shape == (17, 2, 4)
 
 
@@ -294,7 +294,7 @@ def test_ple_gate_conv(T, C, n, segs, dtype, tol):
     for p in params:
         p.grad = None
 
-    tri = ple_gate_conv_triton(hc, key, value, wk, wq, wc, convw, n, eps, dil, cu)
+    tri = ple_gate_conv(hc, key, value, wk, wq, wc, convw, n, eps, dil, cu)
     tri.backward(dout)
     assert rel_err(tri, ref) < tol
     names = ["dhc", "dkey", "dvalue", "dwk", "dwq", "dwc", "dconvw"]

@@ -22,7 +22,7 @@ def ceil_div(x: int, y: int) -> int:
 
 
 @triton.jit
-def _blockwise_cast_to_fp8_triton(
+def _fp8_blockwise_cast_kernel(
     X,
     Y,
     S,
@@ -58,7 +58,7 @@ def _blockwise_cast_to_fp8_triton(
     tl.store(S + pid_m * stride_sm + pid_n * stride_sn, x_s)
 
 
-def blockwise_cast_to_fp8_triton(x: torch.Tensor, block_size=None) -> tuple[torch.Tensor, torch.Tensor]:
+def fp8_blockwise_cast(x: torch.Tensor, block_size=None) -> tuple[torch.Tensor, torch.Tensor]:
     BLOCK_M, BLOCK_N = 128, 128
     if block_size:
         BLOCK_M, BLOCK_N = block_size[0], block_size[1]
@@ -73,7 +73,7 @@ def blockwise_cast_to_fp8_triton(x: torch.Tensor, block_size=None) -> tuple[torc
         kwargs = {"BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "num_warps": 8, "num_stages": 2}
     else:
         kwargs = {"BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "num_warps": 1, "num_stages": 4}
-    _blockwise_cast_to_fp8_triton[grid](
+    _fp8_blockwise_cast_kernel[grid](
         x, y, s, *x.stride(), *y.stride(), *s.stride(), M, N, 1e-10, fp8_min, fp8_max, **kwargs
     )
     return y, s

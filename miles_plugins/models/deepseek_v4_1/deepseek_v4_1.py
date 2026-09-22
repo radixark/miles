@@ -1,4 +1,5 @@
 import copy
+import os
 
 import einops
 import torch
@@ -25,9 +26,11 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import HyperConnectionTransformerLayer, get_transformer_layer_offset
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
+from miles.kernels.hyper_connection.mhc import mhc_aggregate, mhc_mix
+from miles.kernels.position.rope import apply_rotary_emb
+from miles.kernels.quant.fake_quant import fake_quant_compressed_kv
 from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
-from miles_plugins.models.deepseek_v4_1.ops import hc_mix
 from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v4_1.ops.cp_utils import (
     all_gather_cp,
@@ -38,9 +41,9 @@ from miles_plugins.models.deepseek_v4_1.ops.cp_utils import (
 from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer
 from miles_plugins.models.deepseek_v4_1.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v4_1.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
-from miles_plugins.models.deepseek_v4_1.ops.quant import fake_quant_compressed_kv
-from miles_plugins.models.deepseek_v4_1.ops.rope import apply_rotary_emb
 from miles_plugins.models.deepseek_v4_1.ops.rope_tables import wrapped_precompute_freqs_cis
+
+HC_FUSED = os.environ.get("MILES_DSV41_HC_FUSED", "0") == "1"
 
 V41_CONFIG_FIELDS = (
     "kv_source_layer_ids",
@@ -86,8 +89,8 @@ def v41_aggregate(x: torch.Tensor, pre: torch.Tensor | None, n: int) -> torch.Te
     s, b, nc = x.shape
     if pre is None:
         return x.view(s, b, n, nc // n)[:, :, 0].to(x.dtype)
-    if hc_mix.FUSED:
-        return hc_mix.aggregate(x, pre, n)
+    if HC_FUSED:
+        return mhc_aggregate(x, pre, n)
     streams = x.view(s, b, n, nc // n).float()
     return (pre.float().unsqueeze(-1) * streams).sum(dim=2).to(x.dtype)
 
@@ -275,8 +278,8 @@ class V41HyperConnection(HyperConnectionModule):
     ):
         x, bias = layer_output_with_bias
         assert bias is None
-        if hc_mix.FUSED:
-            return hc_mix.hc_mix(x, original_residual, h_res, h_post, self.n)
+        if HC_FUSED:
+            return mhc_mix(x, original_residual, h_res, h_post, self.n)
         s, b, _ = original_residual.shape
         residual = original_residual.view(s, b, self.n, self.hidden_size).float()
         mixed = torch.einsum("sbij,sbid->sbjd", h_res.float(), residual)

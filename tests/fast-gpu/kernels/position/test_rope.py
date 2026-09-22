@@ -1,5 +1,7 @@
 """The DeepSeek-V4.1 triton RoPE must match the torch reference, forward and backward."""
 
+import sys
+
 from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"])
@@ -7,7 +9,7 @@ register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["miles-plugin"
 import pytest
 import torch
 
-from miles_plugins.models.deepseek_v4_1.ops.rope import apply_rotary_emb
+from miles.kernels.position.rope import apply_rotary_emb
 from miles_plugins.models.deepseek_v4_1.ops.rope_tables import apply_rotary_emb as apply_rotary_emb_reference
 
 ROPE_DIM = 64
@@ -59,3 +61,7 @@ def test_rope_backward_is_not_identity():
     out.backward(grad_out)
     assert not torch.allclose(base.grad[..., -ROPE_DIM:], grad_out[..., -ROPE_DIM:])
     torch.testing.assert_close(base.grad[..., :-ROPE_DIM], grad_out[..., :-ROPE_DIM])
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
