@@ -7,6 +7,11 @@ compute, and the Megatron -> HF weight update goes through the head-interleaved 
 ``conv1d`` converters.  ``MILES_GDN_BACKEND=fla`` runs the same recipe on the FLA backend for an
 A/B reference.  Needs Blackwell (SM100a/SM103a) GPUs for the loom backend.
 
+``MILES_E2E_MODE`` selects ``live`` (default: rollouts + training), ``record`` (live, additionally dumps every
+rollout batch to ``MILES_E2E_DEBUG_DIR``) or ``replay`` (``--debug-train-only`` on the recorded batches, saving
+the per-step grad norm under ``MILES_E2E_RUN_TAG``).  Two ``replay`` runs of the loom backend on the same
+recorded batches must produce bit-identical grad norms; ``fla`` replays give the non-deterministic reference.
+
 Paths default to the CI layout (``/root/models``, ``/root/datasets``, ``/root``); set
 ``MILES_E2E_ROOT`` to relocate all three under one directory (out-of-CI runs on scratch storage).
 """
@@ -34,6 +39,9 @@ DATA_DIR = f"{ROOT}/datasets" if ROOT else "/root/datasets"
 CKPT_DIR = ROOT if ROOT else "/root"
 MEGATRON_PATH = os.environ.get("MILES_E2E_MEGATRON_PATH", "/root/Megatron-LM")
 NUM_ROLLOUT = int(os.environ.get("MILES_E2E_NUM_ROLLOUT", "3"))
+MODE = os.environ.get("MILES_E2E_MODE", "live")
+DEBUG_DIR = os.environ.get("MILES_E2E_DEBUG_DIR", f"{CKPT_DIR}/gdn_debug_rollouts")
+RUN_TAG = os.environ.get("MILES_E2E_RUN_TAG", BACKEND)
 
 
 def prepare():
@@ -129,13 +137,24 @@ def execute():
         "--colocate "
         f"--linear-attention-backend {BACKEND} "
     )
+    if MODE == "record":
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        misc_args += f"--save-debug-rollout-data {DEBUG_DIR}/rollout_{{rollout_id}}.pt "
+    elif MODE == "replay":
+        misc_args += (
+            f"--load-debug-rollout-data {DEBUG_DIR}/rollout_{{rollout_id}}.pt "
+            "--debug-train-only "
+            f"--ci-save-grad-norm {DEBUG_DIR}/grad_norm_{RUN_TAG}_{{rollout_id}}_{{step_id}}.pt "
+        )
+    elif MODE != "live":
+        raise ValueError(f"MILES_E2E_MODE must be live, record or replay, got {MODE!r}")
 
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_name_prefix=f'gdn-{BACKEND}')} "
+        f"{U.get_default_wandb_args(__file__, run_name_prefix=f'gdn-{RUN_TAG}-{MODE}')} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
