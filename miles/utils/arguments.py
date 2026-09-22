@@ -331,12 +331,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--linear-attention-backend",
                 type=str,
-                choices=["fla", "flashqla"],
+                choices=["fla", "flashqla", "loom"],
                 default="fla",
                 help=(
                     "Backend for Qwen GDN linear-attention layers. "
                     "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
-                    "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
+                    "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+. "
+                    "'loom' is the bit-deterministic chunked forward/backward generated into "
+                    "miles_plugins/models/gdn_chunk_train (NVIDIA SM100a/SM103a Blackwell only; K = V = 128)."
                 ),
             )
             parser.add_argument(

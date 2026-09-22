@@ -19,4 +19,11 @@ def get_chunk_gated_delta_rule(backend: str):
             ) from exc
         return chunk_gated_delta_rule
 
+    if backend == "loom":
+        try:
+            from miles_plugins.models.gdn_chunk_train import chunk_gated_delta_rule
+        except ImportError as exc:
+            raise ImportError("Qwen GDN backend 'loom' requires the generated kernels in miles_plugins/models/gdn_chunk_train.") from exc
+        return chunk_gated_delta_rule
+
     raise ValueError(f"Unsupported Qwen GDN backend: {backend}")

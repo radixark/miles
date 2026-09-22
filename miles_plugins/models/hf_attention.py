@@ -48,6 +48,10 @@ class HuggingfaceAttention(MegatronModule, ABC):
     # Subclasses set this to True when the underlying module handles CP natively
     # (e.g. via fla's state-passing CP for DeltaNet), bypassing the all-gather.
     hybrid_cp: bool = False
+    # Subclasses set this to True when the wrapped module shards its compute across TP
+    # (head-sharded GDN core): the SP gather's backward must then reduce-scatter the
+    # gradient instead of splitting it.
+    tp_sharded_compute: bool = False
 
     def __init__(
         self,
@@ -88,12 +92,14 @@ class HuggingfaceAttention(MegatronModule, ABC):
         cu_seqlens = packed_seq_params.cu_seqlens_q
 
         if self.args.sequence_parallel:
-            # tensor_parallel_output_grad=False: the linear attention after this
-            # gather is NOT TP-sharded (duplicated on all ranks), so the backward
-            # should split (not reduce-scatter) to avoid inflating gradients by TP.
+            # tensor_parallel_output_grad=False when the module after this gather is NOT
+            # TP-sharded (duplicated on all ranks): the backward then splits (not
+            # reduce-scatters) to avoid inflating gradients by TP. A head-sharded module
+            # (``tp_sharded_compute``) ends in a row-parallel projection, so its input
+            # gradient is a partial sum that the backward must reduce-scatter.
             hidden_states = tensor_parallel.gather_from_sequence_parallel_region(
                 hidden_states,
-                tensor_parallel_output_grad=False,
+                tensor_parallel_output_grad=self.tp_sharded_compute,
                 group=mpu.get_tensor_model_parallel_group(),
             )
 
