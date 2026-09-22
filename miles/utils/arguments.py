@@ -46,10 +46,8 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
 
 def _resolve_rollout_functions(args) -> None:
     if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
-        # Naming the class is the same selection --fully-async makes, so treat it as the
-        # mode rather than an arbitrary plugin. Without this, such a run skips every check
-        # below and the driver scheduling the mode implies, which the class cannot supply
-        # on its own. A subclass still has to pass the flag.
+        # The selection --fully-async makes, so enable the mode: as a plugin path it would
+        # skip the checks below and train.py's async-driver guard. A subclass passes the flag.
         logger.info("--rollout-function-path selects FullyAsyncRolloutFn: enabling --fully-async")
         args.fully_async = True
         args.rollout_function_path = None
