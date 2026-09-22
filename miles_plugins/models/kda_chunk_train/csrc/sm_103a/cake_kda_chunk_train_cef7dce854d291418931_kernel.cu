@@ -77,7 +77,7 @@ __device__ __forceinline__ uint32_t elect_sync() {
 extern "C" {
 
 __global__ __launch_bounds__(128) void
-kernel_cake_kda_chunk_train_2a3743d77da552346275(float* __restrict__ dA_part, float* __restrict__ dbias_part, float* __restrict__ dA_log, float* __restrict__ dt_bias_grad, int num_chunks, int num_heads)
+kernel_cake_kda_chunk_train_cef7dce854d291418931(float* __restrict__ dA_part, float* __restrict__ dbias_part, float* __restrict__ dA_log, float* __restrict__ dt_bias_grad, int num_chunks, int num_heads)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -85,8 +85,7 @@ kernel_cake_kda_chunk_train_2a3743d77da552346275(float* __restrict__ dA_part, fl
 
     extern __shared__ __align__(1024) char smem_raw[];
     int smem;
-    asm volatile("{ .reg .u64 smem_ptr; cvta.to.shared.u64 smem_ptr, %1; cvt.u32.u64 %0, smem_ptr; }" : "=r"(smem) : "l"(smem_raw));
-    smem = make_warp_uniform(smem);
+    smem = (int)(unsigned long long)__cvta_generic_to_shared(smem_raw);
 
     const int bid = blockIdx.x;
     const int num_bids = gridDim.x;
@@ -100,7 +99,7 @@ kernel_cake_kda_chunk_train_2a3743d77da552346275(float* __restrict__ dA_part, fl
     int dim = tid;
     float sum_a = 0.0f;
     float sum_b = 0.0f;
-    #pragma unroll 1
+    #pragma unroll 8
     for (int c = 0; c < num_chunks; c++) {
         long long index = ((long long)c * (long long)num_heads + (long long)head) * 128 + (long long)dim;
         sum_a = sum_a + dA_part[index];

@@ -29,6 +29,7 @@ host-side repacking or padding copies are needed.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import torch
@@ -152,23 +153,41 @@ _LAYOUT_CACHE: dict[tuple, ChunkLayout] = {}
 _LAYOUT_CACHE_LIMIT = 256
 
 
-def chunk_layout(batch: int, seq_len: int, cu_seqlens: torch.Tensor | None, device) -> ChunkLayout:
+def chunk_layout(
+    batch: int,
+    seq_len: int,
+    cu_seqlens: torch.Tensor | None,
+    device,
+    *,
+    cu_seqlens_cpu: Sequence[int] | None = None,
+) -> ChunkLayout:
     """Layout of a ``[batch, seq_len]`` input, or of ``cu_seqlens``-packed sequences (``batch == 1``).
 
     Layouts are cached per (lengths, device): a training run repeats a few packing shapes and the
     tables otherwise cost a handful of small host-to-device copies per backward.
+
+    ``cu_seqlens_cpu`` is the host copy of ``cu_seqlens`` (any sequence of ints).  When the caller
+    has it (the forward already needs one), the layout lookup reads it instead of ``cu_seqlens``,
+    so the backward issues no device-to-host copy and never waits for the stream to drain.
     """
+    dev_key = device.index if isinstance(device, torch.device) else device
+    if dev_key is None:
+        dev_key = torch.cuda.current_device()
     if cu_seqlens is None:
-        key = ("fixed", int(batch), int(seq_len), str(device))
-        lengths, offsets = [seq_len] * batch, [b * seq_len for b in range(batch)]
+        key = ("fixed", int(batch), int(seq_len), dev_key)
+        cu = None
     else:
         _check(batch == 1, f"packed input must have batch 1, got {batch}")
-        cu = [int(x) for x in cu_seqlens.tolist()]
-        _check(len(cu) >= 2 and cu[0] == 0 and cu[-1] == seq_len, f"cu_seqlens must run from 0 to the token count {seq_len}")
-        key = ("packed", tuple(cu), str(device))
-        lengths, offsets = [b - a for a, b in zip(cu[:-1], cu[1:], strict=True)], cu[:-1]
+        cu = tuple(cu_seqlens_cpu) if cu_seqlens_cpu is not None else tuple(int(x) for x in cu_seqlens.tolist())
+        key = ("packed", cu, dev_key)
     layout = _LAYOUT_CACHE.get(key)
     if layout is None:
+        if cu is None:
+            lengths, offsets = [seq_len] * batch, [b * seq_len for b in range(batch)]
+        else:
+            cu = [int(x) for x in cu]
+            _check(len(cu) >= 2 and cu[0] == 0 and cu[-1] == seq_len, f"cu_seqlens must run from 0 to the token count {seq_len}")
+            lengths, offsets = [b - a for a, b in zip(cu[:-1], cu[1:], strict=True)], cu[:-1]
         layout = _build_layout(lengths, offsets, batch * seq_len, device)
         if len(_LAYOUT_CACHE) >= _LAYOUT_CACHE_LIMIT:
             _LAYOUT_CACHE.clear()
@@ -257,6 +276,27 @@ def _launch_wy(arch, akk, vb, kb):
     return u, w
 
 
+_SM_COUNT: dict[int, int] = {}
+SLICE_BLOCKS = 4  # fwdh/dhu *_slices kernels: one 32-column value slice per CTA
+
+
+def _serial_walk_stage(stage, pairs, device):
+    """Pick the two-half (``stage``) or four-slice (``stage + "_slices"``) kernel for the serial chunk walks.
+
+    The slice kernels shorten each (sequence, head) walk by ~1.3x but quadruple the CTA count; they win
+    only while every CTA runs in one wave (``pairs * 4 <= SM count``, measured on B200: b1 t8192
+    199/236 -> 153/175 us; b4 t2048 dhu 68 -> 100 us and rlpack 8x2688 133/192 -> 157/276 us once a
+    second wave appears).  Returns ``(stage name, grid x)``."""
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    sm = _SM_COUNT.get(index)
+    if sm is None:
+        sm = int(torch.cuda.get_device_properties(index).multi_processor_count)
+        _SM_COUNT[index] = sm
+    if pairs * SLICE_BLOCKS <= sm:
+        return stage + "_slices", pairs * SLICE_BLOCKS
+    return stage, pairs * 2
+
+
 def _launch_fwdh(arch, w, kg, u, gk, *, layout):
     rows, hv, _ = w.shape
     nc = layout.num_chunks
@@ -264,8 +304,10 @@ def _launch_fwdh(arch, w, kg, u, gk, *, layout):
     v_new = torch.empty(rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=w.device)
     if layout.has_pad_chunk:
         v_new[nc * CHUNK :].zero_()
-    kernel("fwdh", arch).launch(
-        grid=(layout.num_sequences * hv * 2, 1, 1),
+    pairs = layout.num_sequences * hv
+    stage, grid = _serial_walk_stage("fwdh", pairs, w.device)
+    kernel(stage, arch).launch(
+        grid=(grid, 1, 1),
         w_tma=w,
         kg_tma=kg,
         u=u,
@@ -302,8 +344,10 @@ def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, layout, scale):
     dv2 = torch.empty(rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=kg.device)
     if layout.has_pad_chunk:
         dv2[nc * CHUNK :].zero_()
-    kernel("dhu", arch).launch(
-        grid=(layout.num_sequences * hv * 2, 1, 1),
+    pairs = layout.num_sequences * hv
+    stage, grid = _serial_walk_stage("dhu", pairs, kg.device)
+    kernel(stage, arch).launch(
+        grid=(grid, 1, 1),
         kg_tma=kg,
         qg_tma=qg,
         w_tma=w,
@@ -467,6 +511,23 @@ def _launch_epilogue(
 # --------------------------------------------------------------------------- #
 # public API
 # --------------------------------------------------------------------------- #
+_UNUSED_BETA_OPERANDS: dict[tuple, torch.Tensor] = {}
+_UNUSED_BETA_OPERANDS_LIMIT = 64
+
+
+def _unused_beta_operand(rows: int, hv: int, device) -> torch.Tensor:
+    """bf16 ``[rows, hv]`` zeros for the gate epilogue's ``beta_raw`` slot when the fused sigmoid
+    backward output is discarded (post-sigmoid ``beta``).  The kernel only reads it."""
+    key = (int(rows), int(hv), str(device))
+    t = _UNUSED_BETA_OPERANDS.get(key)
+    if t is None:
+        if len(_UNUSED_BETA_OPERANDS) >= _UNUSED_BETA_OPERANDS_LIMIT:
+            _UNUSED_BETA_OPERANDS.clear()
+        t = torch.zeros(rows, hv, dtype=torch.bfloat16, device=device)
+        _UNUSED_BETA_OPERANDS[key] = t
+    return t
+
+
 def chunk_kda_backward(
     *,
     q_norm: torch.Tensor,
@@ -485,6 +546,7 @@ def chunk_kda_backward(
     scale: float,
     lower_bound: float,
     cu_seqlens: torch.Tensor | None = None,
+    cu_seqlens_cpu: Sequence[int] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Deterministic chunked KDA training backward.
 
@@ -504,6 +566,8 @@ def chunk_kda_backward(
       ``lower_bound``: the safe-gate lower bound (negative).
     - ``cu_seqlens``: optional int32 ``[N + 1]`` packed-sequence offsets (``B`` must be 1); the
       sequences may have any lengths, as in the reference's varlen convention.
+    - ``cu_seqlens_cpu``: optional host copy of ``cu_seqlens`` (a sequence of ints).  With it the
+      backward performs no device-to-host copy; without it ``cu_seqlens`` is read once per call.
 
     Any ``T`` is accepted.  ``HV`` must be a positive multiple of ``H`` (grouped value heads).
     Returns ``dq``/``dk`` bf16 ``[B, T, H, 128]``, ``dv`` bf16 ``[B, T, HV, 128]``, ``dbeta`` bf16
@@ -515,7 +579,7 @@ def chunk_kda_backward(
     hv = v.shape[2]
     _check(kd == HEAD_DIM and v.shape[-1] == HEAD_DIM, "K = V = 128 is required")
     _check(hv % h == 0, "HV must be a multiple of H")
-    layout = chunk_layout(batch0, seq0, cu_seqlens, q_norm.device)
+    layout = chunk_layout(batch0, seq0, cu_seqlens, q_norm.device, cu_seqlens_cpu=cu_seqlens_cpu)
     rows = layout.rows_external
     bf, f32 = torch.bfloat16, torch.float32
 
@@ -529,9 +593,10 @@ def chunk_kda_backward(
     if beta_logits is not None:
         beta_raw = _contiguous("beta_logits", _rows(beta_logits, rows), bf)
     else:
-        # post-sigmoid beta: the gate epilogue's fused sigmoid backward output is not used;
-        # it still needs a bf16 operand of the right shape.
-        beta_raw = beta_s.to(bf)
+        # post-sigmoid beta: the gate epilogue's fused sigmoid backward output is not used; it
+        # still needs a bf16 operand of the right shape, served from a small per-shape cache
+        # instead of a per-call cast (one allocation and one copy kernel fewer per backward).
+        beta_raw = _unused_beta_operand(rows, hv, q_norm.device)
     do_r = _contiguous("do", _rows(do, rows), bf)
     aqk = _contiguous("Aqk", _rows(Aqk, rows), bf)
     akk = _contiguous("Akk", _rows(Akk, rows), bf)

@@ -36,10 +36,10 @@ _CONVERSION_FLAGS = (
 MODULES = {
     "prep": {
         "sm_100a": {
-            "name": "cake_kda_chunk_train_ff540e4f27805de6a473",
+            "name": "cake_kda_chunk_train_35c13d4668c0cafffff2",
             "arch": "sm_100a",
-            "cache_name": "cake_kda_chunk_train_ff540e4f27805de6a473_sm_100a",
-            "kernel_symbol": "kernel_cake_kda_chunk_train_ff540e4f27805de6a473",
+            "cache_name": "cake_kda_chunk_train_35c13d4668c0cafffff2_sm_100a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_35c13d4668c0cafffff2",
             "arg_plan": (
                 ("buffer", "g_raw"),
                 ("buffer", "q_norm"),
@@ -75,20 +75,20 @@ MODULES = {
                 ("grid", "grid_z"),
             ),
             "sources": (
-                "sm_100a/cake_kda_chunk_train_ff540e4f27805de6a473_kernel.cu",
-                "sm_100a/cake_kda_chunk_train_ff540e4f27805de6a473_binding.cu",
+                "sm_100a/cake_kda_chunk_train_35c13d4668c0cafffff2_kernel.cu",
+                "sm_100a/cake_kda_chunk_train_35c13d4668c0cafffff2_binding.cu",
             ),
             "block": (1024, 1, 1),
-            "dynamic_smem_bytes": 4096,
+            "dynamic_smem_bytes": 36864,
             "tma_workspace_bytes": 0,
             "ffi_entry": "run",
             "compile_flags": ("--use_fast_math",),
         },
         "sm_103a": {
-            "name": "cake_kda_chunk_train_7e4f8f2c7082ace9d490",
+            "name": "cake_kda_chunk_train_fc6d8e35d5abf17f5ea6",
             "arch": "sm_103a",
-            "cache_name": "cake_kda_chunk_train_7e4f8f2c7082ace9d490_sm_103a",
-            "kernel_symbol": "kernel_cake_kda_chunk_train_7e4f8f2c7082ace9d490",
+            "cache_name": "cake_kda_chunk_train_fc6d8e35d5abf17f5ea6_sm_103a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_fc6d8e35d5abf17f5ea6",
             "arg_plan": (
                 ("buffer", "g_raw"),
                 ("buffer", "q_norm"),
@@ -124,11 +124,11 @@ MODULES = {
                 ("grid", "grid_z"),
             ),
             "sources": (
-                "sm_103a/cake_kda_chunk_train_7e4f8f2c7082ace9d490_kernel.cu",
-                "sm_103a/cake_kda_chunk_train_7e4f8f2c7082ace9d490_binding.cu",
+                "sm_103a/cake_kda_chunk_train_fc6d8e35d5abf17f5ea6_kernel.cu",
+                "sm_103a/cake_kda_chunk_train_fc6d8e35d5abf17f5ea6_binding.cu",
             ),
             "block": (1024, 1, 1),
-            "dynamic_smem_bytes": 4096,
+            "dynamic_smem_bytes": 36864,
             "tma_workspace_bytes": 0,
             "ffi_entry": "run",
             "compile_flags": ("--use_fast_math",),
@@ -245,6 +245,66 @@ MODULES = {
             ),
             "block": (192, 1, 1),
             "dynamic_smem_bytes": 91136,
+            "tma_workspace_bytes": 256,
+            "ffi_entry": "run",
+            "compile_flags": ("--use_fast_math",),
+        },
+    },
+    "fwdh_slices": {
+        "sm_100a": {
+            "name": "cake_kda_chunk_train_db5273405f7c20c25dda",
+            "arch": "sm_100a",
+            "cache_name": "cake_kda_chunk_train_db5273405f7c20c25dda_sm_100a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_db5273405f7c20c25dda",
+            "arg_plan": (
+                ("tma_buffer", "w_tma"),
+                ("tma_buffer", "kg_tma"),
+                ("buffer", "u"),
+                ("buffer", "gk"),
+                ("buffer", "h_out"),
+                ("buffer", "v_new"),
+                ("parameter", "num_heads"),
+                ("buffer", "seq_chunk_start"),
+                ("workspace", "tma_descriptor_workspace"),
+                ("grid", "grid_x"),
+                ("grid", "grid_y"),
+                ("grid", "grid_z"),
+            ),
+            "sources": (
+                "sm_100a/cake_kda_chunk_train_db5273405f7c20c25dda_kernel.cu",
+                "sm_100a/cake_kda_chunk_train_db5273405f7c20c25dda_binding.cu",
+            ),
+            "block": (192, 1, 1),
+            "dynamic_smem_bytes": 78848,
+            "tma_workspace_bytes": 256,
+            "ffi_entry": "run",
+            "compile_flags": ("--use_fast_math",),
+        },
+        "sm_103a": {
+            "name": "cake_kda_chunk_train_1e1ee370f02052b881ce",
+            "arch": "sm_103a",
+            "cache_name": "cake_kda_chunk_train_1e1ee370f02052b881ce_sm_103a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_1e1ee370f02052b881ce",
+            "arg_plan": (
+                ("tma_buffer", "w_tma"),
+                ("tma_buffer", "kg_tma"),
+                ("buffer", "u"),
+                ("buffer", "gk"),
+                ("buffer", "h_out"),
+                ("buffer", "v_new"),
+                ("parameter", "num_heads"),
+                ("buffer", "seq_chunk_start"),
+                ("workspace", "tma_descriptor_workspace"),
+                ("grid", "grid_x"),
+                ("grid", "grid_y"),
+                ("grid", "grid_z"),
+            ),
+            "sources": (
+                "sm_103a/cake_kda_chunk_train_1e1ee370f02052b881ce_kernel.cu",
+                "sm_103a/cake_kda_chunk_train_1e1ee370f02052b881ce_binding.cu",
+            ),
+            "block": (192, 1, 1),
+            "dynamic_smem_bytes": 78848,
             "tma_workspace_bytes": 256,
             "ffi_entry": "run",
             "compile_flags": ("--use_fast_math",),
@@ -374,12 +434,78 @@ MODULES = {
             "compile_flags": ("--use_fast_math",),
         },
     },
+    "dhu_slices": {
+        "sm_100a": {
+            "name": "cake_kda_chunk_train_7bec085839eca4d8944f",
+            "arch": "sm_100a",
+            "cache_name": "cake_kda_chunk_train_7bec085839eca4d8944f_sm_100a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_7bec085839eca4d8944f",
+            "arg_plan": (
+                ("tma_buffer", "kg_tma"),
+                ("tma_buffer", "qg_tma"),
+                ("tma_buffer", "w_tma"),
+                ("tma_buffer", "do_tma"),
+                ("buffer", "dv1"),
+                ("buffer", "gk"),
+                ("buffer", "dh_out"),
+                ("buffer", "dv2"),
+                ("parameter", "num_heads"),
+                ("buffer", "seq_chunk_start"),
+                ("parameter", "scale"),
+                ("workspace", "tma_descriptor_workspace"),
+                ("grid", "grid_x"),
+                ("grid", "grid_y"),
+                ("grid", "grid_z"),
+            ),
+            "sources": (
+                "sm_100a/cake_kda_chunk_train_7bec085839eca4d8944f_kernel.cu",
+                "sm_100a/cake_kda_chunk_train_7bec085839eca4d8944f_binding.cu",
+            ),
+            "block": (192, 1, 1),
+            "dynamic_smem_bytes": 119808,
+            "tma_workspace_bytes": 512,
+            "ffi_entry": "run",
+            "compile_flags": ("--use_fast_math",),
+        },
+        "sm_103a": {
+            "name": "cake_kda_chunk_train_f36b958b2e98912bca25",
+            "arch": "sm_103a",
+            "cache_name": "cake_kda_chunk_train_f36b958b2e98912bca25_sm_103a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_f36b958b2e98912bca25",
+            "arg_plan": (
+                ("tma_buffer", "kg_tma"),
+                ("tma_buffer", "qg_tma"),
+                ("tma_buffer", "w_tma"),
+                ("tma_buffer", "do_tma"),
+                ("buffer", "dv1"),
+                ("buffer", "gk"),
+                ("buffer", "dh_out"),
+                ("buffer", "dv2"),
+                ("parameter", "num_heads"),
+                ("buffer", "seq_chunk_start"),
+                ("parameter", "scale"),
+                ("workspace", "tma_descriptor_workspace"),
+                ("grid", "grid_x"),
+                ("grid", "grid_y"),
+                ("grid", "grid_z"),
+            ),
+            "sources": (
+                "sm_103a/cake_kda_chunk_train_f36b958b2e98912bca25_kernel.cu",
+                "sm_103a/cake_kda_chunk_train_f36b958b2e98912bca25_binding.cu",
+            ),
+            "block": (192, 1, 1),
+            "dynamic_smem_bytes": 119808,
+            "tma_workspace_bytes": 512,
+            "ffi_entry": "run",
+            "compile_flags": ("--use_fast_math",),
+        },
+    },
     "dqkg": {
         "sm_100a": {
-            "name": "cake_kda_chunk_train_a0c5df001cdd3ee221b8",
+            "name": "cake_kda_chunk_train_ceac272b26b20ca455f8",
             "arch": "sm_100a",
-            "cache_name": "cake_kda_chunk_train_a0c5df001cdd3ee221b8_sm_100a",
-            "kernel_symbol": "kernel_cake_kda_chunk_train_a0c5df001cdd3ee221b8",
+            "cache_name": "cake_kda_chunk_train_ceac272b26b20ca455f8_sm_100a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_ceac272b26b20ca455f8",
             "arg_plan": (
                 ("tma_buffer", "do_tma"),
                 ("tma_buffer", "vn_tma"),
@@ -402,6 +528,7 @@ MODULES = {
                 ("buffer", "dAkk_out"),
                 ("buffer", "dv_out"),
                 ("parameter", "num_heads"),
+                ("parameter", "num_items"),
                 ("buffer", "chunk_bos"),
                 ("buffer", "chunk_len"),
                 ("parameter", "scale"),
@@ -411,20 +538,20 @@ MODULES = {
                 ("grid", "grid_z"),
             ),
             "sources": (
-                "sm_100a/cake_kda_chunk_train_a0c5df001cdd3ee221b8_kernel.cu",
-                "sm_100a/cake_kda_chunk_train_a0c5df001cdd3ee221b8_binding.cu",
+                "sm_100a/cake_kda_chunk_train_ceac272b26b20ca455f8_kernel.cu",
+                "sm_100a/cake_kda_chunk_train_ceac272b26b20ca455f8_binding.cu",
             ),
-            "block": (320, 1, 1),
-            "dynamic_smem_bytes": 174080,
+            "block": (576, 1, 1),
+            "dynamic_smem_bytes": 231936,
             "tma_workspace_bytes": 896,
             "ffi_entry": "run",
             "compile_flags": ("--use_fast_math",),
         },
         "sm_103a": {
-            "name": "cake_kda_chunk_train_cf73aef6c0cf9990f7d3",
+            "name": "cake_kda_chunk_train_72ccdb777dc2a90c17d7",
             "arch": "sm_103a",
-            "cache_name": "cake_kda_chunk_train_cf73aef6c0cf9990f7d3_sm_103a",
-            "kernel_symbol": "kernel_cake_kda_chunk_train_cf73aef6c0cf9990f7d3",
+            "cache_name": "cake_kda_chunk_train_72ccdb777dc2a90c17d7_sm_103a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_72ccdb777dc2a90c17d7",
             "arg_plan": (
                 ("tma_buffer", "do_tma"),
                 ("tma_buffer", "vn_tma"),
@@ -447,6 +574,7 @@ MODULES = {
                 ("buffer", "dAkk_out"),
                 ("buffer", "dv_out"),
                 ("parameter", "num_heads"),
+                ("parameter", "num_items"),
                 ("buffer", "chunk_bos"),
                 ("buffer", "chunk_len"),
                 ("parameter", "scale"),
@@ -456,11 +584,11 @@ MODULES = {
                 ("grid", "grid_z"),
             ),
             "sources": (
-                "sm_103a/cake_kda_chunk_train_cf73aef6c0cf9990f7d3_kernel.cu",
-                "sm_103a/cake_kda_chunk_train_cf73aef6c0cf9990f7d3_binding.cu",
+                "sm_103a/cake_kda_chunk_train_72ccdb777dc2a90c17d7_kernel.cu",
+                "sm_103a/cake_kda_chunk_train_72ccdb777dc2a90c17d7_binding.cu",
             ),
-            "block": (320, 1, 1),
-            "dynamic_smem_bytes": 174080,
+            "block": (576, 1, 1),
+            "dynamic_smem_bytes": 231936,
             "tma_workspace_bytes": 896,
             "ffi_entry": "run",
             "compile_flags": ("--use_fast_math",),
@@ -682,10 +810,10 @@ MODULES = {
     },
     "finalize": {
         "sm_100a": {
-            "name": "cake_kda_chunk_train_2a3743d77da552346275",
+            "name": "cake_kda_chunk_train_5bc05c8f3ffbd9e5ae38",
             "arch": "sm_100a",
-            "cache_name": "cake_kda_chunk_train_2a3743d77da552346275_sm_100a",
-            "kernel_symbol": "kernel_cake_kda_chunk_train_2a3743d77da552346275",
+            "cache_name": "cake_kda_chunk_train_5bc05c8f3ffbd9e5ae38_sm_100a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_5bc05c8f3ffbd9e5ae38",
             "arg_plan": (
                 ("buffer", "dA_part"),
                 ("buffer", "dbias_part"),
@@ -698,8 +826,8 @@ MODULES = {
                 ("grid", "grid_z"),
             ),
             "sources": (
-                "sm_100a/cake_kda_chunk_train_2a3743d77da552346275_kernel.cu",
-                "sm_100a/cake_kda_chunk_train_2a3743d77da552346275_binding.cu",
+                "sm_100a/cake_kda_chunk_train_5bc05c8f3ffbd9e5ae38_kernel.cu",
+                "sm_100a/cake_kda_chunk_train_5bc05c8f3ffbd9e5ae38_binding.cu",
             ),
             "block": (128, 1, 1),
             "dynamic_smem_bytes": 128,
@@ -708,10 +836,10 @@ MODULES = {
             "compile_flags": ("--use_fast_math",),
         },
         "sm_103a": {
-            "name": "cake_kda_chunk_train_eeab91af7e13dac4193a",
+            "name": "cake_kda_chunk_train_cef7dce854d291418931",
             "arch": "sm_103a",
-            "cache_name": "cake_kda_chunk_train_eeab91af7e13dac4193a_sm_103a",
-            "kernel_symbol": "kernel_cake_kda_chunk_train_eeab91af7e13dac4193a",
+            "cache_name": "cake_kda_chunk_train_cef7dce854d291418931_sm_103a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_cef7dce854d291418931",
             "arg_plan": (
                 ("buffer", "dA_part"),
                 ("buffer", "dbias_part"),
@@ -724,8 +852,8 @@ MODULES = {
                 ("grid", "grid_z"),
             ),
             "sources": (
-                "sm_103a/cake_kda_chunk_train_eeab91af7e13dac4193a_kernel.cu",
-                "sm_103a/cake_kda_chunk_train_eeab91af7e13dac4193a_binding.cu",
+                "sm_103a/cake_kda_chunk_train_cef7dce854d291418931_kernel.cu",
+                "sm_103a/cake_kda_chunk_train_cef7dce854d291418931_binding.cu",
             ),
             "block": (128, 1, 1),
             "dynamic_smem_bytes": 128,
@@ -737,15 +865,26 @@ MODULES = {
 }
 
 
+_DEVICE_ARCH: dict[int, str] = {}
+
+
 def device_arch(device=None):
-    """Map the current CUDA device to the exported architecture tag."""
-    capability = torch.cuda.get_device_capability(device)
-    try:
-        return SUPPORTED_CAPABILITIES[capability]
-    except KeyError:
-        raise NotImplementedError(
-            f"the deterministic chunked KDA training backward requires SM100a or SM103a, got {capability}"
-        ) from None
+    """Map the current CUDA device to the exported architecture tag (cached per device index: the
+    capability query costs ~10 us per call and the backward asks once per call)."""
+    index = torch.cuda.current_device() if device is None else (device if isinstance(device, int) else device.index)
+    if index is None:
+        index = torch.cuda.current_device()
+    arch = _DEVICE_ARCH.get(index)
+    if arch is None:
+        capability = torch.cuda.get_device_capability(index)
+        try:
+            arch = SUPPORTED_CAPABILITIES[capability]
+        except KeyError:
+            raise NotImplementedError(
+                f"the deterministic chunked KDA training backward requires SM100a or SM103a, got {capability}"
+            ) from None
+        _DEVICE_ARCH[index] = arch
+    return arch
 
 
 @cache
