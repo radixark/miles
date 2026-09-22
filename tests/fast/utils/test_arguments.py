@@ -24,6 +24,7 @@ from miles.utils.arguments import (
 )
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -910,6 +911,33 @@ class TestMultiLoRAValidation:
         args = self._parse(["--target-modules", "q_proj"])
         miles_validate_args(args)
         assert args.hf_lora_targets == ["q_proj"]
+
+    @pytest.mark.parametrize("exclusion", ["model.layers.*.self_attn.o_proj", "model.layers.0.self_attn.o_proj"])
+    def test_scoped_exclusion_resolves_without_bridge(self, monkeypatch, exclusion):
+        hf_mapping = HfWeightMapping(
+            frozenset(
+                f"model.layers.{layer}.{module}.weight"
+                for layer in range(2)
+                for module in ("self_attn.o_proj", "mlp.down_proj")
+            )
+        )
+        monkeypatch.setattr("miles.utils.arguments.HfWeightMapping.from_config", lambda config: hf_mapping)
+
+        def unexpected_bridge(*args, **kwargs):
+            pytest.fail("HF exclusions must not initialize Bridge")
+
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
+            unexpected_bridge,
+        )
+        args = self._parse(["--target-modules", "o_proj,down_proj", "--exclude-modules", exclusion])
+        miles_validate_args(args)
+
+        expected = {"model.layers.0.mlp.down_proj", "model.layers.1.mlp.down_proj"}
+        if exclusion == "model.layers.0.self_attn.o_proj":
+            expected.add("model.layers.1.self_attn.o_proj")
+        assert set(args.hf_lora_targets) == expected
+        assert args.lora_adapter_targets == args.hf_lora_targets
 
     def test_rejects_multiple_tokenizer_workers(self):
         # Each sglang tokenizer worker holds its own LoRA registry, so per-step
