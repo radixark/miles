@@ -49,6 +49,10 @@ CASE = CaseConfig(
     sglang_ep_size=2,
     enable_mtp_training=True,
     use_r3=True,
+    # 4096, not the regular 8192: with cp2 the GatedDeltaNet CP backward (fla chunk_delta_h)
+    # OOMed on 8x80GB next to ~41 GB of resident Muon training state (run 35719111404);
+    # halving the tokens per micro-batch halves that activation working set.
+    max_tokens_per_gpu=4096,
     num_rollout=100,
     optimizer_args=MUON_OPTIMIZER_ARGS,
     rematerialize_param_from_master_weight=False,
