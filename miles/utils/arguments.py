@@ -3162,9 +3162,9 @@ def miles_validate_args(args):
             args.hf_lora_targets = list(args.target_modules)
         elif args.megatron_to_hf_mode == "bridge":
             # Preserve explicit Megatron selectors without making ordinary HF selection depend on Bridge.
-            from miles.backends.megatron_utils.lora.target_modules import resolve_hf_lora_targets_from_bridge
+            from miles.backends.megatron_utils.lora.target_modules import normalize_lora_targets_to_hf
 
-            args.hf_lora_targets = resolve_hf_lora_targets_from_bridge(
+            args.hf_lora_targets = normalize_lora_targets_to_hf(
                 args.hf_checkpoint,
                 args.target_modules,
                 canonical=args.lora_type == "canonical_lora",

@@ -32,7 +32,7 @@ def _canonical_adapter_module(module, checkpoint_parameter):
     return f"{module.rsplit('.', 1)[0]}.{_CANONICAL_PROJECTIONS[leaf]}"
 
 
-def _hf_parameters(mapping):
+def _checkpoint_parameters(mapping):
     return {mapping.hf_param} if isinstance(mapping.hf_param, str) else set(mapping.hf_param.values())
 
 
@@ -52,7 +52,7 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
                 continue
             visited.add(name)
             resolved = mapping.resolve(match.groups())
-            sources = _hf_parameters(resolved)
+            sources = _checkpoint_parameters(resolved)
             hf_parameters = {source: hf_mapping.model_parameter(source) for source in sources}
             # Bridge can expose auxiliary layers, such as MTP, absent from the HF model.
             selected = {
@@ -121,7 +121,7 @@ def validate_lora_target_adapters(model_chunks, candidates):
     assert not missing, f"LoRA injection skipped selected Megatron modules: {sorted(missing)}"
 
 
-def resolve_hf_lora_targets_from_bridge(hf_checkpoint, target_modules, *, canonical, exclude_modules):
+def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, exclude_modules):
     # Only legacy Megatron selectors need Bridge before trainer creation.
     from megatron.bridge import AutoBridge
 
@@ -134,7 +134,7 @@ def resolve_hf_lora_targets_from_bridge(hf_checkpoint, target_modules, *, canoni
         module, weight = mapping.megatron_param.rsplit(".", 1)
         if weight not in ("weight", "weight*"):
             continue
-        for source in _hf_parameters(mapping):
+        for source in _checkpoint_parameters(mapping):
             hf_module = hf_mapping.model_parameter(source).removesuffix(".weight")
             if hf_mapping.parameter_shapes and not any(
                 matches_hf_lora_target(name.removesuffix(".weight"), hf_module) for name in hf_mapping.parameter_shapes

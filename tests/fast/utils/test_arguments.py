@@ -872,7 +872,7 @@ class TestMultiLoRAValidation:
             lambda path: SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"}),
         )
         monkeypatch.setattr(
-            "miles.backends.megatron_utils.lora.target_modules.resolve_hf_lora_targets_from_bridge",
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
             lambda checkpoint, targets, **kwargs: list(targets),
         )
 
@@ -904,7 +904,7 @@ class TestMultiLoRAValidation:
             pytest.fail("HF selection must not initialize Bridge")
 
         monkeypatch.setattr(
-            "miles.backends.megatron_utils.lora.target_modules.resolve_hf_lora_targets_from_bridge",
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
             unexpected_bridge,
         )
         args = self._parse(["--target-modules", "q_proj"])
