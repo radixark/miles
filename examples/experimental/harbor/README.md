@@ -90,6 +90,15 @@ whatever is there.
 Backend-specific settings go in `HARBOR_ENV_KWARGS` as a JSON object (Harbor's
 `EnvironmentConfig.kwargs`), e.g. `'{"auto_snapshot": true}'` for Daytona.
 
+`HARBOR_OVERRIDE_CPUS`, `HARBOR_OVERRIDE_MEMORY_MB`, and
+`HARBOR_OVERRIDE_STORAGE_MB` replace a task's declared resource values. They do
+not change how Harbor enforces CPU or memory. Set
+`HARBOR_CPU_ENFORCEMENT_POLICY` or `HARBOR_MEMORY_ENFORCEMENT_POLICY` to one of
+Harbor's `auto`, `request`, `limit`, `guarantee`, or `ignore` modes when the
+provider default is not the desired contract. For example, Modal CPU `auto` is
+a hard request-and-limit pair; use `HARBOR_CPU_ENFORCEMENT_POLICY=request` to
+keep the requested CPU guarantee while allowing burst capacity.
+
 Every remaining knob — timeouts and their layering, failure semantics, the
 full env-var reference — is documented in `harbor_agent_function.py`'s header,
 next to the code that reads it.

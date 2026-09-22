@@ -28,7 +28,7 @@ class _Tracer:
         return self.reply
 
 
-def _generate_input(**args_kwargs) -> GenerateFnInput:
+def _generate_input(*, evaluation=False, sampling_params=None, **args_kwargs) -> GenerateFnInput:
     args = SimpleNamespace(
         **{
             "session_server_addrs": ["127.0.0.1:12345"],
@@ -48,7 +48,7 @@ def _generate_input(**args_kwargs) -> GenerateFnInput:
         label="label",
         metadata={"source": "test"},
     )
-    return GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
+    return GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params or {}, evaluation=evaluation)
 
 
 async def _fake_agent(**kwargs):
@@ -65,7 +65,9 @@ def _session_metadata(spec_info=None):
 
 
 def _patch_agent(monkeypatch, tracer):
-    async def fake_create(args):
+    async def fake_create(args, *, evaluation=False, sampling_params=None):
+        tracer.evaluation = evaluation
+        tracer.sampling_params = sampling_params
         return tracer
 
     monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
@@ -73,13 +75,18 @@ def _patch_agent(monkeypatch, tracer):
 
 
 @pytest.mark.asyncio
-async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
+@pytest.mark.parametrize("evaluation", [False, True])
+async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch, evaluation):
     sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
     tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
     _patch_agent(monkeypatch, tracer)
 
-    output = await agentic_tool_call.generate(_generate_input())
+    generate_input = _generate_input(evaluation=evaluation, sampling_params={"temperature": 0.7, "max_new_tokens": 8})
+    output = await agentic_tool_call.generate(generate_input)
 
+    assert tracer.evaluation is evaluation
+    # The session fills these into requests the agent sends without them.
+    assert tracer.sampling_params == {"temperature": 0.7, "max_new_tokens": 8}
     assert output.samples == [sample]
     assert output.samples[0].rollout_id is None
     assert tracer.agent_metadata == {"agent_result": "done"}
@@ -212,7 +219,7 @@ class TestSessionServerAddrsValidation:
         """generate() raises the documented AssertionError when session_server_addrs is absent, null or empty, without creating a tracer."""
         created_for: list[object] = []
 
-        async def fake_create(args):
+        async def fake_create(args, *, evaluation=False, sampling_params=None):
             created_for.append(args)
             return _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="no_records"))
 

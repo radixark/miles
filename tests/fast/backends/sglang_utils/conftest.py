@@ -52,6 +52,8 @@ def make_engine_args(**overrides: Any) -> Namespace:
         lora_adapter_targets=[f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
         sglang_api_key=None,
         lora_adapter_path=None,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
         multi_lora=False,
         colocate=False,
     )

@@ -84,8 +84,13 @@ async def train(args):
         if rollout_data_next_future is not None:
             rollout_data_curr_ref = await rollout_data_next_future
 
-        # Start the next rollout early.
-        if rollout_id + 1 < args.num_rollout:
+        has_next_rollout = rollout_id + 1 < args.num_rollout
+        weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
+
+        # A fully-async producer keeps generating without a pending get(). When
+        # weights will change, defer the next drain so it uses the new version.
+        defer_next_drain = args.fully_async and has_next_rollout and weight_update_due
+        if has_next_rollout and not defer_next_drain:
             rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
         if args.use_critic:
@@ -112,11 +117,14 @@ async def train(args):
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
-        if (rollout_id + 1) % args.update_weights_interval == 0:
-            # sync generate before update weights to prevent update weight in the middle of generation
-            rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
-            rollout_data_next_future = None
+        if weight_update_due:
+            if not args.fully_async:
+                # sync generate before update weights to prevent update weight in the middle of generation
+                rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
+                rollout_data_next_future = None
             await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
+            if defer_next_drain:
+                rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await inference_controller.prepare_eval()

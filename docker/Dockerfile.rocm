@@ -130,8 +130,15 @@ RUN rm -rf /root/Megatron-LM && \
     cd /root/Megatron-LM && \
     pip install -e .
 
+# `git reset --hard` only restores tracked files. The base image builds sglang's AOT kernels inside this
+# checkout, and torch's CUDAExtension hipifies in place, so the tree also carries generated HIP sources
+# (<name>.cu -> <name>.hip, headers -> <name>_hip.<ext>) as untracked files. The checkout below aborts as
+# soon as one of them sits where the new revision tracks a real file, so drop them first. Keep this off
+# ignored files (-x): those include the compiled rust extension and _version.py that the editable sglang
+# install in this image depends on.
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
+    git clean -fd && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \

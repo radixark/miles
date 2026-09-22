@@ -107,7 +107,7 @@ def render_cli_argv(
 
 
 def _record_field_names(record) -> tuple[str, ...]:
-    """RouterArgs is a dataclass; ServerArgs is a msgspec Struct since sglang v0.5.20.
+    """Accept dataclass and msgspec Struct classes or instances across SGLang versions.
 
     msgspec is imported inside the branch that needs it: this module is on the light
     worker entrypoint's import path, whose footprint tests/fast/utils/workers/import_probe.py
