@@ -52,7 +52,8 @@ def _select_checkpoint_parameters(checkpoint_parameters, targets, *, hf_mapping,
 def _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, *, canonical):
     if canonical and len(checkpoint_parameters) > 1 and ".experts." not in megatron_module:
         assert megatron_module.rsplit(".", 1)[-1] in (
-            "linear_qkv", "linear_fc1",
+            "linear_qkv",
+            "linear_fc1",
         ), f"CanonicalLoRA does not define split adapters for {megatron_module!r}"
         return list(dict.fromkeys(_canonical_adapter_module(megatron_module, name) for name in selected))
     assert selected == checkpoint_parameters, (
@@ -79,8 +80,11 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
             matched_megatron_parameters.add(megatron_parameter)
             checkpoint_parameters = _checkpoint_parameters(mapping.resolve(match.groups()))
             selected = _select_checkpoint_parameters(
-                checkpoint_parameters, targets, hf_mapping=hf_mapping,
-                megatron_module=megatron_module, exclude_modules=exclude_modules,
+                checkpoint_parameters,
+                targets,
+                hf_mapping=hf_mapping,
+                megatron_module=megatron_module,
+                exclude_modules=exclude_modules,
             )
             selections.append((checkpoint_parameters, selected))
         if not any(selected for _, selected in selections):
@@ -91,7 +95,9 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
         ), f"LoRA cannot select a subset of parameters in {mapping.megatron_param!r}"
         adapter_selections = set()
         for checkpoint_parameters, selected in selections:
-            adapter_targets = _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, canonical=canonical)
+            adapter_targets = _resolve_adapter_targets(
+                megatron_module, checkpoint_parameters, selected, canonical=canonical
+            )
             adapter_selections.add(frozenset(adapter_targets))
             adapter_modules.update((target, megatron_module) for target in adapter_targets)
             covered_checkpoint_parameters.update(selected)
@@ -137,17 +143,22 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
             ):
                 continue
             for target in target_modules:
-                matches = matches_hf_lora_target(hf_module, target) or _matches_megatron_target(megatron_module, target)
+                matches = matches_hf_lora_target(hf_module, target) or _matches_megatron_target(
+                    megatron_module, target
+                )
                 if (
                     canonical
                     and megatron_module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1")
                     and ".experts." not in megatron_module
                 ):
-                    matches |= _matches_megatron_target(_canonical_adapter_module(megatron_module, checkpoint_parameter), target)
+                    matches |= _matches_megatron_target(
+                        _canonical_adapter_module(megatron_module, checkpoint_parameter), target
+                    )
                 if matches:
                     matched_targets.add(target)
                     if not any(
-                        matches_hf_lora_target(hf_module, exclude) or _matches_megatron_target(megatron_module, exclude)
+                        matches_hf_lora_target(hf_module, exclude)
+                        or _matches_megatron_target(megatron_module, exclude)
                         for exclude in exclude_modules
                     ):
                         selected_hf_modules.add(hf_module)
