@@ -53,3 +53,13 @@ class ConfigSnapshotCase(FrozenStrictBaseModel):
     """Collect all logical process snapshots for one test case."""
 
     processes: dict[str, ConfigSnapshotProcess]
+
+
+# =============================== Test attempts ================================
+
+
+class ConfigSnapshotTestAttempt(FrozenStrictBaseModel):
+    """Record the test identity and whether its execution completed successfully."""
+
+    test: str
+    completed: bool
