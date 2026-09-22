@@ -25,9 +25,7 @@ class HfWeightMapping:
                 with torch.random.fork_rng(devices=[]), torch.device("meta"):
                     model = auto_model.from_config(config, attn_implementation="eager")
                 parameter_names = frozenset(
-                    name
-                    for name, param in model.named_parameters(remove_duplicate=False)
-                    if param.ndim in (2, 3)
+                    name for name, param in model.named_parameters(remove_duplicate=False) if param.ndim in (2, 3)
                 )
                 return cls(parameter_names, tuple(get_model_conversion_mapping(model, add_legacy=False)))
         # Custom HF implementations without native conversion rules retain their checkpoint namespace.
@@ -45,8 +43,8 @@ class HfWeightMapping:
             if isinstance(conversion, WeightConverter):
                 target, source_pattern = conversion.rename_source_key(checkpoint_name)
                 if source_pattern is not None:
-                    assert len(conversion.target_patterns) == 1, (
-                        f"HF target binding does not support one-to-many conversion of {checkpoint_name!r}"
-                    )
+                    assert (
+                        len(conversion.target_patterns) == 1
+                    ), f"HF target binding does not support one-to-many conversion of {checkpoint_name!r}"
                     return target
         return checkpoint_name

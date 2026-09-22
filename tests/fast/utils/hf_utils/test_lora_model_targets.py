@@ -137,9 +137,7 @@ def test_targets_match_native_hf_model(model_type, overrides):
     assert all(param.is_meta for param in model.parameters())
     hf_mapping = HfWeightMapping.from_config(config)
     assert hf_mapping.parameter_names == {
-        name
-        for name, param in model.named_parameters(remove_duplicate=False)
-        if param.ndim in (2, 3)
+        name for name, param in model.named_parameters(remove_duplicate=False) if param.ndim in (2, 3)
     }
     layout = get_hf_lora_targets(config.to_dict())
     for group in (layout.attention, layout.mlp, layout.unembed):
