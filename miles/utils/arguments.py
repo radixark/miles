@@ -29,6 +29,7 @@ from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled, matches_lora_target
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.multi_lora import targets_expert_leaves, validate_multi_lora_args
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
@@ -3149,8 +3150,7 @@ def miles_validate_args(args):
         ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
 
         # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
-        _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "gate_up_proj", "down_proj")
-        if any(leaf in str(tm) for tm in args.target_modules for leaf in _expert_leaves):
+        if targets_expert_leaves(args.target_modules):
             logger.warning(
                 "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
                 "shared-outer" if args.experts_shared_outer_loras else "per-expert",
@@ -3158,8 +3158,6 @@ def miles_validate_args(args):
 
     # Sets args.multi_lora, then validates/defaults the multi-LoRA arg surface
     # (adapter configs themselves are loaded later by the controller).
-    from miles.utils.multi_lora import validate_multi_lora_args
-
     validate_multi_lora_args(args)
     if is_lora_enabled(args):
         hf_config = load_hf_config(args.hf_checkpoint)
