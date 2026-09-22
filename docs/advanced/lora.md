@@ -156,12 +156,12 @@ hybrid attention. Vision towers, routers, norms, and GDN convolutions are exclud
 
 Packed expert entries identify HF parameters rather than `nn.Linear` modules.
 Inkling entries follow the native HF model namespace. Its native Megatron LoRA
-implementation maps the complete selection to its existing adapter names;
-`hf_lora_targets` retains the HF selection, while `lora_adapter_targets` supplies
-the weight-sync config and SGLang startup. Adapter factors, tensor packing, and
-checkpoint names are unchanged. The pinned Transformers version does not yet include native Inkling, so its HF structure
-is not covered by the native meta-model tests. A layout entry is not a backend
-support claim.
+implementation requires the complete fixed layout. SGLang discovers its adapter
+modules with `all`, and online weight-sync config uses `all-linear`; adapter
+checkpoints derive explicit names from exported tensors. Adapter factors, tensor
+packing, and checkpoint names are unchanged. The pinned Transformers version does
+not yet include native Inkling, so its HF structure is not covered by the native
+meta-model tests. A layout entry is not a backend support claim.
 
 Ordinary LoRA and Tinker both use this selection policy. HF targets retain their
 meaning throughout training and serving. `miles/utils/hf_utils/weight_mapping.py`
@@ -183,13 +183,14 @@ consists of complete attention, MLP, and output-head groups. It derives the SDK
 training flags from that final selection; partial groups are rejected because
 the SDK cannot describe them.
 
-SGLang receives the selected HF paths and normalizes them into buffer types
+For Bridge, SGLang receives the selected HF paths and normalizes them into buffer types
 (for example, Q/K/V become `qkv_proj`); it does not own the selection policy.
 Adapter checkpoints derive their concrete `target_modules` from exported tensor
 keys rather than a separate Megatron-to-HF name table. Online adapter registration
-uses the resolved HF selection, without an extra tensor export.
+uses the resolved HF selection for Bridge and `all-linear` for native Inkling,
+without an extra tensor export.
 This requires [SGLang's HF-path normalization support](https://github.com/sgl-project/sglang/pull/40242),
-including GDN split names and Inkling's fused layout. FSDP LoRA injection remains
+including GDN split names. FSDP LoRA injection remains
 unsupported.
 
 Native Inkling
