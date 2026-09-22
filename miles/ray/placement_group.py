@@ -126,7 +126,9 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
         eval_num_gpus = args.eval_num_gpus if selector.selects(DeployComponent.INFERENCE) else 0
         return trainer_num_gpus + eval_num_gpus, trainer_num_gpus
 
-    rollout_num_gpus = (args.rollout_num_gpus or 0) + args.eval_num_gpus if selector.selects(DeployComponent.INFERENCE) else 0
+    rollout_num_gpus = (
+        (args.rollout_num_gpus or 0) + args.eval_num_gpus if selector.selects(DeployComponent.INFERENCE) else 0
+    )
     if args.rollout_external:
         return (0, 0) if args.debug_rollout_only else (trainer_num_gpus, trainer_num_gpus)
     if args.debug_rollout_only:
