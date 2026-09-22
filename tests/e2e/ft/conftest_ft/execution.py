@@ -11,12 +11,11 @@ from uuid import uuid4
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
 from tests.fast.cluster_backends import create_backend_for_run
-from tests.utils.soak.core.utils import API_SERVER_PORT, DATA_DIR, MODEL_DIR, get_dumps_root
+from tests.utils.soak.core.utils import DATA_DIR, MODEL_DIR, get_dumps_root
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.base_backend import LaunchGuard
-from miles.utils.workers.types import ClusterBackend
 
 _LAUNCH_ID: str = uuid4().hex
 _MEGATRON_PATH: str = os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM")
@@ -169,13 +168,6 @@ def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
 def get_ft_args(mode: FTTestMode, *, api_server_args: str = "--api-server-port 0 ") -> str:
     checksum_args = "--save-inference-engine-weight-checksum " if mode.has_real_rollout else ""
     return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} {api_server_args}{checksum_args}"
-
-
-def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) -> str:
-    resolved = config if config is not None else command_utils.default_config()
-    if resolved.cluster_backend is not ClusterBackend.KUBERNETES:
-        return f"--api-server-port {API_SERVER_PORT} "
-    return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
 
 
 DEFAULT_TRAIN_SCRIPT: str = "train.py"
