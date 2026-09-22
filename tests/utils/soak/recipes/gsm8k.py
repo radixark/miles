@@ -7,10 +7,23 @@ from typing import Any, Literal
 
 from tests.e2e.ft.conftest_ft.execution import get_fully_async_args, get_train_script, launch_training
 from tests.fast.cluster_backends import create_backend_for_run
+from tests.utils.soak.core.config import SoakRunnerConfig, create_tail_policy
+from tests.utils.soak.core.entrypoint import run_soak
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.types import SoakForms, SoakObserver
-from tests.utils.soak.core.utils import API_SERVER_ARGS, DATA_DIR, MODEL_DIR, assert_fresh_dump_dir, resolve_dump_dir
+from tests.utils.soak.core.utils import (
+    API_SERVER_ARGS,
+    DATA_DIR,
+    MODEL_DIR,
+    assert_fresh_dump_dir,
+    compute_base_url,
+    create_soak_config,
+    evidence_directory,
+    note_launch_outcome,
+    resolve_dump_dir,
+)
+from tests.utils.soak.ft.observers import create_cell_observer
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -76,7 +89,51 @@ async def run_realistic_gsm8k(
     create_observer: Callable[[Gsm8kRun, SoakForms], SoakObserver] | None = None,
     execute_session: Callable[[Gsm8kRun], Coroutine[Any, Any, None]] | None = None,
 ) -> Gsm8kOutcome:
-    raise NotImplementedError
+    config = create_soak_config(config)
+    print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_kind}")
+    print(f"Test: {test_name}, train script: {get_train_script(fully_async=fully_async)}")
+
+    dump_dir = _prepare_gsm8k_run(config=config, test_name=test_name)
+    train_args = _build_gsm8k_train_args(
+        dump_dir=dump_dir,
+        seed=seed,
+        num_rollout=num_rollout,
+        metric_threshold=metric_threshold,
+        fully_async=fully_async,
+        test_name=test_name,
+        enable_fault_tolerance=enable_fault_tolerance,
+        build_extra_train_args=build_extra_train_args,
+    )
+
+    run = Gsm8kRun(
+        base_url=compute_base_url(config),
+        dump_dir=dump_dir,
+        evidence_dir=evidence_directory(Path(dump_dir)),
+        launch_spec=Gsm8kLaunchSpec(config=config, train_args=train_args, fully_async=fully_async),
+    )
+    forms = create_forms(run)
+
+    injector = await run_soak(
+        config=config,
+        dump_dir=Path(dump_dir),
+        seed=seed,
+        mean_interval_seconds_of_kind=mean_interval_seconds_of_kind,
+        expected_counts=expected_counts,
+        training=execute_gsm8k_session(run) if execute_session is None else execute_session(run),
+        runner_config=SoakRunnerConfig(tail=create_tail_policy(num_rollout=num_rollout)),
+        forms=forms,
+        observer=(
+            create_observer(run, forms)
+            if create_observer is not None
+            else create_cell_observer(
+                base_url=run.base_url, cell_types=set(mean_interval_seconds_of_kind), forms=forms, config=config
+            )
+        ),
+        event_log=run.event_log,
+        evidence_dir=run.evidence_dir,
+    )
+
+    return Gsm8kOutcome(run=run, injector=injector, forms=forms)
 
 
 def _prepare_gsm8k_run(*, config: command_utils.ExecuteTrainConfig, test_name: str) -> str:
@@ -113,7 +170,7 @@ def _build_gsm8k_train_args(
 
 
 async def execute_gsm8k_session(run: Gsm8kRun) -> Literal["finished", "replaced"]:
-    raise NotImplementedError
+    return await note_launch_outcome(event_log=run.event_log, request_id=None, launching=launch(run.launch_spec))
 
 
 async def launch(spec: Gsm8kLaunchSpec, *, guard: LaunchGuard | None = None) -> None:
