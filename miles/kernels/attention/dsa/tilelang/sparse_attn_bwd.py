@@ -1,7 +1,5 @@
 # ruff: noqa
 # Adapt from https://github.com/tile-ai/tilelang/blob/4ff81c7d40803d269569e157e847623e84553f78/examples/deepseek_v32/sparse_mla_bwd.py
-# D_tail=0 selects the single-latent MQA form (DeepSeek-V4). The attention-sink gradient needs only
-# Delta and Lse, so it is computed in torch by the caller and never enters this kernel.
 import tilelang
 import torch
 from tilelang import language as T

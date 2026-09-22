@@ -1,6 +1,5 @@
 # ruff: noqa
 # Adapted from https://github.com/tile-ai/tilelang/blob/e666d2d3cc483829c57618c9ebf2e4f4ada0819d/examples/deepseek_v32/sparse_mla_fwd.py
-# tail_dim=0 selects the single-latent MQA form and has_sink adds a per-head attention sink (DeepSeek-V4).
 import os
 
 import tilelang
@@ -175,8 +174,6 @@ def sparse_attn_fwd(
             # -inf, which the backward then turns into exp2(-inf - -inf) = NaN. Any row with at
             # least one valid key has sumexp >= 1 (the running-max term is exp2(0)), so flooring
             # here is a no-op for real rows and makes an empty row contribute an exact zero.
-            # The sink is a pre-scaled logit that joins the softmax denominator only, so it is
-            # converted to log2 base without sm_scale.
             if has_sink:
                 for h_i in T.Parallel(H_per_block):
                     sumexp[h_i] += T.exp2(Sink[H0 + h_i] * 1.44269504 - m_i[h_i] * sm_scale)

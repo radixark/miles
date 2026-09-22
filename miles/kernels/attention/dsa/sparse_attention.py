@@ -40,7 +40,6 @@ class _SparseAttention(torch.autograd.Function):
         )
         d_sink = None
         if attn_sink is not None:
-            # p_sink = exp(sink) / Z = exp2(sink * log2(e) - lse), with lse in log2 space from the forward.
             p_sink = torch.exp2(attn_sink.float() * _LOG2_E - lse)
             d_sink = -(delta * p_sink).sum(dim=(0, 1))
         return dq, dkv, None, d_sink, None, None
