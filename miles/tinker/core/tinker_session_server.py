@@ -117,6 +117,7 @@ class TrajectorySession:
     sampling_session_id: str | None = None  # the Tinker sampling session bound at create: sampler version + lease
     messages: list[dict[str, Any]] | None = None  # history the last recorded turn answered, its reply appended
     token_ids: Sequence[int] | None = None  # the last turn's input_ids + output_ids, inherited by the next turn
+    request_args: dict[str, Any] | None = None  # the last turn's resolved TITO args (kwargs, tools) it may inherit
 
 
 def max_new_tokens_of(sampling_params: dict[str, Any]) -> int:
@@ -258,7 +259,7 @@ class TrajectoryCollector:
                 cap = self.max_turns_per_session
                 raise SessionLimitError(f"session {session_id!r} already holds {len(session.turns)} turns (cap {cap})")
             # tokenizing is CPU work; keep it off the loop that serves every tenant's Tinker traffic
-            prompt_token_ids, inherits, reset_reason = await asyncio.to_thread(
+            prompt_token_ids, inherits, reset_reason, request_args = await asyncio.to_thread(
                 self.renderer.prepare_pretokenized,
                 session,
                 request.messages,
@@ -274,7 +275,14 @@ class TrajectoryCollector:
                 raise TruncatedGenerationError("cannot extend a reply that ended at max_tokens; resample it or rebind")
             sequence = await self._sample(session, self._payload(session, prompt_token_ids, request.sampling_params))
             return self._commit_generation(
-                session, request.messages, prompt_token_ids, sequence, inherits, reset_reason, after_truncation
+                session,
+                request.messages,
+                prompt_token_ids,
+                sequence,
+                inherits,
+                reset_reason,
+                after_truncation,
+                request_args,
             )
 
     @staticmethod
@@ -319,6 +327,7 @@ class TrajectoryCollector:
         inherits: bool,
         reset_reason: str | None,
         after_truncation: bool,
+        request_args: dict[str, Any] | None,
     ) -> TurnResult:
         """Build the Turn and its assistant message first, then write turns, last_seen and the TITO state together."""
         turn = Turn(
@@ -334,7 +343,7 @@ class TrajectoryCollector:
         message = self.renderer.assistant_message(turn)
         session.turns.append(turn)
         session.last_seen = turn.created_at
-        self.renderer.update_pretokenized_state(session, turn, request_messages, message)  # the same dict, not a copy
+        self.renderer.update_pretokenized_state(session, turn, request_messages, message, request_args)  # same dict
         return TurnResult(turn=turn, assistant_message=message)
 
     def _session_for_request(self, session_id: str, model: str | None) -> TrajectorySession:

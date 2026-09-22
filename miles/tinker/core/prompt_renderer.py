@@ -29,6 +29,18 @@ def validate_messages(request_messages: Any) -> None:
             raise UserInputError(f"messages[{index}] must be an object with a role")
 
 
+def _rendered_ids(render: Any) -> list[int]:
+    """Run a chat-template render, mapping template errors to UserInputError and refusing an empty prompt."""
+    try:
+        rendered = render()
+    except (TypeError, ValueError, KeyError) as error:
+        raise UserInputError(f"cannot render messages with the chat template: {error}") from error
+    ids = _token_list(rendered)
+    if not ids:
+        raise UserInputError("the chat template rendered an empty prompt")
+    return ids
+
+
 def render_prompt(
     request_messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
@@ -40,14 +52,17 @@ def render_prompt(
     kwargs = dict(chat_template_kwargs)
     if tools:
         kwargs["tools"] = tools
-    try:
-        rendered = tokenizer.apply_chat_template(request_messages, add_generation_prompt=True, tokenize=True, **kwargs)
-    except (TypeError, ValueError, KeyError) as error:
-        raise UserInputError(f"cannot render messages with the chat template: {error}") from error
-    ids = _token_list(rendered)
-    if not ids:
-        raise UserInputError("the chat template rendered an empty prompt")
-    return ids
+    return _rendered_ids(
+        lambda: tokenizer.apply_chat_template(request_messages, add_generation_prompt=True, tokenize=True, **kwargs)
+    )
+
+
+def _template_args(request_args: dict[str, Any]) -> dict[str, Any]:
+    """Renderer kwargs of a resolved request: its chat_template_kwargs plus tools (as chat_template_utils extracts)."""
+    args = dict(request_args.get("chat_template_kwargs") or {})
+    if request_args.get("tools"):
+        args["tools"] = request_args["tools"]
+    return args
 
 
 def _resends_history(request_messages: Any, stored: list[dict[str, Any]]) -> bool:
@@ -61,8 +76,8 @@ def _resends_history(request_messages: Any, stored: list[dict[str, Any]]) -> boo
 def _try_merge_tokens(
     session: TrajectorySession,
     request_messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None,
     tito_tokenizer,
+    template_args: dict[str, Any],
     *,
     max_new_tokens: int,
     budget: int | None,
@@ -78,7 +93,7 @@ def _try_merge_tokens(
             old_messages=session.messages,
             new_messages=request_messages,
             pretokenized_token_ids=session.token_ids,
-            tools=tools,
+            template_args=template_args,
         )
     except ValueError:  # the harness edited, reordered or summarized the history; a fresh render is still exact
         return None, "rewrite"
@@ -89,14 +104,6 @@ def _try_merge_tokens(
     if budget is not None and len(prompt_token_ids) + max_new_tokens > budget:
         return None, "budget"
     return prompt_token_ids, None
-
-
-def _update_pretokenized_state(
-    session: TrajectorySession, turn: Turn, request_messages: list[dict[str, Any]], assistant_message: dict[str, Any]
-) -> None:
-    """TITO: remember the answered history + assistant message and this turn's ids as the next turn's prefix."""
-    session.messages = [*request_messages, assistant_message]
-    session.token_ids = array("i", [*turn.input_ids, *turn.output_ids])
 
 
 class PromptRenderer:
@@ -117,26 +124,65 @@ class PromptRenderer:
         *,
         max_new_tokens: int,
         budget: int | None,
-    ) -> tuple[list[int], bool, str | None]:
-        """(prompt_token_ids, inherits, reset_reason): the TITO prefix when it applies, else a full render and why."""
+    ) -> tuple[list[int], bool, str | None, dict[str, Any] | None]:
+        """(prompt_token_ids, inherits, reset_reason, request_args): TITO merge when it applies, else a full render."""
         validate_messages(request_messages)  # the merge path calls into the TITO matcher, which assumes dict messages
-        template_kwargs = self.template_kwargs(override)
-        reason: str | None = "no_tito"
-        if self.tito_tokenizer is not None:
-            tito_tokenizer = self.tito_tokenizer_for(override)
+        if self.tito_tokenizer is None:
+            return (
+                render_prompt(request_messages, tools, self.template_kwargs(override), self.tokenizer),
+                False,
+                "no_tito",
+                None,
+            )
+        request_args, continued = self._resolve_request_args(session, tools, override)
+        template_args = _template_args(request_args)
+        reason = "rewrite"  # the request cannot continue the recorded turn (its tools changed): a new segment
+        if continued:
             prompt_token_ids, reason = _try_merge_tokens(
-                session, request_messages, tools, tito_tokenizer, max_new_tokens=max_new_tokens, budget=budget
+                session,
+                request_messages,
+                self.tito_tokenizer,
+                template_args,
+                max_new_tokens=max_new_tokens,
+                budget=budget,
             )
             if prompt_token_ids is not None:
-                return prompt_token_ids, True, None
-        return render_prompt(request_messages, tools, template_kwargs, self.tokenizer), False, reason
+                return prompt_token_ids, True, None, request_args
+        tito = self.tito_tokenizer
+        ids = _rendered_ids(
+            lambda: tito.apply_chat_template(
+                request_messages, add_generation_prompt=True, tokenize=True, template_args=template_args
+            )
+        )
+        return ids, False, reason, request_args
+
+    def _resolve_request_args(
+        self, session: TrajectorySession, tools: list[dict[str, Any]] | None, override: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], bool]:
+        """The TITO family's resolved (chat_template_kwargs, tools) for this turn; False when it cannot continue."""
+        if override is not None and not isinstance(override, dict):
+            raise UserInputError("chat_template_kwargs must be an object")
+        request = {"chat_template_kwargs": dict(override or {}), "tools": tools}
+        if session.request_args is not None:
+            try:  # omitted fields inherit the recorded turn's; tools that changed cannot reuse its prefix
+                return self.tito_tokenizer.resolve_request_args(dict(request), turn_args=session.request_args), True
+            except ValueError:
+                return self.tito_tokenizer.resolve_request_args(dict(request), turn_args=None), False
+        return self.tito_tokenizer.resolve_request_args(dict(request), turn_args=None), True
 
     def update_pretokenized_state(
-        self, session: TrajectorySession, turn: Turn, request_messages: list[dict[str, Any]], assistant_message: dict
+        self,
+        session: TrajectorySession,
+        turn: Turn,
+        request_messages: list[dict[str, Any]],
+        assistant_message: dict,
+        request_args: dict[str, Any] | None,
     ) -> None:
-        """Remember the answered history + the assistant message for the next TITO merge; no-op without TITO."""
+        """Remember the answered history, the assistant message and the resolved args for the next TITO merge."""
         if self.tito_tokenizer is not None:
-            _update_pretokenized_state(session, turn, request_messages, assistant_message)
+            session.messages = [*request_messages, assistant_message]
+            session.token_ids = array("i", [*turn.input_ids, *turn.output_ids])
+            session.request_args = request_args
 
     @property
     def max_trim_tokens(self) -> int:
@@ -152,21 +198,10 @@ class PromptRenderer:
         return {"role": "assistant", "content": self.decode(turn.output_ids)}
 
     def template_kwargs(self, override: dict[str, Any] | None) -> dict[str, Any]:
-        """The gateway's chat_template_kwargs, overridden by the turn's chat_template_kwargs object."""
+        """The gateway's chat_template_kwargs, overridden by the turn's chat_template_kwargs object (no TITO)."""
         kwargs = dict(self.chat_template_kwargs)
         if override is not None:
             if not isinstance(override, dict):
                 raise UserInputError("chat_template_kwargs must be an object")
             kwargs.update(override)
         return kwargs
-
-    def tito_tokenizer_for(self, override: dict[str, Any] | None):
-        """The injected TITOTokenizer, re-scoped with the turn's chat_template_kwargs override when present."""
-        if not override:
-            return self.tito_tokenizer
-        if not isinstance(override, dict):
-            raise UserInputError("chat_template_kwargs must be an object")
-        try:
-            return self.tito_tokenizer.clone_with_chat_template_kwargs(override)
-        except ValueError as error:
-            raise UserInputError(f"chat_template_kwargs conflict with the TITO template: {error}") from error
