@@ -36,12 +36,18 @@ def _requires_blackwell():
 
 
 def _inputs(batch, seq_len, heads, value_heads, *, seed, packed=False):
+    """``packed=True``: ``batch`` sequences of ``seq_len`` tokens in one row (``cu_seqlens``);
+    ``packed=<list of lengths>``: unequal packed sequences (``batch``/``seq_len`` ignored)."""
     gen = torch.Generator(device="cuda").manual_seed(seed)
     dev, d = "cuda", 128
     rand = lambda *shape: torch.rand(*shape, generator=gen, dtype=torch.float32, device=dev)  # noqa: E731
     randn = lambda *shape: torch.randn(*shape, generator=gen, dtype=torch.float32, device=dev)  # noqa: E731
-    total = batch * seq_len if packed else seq_len
-    b = 1 if packed else batch
+    lengths = list(packed) if isinstance(packed, (list, tuple)) else None
+    if lengths is not None:
+        total, b = sum(lengths), 1
+    else:
+        total = batch * seq_len if packed else seq_len
+        b = 1 if packed else batch
     q = (rand(b, total, heads, d) - 0.5).to(torch.bfloat16)
     k = (rand(b, total, heads, d) - 0.5).to(torch.bfloat16)
     v = (rand(b, total, value_heads, d) - 0.5).to(torch.bfloat16)
@@ -51,7 +57,9 @@ def _inputs(batch, seq_len, heads, value_heads, *, seed, packed=False):
     dt_bias = randn(value_heads * d)
     do = randn(b, total, value_heads, d).to(torch.bfloat16)
     cu = None
-    if packed:
+    if lengths is not None:
+        cu = torch.tensor([0, *torch.cumsum(torch.tensor(lengths), 0).tolist()], dtype=torch.int32, device=dev)
+    elif packed:
         cu = torch.arange(0, batch * seq_len + 1, seq_len, dtype=torch.int32, device=dev)
     return dict(
         q=q,
@@ -172,6 +180,11 @@ SHAPES = [
     pytest.param(1, 512, 2, 4, False, id="b1_t512_h2_hv4_gva"),
     pytest.param(2, 384, 2, 2, False, id="b2_t384_h2"),
     pytest.param(2, 256, 2, 2, True, id="packed_2x256_h2"),
+    # any length: partial chunks at unaligned offsets, odd chunk counts, one-token sequences
+    pytest.param(2, 1000, 2, 2, False, id="b2_t1000_h2"),
+    pytest.param(1, 0, 2, 2, [100, 640, 77], id="packed_unequal_3_h2"),
+    pytest.param(1, 0, 2, 4, [383, 402, 128, 296], id="packed_rl4_h2_hv4_gva"),
+    pytest.param(1, 0, 2, 2, [129, 1], id="packed_129_1_h2"),
     pytest.param(1, 2048, 16, 16, False, id="b1_t2048_h16", marks=pytest.mark.slow),
 ]
 
@@ -195,7 +208,7 @@ def test_matches_reference_chunk_kda(batch, seq_len, heads, value_heads, packed)
         )
 
 
-@pytest.mark.parametrize("batch,seq_len,heads,value_heads,packed", SHAPES[:2])
+@pytest.mark.parametrize("batch,seq_len,heads,value_heads,packed", [*SHAPES[:2], SHAPES[6]])
 def test_backward_is_bit_deterministic(batch, seq_len, heads, value_heads, packed):
     _requires_blackwell()
     inp = _inputs(batch, seq_len, heads, value_heads, seed=461_000 + seq_len, packed=packed)
@@ -207,14 +220,16 @@ def test_backward_is_bit_deterministic(batch, seq_len, heads, value_heads, packe
         assert torch.equal(first[name], second[name]), f"{name} differs between identical backward calls"
 
 
-def test_rejects_unsupported_shapes():
+def test_rejects_inconsistent_cu_seqlens():
     _requires_blackwell()
-    inp = _inputs(1, 192, 2, 2, seed=1)  # T % 128 != 0
+    inp = _inputs(1, 192, 2, 2, seed=1)
+    saved = _saved(inp)
+    inp["cu_seqlens"] = torch.tensor([0, 100], dtype=torch.int32, device="cuda")  # does not end at T
     with pytest.raises(ValueError):
-        _candidate(inp, _saved(inp))
+        _candidate(inp, saved)
 
 
-@pytest.mark.parametrize("batch,seq_len,heads,value_heads,packed", SHAPES[:3])
+@pytest.mark.parametrize("batch,seq_len,heads,value_heads,packed", [*SHAPES[:3], SHAPES[5]])
 def test_matches_reference_with_post_sigmoid_beta(batch, seq_len, heads, value_heads, packed):
     """beta handed in already sigmoided (fp32): dbeta is the gradient w.r.t. that beta, in its dtype."""
     _requires_blackwell()

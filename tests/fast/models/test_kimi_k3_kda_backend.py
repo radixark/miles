@@ -34,9 +34,9 @@ def test_unknown_backend_raises_value_error():
         ((10, 0), 2048, None, None, True),
         ((10, 3), 256, None, None, True),
         ((9, 0), 2048, None, None, False),  # Hopper: FLA
-        ((10, 0), 2000, None, None, True),  # not a multiple of 128: repacked for the backward
-        ((10, 0), 512, [0, 256, 512], None, True),  # equal-length packed: direct
-        ((10, 0), 384, [0, 128, 384], None, True),  # unequal packed lengths: repacked
+        ((10, 0), 2000, None, None, True),  # any fixed length
+        ((10, 0), 512, [0, 256, 512], None, True),  # equal-length packed
+        ((10, 0), 384, [0, 128, 384], None, True),  # unequal packed lengths (native cu_seqlens)
         ((10, 0), 2048, None, object(), False),  # context parallelism
     ],
 )
@@ -70,47 +70,6 @@ def test_deterministic_backward_domain_requires_head_dim_128():
         cu_seqlens=None,
         cp_context=None,
     )
-
-
-@pytest.mark.parametrize(
-    "batch, seq_len, cu_seqlens",
-    [(1, 512, None), (4, 256, None), (1, 512, [0, 256, 512])],
-    ids=["t512", "b4_t256", "packed_2x256"],
-)
-def test_plan_repack_is_direct_for_kernel_layouts(batch, seq_len, cu_seqlens):
-    module = load_backend_module()
-    cu = None if cu_seqlens is None else torch.tensor(cu_seqlens, dtype=torch.int32)
-    assert module.plan_repack(cu, batch, seq_len, torch.device("cpu")) is None
-
-
-@pytest.mark.parametrize(
-    "batch, seq_len, cu_seqlens, slots, length",
-    [
-        (1, 200, None, 1, 256),
-        (3, 1000, None, 3, 1024),
-        (1, 1209, [0, 383, 785, 913, 1209], 4, 512),  # 383 / 402 / 128 / 296
-        (1, 640, [0, 100, 640], 2, 640),  # 100 / 540: one 128-multiple slot per sequence
-        (1, 300, [0, 0, 300], 2, 384),  # an empty sequence keeps its (all-pad) slot
-    ],
-)
-def test_repack_round_trip_places_every_token_and_zero_fills_pads(batch, seq_len, cu_seqlens, slots, length):
-    module = load_backend_module()
-    cu = None if cu_seqlens is None else torch.tensor(cu_seqlens, dtype=torch.int32)
-    plan = module.plan_repack(cu, batch, seq_len, torch.device("cpu"))
-    assert (plan.batch, plan.length) == (slots, length)
-    assert plan.index.shape == (batch * seq_len,) and plan.index.unique().numel() == batch * seq_len
-    torch.manual_seed(0)
-    rows = torch.randn(batch, seq_len, 2, 3) + 1.0  # no exact zeros: pads are the only zero rows
-    padded = module.pad_rows(rows, plan)
-    assert padded.shape == (slots, length, 2, 3)
-    assert torch.equal(module.unpad_rows(padded, plan, batch, seq_len), rows)
-    assert int((padded.reshape(slots * length, -1).abs().sum(-1) != 0).sum()) == batch * seq_len
-    if cu is not None:
-        # every sequence starts at its own 128-aligned slot and keeps its in-sequence order
-        offsets = cu.tolist()
-        for i, (start, end) in enumerate(zip(offsets[:-1], offsets[1:], strict=True)):
-            assert torch.equal(padded[i, : end - start], rows[0, start:end])
-            assert torch.count_nonzero(padded[i, end - start :]) == 0
 
 
 # ----------------------------------------------------------------------------------- GPU
@@ -172,14 +131,14 @@ def _run(module, backend: str, inputs: dict[str, torch.Tensor], cu_seqlens: torc
         (256, None),
         (512, None),
         (512, [0, 256, 512]),
-        (1000, None),  # repacked: T not a multiple of 128
-        (1209, [0, 383, 785, 913, 1209]),  # repacked: variable-length packed (RL batch shape)
-        (640, [0, 100, 640]),  # repacked: two unequal sequences
+        (1000, None),  # T not a multiple of the chunk size
+        (1209, [0, 383, 785, 913, 1209]),  # variable-length packed (RL batch shape)
+        (640, [0, 100, 640]),  # two unequal sequences
     ],
-    ids=["t256", "t512", "packed_2x256", "t1000_repacked", "packed_var4_repacked", "packed_2_unequal_repacked"],
+    ids=["t256", "t512", "packed_2x256", "t1000", "packed_var4", "packed_2_unequal"],
 )
 def test_deterministic_backend_matches_fla(seq_len, cu_seqlens):
-    """Same forward bits; gradients within the bf16 tolerance of FLA's own backward (direct and repacked)."""
+    """Same forward bits; gradients within the bf16 tolerance of FLA's own backward (fixed and packed layouts)."""
     _require_gpu_backends()
     module = load_backend_module()
     cu = None if cu_seqlens is None else torch.tensor(cu_seqlens, dtype=torch.int32, device="cuda")
@@ -193,7 +152,7 @@ def test_deterministic_backend_matches_fla(seq_len, cu_seqlens):
 
 
 @pytest.mark.parametrize(
-    "seq_len, cu_seqlens", [(512, None), (1209, [0, 383, 785, 913, 1209])], ids=["t512", "packed_var4_repacked"]
+    "seq_len, cu_seqlens", [(512, None), (1209, [0, 383, 785, 913, 1209])], ids=["t512", "packed_var4"]
 )
 def test_deterministic_backend_backward_is_bit_deterministic(seq_len, cu_seqlens):
     _require_gpu_backends()
