@@ -12,7 +12,11 @@ Muon specifics:
 - ``--rematerialize-param-from-master-weight`` and the Adam CPU-offload / precision-aware flags
   require Megatron's distributed optimizer, which miles enables only for Adam; the Muon block
   offloads optimizer state between steps with ``--chunked-optimizer-state-offload`` instead.
-- lr 1e-5 follows tests/e2e/megatron/test_qwen3_4B_muon_offload_disk.py.
+- lr 1e-6, the Adam CI runs' value. The first full pass used 1e-5 (the 2-step Muon smoke test's
+  value) and collapsed the same way GLM-4.7-Flash did: reward peaked at 0.81 around rollout
+  10-30, hit 0 by rollout 60, and responses sat at the 8192 cap from rollout 80 on (run
+  35742785147). Train/rollout |dlogp| stayed <= 4e-4 for all 100 rollouts, so the drift was
+  optimisation, not weight sync.
 
 The per-step weight-equality check is off: with 100 updates it would add a full-model compare
 to every step; the per-step train/rollout log-prob checker still guards weight-sync drift.
@@ -30,7 +34,7 @@ register_cuda_ci(est_time=17000, suite="stage-c-8-gpu-h100", labels=["long", "qw
 
 MUON_OPTIMIZER_ARGS = (
     "--optimizer dist_muon "
-    "--lr 1e-5 "
+    "--lr 1e-6 "
     "--lr-decay-style constant "
     "--weight-decay 0.1 "
     "--adam-beta1 0.9 "
