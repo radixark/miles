@@ -487,6 +487,13 @@ class GatedDeltaRuleAttentionCore(MegatronModule):
         lk, g = self.local_num_k_heads, layout.group
         hk, hv = layout.head_k_dim, layout.head_v_dim
 
+        if cp_context is None and self.cp_group is not None:
+            # Hybrid CP configured on the module (detect_and_setup_hybrid_cp) but the caller passed only
+            # the global packed boundaries: build the fla CP context here, as the replicated module did.
+            from .cp_utils import build_gdn_cp_context
+
+            cp_context = build_gdn_cp_context(self, cu_seqlens, hidden_states.device)
+
         mixed_qkv, z, b, a = self._project(hidden_states)
         # Depthwise conv over the head-interleaved channels (conv1d.weight rows use the same order).
         conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
