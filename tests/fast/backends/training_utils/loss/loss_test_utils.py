@@ -91,6 +91,7 @@ _ARGS_DEFAULTS = dict(
     eps_clip=0.2,
     eps_clip_high=0.2,
     entropy_coef=0.01,
+    top_entropy_quantile=1.0,
     use_kl_loss=False,
     kl_loss_coef=0.0,
     use_unbiased_kl=False,
