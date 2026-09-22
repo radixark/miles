@@ -209,6 +209,14 @@ async def test_an_integer_temperature_is_accepted_as_a_float_default(env):
     assert "top_p" not in env.backend.requests[-1]
 
 
+async def test_an_integral_float_top_k_is_stored_as_an_int(env):
+    """An eval dataset YAML can spell top_k as 40.0; the engine must still receive an integer."""
+    sid = await _create(env, b'{"top_k": 40.0}')
+    await _chat(env, sid, [USER])
+    top_k = env.backend.requests[-1]["top_k"]
+    assert top_k == 40 and isinstance(top_k, int)
+
+
 async def test_concurrent_sessions_keep_their_own_sampling_defaults(env):
     first, second = await asyncio.gather(_create(env, b'{"temperature": 0.2}'), _create(env, b'{"temperature": 0.8}'))
     await asyncio.gather(_chat(env, first, [USER]), _chat(env, second, [USER]))

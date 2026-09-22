@@ -33,6 +33,8 @@ from miles.utils.types import Sample
             {"sampling_params": {"temperature": 0.6, "top_p": None, "top_k": 20, "max_new_tokens": 8}},
             {"evaluation": False, "temperature": 0.6, "top_k": 20},
         ),
+        # An eval dataset YAML can spell top_k as 40.0; the session body carries the integer.
+        ({"sampling_params": {"top_k": 40.0}}, {"evaluation": False, "top_k": 40}),
     ],
 )
 async def test_create_reads_session_server_instance_id_from_args(monkeypatch, create_kwargs, expected_payload):
@@ -41,6 +43,10 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
     async def fake_post(url: str, payload: dict, action: str = "post"):
         calls.append((action, url))
         assert payload == expected_payload
+        # 40.0 == 40 in Python, so the equality above cannot see a float leaking through
+        assert {key: type(value) for key, value in payload.items()} == {
+            key: type(value) for key, value in expected_payload.items()
+        }
         assert action == "post"
         assert url == "http://127.0.0.1:12345/sessions"
         return {"session_id": "session-123"}
