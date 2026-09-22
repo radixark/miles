@@ -4,7 +4,12 @@ import pytest
 from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import make_pool_spec
 
 from miles.utils.workers.naming import compute_worker_name
-from miles.utils.workers.worker_provider.kubernetes.core.cell_view import compute_cell_info, compute_worker_infos
+from miles.utils.workers.worker_provider.kubernetes.core.cell_view import (
+    PodIdentity,
+    compute_cell_info,
+    compute_debug_cell_incarnation,
+    compute_worker_infos,
+)
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys, ParsedPod
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo
 
@@ -198,3 +203,50 @@ class TestWorkerInfos:
         """A prefix check alone passes a half-arrived group, and the tail is what is actually missing."""
         with pytest.raises(AssertionError, match="missing pods"):
             build_worker_infos([make_parsed_pod(pod_in_cell_index=0, cell_size=2)])
+
+
+class TestDebugCellIncarnation:
+    def test_a_cell_without_pods_has_no_incarnation(self) -> None:
+        """A deleted cell reads as gone rather than as an empty incarnation that could still be matched."""
+        assert compute_debug_cell_incarnation(CELL_ID, pods=[]) is None
+
+    def test_names_every_pod_by_its_uid_in_cell_order(self) -> None:
+        """Pods are listed by in-cell index whatever order the watch delivered them in."""
+        pods = [make_parsed_pod(pod_in_cell_index=1), make_parsed_pod(pod_in_cell_index=0)]
+
+        incarnation = compute_debug_cell_incarnation(CELL_ID, pods=pods)
+
+        assert incarnation.cell_id == CELL_ID
+        assert incarnation.pods == [
+            PodIdentity(name="engine-0-0", uid="uid-0"),
+            PodIdentity(name="engine-0-1", uid="uid-1"),
+        ]
+        assert incarnation == compute_debug_cell_incarnation(CELL_ID, pods=list(reversed(pods)))
+
+    def test_carries_the_same_hash_consumers_reconcile_the_cell_on(self) -> None:
+        """A fault target matched against the incarnation must agree with the hash in the cell info."""
+        pods = [make_parsed_pod(pod_in_cell_index=0), make_parsed_pod(pod_in_cell_index=1)]
+
+        assert compute_debug_cell_incarnation(CELL_ID, pods=pods).workers_hash == build_cell_info(pods).workers_hash
+
+    def test_a_same_named_replacement_pod_is_a_new_incarnation(self) -> None:
+        """A pod recreated under its old name differs by uid, so a stale target cannot match it."""
+        before = [make_parsed_pod(pod_in_cell_index=0), make_parsed_pod(pod_in_cell_index=1)]
+        after = [before[0], before[1].model_copy(update={"uid": "uid-1-replaced"})]
+
+        old = compute_debug_cell_incarnation(CELL_ID, pods=before)
+        new = compute_debug_cell_incarnation(CELL_ID, pods=after)
+
+        assert new.pods[1] == PodIdentity(name="engine-0-1", uid="uid-1-replaced")
+        assert new.workers_hash != old.workers_hash
+
+    def test_a_container_restart_keeps_the_pods_but_changes_the_hash(self) -> None:
+        """A process restarted inside the same pod is still a new incarnation of the cell."""
+        before = [make_parsed_pod(pod_in_cell_index=0)]
+        after = [before[0].model_copy(update={"restart_count": 1})]
+
+        old = compute_debug_cell_incarnation(CELL_ID, pods=before)
+        new = compute_debug_cell_incarnation(CELL_ID, pods=after)
+
+        assert new.pods == old.pods
+        assert new.workers_hash != old.workers_hash
