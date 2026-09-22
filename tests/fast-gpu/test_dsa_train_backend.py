@@ -248,7 +248,9 @@ def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(
     out2, dq2, dkv2, dsink2 = run()
     assert all(torch.equal(a, b) for a, b in ((out, out2), (dq, dq2), (dkv, dkv2), (dsink, dsink2)))
 
-    flat_idx = torch.where(indices >= 0, indices + (torch.arange(batch, device="cuda") * seq).view(batch, 1, 1), indices)
+    flat_idx = torch.where(
+        indices >= 0, indices + (torch.arange(batch, device="cuda") * seq).view(batch, 1, 1), indices
+    )
     q32 = q.reshape(batch * seq, heads, -1).float().requires_grad_(True)
     kv32 = kv.reshape(batch * seq, -1).float().requires_grad_(True)
     s32 = sink.clone().requires_grad_(True)
@@ -268,7 +270,12 @@ def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(
         out_t = sparse_attn_tilelang(q_t, kv_t, s_t, indices, sm_scale)
         out_t.backward(do)
         # Measured on GB300 with TileLang 0.1.9: o 2.4e-3, dq 2.1e-3, dkv 4.2e-3, dsink 5.0e-4 (BF16-level).
-        for name, ours, theirs in (("o", out, out_t), ("dq", dq, q_t.grad), ("dkv", dkv, kv_t.grad), ("dsink", dsink, s_t.grad)):
+        for name, ours, theirs in (
+            ("o", out, out_t),
+            ("dq", dq, q_t.grad),
+            ("dkv", dkv, kv_t.grad),
+            ("dsink", dsink, s_t.grad),
+        ):
             err = _rel_err(ours, theirs)
             print(f"dsv4 attention {name}: loom vs tilelang rel err {err:.3e}")
             assert err < 1e-2, name

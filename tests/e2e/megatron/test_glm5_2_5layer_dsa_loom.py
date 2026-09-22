@@ -31,7 +31,9 @@ from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1800, suite="stage-c-4-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"])
+register_cuda_ci(
+    est_time=1800, suite="stage-c-4-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"]
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -85,11 +87,7 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=4,
         num_rollout=NUM_ROLLOUT,
         enable_optimizer_offload=True,
-        extra_args=(
-            "--ci-test --ci-disable-logprobs-checker "
-            f"--dsa-attention-backend {BACKEND} "
-            + _mode_args()
-        ),
+        extra_args=("--ci-test --ci-disable-logprobs-checker " f"--dsa-attention-backend {BACKEND} " + _mode_args()),
         **kwargs,
     )
 

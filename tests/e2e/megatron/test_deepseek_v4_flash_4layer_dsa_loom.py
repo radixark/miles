@@ -23,7 +23,9 @@ from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_sing
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-register_cuda_ci(est_time=1900, suite="stage-c-4-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"])
+register_cuda_ci(
+    est_time=1900, suite="stage-c-4-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"]
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -81,8 +83,7 @@ def _args() -> ScriptArgs:
         extra_args=(
             "--ci-test --check-weight-update-allow-quant-error --ci-disable-logprobs-checker "
             f"--num-rollout {NUM_ROLLOUT} "
-            f"--dsa-attention-backend {BACKEND} "
-            + _mode_args()
+            f"--dsa-attention-backend {BACKEND} " + _mode_args()
         ),
         **kwargs,
     )

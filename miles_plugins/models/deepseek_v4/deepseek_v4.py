@@ -4,7 +4,6 @@ import os
 import einops
 import torch
 import torch.nn as nn
-
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TELinear, TENorm, TERowParallelLinear
 from megatron.core.models.gpt import experimental_attention_variant_module_specs as _eav_specs
@@ -33,7 +32,6 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_window_topk_idxs_cp,
 )
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
-from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
@@ -50,6 +48,7 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     to_rank_major_rows,
 )
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
+from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
 
 
 def _enable_deepseek_v4_tf32():

@@ -235,7 +235,9 @@ def dsa_indexer_backward_rows(index_q, index_k, weights, topk_indices, grad_scor
     topk = int(topk_indices.shape[1])
     hp = indexer_padded_heads(int(heads))
     if topk % indexer_key_block(int(heads)) != 0:
-        raise ValueError(f"indexer topk must be a multiple of {indexer_key_block(int(heads))} for {heads} heads, got {topk}")
+        raise ValueError(
+            f"indexer topk must be a multiple of {indexer_key_block(int(heads))} for {heads} heads, got {topk}"
+        )
     _kernel(f"dsa_indexer_bwd_h{hp}", index_q.device).launch(
         grid=(num_rows, 1, 1),
         index_q=index_q,

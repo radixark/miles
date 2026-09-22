@@ -153,15 +153,25 @@ def _flat_attention_backward(q, kv, o, do, indices, lse, sink, sm_scale, d_v, wo
     dq = torch.empty_like(q)
     dkv32 = torch.zeros(num_kv, d_qk, dtype=torch.float32, device=q.device)
     num_head_blocks = geo.head_blocks
-    chunks = reduction.plan_row_chunks(num_rows, num_head_blocks * topk, d_qk, reduction.workspace_budget(workspace_bytes))
+    chunks = reduction.plan_row_chunks(
+        num_rows, num_head_blocks * topk, d_qk, reduction.workspace_budget(workspace_bytes)
+    )
     rows_per_chunk = chunks[0][1] - chunks[0][0]
     partial = torch.empty(rows_per_chunk * num_head_blocks * topk, d_qk, dtype=torch.float32, device=q.device)
     for start, end in chunks:
         rows = end - start
         part = partial[: rows * num_head_blocks * topk]
         weave.dsa_attention_backward_rows(
-            q[start:end], kv, do[start:end], indices[start:end], lse[start:end], delta[start:end], dq[start:end], part,
-            float(sm_scale), geo,
+            q[start:end],
+            kv,
+            do[start:end],
+            indices[start:end],
+            lse[start:end],
+            delta[start:end],
+            dq[start:end],
+            part,
+            float(sm_scale),
+            geo,
         )
         keys = indices[start:end].unsqueeze(1).expand(rows, num_head_blocks, topk).reshape(-1)
         reduction.deterministic_scatter_add(part, keys, dkv32)
@@ -341,12 +351,16 @@ def indexer_logits(
     q_flat, k_flat, w_flat, meta = layouts.flatten_indexer_inputs(index_q, index_k, weights, layout)
     batch, seq_len, seq_len_kv = meta.batch, meta.seq_len, meta.seq_len_kv
     if cu_seqlen_ks.shape != (seq_len,) or cu_seqlen_ke.shape != (seq_len,):
-        raise ValueError(f"cu_seqlen_ks/ke must be [{seq_len}], got {tuple(cu_seqlen_ks.shape)} / {tuple(cu_seqlen_ke.shape)}")
+        raise ValueError(
+            f"cu_seqlen_ks/ke must be [{seq_len}], got {tuple(cu_seqlen_ks.shape)} / {tuple(cu_seqlen_ke.shape)}"
+        )
     if q_flat.dtype != torch.bfloat16 or k_flat.dtype != torch.bfloat16:
         raise TypeError("indexer expects BF16 index_q and index_k")
     ks = cu_seqlen_ks.to(torch.int32).contiguous()
     ke = cu_seqlen_ke.to(torch.int32).contiguous()
-    logits = weave.dsa_indexer_logits(q_flat, k_flat, w_flat, ks, ke, batch=batch, seq_len=seq_len, seq_len_kv=seq_len_kv)
+    logits = weave.dsa_indexer_logits(
+        q_flat, k_flat, w_flat, ks, ke, batch=batch, seq_len=seq_len, seq_len_kv=seq_len_kv
+    )
     return logits.squeeze(0) if layout == "thd" else logits
 
 
@@ -367,7 +381,14 @@ def _flat_indexer_backward(q, k, w, indices, grad_scores, workspace_bytes):
     for start, end in chunks:
         part = partial[: (end - start) * topk]
         weave.dsa_indexer_backward_rows(
-            q[start:end], k, w[start:end], indices[start:end], grad_scores[start:end], dq[start:end], dw[start:end], part
+            q[start:end],
+            k,
+            w[start:end],
+            indices[start:end],
+            grad_scores[start:end],
+            dq[start:end],
+            dw[start:end],
+            part,
         )
         reduction.deterministic_scatter_add(part, indices[start:end].reshape(-1), dk32)
     return dq, dw, dk32
@@ -391,7 +412,9 @@ def indexer_backward(
     q_flat, k_flat, w_flat, meta = layouts.flatten_indexer_inputs(index_q, index_k, weights, layout)
     from . import _kernels as weave
 
-    idx_flat = layouts.pad_topk(layouts.flatten_topk_indices(topk_indices, meta), weave.indexer_key_block(q_flat.shape[1]))
+    idx_flat = layouts.pad_topk(
+        layouts.flatten_topk_indices(topk_indices, meta), weave.indexer_key_block(q_flat.shape[1])
+    )
     grad_flat = layouts.flatten_scores(grad_scores, meta)
     if grad_flat.shape[1] != idx_flat.shape[1]:
         grad_flat = torch.nn.functional.pad(grad_flat, (0, idx_flat.shape[1] - grad_flat.shape[1]), value=0.0)

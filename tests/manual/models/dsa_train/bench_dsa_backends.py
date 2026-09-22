@@ -88,7 +88,9 @@ def make_attention_inputs(shape: AttentionShape, device="cuda"):
     else:
         q = torch.randn(shape.batch, shape.rows, shape.heads, d_qk, device=device, dtype=torch.bfloat16, generator=gen)
         kv = torch.randn(shape.batch, shape.rows, d_qk, device=device, dtype=torch.bfloat16, generator=gen)
-        indices = torch.stack([_causal_indices(shape.rows, shape.topk, shape.rows, device, gen) for _ in range(shape.batch)])
+        indices = torch.stack(
+            [_causal_indices(shape.rows, shape.topk, shape.rows, device, gen) for _ in range(shape.batch)]
+        )
         do = torch.randn(shape.batch, shape.rows, shape.heads, 512, device=device, dtype=torch.bfloat16, generator=gen)
     sink = torch.randn(shape.heads, device=device, generator=gen) if shape.sink else None
     return {"q": q, "kv": kv, "indices": indices, "do": do, "sink": sink, "sm_scale": 1.0 / math.sqrt(d_qk)}
@@ -110,7 +112,9 @@ def make_indexer_inputs(shape: IndexerShape, device="cuda"):
         ks = torch.zeros(shape.rows, device=device, dtype=torch.int32)
         ke = ((torch.arange(shape.rows, device=device) + 1) // (shape.rows // shape.keys)).int()
         topk_indices = None
-    grad_scores = torch.randn(shape.rows, shape.topk, device=device, generator=gen) if topk_indices is not None else None
+    grad_scores = (
+        torch.randn(shape.rows, shape.topk, device=device, generator=gen) if topk_indices is not None else None
+    )
     return {"q": q, "k": k, "w": w, "ks": ks, "ke": ke, "topk_indices": topk_indices, "grad_scores": grad_scores}
 
 
@@ -154,7 +158,9 @@ def bench_attention(shape, timer, backends):
     o, lse = loom_fwd()
     row["loom_fwd_ms"] = timer(loom_fwd)
     row["loom_bwd_ms"] = timer(
-        lambda: dsa_train.sparse_attention_backward(q, kv, o, do, idx, lse, sm_scale=sm_scale, attn_sink=sink, layout=shape.layout)
+        lambda: dsa_train.sparse_attention_backward(
+            q, kv, o, do, idx, lse, sm_scale=sm_scale, attn_sink=sink, layout=shape.layout
+        )
     )
     if "tilelang" in backends:
         if shape.layout == "thd":
@@ -164,14 +170,18 @@ def bench_attention(shape, timer, backends):
             idx_c, q_c, kv_c = idx.contiguous(), q.contiguous(), kv.contiguous()
             tl_o, tl_lse = sparse_mla_fwd_interface(q_c, kv_c, idx_c, sm_scale=sm_scale)
             row["tilelang_fwd_ms"] = timer(lambda: sparse_mla_fwd_interface(q_c, kv_c, idx_c, sm_scale=sm_scale))
-            row["tilelang_bwd_ms"] = timer(lambda: sparse_mla_bwd(q_c, kv_c, tl_o, do.contiguous(), idx_c, tl_lse, sm_scale=sm_scale))
+            row["tilelang_bwd_ms"] = timer(
+                lambda: sparse_mla_bwd(q_c, kv_c, tl_o, do.contiguous(), idx_c, tl_lse, sm_scale=sm_scale)
+            )
         else:
             from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_bwd import sparse_mqa_bwd_interface
             from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 
             tl_o, tl_lse = sparse_mqa_fwd_interface(q, kv, sink, idx, sm_scale=sm_scale)
             row["tilelang_fwd_ms"] = timer(lambda: sparse_mqa_fwd_interface(q, kv, sink, idx, sm_scale=sm_scale))
-            row["tilelang_bwd_ms"] = timer(lambda: sparse_mqa_bwd_interface(q, kv, sink, tl_o, do, idx, tl_lse, sm_scale=sm_scale))
+            row["tilelang_bwd_ms"] = timer(
+                lambda: sparse_mqa_bwd_interface(q, kv, sink, tl_o, do, idx, tl_lse, sm_scale=sm_scale)
+            )
     return row
 
 
@@ -184,7 +194,9 @@ def bench_indexer(shape, timer, backends):
     row["loom_logits_ms"] = timer(lambda: dsa_train.indexer_logits(q, k, w, ks, ke, layout=shape.layout))
     if shape.layout == "thd":
         topk_indices, grad_scores = inputs["topk_indices"], inputs["grad_scores"]
-        row["loom_bwd_ms"] = timer(lambda: dsa_train.indexer_backward(q, k, w, topk_indices, grad_scores, layout="thd"))
+        row["loom_bwd_ms"] = timer(
+            lambda: dsa_train.indexer_backward(q, k, w, topk_indices, grad_scores, layout="thd")
+        )
     if "tilelang" in backends:
         if shape.layout == "thd":
             from miles_plugins.models.glm5.ops.tilelang_indexer_bwd import indexer_bwd_interface
@@ -202,7 +214,9 @@ def bench_indexer(shape, timer, backends):
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--rows", type=int, nargs="+", default=[2048, 4096], help="query rows per rank")
-    parser.add_argument("--glm-index-heads", type=int, default=32, help="GLM-5.2 index_n_heads (32 in the checkpoint config)")
+    parser.add_argument(
+        "--glm-index-heads", type=int, default=32, help="GLM-5.2 index_n_heads (32 in the checkpoint config)"
+    )
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iters", type=int, default=10)
     parser.add_argument("--backends", default="loom,tilelang")
@@ -235,7 +249,9 @@ def main(argv=None) -> int:
         print(json.dumps(rows[-1]), flush=True)
     if args.json:
         with open(args.json, "w") as fh:
-            json.dump({"device": torch.cuda.get_device_name(), "backends": sorted(backends), "rows": rows}, fh, indent=2)
+            json.dump(
+                {"device": torch.cuda.get_device_name(), "backends": sorted(backends), "rows": rows}, fh, indent=2
+            )
     return 0
 
 

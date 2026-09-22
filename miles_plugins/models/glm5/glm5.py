@@ -327,7 +327,9 @@ class DSAMultiLatentAttention(Attention):
             _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
         if self.attention_backend == "loom":
-            core_attn_out = loom_dsa_ops().sparse_attention(q, kv, topk_indices, sm_scale=self.softmax_scale, layout="thd")
+            core_attn_out = loom_dsa_ops().sparse_attention(
+                q, kv, topk_indices, sm_scale=self.softmax_scale, layout="thd"
+            )
         else:
             core_attn_out, _ = SparseMLA.apply(q, kv, topk_indices, self.softmax_scale)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
