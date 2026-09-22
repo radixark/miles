@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 BWD_KERNEL_FILES = [
     "miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_bwd.py",
+    "miles_plugins/models/glm5/ops/tilelang_sparse_mla_bwd.py",
 ]
 
 # Which dims each jit-compiled entry point must resolve symbolically rather than take as an

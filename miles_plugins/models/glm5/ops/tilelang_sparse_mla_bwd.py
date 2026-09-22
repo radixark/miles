@@ -7,8 +7,6 @@ from tilelang import language as T
 
 @tilelang.jit(out_idx=[-1])
 def preprocess(
-    B,
-    S,
     H,
     D,
     block_ND=32,
@@ -18,6 +16,9 @@ def preprocess(
 ):
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
+    # Symbolic so the packed sequence length stays out of the JIT cache key.
+    B = T.dynamic("batch")
+    S = T.dynamic("seq_len")
     shape = [B, S, H, D]
 
     @T.prim_func
@@ -45,8 +46,6 @@ def preprocess(
 
 @tilelang.jit(out_idx=[-1])
 def postprocess(
-    B,
-    S_kv,
     D,
     D_tail,
     kv_group=1,
@@ -57,6 +56,9 @@ def postprocess(
 ):
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
+    # Symbolic B/S_kv: see preprocess().
+    B = T.dynamic("batch")
+    S_kv = T.dynamic("seq_len_kv")
     dkv_shape = [B, S_kv, kv_group, D + D_tail]
 
     @T.prim_func
@@ -85,9 +87,6 @@ def postprocess(
     },
 )
 def bwd(
-    B,
-    S,
-    S_kv,
     H,
     D,
     D_tail,
@@ -111,6 +110,11 @@ def bwd(
     if sm_scale is None:
         sm_scale = (D + D_tail) ** (-0.5)
     sm_scale_mul_reciprocal_log2 = sm_scale * 1.44269504  # log2(e)
+
+    # Symbolic B/S/S_kv: see preprocess().
+    B = T.dynamic("batch")
+    S = T.dynamic("seq_len")
+    S_kv = T.dynamic("seq_len_kv")
 
     H_kv = H // kv_group
     q_shape = [B, S, H, D + D_tail]
@@ -297,9 +301,9 @@ def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None, is_casual=True, re
     assert lse.shape == (B, S, H)
 
     # Get kernels
-    preprocess_kernel = preprocess(B, S, H, D)
-    bwd_kernel = bwd(B, S, S_kv, H, D, D_tail, topk, kv_group, sm_scale, is_casual)
-    postprocess_kernel = postprocess(B, S_kv, D, D_tail, kv_group)
+    preprocess_kernel = preprocess(H, D)
+    bwd_kernel = bwd(H, D, D_tail, topk, kv_group, sm_scale, is_casual)
+    postprocess_kernel = postprocess(D, D_tail, kv_group)
 
     if delta is None:
         delta = preprocess_kernel(o, do)
