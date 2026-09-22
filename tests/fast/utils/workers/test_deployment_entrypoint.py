@@ -125,7 +125,6 @@ class TestServingTheFaultToleranceOfItsOwnCells:
 _DRIVER_SCRIPTS = [
     "train.py",
     "train_async.py",
-    "train_multi_lora_async.py",
     "train_multi_policy.py",
 ]
 

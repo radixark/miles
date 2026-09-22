@@ -10,7 +10,7 @@ from miles.backends.training_utils.data import get_rollout_data
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import WeightPublisher
 from miles.utils.multi_lora import AdapterSpec
-from miles.utils.ray_utils import Box
+from miles.utils.object_store import StoreObjectRef
 from miles.utils.tracking_utils.structured_log import with_logs
 
 
@@ -28,7 +28,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         self.weight_publisher = WeightPublisher(iterator, build_lora_sync_config(args))
 
     @with_logs
-    def forward_backward(self, batch_id: int, rollout_data_ref: Box) -> dict:
+    def forward_backward(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         self._heartbeat.bump()
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
@@ -41,7 +41,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         return lora_model.optim_step(self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
-    def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
+    def forward_only(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         """Same loss pass as forward_backward, without the backward: the Tinker
         forward() contract returns the requested loss per datum."""
         self._heartbeat.bump()

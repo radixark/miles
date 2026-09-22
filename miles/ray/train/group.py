@@ -423,7 +423,7 @@ class TrainerController:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
-    async def offload_grad_buffer(self):
+    async def offload_grad_buffer(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("offload_grad_buffer")
 
@@ -434,13 +434,13 @@ class TrainerController:
         assert cell.is_alive, "the Tinker trainer cell is unavailable"
         return await cell.execute(fn_name, **kwargs)
 
-    async def forward_backward(self, batch_id: int, data_ref) -> list:
+    async def forward_backward(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
         return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> list:
         return await self._execute_slots("optim_step", adam_params_by_slot=adam_params_by_slot)
 
-    async def forward_only(self, batch_id: int, data_ref) -> list:
+    async def forward_only(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
         return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
 
     async def load_slot(
