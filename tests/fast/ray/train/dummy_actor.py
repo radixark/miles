@@ -21,6 +21,7 @@ class DummyTrainActor:
         self._train_return_value: Any = TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
         self._train_return_values_per_attempt: list[Any] = []
         self._update_weights_return_value: Any = None
+        self._async_save_complete = True
         self._heartbeat = SimpleHeartbeat()
         self._heartbeat.bump()
         self._heartbeat_fail: bool = False
@@ -77,6 +78,13 @@ class DummyTrainActor:
 
     def save_model(self, *args: Any, **kwargs: Any) -> None:
         self._record("save_model", args, kwargs)
+
+    def set_async_save_complete(self, complete: bool) -> None:
+        self._async_save_complete = complete
+
+    def finalize_async_save(self, *args: Any, **kwargs: Any) -> bool:
+        self._record("finalize_async_save", args, kwargs)
+        return self._async_save_complete
 
     def export_hf(self, *args: Any, **kwargs: Any) -> None:
         self._record("export_hf", args, kwargs)

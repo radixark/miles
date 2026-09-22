@@ -689,10 +689,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
             save_hf_model(self.args, rollout_id, self.model)
 
-        if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
-            if self.args.async_save:
-                maybe_finalize_async_save(blocking=True)
+        post_save_hook_path = self.args.custom_megatron_post_save_hook_path
+        if post_save_hook_path is not None and self.args.async_save:
+            # Distributed checkpoint finalization must run on every rank.
+            maybe_finalize_async_save(blocking=True)
 
+        if post_save_hook_path is not None and dist.get_rank() == 0:
             from megatron.training.checkpointing import get_checkpoint_name
 
             from miles.utils.function_registry import load_function
@@ -703,7 +705,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 if self.args.save_hf is not None and self.role == "actor"
                 else None
             )
-            post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
+            post_save_hook = load_function(post_save_hook_path)
             post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
 
     @with_logs
@@ -736,6 +738,29 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.colocate or self._asleep or self._active_model_tag != "actor":
             return self.weights_backuper.get("actor")
         return dict(self._named_actor_weights())
+
+    def finalize_async_save(self, blocking: bool) -> bool:
+        """Finalize a scheduled Megatron checkpoint save on this training rank.
+
+        Args:
+            blocking: Wait for active checkpoint writes when true.
+
+        Returns:
+            Whether no asynchronous checkpoint remains in flight.
+        """
+        if not self.args.async_save:
+            return True
+
+        from megatron.training.async_utils import is_empty_async_queue, maybe_finalize_async_save
+
+        if self.args.offload_train:
+            reload_process_groups()
+        try:
+            maybe_finalize_async_save(blocking=blocking)
+            return is_empty_async_queue()
+        finally:
+            if self.args.offload_train:
+                destroy_process_groups()
 
     @with_logs
     @timer
