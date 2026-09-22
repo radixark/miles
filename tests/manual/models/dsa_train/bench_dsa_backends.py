@@ -57,6 +57,9 @@ def production_shapes(rows: int, glm_index_heads: int):
         AttentionShape(f"glm52_tp4_attention_r{rows}", "thd", 1, rows, 16, 64, 2048, False),
         AttentionShape(f"glm52_tp1_attention_r{rows}", "thd", 1, rows, 64, 64, 2048, False),
         AttentionShape(f"dsv4_tp1_attention_r{rows}", "bshd", 1, rows, 64, 0, 128 + 512, True),
+        # DeepSeek-V4-Flash e2e (4 GPUs, TP4, 64 heads -> 16 local heads, window 128 + index_topk 512).
+        AttentionShape(f"dsv4_tp4_attention_r{rows}", "bshd", 1, rows, 16, 0, 128 + 512, True),
+        AttentionShape(f"dsv4_tp2_attention_r{rows}", "bshd", 1, rows, 32, 0, 128 + 512, True),
     ]
     indexer = [
         IndexerShape(f"glm52_indexer_r{rows}", "thd", 1, rows, glm_index_heads, rows, 2048),
