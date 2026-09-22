@@ -122,9 +122,7 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
             ):
                 continue
             for target in target_modules:
-                matches = matches_lora_target(hf_module, target) or matches_lora_target(
-                    megatron_module, target
-                )
+                matches = matches_lora_target(hf_module, target) or matches_lora_target(megatron_module, target)
                 if (
                     canonical
                     and megatron_module.rsplit(".", 1)[-1] in ("linear_qkv", "linear_fc1")
@@ -136,8 +134,7 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
                 if matches:
                     matched_targets.add(target)
                     if not any(
-                        matches_lora_target(hf_module, exclude)
-                        or matches_lora_target(megatron_module, exclude)
+                        matches_lora_target(hf_module, exclude) or matches_lora_target(megatron_module, exclude)
                         for exclude in exclude_modules
                     ):
                         selected_hf_modules.add(hf_module)
