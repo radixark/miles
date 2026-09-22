@@ -109,7 +109,18 @@ class RayWorkerManager:
             raise StaleFaultTargetError(f"Cell {cell_id} has no live worker at index {sub_index}")
         return FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash=cell.get_info().workers_hash)
 
-    def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
+    def inject_fault(
+        self,
+        cell_id: str,
+        *,
+        mode: str,
+        worker_in_cell_index: int,
+        expected_target: FaultTarget | None = None,
+    ) -> None:
+        if expected_target is not None and expected_target != self.observe_fault_target(
+            cell_id, sub_index=worker_in_cell_index
+        ):
+            raise StaleFaultTargetError(f"Cell {cell_id} no longer matches the observed fault target")
         cell = self._find_cell(cell_id)
         if not cell.alive:
             raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
