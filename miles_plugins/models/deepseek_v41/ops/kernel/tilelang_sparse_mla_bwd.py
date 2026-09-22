@@ -6,8 +6,6 @@ from tilelang import language as T
 
 @tilelang.jit(out_idx=[-1])
 def preprocess(
-    B,
-    S,
     H,
     D,
     block_ND=32,
@@ -17,6 +15,9 @@ def preprocess(
 ):
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
+    # Symbolic so the packed sequence length stays out of the JIT cache key.
+    B = T.dynamic("batch")
+    S = T.dynamic("seq_len")
     shape = [B, S, H, D]
 
     @T.prim_func
@@ -44,8 +45,6 @@ def preprocess(
 
 @tilelang.jit(out_idx=[-1])
 def postprocess(
-    B,
-    S_kv,
     D,
     block_N=64,
     threads=128,
@@ -54,6 +53,9 @@ def postprocess(
 ):
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
+    # Symbolic B/S_kv: see preprocess().
+    B = T.dynamic("batch")
+    S_kv = T.dynamic("seq_len_kv")
     dkv_shape = [B, S_kv, D]
 
     @T.prim_func
@@ -79,9 +81,6 @@ def postprocess(
     },
 )
 def bwd(
-    B,
-    S,
-    S_kv,
     H,
     D,
     topk,
@@ -100,6 +99,11 @@ def bwd(
     if sm_scale is None:
         sm_scale = D ** (-0.5)
     sm_scale_mul_reciprocal_log2 = sm_scale * 1.44269504  # log2(e)
+
+    # Symbolic B/S/S_kv: see preprocess().
+    B = T.dynamic("batch")
+    S = T.dynamic("seq_len")
+    S_kv = T.dynamic("seq_len_kv")
 
     q_shape = [B, S, H, D]
     kv_shape = [B, S_kv, D]
@@ -269,9 +273,9 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
         topk_idxs = torch.cat([topk_idxs, pad], dim=-1).contiguous()
         topk = padded_topk
 
-    preprocess_kernel = preprocess(B, S, H, D)
-    bwd_kernel = bwd(B, S, S_kv, H, D, topk, sm_scale)
-    postprocess_kernel = postprocess(B, S_kv, D)
+    preprocess_kernel = preprocess(H, D)
+    bwd_kernel = bwd(H, D, topk, sm_scale)
+    postprocess_kernel = postprocess(D)
 
     delta = preprocess_kernel(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
