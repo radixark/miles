@@ -247,6 +247,11 @@ class SparseAttentionFunction(torch.autograd.Function):
         has_sink = attn_sink is not None
         sink = _sink_or_disabled(attn_sink, q_flat.shape[1], q_flat.device)
         o_flat, lse_flat, o_layout = _flat_attention_forward(q_flat, kv_flat, idx_flat, sink, sm_scale, d_v, meta)
+        if o_layout is not o_flat:
+            # o_flat is a view of the returned layout tensor, created here in no-grad mode. DeepSeek-V4
+            # applies the inverse RoPE in place on the output before the projection, so save a copy that
+            # the in-place update cannot reach (the pinned TileLang function saves o.clone() for the same reason).
+            o_flat = o_flat.clone()
         ctx.save_for_backward(q_flat, kv_flat, idx_flat, o_flat, lse_flat, sink)
         ctx.meta = meta
         ctx.sm_scale = float(sm_scale)

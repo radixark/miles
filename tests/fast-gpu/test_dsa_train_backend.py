@@ -284,6 +284,13 @@ def test_dsv4_sparse_attention_output_allows_inplace_rope_before_backward():
     out[..., -64:].mul_(-1.0)  # in-place on a slice, as apply_rotary_emb(o[..., -rd:], ..., inverse=True) does
     out.backward(do)
     assert q_.grad is not None and torch.isfinite(q_.grad).all()
+    # The saved forward output must not see the in-place update: same gradient as the out-of-place form.
+    q_ref = q.clone().requires_grad_(True)
+    out_ref = loom.sparse_attention(q_ref, kv, indices, sm_scale=sm_scale, attn_sink=sink, layout="bshd")
+    scale = torch.ones_like(out_ref)
+    scale[..., -64:] = -1.0
+    (out_ref * scale).backward(do)
+    assert torch.equal(q_.grad, q_ref.grad)
 
 
 def test_dsv4_batched_indexer_logits_match_reference_and_tilelang():
