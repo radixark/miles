@@ -7,8 +7,6 @@ from tilelang import language as T
 
 @tilelang.jit(out_idx=[-1])
 def preprocess(
-    B,
-    S,
     H,
     D,
     block_ND=32,
@@ -18,6 +16,8 @@ def preprocess(
 ):
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
+    B = T.dynamic("batch")
+    S = T.dynamic("seq_len")
     shape = [B, S, H, D]
 
     @T.prim_func
@@ -45,8 +45,6 @@ def preprocess(
 
 @tilelang.jit(out_idx=[-1])
 def postprocess(
-    B,
-    S_kv,
     D,
     D_tail,
     kv_group=1,
@@ -57,6 +55,8 @@ def postprocess(
 ):
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
+    B = T.dynamic("batch")
+    S_kv = T.dynamic("seq_len_kv")
     dkv_shape = [B, S_kv, kv_group, D + D_tail]
 
     @T.prim_func
@@ -85,9 +85,6 @@ def postprocess(
     },
 )
 def bwd(
-    B,
-    S,
-    S_kv,
     H,
     D,
     D_tail,
@@ -96,7 +93,7 @@ def bwd(
     sm_scale=None,
     block_size=32,
     num_stages=0,
-    threads=128,
+    threads=None,
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
@@ -111,6 +108,9 @@ def bwd(
     sm_scale_mul_reciprocal_log2 = sm_scale * 1.44269504  # log2(e)
 
     H_kv = H // kv_group
+    B = T.dynamic("batch")
+    S = T.dynamic("seq_len")
+    S_kv = T.dynamic("seq_len_kv")
     q_shape = [B, S, H, D + D_tail]
     k_shape = [B, S_kv, kv_group, D + D_tail]
     o_shape = [B, S, H, D]
@@ -126,6 +126,8 @@ def bwd(
     block_H = min(64, padded_H)
     assert padded_H % block_H == 0
     NH = padded_H // block_H
+    if threads is None:
+        threads = 256 if block_H >= 64 else 128
     BS = block_size
     NS = tilelang.cdiv(topk, block_size)
 
@@ -146,8 +148,8 @@ def bwd(
             Q_shared = T.alloc_shared([block_H, D], dtype)
             KV_shared = T.alloc_shared([BS, D], dtype)
             dO_shared = T.alloc_shared([block_H, D], dtype)
-            mask = T.alloc_fragment([BS], "bool")
-            kv_i = T.alloc_fragment([BS], indices_dtype)
+            mask = T.alloc_shared([BS], "bool")
+            kv_i = T.alloc_shared([BS], indices_dtype)
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
@@ -290,8 +292,8 @@ def sparse_attn_bwd_interface(q, kv, o, do, indices, lse, d_v, sm_scale=None):
     assert indices.shape == (B, S, kv_group, topk)
     assert lse.shape == (B, S, H)
 
-    delta = preprocess(B, S, H, d_v)(o, do)
+    delta = preprocess(H, d_v)(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    dq = bwd(B, S, S_kv, H, d_v, D_tail, topk, kv_group, sm_scale)(q, kv, do, indices, lse, delta, dkv)
-    dkv = postprocess(B, S_kv, d_v, D_tail, kv_group)(dkv)
+    dq = bwd(H, d_v, D_tail, topk, kv_group, sm_scale)(q, kv, do, indices, lse, delta, dkv)
+    dkv = postprocess(d_v, D_tail, kv_group)(dkv)
     return dq, dkv, delta

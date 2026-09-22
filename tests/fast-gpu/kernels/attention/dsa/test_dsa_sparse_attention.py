@@ -8,6 +8,9 @@ tilelang = pytest.importorskip("tilelang")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 from miles.kernels.attention.dsa import sparse_attention  # noqa: E402
+from miles.kernels.attention.dsa.sparse_attention import flash_mla_sparse_fwd  # noqa: E402
+
+BACKENDS = ["tilelang"] + (["flash_mla"] if flash_mla_sparse_fwd is not None else [])
 
 _spec = importlib.util.spec_from_file_location("dsa_reference", pathlib.Path(__file__).with_name("dsa_reference.py"))
 reference = importlib.util.module_from_spec(_spec)
@@ -40,6 +43,7 @@ MQA_CASES = [  # DeepSeek-V4: single latent, attention sink
     (1, 128, 8, 1, 512, 0, 160, 64, False),
 ]
 MLA_CASES = [  # GLM-5 / DeepSeek-V3.2: RoPE tail, no sink
+    (1, 128, 8, 1, 512, 64, 160, 64, False),  # TP-local head count below FlashMLA's minimum
     (1, 128, 16, 1, 512, 64, 160, 64, False),
     (1, 256, 64, 1, 512, 64, 320, 128, False),
     (1, 256, 128, 1, 512, 64, 320, 2048, False),  # topk > seq_len_kv exercises -1 padding
@@ -53,21 +57,23 @@ def IDS(cases):
     ]
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("case", MQA_CASES + MLA_CASES, ids=IDS(MQA_CASES + MLA_CASES))
-def test_forward_matches_reference(case):
+def test_forward_matches_reference(case, backend):
     torch.manual_seed(0)
     batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink = case
     q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink)
     sm_scale = (d_v + d_tail) ** -0.5
     ref = reference.sparse_attention_ref(q, kv, indices, sm_scale, d_v, attn_sink)
-    out = sparse_attention(q, kv, indices, sm_scale, d_v=d_v, attn_sink=attn_sink)
+    out = sparse_attention(q, kv, indices, sm_scale, d_v=d_v, attn_sink=attn_sink, forward_backend=backend)
     assert out.shape == (batch, seq_len, heads, d_v)
     assert reference.rel_diff(ref, out) < 1e-3
     assert (ref - out.float()).abs().max() < 0.1
 
 
-@pytest.mark.parametrize("case", MQA_CASES[:3] + MLA_CASES[:2], ids=IDS(MQA_CASES[:3] + MLA_CASES[:2]))
-def test_backward_matches_autograd(case):
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("case", MQA_CASES[:3] + MLA_CASES[:3], ids=IDS(MQA_CASES[:3] + MLA_CASES[:3]))
+def test_backward_matches_autograd(case, backend):
     torch.manual_seed(0)
     batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink = case
     q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink)
@@ -79,13 +85,36 @@ def test_backward_matches_autograd(case):
 
     q_tl, kv_tl = q.clone().requires_grad_(), kv.clone().requires_grad_()
     sink_tl = attn_sink.clone().requires_grad_() if sink else None
-    sparse_attention(q_tl, kv_tl, indices, sm_scale, d_v=d_v, attn_sink=sink_tl).float().sum().backward()
+    sparse_attention(
+        q_tl, kv_tl, indices, sm_scale, d_v=d_v, attn_sink=sink_tl, forward_backend=backend
+    ).float().sum().backward()
 
     # bf16 GEMMs and atomic dKV accumulation, so the tolerance is looser than the forward.
     assert reference.rel_diff(q_ref.grad, q_tl.grad) < 0.05
     assert reference.rel_diff(kv_ref.grad, kv_tl.grad) < 0.05
     if sink:
         assert reference.rel_diff(sink_ref.grad, sink_tl.grad) < 0.05
+
+
+@pytest.mark.skipif(len(BACKENDS) < 2, reason="FlashMLA not installed")
+@pytest.mark.parametrize("case", MQA_CASES + MLA_CASES, ids=IDS(MQA_CASES + MLA_CASES))
+def test_forward_backends_agree(case):
+    """Both forwards feed the same TileLang backward, so the log-sum-exp conversion must be exact enough
+    that gradients agree to bf16 noise."""
+    torch.manual_seed(0)
+    batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink = case
+    q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink)
+    sm_scale = (d_v + d_tail) ** -0.5
+    grads = {}
+    for backend in BACKENDS:
+        q_, kv_ = q.clone().requires_grad_(), kv.clone().requires_grad_()
+        sink_ = attn_sink.clone().requires_grad_() if sink else None
+        out = sparse_attention(q_, kv_, indices, sm_scale, d_v=d_v, attn_sink=sink_, forward_backend=backend)
+        out.float().sum().backward()
+        grads[backend] = (out, q_.grad, kv_.grad, sink_.grad if sink else None)
+    for a, b in zip(grads["tilelang"], grads["flash_mla"], strict=True):
+        if a is not None:
+            assert reference.rel_diff(a, b) < 1e-5
 
 
 def test_sink_changes_output():
