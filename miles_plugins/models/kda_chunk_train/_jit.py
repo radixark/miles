@@ -36,10 +36,10 @@ _CONVERSION_FLAGS = (
 MODULES = {
     "prep": {
         "sm_100a": {
-            "name": "cake_kda_chunk_train_1507745577037da482f0",
+            "name": "cake_kda_chunk_train_ff540e4f27805de6a473",
             "arch": "sm_100a",
-            "cache_name": "cake_kda_chunk_train_1507745577037da482f0_sm_100a",
-            "kernel_symbol": "kernel_cake_kda_chunk_train_1507745577037da482f0",
+            "cache_name": "cake_kda_chunk_train_ff540e4f27805de6a473_sm_100a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_ff540e4f27805de6a473",
             "arg_plan": (
                 ("buffer", "g_raw"),
                 ("buffer", "q_norm"),
@@ -75,8 +75,8 @@ MODULES = {
                 ("grid", "grid_z"),
             ),
             "sources": (
-                "sm_100a/cake_kda_chunk_train_1507745577037da482f0_kernel.cu",
-                "sm_100a/cake_kda_chunk_train_1507745577037da482f0_binding.cu",
+                "sm_100a/cake_kda_chunk_train_ff540e4f27805de6a473_kernel.cu",
+                "sm_100a/cake_kda_chunk_train_ff540e4f27805de6a473_binding.cu",
             ),
             "block": (1024, 1, 1),
             "dynamic_smem_bytes": 4096,
@@ -85,10 +85,10 @@ MODULES = {
             "compile_flags": ("--use_fast_math",),
         },
         "sm_103a": {
-            "name": "cake_kda_chunk_train_740981d1a5d02c735ef1",
+            "name": "cake_kda_chunk_train_7e4f8f2c7082ace9d490",
             "arch": "sm_103a",
-            "cache_name": "cake_kda_chunk_train_740981d1a5d02c735ef1_sm_103a",
-            "kernel_symbol": "kernel_cake_kda_chunk_train_740981d1a5d02c735ef1",
+            "cache_name": "cake_kda_chunk_train_7e4f8f2c7082ace9d490_sm_103a",
+            "kernel_symbol": "kernel_cake_kda_chunk_train_7e4f8f2c7082ace9d490",
             "arg_plan": (
                 ("buffer", "g_raw"),
                 ("buffer", "q_norm"),
@@ -124,8 +124,8 @@ MODULES = {
                 ("grid", "grid_z"),
             ),
             "sources": (
-                "sm_103a/cake_kda_chunk_train_740981d1a5d02c735ef1_kernel.cu",
-                "sm_103a/cake_kda_chunk_train_740981d1a5d02c735ef1_binding.cu",
+                "sm_103a/cake_kda_chunk_train_7e4f8f2c7082ace9d490_kernel.cu",
+                "sm_103a/cake_kda_chunk_train_7e4f8f2c7082ace9d490_binding.cu",
             ),
             "block": (1024, 1, 1),
             "dynamic_smem_bytes": 4096,
