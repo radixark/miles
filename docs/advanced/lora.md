@@ -177,6 +177,8 @@ targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
 within a registry template are not implemented and are rejected.
 Standard LoRA requires all projections of a fused weight together;
 `canonical_lora` supports individual Q/K/V and dense gate/up selections.
+Grouped-expert FC1 remains fused and requires all of its HF projections even in
+canonical mode.
 
 Tinker selects complete attention, MLP, and output-head groups through
 `--tinker-train-attn/mlp/unembed`, which default to enabled. Client SDK flags must
