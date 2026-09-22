@@ -12,6 +12,7 @@ Each stage builds on first use as a torch CUDA extension (``nvcc`` + ``ninja``; 
 caller-owned device workspace, so tensor addresses may change between calls.
 """
 
+import operator
 import os
 from functools import cache
 from pathlib import Path
@@ -903,12 +904,65 @@ def load(stage, arch):
     )
 
 
+_GRID_AXES = ("grid_x", "grid_y", "grid_z")
+# argument-plan segment kinds (see _plan_segments)
+_BINDINGS, _GRID, _WORKSPACE = "bindings", "grid", "workspace"
+
+
+def _is_binding(kind):
+    return kind != "grid" and kind != "workspace"
+
+
+def _bindings_getter(names):
+    """``bindings -> tuple of the values of names, in order`` (``itemgetter`` unwraps a single key)."""
+    if len(names) == 1:
+        (name,) = names
+
+        def single(bindings):
+            return (bindings[name],)
+
+        return single
+    return operator.itemgetter(*names)
+
+
+def _plan_segments(arg_plan, descriptor_storage):
+    """Compile an exported argument plan into positional segments for :meth:`NativeKernel.launch`.
+
+    Consecutive named entries (buffers, TMA buffers, parameters) collapse into one
+    ``(_BINDINGS, getter)`` segment whose getter pulls their values out of the caller's bindings in
+    plan order with a single ``itemgetter`` call; ``(_GRID, axis)`` takes one launch-grid component
+    and ``(_WORKSPACE, tensor)`` the kernel's fixed descriptor workspace.  The concatenated segments
+    reproduce the plan's positional order exactly.
+    """
+    segments = []
+    run = []
+
+    def flush():
+        if run:
+            segments.append((_BINDINGS, _bindings_getter(tuple(run))))
+            run.clear()
+
+    for kind, name in arg_plan:
+        if kind == "grid":
+            flush()
+            segments.append((_GRID, _GRID_AXES.index(name)))
+        elif kind == "workspace":
+            flush()
+            segments.append((_WORKSPACE, descriptor_storage))
+        else:
+            run.append(name)
+    flush()
+    return tuple(segments)
+
+
 class NativeKernel:
     """One generated stage; named bindings are mapped onto the exported argument plan.
 
     ``launch(grid=(x, y, z), **bindings)`` binds tensors and scalars by their
     exported names.  The caller-owned TMA descriptor workspace and the grid
     are filled in automatically; descriptors are re-encoded on every call.
+    The plan is compiled once here into positional segments so a launch costs
+    one set comparison of the binding names and a few ``itemgetter`` calls.
     """
 
     def __init__(self, stage, arch=None, device=None):
@@ -929,25 +983,30 @@ class NativeKernel:
             if workspace_bytes
             else None
         )
+        self._binding_names = frozenset(name for kind, name in self._arg_plan if _is_binding(kind))
+        self._segments = _plan_segments(self._arg_plan, self.descriptor_storage)
 
     def launch(self, *, grid, **bindings):
-        grid = tuple(int(g) for g in grid) + (1,) * (3 - len(grid))
+        if bindings.keys() != self._binding_names:
+            self._raise_binding_mismatch(bindings)
+        if len(grid) != 3:
+            grid = tuple(grid) + (1,) * (3 - len(grid))
         args = []
-        used = set()
-        for kind, name in self._arg_plan:
-            if kind == "grid":
-                args.append(grid[("grid_x", "grid_y", "grid_z").index(name)])
-            elif kind == "workspace":
-                args.append(self.descriptor_storage)
+        for kind, payload in self._segments:
+            if kind is _BINDINGS:
+                args.extend(payload(bindings))
+            elif kind is _GRID:
+                args.append(int(grid[payload]))
             else:
-                if name not in bindings:
-                    raise KeyError(f"{self.stage}: missing binding {name!r}")
-                args.append(bindings[name])
-                used.add(name)
-        unexpected = set(bindings) - used
-        if unexpected:
-            raise KeyError(f"{self.stage}: unexpected bindings {sorted(unexpected)!r}")
+                args.append(payload)
         return self._call(*args)
+
+    def _raise_binding_mismatch(self, bindings):
+        for kind, name in self._arg_plan:
+            if _is_binding(kind) and name not in bindings:
+                raise KeyError(f"{self.stage}: missing binding {name!r}")
+        unexpected = set(bindings) - self._binding_names
+        raise KeyError(f"{self.stage}: unexpected bindings {sorted(unexpected)!r}")
 
 
 @cache

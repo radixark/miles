@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import cached_property
 
 import torch
 
@@ -47,8 +48,15 @@ def _check(cond: bool, message: str) -> None:
 
 
 def _contiguous(name: str, t: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
-    _check(t.dtype == dtype, f"{name} must be {dtype}, got {t.dtype}")
+    if t.dtype != dtype:
+        raise ValueError(f"{name} must be {dtype}, got {t.dtype}")
     return t.contiguous()
+
+
+def _as_dtype(t: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    """``t.to(dtype)``, skipping the dispatcher round trip when ``t`` already has ``dtype``
+    (``Tensor.to`` returns ``t`` itself in that case)."""
+    return t if t.dtype == dtype else t.to(dtype)
 
 
 def _rows(x: torch.Tensor, rows: int) -> torch.Tensor:
@@ -71,6 +79,9 @@ class ChunkLayout:
     ``chunk_bos[c]``: first input row of chunk ``c``; ``chunk_len[c]``: its valid tokens (0 for the
     trailing pad chunk); ``seq_chunk_start[n]``: first chunk of sequence ``n`` (``N + 1`` entries);
     ``internal_rows[r]``: internal row of input row ``r``.
+
+    Layouts are immutable and cached per packing, so the derived counts below are computed once per
+    layout rather than on every access from the backward's hot path.
     """
 
     lengths: tuple[int, ...]
@@ -82,27 +93,27 @@ class ChunkLayout:
     seq_chunk_start: torch.Tensor
     internal_rows: torch.Tensor
 
-    @property
+    @cached_property
     def num_sequences(self) -> int:
         return len(self.lengths)
 
-    @property
+    @cached_property
     def num_chunks(self) -> int:
         return self.seq_chunk_start_cpu[-1]
 
-    @property
+    @cached_property
     def num_chunks_padded(self) -> int:
         return -(-self.num_chunks // 2) * 2
 
-    @property
+    @cached_property
     def rows(self) -> int:
         return self.num_chunks_padded * CHUNK
 
-    @property
+    @cached_property
     def has_pad_chunk(self) -> bool:
         return self.num_chunks_padded != self.num_chunks
 
-    @property
+    @cached_property
     def identity(self) -> bool:
         """Input rows and internal rows coincide (64-multiple lengths laid out back to back, even chunk count)."""
         return (
@@ -205,25 +216,25 @@ def _launch_prep(arch, g_raw, q_norm, k_norm, v, beta, A_log, dt_bias, aqk, akk,
         kd == HEAD_DIM
         and hv % h == 0
         and rows_ext == layout.rows_external
-        and tuple(aqk.shape) == (rows_ext, hv, CHUNK)
-        and tuple(akk.shape) == (rows_ext, hv, CHUNK),
+        and aqk.shape == (rows_ext, hv, CHUNK)
+        and akk.shape == (rows_ext, hv, CHUNK),
         "prep: expected [R,HV,128] g/v/do, [R,H,128] q/k, [R,HV,64] Aqk/Akk over the layout's token rows",
     )
     dev, bf = g_raw.device, torch.bfloat16
     rows = layout.rows
+    copy_inputs = 0 if layout.identity else 1
+    # The bf16 [rows, HV, 128] stage outputs are carved from one allocation (each plane is a
+    # contiguous view with its own base address): one allocator round trip instead of six / eight.
+    planes = torch.empty(6 + 2 * copy_inputs, rows, hv, HEAD_DIM, dtype=bf, device=dev).unbind(0)
     out = {"gk": torch.empty(rows, hv, HEAD_DIM, dtype=torch.float32, device=dev)}
-    for name in ("vb", "kb", "qg", "kg", "ke", "qe"):
-        out[name] = torch.empty(rows, hv, HEAD_DIM, dtype=bf, device=dev)
+    out["vb"], out["kb"], out["qg"], out["kg"], out["ke"], out["qe"] = planes[:6]
     out["aqk_tril"] = torch.empty(rows, hv, CHUNK, dtype=bf, device=dev)
-    if layout.identity:
-        out["akk"], out["do"], out["v"], out["beta"] = akk, do, v, beta
-        copy_inputs = 0
-    else:
+    if copy_inputs:
         out["akk"] = torch.empty(rows, hv, CHUNK, dtype=bf, device=dev)
-        out["do"] = torch.empty(rows, hv, HEAD_DIM, dtype=bf, device=dev)
-        out["v"] = torch.empty(rows, hv, HEAD_DIM, dtype=bf, device=dev)
+        out["do"], out["v"] = planes[6:]
         out["beta"] = torch.empty(rows, hv, dtype=torch.float32, device=dev)
-        copy_inputs = 1
+    else:
+        out["akk"], out["do"], out["v"], out["beta"] = akk, do, v, beta
     kernel("prep", arch).launch(
         grid=(layout.num_chunks_padded, hv, 1),
         g_raw=g_raw,
@@ -262,8 +273,7 @@ def _launch_prep(arch, g_raw, q_norm, k_norm, v, beta, A_log, dt_bias, aqk, akk,
 def _launch_wy(arch, akk, vb, kb):
     rows, hv, _ = vb.shape
     _check(rows % PAIR_ROWS == 0, "wy: R % 128 == 0 required")
-    u = torch.empty(rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=vb.device)
-    w = torch.empty_like(u)
+    u, w = torch.empty(2, rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=vb.device).unbind(0)
     kernel("wy", arch).launch(
         grid=(rows // PAIR_ROWS, hv, 1),
         akk_tma=akk,
@@ -367,11 +377,10 @@ def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, lay
     rows, hv, _ = do.shape
     nc = layout.num_chunks
     dev = do.device
-    h2 = h.reshape(nc * hv * HEAD_DIM, HEAD_DIM)
-    dh2 = dh.reshape(nc * hv * HEAD_DIM, HEAD_DIM)
-    dq = torch.empty(rows, hv, HEAD_DIM, dtype=torch.float32, device=dev)
-    dk = torch.empty_like(dq)
-    dg = torch.empty_like(dq)
+    # h / dh are the fresh contiguous [nc, HV, 128, 128] state carriers from fwdh / dhu
+    h2 = h.view(nc * hv * HEAD_DIM, HEAD_DIM)
+    dh2 = dh.view(nc * hv * HEAD_DIM, HEAD_DIM)
+    dq, dk, dg = torch.empty(3, rows, hv, HEAD_DIM, dtype=torch.float32, device=dev).unbind(0)
     db = torch.empty(rows, hv, dtype=torch.float32, device=dev)
     dAkk = torch.empty(rows, hv, CHUNK, dtype=torch.float32, device=dev)
     dv = torch.empty(layout.rows_external, hv, HEAD_DIM, dtype=torch.bfloat16, device=dev)
@@ -408,7 +417,8 @@ def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, lay
 def _launch_intra(arch, dAqk, dAkk, gk, k_e, q_e, beta, dq_f, dk_f, dg_f, db_f, *, num_chunks):
     rows, hv, _ = gk.shape
     hq = k_e.shape[1]
-    dq, dk, dg, db = (torch.empty_like(t) for t in (dq_f, dk_f, dg_f, db_f))
+    dq, dk, dg = torch.empty(3, rows, hv, HEAD_DIM, dtype=torch.float32, device=gk.device).unbind(0)
+    db = torch.empty_like(db_f)
     kernel("intra", arch).launch(
         grid=(num_chunks, hv, 1),
         dAqk=dAqk,
@@ -457,8 +467,7 @@ def _launch_epilogue(
     dev, bf = dg_intra.device, torch.bfloat16
     dg_out = torch.empty(rows_ext, hv, kd, dtype=bf, device=dev)
     dbeta = torch.empty(rows_ext, hv, dtype=bf, device=dev)
-    dA_part = torch.empty(nc, hv, kd, dtype=torch.float32, device=dev)
-    dbias_part = torch.empty(nc, hv, kd, dtype=torch.float32, device=dev)
+    dA_part, dbias_part = torch.empty(2, nc, hv, kd, dtype=torch.float32, device=dev).unbind(0)
     dq_out = torch.empty(rows_ext, h, kd, dtype=bf, device=dev)
     dk_out = torch.empty(rows_ext, h, kd, dtype=bf, device=dev)
     dA_log = torch.empty(hv, dtype=torch.float32, device=dev)
@@ -518,7 +527,7 @@ _UNUSED_BETA_OPERANDS_LIMIT = 64
 def _unused_beta_operand(rows: int, hv: int, device) -> torch.Tensor:
     """bf16 ``[rows, hv]`` zeros for the gate epilogue's ``beta_raw`` slot when the fused sigmoid
     backward output is discarded (post-sigmoid ``beta``).  The kernel only reads it."""
-    key = (int(rows), int(hv), str(device))
+    key = (int(rows), int(hv), device)
     t = _UNUSED_BETA_OPERANDS.get(key)
     if t is None:
         if len(_UNUSED_BETA_OPERANDS) >= _UNUSED_BETA_OPERANDS_LIMIT:
@@ -585,8 +594,8 @@ def chunk_kda_backward(
 
     qn = _contiguous("q_norm", _rows(q_norm, rows), bf)
     kn = _contiguous("k_norm", _rows(k_norm, rows), bf)
-    qr = _rows(q_rstd, rows).contiguous().float()
-    kr = _rows(k_rstd, rows).contiguous().float()
+    qr = _as_dtype(_rows(q_rstd, rows).contiguous(), f32)
+    kr = _as_dtype(_rows(k_rstd, rows).contiguous(), f32)
     v_r = _contiguous("v", _rows(v, rows), bf)
     g_r = _contiguous("g", _rows(g, rows), bf)
     beta_s = _contiguous("beta", _rows(beta, rows), f32)
@@ -600,8 +609,8 @@ def chunk_kda_backward(
     do_r = _contiguous("do", _rows(do, rows), bf)
     aqk = _contiguous("Aqk", _rows(Aqk, rows), bf)
     akk = _contiguous("Akk", _rows(Akk, rows), bf)
-    A_log = A_log.contiguous().float()
-    dt_bias = dt_bias.contiguous().float()
+    A_log = _as_dtype(A_log.contiguous(), f32)
+    dt_bias = _as_dtype(dt_bias.contiguous(), f32)
 
     # prep gathers the token rows into the internal layout; every stage below runs there, and dqkg /
     # the epilogue scatter the gradients back to the token rows.
@@ -657,16 +666,17 @@ def chunk_kda_backward(
         layout=layout,
         lower_bound=lower_bound,
     )
+    # every gradient below is a fresh contiguous kernel output (or an index_select of one): view, not reshape
     return {
-        "dq": dq.reshape(batch0, seq0, h, kd),
-        "dk": dk.reshape(batch0, seq0, h, kd),
-        "dv": dv.reshape(batch0, seq0, hv, kd),
+        "dq": dq.view(batch0, seq0, h, kd),
+        "dk": dk.view(batch0, seq0, h, kd),
+        "dv": dv.view(batch0, seq0, hv, kd),
         "dbeta": (
-            dbeta.reshape(batch0, seq0, hv)
+            dbeta.view(batch0, seq0, hv)
             if beta_logits is not None
-            else layout.scatter(db_i).reshape(batch0, seq0, hv).to(beta.dtype)
+            else _as_dtype(layout.scatter(db_i).view(batch0, seq0, hv), beta.dtype)
         ),
-        "dg": dg.reshape(batch0, seq0, hv, kd),
+        "dg": dg.view(batch0, seq0, hv, kd),
         "dA_log": dA_log_grad,
         "dt_bias": dt_bias_grad,
     }
