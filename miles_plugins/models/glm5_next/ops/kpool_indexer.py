@@ -167,7 +167,7 @@ def _append_tail_kernel(
 
 
 def _pool_topk(pool_logits: torch.Tensor, topk: int, kpool: int):
-    num_tokens, num_pools = pool_logits.shape
+    _, num_pools = pool_logits.shape
     group_topk = min(topk // kpool, num_pools)
     assert group_topk > 0, (topk, kpool, num_pools)
     assert kpool & (kpool - 1) == 0 and _SELECT_BLOCK % kpool == 0, kpool
