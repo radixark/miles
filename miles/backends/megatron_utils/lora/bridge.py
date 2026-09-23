@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.utils.hf_config import load_hf_config
+from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
 from .utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
@@ -161,8 +162,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
-    if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
+    apply_dsa_backend_args(provider, args)
     provider.finalize()
 
     if is_multi_lora_enabled(args):

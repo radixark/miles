@@ -4,7 +4,6 @@ import os
 import shlex
 import sys
 
-import msgspec
 
 from sglang.srt.server_args import ServerArgs
 
@@ -17,6 +16,7 @@ from miles.utils.lora import (
     lora_rollout_enabled,
 )
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
 
@@ -183,12 +183,12 @@ def _compute_server_args(
         kwargs.update(sglang_overrides)
 
     unused_keys = set(kwargs.keys())
-    for attr in msgspec.structs.fields(ServerArgs):
-        if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
+    for name in _record_field_names(ServerArgs):
+        if worker_type == "decode" and name == "enable_hierarchical_cache":
             continue
-        if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
-            kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
-        unused_keys.discard(attr.name)
+        if hasattr(args, f"sglang_{name}") and name not in kwargs:
+            kwargs[name] = getattr(args, f"sglang_{name}")
+        unused_keys.discard(name)
 
     # for compatibility with old args
     if len(unused_keys) > 0:

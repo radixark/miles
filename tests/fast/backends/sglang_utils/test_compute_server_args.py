@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
+import msgspec
 import pytest
 
+from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 
 
@@ -49,6 +52,21 @@ def compute(args: SimpleNamespace, **overrides: object) -> dict:
     )
     kwargs.update(overrides)
     return _compute_server_args(args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "record_factory", [dataclasses.make_dataclass, msgspec.defstruct], ids=["dataclass", "msgspec"]
+)
+def test_server_args_representation_preserves_launch_values(monkeypatch, record_factory):
+    server_args_type = record_factory(
+        "ServerArgs",
+        [("gated_launch_port", int), ("mem_fraction_static", float), ("random_seed", int)],
+    )
+    monkeypatch.setattr(sglang_engine, "ServerArgs", server_args_type)
+
+    result = compute(make_args(), random_seed=7, sglang_overrides={"random_seed": 99, "unknown_field": True})
+
+    assert result == {"gated_launch_port": 30001, "mem_fraction_static": 0.7, "random_seed": 99}
 
 
 class TestRandomSeed:

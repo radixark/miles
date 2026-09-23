@@ -17,7 +17,12 @@ from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
+from miles.rollout.session.errors import (
+    SessionNotFoundError,
+    TokenizationError,
+    UpstreamGenerationAbortedError,
+    UpstreamResponseError,
+)
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import encode_samples
@@ -159,6 +164,8 @@ def extract_completion(result: dict) -> tuple:
     """
     response = json.loads(result["response_body"])
     choice = response.get("choices", [{}])[0]
+    if choice.get("finish_reason") == "abort":
+        raise UpstreamGenerationAbortedError("upstream generation aborted before completion")
 
     meta_info = choice.get("meta_info")
     if not isinstance(meta_info, dict) or "output_token_logprobs" not in meta_info:
@@ -231,8 +238,8 @@ class SessionCore:
             body["session_server_instance_id"] = self.instance_id
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def create_session(self) -> Response:
-        session_id = self.registry.create_session()
+    async def create_session(self, *, evaluation: bool = False, sampling_defaults: dict | None = None) -> Response:
+        session_id = self.registry.create_session(evaluation=evaluation, sampling_defaults=sampling_defaults)
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     def _session_metadata(self, session_id: str, session) -> dict:
@@ -366,7 +373,7 @@ class SessionCore:
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
             if session.closing:
-                logger.warning(f"Session {session_id} closed during proxy, skipping state update")
+                logger.debug("Session %s closed during proxy, skipping state update", session_id)
                 return _chat_client_response(result, response, client_stream)
 
             if session.num_assistant != expected_num_assistant:
