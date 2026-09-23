@@ -1,7 +1,7 @@
 import torch
 
-from miles_plugins.models.deepseek_v4.ops.kernel import tilelang_sparse_mla_bwd as sparse_mla_bwd
-from miles_plugins.models.deepseek_v4.ops.kernel import tilelang_sparse_mla_fwd as sparse_mla_fwd
+from miles.kernels.attention.dsa.deepseek_v4 import tilelang_sparse_mla_bwd as sparse_mla_bwd
+from miles.kernels.attention.dsa.deepseek_v4 import tilelang_sparse_mla_fwd as sparse_mla_fwd
 
 
 class DeepSeekV4SparseAttention(torch.autograd.Function):
