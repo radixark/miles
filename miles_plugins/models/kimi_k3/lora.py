@@ -31,6 +31,7 @@ _SUPPORTED_TARGET_SUFFIXES = {
 # the routed-expert down-proj may be omitted: its EP-shared w2_lora_B dominates adapter growth (#1559)
 _OPTIONAL_TARGET_SUFFIXES = {"block_sparse_moe.experts.*.w2"}
 
+
 class KimiK3LoRAAdapter(nn.Module):
     def __init__(self, kind: str, hf_prefix: str) -> None:
         super().__init__()
