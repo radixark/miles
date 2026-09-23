@@ -240,14 +240,24 @@ async def generate(
         new_response_tokens, new_response_log_probs = [], []
 
     if payload.get("return_sampling_mask", False):
-        new_response_log_probs = append_sampling_metadata(sample, new_response_tokens, output["meta_info"])
+        new_response_log_probs = append_sampling_metadata(
+            sample,
+            new_response_tokens,
+            output["meta_info"],
+            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+        )
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens
     sample.response_length += len(new_response_tokens)
     sample.response += output["text"]
     if not evaluation:
-        append_score_centering_topk(sample, output["meta_info"], score_centering_top_k(args))
+        append_score_centering_topk(
+            sample,
+            output["meta_info"],
+            score_centering_top_k(args),
+            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+        )
 
     # When partial rollout and masking off policy is enabled, update the loss mask
     if sample.loss_mask is not None:

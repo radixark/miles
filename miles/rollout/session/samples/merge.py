@@ -121,14 +121,20 @@ def _compute_sample_from_openai_record(
             output_token_ids,
             choice["meta_info"],
             aborted=finish_reason == "abort",
+            sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
         )
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
-    if record.request.get("top_logprobs"):
-        append_score_centering_topk(sample, choice["meta_info"], score_centering_top_k(args))
+    if record.request.get("top_logprobs") or record.request.get("sampling_logprobs_mode") == "support":
+        append_score_centering_topk(
+            sample,
+            choice["meta_info"],
+            score_centering_top_k(args),
+            sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+        )
     sample.rollout_routed_experts = (
         None if use_addition_r3 else get_routed_experts_from_response(args, choice, len(sample.tokens) - 1)
     )

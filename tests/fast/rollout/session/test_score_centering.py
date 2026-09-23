@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import math
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from tests.fast.fixtures.score_centering_fixtures import _args, _meta, _Tokenizer
 from tests.fast.fixtures.session_fixtures import make_session_server_config
@@ -78,6 +80,52 @@ def test_session_producer_trims_candidates_with_tito_tokens() -> None:
     merged = merge_samples(samples, _Tokenizer())
     assert merged.loss_mask == [1, 0, 1, 1]
     validate_score_centering_sample(merged, 3)
+
+
+def test_filtered_session_request_and_producer() -> None:
+    config = make_session_server_config(
+        loss_type="score_centering",
+        rollout_temperature=0.7,
+        score_centering_top_k=3,
+        use_sampling_support_replay=True,
+    )
+    tokenizer = SimpleNamespace(resolve_request_args=lambda request, **kwargs: request)
+    prepared = prepare_chat_request(
+        {"messages": [{"role": "user", "content": "Solve."}]},
+        tokenizer,
+        config=config,
+        turn_args=None,
+        sampling_defaults={"temperature": 0.7, "top_p": 0.6, "top_k": 3},
+        sampling_support_replay=True,
+    )
+    assert prepared.body["return_sampling_mask"] is True
+    assert prepared.body["sampling_logprobs_mode"] == "support"
+    assert "top_logprobs" not in prepared.body
+    meta = {
+        "output_token_logprobs": [(math.log(0.4), 2, None)],
+        "output_token_sampling_mask": [[2, 3]],
+        "output_token_sampling_logprobs": [[math.log(4 / 7), math.log(3 / 7)]],
+    }
+    record = SessionRecord(
+        timestamp=2.0,
+        request_timestamp=1.0,
+        method="POST",
+        path="v1/chat/completions",
+        status_code=200,
+        request={"input_ids": [0, 1], **prepared.body},
+        response={"choices": [{"meta_info": meta, "finish_reason": "stop"}]},
+    )
+    samples = compute_samples_from_openai_records(
+        _args(save_debug_trajectory_data=None, sglang_speculative_algorithm=None),
+        [record],
+        _Tokenizer(),
+        accumulated_token_ids=[0, 1, 2],
+        max_trim_tokens=0,
+    )
+    assert len(samples) == 1
+    validate_score_centering_sample(samples[0], 3)
+    np.testing.assert_array_equal(samples[0].rollout_topk_token_ids, [[2, 3, -1]])
+    np.testing.assert_allclose(samples[0].rollout_log_probs, [math.log(4 / 7)])
 
 
 @pytest.mark.parametrize("override", [{"temperature": 0.8}, {"top_p": 0.9}, {"min_p": 0.1}, {"logit_bias": {"1": 2}}])

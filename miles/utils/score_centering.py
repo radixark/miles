@@ -11,19 +11,24 @@ def score_centering_top_k(args: Namespace) -> int:
     return args.score_centering_top_k if getattr(args, "loss_type", None) == "score_centering" else 0
 
 
-def validate_score_centering_sampling(sampling: Mapping[str, Any], *, temperature: float) -> None:
-    """Reject sampling filters whose returned logprobs are not post-filter q.
+def validate_score_centering_sampling(
+    sampling: Mapping[str, Any], *, temperature: float, candidate_count: int
+) -> None:
+    """Require a bounded support covered by the recorded candidates.
 
-    SGLang's ordinary top logprobs are computed before top-p/top-k filtering.
-    Such probabilities cannot be substituted for the behavior distribution.
+    SGLang's ordinary top logprobs precede top-p/top-k filtering. The realized
+    support lets us select and renormalize them, provided it fits in the head.
     """
     if sampling.get("temperature", temperature) != temperature or not math.isfinite(temperature) or temperature <= 0:
         raise ValueError("Score centering requires the same positive rollout temperature on every generation call")
-    for key, default in (("top_p", 1.0), ("top_k", -1), ("min_p", 0.0)):
-        if sampling.get(key, default) != default:
-            raise ValueError(
-                f"Score centering requires {key}={default}; filtered sampler probabilities are unsupported"
-            )
+    top_p = sampling.get("top_p", 1.0)
+    top_k = sampling.get("top_k", -1)
+    if not 0 < top_p <= 1 or (top_k != -1 and not 0 < top_k <= candidate_count):
+        raise ValueError("Score centering requires top_p in (0, 1] and top_k=-1 or 1..score_centering_top_k")
+    if top_p < 1 and top_k == -1:
+        raise ValueError("Score centering requires positive top_k with top_p filtering to bound the support")
+    if sampling.get("min_p", 0.0) != 0.0:
+        raise ValueError("Score centering requires min_p=0.0")
     for key in ("json_schema", "regex", "ebnf", "structural_tag", "custom_logit_processor", "logit_bias"):
         if sampling.get(key):
             raise ValueError(f"Score centering does not support constrained/custom sampling ({key})")
@@ -48,7 +53,9 @@ def validate_score_centering_args(args: Namespace) -> None:
     if not (math.isfinite(low) and math.isfinite(high) and 0 < low <= high):
         raise ValueError("Score-centering MIS bounds must be finite with 0 < low <= high")
     validate_score_centering_sampling(
-        {"top_p": args.rollout_top_p, "top_k": args.rollout_top_k}, temperature=args.rollout_temperature
+        {"top_p": args.rollout_top_p, "top_k": args.rollout_top_k},
+        temperature=args.rollout_temperature,
+        candidate_count=args.score_centering_top_k,
     )
     if args.advantage_estimator != "grpo":
         raise ValueError("Score centering currently supports --advantage-estimator grpo (group-centered rewards)")

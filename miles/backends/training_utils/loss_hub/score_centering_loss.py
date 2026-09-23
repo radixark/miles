@@ -21,6 +21,7 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
     parallel = get_parallel_state()
     result = {"selected": []}
     with_entropy = args.entropy_coef != 0 or args.observe_training_entropy
+    replay = getattr(args, "use_sampling_support_replay", False)
     if with_entropy:
         result["entropy"] = []
     chunks = _iter_response_chunks(
@@ -44,8 +45,19 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
             vocab_size=getattr(args, "vocab_size", None),
             temperature=args.rollout_temperature,
             chunk_size=args.log_probs_chunk_size,
-            with_entropy=with_entropy,
+            with_entropy=with_entropy and not replay,
         )
+        if replay:
+            # The saved candidates cover the entire realized support. Their
+            # full-vocabulary logprobs share a normalizer, which cancels here.
+            head_valid = ids[:, 1:] >= 0
+            head = selected[:, 1:].masked_fill(~head_valid, -torch.inf)
+            normalizer = torch.logsumexp(head, dim=-1, keepdim=True)
+            normalizer = torch.where(head_valid.any(-1, keepdim=True), normalizer, 0.0)
+            selected = selected - normalizer
+            if with_entropy:
+                head = selected[:, 1:].masked_fill(~head_valid, -torch.inf)
+                entropy = -(head.exp() * torch.where(torch.isfinite(head), head, 0.0)).sum(-1)
         result["selected"].append(selected)
         if with_entropy:
             result["entropy"].append(entropy)

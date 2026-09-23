@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.score_centering import score_centering_top_k, validate_score_centering_sampling
 from miles.utils.types import Sample
 
@@ -20,14 +21,23 @@ def configure_score_centering_request(args: Namespace, request: dict[str, Any], 
     for key, default in (("temperature", args.rollout_temperature), ("top_p", 1.0), ("top_k", -1), ("min_p", 0.0)):
         if sampling.get(key) is None:
             sampling[key] = default
-    validate_score_centering_sampling(sampling, temperature=args.rollout_temperature)
-    if openai:
+    validate_score_centering_sampling(sampling, temperature=args.rollout_temperature, candidate_count=k)
+    if sampling["top_p"] < 1.0 or sampling["top_k"] > 0:
+        # SGLang's support mode returns the actual post-filter behavior distribution.
+        request.pop("top_logprobs", None)
+        request.pop("top_logprobs_num", None)
+        request["sampling_logprobs_mode"] = "support"
+    elif openai:
+        request.pop("sampling_logprobs_mode", None)
         request["top_logprobs"] = k
     else:
+        request.pop("sampling_logprobs_mode", None)
         request["top_logprobs_num"] = max(k, request.get("top_logprobs_num", 0) or 0)
 
 
-def append_score_centering_topk(sample: Sample, meta: Mapping[str, Any], k: int) -> None:
+def append_score_centering_topk(
+    sample: Sample, meta: Mapping[str, Any], k: int, *, sampling_logprobs_mode: str = "selected"
+) -> None:
     """Append compact [response, k] arrays after appending generated tokens.
 
     No rescoring is allowed: with stale rollouts it would replace the behavior
@@ -36,29 +46,49 @@ def append_score_centering_topk(sample: Sample, meta: Mapping[str, Any], k: int)
     if not k:
         return
     n = len(meta.get("output_token_logprobs") or [])
-    rows = meta.get("output_top_logprobs")
+    support_mode = sampling_logprobs_mode == "support"
+    if sampling_logprobs_mode not in ("selected", "support"):
+        raise ValueError(f"Unsupported score-centering sampling logprobs mode: {sampling_logprobs_mode}")
+    support_ids = meta.get("output_token_sampling_mask") if support_mode else None
+    rows = meta.get("output_token_sampling_logprobs" if support_mode else "output_top_logprobs")
+    if support_mode and n and (sample.rollout_sampling_mask is None or support_ids is None):
+        raise ValueError("Score centering requires SGLang sampling support IDs")
     if rows is None and n:
-        raise ValueError("Score centering requires SGLang output_top_logprobs from generation")
+        field = "output_token_sampling_logprobs" if support_mode else "output_top_logprobs"
+        raise ValueError(f"Score centering requires SGLang {field} from generation")
     rows = rows if rows is not None else []
-    if len(rows) != n:
-        raise ValueError("Score-centering top-k rows do not match generated tokens")
+    if len(rows) != n or (support_mode and len(support_ids) != n):
+        raise ValueError("Score-centering candidate rows do not match generated tokens")
     ids = np.full((n, k), -1, dtype=np.int32)
     logps = np.full((n, k), -np.inf, dtype=np.float32)
     for i, entries in enumerate(rows):
         if not entries:
             raise ValueError(f"Missing score-centering candidates at generated position {i}")
-        entries = entries[:k]
-        token_ids = [entry[1] for entry in entries]
-        probabilities = np.asarray([entry[0] for entry in entries], dtype=np.float64)
+        if support_mode:
+            token_ids = support_ids[i]
+            if len(entries) != len(token_ids) or len(entries) > k:
+                raise ValueError("Score-centering sampling support exceeds or disagrees with saved candidates")
+            probabilities = np.asarray(entries, dtype=np.float64)
+        else:
+            entries = entries[:k]
+            token_ids = [entry[1] for entry in entries]
+            probabilities = np.asarray([entry[0] for entry in entries], dtype=np.float64)
         if any(not isinstance(token_id, int) or isinstance(token_id, bool) or token_id < 0 for token_id in token_ids):
             raise ValueError("Score-centering candidates must have non-negative integer token IDs")
         if len(set(token_ids)) != len(token_ids):
             raise ValueError("Duplicate score-centering candidate token IDs")
-        if np.isnan(probabilities).any() or (probabilities > 0).any() or np.exp(probabilities).sum() > 1 + 1e-5:
+        mass = np.exp(probabilities).sum()
+        if np.isnan(probabilities).any() or (probabilities > 0).any() or mass > 1 + 1e-5:
             raise ValueError("Invalid score-centering candidate probabilities")
+        if support_mode and (not np.isfinite(probabilities).all() or not np.isclose(mass, 1.0, atol=1e-5)):
+            raise ValueError("Score-centering sampling support probabilities must sum to one")
         ids[i, : len(entries)] = token_ids
         logps[i, : len(entries)] = probabilities
     prefix_length = sample.response_length - n
+    if support_mode and n:
+        in_support, lengths = _candidate_support_membership(ids, sample.rollout_sampling_mask, prefix_length)
+        if not np.array_equal(in_support, ids >= 0) or not np.array_equal(in_support.sum(-1), lengths):
+            raise ValueError("Score-centering candidates do not match the sampling support")
     for field, values in (("rollout_topk_token_ids", ids), ("rollout_topk_log_probs", logps)):
         previous = getattr(sample, field)
         if previous is None:
@@ -69,6 +99,31 @@ def append_score_centering_topk(sample: Sample, meta: Mapping[str, Any], k: int)
             if previous.shape != (prefix_length, k):
                 raise ValueError(f"Misaligned {field}: {previous.shape}, expected {(prefix_length, k)}")
             setattr(sample, field, np.concatenate((previous, values)))
+
+
+def _candidate_support_membership(
+    ids: np.ndarray, support: RolloutSamplingMask, start: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Match candidate IDs to ragged support IDs without a per-token Python loop."""
+    n = len(ids)
+    if start < 0 or start + n > len(support):
+        raise ValueError("Score-centering candidates and sampling support are misaligned")
+    if not n:
+        return np.zeros_like(ids, dtype=bool), np.empty(0, dtype=np.int64)
+    flat_ids, offsets = support._as_tensors()
+    flat_ids = flat_ids.numpy()
+    offsets = offsets.numpy()
+    lengths = np.diff(offsets[start : start + n + 1])
+    support_ids = flat_ids[offsets[start] : offsets[start + n]]
+    stride = 1 << 32  # Token IDs are nonnegative int32; rows remain distinct.
+    support_rows = np.repeat(np.arange(n, dtype=np.int64), lengths)
+    support_keys = np.sort(support_rows * stride + support_ids.astype(np.int64))
+    if (np.diff(support_keys) == 0).any():
+        raise ValueError("Sampling support contains duplicate token IDs")
+    candidate_keys = np.arange(n, dtype=np.int64)[:, None] * stride + ids.astype(np.int64)
+    positions = np.searchsorted(support_keys, candidate_keys)
+    membership = (ids >= 0) & (support_keys[np.minimum(positions, len(support_keys) - 1)] == candidate_keys)
+    return membership, lengths
 
 
 def append_score_centering_observations(sample: Sample, count: int) -> None:
@@ -105,6 +160,13 @@ def validate_score_centering_sample(sample: Sample, k: int) -> None:
     sorted_ids = np.sort(ids, axis=-1)
     if ((sorted_ids[:, 1:] >= 0) & (sorted_ids[:, 1:] == sorted_ids[:, :-1])).any():
         raise ValueError("Duplicate score-centering candidate token IDs")
+    if sample.rollout_sampling_mask is not None:
+        in_support, lengths = _candidate_support_membership(ids, sample.rollout_sampling_mask, 0)
+        if ((valid != in_support) & active[:, None]).any() or ((valid.sum(-1) != lengths) & active).any():
+            raise ValueError("Score-centering candidates must equal the sampling support")
+        head_mass = np.exp(logps.astype(np.float64)).sum(-1)
+        if not np.allclose(head_mass[active], 1.0, atol=1e-5):
+            raise ValueError("Filtered score-centering candidates must sum to one")
     sampled = np.asarray(sample.rollout_log_probs)
     if not np.isfinite(sampled[active]).all() or (sampled[active] > 0).any():
         raise ValueError("Invalid score-centering sampled-token logprobs")

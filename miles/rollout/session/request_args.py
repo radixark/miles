@@ -75,6 +75,7 @@ def prepare_chat_request(
     if evaluation:
         # Model rules must not re-enable training replay outputs for evaluation.
         request_args.update(return_sampling_mask=False, return_routed_experts=False, return_indexer_topk=False)
+        request_args.pop("sampling_logprobs_mode", None)
         request_args.pop("routed_experts_start_len", None)
     else:
         try:
