@@ -184,7 +184,9 @@ def _resolve_lora_targets(args, hf_config):
     if all(any(matches_lora_target(module, target) for module in hf_modules) for target in targets + exclusions):
         hf_targets = targets
         if exclusions:
-            selected = [module for module in hf_modules if any(matches_lora_target(module, target) for target in targets)]
+            selected = [
+                module for module in hf_modules if any(matches_lora_target(module, target) for target in targets)
+            ]
             hf_targets = exclude_hf_lora_targets(selected, exclusions)
     elif args.megatron_to_hf_mode == "bridge":
         # Only legacy Megatron selectors need Bridge before trainer creation.

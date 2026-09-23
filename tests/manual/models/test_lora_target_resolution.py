@@ -19,29 +19,50 @@ def target_case(request):
     case = request.param
     config = AutoConfig.for_model(
         "qwen3_next" if case == "gdn" else "qwen3_moe",
-        vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
-        num_attention_heads=4, num_key_value_heads=2, head_dim=8,
-        num_experts=2, num_experts_per_tok=1, moe_intermediate_size=16,
-        shared_expert_intermediate_size=16, decoder_sparse_step=1,
+        vocab_size=64,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        num_experts=2,
+        num_experts_per_tok=1,
+        moe_intermediate_size=16,
+        shared_expert_intermediate_size=16,
+        decoder_sparse_step=1,
         layer_types=["linear_attention", "full_attention"],
-        linear_key_head_dim=8, linear_value_head_dim=8, linear_num_key_heads=2, linear_num_value_heads=4,
+        linear_key_head_dim=8,
+        linear_value_head_dim=8,
+        linear_num_key_heads=2,
+        linear_num_value_heads=4,
     )
     bridge = Qwen3NextBridge() if case == "gdn" else Qwen3MoEBridge()
     targets, module, parameters = {
         "qkv": (
             ["model.layers.*.self_attn.q_proj"],
-            "decoder.layers.0.self_attention.linear_qkv", ["weight"],
+            "decoder.layers.0.self_attention.linear_qkv",
+            ["weight"],
         ),
         "experts": (
             ["model.layers.*.mlp.experts.gate_up_proj"],
-            "decoder.layers.0.mlp.experts.linear_fc1", ["weight0", "weight1"],
+            "decoder.layers.0.mlp.experts.linear_fc1",
+            ["weight0", "weight1"],
         ),
         "gdn": (
             ["model.layers.*.linear_attn.in_proj_qkvz", "model.layers.*.linear_attn.in_proj_ba"],
-            "decoder.layers.0.self_attention.in_proj", ["weight"],
+            "decoder.layers.0.self_attention.in_proj",
+            ["weight"],
         ),
     }[case]
-    return case, bridge.mapping_registry().get_all_mappings(), HfWeightMapping.from_config(config), targets, module, parameters
+    return (
+        case,
+        bridge.mapping_registry().get_all_mappings(),
+        HfWeightMapping.from_config(config),
+        targets,
+        module,
+        parameters,
+    )
 
 
 @pytest.mark.parametrize("mode", ["lora", "canonical_lora", "multi_lora"])
@@ -52,9 +73,11 @@ def test_registry_to_adapter_matcher(target_case, mode):
     def resolve(selection):
         # Explicit parameter fixtures exercise registry binding without constructing a distributed trainer.
         return resolve_megatron_lora_targets(
-            selection, mappings,
+            selection,
+            mappings,
             parameter_names={f"{module}.{parameter}" for parameter in parameters},
-            hf_mapping=hf_mapping, canonical=canonical,
+            hf_mapping=hf_mapping,
+            canonical=canonical,
         )
 
     if case == "qkv" and not canonical:

@@ -162,12 +162,18 @@ def test_native_export_is_chunked_by_adapter(monkeypatch, include_fc2):
 
 
 def _default_hf_targets():
-    return resolve_hf_lora_targets(dict(
-        model_type="kimi_k3", text_config=dict(
-            num_hidden_layers=5, first_k_dense_replace=4,
-            moe_layer_freq=1, num_experts=3, num_shared_experts=1,
-        ),
-    ))
+    return resolve_hf_lora_targets(
+        dict(
+            model_type="kimi_k3",
+            text_config=dict(
+                num_hidden_layers=5,
+                first_k_dense_replace=4,
+                moe_layer_freq=1,
+                num_experts=3,
+                num_shared_experts=1,
+            ),
+        )
+    )
 
 
 @pytest.mark.parametrize("case", ["missing", "extra", "canonical", "per-expert"])
@@ -178,10 +184,17 @@ def test_native_target_resolution_rejects_unsupported_layout(case):
     elif case == "extra":
         targets.append("language_model.model.layers.*.self_attn.q_b_proj")
     error = AssertionError if case == "canonical" else NotImplementedError
-    message = {"missing": "missing=", "extra": "unsupported=", "canonical": "canonical_lora", "per-expert": "shared-outer"}[case]
+    message = {
+        "missing": "missing=",
+        "extra": "unsupported=",
+        "canonical": "canonical_lora",
+        "per-expert": "shared-outer",
+    }[case]
     with pytest.raises(error, match=message):
         resolve_kimi_k3_adapter_targets(
-            targets, canonical=case == "canonical", experts_shared_outer_loras=case != "per-expert",
+            targets,
+            canonical=case == "canonical",
+            experts_shared_outer_loras=case != "per-expert",
         )
 
 
