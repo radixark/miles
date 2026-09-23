@@ -11,10 +11,10 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     compute_megatron_config,
     launch_train,
 )
+from tests.utils.env_reports import report_ranks, trainer_env_reports
 
 from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.audit_utils.event_logger.models import EnvReportEvent, MetricEvent
-from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 
 
 class EvalScoreBounds(NamedTuple):
@@ -51,9 +51,8 @@ def execute(
 
 def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: dict, expected_num_ranks: int) -> None:
     reports_by_model_id: dict[str, list[EnvReportEvent]] = {}
-    for event in read_events(events_dir):
-        if isinstance(event, EnvReportEvent) and isinstance(event.source, TrainProcessIdentity):
-            reports_by_model_id.setdefault(event.source.model_id, []).append(event)
+    for event in trainer_env_reports(read_events(events_dir)):
+        reports_by_model_id.setdefault(event.source.model_id, []).append(event)
 
     expected_model_ids = sorted(trainer["model_id"] for trainer in megatron_config["trainers"])
     assert sorted(reports_by_model_id) == expected_model_ids, (
@@ -62,8 +61,7 @@ def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: 
     )
 
     ranks_by_model_id: dict[str, list[tuple[int, int]]] = {
-        model_id: sorted({(event.source.cell_index, event.source.rank_within_cell) for event in reports})
-        for model_id, reports in reports_by_model_id.items()
+        model_id: sorted(report_ranks(reports)) for model_id, reports in reports_by_model_id.items()
     }
     every_rank = sorted({rank for ranks in ranks_by_model_id.values() for rank in ranks})
     for model_id, ranks in ranks_by_model_id.items():

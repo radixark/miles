@@ -348,6 +348,10 @@ Assertions:
   3. Dumps: rel <= 0
   4. Engine checksums: baseline and target pushed identical weights per weight version
   5. Weights moved, per side: the engine weight checksum is not identical across all weight versions
+  6. Publications, per side: every published version carries engine checksums bound to its
+     version and engine incarnations (assert_engine_checksums_cover_published_updates)
+  7. Numerical prerequisites, per side: every trainer rank and every updated engine incarnation
+     reports the deterministic arguments and environment (assert_deterministic_environment)
 ```
 
 - **Why it exists**: an engine dying and a fresh one taking over mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak asserts survival only.
@@ -361,6 +365,8 @@ Assertions:
 - **Why the progress-window witness**: faults confined to one window between completed rollouts only show that one rollout survived a fault, not that faults cost the run nothing across its rollouts.
 - **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.
 - **Why the weights-moved gate**: bitwise equality is also satisfied by two runs that trained on nothing.
+- **Why the numerical-prerequisite witness**: bitwise equality proves nothing if a replacement engine came up without the deterministic recipe the baseline had, so each engine incarnation that took weights must report it.
+- **Generation coverage boundary**: the progress-window witness proves temporal spread; there is no atomic evidence that the victim engine was processing a generation request at the fault instant. Precise weight-transfer hooks do not close this separate gap.
 - **Why not a loss or reward curve**: neither is a progress signal here — the reward is `deterministic_random`, a hash of the response, and GRPO's surrogate loss is not monotone even while a run learns. Over eight rollouts neither moves for a reason worth asserting, and the weights either changed or they did not.
 
 ### `scenario_random_crash`

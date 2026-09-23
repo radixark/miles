@@ -3,11 +3,14 @@
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, RunSideRequest, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.ft.launch import DETERMINISTIC_ENV_VARS
+from tests.utils.soak.core.checkers.engine_checksums import assert_engine_checksums_cover_published_updates
 from tests.utils.soak.core.config import (
     QUIESCENT_POLLS_REQUIRED,
     SoakRunnerConfig,
@@ -24,11 +27,13 @@ from tests.utils.soak.core.utils import (
     note_launch_outcome,
 )
 from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
+from tests.utils.soak.ft.checkers.determinism import assert_deterministic_environment
 from tests.utils.soak.ft.checkers.healing import assert_injections_recovered, assert_min_injections
 from tests.utils.soak.ft.checkers.progress_windows import assert_faults_span_progress_windows
 from tests.utils.soak.ft.entrypoint import run_cell_soak
 from tests.utils.soak.ft.types import ROLLOUT_CELL_TYPE
 
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend
 
@@ -45,6 +50,19 @@ RAY_QUIESCENT_POLLS_REQUIRED: int = 1
 DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {
     "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false",
     "SGLANG_ENABLE_JIT_DEEPGEMM": "false",
+}
+DETERMINISTIC_TRAINER_ARGS: dict[str, Any] = {
+    "deterministic_mode": True,
+    "debug_deterministic_collective": True,
+    "ft_components": ["rollout"],
+    "update_weight_transfer_mode": "p2p",
+    "sglang_router_policy": "round_robin",
+    "colocate": False,
+}
+DETERMINISTIC_INFERENCE_ARGS: dict[str, Any] = {
+    "enable_deterministic_inference": True,
+    "attention_backend": "flashinfer",
+    "disable_radix_cache": True,
 }
 
 
@@ -127,6 +145,18 @@ def _compute_quiescent_polls_required(config: command_utils.ExecuteTrainConfig) 
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
+    for side in (BASELINE_SIDE, TARGET_SIDE):
+        side_events = read_events(Path(dump_dir) / side / EVENTS_DIRNAME)
+        assert_engine_checksums_cover_published_updates(side_events)
+        assert_deterministic_environment(
+            side_events,
+            trainer_ranks={(0, rank) for rank in range(mode.train_num_nodes * mode.train_gpus_per_node)},
+            engine_count=mode.rollout_num_engines,
+            trainer_env=DETERMINISTIC_ENV_VARS,
+            trainer_args=DETERMINISTIC_TRAINER_ARGS,
+            engine_env=DETERMINISTIC_INFERENCE_ENV_VARS,
+            engine_args=DETERMINISTIC_INFERENCE_ARGS,
+        )
     compare_deterministic_sides(
         baseline_dir=f"{dump_dir}/{BASELINE_SIDE}",
         target_dir=f"{dump_dir}/{TARGET_SIDE}",
