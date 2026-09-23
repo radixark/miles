@@ -13,9 +13,7 @@ from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_block_sparse_attn import (
-    qsa_block_sparse_attention_triton,
-)
+from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_block_sparse_attn import qsa_block_sparse_attention_triton
 from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer
 
