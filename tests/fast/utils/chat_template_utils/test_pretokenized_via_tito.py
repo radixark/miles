@@ -54,8 +54,12 @@ _PASS_PARAMS = [
     pytest.param(TITOTokenizerType.QWEN3, "Qwen/Qwen3-0.6B", id="qwen3"),
     pytest.param(TITOTokenizerType.QWEN35, "Qwen/Qwen3.5-0.8B", id="qwen35"),
     pytest.param(TITOTokenizerType.QWEN36, "Qwen/Qwen3.6-35B-A3B", id="qwen36"),
+    pytest.param(TITOTokenizerType.QWEN38_SMALL, "Qwen/Qwen3.8-27B", id="qwen38small"),
+    pytest.param(TITOTokenizerType.QWEN4_EXP, "Qwen/Qwen3.8-Flash-Next", id="qwen4exp"),
     pytest.param(TITOTokenizerType.QWENNEXT, "Qwen/Qwen3-4B-Thinking-2507", id="qwennext"),
     pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", id="glm47"),
+    pytest.param(TITOTokenizerType.GLM53, "zai-org/GLM-5.3", id="glm53"),
+    pytest.param(TITOTokenizerType.GLM53, "zai-org/GLM-5.3-Flash", id="glm53_flash"),
 ]
 
 
@@ -66,7 +70,7 @@ def test_via_tito_pass_on_registered_families(family, model_id):
     results = run_all_checks_via_tito(
         tokenizer,
         family,
-        thinking="both",
+        thinking="on" if family == TITOTokenizerType.GLM53 else "both",
         extra_template_kwargs=extra_kwargs,
     )
     failures = [r for r in results if not r.passed]
@@ -152,8 +156,8 @@ class _BuggyQwen3TITOTokenizer(Qwen3TITOTokenizer):
     single-character diff at the prefix-suffix junction.
     """
 
-    def merge_tokens(self, old_messages, new_messages, pretokenized_token_ids, tools=None):
-        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
+    def merge_tokens(self, old_messages, new_messages, pretokenized_token_ids, *, template_args=None):
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, template_args=template_args)
         # Intentionally omit the `+\n` insertion — that's the bug we're catching.
         return list(pretokenized_token_ids) + incremental
 

@@ -1,7 +1,7 @@
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 # Build via docker/build.py (single source of truth for variant defaults,
 # platforms, tags, and build-arg ordering); callers may append explicit
-# build-arg overrides. See docs/ci/02-docker-build.md. Examples:
+# build-arg overrides. See docs/developer/ci/02-docker-build.md. Examples:
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
 #       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
 #       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
@@ -11,7 +11,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.18
+ARG SGLANG_IMAGE_TAG=v0.5.20
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -84,12 +84,20 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.4.2
+RUN pip install flash-linear-attention==0.5.2
 # required for DeepSeek V4
-RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
-RUN pip install --no-deps tile_kernels==1.0.0
+RUN pip install tilelang==0.1.14 apache-tvm-ffi==0.1.11
+# TileKernels target-import fix: https://github.com/deepseek-ai/TileKernels/pull/25.
+COPY docker/patch/tile_kernels_target.patch /tmp/tile_kernels_target.patch
+RUN pip install --no-deps tile_kernels==1.0.0 && \
+    TILE_KERNELS_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("tile_kernels").submodule_search_locations[0])') && \
+    patch --fuzz=0 -p1 -d "$TILE_KERNELS_DIR" < /tmp/tile_kernels_target.patch && \
+    rm /tmp/tile_kernels_target.patch
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
-RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
+# Its dependency pins would downgrade TileLang and TVM-FFI; use the versions above.
+# FlashQLA FP16 on Blackwell retains a pre-existing compile failure.
+# Fixed after 0.1.14 by https://github.com/tile-ai/tilelang/pull/3158.
+RUN pip install -v --no-deps --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@7c7dfe16416ad21b1d03258189fc8d3b8460ae06"
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
 # builds are the expensive path this avoids).
@@ -97,6 +105,16 @@ RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; the
       pip install /tmp/wheels/fast_hadamard_transform-*.whl; \
     else \
       pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation; \
+    fi
+
+# required by Megatron's cuDNN DSA backend (--dsv4-impl megatron).
+# cudnn-frontend >= 1.28 ships the compact indexer forward + Top-K wrapper
+# (cudnn.DSA.indexer_forward_top_k_wrapper with `deterministic`) that upstream
+# Megatron #5992 requires on SM100; 1.26.0 has no compact wrapper and fails
+# TransformerConfig validation once that change is in miles-main.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      pip install /tmp/wheels/flash_mla-*.whl && \
+      pip install --no-deps "nvidia-cudnn-frontend==1.28.0"; \
     fi
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
@@ -163,12 +181,9 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 
 # torch_memory_saver's source build needs TMS_CUDA_MAJOR; take it from torch.
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
-    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@f05a8754daf68238d54e4cf31cb3ba866684bbaf --no-cache-dir --force-reinstall
+    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@b5588e83de86412a48689a6583a4b567e75f7acc --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-# radixark/Megatron-Bridge#24 (TE 2.17 grouped-linear contract), merged to @bridge.
-# Pinned by SHA, not branch: buildkit caches this layer on the instruction text, so a
-# branch that moves leaves the old revision baked into the image with nothing to show it.
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@7f0fb3456f8ffe47599b5fd167b454605d85f932 --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@2e09c234a3272285140224d0d698593418b55ba5 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
@@ -200,6 +215,9 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # file. Force it, then re-apply the same rewrite: the tree we just checked out carries
 # the cu13 markers, and sglang's editable install makes them visible to every later pip
 # resolve, which would drag cu13 packages onto a cu12 image.
+# The base image ships the Rust extension modules prebuilt (SGLANG_RUST_BUILD_MODE=never);
+# re-installing must not rebuild them, which needs the torch link path only the upstream
+# build stage has.
 RUN cd /sgl-workspace/sglang && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
@@ -212,7 +230,7 @@ RUN cd /sgl-workspace/sglang && \
       sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
       sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
     fi && \
-    pip install -e "python[all]" --no-deps
+    SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
 
 # =========================== Mooncake structured object store wheel ===========================
 

@@ -206,28 +206,3 @@ def convert_inkling_to_hf(args, name, param):
             return [(hp + "mlp.shared_experts.shared_w2_weight", torch.stack(out, dim=0))]
 
     raise ValueError(f"convert_inkling_to_hf: unhandled param name {name!r} (rest={rest!r})")
-
-
-def get_inkling_atomic_update_groups(args):
-    """Keep each accumulated group in one weight-sync bucket so the accumulator completes before flush."""
-    from ..update_weight.common import AtomicUpdateGroup
-
-    ns = _text_cfg(args)["n_shared_experts"]
-
-    groups = []
-    for which in ("linear_fc1", "linear_fc2"):
-        groups.append(
-            AtomicUpdateGroup(
-                key=f"inkling_shared_{which}",
-                suffixes=tuple(f".mlp.shared_experts.experts.{e}.{which}.weight" for e in range(ns)),
-                optional=True,
-            )
-        )
-    groups.append(
-        AtomicUpdateGroup(
-            key="inkling_gate",
-            suffixes=(".mlp.router.weight", ".mlp.router.shared_gate"),
-            optional=True,
-        )
-    )
-    return groups

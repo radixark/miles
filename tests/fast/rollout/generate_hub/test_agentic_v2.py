@@ -6,6 +6,7 @@ import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.session.samples.codec import SamplesReply
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.types import Sample
 
 
@@ -27,14 +28,17 @@ class _Tracer:
         return self.reply
 
 
-def _generate_input(**args_kwargs) -> GenerateFnInput:
+def _generate_input(*, evaluation=False, sampling_params=None, **args_kwargs) -> GenerateFnInput:
     args = SimpleNamespace(
-        session_server_ip="127.0.0.1",
-        session_server_ports=[12345],
-        custom_agent_function_path="test.fake_agent",
-        max_seq_len=None,
-        use_session_server="v2",
-        **args_kwargs,
+        **{
+            "session_server_addrs": ["127.0.0.1:12345"],
+            "custom_agent_function_path": "test.fake_agent",
+            "max_seq_len": None,
+            "partial_rollout": False,
+            "use_session_server": "v2",
+            "sglang_speculative_algorithm": None,
+            **args_kwargs,
+        }
     )
     state = SimpleNamespace(args=args)
     sample = Sample(
@@ -44,15 +48,26 @@ def _generate_input(**args_kwargs) -> GenerateFnInput:
         label="label",
         metadata={"source": "test"},
     )
-    return GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
+    return GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params or {}, evaluation=evaluation)
 
 
 async def _fake_agent(**kwargs):
     return {"agent_result": "done"}
 
 
+def _session_metadata(spec_info=None):
+    return {
+        SESSION_ROLLOUT_METRICS_KEY: {
+            "session_id": "sid-1",
+            "metrics": {"spec_info": spec_info or Sample.SpecInfo().to_dict()},
+        }
+    }
+
+
 def _patch_agent(monkeypatch, tracer):
-    async def fake_create(args):
+    async def fake_create(args, *, evaluation=False, sampling_params=None):
+        tracer.evaluation = evaluation
+        tracer.sampling_params = sampling_params
         return tracer
 
     monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
@@ -60,13 +75,18 @@ def _patch_agent(monkeypatch, tracer):
 
 
 @pytest.mark.asyncio
-async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
+@pytest.mark.parametrize("evaluation", [False, True])
+async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch, evaluation):
     sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
     tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
     _patch_agent(monkeypatch, tracer)
 
-    output = await agentic_tool_call.generate(_generate_input())
+    generate_input = _generate_input(evaluation=evaluation, sampling_params={"temperature": 0.7, "max_new_tokens": 8})
+    output = await agentic_tool_call.generate(generate_input)
 
+    assert tracer.evaluation is evaluation
+    # The session fills these into requests the agent sends without them.
+    assert tracer.sampling_params == {"temperature": 0.7, "max_new_tokens": 8}
     assert output.samples == [sample]
     assert output.samples[0].rollout_id is None
     assert tracer.agent_metadata == {"agent_result": "done"}
@@ -119,6 +139,103 @@ async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
     assert len(output.samples) == 1
     assert output.samples[0] is not generate_input.sample
     assert output.samples[0].status == Sample.Status.ABORTED
+    assert SESSION_ROLLOUT_METRICS_KEY not in output.samples[0].metadata
+
+
+@pytest.mark.asyncio
+async def test_transport_collection_error_has_no_metrics_owner(monkeypatch):
+    tracer = _Tracer(error=TimeoutError("samples unavailable"))
+    _patch_agent(monkeypatch, tracer)
+    generate_input = _generate_input(sglang_speculative_algorithm="EAGLE")
+    generate_input.sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {"session_id": "stale", "metrics": {}}
+
+    output = await agentic_tool_call.generate(generate_input)
+
+    (sample,) = output.samples
+    assert sample.status == Sample.Status.ABORTED
+    assert SESSION_ROLLOUT_METRICS_KEY not in sample.metadata
+
+
+@pytest.mark.asyncio
+async def test_v2_replaces_stale_metrics_with_shared_authoritative_carrier(monkeypatch):
+    stale = {"session_id": "stale", "metrics": {"agent": "plant"}}
+    leaves = [
+        Sample(metadata={SESSION_ROLLOUT_METRICS_KEY: stale}),
+        Sample(metadata={SESSION_ROLLOUT_METRICS_KEY: stale}),
+    ]
+    spec_info = {
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "completion_tokens": 2,
+    }
+    tracer = _Tracer(SamplesReply(samples=leaves, session_metadata=_session_metadata(spec_info), empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    output = await agentic_tool_call.generate(_generate_input(sglang_speculative_algorithm="EAGLE"))
+
+    expected = {"session_id": "sid-1", "metrics": {"spec_info": spec_info}}
+    assert [sample.metadata[SESSION_ROLLOUT_METRICS_KEY] for sample in output.samples] == [expected, expected]
+
+
+@pytest.mark.asyncio
+async def test_v2_rejects_missing_server_session_metrics(monkeypatch):
+    tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    with pytest.raises(KeyError, match=SESSION_ROLLOUT_METRICS_KEY):
+        await agentic_tool_call.generate(_generate_input(sglang_speculative_algorithm="EAGLE"))
+
+
+@pytest.mark.asyncio
+async def test_v2_rejects_metrics_from_another_session(monkeypatch):
+    session_metadata = _session_metadata()
+    session_metadata[SESSION_ROLLOUT_METRICS_KEY]["session_id"] = "sid-2"
+    tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata=session_metadata, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    with pytest.raises(ValueError, match="does not match the collected session"):
+        await agentic_tool_call.generate(_generate_input(sglang_speculative_algorithm="EAGLE"))
+
+
+@pytest.mark.asyncio
+async def test_v2_rejects_unavailable_metrics_from_successful_collect(monkeypatch):
+    session_metadata = _session_metadata()
+    session_metadata[SESSION_ROLLOUT_METRICS_KEY]["metrics"] = None
+    tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata=session_metadata, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    with pytest.raises(ValueError, match="successful session collect must carry metrics"):
+        await agentic_tool_call.generate(_generate_input(sglang_speculative_algorithm="EAGLE"))
+
+
+_ADDRS_ATTR_ABSENT = object()
+
+
+class TestSessionServerAddrsValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("addrs", [_ADDRS_ATTR_ABSENT, None, []], ids=["absent", "none", "empty"])
+    async def test_empty_session_server_addrs_is_rejected(self, monkeypatch, addrs):
+        """generate() raises the documented AssertionError when session_server_addrs is absent, null or empty, without creating a tracer."""
+        created_for: list[object] = []
+
+        async def fake_create(args, *, evaluation=False, sampling_params=None):
+            created_for.append(args)
+            return _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="no_records"))
+
+        monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
+        monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _fake_agent)
+
+        generate_input = _generate_input()
+        if addrs is _ADDRS_ATTR_ABSENT:
+            del generate_input.args.session_server_addrs
+        else:
+            generate_input.args.session_server_addrs = addrs
+
+        with pytest.raises(AssertionError, match="requires session_server_addrs"):
+            await agentic_tool_call.generate(generate_input)
+
+        assert created_for == []
 
 
 @pytest.mark.asyncio

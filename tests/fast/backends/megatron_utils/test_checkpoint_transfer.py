@@ -1,4 +1,6 @@
+import logging
 import pickle
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -6,7 +8,36 @@ from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
+from miles.backends.megatron_utils.ft import checkpoint_transfer, in_memory_checkpoint
 from miles.backends.megatron_utils.ft.checkpoint_transfer import _TensorViewCodec, _TransportCodec
+from miles.utils.ft_utils.process_group_utils import GroupInfo
+
+_CKPT_TRANSFER_LOGGER = "miles.backends.megatron_utils.ft.checkpoint_transfer"
+
+
+class _FakeTransport:
+    def __init__(self, recv_payload: dict | None = None) -> None:
+        self.recv_payload = recv_payload
+        self.sent_payloads: list[dict] = []
+        self.sent_dst_ranks: list[list[int]] = []
+        self.disallow_calls = 0
+
+    def send_checkpoint(self, *, dst_ranks: list[int], step: int, state_dict: dict, timeout) -> None:
+        self.sent_dst_ranks.append(dst_ranks)
+        self.sent_payloads.append(state_dict)
+
+    def disallow_checkpoint(self) -> None:
+        self.disallow_calls += 1
+
+    def metadata(self) -> str:
+        return "fake-metadata"
+
+    def recv_checkpoint(self, *, src_rank: int, metadata: str, step: int, timeout) -> dict:
+        return self.recv_payload
+
+
+def _transfer_messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == _CKPT_TRANSFER_LOGGER]
 
 
 @pytest.fixture()
@@ -129,6 +160,55 @@ class TestDeserializeFromTransport:
         assert state_dict_back.common == original_common
         for original, back in zip(original_tensors, state_dict_back.tensors, strict=True):
             assert torch.equal(original, back)
+
+
+class TestSendCkptRecords:
+    def test_send_brackets_the_transfer_with_ft_tagged_records(self, state_dict, monkeypatch, caplog):
+        """send_ckpt brackets the transport send with ft-tagged ckpt_send records carrying iteration and dst rank."""
+        transport = _FakeTransport()
+        monkeypatch.setattr(checkpoint_transfer, "save_to_memory", lambda **kwargs: state_dict)
+        monkeypatch.setattr(checkpoint_transfer, "_create_transport", lambda indep_dp, timeout: transport)
+
+        with caplog.at_level(logging.INFO, logger=_CKPT_TRANSFER_LOGGER):
+            checkpoint_transfer.send_ckpt(
+                indep_dp=GroupInfo(rank=0, size=2, group=None),
+                model=[],
+                optimizer=object(),
+                opt_param_scheduler=object(),
+                iteration=7,
+                dst_rank=3,
+            )
+
+        assert transport.sent_dst_ranks == [[3]]
+        assert transport.sent_payloads[0]["iteration"] == 7
+        assert _transfer_messages(caplog) == [
+            "ft op=cross_cell phase=start kind=ckpt_send iteration=7 to_alive_rank=3",
+            "ft op=cross_cell phase=end kind=ckpt_send iteration=7 to_alive_rank=3",
+        ]
+
+
+class TestRecvCkptRecords:
+    def test_recv_brackets_the_transfer_with_ft_tagged_records(self, state_dict, monkeypatch, caplog):
+        """recv_ckpt brackets the transport recv with ft-tagged ckpt_recv records naming the source rank."""
+        transport = _FakeTransport(recv_payload=_TransportCodec.encode(state_dict=state_dict, iteration=11))
+        monkeypatch.setattr(checkpoint_transfer, "_create_transport", lambda indep_dp, timeout: transport)
+        monkeypatch.setattr(
+            in_memory_checkpoint,
+            "get_args",
+            lambda: SimpleNamespace(
+                non_persistent_ckpt_type="local",
+                non_persistent_local_ckpt_algo="fully_parallel",
+            ),
+        )
+
+        with caplog.at_level(logging.INFO, logger=_CKPT_TRANSFER_LOGGER):
+            manager = checkpoint_transfer.recv_ckpt(indep_dp=GroupInfo(rank=1, size=2, group=None), src_rank=2)
+
+        assert manager.find_latest() == 11
+        assert _transfer_messages(caplog) == [
+            "ft op=cross_cell phase=start kind=ckpt_recv from_alive_rank=2",
+            "ft op=cross_cell phase=end kind=ckpt_recv iteration=11 from_alive_rank=2",
+        ]
 
 
 class TestTensorViewCodec:

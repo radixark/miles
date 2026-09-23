@@ -12,20 +12,20 @@ from miles.rollout.session.core import (
     _render_json,
     _samples_response,
     extract_completion,
-    prepare_chat_request,
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
+from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
     commit_generation,
-    position_for_request,
-    prepare_pretokenized,
+    prepare_token_ids_and_request_args,
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +36,16 @@ class SessionCoreV2(SessionCore):
     transport shell (health, create/delete, raw proxy)."""
 
     def __init__(
-        self, backend, registry: SessionRegistryV2, args, session_server_instance_id=None, *, use_addition_r3=False
+        self, backend, registry: SessionRegistryV2, config, session_server_instance_id=None, *, use_addition_r3=False
     ):
-        super().__init__(backend, registry, args, session_server_instance_id, use_addition_r3=use_addition_r3)
+        super().__init__(backend, registry, config, session_server_instance_id, use_addition_r3=use_addition_r3)
         # Import-path only in production: function_registry is process-local.
-        self.sample_picker = load_function(args.session_sample_picker_path, sync_required=True)
-        self.sample_postprocessor = load_function(args.session_sample_postprocessor_path, sync_required=True)
+        self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
+        self.sample_postprocessor = load_function(config.session_sample_postprocessor_path, sync_required=True)
 
     def _session_metadata(self, session_id: str, session) -> dict:
         """Mirrors ``core.SessionCore._session_metadata``: token ids come from
-        the active path, plus the ``tree`` block."""
+        the latest committed generation's path, plus the ``tree`` block."""
         metadata: dict = {}
         try:
             mismatch = self.registry.compute_session_mismatch(session)
@@ -54,16 +54,21 @@ class SessionCoreV2(SessionCore):
             mismatch = None
         if mismatch is not None:
             metadata["tito_session_mismatch"] = mismatch
-        metadata["accumulated_token_ids"] = session.active_token_ids()
+        latest = session.latest()
+        metadata["accumulated_token_ids"] = latest.token_ids if latest is not None else []
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
+        metadata["turn_args"] = filter_turn_args(latest.turn_args) if latest is not None else {}
         return metadata
 
     async def get_session(self, session_id: str) -> Response:
-        """Mirrors ``core.SessionCore.get_session``, serving ``active_records()``."""
+        """Mirrors ``core.SessionCore.get_session``, serving the records along the
+        latest committed generation's path."""
         session = self.registry.get_session(session_id)
         metadata = self._session_metadata(session_id, session)
-        payload = GetSessionResponse(session_id=session_id, records=session.active_records(), metadata=metadata)
+        latest = session.latest()
+        records = [node.record for node in latest.path_nodes()] if latest is not None else []
+        payload = GetSessionResponse(session_id=session_id, records=records, metadata=metadata)
         return Response(
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
         )
@@ -89,7 +94,7 @@ class SessionCoreV2(SessionCore):
 
         try:
             material = build_leaf_material(
-                self.args,
+                self.config,
                 session,
                 self.registry,
                 session_id=session_id,
@@ -116,14 +121,18 @@ class SessionCoreV2(SessionCore):
             samples = self.sample_postprocessor(picked, metadata)
         except Exception as exc:
             body = (
-                f"session sample hook failed (picker={self.args.session_sample_picker_path}, "
-                f"postprocessor={self.args.session_sample_postprocessor_path}): {exc}"
+                f"session sample hook failed (picker={self.config.session_sample_picker_path}, "
+                f"postprocessor={self.config.session_sample_postprocessor_path}): {exc}"
             )
             return Response(content=body.encode(), status_code=422, media_type="text/plain")
         if not samples:
             return _samples_response(
                 encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)
             )
+        # Hooks may inspect or mutate session metadata, so publish the
+        # authoritative server-owned value only at the wire boundary.
+        if self.config.sglang_speculative_algorithm is not None:
+            metadata[SESSION_ROLLOUT_METRICS_KEY] = build_session_rollout_metrics(session_id, session.tree.nodes)
         return _samples_response(encode_samples(samples, metadata, fields=COMPUTED_FIELDS_V2))
 
     async def chat_completions(
@@ -146,25 +155,24 @@ class SessionCoreV2(SessionCore):
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.args, self.registry.tito_tokenizer
-            )
-
-            request_messages = request_body.get("messages", [])
-            position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
-            prompt_token_ids = prepare_pretokenized(
+            client_args = parse_chat_request(body)
+            prepared, attach_parent = prepare_token_ids_and_request_args(
                 session,
-                request_messages,
-                tools=request_body.get("tools"),
-                tito_tokenizer=tito_tokenizer,
+                client_args,
+                config=self.config,
+                tito_tokenizer=self.registry.tito_tokenizer,
+                message_matcher=self.registry.message_matcher,
             )
-            request_body["input_ids"] = prompt_token_ids
+            request_body, tito_tokenizer = prepared.body, self.registry.tito_tokenizer
+            client_stream = prepared.client_stream
+            request_messages = request_body.get("messages", [])
+            prompt_token_ids = request_body["input_ids"]
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
-            self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
+            checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
+            self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
 
             proxy_body = json.dumps(request_body).encode()
-            attach_parent = session.active_leaf
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---
@@ -179,11 +187,16 @@ class SessionCoreV2(SessionCore):
             return proxy_result_to_response(result)
 
         response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        assistant_message = tito_tokenizer.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=completion_token_ids,
+        )
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
             if session.closing:
-                logger.warning(f"Session {session_id} closed during proxy, skipping state update")
+                logger.debug("Session %s closed during proxy, skipping state update", session_id)
                 return _chat_client_response(result, response, client_stream)
 
             record = SessionRecord(
@@ -206,6 +219,7 @@ class SessionCoreV2(SessionCore):
                 record=record,
                 response_id=response.get("id", ""),
                 finish_reason=choice.get("finish_reason") or "",
+                turn_args=request_body,
             )
         # --- lock released ---
 

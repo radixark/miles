@@ -99,7 +99,7 @@ python scripts/run_qwen3_235b_a22b.py
 ```bash
 --rollout-num-gpus-per-engine 8
 --sglang-mem-fraction-static 0.7
---sglang-cuda-graph-max-bs 512
+--sglang-cuda-graph-max-bs-decode 512
 ```
 
 `run_qwen3_235b_a22b.py`:
@@ -111,7 +111,7 @@ python scripts/run_qwen3_235b_a22b.py
 --sglang-dp-size 4
 --sglang-ep-size 32
 --sglang-enable-dp-lm-head
---sglang-cuda-graph-bs 1 2 4 8 16 24 ... 256
+--sglang-cuda-graph-bs-decode 1 2 4 8 16 24 ... 256
 --sglang-moe-a2a-backend deepep
 --sglang-deepep-mode auto
 ```

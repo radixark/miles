@@ -52,8 +52,37 @@ class RolloutSamplingMask:
             offsets.append(len(ids))
         return cls(ids=ids, offsets=offsets)
 
+    @classmethod
+    def concatenate(cls, masks: Sequence["RolloutSamplingMask"]) -> "RolloutSamplingMask":
+        """Concatenate complete per-token supports in response order."""
+        if not masks:
+            return cls(ids=[], offsets=[0])
+        if len(masks) == 1:
+            return masks[0]
+
+        ids = torch.cat([mask._ids for mask in masks])
+        offsets = [torch.zeros(1, dtype=torch.long)]
+        id_count = 0
+        for mask in masks:
+            offsets.append(mask._offsets[1:] + id_count)
+            id_count += mask._ids.numel()
+        return cls(ids=ids, offsets=torch.cat(offsets))
+
     def __len__(self) -> int:
         return self._offsets.numel() - 1
+
+    def prefix(self, response_length: int) -> "RolloutSamplingMask":
+        """Return the support for the first ``response_length`` tokens."""
+        if not 0 <= response_length <= len(self):
+            raise ValueError(f"sampling-mask prefix length must be in [0, {len(self)}]")
+        if response_length == len(self):
+            return self
+        id_count = self._offsets[response_length]
+        return type(self)(ids=self._ids[:id_count], offsets=self._offsets[: response_length + 1])
+
+    def _as_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Borrow the private CSR tensors for immediate read-only transport."""
+        return self._ids, self._offsets
 
     def _select_masks(self, token_indices: Sequence[int] | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Flattened masks for the given response positions.

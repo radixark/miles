@@ -15,6 +15,7 @@ from tests.ci.ci_policy import (
     resolve_workflow_inputs,
 )
 from tests.ci.ci_register import register_cpu_ci
+from tests.ci.stage_selection import PR_GPU_STAGES
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
@@ -109,14 +110,16 @@ def test_weekly_schedule_resolves_to_independent_full_policy():
     [
         (
             "[]",
-            "existing=value\ncadence=regular\nraw_labels=\nbypass_fastfail=false\nskipped_stages=[]\n",
+            "existing=value\ncadence=regular\nraw_labels=\nbypass_fastfail=false\n"
+            f"skipped_stages={json.dumps(sorted(PR_GPU_STAGES), separators=(',', ':'))}\n"
+            "needs_cuda_image=false\n",
         ),
         (
             '["run-ci-megatron", "nightly", "run-ci-megatron", "ignored"]',
             "existing=value\ncadence=nightly\n"
             "raw_labels=run-ci-megatron nightly run-ci-megatron\n"
             "bypass_fastfail=true\n"
-            "skipped_stages=[]\n",
+            "skipped_stages=[]\nneeds_cuda_image=true\n",
         ),
     ],
 )
@@ -130,6 +133,8 @@ def test_cli_appends_exact_github_outputs(tmp_path, labels_json, expected_output
             "EVENT_NAME": "pull_request",
             "SCHEDULE": "",
             "PR_LABELS_JSON": labels_json,
+            "CADENCE_OVERRIDE": "",
+            "CHANGED_FILES_PATH": "",
             "GITHUB_OUTPUT": str(output_path),
         }
     )
@@ -145,6 +150,36 @@ def test_cli_appends_exact_github_outputs(tmp_path, labels_json, expected_output
     assert result.returncode == 0, result.stderr
     assert output_path.read_text() == expected_outputs
     assert "Resolved CI policy:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("event_name", "schedule", "cadence_override"),
+    [
+        ("schedule", "0 15 * * 0-5", ""),
+        ("schedule", "0 15 * * 6", ""),
+        ("workflow_dispatch", "", ""),
+        ("push", "", "release"),
+    ],
+)
+def test_non_pr_cli_preserves_image_preparation(tmp_path, event_name, schedule, cadence_override):
+    repo_root = Path(__file__).resolve().parents[3]
+    output_path = tmp_path / "github-output"
+    env = os.environ.copy()
+    env.update(
+        EVENT_NAME=event_name,
+        SCHEDULE=schedule,
+        CADENCE_OVERRIDE=cadence_override,
+        PR_LABELS_JSON="[]",
+        CHANGED_FILES_PATH="",
+        GITHUB_OUTPUT=str(output_path),
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.ci.ci_policy"], cwd=repo_root, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
+    assert outputs["skipped_stages"] == "[]"
+    assert outputs["needs_cuda_image"] == "true"
 
 
 def test_cli_fails_for_unknown_schedule(tmp_path):

@@ -1,3 +1,4 @@
+# doc-dev: docs/developer/ci/02-docker-build.md
 name: PR CI Image Build
 
 on:
@@ -22,6 +23,7 @@ jobs:
       needs_image: ${{ steps.decide.outputs.needs_image }}
       rebuild: ${{ steps.decide.outputs.rebuild }}
       force_rebuild: ${{ steps.prepare.outputs.force_rebuild }}
+      current: ${{ steps.compare.outputs.current }}
     env:
       SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
@@ -52,12 +54,6 @@ jobs:
           BASE=$(python3 docker/image_inputs.py --rev HEAD^1)
           if [ "$CURRENT" = "$BASE" ]; then
             echo "Build inputs match the base branch; suites use the released image."
-            emit false ""
-            exit 0
-          fi
-
-          if [ "$SAME_REPO" != "true" ]; then
-            echo "::notice::Fork PRs cannot publish an image; suites use the released image."
             emit false ""
             exit 0
           fi
@@ -93,7 +89,7 @@ jobs:
 
       # Registry auth is needed only when reading the inputs label from an existing tag.
       - name: Login to Docker Hub
-        if: steps.prepare.outputs.inspect_tag == 'true'
+        if: steps.prepare.outputs.inspect_tag == 'true' && env.SAME_REPO == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -141,18 +137,56 @@ jobs:
   docker-build:
     needs: [docker-decide]
     if: always() && !cancelled() && github.event.action != 'closed'
-    runs-on: ${{ fromJSON(needs.docker-decide.outputs.rebuild == 'true' && '["docker-build"]' || '["ubuntu-latest"]') }}
-    timeout-minutes: 180
+    runs-on: ${{ fromJSON(needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name == github.repository && '["docker-build"]' || '["ubuntu-latest"]') }}
+    # The fork job waits for a separately queued builder, whose own limit is 180m.
+    timeout-minutes: ${{ needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name != github.repository && 360 || 180 }}
     outputs:
-      built: ${{ steps.build.outputs.built || 'false' }}
+      built: ${{ steps.build.outputs.built || steps.wait.outputs.built || 'false' }}
       # Reusing an image the previous run published is as good as building one now.
-      tag_available: ${{ needs.docker-decide.outputs.needs_image == 'true' && (steps.build.outputs.built == 'true' || needs.docker-decide.outputs.rebuild != 'true') }}
+      tag_available: ${{ needs.docker-decide.outputs.needs_image == 'true' && (steps.build.outputs.built == 'true' || steps.wait.outputs.built == 'true' || needs.docker-decide.outputs.rebuild != 'true') }}
     env:
-      BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' }}
+      BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+      REQUEST_BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
       - name: Checkout repository
-        if: env.BUILD == 'true'
+        if: env.BUILD == 'true' || env.REQUEST_BUILD == 'true'
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Request a trusted fork image build
+        if: env.REQUEST_BUILD == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUTS_HASH: ${{ needs.docker-decide.outputs.current }}
+          FORCE_REBUILD: ${{ needs.docker-decide.outputs.force_rebuild }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/fork-ci-image-request"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          request = dict(pr=int(os.environ['PR_NUMBER']), merge_sha=os.environ['GITHUB_SHA'],
+                         inputs_hash=os.environ['INPUTS_HASH'], run_id=int(os.environ['GITHUB_RUN_ID']),
+                         run_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']),
+                         force_rebuild=os.environ['FORCE_REBUILD'] == 'true',
+                         labels=json.loads(os.environ['PR_LABELS_JSON']))
+          (Path(os.environ['RUNNER_TEMP']) / 'fork-ci-image-request/request.json').write_text(json.dumps(request))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: env.REQUEST_BUILD == 'true'
+        with:
+          name: fork-ci-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fork-ci-image-request/request.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: Wait for trusted image publication
+        id: wait
+        if: env.REQUEST_BUILD == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 .github/workflows/scripts/fork_ci_image.py wait-build
+          echo "built=true" >> "$GITHUB_OUTPUT"
       # Shared builders accumulate buildkit cache and orphaned builder volumes
       # until the disk fills and installs die with ENOSPC mid-layer. Reclaim
       # anything idle for 48h before building; recent cache survives.
@@ -206,5 +240,5 @@ jobs:
             "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/rebuild-ci-image" \
             || echo "::warning::Could not remove the rebuild-ci-image label; remove it by hand or every run will rebuild."
       - name: Nothing to build
-        if: env.BUILD != 'true'
+        if: env.BUILD != 'true' && env.REQUEST_BUILD != 'true'
         run: echo "No rebuild needed; suites use the PR image if it exists, else the released one."

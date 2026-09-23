@@ -17,8 +17,10 @@ from tests.ci.ci_utils import (
     CI_GATE_RECORD_DIR_ENV,
     build_store_from_env,
     gate_provenance_from_env,
+    reaping_is_isolated,
     run_unittest_files,
 )
+from tests.ci.hardware import CUDA_STAGES, dispatch_targets
 from tests.ci.labels import KNOWN_LABELS
 
 HW_MAPPING = {
@@ -30,23 +32,15 @@ HW_MAPPING = {
 # CI suites by hardware backend. Cadence is an eligibility filter within a
 # suite, not a second suite inventory.
 #
-# CUDA suites: each is served by a matching workflow job in
-# .github/workflows/pr-test.yml. `stage-c-8-gpu-h100` and `stage-c-8-gpu-h200`
-# run on full-node 8-GPU hosts; the split H200 fleet is one 8-GPU node divided
-# into 2+2+4 workers via per-runner CUDA_VISIBLE_DEVICES (see pr-test.yml
-# stage-c-4-gpu-h200 / stage-b-2-gpu-h200 / stage-c-2-gpu-h200 job comments).
+# CUDA suites derive from `hardware.CUDA_STAGES`, which also carries each
+# stage's arch, GPU count and runner labels; each has a matching workflow job in
+# .github/workflows/pr-test.yml.
 CI_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
         "stage-b-cpu",
     ],
-    HWBackend.CUDA: [
-        "stage-b-2-gpu-h200",
-        "stage-c-8-gpu-h100",
-        "stage-c-8-gpu-h200",
-        "stage-c-4-gpu-h200",
-        "stage-c-2-gpu-h200",
-    ],
+    HWBackend.CUDA: list(CUDA_STAGES),
     HWBackend.ROCM: [
         # Consumed by pr-test-rocm.yml.
         "stage-c-4-gpu-mi350",
@@ -58,12 +52,38 @@ CI_SUITES = {
 }
 
 
+def runs_in_stage(
+    registration: CIRegistry,
+    suite: str,
+    *,
+    dispatch_arches: frozenset[str] = frozenset(),
+    absorb: bool = False,
+) -> bool:
+    """Whether `registration` executes in `suite`, ignoring label selection.
+
+    CPU and ROCm registrations have no arch, so their home suite is the only
+    answer. A CUDA registration's home stage is where AUTO sends it; an explicit
+    `run-on-*` can send it to another arch's stage instead. Shared with
+    `stage_selection` so runner allocation and test collection cannot disagree.
+    """
+    if registration.backend is not HWBackend.CUDA:
+        return registration.suite == suite
+    return suite in dispatch_targets(
+        registration.suite,
+        registration.hardware,
+        dispatch_arches=dispatch_arches,
+        absorb=absorb,
+    )
+
+
 def filter_tests(
     ci_tests: list[CIRegistry],
     hw: HWBackend,
     suite: str,
     admit_nightly_tests: bool = False,
     labels: set[str] | None = None,
+    dispatch_arches: frozenset[str] = frozenset(),
+    absorb: bool = False,
 ) -> tuple[list[CIRegistry], list[CIRegistry]]:
     """Filter registered tests down to the set that should run.
 
@@ -86,7 +106,7 @@ def filter_tests(
         t
         for t in ci_tests
         if t.backend == hw
-        and t.suite == suite
+        and runs_in_stage(t, suite, dispatch_arches=dispatch_arches, absorb=absorb)
         and registration_matches_selection(
             t.labels,
             t.nightly,
@@ -209,6 +229,8 @@ def run_a_suite(args):
         suite,
         policy.admit_nightly_tests,
         labels=include_labels,
+        dispatch_arches=policy.dispatch_arches,
+        absorb=policy.absorb,
     )
 
     if auto_partition_size:
@@ -255,8 +277,10 @@ def run_a_suite(args):
         max_attempts=args.max_attempts,
         retry_wait_seconds=args.retry_wait_seconds,
         gate_store=gate_store,
+        gate_executing_suite=suite,
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
+        reap_leftovers=reaping_is_isolated(),
     )
 
 

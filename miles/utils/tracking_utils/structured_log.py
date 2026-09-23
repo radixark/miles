@@ -10,8 +10,9 @@ from typing import Any
 _PRUNE_CAP = 160
 
 
-def log_structured(log_fn: Callable[..., None], *, exc_info: bool = False, **fields: Any) -> None:
-    log_fn("ft " + _to_logfmt(fields), stacklevel=2, exc_info=exc_info)
+def log_structured(log_fn: Callable[..., None], *, tag: str = "", exc_info: bool = False, **fields: Any) -> None:
+    message = _to_logfmt(fields)
+    log_fn(f"{tag} {message}" if tag else message, stacklevel=2, exc_info=exc_info)
 
 
 def with_logs(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -20,20 +21,36 @@ def with_logs(func: Callable[..., Any]) -> Callable[..., Any]:
 
     def log_start(args: tuple[Any, ...]) -> tuple[str, float]:
         cls = type(args[0]).__name__ if args else ""
-        log_structured(method_logger.info, cls=cls, fn=fn_name, phase="start")
+        log_structured(method_logger.info, tag="actor", cls=cls, fn=fn_name, phase="start")
         return cls, time.monotonic()
 
     def log_end(cls: str, start: float) -> None:
-        log_structured(method_logger.info, cls=cls, fn=fn_name, phase="end", ok=True, elapsed_s=_elapsed(start))
+        log_structured(
+            method_logger.info, tag="actor", cls=cls, fn=fn_name, phase="end", ok=True, elapsed_s=_elapsed(start)
+        )
 
     def log_fail(cls: str, start: float) -> None:
         log_structured(
-            method_logger.error, cls=cls, fn=fn_name, phase="end", ok=False, elapsed_s=_elapsed(start), exc_info=True
+            method_logger.error,
+            tag="actor",
+            cls=cls,
+            fn=fn_name,
+            phase="end",
+            ok=False,
+            elapsed_s=_elapsed(start),
+            exc_info=True,
         )
 
     def log_cancelled(cls: str, start: float) -> None:
         log_structured(
-            method_logger.info, cls=cls, fn=fn_name, phase="end", ok=False, elapsed_s=_elapsed(start), cancelled=True
+            method_logger.info,
+            tag="actor",
+            cls=cls,
+            fn=fn_name,
+            phase="end",
+            ok=False,
+            elapsed_s=_elapsed(start),
+            cancelled=True,
         )
 
     if inspect.iscoroutinefunction(func):

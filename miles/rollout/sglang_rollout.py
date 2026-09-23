@@ -14,17 +14,18 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
-from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.filter_hub.base_types import MetricGatherer
+from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
-from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
-from miles.utils.multi_lora import make_rid, slot_lora_name
+from miles.utils.misc import SingletonMeta, call_agent_abort_hook
 from miles.utils.processing_utils import (
     call_processor,
     encode_image_for_rollout_engine,
@@ -181,22 +182,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
 
-    if sample.adapter is not None:
-        from miles.ray.multi_lora.controller import AdaptersCache
-
-        if (adapter := await AdaptersCache().get(sample.adapter.name)) is None:
-            # Adapter deregistered: don't POST, or an orphan the abort round can't see
-            # would keep decoding under the slot's next tenant and pollute its group.
-            logger.warning(
-                f"Dropping generation for adapter '{sample.adapter.name}' (slot {sample.adapter.slot}): "
-                "adapter is no longer sampleable"
-            )
-            sample.status = Sample.Status.ABORTED
-            return sample
-        payload["lora_path"] = slot_lora_name(sample.adapter.slot)
-        payload["rid"] = make_rid(sample.adapter.name)
-        payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
-    elif lora_rollout_enabled(args):
+    if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
@@ -500,9 +486,9 @@ async def generate_rollout_async(
 
             assert len(group) == args.n_samples_per_prompt
             all_data.append(group)
-            dynamic_filter_output = call_dynamic_filter(dynamic_filter, args, group)
-            if not dynamic_filter_output.keep:
-                metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
+            filter_output = apply_preput_filters(args, dynamic_filter, group)
+            if not filter_output.keep:
+                metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
                 state.remaining_batch_size -= 1
                 continue
 

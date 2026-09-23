@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,12 @@ _EVENT_PARTIAL: dict = dict(
     rollout_id=0, attempt=0, witness_id_to_sample_index={10: 0, 11: 1, 12: 2}, counter_after=13
 )
 
+_LOGGER_MODULE_LOGGER = "miles.utils.audit_utils.event_logger.logger"
+
+
+def _structured_messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == _LOGGER_MODULE_LOGGER]
+
 
 class TestEventLoggerWritesJsonl:
     def test_writes_multiple_events(self, tmp_path: Path) -> None:
@@ -44,6 +51,21 @@ class TestEventLoggerWritesJsonl:
             parsed = json.loads(line)
             assert "timestamp" in parsed
             assert "type" in parsed
+
+
+class TestEventLoggerStructuredPrint:
+    def test_printed_event_uses_audit_structured_log_tag(self, tmp_path: Path, caplog) -> None:
+        """A printed event is echoed as one audit-tagged op=event record naming the event class and its fields."""
+        logger = _make_logger(tmp_path)
+
+        with caplog.at_level(logging.INFO, logger=_LOGGER_MODULE_LOGGER):
+            logger.log(_EVENT_CLS, _EVENT_PARTIAL)
+        logger.close()
+
+        messages = _structured_messages(caplog)
+        assert len(messages) == 1
+        assert messages[0].startswith("audit op=event event=WitnessAllocateIdEvent ")
+        assert "counter_after=13" in messages[0]
 
 
 class TestEventLoggerAutoFillsMetadata:

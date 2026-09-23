@@ -197,7 +197,7 @@ def _prepare_spmd(args: ScriptArgs):
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
-    extra_args = "--expert-tensor-parallel-size 1 --context-parallel-size 1 "
+    extra_args = "--dsv4-impl miles --expert-tensor-parallel-size 1 --context-parallel-size 1 "
     if actor_num_nodes == 1 and is_4layer:
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
@@ -285,6 +285,9 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--decoder-first-pipeline-num-layers 11 "
                 "--decoder-last-pipeline-num-layers 10 "
                 "--context-parallel-size 1 "
+                # Raising context parallelism also needs --allgather-cp: DeepSeek V4 has no
+                # zigzag CP path, and arguments.py asserts on the flag rather than setting it.
+                # "--allgather-cp "
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
@@ -434,8 +437,9 @@ def _train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.5 "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
+        "--dsv4-impl miles "  # ROCm has no cudnn/flash_mla path for the megatron impl
         "--model-name deepseekv4 "  # for mbridge load
-        "--qkv-format bshd "
+        "--qkv-format thd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "

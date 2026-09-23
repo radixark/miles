@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/04-release.md
+# doc-dev: docs/developer/ci/04-release.md
 name: Release Branch Cut
 # The branch name in run-name identifies the operator run; release-tag.yml
 # gates on the per-SHA release-ci commit status, not on this title.

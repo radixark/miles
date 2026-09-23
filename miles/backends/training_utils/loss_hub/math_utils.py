@@ -949,6 +949,15 @@ def chunked_gae(
     return advantages, returns
 
 
+def _upcast_chunk_to_fp32(logits_chunk: torch.Tensor, temperature: float) -> torch.Tensor:
+    # copy=True: the TP cross-entropy mutates its input. Scaling after the upcast
+    # keeps the division in fp32 when the caller hands model-precision logits.
+    chunk = logits_chunk.to(torch.float32, copy=True)
+    if temperature > 0 and temperature != 1.0:
+        chunk.div_(temperature)
+    return chunk
+
+
 def calculate_log_probs_and_entropy(
     logits,
     tokens,
@@ -959,28 +968,29 @@ def calculate_log_probs_and_entropy(
     true_on_policy: bool = False,
     vocab_size: int | None = None,
     sampling_mask: torch.Tensor | None = None,
+    temperature: float = 1.0,
 ):
     if true_on_policy:
+        assert temperature == 1.0, "true-on-policy scales logits in _iter_response_chunks"
         return _calculate_log_probs_and_entropy_true_on_policy(
             logits,
             tokens,
             tp_group,
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
+            chunk_size=chunk_size,
             vocab_size=vocab_size,
             sampling_mask=sampling_mask,
         )
 
     logits = logits.contiguous()
-    # TP cross-entropy mutates its input in forward, and entropy does so in backward.
-    # Force a copy for fp32 inputs, where the dtype conversion would otherwise alias logits.
     entropy = None
 
     def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
         if entropy_requires_grad:
-            return compute_entropy_from_logits(logits_chunk.to(torch.float32, copy=True), tp_group)
+            return compute_entropy_from_logits(_upcast_chunk_to_fp32(logits_chunk, temperature), tp_group)
         with torch.no_grad():
-            return compute_entropy_from_logits(logits_chunk.detach().to(torch.float32, copy=True), tp_group)
+            return compute_entropy_from_logits(_upcast_chunk_to_fp32(logits_chunk.detach(), temperature), tp_group)
 
     if logits.size(0) != 0:
         if chunk_size > 0:
@@ -995,7 +1005,7 @@ def calculate_log_probs_and_entropy(
                 tokens_chunks, logits_chunks, sampling_mask_chunks, strict=True
             ):
                 log_prob = compute_log_probs(
-                    logits_chunk.to(torch.float32, copy=True),
+                    _upcast_chunk_to_fp32(logits_chunk, temperature),
                     tokens_chunk,
                     tp_group,
                     sampling_mask=sampling_mask_chunk,
@@ -1010,7 +1020,7 @@ def calculate_log_probs_and_entropy(
                 entropy = torch.cat(entropys, dim=0)
         else:
             log_prob = compute_log_probs(
-                logits.to(torch.float32, copy=True),
+                _upcast_chunk_to_fp32(logits, temperature),
                 tokens,
                 tp_group,
                 sampling_mask=sampling_mask,
@@ -1018,9 +1028,9 @@ def calculate_log_probs_and_entropy(
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
-        log_prob = logits.new_zeros((0,))
+        log_prob = logits.new_zeros((0,), dtype=torch.float32)
         if with_entropy:
-            entropy = logits.new_zeros((0,))
+            entropy = logits.new_zeros((0,), dtype=torch.float32)
 
     return log_prob, entropy
 
@@ -1031,6 +1041,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     tp_group: dist.ProcessGroup | None,
     with_entropy: bool = False,
     entropy_requires_grad: bool = True,
+    chunk_size: int = -1,
     vocab_size: int | None = None,
     sampling_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -1038,12 +1049,14 @@ def _calculate_log_probs_and_entropy_true_on_policy(
 
     Args:
         logits: Aligned local logits of shape ``[R, V_local]`` (already
-            response-sliced and temperature-scaled by ``get_responses``).
+            response-sliced and temperature-scaled by ``_iter_response_chunks``).
         tokens: Target tokens of shape ``[R]``.
         tp_group: Tensor-parallel process group for vocab gather.
         with_entropy: If True, also compute entropy.
         entropy_requires_grad: If False, compute entropy as an observed metric
             without attaching it to the autograd graph.
+        chunk_size: Maximum number of response rows processed at once. A
+            non-positive value processes all rows together.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
         sampling_mask: Optional local-vocabulary support used to normalize
@@ -1061,21 +1074,54 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     log_prob_logits = _apply_sampling_mask(logits, sampling_mask)
     full_logits = _gather_true_on_policy_full_logits(log_prob_logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
-    log_probs_full = torch.log_softmax(full_logits, dim=-1)
-    _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
-    log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
-    _maybe_dump_top_logprob_backward("log_prob", log_prob)
+    entropy_logits = None
+    if with_entropy:
+        entropy_logits = (
+            full_logits
+            if sampling_mask is None
+            else _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
+        )
+    if chunk_size > 0:
+        full_logits_chunks = full_logits.split(chunk_size, dim=0)
+        tokens_chunks = tokens.split(chunk_size, dim=0)
+        entropy_logits_chunks = (
+            full_logits_chunks
+            if entropy_logits is full_logits
+            else entropy_logits.split(chunk_size, dim=0) if entropy_logits is not None else ()
+        )
+    else:
+        full_logits_chunks = (full_logits,)
+        tokens_chunks = (tokens,)
+        entropy_logits_chunks = (entropy_logits,) if entropy_logits is not None else ()
 
+    log_prob_chunks = []
+    entropy_chunks = []
+    for chunk_index, (full_logits_chunk, tokens_chunk) in enumerate(
+        zip(full_logits_chunks, tokens_chunks, strict=True)
+    ):
+        log_probs_full = torch.log_softmax(full_logits_chunk, dim=-1)
+        _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
+        log_prob_chunks.append(torch.gather(log_probs_full, dim=-1, index=tokens_chunk.unsqueeze(-1)).squeeze(-1))
+
+        if with_entropy:
+            entropy_logits_chunk = entropy_logits_chunks[chunk_index]
+            entropy_log_probs = (
+                log_probs_full
+                if entropy_logits_chunk is full_logits_chunk
+                else torch.log_softmax(entropy_logits_chunk, dim=-1)
+            )
+            if not entropy_requires_grad:
+                entropy_log_probs = entropy_log_probs.detach()
+            probs = entropy_log_probs.exp()
+            if entropy_requires_grad:
+                entropy_chunks.append(-(probs * entropy_log_probs).sum(dim=-1))
+            else:
+                entropy_chunks.append(-probs.mul_(entropy_log_probs).sum(dim=-1))
+
+    log_prob = log_prob_chunks[0] if len(log_prob_chunks) == 1 else torch.cat(log_prob_chunks, dim=0)
+    _maybe_dump_top_logprob_backward("log_prob", log_prob)
     entropy = None
     if with_entropy:
-        if sampling_mask is None:
-            entropy_log_probs = log_probs_full
-        else:
-            entropy_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
-            entropy_log_probs = torch.log_softmax(entropy_logits, dim=-1)
-        if not entropy_requires_grad:
-            entropy_log_probs = entropy_log_probs.detach()
-        probs = entropy_log_probs.exp()
-        entropy = -(probs * entropy_log_probs).sum(dim=-1)
+        entropy = entropy_chunks[0] if len(entropy_chunks) == 1 else torch.cat(entropy_chunks, dim=0)
 
     return log_prob, entropy

@@ -937,7 +937,7 @@ def cmd_run(
     if cfg.sglang_moe_dense_tp_size is not None:
         args.extend(["--sglang-moe-dense-tp-size", str(cfg.sglang_moe_dense_tp_size)])
     if cfg.sglang_cuda_graph_bs:
-        args.extend(["--sglang-cuda-graph-bs"] + cfg.sglang_cuda_graph_bs.split())
+        args.extend(["--sglang-cuda-graph-bs-decode"] + cfg.sglang_cuda_graph_bs.split())
     if cfg.sglang_enable_dp_attention:
         args.append("--sglang-enable-dp-attention")
     if cfg.sglang_enable_dp_lm_head:
@@ -955,16 +955,16 @@ def cmd_run(
             args.extend(["--sglang-page-size", str(cfg.sglang_page_size)])
         args.extend(
             [
-                "--sglang-nsa-decode-backend",
+                "--sglang-dsa-decode-backend",
                 "flashmla_sparse",
-                "--sglang-nsa-prefill-backend",
+                "--sglang-dsa-prefill-backend",
                 "flashmla_sparse",
                 "--sglang-attention-backend",
                 "nsa",
             ]
         )
         if cfg.sglang_cuda_graph_max_bs is not None:
-            args.extend(["--sglang-cuda-graph-max-bs", str(cfg.sglang_cuda_graph_max_bs)])
+            args.extend(["--sglang-cuda-graph-max-bs-decode", str(cfg.sglang_cuda_graph_max_bs)])
         if cfg.sglang_max_running_requests is not None:
             args.extend(["--sglang-max-running-requests", str(cfg.sglang_max_running_requests)])
         if cfg.sglang_chunked_prefill_size_factor is not None:

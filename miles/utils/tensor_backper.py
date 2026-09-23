@@ -60,6 +60,7 @@ class _TensorBackuperNormal(TensorBackuper):
         return list(self._backups)
 
     def get(self, tag: str):
+        assert tag in self._backups, f"tag {tag!r} was never backed up"
         return self._backups[tag]
 
     @torch.no_grad()

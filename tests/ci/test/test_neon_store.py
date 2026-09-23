@@ -366,7 +366,7 @@ def test_mark_untrusted_rolls_back_on_error(store, fake_conn):
 _LIVE_DSN_ENV = "MILES_TEST_POSTGRES_DSN"
 
 
-# Test-local provisioning DDL, mirroring the out-of-band schema (docs/ci/03:
+# Test-local provisioning DDL, mirroring the out-of-band schema (docs/developer/ci/03:
 # the two tables are provisioned outside this repo; the store itself stays
 # DML-only). Only the live smoke test ever executes this, as an admin role.
 _PROVISION_SQL = """

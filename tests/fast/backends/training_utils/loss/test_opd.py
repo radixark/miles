@@ -14,6 +14,8 @@ import torch
 from miles.backends.training_utils import loss as loss_utils
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 
+from .loss_test_utils import make_parallel_state
+
 # This module intentionally has no explicit CI registration call: modules under
 # tests/fast are implicitly assigned to the stage-a-cpu suite by the CI collector
 # (an explicit default-form call would be rejected by the AC-9 meta-test).
@@ -64,6 +66,7 @@ def test_precomputed_reverse_kl_is_detached_before_weighting_advantages():
 
 
 def test_fixed_opd_inputs_are_detached_in_persistent_rollout_data(monkeypatch):
+    make_parallel_state()
     old_source = torch.tensor([0.2, 0.4], requires_grad=True)
     rollout_source = torch.tensor([0.3, 0.5], requires_grad=True)
     reference_source = torch.tensor([0.4, 0.6], requires_grad=True)

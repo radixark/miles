@@ -18,7 +18,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.utils.audit_utils.witness.module import install_witness
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,10 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     # loss / sequence handling
     provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
     provider.variable_seq_lengths = args.variable_seq_lengths
+
+    # Match the non-bridge path: MTP must only train its own draft parameters.
+    if getattr(args, "enable_mtp_training", False):
+        provider.mtp_detach_heads = True
 
     # numerics (training infra, not model-defining)
     provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
@@ -93,8 +97,10 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     if getattr(args, "moe_aux_loss_coeff", None) is not None:
         provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
 
-    if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
+    # Imported here: test_bridge_mtp_detachment.py exec()s this function's AST in a bare namespace (no module names).
+    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
+
+    apply_dsa_backend_args(provider, args)
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
@@ -167,6 +173,8 @@ def get_model_provider_func(
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
         _apply_bridge_runtime_config(provider, args)
+        if role == "critic":
+            provider.share_embeddings_and_output_weights = False
         provider.finalize()
 
         def wrapped_bridge_provider(
@@ -183,6 +191,10 @@ def get_model_provider_func(
             if pg_collection is not None:
                 provider._pg_collection = pg_collection
             model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+            if post_process and role == "critic":
+                model.output_layer = LinearForLastLayer(
+                    input_size=model.config.hidden_size, output_size=1, config=model.config
+                )
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward

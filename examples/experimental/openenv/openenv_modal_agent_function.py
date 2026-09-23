@@ -43,6 +43,7 @@ the code each one steers.
 """
 
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 # The sandbox's env server is the tbench2_env baked by the recipe, installed
-# per the README (at or after the huggingface/OpenEnv#1012 merge): canonical
+# per the README (at or after the huggingface/OpenEnv#1025 merge): canonical
 # tests/test.sh scoring built into `evaluate`, task WORKDIR resolved
 # server-side, verifier assets withheld. The launcher preflight rejects an
 # older install outright, and the shared agent loop's harness-marker guard
@@ -84,7 +85,7 @@ def _is_throttle_error(exc: BaseException) -> bool:
 
 def _start_sandbox(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     sandbox, url = tb2_sandbox_modal.create_task_sandbox(Path(tasks_dir) / task_id)
-    return sandbox.terminate, url
+    return partial(tb2_sandbox_modal.close_sandbox, sandbox), url
 
 
 BACKEND = common.SandboxBackend(

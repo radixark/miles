@@ -13,6 +13,7 @@ from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
+from miles.rollout.generate_utils.sampling_mask import append_forced_sampling_tokens
 from miles.utils.types import Sample
 
 _DUMMY_USER = {"role": "user", "content": "dummy"}
@@ -57,6 +58,8 @@ async def _execute_tool_call(
 
 def update_sample_with_tool_responses(sample: Sample, tool_messages: list[dict[str, Any]], tokenizer):
     next_obs_tokens_ids: list[int] = tokenize_tool_responses(tool_messages, tokenizer=tokenizer)
+    if sample.rollout_sampling_mask is not None:
+        append_forced_sampling_tokens(sample, next_obs_tokens_ids)
     sample.response += tokenizer.decode(next_obs_tokens_ids)
     sample.response_length += len(next_obs_tokens_ids)
     sample.tokens += next_obs_tokens_ids

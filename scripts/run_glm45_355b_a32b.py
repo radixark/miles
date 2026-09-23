@@ -260,7 +260,7 @@ def _execute_train(args: ScriptArgs):
             "--sglang-deepep-mode low_latency "
             f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
             f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-            f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+            f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
         )
         sglang_extra_env_vars |= {
             "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",

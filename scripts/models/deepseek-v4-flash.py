@@ -3,7 +3,7 @@ import os
 from model_args_utils import moe_layer_freq
 
 
-COMPRESS_RATIOS = "0 0 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 0"
+COMPRESS_RATIOS = "[0,0,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,0]"
 SWIGLU_LIMIT_ARGS = "--activation-func-clamp-value 10 --no-bias-swiglu-fusion --no-activation-func-clamp-shared-expert"
 
 
@@ -58,15 +58,14 @@ def model_args(
         "--moe-grouped-gemm "
         "--moe-router-topk-scaling-factor 1.5 "
         # DSV4 specific
-        "--experimental-attention-variant dsv4 "
-        "--dsv4-hc-mult 4 "
-        "--dsv4-hc-sinkhorn-iters 20 "
-        f"--dsv4-compress-ratios {compress_ratios} "
-        "--dsv4-compress-rope-theta 160000 "
-        "--dsv4-o-groups 8 "
-        "--dsv4-o-lora-rank 1024 "
-        "--dsv4-n-hash-layers 3 "
-        "--dsv4-window-size 128 "
+        "--num-residual-streams 4 "
+        "--mhc-sinkhorn-iterations 20 "
+        f"--csa-compress-ratios {compress_ratios} "
+        "--csa-compress-rotary-base 160000 "
+        "--o-groups 8 "
+        "--o-lora-rank 1024 "
+        "--moe-n-hash-layers 3 "
+        "--csa-window-size 128 "
         # DSA Indexer
         "--dsa-indexer-n-heads 64 "
         "--dsa-indexer-head-dim 128 "

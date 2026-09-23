@@ -13,6 +13,7 @@ from miles.rollout.session.samples.codec import (
     SamplesReply,
     decode_samples_and_merge_input_sample,
 )
+from miles.rollout.session.types import CreateSessionRequest
 from miles.utils.http_utils import post, post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -44,21 +45,24 @@ class OpenAIEndpointTracer:
         return self.router_url.removeprefix("http://")
 
     @staticmethod
-    async def create(args: Namespace):
-        session_ip = getattr(args, "session_server_ip", None)
-        session_ports = getattr(args, "session_server_ports", None)
-        if not session_ip or not session_ports:
+    async def create(args: Namespace, *, evaluation: bool = False, sampling_params: dict | None = None):
+        session_addrs = getattr(args, "session_server_addrs", None)
+        if not session_addrs:
             raise RuntimeError(
-                "session_server_ip/session_server_ports are not set. "
-                "Pass --use-session-server to start the session server."
+                "session_server_addrs is not set. Pass --use-session-server to start the session server."
             )
         # The only routing decision in the system: pick the owning instance once
         # per session; every later touch of the session reuses this URL.
-        session_port = random.choice(session_ports)
-        session_url = f"http://{session_ip}:{session_port}"
+        session_addr = random.choice(session_addrs)
+        session_url = f"http://{session_addr}"
         instance_ids = getattr(args, "session_server_instance_ids", None) or {}
-        session_server_instance_id = instance_ids.get(session_port)
-        response = await post(f"{session_url}/sessions", {}, action="post")
+        session_server_instance_id = instance_ids.get(session_addr)
+        # Drop engine-only sampling fields before validating the session creation body.
+        session_params = {
+            key: value for key, value in (sampling_params or {}).items() if key in CreateSessionRequest.model_fields
+        }
+        body = CreateSessionRequest.model_validate({**session_params, "evaluation": evaluation})
+        response = await post(f"{session_url}/sessions", body.model_dump(exclude_none=True), action="post")
         session_id = response["session_id"]
         use_v2 = getattr(args, "use_session_server", None) == "v2"
         return OpenAIEndpointTracer(

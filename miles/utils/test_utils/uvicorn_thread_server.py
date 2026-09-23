@@ -7,10 +7,11 @@ import uvicorn
 
 
 class UvicornThreadServer:
-    def __init__(self, app, host: str, port: int):
+    def __init__(self, app, host: str, port: int, bind_host: str | None = None):
         self._app = app
         self.host = host
         self.port = port
+        self._bind_host = bind_host if bind_host is not None else host
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
 
@@ -19,7 +20,7 @@ class UvicornThreadServer:
         return f"http://{self.host}:{self.port}"
 
     def start(self) -> None:
-        config = uvicorn.Config(self._app, host=self.host, port=self.port, log_level="info")
+        config = uvicorn.Config(self._app, host=self._bind_host, port=self.port, log_level="info")
         self._server = uvicorn.Server(config)
 
         def run() -> None:

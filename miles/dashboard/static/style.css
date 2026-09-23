@@ -81,7 +81,12 @@ table.data tr.flagged td { color: var(--bad); }
 .tablewrap { max-height: 480px; overflow: auto; }
 
 .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
-.tokens { line-height: 1.9; font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
+/* position: relative makes the box the offsetParent of its tokens, so a token's
+   offsetTop is the scroll offset that brings it to the top of the box */
+.tokens {
+  line-height: 1.9; font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all;
+  max-height: 480px; overflow-y: auto; position: relative;
+}
 .tok { border-radius: 2px; padding: 1px 0; position: relative; }
 .tok.prompt { color: var(--muted); }
 .tok.masked { opacity: 0.35; }
@@ -128,5 +133,6 @@ canvas.anatomy { width: 100%; display: block; cursor: pointer; }
 .role-system { color: var(--muted); }
 .msg-body { padding: 0 10px 8px; }
 .msg-body.closed { display: none; }
+.msg-image { display: block; max-width: 100%; max-height: 70vh; margin: 8px 0; }
 .msg-text { white-space: pre-wrap; word-break: break-word; font-size: 13px; margin: 4px 0; max-height: 320px; overflow-y: auto; background: var(--bg); border-radius: 4px; padding: 8px; }
 .msg-thinking { white-space: pre-wrap; font-style: italic; color: var(--muted); font-size: 12px; max-height: 200px; overflow-y: auto; border-left: 3px solid var(--border); padding: 6px 10px; margin: 4px 0; }

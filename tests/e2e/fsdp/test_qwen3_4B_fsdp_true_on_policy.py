@@ -8,6 +8,7 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-2-gpu-h200",
     labels=["fsdp"],
+    hardware=["hopper"],
 )
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))

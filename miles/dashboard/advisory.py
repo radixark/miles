@@ -236,6 +236,8 @@ def _rollout_advisories(reader: DumpReader, args: dict) -> list[Advisory]:
             out.append(Advisory(level="warning", message=message))
 
     summary = reader.summary(rollout_id)
+    if summary.height == 0:
+        return out
     truncated_frac = summary["truncated"].cast(float).mean()
     if truncated_frac is not None and truncated_frac >= TRUNCATED_FRAC_WARN:
         message = f"{truncated_frac:.0%} of samples in rollout {rollout_id} are truncated"

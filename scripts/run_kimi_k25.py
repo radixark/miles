@@ -202,7 +202,7 @@ def _execute_train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         f"--sglang-ep-size {args.num_gpus_per_node} "
         "--sglang-server-concurrency 1024 "
-        f"--sglang-cuda-graph-bs {_CUDA_GRAPH_BS} "
+        f"--sglang-cuda-graph-bs-decode {_CUDA_GRAPH_BS} "
         "--use-rollout-routing-replay "
     )
 

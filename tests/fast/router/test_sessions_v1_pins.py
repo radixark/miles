@@ -9,6 +9,7 @@ original test modules stay untouched.
 
 from unittest.mock import patch
 
+import pytest
 import requests
 from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import _create_session, _post_chat
@@ -126,8 +127,28 @@ class TestRollbackPins:
         assert resend.status_code == 200
         assert len(self._get(router_env.url, session_id)["records"]) == 2
 
-    def test_disallowed_append_role_400_with_rollback_side_effect(self, router_env):
+    @pytest.mark.parametrize(
+        "invalid_args",
+        [{"input_ids": [999]}, {"chat_template_kwargs": []}, {"lora_path": "wrong-adapter"}],
+    )
+    def test_invalid_retry_args_400_preserves_history(self, router_env, invalid_args):
+        session_id, a1, a2 = self._two_turn_session(router_env)
+        before = self._get(router_env.url, session_id)
+        backend_requests = len(router_env.backend.request_log)
+
+        resp = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1_DIFF], **invalid_args})
+
+        assert resp.status_code == 400
+        assert self._get(router_env.url, session_id) == before
+        assert len(router_env.backend.request_log) == backend_requests
+        t2 = {"role": "tool", "content": "next", "tool_call_id": "t1"}
+        self._turn(router_env.url, session_id, [self.U1, a1, self.T1, a2, t2])
+        assert len(self._get(router_env.url, session_id)["records"]) == 3
+
+    def test_disallowed_append_role_400_preserves_history(self, router_env):
         session_id, a1, _ = self._two_turn_session(router_env)
+        before = self._get(router_env.url, session_id)
+        backend_requests = len(router_env.backend.request_log)
 
         resp = _post_chat(
             router_env.url, session_id, {"messages": [self.U1, a1, {"role": "developer", "content": "another"}]}
@@ -136,10 +157,8 @@ class TestRollbackPins:
         assert resp.status_code == 400
         error = resp.json()["error"]
         assert error.endswith("; the selected TITO fixed template does not support appending this role")
-        # Characterization: today the rollback mutates BEFORE the append-only
-        # check rejects, and the 400 leaves the rolled-back state behind. Any
-        # future rework of v1 must keep this order.
-        assert len(self._get(router_env.url, session_id)["records"]) == 1
+        assert self._get(router_env.url, session_id) == before
+        assert len(router_env.backend.request_log) == backend_requests
 
     def test_collect_samples_after_rollback_single_sample(self, router_env):
         from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample

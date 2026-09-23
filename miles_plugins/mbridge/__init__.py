@@ -1,11 +1,12 @@
+from .deepseek_v4 import DeepseekV4Bridge
 from .deepseek_v32 import DeepseekV32Bridge
-from .deepseekv4 import DeepseekV4Bridge
 from .glm4 import GLM4Bridge
 from .glm4moe import GLM4MoEBridge
 from .glm4moe_lite import GLM4MoELiteBridge
 from .glm5_next import Glm5NextBridge
 from .inkling import InklingBridge
 from .joyai_llm_flash import JoyAILLMFlashBridge
+from .kimi_k3 import KimiK3Bridge
 from .mimo import MimoBridge
 from .qwen3_5 import Qwen3_5Bridge
 from .qwen3_next import Qwen3NextBridge
@@ -22,4 +23,5 @@ __all__ = [
     "DeepseekV4Bridge",
     "JoyAILLMFlashBridge",
     "InklingBridge",
+    "KimiK3Bridge",
 ]

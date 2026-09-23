@@ -79,7 +79,7 @@ and the `torch_dist` path. The launcher asserts the node shape, so a mismatched
 ## 3. Environment Setup
 
 Use the `docker.io/radixark/miles:qwen38next` image. It is the rolling
-[`radixark/miles:dev`](/ci/02-docker-build) image with the three moving parts checked out at
+[`radixark/miles:dev`](/developer/ci/02-docker-build) image with the three moving parts checked out at
 the versions this recipe was built against, and nothing else changed — every prebuilt wheel,
 TransformerEngine patch and version pin comes from `dev`. It is multi-arch, so the same tag
 serves GB300 (aarch64) and x86 nodes.

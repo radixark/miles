@@ -77,7 +77,7 @@ For example, base version `0.3.0` owns branch `release/v0.3.0`; that branch can 
 
 `release-lock.json` freezes the two dependency source commits and names the prune-exempt CUDA image used by release CI. Miles itself is frozen by the release commit and final Git tag. Wheels asset fingerprints are audit records, not content-addressed inputs.
 
-Use [Release a Version](/ci/04-release) for the maintainer procedure. That runbook owns workflow order, inputs, success signals, and recovery; this page owns the identity and pinning model.
+Use [Release a Version](/developer/ci/04-release) for the maintainer procedure. That runbook owns workflow order, inputs, success signals, and recovery; this page owns the identity and pinning model.
 
 ## The images
 
@@ -92,9 +92,9 @@ fleet's image is.
 | `cu13` | `radixark/miles:dev` | `linux/amd64` + `linux/arm64`, one manifest. This is the daily image |
 | `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` | Single-arch rebuilds of the same image |
 | `cu12-x86` | `radixark/miles:dev-cu12` | `linux/amd64`, CUDA 12.9 legacy |
-| `rocm700-mi30x` / `rocm700-mi35x` / `rocm720-mi35x` | `rocm/sgl-dev:miles-rocm7xx-mi3xx` | Native |
+| `rocm720-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` | Native |
 
-`--image-tag dev` also publishes a timestamped sibling. Scheduled retention and manual tag behavior are documented in [Docker build](/ci/02-docker-build).
+`--image-tag dev` also publishes a timestamped sibling. Scheduled retention and manual tag behavior are documented in [Docker build](/developer/ci/02-docker-build).
 
 Build one yourself with `docker/build.py`:
 
@@ -102,7 +102,7 @@ Build one yourself with `docker/build.py`:
 python docker/build.py --variant cu13-x86 --image-tag custom --custom-tag my-experiment --push
 ```
 
-[Docker build](/ci/02-docker-build) is the full reference for the build script, the
+[Docker build](/developer/ci/02-docker-build) is the full reference for the build script, the
 workflow and the tag rules.
 
 Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image and `radixark/miles:v<exact-version>-cu12` for the CUDA 12.9 image. Publishing them does not move the rolling `dev` or `latest` families.
@@ -128,7 +128,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
 | Miles code | No |
 
-The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` and exposes no dependency-ref inputs, so the only way to move them there is a new ROCm image. A release call can select the Miles ref, but its baked dependencies still make the run a smoke signal rather than a lock-accurate check.
+The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` unless the run names a ref for one, and never reads `release-lock.json`. A release call can select the Miles ref, but its baked dependencies still make the run a smoke signal rather than a lock-accurate check.
 
 ## Bumping principle
 
@@ -166,8 +166,9 @@ rebuild constantly, and instead forces a build once the last one is 24 hours old
 follows its dependencies immediately and trails Miles `main` by at most a day. When you need
 that to stop moving underneath you, pin `ci-image-tag:` to a timestamped tag.
 
-**Bump the ROCm images by hand.** They have no automatic path, so a ROCm bump is a
-`workflow_dispatch` on the variant you want.
+**The ROCm images move daily too.** The sgl-project/sglang nightlies rebuild the undated
+`rocm/sgl-dev:miles-rocm*-mi35x` tags from Miles `main` every day and publish a dated
+`-YYYYMMDD` sibling; an out-of-band rebuild is a `workflow_dispatch` on the variant you want.
 
 ## After a bump, the usual suspects
 
@@ -182,8 +183,8 @@ that to stop moving underneath you, pin `ci-image-tag:` to a timestamped tag.
 ## Related
 
 - [Installation](/getting-started/installation) for pulling and running the image.
-- [Release a Version](/ci/04-release) for the maintainer release runbook.
+- [Release a Version](/developer/ci/04-release) for the maintainer release runbook.
 - [Contributing](/developer/contributor-guide) for the CI labels and PR-description
   directives.
-- [Docker build](/ci/02-docker-build) for the build script, workflow triggers and tag
+- [Docker build](/developer/ci/02-docker-build) for the build script, workflow triggers and tag
   mechanics.

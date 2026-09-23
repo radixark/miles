@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/00-stage.md
+# doc-dev: docs/developer/ci/00-stage.md
 name: PR Test (ROCm)
 
 # ROCm counterpart to pr-test.yml. Same structure, different GPU stage:
@@ -94,7 +94,7 @@ jobs:
         run: |
           if ! git diff --name-status -z -M HEAD^1 HEAD > "$RUNNER_TEMP/changed-files.z"; then
             rm -f "$RUNNER_TEMP/changed-files.z"
-            echo "::warning::Unable to compute PR diff; all GPU stages remain eligible."
+            echo "::warning::Unable to compute PR diff; all selected GPU stages are treated as affected."
           fi
       - name: Resolve CI policy inputs
         id: resolve
@@ -109,6 +109,8 @@ jobs:
         run: python -m tests.ci.ci_policy
 
   resolve-ci-image:
+    needs: [resolve-ci-policy]
+    if: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') }}
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}

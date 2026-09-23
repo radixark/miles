@@ -123,7 +123,7 @@ def execute(args: ScriptArgs):
     sglang_args = (
         "--rollout-num-gpus-per-engine 8 "
         f"--sglang-mem-fraction-static 0.7 {sglang_extra}"
-        "--sglang-cuda-graph-max-bs 512 "
+        "--sglang-cuda-graph-max-bs-decode 512 "
     )
 
     misc_args = (

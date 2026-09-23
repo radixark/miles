@@ -5,6 +5,7 @@ which runs on a bare hosted runner before any dependency install; this module
 may import only the stdlib and the dependency-free registry modules.
 """
 
+import ast
 import json
 import os
 import re
@@ -25,6 +26,7 @@ CUDA_SUITE_RUNS_ON = {
     "stage-c-8-gpu-h200": ["h200", "8gpu"],
     "stage-c-4-gpu-h200": ["h200", "4gpu"],
     "stage-c-2-gpu-h200": ["h200", "2gpu"],
+    "stage-c-8-gpu-b200": ["b200", "8gpu"],
 }
 
 # Same shape the pr-test.yml resolve-ci-image step enforces for a Docker tag.
@@ -103,7 +105,33 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
     }
 
 
-def resolve_file_run(test_file: str, image_tag: str, source_root: str | Path = ".") -> dict[str, str]:
+def _read_snapshot_labels() -> dict[str, str]:
+    path = Path("tests/ci/labels.py")
+    if path.is_symlink():
+        raise FileRunError(f"CI label registry must not be a symlink: {path}")
+    try:
+        tree = ast.parse(path.read_text(), filename=str(path))
+        definitions = [
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "KNOWN_LABELS"
+        ]
+        if len(definitions) != 1:
+            raise FileRunError(f"{path} must define KNOWN_LABELS once as a literal dictionary")
+        labels = ast.literal_eval(definitions[0])
+    except (OSError, SyntaxError, ValueError, TypeError) as error:
+        raise FileRunError(f"cannot read CI label registry {path}: {error}") from error
+    if not isinstance(labels, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in labels.items()
+    ):
+        raise FileRunError(f"{path}: KNOWN_LABELS must be a literal string-to-string dictionary")
+    return labels
+
+
+def collect_snapshot_tests(source_root: str | Path):
+    """Parse a source snapshot as data, without importing its Python modules."""
     try:
         root = Path(source_root).resolve(strict=True)
     except OSError as error:
@@ -114,10 +142,14 @@ def resolve_file_run(test_file: str, image_tag: str, source_root: str | Path = "
     previous_directory = Path.cwd()
     try:
         os.chdir(root)
-        tests = collect_tests(_discover_regular_ci_files(), sanity_check=True)
+        files = _discover_regular_ci_files()
+        return collect_tests(files, sanity_check=True, known_labels=_read_snapshot_labels())
     finally:
         os.chdir(previous_directory)
-    return plan_file_run(tests, test_file, image_tag)
+
+
+def resolve_file_run(test_file: str, image_tag: str, source_root: str | Path = ".") -> dict[str, str]:
+    return plan_file_run(collect_snapshot_tests(source_root), test_file, image_tag)
 
 
 def main() -> int:

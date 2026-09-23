@@ -11,11 +11,18 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from argparse import Namespace
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.utils.misc import load_function
+from miles.rollout.filter_hub.common_filters import (
+    GroupWeightVersionStats,
+    apply_aborted_filter,
+    apply_missing_reward_filter,
+    group_staleness,
+    group_weight_version_stats,
+)
+from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -25,22 +32,8 @@ logger = logging.getLogger(__name__)
 Group = list[Sample | list[Sample]]
 
 
-def iter_samples(group: Group) -> Iterator[Sample]:
-    for item in group:
-        if isinstance(item, list):
-            yield from item
-        else:
-            yield item
-
-
 def first_sample(group: Group) -> Sample:
     return group[0][0] if isinstance(group[0], list) else group[0]
-
-
-def group_oldest_weight_version(group: Group) -> int | None:
-    """Return the minimum weight version across all trajectories and turns in a group."""
-    versions = [v for s in iter_samples(group) if (v := s.oldest_weight_version) is not None]
-    return min(versions) if versions else None
 
 
 @dataclass(frozen=True)
@@ -86,6 +79,7 @@ class DefaultDataBuffer(DataBuffer):
     Rejected on put, because the verdict is fixed once the group is generated:
 
     - aborted groups (the generate function gave up, e.g. an agentic collect timeout)
+    - groups with a missing reward
     - groups ``--dynamic-sampling-filter-path`` does not keep
 
     Rejected on get, because staleness depends on when the group is consumed:
@@ -99,8 +93,8 @@ class DefaultDataBuffer(DataBuffer):
         training consumes.
     (2) unused handling: ``--async-unused-samples-handler`` decides what happens
         to aborted and stale groups: drop discards them, retry recycles their
-        prompts for regeneration. Dynamic-filter groups are processed per the
-        filter's ``keep``.
+        prompts for regeneration. Missing-reward and custom-filter rejections
+        are discarded directly.
     """
 
     def __init__(self, input: DataBufferConstructorInput):
@@ -121,17 +115,15 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
         self._metric_consumed_staleness: list[int] = []
+        self._metric_selected_newest_lag: list[int] = []
+        self._metric_selected_version_span: list[int] = []
+        self._metric_selected_token_lag_sum = 0.0
+        self._metric_selected_versioned_tokens = 0
+        self._metric_selected_samples = 0
+        self._metric_selected_versioned_samples = 0
 
     async def put(self, input: DataBufferInput) -> None:
-        # filters at receiving sample: abort filter, dynamic filter
-        if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
-            self._metric_aborted_groups += 1
-            self._unused_handler_fn(input.prompt_group)
-            return
-        filter_output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
-        if not filter_output.keep:
-            # Dropped, not recycled: no usable gradient signal.
-            self._metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+        if not self._preput_filter(input):
             return
 
         async with self._cond:
@@ -139,6 +131,24 @@ class DefaultDataBuffer(DataBuffer):
                 await self._cond.wait()
             self._buffer.append(input)
             self._cond.notify_all()
+
+    def _preput_filter(self, input: DataBufferInput) -> bool:
+        output = apply_aborted_filter(self._args, input.group)
+        if not output.keep:
+            self._metric_aborted_groups += 1
+            self._unused_handler_fn(input.prompt_group)
+            return False
+
+        output = apply_missing_reward_filter(self._args, input.group)
+        if not output.keep:
+            self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
+            return False
+
+        output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
+        if not output.keep:
+            self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
+            return False
+        return True
 
     async def get(self, current_version: int | None = None, **_) -> DataBufferInput:
         if current_version is not None:
@@ -150,16 +160,37 @@ class DefaultDataBuffer(DataBuffer):
                 entry = self._buffer.pop(0)
                 self._cond.notify_all()  # wake producers blocked on a full buffer
 
-                # filters at retrieving sample: staleness filter
-                staleness = self._staleness(entry.group, current_version)
-                if staleness is None:
-                    return entry
-                self._metric_consumed_staleness.append(staleness)
-                if self._args.max_weight_staleness is None or staleness <= self._args.max_weight_staleness:
-                    return entry
-                logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
-                self._metric_stale_groups += 1
-                self._unused_handler_fn(entry.prompt_group)
+                version_stats = group_weight_version_stats(entry.group)
+                staleness = version_stats.oldest_lag(current_version)
+                if staleness is not None:
+                    if self._args.max_weight_staleness is not None and staleness > self._args.max_weight_staleness:
+                        logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
+                        self._metric_stale_groups += 1
+                        self._unused_handler_fn(entry.prompt_group)
+                        continue
+                    self._metric_consumed_staleness.append(staleness)
+                self._record_selected_version_stats(version_stats, current_version)
+                return entry
+
+    def _record_selected_version_stats(
+        self,
+        stats: GroupWeightVersionStats,
+        current_version: int | None,
+    ) -> None:
+        self._metric_selected_samples += stats.sample_count
+        self._metric_selected_versioned_samples += stats.versioned_sample_count
+
+        if stats.oldest_version is not None and stats.newest_version is not None:
+            self._metric_selected_version_span.append(stats.newest_version - stats.oldest_version)
+
+        newest_lag = stats.newest_lag(current_version)
+        if newest_lag is not None:
+            self._metric_selected_newest_lag.append(newest_lag)
+
+        token_weighted_lag = stats.token_weighted_lag(current_version)
+        if token_weighted_lag is not None:
+            self._metric_selected_token_lag_sum += token_weighted_lag * stats.versioned_token_count
+            self._metric_selected_versioned_tokens += stats.versioned_token_count
 
     def get_metrics(self) -> dict[str, float]:
         prefix = "rollout/fully_async/"
@@ -172,8 +203,22 @@ class DefaultDataBuffer(DataBuffer):
         if consumed := self._metric_consumed_staleness:
             metrics[f"{prefix}avg_staleness"] = sum(consumed) / len(consumed)
             metrics[f"{prefix}max_staleness"] = max(consumed)
+        if newest_lag := self._metric_selected_newest_lag:
+            metrics[f"{prefix}avg_post_generation_staleness"] = sum(newest_lag) / len(newest_lag)
+            metrics[f"{prefix}max_post_generation_staleness"] = max(newest_lag)
+        if version_span := self._metric_selected_version_span:
+            metrics[f"{prefix}avg_generation_version_span"] = sum(version_span) / len(version_span)
+            metrics[f"{prefix}max_generation_version_span"] = max(version_span)
+        if self._metric_selected_versioned_tokens:
+            metrics[f"{prefix}token_weighted_staleness"] = (
+                self._metric_selected_token_lag_sum / self._metric_selected_versioned_tokens
+            )
+        if self._metric_selected_samples:
+            metrics[f"{prefix}weight_version_sample_coverage"] = (
+                self._metric_selected_versioned_samples / self._metric_selected_samples
+            )
         buffered = [
-            s for entry in self._buffer if (s := self._staleness(entry.group, self._current_version)) is not None
+            s for entry in self._buffer if (s := group_staleness(entry.group, self._current_version)) is not None
         ]
         if buffered:
             metrics[f"{prefix}buffer_avg_staleness"] = sum(buffered) / len(buffered)
@@ -181,12 +226,11 @@ class DefaultDataBuffer(DataBuffer):
 
         self._metric_gatherer = MetricGatherer()
         self._metric_consumed_staleness = []
+        self._metric_selected_newest_lag = []
+        self._metric_selected_version_span = []
+        self._metric_selected_token_lag_sum = 0.0
+        self._metric_selected_versioned_tokens = 0
+        self._metric_selected_samples = 0
+        self._metric_selected_versioned_samples = 0
         self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics
-
-    @staticmethod
-    def _staleness(group: Group, current_version: int | None) -> int | None:
-        oldest = group_oldest_weight_version(group)
-        if oldest is None or current_version is None:
-            return None
-        return current_version - oldest

@@ -5,6 +5,7 @@ template path, required kwargs, and the role surface that renderer supports.
 """
 
 import os
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,6 +20,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
     Qwen36TITOTokenizer,
+    Qwen38SmallTITOTokenizer,
     TITOTokenizer,
 )
 
@@ -26,8 +28,17 @@ _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.QWEN3: ("qwen3_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.QWEN35: ("qwen3.5_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.QWEN36: ("qwen3.6_fixed.jinja", {"preserve_thinking": True}),
+    TITOTokenizerType.QWEN38_SMALL: (
+        "qwen3.8_small_and_flash_next_fixed.jinja",
+        {"preserve_thinking": True},
+    ),
+    TITOTokenizerType.QWEN4_EXP: (
+        "qwen3.8_small_and_flash_next_fixed.jinja",
+        {"preserve_thinking": True},
+    ),
     TITOTokenizerType.QWENNEXT: ("qwen3_thinking_2507_and_next_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.GLM47: (None, {"clear_thinking": False}),
+    TITOTokenizerType.GLM53: (None, {"clear_thinking": False, "enable_thinking": True}),
     TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),
     TITOTokenizerType.KIMI25: ("kimi_k25_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.KIMI26: (None, {"preserve_thinking": True}),
@@ -82,6 +93,7 @@ def test_fixed_template_rejects_unknown_role():
         DeepSeekV4TITOTokenizer,
         Qwen35TITOTokenizer,
         Qwen36TITOTokenizer,
+        Qwen38SmallTITOTokenizer,
         MinimaxM25TITOTokenizer,
         MinimaxM27TITOTokenizer,
     ],
@@ -106,9 +118,18 @@ def test_kwargs_are_copied_not_shared(monkeypatch):
     assert Qwen3TITOTokenizer.FIXED_TEMPLATE.extra_kwargs == {"clear_thinking": False}
 
 
-def test_registered_kwargs_cannot_be_overridden():
-    with pytest.raises(ValueError, match="conflicts with the value registered"):
-        Qwen3TITOTokenizer(object(), chat_template_kwargs={"clear_thinking": True})
+@pytest.mark.parametrize(
+    ("tokenizer_cls", "chat_template_kwargs"),
+    [
+        (Qwen3TITOTokenizer, {"clear_thinking": True}),
+        (Qwen38SmallTITOTokenizer, {"preserve_thinking": False}),
+    ],
+)
+def test_registered_kwargs_override_conflicting_launch_values(tokenizer_cls, chat_template_kwargs):
+    tokenizer = MagicMock()
+    tokenizer.encode.return_value = [1]
+    tito = tokenizer_cls(tokenizer, chat_template_kwargs=chat_template_kwargs)
+    assert tito.chat_template_kwargs == tokenizer_cls.FIXED_TEMPLATE.extra_kwargs
 
 
 @pytest.mark.parametrize(

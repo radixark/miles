@@ -177,7 +177,7 @@ Per-group filter after scoring (DAPO-style). Stock:
 
 ```python
 def filter_function(args, samples: list[Sample], **kwargs):
-    # return DynamicFilterOutput(keep=..., reason=...) or a bool
+    # return FilterOutput(keep=..., reason=...) or a bool
     ...
 ```
 

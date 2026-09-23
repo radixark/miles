@@ -1,22 +1,36 @@
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass
+
+from miles.utils.types import Sample
 
 
 @dataclass
-class DynamicFilterOutput:
+class FilterOutput:
     keep: bool
     reason: str | None = None
 
 
-def call_dynamic_filter(fn, *args, **kwargs):
-    if fn is None:
-        return DynamicFilterOutput(keep=True)
+DynamicFilterOutput = FilterOutput
 
-    output = fn(*args, **kwargs)
+
+def iter_samples(group: list[Sample | list[Sample]]) -> Iterator[Sample]:
+    for sample in group:
+        if isinstance(sample, list):
+            yield from sample
+        else:
+            yield sample
+
+
+def call_dynamic_filter(fn, args, samples: list[Sample | list[Sample]], **kwargs):
+    if fn is None:
+        return FilterOutput(keep=True)
+
+    output = fn(args, samples, **kwargs)
 
     # compatibility for legacy version
-    if not isinstance(output, DynamicFilterOutput):
-        output = DynamicFilterOutput(keep=output)
+    if not isinstance(output, FilterOutput):
+        output = FilterOutput(keep=output)
 
     return output
 

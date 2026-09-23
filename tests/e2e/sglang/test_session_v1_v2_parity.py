@@ -10,7 +10,7 @@ from tests.session_parity_utils import V1, V2, assert_agentic_retry_trajectory_p
 from miles.utils.test_utils.session_verify_agent import build_initial_messages
 from miles.utils.types import Sample
 
-register_cuda_ci(est_time=190, suite="stage-c-2-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=190, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper"])
 
 _MODEL_ID = "Qwen/Qwen3-8B"
 _MODEL_REVISION = "b968826d9c46dd6066d109eabc6255188de91218"
@@ -65,6 +65,7 @@ def test_qwen3_8b_h200_fa3_agentic_v2_drop_retries_matches_v1_training_payload_b
     assert len(v1_runs) == len(v2_runs) == _BATCH_SIZE
     for index, (v1, v2) in enumerate(zip(v1_runs, v2_runs, strict=True)):
         assert v1.samples[0].index == v2.samples[0].index == index
+        assert v1.samples[0].rollout_id == v2.samples[0].rollout_id == index
         assert_agentic_retry_trajectory_parity(v1, v2)
 
 
@@ -72,6 +73,7 @@ def _build_input_samples() -> list[Sample]:
     return [
         Sample(
             index=index,
+            rollout_id=index,
             prompt=build_initial_messages(),
             reward=0.25,
             metadata={"source": "parity"},

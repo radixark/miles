@@ -31,6 +31,11 @@ _ARGS = SimpleNamespace(
     apply_chat_template_kwargs={"enable_thinking": False},
     tito_model="default",
     sglang_speculative_algorithm=None,
+    use_rollout_routing_replay=False,
+    use_rollout_indexer_replay=False,
+    lora_rank=0,
+    lora_adapter_path=None,
+    lora_train_only=False,
     session_server_instance_id=uuid.uuid4().hex,
     save_debug_trajectory_data=None,
     session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
@@ -51,7 +56,7 @@ def core():
         tokenizer_type=_ARGS.tito_model,
         chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
     )
-    registry = SessionRegistryV2(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
+    registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
     return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
 
 
@@ -171,7 +176,6 @@ async def test_fuzz_forest_assembly_invariants(core, seed):
     sid, state, grower = await _fresh_grower(core)
     rng = random.Random(seed)
     _grow_random_tree(grower, rng)
-    state.active_leaf = state.tree.leaves()[-1]
 
     kept, trimmed = _oracle_pick(state)
     trajectory_reward = round(rng.random(), 3)
@@ -195,7 +199,6 @@ async def test_fuzz_shorter_replacements_assemble_legally(core, seed):
     sid, state, grower = await _fresh_grower(core)
     rng = random.Random(seed)
     _grow_random_tree(grower, rng, allow_shorter_retries=True)
-    state.active_leaf = state.tree.leaves()[-1]
 
     kept, _ = _oracle_pick(state)
     status, payload = await _collect(core, sid)
@@ -212,7 +215,6 @@ async def test_fuzz_forest_invariants_under_truncation(core, seed):
     sid, state, grower = await _fresh_grower(core)
     rng = random.Random(seed)
     _grow_random_tree(grower, rng)
-    state.active_leaf = state.tree.leaves()[-1]
 
     kept, _ = _oracle_pick(state)
     max_seq_len = rng.randint(4, 12)
@@ -240,7 +242,6 @@ class TestTargetedEdges:
         for _ in range(3):  # three abandoned attempts, each superseded
             grower.grow(root, env_len=1, completion_len=2)
         survivor = grower.grow(root, env_len=1, completion_len=2)
-        state.active_leaf = survivor
 
         status, payload = await _collect(core, sid)
         assert status == 200
@@ -253,7 +254,6 @@ class TestTargetedEdges:
         root = grower.grow(None, env_len=2, completion_len=2)
         grower.grow(root, env_len=1, completion_len=2)
         twin_b = grower.grow(root, env_len=1, completion_len=2)
-        state.active_leaf = twin_b
 
         status, payload = await _collect(core, sid)
         assert status == 200
@@ -270,8 +270,7 @@ class TestTargetedEdges:
         deep_a = grower.grow(mid, env_len=1, completion_len=2)  # earliest leaf: owns root+mid+own
         grower.grow(deep_a, env_len=1, completion_len=2)  # extend: deep_a no longer a leaf
         grower.grow(mid, env_len=1, completion_len=3)  # later sibling below mid
-        side = grower.grow(root, env_len=1, completion_len=4)  # sibling below root
-        state.active_leaf = side
+        grower.grow(root, env_len=1, completion_len=4)  # sibling below root
 
         kept, _ = _oracle_pick(state)
         status, payload = await _collect(core, sid)
@@ -302,7 +301,6 @@ class TestTargetedEdges:
         root = grower.grow(None, env_len=2, completion_len=2)
         cut = grower.grow(root, env_len=1, completion_len=2, finish_reason="length")
         leaf = grower.grow(cut, env_len=1, completion_len=2)
-        state.active_leaf = leaf
 
         status, payload = await _collect(core, sid)
         assert status == 200

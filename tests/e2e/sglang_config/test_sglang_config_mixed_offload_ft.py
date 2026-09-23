@@ -17,7 +17,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=500, suite="stage-c-8-gpu-h100", labels=["short"])
+register_cuda_ci(est_time=500, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=600, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
@@ -113,7 +113,7 @@ def execute():
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         f"--sglang-mem-fraction-static 0.7 "
-        "--sglang-cuda-graph-max-bs 32 "
+        "--sglang-cuda-graph-max-bs-decode 32 "
         f"--sglang-config {config_path} "
     )
 

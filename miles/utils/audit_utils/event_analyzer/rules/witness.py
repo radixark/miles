@@ -39,7 +39,7 @@ def check(events: list[Event]) -> list[WitnessIssue]:
     * WitnessAllocateIdEvent: when allocating `witness_id` to `sample_index`
     * WitnessSnapshotParamEvent: near the end of each train() step in MegatronTrainRayActor
         * If a witness_id appears in the weight, it means the corresponding data is consumed at least once.
-    * TrainGroupStepEndEvent: after each train() step in RayTrainGroup
+    * TrainGroupStepEndEvent: after each train() step in TrainerController
 
     Check:
     1. For each (rollout_id, cell_index),

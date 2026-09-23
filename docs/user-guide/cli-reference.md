@@ -26,6 +26,7 @@ This page has two passes.
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
+| `--run-uuid` | generated | Machine-readable id for this launch; 16 lowercase hex characters. |
 
 See [Training Backends](/user-guide/training-backend) for what `--colocate` flips on under the hood.
 
@@ -200,6 +201,7 @@ Sections mirror the launch-script argument groups.
 | `--eval-max-response-len` | int | – | Max eval response length. Inherits from rollout if unset. |
 | `--eval-temperature` | float | – | Eval temperature. Inherits from rollout if unset. |
 | `--eval-top-p` | float | – | Eval top-p. Inherits from rollout if unset. |
+| `--eval-top-k` | int | – | Eval top-k. Inherits from rollout if unset. |
 | `--eval-num-gpus` | int | `0` | Dedicated eval fleet size. `0` = shared-engine eval. Requires `train_async.py`. |
 | `--eval-num-gpus-per-engine` | int | `1` | Eval engine TP, independent of rollout TP. |
 | `--eval-hf-dir` | str | – | Staging dir for per-eval HF snapshots (tmpfs recommended). Unset + `--save-hf` = reuse mode. |
@@ -283,8 +285,8 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--sglang-router-ip` | str | – | External router IP. Miles starts its own router if unset. |
-| `--sglang-router-port` | int | – | External router port. |
+| `--sglang-router-ip` | str | – | Must stay unset: external router mode was removed. Miles always starts its own router. |
+| `--sglang-router-port` | int | – | Pins the port of the router miles starts; model `i` gets `port + i`. Unset lets it move off a busy port. |
 | `--sglang-*` | passthrough | | Any flag accepted by `python -m sglang.launch_server` works with this prefix. |
 | `--router-*` | passthrough | | Any flag accepted by the active router works with this prefix. |
 
@@ -316,7 +318,8 @@ contract, session behavior, and model-family selection.
 | `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
 | `--session-server-ip` | str | router IP | Session-server bind address. |
-| `--session-server-port` | int or start/end | auto | One port, or a half-open port range `[start, end)` for multiple instances. |
+| `--session-server-port` | int | auto | First port for standalone session-server instances. When unset, each worker port is auto-allocated. |
+| `--session-server-workers` | int | `32` | Number of instances, at least 1; an explicit `--session-server-port` anchors a consecutive range. |
 | `--session-sample-picker-path` | `<module>.<fn>` | `drop_retries` | v2 only: selects leaf samples before post-processing. |
 | `--session-sample-postprocessor-path` | `<module>.<fn>` | `default_postprocess` | v2 only: finalizes loss masks and rewards. |
 

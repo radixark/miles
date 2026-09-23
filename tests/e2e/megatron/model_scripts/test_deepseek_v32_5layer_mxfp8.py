@@ -8,6 +8,7 @@ register_cuda_ci(
     est_time=3600,
     suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
+    hardware=["blackwell"],
     disabled="Temporarily disabled; superseded by test_deepseek_v32_5layer_ci on H100.",
 )
 
@@ -184,7 +185,7 @@ def execute():
         f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-enable-dp-attention "
         "--sglang-enable-dp-lm-head "
-        "--sglang-cuda-graph-max-bs 256 "
+        "--sglang-cuda-graph-max-bs-decode 256 "
     )
 
     ci_args = "--ci-test --check-weight-update-allow-quant-error "

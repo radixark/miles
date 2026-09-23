@@ -112,8 +112,8 @@ Always-on flags:
 
 # DSA / NSA attention with FP8 KV cache
 --sglang-kv-cache-dtype fp8_e4m3
---sglang-nsa-decode-backend flashmla_kv
---sglang-nsa-prefill-backend flashmla_sparse
+--sglang-dsa-decode-backend flashmla_kv
+--sglang-dsa-prefill-backend flashmla_sparse
 --sglang-attention-backend nsa
 --sglang-page-size 64
 

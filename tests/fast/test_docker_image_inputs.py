@@ -32,8 +32,8 @@ def test_compute_is_deterministic():
 def test_compute_tracks_every_declared_input(tmp_path, monkeypatch):
     """A file matching INPUT_GLOBS must move the hash, or rebuilds get skipped wrongly."""
     baseline = image_inputs.compute()
-    monkeypatch.setattr(image_inputs, "_paths_at", lambda rev: ["requirements.txt"])
-    monkeypatch.setattr(image_inputs, "_content_at", lambda path, rev: b"changed")
+    monkeypatch.setattr(image_inputs, "_paths_at", lambda rev, root: ["requirements.txt"])
+    monkeypatch.setattr(image_inputs, "_content_at", lambda path, rev, root: b"changed")
     assert image_inputs.compute() != baseline
 
 
