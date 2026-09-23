@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+from tests.e2e.deploy.conftest_deploy.common import comparisons as comparisons_module
 from tests.e2e.deploy.conftest_deploy.common import utils
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
@@ -100,14 +101,16 @@ def recorded_calls(monkeypatch) -> dict[str, list[dict[str, Any]]]:
 
         return recorder
 
-    monkeypatch.setattr(utils.comparisons, "compare_deterministic_sides", record("compare_deterministic_sides"))
-    monkeypatch.setattr(utils, "assert_engine_count", record("assert_engine_count"))
+    monkeypatch.setattr(
+        comparisons_module.comparisons, "compare_deterministic_sides", record("compare_deterministic_sides")
+    )
+    monkeypatch.setattr(comparisons_module, "assert_engine_count", record("assert_engine_count"))
 
     return calls
 
 
 def _compare(*, exclude_keys: list[str] | None = None) -> None:
-    utils.compare_deterministic_sides(
+    comparisons_module.compare_deterministic_sides(
         baseline_dir=_BASELINE_DIR,
         target_dir=_TARGET_DIR,
         expected_engine_count=_EXPECTED_ENGINE_COUNT,
