@@ -129,6 +129,9 @@ class _GatherLog:
             buffer.copy_(tensor)
         return _Done()
 
+    def get_rank(self) -> int:
+        return 0
+
     def all_gather_object(self, output: list[object], obj: object, *, group: str) -> None:
         self.log.append(("gather_names", group))
         output[:] = [list(obj) for _ in output]
@@ -228,3 +231,100 @@ class TestTensorParallelGatherFaultHook:
             )
 
         assert gather_log.log == [("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER.value)]
+
+
+_EXPERT_NAMES = [
+    "decoder.layers.0.mlp.experts.linear_fc1.weight0",
+    "decoder.layers.0.mlp.experts.linear_fc2.weight0",
+]
+
+
+def _expert_info(name: str) -> ParamInfo:
+    return ParamInfo(
+        name=name,
+        dtype=torch.float32,
+        shape=torch.Size([2]),
+        attrs={"tensor_model_parallel": False, "partition_dim": -1, "partition_stride": 1},
+        size=2,
+        src_rank=0,
+    )
+
+
+@pytest.fixture
+def expert_parallel(direct_module, gather_log: _GatherLog, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(
+        direct_module,
+        "get_parallel_state",
+        lambda: SimpleNamespace(
+            tp=SimpleNamespace(size=1, group="tp"),
+            etp=SimpleNamespace(size=1, group="etp"),
+            ep=SimpleNamespace(size=2, group="ep"),
+        ),
+    )
+
+
+def _materialize_experts(direct_module) -> list[tuple[str, torch.Tensor]]:
+    return direct_module._materialize_expert_batch(
+        Namespace(swiglu=False),
+        [_expert_info(name) for name in _EXPERT_NAMES],
+        {name: torch.full((2,), float(index)) for index, name in enumerate(_EXPERT_NAMES)},
+        gather_pp=False,
+    )
+
+
+class TestExpertParallelGatherFaultHook:
+    def test_the_hook_fires_before_the_first_expert_parallel_all_gather(
+        self, direct_module, gather_log: _GatherLog, expert_parallel: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On an EP run the all-gather fault must strike before the first expert collective, after the name exchange."""
+        _arm_marker_hook(
+            monkeypatch, log=gather_log.log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER
+        )
+
+        gathered = _materialize_experts(direct_module)
+
+        assert gather_log.log == [
+            ("gather_names", "ep"),
+            ("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER.value),
+            ("gather", "ep"),
+            ("gather", "ep"),
+        ]
+        assert [name for name, _ in gathered] == _EXPERT_NAMES * 2
+
+    def test_a_failing_hook_starts_no_expert_collective(
+        self, direct_module, gather_log: _GatherLog, expert_parallel: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hook failure must abort before this rank enters the EP all-gather its peers wait on."""
+        _arm_marker_hook(
+            monkeypatch,
+            log=gather_log.log,
+            hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER,
+            fail=True,
+        )
+
+        with pytest.raises(RuntimeError, match="failed"):
+            _materialize_experts(direct_module)
+
+        assert ("gather", "ep") not in gather_log.log
+
+    def test_a_single_expert_rank_never_reaches_the_hook(
+        self, direct_module, gather_log: _GatherLog, expert_parallel: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without EP peers there is no expert all-gather, so the one-shot fault must stay armed."""
+        monkeypatch.setattr(
+            direct_module,
+            "get_parallel_state",
+            lambda: SimpleNamespace(
+                tp=SimpleNamespace(size=1, group="tp"),
+                etp=SimpleNamespace(size=1, group="etp"),
+                ep=SimpleNamespace(size=1, group="ep"),
+            ),
+        )
+        _arm_marker_hook(
+            monkeypatch, log=gather_log.log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER
+        )
+
+        assert [name for name, _ in _materialize_experts(direct_module)] == _EXPERT_NAMES
+        assert gather_log.log == []
