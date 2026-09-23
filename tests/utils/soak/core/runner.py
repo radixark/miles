@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -8,10 +9,12 @@ from tests.utils.soak.core.archive import archive_evidence
 from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
+    SoakActionRequestedEvent,
     SoakAdmissionClosedEvent,
     SoakEvent,
     SoakObservationEvent,
 )
+from tests.utils.soak.core.scheduler import SoakActionScheduler
 from tests.utils.soak.core.sut_events import SutEventFeed
 from tests.utils.soak.core.types import SoakForms, SoakObserver
 from tests.utils.soak.core.views import admission_closed, trainer_step_ends
@@ -22,6 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass(kw_only=True)
 class SoakRunner:
     observer: SoakObserver
+    scheduler: SoakActionScheduler
     forms: SoakForms
     event_log: EventLog
     config: SoakRunnerConfig
@@ -57,6 +61,11 @@ class SoakRunner:
 
             events = self.event_log.events
             _assert_within_tail_budget(events, tail_seconds=self.config.timeouts.tail_seconds)
+
+            if (request := self.scheduler.choose(events=events, now=time.monotonic())) is None:
+                continue
+
+            self.event_log.append(SoakActionRequestedEvent(request=request))
 
     async def _observe_and_record(self, *, timeout_seconds: float) -> None:
         try:
