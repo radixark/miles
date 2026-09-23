@@ -8,6 +8,14 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from miles_plugins.models.deepseek_v4.ops.kernel.tiling import (
+    DeviceLimits,
+    build_with_largest_fitting_tiling,
+    current_target,
+    indexer_forward_block_ns,
+    shared_memory_required,
+)
+
 
 @tilelang.jit(
     pass_configs={
@@ -133,6 +141,40 @@ def _make_causal_cu_seqlens(seq_len_q, seq_len_kv, compress_ratio, device):
     return cu_seqlen_ks, cu_seqlen_ke
 
 
+_fitted_block_N: dict[tuple, int] = {}
+
+
+def _indexer_fwd_within_shared_mem(heads, index_dim, block_N=256):
+    """Build tl_indexer_fwd_impl with the largest block_N this target can host.
+
+    block_N only sets how much of the KV axis one workgroup sweeps per iteration, so shrinking it
+    costs performance and nothing else. Memoized per shape.
+    """
+
+    def build(n):
+        return tl_indexer_fwd_impl(heads=heads, index_dim=index_dim, block_N=n)
+
+    key = (heads, index_dim, block_N)
+    if key in _fitted_block_N:
+        return build(_fitted_block_N[key])
+
+    target = current_target()
+    limits = DeviceLimits.from_target(target)
+    kernel, fitted = build_with_largest_fitting_tiling(
+        requested=block_N,
+        derived=indexer_forward_block_ns(block_N=block_N, limits=limits),
+        compile_tiling=build,
+        required_bytes=lambda n: shared_memory_required(
+            tl_indexer_fwd_impl.get_tir(heads=heads, index_dim=index_dim, block_N=n), target
+        ),
+        budget=limits.shared_memory_per_block,
+        describe=lambda n: f"block_N={n} (requested {block_N})",
+        what="tl_indexer_fwd",
+    )
+    _fitted_block_N[key] = fitted
+    return kernel
+
+
 def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True):
     """Forward interface matching GLM-5's API but for a single batch element.
 
@@ -150,7 +192,7 @@ def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logi
     seq_len_kv = kv.shape[0]
 
     clean_logits_kernel = clean_logits_()
-    tl_indexer_fwd_kernel = tl_indexer_fwd_impl(heads=heads, index_dim=index_dim)
+    tl_indexer_fwd_kernel = _indexer_fwd_within_shared_mem(heads=heads, index_dim=index_dim)
 
     logits = torch.empty([seq_len, seq_len_kv], device=q.device, dtype=torch.float32)
     tl_indexer_fwd_kernel(
