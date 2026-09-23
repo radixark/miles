@@ -299,7 +299,7 @@ def _ensure_provider_key() -> None:
         os.environ[key_env] = resolve_provider_api_key(key_env, spec["file_env_var"], spec["default_path"])
 
 
-def _environment_config():
+def _environment_config(metadata: dict[str, Any] | None = None):
     """``HARBOR_ENV_TYPE`` straight through to Harbor's ``EnvironmentType``: adding a
     backend is Harbor's job, not a branch here. Backend-specific settings ride in
     ``HARBOR_ENV_KWARGS`` (a JSON object) as ``EnvironmentConfig.kwargs``."""
@@ -311,6 +311,12 @@ def _environment_config():
         raise ValueError("set HARBOR_ENV_TYPE to the Harbor environment type to run trials on (e.g. e2b, daytona)")
     env_type = EnvironmentType(raw)  # raises on an unknown backend instead of guessing
     kwargs = json.loads(os.getenv("HARBOR_ENV_KWARGS", "{}") or "{}")
+    if not isinstance(kwargs, dict):
+        raise TypeError("HARBOR_ENV_KWARGS must be a JSON object")
+    task_kwargs = (metadata or {}).get("harbor_environment_kwargs", {})
+    if not isinstance(task_kwargs, dict):
+        raise TypeError("metadata.harbor_environment_kwargs must be an object")
+    kwargs.update(task_kwargs)
     if env_type == EnvironmentType.DAYTONA:
         # a killed worker never reaches Harbor's teardown, and Harbor's Daytona defaults (0) never reclaim;
         # the stop timer outlasts the trial cap because an in-sandbox agent looks idle to Daytona
@@ -380,7 +386,7 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
             kwargs=agent_kwargs,
             extra_allowed_hosts=_allowed_hosts("HARBOR_AGENT_ALLOWED_HOSTS"),
         ),
-        environment=_environment_config(),
+        environment=_environment_config(metadata),
         trials_dir=Path(os.getenv("HARBOR_TRIALS_DIR", "/tmp/harbor_trials")),
         timeout_multiplier=float(os.getenv("HARBOR_TIMEOUT_MULTIPLIER", "2.0")),
         **extra,

@@ -90,6 +90,12 @@ whatever is there.
 Backend-specific settings go in `HARBOR_ENV_KWARGS` as a JSON object (Harbor's
 `EnvironmentConfig.kwargs`), e.g. `'{"auto_snapshot": true}'` for Daytona.
 
+Per-task settings can be supplied in dataset `metadata.harbor_environment_kwargs`.
+This must be an object; its keys override `HARBOR_ENV_KWARGS` for that trial only.
+For example, `{"prebuilt_template_id": "existing-template-id"}` selects a task's
+already-built E2B template when using a Harbor version supporting that option.
+The adapter forwards these settings but does not implement provider options itself.
+
 `HARBOR_OVERRIDE_CPUS`, `HARBOR_OVERRIDE_MEMORY_MB`, and
 `HARBOR_OVERRIDE_STORAGE_MB` replace a task's declared resource values. They do
 not change how Harbor enforces CPU or memory. Set

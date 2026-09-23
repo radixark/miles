@@ -122,6 +122,31 @@ def _verdict(reward=1.0, **agent_fields):
 # --- trial config ----------------------------------------------------------
 
 
+def test_task_environment_kwargs_override_defaults_without_mutation(tasks_dir, monkeypatch):
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"prebuilt_template_id":"default", "extra":1}')
+    metadata = {"instance_id": "task-1", "harbor_environment_kwargs": {"prebuilt_template_id": "task-template"}}
+    cfg = haf.build_trial_config(metadata, "http://s/v1", {})
+    assert cfg.environment.kwargs == {"prebuilt_template_id": "task-template", "extra": 1}
+    assert metadata["harbor_environment_kwargs"] == {"prebuilt_template_id": "task-template"}
+    assert haf._environment_config().kwargs["prebuilt_template_id"] == "default"
+
+
+@pytest.mark.parametrize("value", [None, [], "", False, 1])
+def test_invalid_task_environment_kwargs_rejected(tasks_dir, monkeypatch, value):
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+    with pytest.raises(TypeError, match="harbor_environment_kwargs"):
+        haf.build_trial_config({"instance_id": "task-1", "harbor_environment_kwargs": value}, "http://s/v1", {})
+
+
+@pytest.mark.parametrize("value", ["null", "[]", '""', "false", "1"])
+def test_invalid_global_environment_kwargs_rejected(monkeypatch, value):
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", value)
+    with pytest.raises(TypeError, match="HARBOR_ENV_KWARGS"):
+        haf._environment_config()
+
+
 def test_environment_type_is_passed_straight_through(tasks_dir, monkeypatch):
     monkeypatch.setenv("HARBOR_ENV_TYPE", "modal")
     monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"passthrough_probe": 1}')
