@@ -24,7 +24,6 @@ class Qwen38NextQSACoreAttention(MegatronModule):
         self.layer_number = layer_number
         object.__setattr__(self, "_owner", owner)
         self.softmax_scale = config.kv_channels**-0.5
-        self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
 
     def forward(self, query: Tensor, key: Tensor, value: Tensor, attention_mask=None, **kwargs):
         selection = getattr(self._owner, "_qsa_selection", None)

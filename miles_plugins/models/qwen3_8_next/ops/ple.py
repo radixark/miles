@@ -270,8 +270,6 @@ class Qwen38NextPLE(MegatronModule):
         self.n = config.num_residual_streams
         self.hidden_size = config.hidden_size
         self.norm_eps = config.layernorm_epsilon
-        self.ngram_size = config.qwen3_8_next_ngram_size
-        self.heads_per_ngram = config.qwen3_8_next_heads_per_ngram
         self.embed_dim = config.qwen3_8_next_ple_embed_dim
         wide = self.n * self.hidden_size
 

@@ -34,7 +34,7 @@ def _layer_types(text_config):
     return ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)]
 
 
-def _hc_spec(config, *, with_ple: bool = False):
+def _hc_spec(*, with_ple: bool = False):
     """The attention-site HC on the PLE layer also owns the PLE module.
 
     PLE's increment lands on the widened residual before the read gate, and the HC
@@ -43,7 +43,7 @@ def _hc_spec(config, *, with_ple: bool = False):
     return ModuleSpec(module=Qwen38NextPLEHyperConnection if with_ple else Qwen38NextHyperConnection)
 
 
-def _strip_block_layernorms(layer_spec, config):
+def _strip_block_layernorms(layer_spec):
     """Replace the fused-layernorm qkv with a plain TE linear, and drop pre_mlp_layernorm."""
     submodules = layer_spec.submodules
     attn = submodules.self_attention
@@ -138,8 +138,8 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
         layer_spec = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
 
         with_ple = global_layer_id in config.qwen3_8_next_ple_layer_ids
-        layer_spec.submodules.self_attention_hyper_connection = _hc_spec(config, with_ple=with_ple)
-        layer_spec.submodules.mlp_hyper_connection = _hc_spec(config)
+        layer_spec.submodules.self_attention_hyper_connection = _hc_spec(with_ple=with_ple)
+        layer_spec.submodules.mlp_hyper_connection = _hc_spec()
 
         if layer_types[global_layer_id] == "linear_attention":
             layer_spec.submodules.self_attention = ModuleSpec(
@@ -153,7 +153,7 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
                 submodules=layer_spec.submodules.self_attention.submodules,
             )
 
-        _strip_block_layernorms(layer_spec, config)
+        _strip_block_layernorms(layer_spec)
         transformer_layer_spec.layer_specs[layer_id] = layer_spec
 
     transformer_layer_spec.hc_head_contraction = ModuleSpec(module=Qwen38NextHCHeadContraction)
