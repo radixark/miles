@@ -529,9 +529,6 @@ class TinkerService:
             self.futures.fail(request_id, "cancelled", "user")
         except UserInputError as error:
             self.futures.fail(request_id, str(error), "user")
-        except Exception as error:  # a bad sample fails its own future, not the dispatcher every tenant shares
-            logger.exception("sample %s failed", request_id)
-            self.futures.fail(request_id, f"sampling failed: {error}", "server")
         else:
             if "error" in result:
                 self.futures.fail(request_id, result["error"], "server")
