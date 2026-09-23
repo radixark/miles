@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Discriminator, Field
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord
@@ -121,8 +122,11 @@ class InferenceEngineWeightChecksumEvent(EventBase):
     rollout_id: int
     # The policy whose weights were pushed, or None for a run that trains one unnamed policy.
     trainer_model_id: str | None = None
+    weight_version: int
+    debug_trainer_load_state_timestamp: float
+    debug_weight_update_id: str
     # One {tensor -> hash} dict per rollout engine; a TP>1 engine's ranks merge with a rank{r}/ prefix.
-    engine_checksums: list[dict[str, str]]
+    engine_snapshots: list[InferenceEngineChecksumSnapshot] = Field(min_length=1)
 
 
 class TrainAdvantageComputationEvent(_ActorTrainEventBase):

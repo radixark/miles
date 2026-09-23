@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 class WeightUpdateOutput:
     weight_version: int | None
     failed_cell_ids: tuple[str, ...]
+    debug_trainer_load_state_timestamp: float | None = None
+    debug_weight_update_id: str | None = None
 
     @classmethod
     def merge(cls, outputs: list["WeightUpdateOutput"]) -> "WeightUpdateOutput":
