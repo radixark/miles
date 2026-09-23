@@ -18,7 +18,7 @@ from tests.utils.soak.ft.types import CellTarget
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.ft_utils.api_server.models import TriState
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.types import ClusterBackend
 

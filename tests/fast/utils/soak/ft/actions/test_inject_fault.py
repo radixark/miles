@@ -20,7 +20,7 @@ from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, ObservedCellFaultKind
 
 from miles.utils.ft_utils.api_server.models import TriState
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.naming import compute_cell_id
 
 _BASE_URL = "http://api:18080"
