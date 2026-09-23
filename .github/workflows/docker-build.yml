@@ -11,8 +11,10 @@ on:
       - 'requirements.txt'
 
   schedule:
-    # Every 12 hours: midnight and noon UTC
-    - cron: '0 0,12 * * *'
+    # Poll every 10 minutes so an upstream move starts a build within ~30 minutes;
+    # check-upstream gates each poll. Off the top of the hour, where GitHub delays
+    # or drops scheduled runs under load.
+    - cron: '5,15,25,35,45,55 * * * *'
 
   workflow_dispatch:
     inputs:
@@ -68,16 +70,27 @@ jobs:
 
       - name: Check for new upstream commits
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -o pipefail
           SHOULD_BUILD=false
 
-          # Check sglang (sglang-miles branch)
-          SGLANG_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
+          # A failed lookup must not read as an upstream move: an error body stored as
+          # the "SHA" would build now and again once the API recovers. Skip this poll
+          # without building or saving state; the next poll retries.
+          skip_poll() {
+            echo "::warning::$1; skipping this poll"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
 
-          # Check Megatron-LM (miles-main branch)
-          MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/radixark/Megatron-LM/commits/miles-main")
+          head_sha() {
+            local sha
+            sha=$(gh api "repos/$1/commits/$2" --jq .sha) && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
+          }
+          SGLANG_SHA=$(head_sha sgl-project/sglang sglang-miles) || skip_poll "sglang sglang-miles HEAD lookup failed"
+          MEGATRON_SHA=$(head_sha radixark/Megatron-LM miles-main) || skip_poll "Megatron-LM miles-main HEAD lookup failed"
 
           # Fingerprint the miles-wheels releases the images install from (sgl-router +
           # the other prebuilt wheels). cu13 installs cu130-torch213-x86_64 /
@@ -86,12 +99,14 @@ jobs:
           # release tags they bake. Rolling tags stay fixed while assets may be replaced,
           # so fingerprint the asset list rather than a commit SHA.
           wheels_fp() {
-            curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
-              | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
+            local fp
+            fp=$(gh api "repos/yueming-yuan/miles-wheels/releases/tags/$1" \
+              | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')") \
+              && [[ "$fp" =~ ^[0-9a-f]{64}$ ]] && echo "$fp"
           }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64)
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64)
-          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64)
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64) || skip_poll "wheels cu130-torch213-x86_64 lookup failed"
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64) || skip_poll "wheels cu130-torch213-aarch64 lookup failed"
+          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64) || skip_poll "wheels cu129-x86_64 lookup failed"
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"
@@ -125,8 +140,8 @@ jobs:
           fi
 
           # miles commits alone never trigger rebuilds, so bound how stale the baked
-          # miles checkout can get.
-          MAX_BUILD_AGE_SECONDS=$(( 24 * 3600 ))
+          # miles checkout can get: rebuild once the last triggered build is 12h old.
+          MAX_BUILD_AGE_SECONDS=$(( 12 * 3600 ))
           NOW_EPOCH=$(date +%s)
           if [ "$SHOULD_BUILD" = "false" ]; then
             if ! [ "$LAST_BUILD_EPOCH" -gt 0 ] 2>/dev/null; then
@@ -163,6 +178,14 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
+    # Automatic builds (schedule, push) run one at a time: a build outlasts the poll
+    # interval, and overlapping ones race to push dev / latest. A newer pending build
+    # replaces an older one, which is safe because builds clone branch HEADs when they
+    # start. Manual dispatches and polls that skip the build get a per-run group, so
+    # they never wait on, or cancel, an automatic build.
+    concurrency:
+      group: ${{ github.event_name != 'workflow_dispatch' && (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') && 'docker-build-auto' || format('docker-build-{0}', github.run_id) }}
+      cancel-in-progress: false
     # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
     # nodes are CI machines carrying a second runner instance dedicated to builds, so
     # image builds stop competing for GPU-suite runner slots.
