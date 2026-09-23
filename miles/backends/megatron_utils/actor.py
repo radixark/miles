@@ -43,6 +43,7 @@ from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext, FaultHookResources
 from miles.utils.test_utils.fault_injector.controller import fault_hook_controller
 from miles.utils.test_utils.fault_injector.models import FaultHookOwner
+from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -136,6 +137,11 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
         trainer_pool_id = compute_trainer_pool_id(args.trainer_id)
+        self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
+            args,
+            cell_id=compute_cell_id(pool_id=trainer_pool_id, cell_index=indep_dp_info.cell_index),
+            rank=self._rank,
+        )
         fault_hook_controller.configure(
             resources=FaultHookResources(args=args),
             owner=FaultHookOwner.TRAINER_ACTOR,
@@ -751,6 +757,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     num_rollouts,
                     witness_info=witness_info,
                     attempt=attempt,
+                    ft_test_action_executor=self._ft_test_action_executor,
                 )
 
             self.prof.step(rollout_id=rollout_id)

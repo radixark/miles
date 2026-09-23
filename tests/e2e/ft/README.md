@@ -202,17 +202,16 @@ Phase B - baseline:
 Phase B - target:
   1. Resume from the phase_a checkpoint
   2. Rollout 1: N cells normal
-  3. Rollout 2, attempt 0: exit_process at trainer_step_before_allreduce on last cell rank 0
+  3. Rollout 2, attempt 0: crash_before_allreduce on last cell rank 0
      -> os._exit(1) -> allreduce timeout -> should_commit=false -> retry
   4. Rollout 2, attempt 1: reconfigure to N-1 cells, commit on the degraded quorum
   5. After rollout 2: stop_cell_at_end(last) + start_cell_at_end(last)
   6. Rollout 3: heal back to N cells, train with the healed cell
 
-Fault injection: --ci-ft-test-actions, JSON list of {at_rollout, action, cell_id}
-  at_rollout: rollout id
+Fault injection: --ci-ft-test-actions, JSON list of {at_rollout, action, cell_id, rank, attempt}
+  at_rollout: rollout id; attempt: retry attempt, actor-level actions only
   stop_cell_at_end / start_cell_at_end: trainer controller, suspend/resume via cell_operations
-Crash: --ci-fault-hooks, exit_process at trainer_step_before_allreduce inside the targeted actor rank, matched on
-  rollout_id and attempt
+  crash_before_allreduce: inside the targeted actor
 
 Healing witness: target phase_b event dir, exactly two CellReconfigureEvents
   rollout 2: shrink, alive N -> N-1
