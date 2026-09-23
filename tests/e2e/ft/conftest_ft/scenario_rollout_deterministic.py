@@ -6,7 +6,6 @@ import shutil
 import threading
 import time
 from collections.abc import Iterator
-from datetime import datetime
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
@@ -26,6 +25,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TY
 from tests.e2e.ft.conftest_ft.fault_injection.views import compute_injection_times, compute_num_injections
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_rollout_cells_served_after_injection
+from tests.utils.soak.ft.checkers.progress_windows import MIN_CRASHED_ROLLOUTS, _compute_crashed_rollouts
 from tests.utils.soak.ft.checkers.reconfigure import assert_min_soak_injections
 
 from miles.utils.external_utils import command_utils
@@ -43,7 +43,6 @@ HEALTH_CHECK_INTERVAL_SECONDS: float = 1.0
 MIN_TRAINED_ROLLOUTS: int = 2
 FIRST_ROLLOUT_TIMEOUT_SECONDS: float = 3600.0
 FIRST_ROLLOUT_POLL_SECONDS: float = 5.0
-MIN_CRASHED_ROLLOUTS: int = 2
 TERMINAL_FAULT_FREE_ROLLOUTS: int = 2
 
 
@@ -155,15 +154,6 @@ def _assert_injections_spread_over_rollouts(injector: FaultInjectorHandle, *, du
         f"nothing across the run"
     )
     print(f"Injections landed across rollouts {sorted(crashed_rollouts)}")
-
-
-def _compute_crashed_rollouts(
-    *, injected_at: list[datetime], rollout_completions: list[tuple[int, datetime]]
-) -> set[int]:
-    return {
-        max((rollout_id for rollout_id, finished_at in rollout_completions if finished_at <= at), default=-1) + 1
-        for at in injected_at
-    }
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
