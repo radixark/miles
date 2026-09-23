@@ -566,10 +566,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="the temperature for the inference engine during rollout.",
             )
             parser.add_argument(
-                "--rollout-top-p", type=float, default=1.0, help="the top-p for the inference engine during rollout."
+                "--rollout-top-p",
+                type=float,
+                default=1.0,
+                help=(
+                    "the top-p for the inference engine during rollout. Values below 1 enable "
+                    "sampling-support replay and require a positive --rollout-top-k."
+                ),
             )
             parser.add_argument(
-                "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
+                "--rollout-top-k",
+                type=int,
+                default=-1,
+                help=(
+                    "the top-k for the inference engine during rollout. Positive values enable "
+                    "sampling-support replay. SGLang's --sampling-mask-max-tokens is the physical "
+                    "returned-support limit because cutoff ties can retain more than top-k tokens."
+                ),
             )
             parser.add_argument(
                 "--rollout-max-context-len",
@@ -2951,6 +2964,31 @@ def miles_validate_args(args):
             "R3 payloads can become very large. TODO: Retract-mode weight updates R3 "
             "have known issues in SGLang and need to be fixed."
         )
+
+    if not 0.0 < args.rollout_top_p <= 1.0:
+        raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
+    if args.rollout_top_k != -1 and args.rollout_top_k < 1:
+        raise ValueError(f"--rollout-top-k must be -1 or at least 1, got {args.rollout_top_k}")
+    args.use_sampling_support_replay = args.rollout_top_p < 1.0 or args.rollout_top_k > 0
+    if args.use_sampling_support_replay:
+        if args.rollout_top_k == -1:
+            raise ValueError(
+                "--rollout-top-p below 1 requires a positive --rollout-top-k; "
+                "top-p alone does not bound the returned support size"
+            )
+        if args.recompute_logprobs_via_prefill:
+            raise ValueError(
+                "sampling-support replay cannot be combined with --recompute-logprobs-via-prefill; "
+                "prefill scoring does not preserve the rollout sampling support"
+            )
+        if args.kl_coef != 0 or args.use_kl_loss or args.use_opd:
+            # The actor still produces full-vocabulary logits, but replay currently exposes only the
+            # support-normalized actor score to the loss. These objectives can be enabled once the loss
+            # path also preserves an unmasked actor score from the same forward pass.
+            raise ValueError(
+                "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
+                "those objectives require a separate full-policy actor score"
+            )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(

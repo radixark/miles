@@ -296,6 +296,85 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--rollout-top-p", "0"], "--rollout-top-p must be in"),
+        (["--rollout-top-k", "0"], "--rollout-top-k must be -1 or at least 1"),
+        (
+            ["--rollout-top-p", "0.95"],
+            "--rollout-top-p below 1 requires a positive --rollout-top-k",
+        ),
+        (
+            [
+                "--rollout-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+                "--true-on-policy-mode",
+                "--recompute-logprobs-via-prefill",
+            ],
+            "sampling-support replay cannot be combined with --recompute-logprobs-via-prefill",
+        ),
+        (
+            [
+                "--rollout-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+                "--kl-coef",
+                "0.1",
+            ],
+            "cannot currently be combined with reference KL or teacher distillation",
+        ),
+        (
+            [
+                "--rollout-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+                "--use-kl-loss",
+            ],
+            "cannot currently be combined with reference KL or teacher distillation",
+        ),
+        (
+            [
+                "--rollout-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+                "--use-opd",
+            ],
+            "cannot currently be combined with reference KL or teacher distillation",
+        ),
+    ],
+)
+def test_sampling_support_arguments_fail_closed(extra, message):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(ValueError, match=message):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
+    ("sampling_args", "expected"),
+    [
+        ([], False),
+        (["--rollout-top-k", "32"], True),
+        (["--rollout-top-p", "0.95", "--rollout-top-k", "32"], True),
+    ],
+)
+def test_sampling_support_replay_is_derived_from_rollout_filters(sampling_args, expected):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(sampling_args + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    miles_validate_args(args)
+    assert args.use_sampling_support_replay is expected
+
+
 def test_sglang_parallel_sizes_keep_server_args_destinations():
     parser = add_sglang_arguments(argparse.ArgumentParser())
     args = parser.parse_args(
