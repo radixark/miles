@@ -103,10 +103,8 @@ class TestOneRunIdentityAcrossTheScenario:
 
 
 class TestTheLaunchedTrainArguments:
-    @pytest.mark.parametrize(
-        "mode_name", sorted(name for name, mode in MODES.items() if "rollout" not in mode.ft_components)
-    )
-    def test_every_trainer_mode_launches_arguments_the_fault_tolerance_parser_gate_accepts(
+    @pytest.mark.parametrize("mode_name", sorted(MODES))
+    def test_every_mode_launches_arguments_the_fault_tolerance_parser_gate_accepts(
         self, harness: ScenarioHarness, mode_name: str
     ) -> None:
         """A mode whose generated args fail the real partial-target gate cannot start, whatever the soak checks."""
@@ -122,11 +120,12 @@ class TestTheLaunchedTrainArguments:
         assert "rollout" not in parsed.ft_components or parsed.partial_target_weight_update
         _assert_the_gpu_layout_is_the_modes(launch.request.num_gpus_per_node, parsed.namespace, mode=mode)
 
-    def test_a_real_rollout_run_launches_the_sync_driver_for_every_rollout(self, harness: ScenarioHarness) -> None:
-        """A shorter run or the async driver would soak a different training than the one configured."""
+    def test_a_real_rollout_run_carries_the_p2p_update(self, harness: ScenarioHarness) -> None:
+        """A rollout soak without the disaggregated P2P update would fail the partial-target gate at launch."""
         _run(_MIXED_MODE, seed=7, num_steps=9)
 
         (launch,) = harness.launches
+        assert launch.value_of("--update-weight-transfer-mode") == "p2p"
         assert launch.value_of("--num-rollout") == "9"
         assert launch.request.train_script.endswith("/train.py")
 
@@ -149,6 +148,7 @@ class TestTheLaunchedTrainArguments:
 
         (launch,) = harness.launches
         assert launch.value_of("--load-debug-rollout-data") == f"{tmp_path / 'cyclic-9'}/{{rollout_id}}.pt"
+        assert "--update-weight-transfer-mode" not in launch.argv
 
     def test_a_fully_async_run_launches_the_async_driver_under_a_name_of_its_own(
         self, harness: ScenarioHarness
