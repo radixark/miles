@@ -9,9 +9,10 @@ from uuid import uuid4
 
 from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 from tests.utils.soak.core.event_log import EventLog
-from tests.utils.soak.core.events import LaunchOutcome
+from tests.utils.soak.core.events import LaunchOutcome, SoakLaunchFinishedEvent
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.workers.types import ClusterBackend
 
@@ -82,4 +83,22 @@ def evidence_directory(dump_dir: Path) -> Path:
 async def note_launch_outcome(
     *, event_log: EventLog, request_id: str | None, launching: Awaitable[None]
 ) -> LaunchOutcome:
-    raise NotImplementedError
+    def record(outcome: LaunchOutcome, *, error: BaseException | None = None) -> LaunchOutcome:
+        event_log.append(
+            SoakLaunchFinishedEvent(
+                request_id=request_id, outcome=outcome, error=None if error is None else repr(error)
+            )
+        )
+        return outcome
+
+    try:
+        await launching
+    except RunExitedError as error:
+        if error.exit_code != REPLACED_LAUNCH_EXIT_CODE:
+            record(LaunchOutcome.FAILED, error=error)
+            raise
+        return record(LaunchOutcome.REPLACED)
+    except BaseException as error:
+        record(LaunchOutcome.FAILED, error=error)
+        raise
+    return record(LaunchOutcome.FINISHED)
