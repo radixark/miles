@@ -26,7 +26,7 @@ from tests.utils.deploy.hot_restart.evidence import (
     read_step_events,
 )
 from tests.utils.soak.deploy.checkers.takeover_scope import assert_take_overs_replaced_only_script
-from tests.utils.soak.recipes.gsm8k import Gsm8kRun
+from tests.utils.soak.recipes.gsm8k import _LegacyGsm8kRun
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -64,7 +64,7 @@ def run_ci(
     hot_restart_form: MutableBox[HotRestartFaultForm | None] = MutableBox(value=None)
     max_allowed_rollout_id = num_rollout - TERMINAL_QUIESCENCE_ROLLOUTS - 1
 
-    def create_forms(run: Gsm8kRun) -> CellFaultForms:
+    def create_forms(run: _LegacyGsm8kRun) -> CellFaultForms:
         forms = create_hot_restart_forms(run, max_allowed_rollout_id=max_allowed_rollout_id)
         assert hot_restart_form.value is None, (
             "the run's fault forms were built twice, so the form this soak reads at the end is not the one the "
@@ -193,7 +193,7 @@ def _read_finished_steps_of_log(events_dir: Path) -> dict[int, str]:
     return {rollout_id: events[0] for rollout_id, events in logged.items()}
 
 
-def create_hot_restart_forms(run: Gsm8kRun, *, max_allowed_rollout_id: int) -> CellFaultForms:
+def create_hot_restart_forms(run: _LegacyGsm8kRun, *, max_allowed_rollout_id: int) -> CellFaultForms:
     form = HotRestartFaultForm(
         launch=run.launch,
         config=run.config,
