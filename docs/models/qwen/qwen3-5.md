@@ -101,6 +101,20 @@ From `scripts/models/qwen3.5-4B.py` (and analogous configs for 9 B / 27 B):
 
 See [Backends Beyond Megatron](/advanced/architecture-support) for how miles preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.
 
+### 5.6 GDN kernel backend and tensor parallelism
+
+The GDN (gated delta-net) layers run through one head-sharded module (`miles_plugins/models/gdn_attention.py`): the projections are Megatron column/row-parallel linears sharded by key-head group, so with `--tensor-model-parallel-size N` each rank computes only its `linear_num_key_heads / N` key heads (and their value heads) instead of replicating the whole GDN layer on every TP rank. Sequence parallelism and fla context parallelism (`build_gdn_cp_context`) work as before. The Megatron checkpoint keeps the HF parameter names; `in_proj_qkv.weight` and `conv1d.weight` are stored head-interleaved (`[q_h, k_h, v_h]` per key head) so contiguous TP chunks are head shards, and both the HF → Megatron bridge and the Megatron → HF weight update translate the order.
+
+`--linear-attention-backend` selects the `chunk_gated_delta_rule` kernel:
+
+| backend | kernel | GPUs | notes |
+|---|---|---|---|
+| `fla` (default) | flash-linear-attention (Triton) | any | portable reference |
+| `flashqla` | FlashQLA | SM90+ | |
+| `loom` | generated deterministic forward + backward in `miles_plugins/models/gdn_chunk_train` | SM100a / SM103a (Blackwell) | bit-identical outputs and gradients across calls (no atomics, fixed reduction order); takes grouped value heads without `repeat_interleave`; `K = V = 128`; the kernels are built on first use as torch CUDA extensions (`TORCH_EXTENSIONS_DIR`) |
+
+`loom` is the backend for true-on-policy runs that need reproducible gradients; `tests/e2e/precision/test_qwen_gdn_tp_cp_parity.py` checks it against `fla` under TP=2, CP=2 and TP=2 × CP=2.
+
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](/advanced/architecture-support)

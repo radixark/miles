@@ -1,6 +1,8 @@
-"""fla vs flashqla numerical equivalence for the Qwen GDN backends.
+"""Numerical equivalence of the Qwen GDN backends.
 
-Needs a Hopper (SM90+) GPU with both `fla` and `flash_qla`; skips otherwise.
+* fla vs flashqla: needs a Hopper (SM90+) GPU with both `fla` and `flash_qla`; skips otherwise.
+* fla vs loom (deterministic generated kernels): needs a Blackwell SM100a/SM103a GPU and `fla`;
+  also checks that the loom forward and backward are bit-identical across calls.
 """
 
 import importlib.util
@@ -22,6 +24,14 @@ def test_unknown_backend_raises_value_error():
     module = load_backend_module()
     with pytest.raises(ValueError, match="Unsupported Qwen GDN backend"):
         module.get_chunk_gated_delta_rule("nope")
+
+
+def test_loom_backend_routes_to_the_generated_kernels():
+    pytest.importorskip("torch")
+    module = load_backend_module()
+    fn = module.get_chunk_gated_delta_rule("loom")
+    assert fn.__module__ == "miles_plugins.models.gdn_chunk_train.ops"
+    assert fn.__name__ == "chunk_gated_delta_rule"
 
 
 NUM_HEADS = 4
@@ -105,3 +115,61 @@ def test_fla_flashqla_equivalence(dtype_name, atol, rtol):
     )
 
     torch.testing.assert_close(flashqla_out, fla_out, atol=atol, rtol=rtol)
+
+
+def _require_loom():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA device required to compare GDN kernels")
+    from miles_plugins.models.gdn_chunk_train import SUPPORTED_CAPABILITIES
+
+    if torch.cuda.get_device_capability() not in SUPPORTED_CAPABILITIES:
+        pytest.skip("the deterministic GDN kernels need an SM100a/SM103a GPU")
+    pytest.importorskip("fla.ops.gated_delta_rule")
+    return torch
+
+
+def _autograd_step(torch, kernel, inputs, cu, use_cu: bool):
+    query, key, value, g, beta = (t.detach().clone().requires_grad_(True) for t in inputs)
+    out, _ = kernel(
+        query,
+        key,
+        value,
+        g=g,
+        beta=beta,
+        initial_state=None,
+        output_final_state=False,
+        use_qk_l2norm_in_kernel=True,
+        cu_seqlens=cu if use_cu else None,
+    )
+    torch.manual_seed(1)
+    dout = torch.randn_like(out)
+    out.backward(dout)
+    return {"out": out.detach(), "dq": query.grad, "dk": key.grad, "dv": value.grad, "dg": g.grad, "dbeta": beta.grad}
+
+
+@pytest.mark.parametrize("use_cu", [True, False])
+def test_fla_loom_equivalence_and_determinism(use_cu):
+    torch = _require_loom()
+    module = load_backend_module()
+    fla_kernel = module.get_chunk_gated_delta_rule("fla")
+    loom_kernel = module.get_chunk_gated_delta_rule("loom")
+
+    query, key, value, g, beta, cu = _make_inputs(torch, torch.bfloat16, device="cuda")
+    if not use_cu:
+        # equal-length batch of 2 sequences instead of the packed varlen layout
+        total = query.shape[1] // 2 * 2
+        query, key, value, g, beta = (
+            t[:, :total].reshape(2, total // 2, *t.shape[2:]) for t in (query, key, value, g, beta)
+        )
+    beta = beta.to(torch.bfloat16)  # as the model feeds it: sigmoid(b) in the activation dtype
+    inputs = (query, key, value, g, beta)
+
+    ref = _autograd_step(torch, fla_kernel, inputs, cu, use_cu)
+    first = _autograd_step(torch, loom_kernel, inputs, cu, use_cu)
+    second = _autograd_step(torch, loom_kernel, inputs, cu, use_cu)
+    for name in ref:
+        assert torch.equal(first[name], second[name]), f"loom {name} is not bit-deterministic"
+        a, b = first[name].float(), ref[name].float()
+        scale = max(1.0, b.abs().max().item()) if name in ("dg",) else 1.0
+        torch.testing.assert_close(a, b, atol=1e-2 * scale, rtol=1e-2, msg=lambda m, name=name: f"{name}: {m}")
