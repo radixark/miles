@@ -20,7 +20,8 @@ from tests.utils.soak.deploy.utils import compute_hot_restart_config
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
-from miles.utils.test_utils.fault_injector.actions.frozen import SLEEP_FOREVER_AT_END_ACTION, read_frozen_rollout_id
+from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction, read_frozen_rollout_id
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
 from miles.utils.test_utils.polling_worker import PollingWorker
 
 # ================================= constants ==================================
@@ -52,10 +53,17 @@ class ScheduledFreeze:
         )
 
 
-def compute_freeze_plan(frozen_rollout_id: int | None) -> list[dict]:
+def compute_freeze_plan(frozen_rollout_id: int | None) -> list[FaultHookRequest]:
     if frozen_rollout_id is None:
         return []
-    return [{"at_rollout": frozen_rollout_id, "action": SLEEP_FOREVER_AT_END_ACTION}]
+    return [
+        FaultHookRequest(
+            request_id=f"sleep_forever_at_{frozen_rollout_id}",
+            hook_name=FaultHookName.ORCHESTRATOR_STEP_END,
+            action=SleepForeverAction(),
+            rollout_id=frozen_rollout_id,
+        )
+    ]
 
 
 # ============================ relaunching a release ===========================
