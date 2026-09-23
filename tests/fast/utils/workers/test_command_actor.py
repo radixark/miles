@@ -11,7 +11,11 @@ from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import get_current_node_ip
 from miles.utils.test_utils import fault_injector
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
-from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.actions.process import (
+    FreezeProcessAction,
+    KillProcessAction,
+    StopProcessAction,
+)
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation, _FaultHookController
 from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest, FaultHookStatus
 from miles.utils.workers import command_actor, process_utils
@@ -325,6 +329,14 @@ def _refuse_any_signal(process: _HookedWorkerProcess, signum: signal.Signals) ->
     raise AssertionError(f"no signal was expected, but {signum} was sent to pid {process.pid}")
 
 
+def _refuse_to_signal_the_actor(pid: int, signum: signal.Signals) -> None:
+    raise AssertionError(f"the actor process must not signal itself, but {signum} was sent to {pid}")
+
+
+def _refuse_any_kill(process: _HookedWorkerProcess) -> None:
+    raise AssertionError(f"no kill was expected, but pid {process.pid} was killed")
+
+
 def _hooked_actor(hooks: _FaultHookController) -> CommandActor:
     actor = CommandActor()
     actor._process = _HookedWorkerProcess(pid=4321)
@@ -353,3 +365,39 @@ class TestFaultHookThroughTheActor:
         cleared = actor.control_fault_hook(FaultHookCommand(operation=FaultHookOperation.CLEAR, request=request))
 
         assert (armed.status, cleared.status) == (FaultHookStatus.PENDING, FaultHookStatus.CLEARED)
+
+    def test_a_sigstop_reaches_the_worker_process_group_and_spares_the_actor(
+        self, monkeypatch: pytest.MonkeyPatch, actor_hooks: _FaultHookController
+    ) -> None:
+        """Pausing a worker must stop its whole process group and never the supervising actor."""
+        stopped: list[tuple[int, signal.Signals]] = []
+        monkeypatch.setattr(os, "kill", _refuse_to_signal_the_actor)
+        monkeypatch.setattr(
+            process_utils, "signal_process_tree", lambda process, signum: stopped.append((process.pid, signum))
+        )
+        actor = _hooked_actor(actor_hooks)
+
+        record = actor.control_fault_hook(
+            FaultHookCommand(
+                operation=FaultHookOperation.SET,
+                request=FaultHookRequest(request_id="test", action=StopProcessAction()),
+            )
+        )
+
+        assert stopped == [(4321, signal.SIGSTOP)]
+        assert record.status == FaultHookStatus.FIRED
+
+    def test_a_freeze_is_rejected_for_a_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch, actor_hooks: _FaultHookController
+    ) -> None:
+        """A process freezes from the inside; no signal an outsider sends reproduces that."""
+        monkeypatch.setattr(process_utils, "kill_process_tree", _refuse_any_kill)
+        actor = _hooked_actor(actor_hooks)
+
+        with pytest.raises(AssertionError, match="not on a subprocess"):
+            actor.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(request_id="test", action=FreezeProcessAction()),
+                )
+            )

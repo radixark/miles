@@ -7,7 +7,7 @@ from miles.utils.audit_utils.event_logger.models import Event, FaultHookEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
 from miles.utils.test_utils.fault_injector.actions.cell import StopCellAction
-from miles.utils.test_utils.fault_injector.actions.process import ObserveAction
+from miles.utils.test_utils.fault_injector.actions.process import DeadlockThreadAction, ObserveAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import (
     DeclaredFaultHookTarget,
@@ -134,6 +134,16 @@ class TestFaultHookRequestValidation:
         """The largest delay and lifetime and the smallest positive lifetime must be valid."""
         _request(**change)
 
+    def test_a_delayed_deadlock_is_rejected(self) -> None:
+        """A thread deadlock must fire immediately or not be accepted at all."""
+        with pytest.raises(ValidationError, match="requires immediate hook execution"):
+            _request(action={"kind": "deadlock_thread"}, delay_ms=1)
+
+    def test_an_immediate_deadlock_and_a_delayed_kill_are_accepted(self) -> None:
+        """The deadlock delay restriction must not spill over to other actions."""
+        assert isinstance(_request(action={"kind": "deadlock_thread"}).action, DeadlockThreadAction)
+        assert _request(delay_ms=50).delay_ms == 50
+
     @pytest.mark.parametrize(
         "hook_name", [FaultHookName.TRAINER_CONTROLLER_STEP_END, FaultHookName.ORCHESTRATOR_STEP_END]
     )
@@ -154,9 +164,12 @@ class TestFaultHookRequestValidation:
         "action",
         [
             {"kind": "observe"},
+            {"kind": "stop_process"},
+            {"kind": "freeze_process"},
             {"kind": "segfault_process"},
             {"kind": "exit_process"},
             {"kind": "start_cell", "cell_id": "c"},
+            {"kind": "sleep_forever"},
         ],
     )
     def test_every_action_kind_round_trips_through_json(self, action: dict[str, object]) -> None:
@@ -199,7 +212,7 @@ class TestFaultHookRequestConflicts:
         "change",
         [
             {"hook_name": FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE},
-            {"action": {"kind": "exit_process"}},
+            {"action": {"kind": "stop_process"}},
             {"rollout_id": 4},
             {"rollout_id": None},
             {"attempt": 0},

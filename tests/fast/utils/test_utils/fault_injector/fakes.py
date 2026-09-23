@@ -101,6 +101,11 @@ class _Effects:
                 c_uint=object(),
             ),
         )
+        monkeypatch.setattr(
+            process,
+            "threading",
+            SimpleNamespace(Event=lambda: SimpleNamespace(wait=lambda: self.log.append(("wait", None)))),
+        )
 
 
 class _MarkerOperations:
