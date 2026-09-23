@@ -25,7 +25,7 @@ from miles.backends.megatron_utils.lora.utils import (
     parse_exclude_modules,
     save_lora_checkpoint,
 )
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_weight_name
 
 # ---------------------------------------------------------------------------
 # _get_lora_class_name

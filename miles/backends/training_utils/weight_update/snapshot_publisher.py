@@ -7,7 +7,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
-from miles.utils.multi_lora import AdapterSpec
+from miles.utils.lora.utils import AdapterSpec
 
 
 class WeightPublisher:

@@ -18,7 +18,7 @@ from typing import Any
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
-from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 
 DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
 

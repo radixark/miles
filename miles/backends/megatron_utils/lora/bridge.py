@@ -14,7 +14,7 @@ from megatron.core.utils import get_attr_wrapped_model
 
 from miles.utils.hf_config import load_hf_config
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
-from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
+from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
 
 from .utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
 

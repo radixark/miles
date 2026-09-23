@@ -20,7 +20,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     resolve_placement,
 )
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
-from miles.utils.lora import is_lora_weight_name
+from miles.utils.lora.utils import is_lora_weight_name
 
 logger = logging.getLogger(__name__)
 

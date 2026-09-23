@@ -9,7 +9,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_h
 from miles.backends.training_utils.data import get_rollout_data
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import WeightPublisher
-from miles.utils.multi_lora import AdapterSpec
+from miles.utils.lora.utils import AdapterSpec
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.structured_log import with_logs
 
