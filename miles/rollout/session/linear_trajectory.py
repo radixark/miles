@@ -7,7 +7,7 @@ from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
+from miles.rollout.session.request_args import PreparedChatRequest, fit_completion_to_context, prepare_chat_request
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcher,
@@ -143,6 +143,7 @@ class LinearTrajectory:
             tito_tokenizer=tito_tokenizer,
             message_matcher=matcher,
         )
+        fit_completion_to_context(prepared.body, context_limit=config.rollout_max_context_len)
         self._rollback_to_checkpoint(checkpoint_index)
         return prepared
 

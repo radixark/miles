@@ -28,7 +28,7 @@ from typing import Any
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
-from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
+from miles.rollout.session.request_args import PreparedChatRequest, fit_completion_to_context, prepare_chat_request
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
@@ -111,6 +111,7 @@ def prepare_token_ids_and_request_args(
     prepared.body["input_ids"] = _render_token_ids(
         parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
     )
+    fit_completion_to_context(prepared.body, context_limit=config.rollout_max_context_len)
     return prepared, parent
 
 

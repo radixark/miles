@@ -4,6 +4,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
 class SessionServerConfig(FrozenStrictBaseModel):
+    rollout_max_context_len: int | None
     host: str
     port: int
     instance_id: str | None
@@ -33,6 +34,7 @@ def compute_session_server_config(
     args, *, host: str, port: int, instance_id: str | None, backend_url: str
 ) -> SessionServerConfig:
     return SessionServerConfig(
+        rollout_max_context_len=getattr(args, "rollout_max_context_len", None),
         host=host,
         port=port,
         instance_id=instance_id,
