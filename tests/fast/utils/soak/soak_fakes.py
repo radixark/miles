@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.events import (
     SoakActionAppliedEvent,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakEvent,
     SoakObservationEvent,
+    SoakRunContext,
+    SoakRunContextEvent,
     StoredEvent,
 )
 from tests.utils.soak.core.types import SoakActionRequest, SoakTarget
@@ -137,3 +140,13 @@ def _result(
 
 def _stored_line(sequence: int, event: SoakEvent) -> str:
     return StoredEvent(sequence=sequence, event=event).model_dump_json() + "\n"
+
+
+def _run_context(sources: dict[str, Path], *, at: datetime) -> SoakRunContextEvent:
+    return SoakRunContextEvent(
+        timestamp=at,
+        context=SoakRunContext(
+            base_url="http://localhost:18080", config=SoakRunnerConfig(seed=0), form_names={}, train_config=None
+        ),
+        sources=sources,
+    )
