@@ -239,7 +239,7 @@ class TrainRayActor(NodeProbeMixin):
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def update_weights(self, info: UpdatableEngines) -> WeightUpdateOutput:
+    def update_weights(self, info: UpdatableEngines, debug_weight_update_id: str) -> WeightUpdateOutput:
         raise NotImplementedError
 
     @abc.abstractmethod

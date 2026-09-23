@@ -1,9 +1,11 @@
 import asyncio
 import logging
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -19,6 +21,7 @@ from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_eve
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     TrainGroupStepEndEvent,
+    WeightUpdateResultEvent,
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
@@ -85,6 +88,7 @@ class TrainerController:
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
+        self._debug_trainer_load_state_timestamp = time.time()
 
     @property
     def pool_id(self) -> str:
@@ -263,7 +267,13 @@ class TrainerController:
             }
             get_event_logger().log(
                 TrainGroupStepEndEvent,
-                dict(rollout_id=rollout_id, attempt=attempt, role=self._role, cell_outcomes=cell_outcomes),
+                dict(
+                    rollout_id=rollout_id,
+                    attempt=attempt,
+                    role=self._role,
+                    cell_outcomes=cell_outcomes,
+                    cell_incarnations={cell.cell_id: cell.workers_hash for cell in snapshot_alive_cells},
+                ),
             )
 
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
@@ -377,6 +387,7 @@ class TrainerController:
         assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
 
         cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
+        self._debug_trainer_load_state_timestamp = time.time()
         return [item for sublist in cell_results for item in sublist]
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
@@ -397,20 +408,53 @@ class TrainerController:
     async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
         """Broadcast weights to rollout engines and return which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
-        if supports_partial_target_weight_update(self.args):
-            return await self._update_weights_on_every_alive_cell(info)
-        else:
-            return await self._update_weights_on_first_alive_cell(info)
+        debug_weight_update_id = uuid4().hex
 
-    async def _update_weights_on_first_alive_cell(self, info: UpdatableEngines) -> WeightUpdateOutput:
+        if supports_partial_target_weight_update(self.args):
+            output = await self._update_weights_on_every_alive_cell(
+                info, debug_weight_update_id=debug_weight_update_id
+            )
+        else:
+            output = await self._update_weights_on_first_alive_cell(
+                info, debug_weight_update_id=debug_weight_update_id
+            )
+
+        updated_cell_ids = [cell_id for cell_id in info.engine_cell_ids if cell_id not in set(output.failed_cell_ids)]
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                WeightUpdateResultEvent,
+                dict(
+                    debug_weight_update_id=debug_weight_update_id,
+                    debug_trainer_load_state_timestamp=self._debug_trainer_load_state_timestamp,
+                    rollout_id=rollout_id,
+                    candidate_version=output.weight_version,
+                    published_version=output.weight_version if updated_cell_ids else None,
+                    snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+                    updated_cell_ids=updated_cell_ids,
+                    failed_cell_ids=list(output.failed_cell_ids),
+                ),
+            )
+
+        return output
+
+    async def _update_weights_on_first_alive_cell(
+        self, info: UpdatableEngines, *, debug_weight_update_id: str
+    ) -> WeightUpdateOutput:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         outputs = await retry(
-            lambda _: self._execute_first_alive("update_weights", timeout=self.args.update_weights_timeout, info=info),
+            lambda _: self._execute_first_alive(
+                "update_weights",
+                timeout=self.args.update_weights_timeout,
+                info=info,
+                debug_weight_update_id=debug_weight_update_id,
+            ),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
         return _unique(outputs)
 
-    async def _update_weights_on_every_alive_cell(self, info: UpdatableEngines) -> WeightUpdateOutput:
+    async def _update_weights_on_every_alive_cell(
+        self, info: UpdatableEngines, *, debug_weight_update_id: str
+    ) -> WeightUpdateOutput:
         alive_cells = [c for c in self._cells if c.is_alive]
         if not alive_cells:
             raise NonRetryableError("No alive cells, therefore cannot update weights")
@@ -421,7 +465,12 @@ class TrainerController:
 
         outcomes = await asyncio.gather(
             *[
-                c.execute("update_weights", timeout=self.args.update_weights_timeout, info=s)
+                c.execute(
+                    "update_weights",
+                    timeout=self.args.update_weights_timeout,
+                    info=s,
+                    debug_weight_update_id=debug_weight_update_id,
+                )
                 for c, s in cells_and_splitted_infos
             ],
             return_exceptions=True,
