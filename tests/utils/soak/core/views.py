@@ -44,6 +44,19 @@ def latest_observation(events: list[SoakEvent]) -> SoakObservationEvent | None:
     return next((event for event in reversed(events) if isinstance(event, SoakObservationEvent)), None)
 
 
+def quiescent_polls_of_type(events: list[SoakEvent], *, expected_count_of_kind: dict[str, int]) -> dict[str, int]:
+    polls = dict.fromkeys(expected_count_of_kind, 0)
+    for event in events:
+        if isinstance(event, SoakActionRequestedEvent):
+            polls[event.request.target.kind] = 0
+        elif isinstance(event, SoakObservationEvent) and event.targets is not None:
+            for kind, expected_count in expected_count_of_kind.items():
+                polled = [target for target in event.targets if target.kind == kind]
+                settled = len(polled) == expected_count and all(target.alive for target in polled)
+                polls[kind] = polls[kind] + 1 if settled else 0
+    return polls
+
+
 # ================================ sut progress ================================
 
 
@@ -75,5 +88,17 @@ def is_normal_step(step: TrainGroupStepEndEvent) -> bool:
 # ================================== injections ================================
 
 
+def compute_successful_form_names(events: list[SoakEvent], *, kind: str) -> set[str]:
+    return {action.requested.request.form_name for action in _applied_actions(events, kind=kind)}
+
+
 def event_source(events: list[SoakEvent], *, name: str, fallback: Path) -> Path:
     raise NotImplementedError
+
+
+def _applied_actions(events: list[SoakEvent], *, kind: str | None) -> list[SoakActionRecord]:
+    return [
+        action
+        for action in project_actions(events).values()
+        if action.applied is not None and (kind is None or action.requested.request.target.kind == kind)
+    ]
