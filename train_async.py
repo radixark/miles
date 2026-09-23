@@ -113,22 +113,28 @@ async def train(args):
         rollout_data_curr_ref = await rollout_data_next_future
         rollout_data_next_future = None
         weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
-        # A fully-async producer keeps generating without a pending get(). When
-        # weights will change, defer the next drain so it uses the new version.
-        defer_next_drain = args.fully_async and weight_update_due
-        if not defer_next_drain:
-            rollout_data_next_future = await prefetch_next_rollout(rollout_id)
-        await train_step(rollout_id, rollout_data_curr_ref)
-        remove_rollout_data_refs(args, rollout_data_curr_ref)
-        rollout_data_curr_ref = None
-        await save_if_needed(rollout_id)
-        if weight_update_due:
-            # Finish the next generation before publishing new weights.
-            if rollout_data_next_future is not None:
-                await rollout_data_next_future
-            await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
-            if defer_next_drain:
+        if args.fully_async:
+            # Drain after publication on update steps; the producer runs independently.
+            if not weight_update_due:
                 rollout_data_next_future = await prefetch_next_rollout(rollout_id)
+            await train_step(rollout_id, rollout_data_curr_ref)
+            remove_rollout_data_refs(args, rollout_data_curr_ref)
+            rollout_data_curr_ref = None
+            await save_if_needed(rollout_id)
+            if weight_update_due:
+                await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
+                rollout_data_next_future = await prefetch_next_rollout(rollout_id)
+        else:
+            rollout_data_next_future = await prefetch_next_rollout(rollout_id)
+            await train_step(rollout_id, rollout_data_curr_ref)
+            remove_rollout_data_refs(args, rollout_data_curr_ref)
+            rollout_data_curr_ref = None
+            await save_if_needed(rollout_id)
+            if weight_update_due:
+                # Finish the next generation before publishing new weights.
+                if rollout_data_next_future is not None:
+                    await rollout_data_next_future
+                await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await inference_controller.prepare_eval()
