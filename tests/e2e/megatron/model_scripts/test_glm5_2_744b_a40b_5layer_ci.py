@@ -1,8 +1,8 @@
 import os
 
-_IS_ROCM = os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
+MILES_HARDWARE_PLATFORM = os.getenv("MILES_HARDWARE_PLATFORM")
 
-if _IS_ROCM:
+if MILES_HARDWARE_PLATFORM == "rocm":
     from scripts.amd.run_glm5_2_744b_a40b import (
         ScriptArgs,
         _convert_to_fp8,
@@ -48,16 +48,17 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    platform_args = {} if _IS_ROCM else {"hardware": "H200"}
-    return ScriptArgs(
+    common_args = dict(
         model_name="GLM-5.2_5layer",
         num_nodes=1,
         num_gpus_per_node=4,
         num_rollout=2,
         enable_optimizer_offload=True,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
-        **platform_args,
     )
+    if MILES_HARDWARE_PLATFORM == "rocm":
+        return ScriptArgs(**common_args)
+    return ScriptArgs(**common_args, hardware="H200")
 
 
 def prepare(args: ScriptArgs):

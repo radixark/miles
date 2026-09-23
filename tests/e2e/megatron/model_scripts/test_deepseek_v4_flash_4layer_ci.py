@@ -2,9 +2,9 @@ import fcntl
 import os
 from pathlib import Path
 
-_IS_ROCM = os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
+MILES_HARDWARE_PLATFORM = os.getenv("MILES_HARDWARE_PLATFORM")
 
-if _IS_ROCM:
+if MILES_HARDWARE_PLATFORM == "rocm":
     from scripts.amd.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
 else:
     from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
@@ -29,8 +29,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    platform_args = {} if _IS_ROCM else {"dsv4_impl": "miles", "hardware": "H200"}
-    return ScriptArgs(
+    common_args = dict(
         model_name="DeepSeek-V4-Flash-FP8-4layer",
         task="gsm8k",
         enable_eval=False,
@@ -41,8 +40,10 @@ def _args() -> ScriptArgs:
         extra_args=(
             "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),
-        **platform_args,
     )
+    if MILES_HARDWARE_PLATFORM == "rocm":
+        return ScriptArgs(**common_args)
+    return ScriptArgs(**common_args, dsv4_impl="miles", hardware="H200")
 
 
 def prepare(args: ScriptArgs):

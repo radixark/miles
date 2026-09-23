@@ -414,6 +414,7 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_OPT_FP8_WO_A_GEMM": "0",
         "SGLANG_HACK_FLASHMLA_BACKEND": "unified_kv_triton",
         # unified_kv lives in compressor_v2 only; on HIP the v1 path leaves
         # compress_kv_pool unset and the memory pool asserts on it.

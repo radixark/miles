@@ -61,8 +61,9 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
-            "SGLANG_IMAGE_TAG": "v0.5.16-rocm720-mi35x-20260730",
+            "SGLANG_IMAGE_TAG": "v0.5.19-rocm720-mi35x-20260917",
             "WHEELS_TAG_ROCM": "rocm720-gfx950-v0.5.16",
+            "MEGATRON_BRIDGE_COMMIT": "40b930897717941cfe2bd9806f417e28bf1bfa65",
             "APPLY_ROCR_VMMFIX": "1",
             "TE_USE_WHEEL": "1",
         },
@@ -77,6 +78,7 @@ VARIANTS = {
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
             "SGLANG_IMAGE_TAG": "v0.5.18-rocm10-mi35x-20260831",
             "WHEELS_TAG_ROCM": "rocm10-gfx950-v0.5.18",
+            "MEGATRON_BRIDGE_COMMIT": "2e09c234a3272285140224d0d698593418b55ba5",
             "APEX_USE_PREBUILT": "1",
             "NVRX_INSTALL": "1",
             "TE_USE_WHEEL": "1",

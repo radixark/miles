@@ -24,7 +24,6 @@ class CaseConfig:
     use_bridge: bool = False
     use_r3: bool = False
     max_tokens_per_gpu: int = 8192
-    extra_args: str = ""
     extra_env_vars: dict[str, str] = field(default_factory=dict)
 
 
@@ -162,7 +161,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
-        f"{case.extra_args} "
         f"{mtp_args} "
         f"{ci_args} "
         f"{misc_args} "
