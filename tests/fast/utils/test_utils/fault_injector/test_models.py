@@ -112,19 +112,26 @@ class TestFaultHookRequestValidation:
             {"delay_ms": 300_001},
             {"delay_ms": math.inf},
             {"delay_ms": math.nan},
+            {"lifetime_seconds": 0},
+            {"lifetime_seconds": -1},
+            {"lifetime_seconds": 300.001},
+            {"lifetime_seconds": math.inf},
+            {"lifetime_seconds": math.nan},
             {"attempt": -1},
             {"weight_version": -1},
             {"hook_name": "not_a_hook"},
         ],
     )
     def test_out_of_range_timing_and_filters_are_rejected(self, change: dict[str, object]) -> None:
-        """Filters and timing fields outside their bounds must fail validation."""
+        """Delays, lifetimes and filters outside their bounds must fail validation."""
         with pytest.raises(ValidationError):
             _request(**change)
 
-    @pytest.mark.parametrize("change", [{"delay_ms": 0}, {"delay_ms": 300_000}])
+    @pytest.mark.parametrize(
+        "change", [{"delay_ms": 0}, {"delay_ms": 300_000}, {"lifetime_seconds": 300}, {"lifetime_seconds": 0.001}]
+    )
     def test_the_inclusive_timing_bounds_are_accepted(self, change: dict[str, object]) -> None:
-        """The smallest and the largest delay must be valid."""
+        """The largest delay and lifetime and the smallest positive lifetime must be valid."""
         _request(**change)
 
     @pytest.mark.parametrize(
