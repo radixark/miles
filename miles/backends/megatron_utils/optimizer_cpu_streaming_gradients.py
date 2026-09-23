@@ -158,6 +158,24 @@ def _streaming_step(self, closure=None):
         raise
 
 
+def validate_optimizer_cpu_streaming_gradients_args(args):
+    """Reject configurations that would never reach the install below.
+
+    setup_model_and_optimizer returns before installing under --debug-disable-optimizer and
+    multi-LoRA, and the FSDP backend never calls it, so there the flag would otherwise be a
+    silent no-op: full CPU gradient residency, which is the OOM the flag exists to avoid.
+    """
+    if not getattr(args, "optimizer_cpu_streaming_gradients", False):
+        return
+    from miles.utils.lora.utils import is_multi_lora_enabled
+
+    _require(getattr(args, "train_backend", "megatron") == "megatron", "requires --train-backend megatron")
+    _require(not getattr(args, "debug_disable_optimizer", False), "has no optimizer under --debug-disable-optimizer")
+    _require(not is_multi_lora_enabled(args), "does not support multi-LoRA (per-tenant optimizers)")
+    _require(getattr(args, "optimizer_cpu_offload", False), "requires --optimizer-cpu-offload")
+    _require(getattr(args, "overlap_cpu_optimizer_d2h_h2d", False), "requires --overlap-cpu-optimizer-d2h-h2d")
+
+
 def install_optimizer_cpu_streaming_gradients(args, optimizer):
     """Install on all HDO instances under Megatron wrappers, or fail before any install."""
     if not getattr(args, "optimizer_cpu_streaming_gradients", False):
