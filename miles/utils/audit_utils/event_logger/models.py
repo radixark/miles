@@ -102,6 +102,7 @@ class TrainGroupStepEndEvent(EventBase):
     attempt: int
     role: Literal["actor", "critic"]
     cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
+    cell_incarnations: dict[str, str] = Field(default_factory=dict)
 
 
 class CellReconfigureEvent(EventBase):
@@ -226,6 +227,8 @@ class FaultHookRequest(FrozenStrictBaseModel):
 
 class FaultHookContext(FrozenStrictBaseModel):
     weight_version: int
+    debug_weight_update_id: str
+    snapshot_cell_id_to_hashes: dict[str, str]
 
 
 class FaultHookRecord(FrozenStrictBaseModel):
@@ -242,6 +245,18 @@ class FaultHookEvent(EventBase):
     record: FaultHookRecord
 
 
+class WeightUpdateResultEvent(EventBase):
+    type: Literal["weight_update_result"] = "weight_update_result"
+    debug_weight_update_id: str
+    debug_trainer_load_state_timestamp: float
+    rollout_id: int | None
+    candidate_version: int | None
+    published_version: int | None
+    snapshot_cell_id_to_hashes: dict[str, str]
+    updated_cell_ids: list[str]
+    failed_cell_ids: list[str]
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -256,7 +271,8 @@ Event = Annotated[
     | DataSourceIssuedSamplesEvent
     | ExplicitlyDroppedSamplesEvent
     | TrainerModelCompanionInfoEvent
-    | FaultHookEvent,
+    | FaultHookEvent
+    | WeightUpdateResultEvent,
     Discriminator("type"),
 ]
 
