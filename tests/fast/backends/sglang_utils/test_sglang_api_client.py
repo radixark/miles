@@ -547,8 +547,6 @@ _DIRECT_HTTP_METHODS = [
     ("get_remote_instance_transfer_engine_info", lambda c: c.get_remote_instance_transfer_engine_info(rank=0)),
     ("get_parallelism_info", lambda c: c.get_parallelism_info(rank=0)),
     ("get_server_info", lambda c: c.get_server_info()),
-    ("pause_generation", lambda c: c.pause_generation()),
-    ("continue_generation", lambda c: c.continue_generation()),
     ("start_profile", lambda c: c.start_profile()),
     ("stop_profile", lambda c: c.stop_profile()),
 ]
@@ -999,3 +997,33 @@ class TestMakeRequestTransportRetry:
         with pytest.raises(httpx.ReadError):
             await call(client)
         assert http.attempts == 1, endpoint
+
+    @pytest.mark.parametrize(
+        "call",
+        [lambda c: c.pause_generation(mode="retract"), lambda c: c.continue_generation()],
+        ids=["pause_generation", "continue_generation"],
+    )
+    async def test_the_session_frame_survives_a_refused_connection(self, client, monkeypatch, call):
+        """pause/continue bracket every weight update; they used to be bare POSTs, so a refused
+        connection there ended the job exactly like one inside the transfer."""
+        http = _FailThenSucceed([httpx.ConnectError("refused")])
+        monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
+        http.install(monkeypatch)
+
+        assert await call(client) == {"ok": True}
+        assert http.attempts == 2
+
+    @pytest.mark.parametrize(("action", "replayed"), [("checksum", True), ("snapshot", True), ("compare", False)])
+    async def test_check_weights_replays_only_the_actions_that_allow_it(self, client, monkeypatch, action, replayed):
+        """compare consumes the engine's snapshot, so a replay would assert on the missing copy."""
+        http = _FailThenSucceed([httpx.ReadError("connection dropped")])
+        monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
+        http.install(monkeypatch)
+
+        if replayed:
+            assert await client.check_weights(action=action) == {"ok": True}
+            assert http.attempts == 2
+        else:
+            with pytest.raises(httpx.ReadError):
+                await client.check_weights(action=action)
+            assert http.attempts == 1

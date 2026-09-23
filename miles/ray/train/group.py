@@ -403,6 +403,7 @@ class TrainerController:
                 max_attempts=_RETRY_MAX_ATTEMPTS,
             )
         except NonRetryableError:
+            alive_cells = sum(1 for c in self._cells if c.is_alive)
             log_structured(
                 logger.error,
                 tag="ft",
@@ -410,12 +411,15 @@ class TrainerController:
                 phase="non_retryable",
                 rollout=rollout_id,
                 num_cells=len(self._cells),
-                alive_cells=sum(1 for c in self._cells if c.is_alive),
+                alive_cells=alive_cells,
                 configured_max_attempts=_RETRY_MAX_ATTEMPTS,
+                # A non-retryable cause also surfaces here while cells are still alive.
                 hint=(
                     "no cell left alive, so retry() gave up without exhausting "
                     "max_attempts. A single cell means no weight-update fault tolerance -- "
                     "enable indep_dp for a fallback cell."
+                    if alive_cells == 0
+                    else "the cause was non-retryable; retry() re-raised it without an attempt."
                 ),
             )
             raise
