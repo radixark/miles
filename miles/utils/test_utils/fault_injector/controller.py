@@ -75,17 +75,9 @@ class _FaultHookController:
         with self._lock:
             match command.operation:
                 case FaultHookOperation.SET:
-                    executor = self._set(command.request)
+                    return self._set(command.request).record
                 case FaultHookOperation.CLEAR:
                     return self._clear(command.request)
-            fired = (
-                self._dispatch(executor, context=self._current_context({}))
-                if command.request.hook_name is None
-                else None
-            )
-        if fired is not None:
-            _run_blocking(fired.execute(resources=self._resources))
-        return executor.record
 
     def _set(self, request: FaultHookRequest) -> FaultHookRequestExecutor:
         if request.request_id in self._executors or any(
@@ -143,8 +135,7 @@ def _filter_fault_hooks(
     return [
         request
         for request in requests
-        if (request.hook_name is None or request.hook_name.owner == owner)
-        and request.target.covers(cell_id=cell_id, rank=rank)
+        if request.hook_name.owner == owner and request.target.covers(cell_id=cell_id, rank=rank)
     ]
 
 

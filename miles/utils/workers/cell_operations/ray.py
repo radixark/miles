@@ -4,6 +4,7 @@ import asyncio
 
 import ray.actor
 
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
 from miles.utils.workers.cell_operations.base import BaseCellOperations
@@ -27,6 +28,18 @@ class RayCellOperations(BaseCellOperations):
 
     async def observe_fault_target(self, *, cell_id: str, rank: int) -> ObservedFaultHookTarget:
         return await self._worker_manager_handle.observe_fault_target.remote(cell_id, rank=rank)
+
+    async def inject_fault(
+        self,
+        *,
+        cell_id: str,
+        mode: FailureMode,
+        sub_index: int,
+        expected_target: ObservedFaultHookTarget | None = None,
+    ) -> None:
+        await self._worker_manager_handle.inject_fault.remote(
+            cell_id, mode=mode.value, worker_in_cell_index=sub_index, expected_target=expected_target
+        )
 
     async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
         return await asyncio.wait_for(

@@ -4,28 +4,23 @@ from tests.utils.soak.ft.actions.pod import DeletePodFaultForm, ExecSigkillFault
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 
 from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.fault_injector.actions.process import (
-    ExitProcessAction,
-    KillProcessAction,
-    SegfaultProcessAction,
-)
-from miles.utils.test_utils.fault_injector.actions.union import FaultAction
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.types import ClusterBackend
 
-ACTOR_FAULT_ACTIONS: list[FaultAction] = [KillProcessAction(), ExitProcessAction(), SegfaultProcessAction()]
-ROLLOUT_FAULT_ACTIONS: list[FaultAction] = [KillProcessAction()]
+ACTOR_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
+ROLLOUT_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL]
 
 CELL_TYPE_OF_FT_COMPONENT: dict[str, str] = {"train": ACTOR_CELL_TYPE, "rollout": ROLLOUT_CELL_TYPE}
 
 
 def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrainConfig) -> CellFaultForms:
-    actor_inject_fault_forms = _inject_fault_forms(base_url=base_url, actions=ACTOR_FAULT_ACTIONS)
+    actor_inject_fault_forms = _inject_fault_forms(base_url=base_url, failure_modes=ACTOR_FAILURE_MODES)
 
     match config.cluster_backend:
         case ClusterBackend.RAY:
             return {
                 ACTOR_CELL_TYPE: actor_inject_fault_forms,
-                ROLLOUT_CELL_TYPE: _inject_fault_forms(base_url=base_url, actions=ROLLOUT_FAULT_ACTIONS),
+                ROLLOUT_CELL_TYPE: _inject_fault_forms(base_url=base_url, failure_modes=ROLLOUT_FAILURE_MODES),
             }
         case ClusterBackend.KUBERNETES:
             pod_form_kwargs: dict[str, str] = {"namespace": config.namespace, "run_id": config.run_id}
@@ -51,5 +46,5 @@ def compute_mean_interval_seconds_of_kind(
     }
 
 
-def _inject_fault_forms(*, base_url: str, actions: list[FaultAction]) -> list[BaseCellFaultForm]:
-    return [InjectFaultForm(base_url=base_url, action=action) for action in actions]
+def _inject_fault_forms(*, base_url: str, failure_modes: list[FailureMode]) -> list[BaseCellFaultForm]:
+    return [InjectFaultForm(base_url=base_url, failure_mode=failure_mode) for failure_mode in failure_modes]

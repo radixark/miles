@@ -14,13 +14,7 @@ from starlette.responses import JSONResponse
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
-from miles.utils.ft_utils.api_server.models import (
-    Cell,
-    CellList,
-    CellPatch,
-    K8sStatus,
-    _OkResponse,
-)
+from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookConflictError
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
@@ -141,6 +135,18 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
         handler = await _resolve(name)
         with _translate_fault_errors(name, action="Fault target observation"):
             return await handler.observe_fault_target(name, rank=rank)
+
+    @app.post("/api/v1/cells/{name}/inject-fault")
+    async def inject_fault(name: str, body: FaultInjection) -> _OkResponse:
+        handler = await _resolve(name)
+        with _translate_fault_errors(name, action="Fault injection"):
+            await handler.inject_fault(
+                name,
+                mode=body.mode,
+                sub_index=body.sub_index,
+                expected_target=body.expected_target,
+            )
+            return _OkResponse()
 
     @app.post("/api/v1/cells/{name}/fault-hook")
     async def control_fault_hook(name: str, body: FaultHookCommand) -> FaultHookRecord:
