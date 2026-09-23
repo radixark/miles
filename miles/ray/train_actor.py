@@ -15,6 +15,7 @@ import miles.utils.eval_config
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.utils import object_store
+from miles.utils.audit_utils.event_logger.models import FaultHookRecord
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group
@@ -27,6 +28,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
+from miles.utils.test_utils.fault_hooks import FaultHookCommand, fault_hook_controller
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
 from miles.utils.workers.rpc.common.metadata import rpc
@@ -195,6 +197,10 @@ class TrainRayActor(NodeProbeMixin):
     @rpc(concurrency_group="fault_injector")
     def inject_fault(self, mode: str) -> None:
         _inject_fault(mode=mode)
+
+    @rpc(concurrency_group="fault_injector")
+    def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        return fault_hook_controller.apply(command)
 
     @rpc(concurrency_group="kill_self")
     def kill_self(self) -> None:
