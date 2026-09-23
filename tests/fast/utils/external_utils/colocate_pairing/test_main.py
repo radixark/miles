@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from kubernetes_asyncio import client as kubernetes_client
+from kubernetes_asyncio import config as kubernetes_config
 from kubernetes_asyncio import watch as kubernetes_watch
 from pydantic import ValidationError
 
@@ -53,7 +55,7 @@ class TestRunForever:
 
         def load_incluster_config() -> None:
             calls.append("incluster")
-            raise main_module.kube_config.ConfigException()
+            raise kubernetes_config.ConfigException()
 
         async def load_kube_config() -> None:
             calls.append("kubeconfig")
@@ -68,9 +70,9 @@ class TestRunForever:
             async def __aexit__(self, *args: Any) -> None:
                 return None
 
-        monkeypatch.setattr(main_module.kube_config, "load_incluster_config", load_incluster_config)
-        monkeypatch.setattr(main_module.kube_config, "load_kube_config", load_kube_config)
-        monkeypatch.setattr(main_module.client, "ApiClient", FakeApiClient)
+        monkeypatch.setattr(kubernetes_config, "load_incluster_config", load_incluster_config)
+        monkeypatch.setattr(kubernetes_config, "load_kube_config", load_kube_config)
+        monkeypatch.setattr(kubernetes_client, "ApiClient", FakeApiClient)
 
         with pytest.raises(StartupReached):
             await main_module._run_forever(_config())
@@ -123,8 +125,8 @@ def _install_kubernetes_boundary(monkeypatch: pytest.MonkeyPatch) -> SimpleNames
         async def close(self) -> None:
             return None
 
-    monkeypatch.setattr(main_module.kube_config, "load_incluster_config", lambda: None)
-    monkeypatch.setattr(main_module.client, "ApiClient", FakeApiClient)
-    monkeypatch.setattr(main_module.client, "CoreV1Api", FakeCoreV1Api)
+    monkeypatch.setattr(kubernetes_config, "load_incluster_config", lambda: None)
+    monkeypatch.setattr(kubernetes_client, "ApiClient", FakeApiClient)
+    monkeypatch.setattr(kubernetes_client, "CoreV1Api", FakeCoreV1Api)
     monkeypatch.setattr(kubernetes_watch, "Watch", FakeWatch)
     return boundary
