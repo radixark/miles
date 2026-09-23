@@ -6,7 +6,7 @@ from tests.utils.soak.core.entrypoint import run_soak
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.utils import compute_base_url
-from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
+from tests.utils.soak.ft.actions.base import CellFaultForms
 from tests.utils.soak.ft.observers import create_cell_observer
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
@@ -20,11 +20,11 @@ async def run_cell_soak(
     runner_config: SoakRunnerConfig,
     event_log: EventLog,
     evidence_dir: Path,
+    cell_fault_forms: CellFaultForms,
 ) -> SoakRunner:
     base_url = compute_base_url(config)
     cell_types = set(runner_config.target_configs)
-    all_forms = create_cell_fault_forms(base_url=base_url, config=config)
-    forms = {kind: all_forms[kind] for kind in cell_types}
+    forms = {kind: cell_fault_forms[kind] for kind in cell_types}
 
     return await run_soak(
         config=config,

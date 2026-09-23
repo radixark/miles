@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,11 +12,12 @@ from tests.utils.soak.core.events import (
     SoakEvidenceArchivedEvent,
     SoakObservationEvent,
 )
+from tests.utils.soak.core.types import SoakTarget
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
-from miles.utils.audit_utils.event_logger.models import Event, TrainGroupStepEndEvent
+from miles.utils.audit_utils.event_logger.models import Event, TrainGroupStepEndEvent, WeightUpdateResultEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
 
@@ -56,6 +58,10 @@ def tail_started_at(events: list[SoakEvent]) -> datetime:
 
 def latest_observation(events: list[SoakEvent]) -> SoakObservationEvent | None:
     return next((event for event in reversed(events) if isinstance(event, SoakObservationEvent)), None)
+
+
+def alive_targets_of_kind(observation: SoakObservationEvent, kind: str) -> list[SoakTarget]:
+    return [target for target in observation.targets or [] if target.kind == kind and target.alive]
 
 
 def quiescent_polls_of_type(events: list[SoakEvent], *, expected_count_of_kind: dict[str, int]) -> dict[str, int]:
@@ -137,3 +143,24 @@ def _applied_actions(events: list[SoakEvent], *, kind: str | None) -> list[SoakA
         for action in project_actions(events).values()
         if action.applied is not None and (kind is None or action.requested.request.target.kind == kind)
     ]
+
+
+# ================================ weight updates ==============================
+
+
+def weight_update_results(events: Sequence[Event]) -> list[WeightUpdateResultEvent]:
+    results = [event for event in events if isinstance(event, WeightUpdateResultEvent)]
+    for result in results:
+        updated, failed = set(result.updated_cell_ids), set(result.failed_cell_ids)
+        assert len(updated) == len(result.updated_cell_ids), f"Repeated updated engine: {result.debug_weight_update_id}"
+        assert not updated & failed, f"Published engine is also reported failed: {result.debug_weight_update_id}"
+        assert updated | failed == set(
+            result.snapshot_cell_id_to_hashes
+        ), f"Update omits assigned targets: {result.debug_weight_update_id}"
+        assert all(
+            result.snapshot_cell_id_to_hashes[cell_id] for cell_id in updated
+        ), f"Updated engine lacks its incarnation: {result.debug_weight_update_id}"
+        assert result.published_version == (
+            result.candidate_version if updated else None
+        ), f"Published version is inconsistent with the updated engines: {result.debug_weight_update_id}"
+    return results

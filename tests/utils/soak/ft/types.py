@@ -7,10 +7,15 @@ from tests.utils.soak.k8s_utils.pod_manipulation import SoakPodTarget
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
-from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
+from miles.utils.test_utils.fault_injector.models import FaultHookName, ObservedFaultHookTarget
 
 ACTOR_CELL_TYPE: str = ACTOR_ROLE
 ROLLOUT_CELL_TYPE: str = "rollout"
+
+
+class FaultTrigger(StrEnum):
+    TIMER = "timer"
+    HOOK = "hook"
 
 
 class CellTarget(FrozenStrictBaseModel):
@@ -26,6 +31,9 @@ class CellTarget(FrozenStrictBaseModel):
 class InjectFaultDetails(FrozenStrictBaseModel):
     form: Literal["inject_fault"] = "inject_fault"
     fault_target: ObservedFaultHookTarget
+    hook_target: ObservedFaultHookTarget
+    hook_name: FaultHookName | None = None
+    delay_ms: float = Field(default=0, ge=0, le=300_000, allow_inf_nan=False)
 
 
 class PodDetails(FrozenStrictBaseModel):

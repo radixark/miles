@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 from tests.e2e.ft.conftest_ft.cli_options import (
+    FaultTriggersOption,
     FullyAsyncOption,
     ModeOption,
     NumStepsOption,
@@ -34,7 +35,9 @@ from tests.utils.soak.core.utils import (
     note_launch_outcome,
     resolve_dump_dir,
 )
-from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind
+from tests.utils.soak.ft import fault_triggers
+from tests.utils.soak.ft.actions.base import CellFaultForms
+from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_healing
 from tests.utils.soak.ft.entrypoint import run_cell_soak
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
@@ -59,6 +62,7 @@ def run_ci(
     trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
     rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
     fully_async: FullyAsyncOption = False,
+    requested_triggers: FaultTriggersOption = None,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -72,9 +76,12 @@ def run_ci(
     ft_mode: FTTestMode = resolve_mode(mode)
     if fully_async:
         assert_mode_supports_fully_async(ft_mode, mode=mode)
+    triggers = fault_triggers.resolve(requested_triggers)
 
     config = create_soak_config(command_utils.default_config())
-    test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
+    test_name: str = TEST_NAME + fault_triggers.compute_test_name_suffix(triggers)
+    if fully_async:
+        test_name += "_fully_async"
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_kind(
@@ -89,7 +96,7 @@ def run_ci(
     prepare(ft_mode, config=config)
     train_args = _build_train_args(
         ft_mode, config=config, dump_dir=dump_dir, num_steps=num_steps, fully_async=fully_async
-    )
+    ) + fault_triggers.compute_hook_train_args(triggers)
 
     injector = _run_soak(
         ft_mode,
@@ -100,8 +107,16 @@ def run_ci(
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         train_args=train_args,
         fully_async=fully_async,
+        cell_fault_forms=create_cell_fault_forms(config, triggers=triggers),
     )
 
+    fault_triggers.assert_hook_evidence(
+        triggers,
+        ft_components=ft_mode.ft_components,
+        config=config,
+        events=injector.event_log.events,
+        dump_dir=dump_dir,
+    )
     assert_healing(
         ft_mode.ft_components,
         events=injector.event_log.events,
@@ -140,6 +155,7 @@ def _run_soak(
     mean_interval_seconds_of_cell_type: dict[str, float],
     train_args: str,
     fully_async: bool,
+    cell_fault_forms: CellFaultForms,
 ) -> SoakRunner:
     expected_counts: dict[str, int] = {
         ACTOR_CELL_TYPE: ft_mode.num_cells,
@@ -172,6 +188,7 @@ def _run_soak(
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
+            cell_fault_forms=cell_fault_forms,
         )
     )
 

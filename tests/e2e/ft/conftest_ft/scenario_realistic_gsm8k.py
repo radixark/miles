@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 from tests.e2e.ft.conftest_ft.cli_options import (
+    FaultTriggersOption,
     FullyAsyncOption,
     MetricThresholdOption,
     NumRolloutOption,
@@ -15,7 +16,8 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     TrainerCrashIntervalSecondsOption,
 )
 from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
-from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind
+from tests.utils.soak.ft import fault_triggers
+from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_healing
 from tests.utils.soak.ft.entrypoint import run_cell_soak
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
@@ -49,15 +51,19 @@ def run_ci(
     rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
     metric_threshold: MetricThresholdOption = DEFAULT_METRIC_THRESHOLD,
     fully_async: FullyAsyncOption = False,
+    requested_triggers: FaultTriggersOption = None,
 ) -> None:
-    test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
+    triggers = fault_triggers.resolve(requested_triggers)
+    test_name: str = TEST_NAME + fault_triggers.compute_test_name_suffix(triggers)
+    if fully_async:
+        test_name += "_fully_async"
 
     run = prepare_gsm8k_run(
         config=command_utils.default_config(),
         test_name=test_name,
         seed=seed,
         num_rollout=num_rollout,
-        build_extra_train_args=lambda _dump_dir: "",
+        build_extra_train_args=lambda _dump_dir: fault_triggers.compute_hook_train_args(triggers),
         metric_threshold=metric_threshold,
         fully_async=fully_async,
     )
@@ -74,9 +80,17 @@ def run_ci(
             ),
             event_log=run.event_log,
             evidence_dir=run.evidence_dir,
+            cell_fault_forms=create_cell_fault_forms(run.launch_spec.config, triggers=triggers),
         )
     )
 
+    fault_triggers.assert_hook_evidence(
+        triggers,
+        ft_components=FT_COMPONENTS,
+        config=run.launch_spec.config,
+        events=injector.event_log.events,
+        dump_dir=run.dump_dir,
+    )
     assert_healing(
         FT_COMPONENTS,
         events=injector.event_log.events,
