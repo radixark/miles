@@ -10,6 +10,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
@@ -49,9 +50,9 @@ from miles.utils.ft_utils.api_server.models import (
     CellMetadata,
     CellSpec,
     CellStatus,
-    FaultInjection,
     TriState,
 )
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
 from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
@@ -416,8 +417,8 @@ class _FakeCellApi:
         self.list_reply: int | dict | None = None
         self.fault_targets: dict[str, ObservedFaultHookTarget | int] = {}
         self.cell_replies: dict[str, list[_CellReply]] = {}
-        self.injection_status = 200
-        self.injection_posts: list[tuple[str, FaultInjection]] = []
+        self.hook_status = 200
+        self.hook_posts: list[tuple[str, FaultHookCommand]] = []
         self.paths: list[str] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -439,9 +440,9 @@ class _FakeCellApi:
                     return httpx.Response(status)
                 case target:
                     return httpx.Response(200, json=target.model_dump(mode="json"))
-        if parts[1:] == ["inject-fault"]:
-            self.injection_posts.append((name, FaultInjection.model_validate_json(request.content)))
-            return httpx.Response(self.injection_status)
+        if parts[1:] == ["fault-hook"]:
+            self.hook_posts.append((name, FaultHookCommand.model_validate_json(request.content)))
+            return httpx.Response(self.hook_status)
 
         replies = self.cell_replies.get(name)
         reply: _CellReply = (
@@ -527,16 +528,16 @@ def _with_fault_target(target: CellTarget) -> CellTarget:
     return target.model_copy(update={"fault_target": _fault_target(target.identity, workers_hash=target.incarnation)})
 
 
-def _raising_injection_transport(api: _FakeCellApi) -> _FakeCellApi:
+def _raising_hook_transport(api: _FakeCellApi) -> _FakeCellApi:
     handle = api.handle
 
-    def raise_on_injection(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/inject-fault"):
+    def raise_on_hook(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/fault-hook"):
             handle(request)
             raise httpx.ReadTimeout("lost reply", request=request)
         return handle(request)
 
-    api.handle = raise_on_injection
+    api.handle = raise_on_hook
     return api
 
 

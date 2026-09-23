@@ -152,15 +152,15 @@ hf upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer \
 
 | Backend | Cell type | Forms, drawn from uniformly |
 | --- | --- | --- |
-| ray | actor | `inject_fault:sigkill`, `inject_fault:exit`, `inject_fault:segfault` |
-| ray | rollout | `inject_fault:sigkill` |
+| ray | actor | `inject_fault:kill_process`, `inject_fault:exit_process`, `inject_fault:segfault_process` |
+| ray | rollout | `inject_fault:kill_process` |
 | kubernetes | actor | those three kills, plus `delete_pod` |
 | kubernetes | rollout | `exec_sigkill`, `exec_sigstop`, `delete_pod` |
 
-- **Each `FailureMode` is its own form**: pod deletion is a quarter of a kubernetes trainer injection, not half of it.
-- **The actor class decides what a kill means**, since an injection carries only a mode and a `sub_index`: `TrainRayActor` and `ServeActor` crash their own process, the only thing that costs torchft a member, while `CommandActor` SIGKILLs the isolated process group rooted at the engine subprocess. That includes the launch shell and every engine child it spawned, so a dead cell cannot leave an orphaned scheduler holding GPU memory while its replacement starts; the Ray actor observes the subprocess exit and reports the death as production sees it.
-- **Why an engine never exits or segfaults**: exiting and segfaulting are what a process does to itself from the inside, and no signal reproduces them from outside — SIGTERM is a clean shutdown, SIGSEGV is delivered rather than provoked. An engine takes SIGKILL, plus SIGSTOP on kubernetes; the other modes are refused, not approximated.
-- **How a kubernetes engine takes a kill**: its pod runs sglang as the entrypoint (`CommandWorkerSpec`), so no actor and no rpc server exist to receive `inject_fault`. The kill is delivered from outside instead, as a `kubectl exec` SIGKILL of the sglang processes in the engine container, and deleting the pod is the second, coarser form — the engine *is* the pod.
+- **Each fault action is its own form**: pod deletion is a quarter of a kubernetes trainer injection, not half of it.
+- **The actor class decides what a kill means**, since an injection carries only an action and a target: `TrainRayActor` and `ServeActor` crash their own process, the only thing that costs torchft a member, while `CommandActor` SIGKILLs the isolated process group rooted at the engine subprocess. That includes the launch shell and every engine child it spawned, so a dead cell cannot leave an orphaned scheduler holding GPU memory while its replacement starts; the Ray actor observes the subprocess exit and reports the death as production sees it.
+- **Why an engine never exits or segfaults**: exiting and segfaulting are what a process does to itself from the inside, and no signal reproduces them from outside — SIGTERM is a clean shutdown, SIGSEGV is delivered rather than provoked. An engine takes SIGKILL, plus SIGSTOP on kubernetes; the soak asks it for nothing else.
+- **How a kubernetes engine takes a kill**: its pod runs sglang as the entrypoint (`CommandWorkerSpec`), so no actor and no rpc server exist to receive a fault hook. The kill is delivered from outside instead, as a `kubectl exec` SIGKILL of the sglang processes in the engine container, and deleting the pod is the second, coarser form — the engine *is* the pod.
 - **Deletion is the test layer's own**: the async Kubernetes client deletes the observed pod under UID and resource-version preconditions, timeout-bounded, and waits until that UID is absent. It models an outsider, and deliberately avoids the production heal path `KubernetesCellOperations.suspend`, whose bugs an injector sharing it would hide.
 
 ### `scenario_trainer_no_failure`
@@ -384,7 +384,7 @@ Architecture (external fault injection, not inside the training loop):
         form harms its target
      f. Record the request, apply it as its own task, and draw that kind's next injection
         time once the fault is applied
-  3. inject_fault() kills the actor's process; on kubernetes the test layer also signals
+  3. The immediate fault hook kills the actor's process; on kubernetes the test layer also signals
      engine processes or deletes the pod
   4. The mini FT controller recovers the cell (suspend -> resume)
   5. Admission closes once rollout num_steps - max(3, num_steps // 5) - 1 finishes
@@ -412,7 +412,7 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
 - **Why injections wait for quiescence**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica. A 60-poll all-healthy streak (~120s) outlasts that window.
 - **Why quiescence counts replicas against `SoakTargetConfig.expected_count`**: a deleted pod vanishes from the listing rather than reading unhealthy, and the survivors all read healthy; only the missing replica says the kind is still recovering.
-- **Why every enabled form has to land**: the floors count injections, not forms, so `inject_fault:sigkill` alone could clear them while `delete_pod` is never tried. This witness makes the draw's preference for an untried form binding.
+- **Why every enabled form has to land**: the floors count injections, not forms, so `inject_fault:kill_process` alone could clear them while `delete_pod` is never tried. This witness makes the draw's preference for an untried form binding.
 - **Why every injection recovers on its own cell**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
 - **Why the step budget is 60**: a rollout injection needs a 60-poll (~120s) quiescent streak plus a mean-240s exponential wait, so the second accepted rollout injection the witness demands takes well over ten minutes. The budget buys that time instead of lowering the quiescence gate that keeps the injector from killing a kind's last live replica.
 - **Why the rollout witness is one-sided**: sampled polls miss windows by construction, so it never demands seeing the down half of a recovery. It demands a new incarnation of the cell observed Serving after the fault applied; a stale Healthy reading of the old incarnation cannot satisfy it.

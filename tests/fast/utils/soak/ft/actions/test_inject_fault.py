@@ -10,7 +10,7 @@ from tests.fast.utils.soak.soak_fakes import (
     _fault_target,
     _observation,
     _patch_http,
-    _raising_injection_transport,
+    _raising_hook_transport,
     _with_fault_target,
 )
 from tests.utils.soak.core.events import SoakEvent
@@ -20,7 +20,8 @@ from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, ObservedCellFaultKind
 
 from miles.utils.ft_utils.api_server.models import TriState
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import ExitProcessAction, KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookOperation
 from miles.utils.workers.naming import compute_cell_id
 
 _BASE_URL = "http://api:18080"
@@ -28,7 +29,7 @@ _ACTOR_0 = compute_cell_id(pool_id="actor", cell_index=0)
 
 
 def _form() -> InjectFaultForm:
-    return InjectFaultForm(base_url=_BASE_URL, failure_mode=FailureMode.SIGKILL)
+    return InjectFaultForm(base_url=_BASE_URL, action=KillProcessAction())
 
 
 def _create(
@@ -46,10 +47,10 @@ async def _execute(form: InjectFaultForm, request: SoakActionRequest) -> list[So
 
 
 class TestInjectFaultFormName:
-    def test_the_name_encodes_the_failure_mode(self) -> None:
-        """Forms injecting different failure modes get distinct names so find_form can tell them apart."""
-        assert _form().name == "inject_fault:sigkill"
-        assert InjectFaultForm(base_url=_BASE_URL, failure_mode=FailureMode.EXIT).name == "inject_fault:exit"
+    def test_the_name_encodes_the_action(self) -> None:
+        """Forms injecting different actions get distinct names so find_form can tell them apart."""
+        assert _form().name == "inject_fault:kill_process"
+        assert InjectFaultForm(base_url=_BASE_URL, action=ExitProcessAction()).name == "inject_fault:exit_process"
 
 
 class TestInjectFaultFormRequest:
@@ -76,10 +77,10 @@ class TestInjectFaultFormRequest:
 
 
 class TestInjectFaultFormExecute:
-    async def test_the_fault_is_injected_into_the_target_and_a_missing_cell_is_the_effect(
+    async def test_the_fault_is_set_on_the_target_and_a_missing_cell_is_the_effect(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The injection names the observed target and a vanished cell is reported as applied."""
+        """A SET command naming this request is posted and a vanished cell is reported as applied."""
         api = _FakeCellApi([])
         _patch_http(monkeypatch, api)
         form = _form()
@@ -87,15 +88,16 @@ class TestInjectFaultFormExecute:
 
         [evidence] = await _execute(form, request)
 
-        [(cell_id, injection)] = api.injection_posts
+        [(cell_id, command)] = api.hook_posts
         assert cell_id == _ACTOR_0
-        assert injection.mode is FailureMode.SIGKILL
-        assert injection.sub_index == request.details.fault_target.rank
-        assert injection.expected_target == request.details.fault_target
+        assert command.operation is FaultHookOperation.SET
+        assert command.request.request_id == request.request_id
+        assert command.request.action == KillProcessAction()
+        assert command.request.target == request.details.fault_target
         assert evidence == ObservedCellFault(
             request_id=request.request_id,
             target=request.details.fault_target,
-            mode=FailureMode.SIGKILL,
+            action=KillProcessAction(),
             observed=ObservedCellFaultKind.MISSING,
         )
 
@@ -145,8 +147,8 @@ class TestInjectFaultFormExecute:
         """A server error or lost reply may still have fired the fault, so the effect decides."""
         api = _FakeCellApi([])
         if isinstance(post, int):
-            api.injection_status = post
-        _patch_http(monkeypatch, _raising_injection_transport(api) if post == "transport" else api)
+            api.hook_status = post
+        _patch_http(monkeypatch, _raising_hook_transport(api) if post == "transport" else api)
         form = _form()
 
         [evidence] = await _execute(form, _create(form, _with_fault_target(_cell_target())))
@@ -156,7 +158,7 @@ class TestInjectFaultFormExecute:
     async def test_a_rejected_submission_fails_without_an_effect(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A client error means the fault was refused, so nothing is reported applied."""
         api = _FakeCellApi([])
-        api.injection_status = 412
+        api.hook_status = 409
         _patch_http(monkeypatch, api)
         form = _form()
         request = _create(form, _with_fault_target(_cell_target()))
@@ -184,7 +186,7 @@ class TestInjectFaultFormExecute:
     async def test_a_request_whose_fault_target_is_not_its_target_is_refused_before_posting(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A request addressing another incarnation must never reach the injection route."""
+        """A request addressing another incarnation must never reach the fault hook."""
         api = _FakeCellApi([])
         _patch_http(monkeypatch, api)
         form = _form()
@@ -193,4 +195,4 @@ class TestInjectFaultFormExecute:
 
         with pytest.raises(AssertionError):
             await _execute(form, forged)
-        assert api.injection_posts == []
+        assert api.hook_posts == []

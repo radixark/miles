@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Discriminator, Field
+from pydantic import Discriminator, Field, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
@@ -69,12 +69,22 @@ FaultHookTarget = Annotated[DeclaredFaultHookTarget | ObservedFaultHookTarget, D
 
 class FaultHookRequest(FrozenStrictBaseModel):
     request_id: str = Field(min_length=1)
-    hook_name: FaultHookName
+    hook_name: FaultHookName | None = None
     action: FaultAction
     target: FaultHookTarget = DeclaredFaultHookTarget()
     rollout_id: int | None = Field(default=None, ge=0)
     attempt: int | None = Field(default=None, ge=0)
     weight_version: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_target(self) -> "FaultHookRequest":
+        if (
+            self.hook_name is not None
+            and self.hook_name.owner is not FaultHookOwner.TRAINER_ACTOR
+            and self.target != DeclaredFaultHookTarget()
+        ):
+            raise ValueError(f"{self.hook_name} is reached outside any cell, so its request cannot name a target")
+        return self
 
     def matches(self, context: FaultHookContext) -> bool:
         return (
@@ -85,7 +95,8 @@ class FaultHookRequest(FrozenStrictBaseModel):
 
     def conflicts_with(self, other: "FaultHookRequest") -> bool:
         return (
-            self.hook_name == other.hook_name
+            other.hook_name is not None
+            and self.hook_name == other.hook_name
             and self.action == other.action
             and self.rollout_id == other.rollout_id
             and self.attempt == other.attempt

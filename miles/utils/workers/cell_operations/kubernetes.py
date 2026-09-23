@@ -3,20 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
 from miles.utils.workers.cell_operations.base import BaseCellOperations, StaleFaultTargetError
 from miles.utils.workers.k8s_client import core_v1_api
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
-from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 
 logger = logging.getLogger(__name__)
 
-INJECT_FAULT_TIMEOUT_SECONDS = 60.0
 CONTROL_FAULT_HOOK_TIMEOUT_SECONDS = 10.0
 
 
@@ -71,32 +68,6 @@ class KubernetesCellOperations(BaseCellOperations):
             pod_uid=health.pod_uid,
         )
 
-    async def inject_fault(
-        self,
-        *,
-        cell_id: str,
-        mode: FailureMode,
-        sub_index: int,
-        expected_target: ObservedFaultHookTarget | None = None,
-    ) -> None:
-        await self._ensure_watching()
-
-        if expected_target is not None and expected_target != await self.observe_fault_target(
-            cell_id=cell_id, rank=sub_index
-        ):
-            raise StaleFaultTargetError(f"Cell {cell_id} no longer matches the observed fault target")
-
-        (infos,) = self._provider.get_worker_infos(cell_ids=[cell_id])
-        assert (
-            0 <= sub_index < len(infos)
-        ), f"sub_index {sub_index} is out of range for cell {cell_id}, which has {len(infos)} workers"
-
-        info = infos[sub_index]
-        handle = build_rpc_handle_of_worker_info(
-            info, expected_boot_uuid=expected_target.boot_uuid if expected_target is not None else None
-        )
-        await _inject_fault_over_rpc(handle=handle, mode=mode, worker_name=info.name)
-
     async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
         await self._ensure_watching()
 
@@ -121,17 +92,6 @@ class KubernetesCellOperations(BaseCellOperations):
         except BaseException:
             self._watching = None
             raise
-
-
-async def _inject_fault_over_rpc(*, handle: BaseWorkerHandle, mode: FailureMode, worker_name: str) -> None:
-    try:
-        await asyncio.wait_for(
-            handle.submit_without_result("inject_fault", mode=mode.value), timeout=INJECT_FAULT_TIMEOUT_SECONDS
-        )
-    except ServerRestartedError as error:
-        raise StaleFaultTargetError(f"Worker {worker_name} changed its boot identity") from error
-    except (WorkerUnreachableError, TimeoutError, asyncio.TimeoutError):
-        logger.info("Injecting %s into %s left it unreachable, which is what was asked for", mode.value, worker_name)
 
 
 async def _ignore_cell(cell_id: str, info: CellInfo | None) -> None:

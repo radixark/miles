@@ -23,7 +23,6 @@ from miles.utils.test_utils.fault_injector.controller import (
     FaultHookOperation,
 )
 from miles.utils.test_utils.fault_injector.models import (
-    FaultHookName,
     FaultHookRecord,
     FaultHookRequest,
     FaultHookStatus,
@@ -767,7 +766,6 @@ def _identity_command(*, cell_id: str, rank: int = 0) -> FaultHookCommand:
         operation=FaultHookOperation.SET,
         request=FaultHookRequest(
             request_id="test-request",
-            hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
             action=KillProcessAction(),
             target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="pseudo-hash-1"),
         ),

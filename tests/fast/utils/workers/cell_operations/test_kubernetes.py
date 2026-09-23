@@ -8,7 +8,7 @@ import pytest
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
-from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest, ObservedFaultHookTarget
+from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
@@ -528,7 +528,6 @@ class TestControlFaultHookRejectsAChangedTarget:
                     operation=FaultHookOperation.SET,
                     request=FaultHookRequest(
                         request_id="test",
-                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
                         action=KillProcessAction(),
                         target=ObservedFaultHookTarget(
                             cell_id="engine-0",
@@ -554,7 +553,6 @@ class TestControlFaultHookRejectsAChangedTarget:
                     operation=FaultHookOperation.SET,
                     request=FaultHookRequest(
                         request_id="test",
-                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
                         action=KillProcessAction(),
                         target=ObservedFaultHookTarget(
                             cell_id="engine-0",
@@ -583,7 +581,6 @@ class TestControlFaultHookRejectsAChangedTarget:
                     operation=FaultHookOperation.SET,
                     request=FaultHookRequest(
                         request_id="test",
-                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
                         action=KillProcessAction(),
                         target=ObservedFaultHookTarget(
                             cell_id="engine-0",
@@ -613,7 +610,6 @@ class TestControlFaultHookRejectsAChangedTarget:
                     operation=FaultHookOperation.SET,
                     request=FaultHookRequest(
                         request_id="test",
-                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
                         action=KillProcessAction(),
                         target=ObservedFaultHookTarget(
                             cell_id="engine-0",
@@ -639,7 +635,6 @@ class TestControlFaultHookRejectsAChangedTarget:
                     operation=FaultHookOperation.SET,
                     request=FaultHookRequest(
                         request_id="test",
-                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
                         action=KillProcessAction(),
                         target=ObservedFaultHookTarget(
                             cell_id="engine-0",
@@ -670,7 +665,6 @@ class TestControlFaultHookRejectsAChangedTarget:
                     operation=FaultHookOperation.SET,
                     request=FaultHookRequest(
                         request_id="test",
-                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
                         action=KillProcessAction(),
                         target=ObservedFaultHookTarget(
                             cell_id="engine-0",
