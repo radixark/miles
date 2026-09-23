@@ -9,7 +9,6 @@ from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
 from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
 from miles.tinker.core.service import TinkerService
-from miles.tinker.core.tinker_session_server import TrajectoryCollector
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
@@ -22,16 +21,6 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 
 logger = logging.getLogger(__name__)
-
-_SWEEP_INTERVAL_S = 60.0
-
-
-async def _sweep_collector(collector: TrajectoryCollector, interval_s: float) -> None:
-    """Every interval_s drop recorded sessions idle past their TTL; lives and dies with service.run()."""
-    while True:
-        await asyncio.sleep(interval_s)
-        if dropped := collector.sweep():
-            logger.info(f"swept {dropped} idle recorded session(s)")
 
 
 async def serve(args):
@@ -99,9 +88,9 @@ async def serve(args):
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
     # not keep answering /healthz while every training future pends forever
     service_task = asyncio.create_task(service.run())
-    if args.tinker_session_server:
+    if collector is not None:
         # the sweep lives exactly as long as the dispatcher; nothing else needs to know about it
-        sweep_task = asyncio.create_task(_sweep_collector(collector, _SWEEP_INTERVAL_S))
+        sweep_task = asyncio.create_task(collector.run_sweeper())
         service_task.add_done_callback(lambda _: sweep_task.cancel())
     server_task = asyncio.create_task(server.serve())
     try:

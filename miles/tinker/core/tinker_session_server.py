@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from array import array
@@ -15,7 +16,10 @@ from miles.tinker.core.prompt_renderer import PromptRenderer, Rendered
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import OwnershipError, UserInputError
 
+logger = logging.getLogger(__name__)
+
 TINKER_PATH_PREFIX = "tinker://"
+SWEEP_INTERVAL_S = 60.0
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
@@ -252,6 +256,13 @@ class TrajectoryCollector:
         for sid in expired:
             del self.sessions[sid]
         return len(expired)
+
+    async def run_sweeper(self, interval_s: float = SWEEP_INTERVAL_S) -> None:
+        """Every interval_s run sweep(); the gateway starts it beside service.run() and cancels it with it."""
+        while True:
+            await asyncio.sleep(interval_s)
+            if dropped := self.sweep():
+                logger.info(f"swept {dropped} idle recorded session(s)")
 
     def _tito_budget(self, session: TrajectorySession) -> int:
         """TITO chain budget: the gateway per-datum cap, lowered to the client's bind-time max_datum_tokens."""
