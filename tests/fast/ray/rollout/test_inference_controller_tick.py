@@ -38,8 +38,9 @@ class _StubServer:
         self.server_cells.clear()
 
 
-def _make_controller(servers: dict) -> InferenceController:
+def _make_controller(servers: dict, *, rollout_cell_tick_timeout: float | None = None) -> InferenceController:
     controller = InferenceController.__new__(InferenceController)
+    controller.args = SimpleNamespace(rollout_cell_tick_timeout=rollout_cell_tick_timeout)
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
     controller._watcher_disposers = []
@@ -84,6 +85,16 @@ class TestTickCells:
 
         assert wedged.finished_count == 0
         assert healthy.finished_count == 1
+
+    async def test_a_configured_tick_timeout_outlasts_a_slow_but_live_cell(self, monkeypatch):
+        """A colocated engine's first memory release can outlast the default bound; cancelling it re-issues the release."""
+        slow = _RecordingCell(delay=0.05, cell_id="slow")
+        controller = _make_controller({"default": _StubServer({"a": slow})}, rollout_cell_tick_timeout=5.0)
+        monkeypatch.setattr(inference_controller_module, "CELL_TICK_TIMEOUT_SECONDS", 0.01)
+
+        await controller._tick_cells()
+
+        assert slow.finished_count == 1
 
     async def test_a_cell_added_after_the_loop_started_is_picked_up(self):
         """Cells appear from reconcile long after startup, so the sweep must re-read the bookkeeping."""

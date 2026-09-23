@@ -133,7 +133,8 @@ class ServerCell:
 
     @property
     def is_initializing_past_deadline(self) -> bool:
-        return self.is_initializing and time.monotonic() - self._state.start_time >= INITIALIZING_TIMEOUT_SECONDS
+        deadline = self.args.rollout_cell_init_timeout or INITIALIZING_TIMEOUT_SECONDS
+        return self.is_initializing and time.monotonic() - self._state.start_time >= deadline
 
     @property
     def addr_info(self) -> CellAddrInfo:

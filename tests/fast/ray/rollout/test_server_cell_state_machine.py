@@ -568,6 +568,19 @@ class TestInitializingDeadline:
         assert cell.is_initializing
         assert not cell.is_initializing_past_deadline
 
+    async def test_a_configured_deadline_replaces_the_default(self, cell_env):
+        """A model whose engines load for longer than the default must be able to say so."""
+        cell_env["health"]["ready"] = False
+        default = server_cell_module.INITIALIZING_TIMEOUT_SECONDS
+        cell = _make_cell(args_overrides=dict(rollout_cell_init_timeout=3 * default))
+        await cell.init()
+        _pretend_started_long_ago(cell)
+
+        await cell.tick()
+
+        assert cell.is_initializing
+        assert not cell.is_initializing_past_deadline
+
     async def test_a_transient_failure_before_the_deadline_is_not_reported(self, cell_env):
         """Reporting on the first error would throw away the existing retry contract."""
 

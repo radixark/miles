@@ -76,6 +76,10 @@ def init(
 
     # Pytorch distributed.
     _initialize_distributed(args)
+    if args.moe_ep_p2p_alltoall:
+        from .ep_p2p_alltoall import install as install_ep_p2p_alltoall
+
+        install_ep_p2p_alltoall(args)
 
     indep_dp = create_indep_dp_group(
         store_addr=indep_dp_store_addr,

@@ -233,6 +233,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--moe-ep-p2p-alltoall",
+                action="store_true",
+                default=False,
+                help=(
+                    "Megatron backend: serve the MoE expert-parallel all-to-all as an ordered ring of "
+                    "matched isend/irecv pairs, one peer at a time, on a dedicated communicator "
+                    "that is rebuilt after every colocate wake-up. Works around the RCCL 2.27.7 "
+                    "AllToAll kernel deadlocking on GLM-5.2's dispatch payload under colocate on "
+                    "ROCm. Slower than a native all-to-all; do not widen the per-peer batching, "
+                    "which deadlocked on real training splits."
+                ),
+            )
+            parser.add_argument(
                 "--stream-optimizer-state-to-disk",
                 action="store_true",
                 help=(
@@ -890,6 +903,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 nargs="+",
                 help="Address and ports of the external engines.",
+            )
+            parser.add_argument(
+                "--rollout-cell-tick-timeout",
+                type=float,
+                default=None,
+                help=(
+                    "Seconds one inference-controller tick of a rollout cell may run before it is "
+                    "cancelled (default 120). A colocated engine's first memory release copies its "
+                    "base weights to pinned host memory and can legitimately take far longer on a "
+                    "large model; a cancelled release is re-issued and allocates another pinned "
+                    "buffer each time."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-cell-init-timeout",
+                type=float,
+                default=None,
+                help="Seconds a rollout cell may stay initializing before it is reported past its startup deadline (default 1800).",
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",

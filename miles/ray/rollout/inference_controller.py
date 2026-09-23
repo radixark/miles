@@ -267,8 +267,9 @@ class InferenceController:
     @with_lock
     async def _tick_cells(self) -> None:
         cells = [cell for srv in list(self.servers.values()) for cell in list(srv.server_cells.values())]
+        timeout = self.args.rollout_cell_tick_timeout or CELL_TICK_TIMEOUT_SECONDS
         results = await asyncio.gather(
-            *[asyncio.wait_for(cell.tick(), timeout=CELL_TICK_TIMEOUT_SECONDS) for cell in cells],
+            *[asyncio.wait_for(cell.tick(), timeout=timeout) for cell in cells],
             return_exceptions=True,
         )
         for cell, result in zip(cells, results, strict=True):

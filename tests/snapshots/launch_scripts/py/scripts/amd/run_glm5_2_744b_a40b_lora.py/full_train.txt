@@ -1,0 +1,162 @@
+### 0
+mkdir -p /root/datasets /root/models
+
+### 1
+hf download zai-org/GLM-5.2
+  --local-dir /root/models/GLM-5.2
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 4
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 5
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "INDEXER_ROPE_NEOX_STYLE": "0", "SGLANG_NSA_FORCE_MLA": "1", "PYTORCH_ALLOC_CONF": "max_split_size_mb:512", "TORCH_NCCL_TRACE_BUFFER_SIZE": "2000", "TORCH_NCCL_DUMP_ON_TIMEOUT": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.glm5.glm5 get_glm5_spec
+  --moe-layer-freq '[0]*3+[1]*75'
+  --num-experts 256
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-topk 8
+  --moe-grouped-gemm
+  --moe-permute-fusion
+  --moe-ffn-hidden-size 2048
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-router-topk-scaling-factor 2.5
+  --moe-aux-loss-coeff 0
+  --moe-router-dtype fp32
+  --make-vocab-size-divisible-by 16
+  --num-layers 78
+  --hidden-size 6144
+  --ffn-hidden-size 12288
+  --num-attention-heads 64
+  --disable-bias-linear
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --position-embedding-type rope
+  --no-position-embedding
+  --normalization RMSNorm
+  --qk-layernorm
+  --multi-latent-attention
+  --q-lora-rank 2048
+  --kv-lora-rank 512
+  --qk-head-dim 192
+  --v-head-dim 256
+  --kv-channels 192
+  --qk-pos-emb-head-dim 64
+  --vocab-size 154880
+  --rotary-base 8000000
+  --enable-experimental
+  --hf-checkpoint /root/models/GLM-5.2
+  --megatron-to-hf-mode bridge
+  --dsa-attention-backend tilelang
+  --save /root/shared_data/260101-000000-000
+  --save-interval 10
+  --lora-rank 16
+  --lora-alpha 32
+  --lora-dropout 0.0
+  --target-modules "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
+  --no-gradient-accumulation-fusion
+  --experts-shared-outer-loras
+  --lora-base-cpu-backup
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --balance-data
+  --rm-type math
+  --rollout-temperature 1.0
+  --num-rollout 40
+  --rollout-batch-size 8
+  --n-samples-per-prompt 8
+  --global-batch-size 64
+  --seq-length 4096
+  --rollout-max-context-len 4096
+  --rollout-max-response-len 3584
+  --optimizer adam
+  --lr 1e-05
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --optimizer-cpu-offload
+  --overlap-cpu-optimizer-d2h-h2d
+  --use-precision-aware-optimizer
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --kl-coef 0.00
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28
+  --use-rollout-routing-replay
+  --use-wandb
+  --wandb-project miles-run_glm5_2_744b_a40b_lora
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix
+  --tensor-model-parallel-size 8
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --qkv-format thd
+  --micro-batch-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --rollout-num-gpus-per-engine 8
+  --sglang-mem-fraction-static 0.85
+  --sglang-ep-size 8
+  --sglang-attention-backend nsa
+  --sglang-nsa-prefill-backend tilelang
+  --sglang-nsa-decode-backend tilelang
+  --sglang-page-size 64
+  --sglang-context-length 4096
+  --sglang-cuda-graph-max-bs 64
+  --sglang-max-running-requests 64
+  --sglang-chunked-prefill-size 8192
+  --sglang-watchdog-timeout 3600
+  --sglang-moe-runner-backend triton
+  --sglang-disable-shared-experts-fusion
+  --sglang-max-lora-rank 16
+  --sglang-lora-backend triton
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --calculate-per-token-loss
+  --moe-token-dispatcher-type alltoall
+  --moe-ep-p2p-alltoall
+  --colocate
+  --rollout-cell-tick-timeout 3600.0
+  --rollout-cell-init-timeout 5400.0
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --offload-train-target disk
+  --offload-train-disk-dir /root/shared_data/train_offload
+  --offload-train-disk-chunk-mb 256
+  --no-check-for-nan-in-loss-and-grad
+  --observe-training-entropy
+  --distributed-timeout-minutes 60  

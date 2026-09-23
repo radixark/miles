@@ -52,6 +52,7 @@ from ..training_utils.loss import (
 )
 from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
+from . import ep_p2p_alltoall
 from .checkpoint import load_checkpoint
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
@@ -318,6 +319,7 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before offload model")
         should_log_cpu_memory = is_first_replica_megatron_main_rank() and hasattr(self, "_last_rollout_id")
 
+        ep_p2p_alltoall.release_transports()
         destroy_process_groups()
 
         if self.args.rematerialize_param_from_master_weight and self.role == "actor":
