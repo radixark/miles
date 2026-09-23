@@ -5,10 +5,12 @@ https://www.apache.org/licenses/LICENSE-2.0
 
 Native loading for the generated deterministic DSA (sparse attention + lightning indexer) training kernels (SM100a / SM103a).
 
-``registry_<arch>.json`` next to this file is written mechanically by the kernel generator: one
-record per stage with the argument plan, launch block, dynamic shared memory, the device/launcher
-source pair under ``csrc/<arch>/`` and the compile flags. Each stage builds on first use as a torch
-CUDA extension (``nvcc`` + ``ninja``; cached under ``TORCH_EXTENSIONS_DIR``).
+``registry.json`` next to this file is written mechanically by the kernel generator: one record per
+stage with the argument plan, launch block, dynamic shared memory, the device/launcher source pair
+under ``csrc/`` and the compile flags. The kernels are register-MMA (``mma.sync`` / ``cp.async``)
+code without architecture-specific instructions, so one source set serves every listed architecture
+(``arches``); each stage builds on first use as a torch CUDA extension for the current device's
+architecture (``nvcc`` + ``ninja``; cached per architecture under ``TORCH_EXTENSIONS_DIR``).
 """
 
 import json
@@ -34,19 +36,21 @@ _CONVERSION_FLAGS = (
 )
 
 
-def _load_registries() -> dict:
-    modules: dict = {}
-    for arch in _ARCH_FLAGS:
-        path = _PACKAGE / f"registry_{arch}.json"
-        if not path.is_file():
-            continue
-        for stage, record in json.loads(path.read_text()).items():
-            modules.setdefault(stage, {})[arch] = record
-    return modules
+def _load_registry() -> dict:
+    path = _PACKAGE / "registry.json"
+    return json.loads(path.read_text()) if path.is_file() else {}
 
 
-# MODULES[stage][arch] -> generated module record (from registry_<arch>.json).
-MODULES = _load_registries()
+# MODULES[stage] -> generated module record (from registry.json); record["arches"] lists the
+# architectures the source set is exported for.
+MODULES = _load_registry()
+
+
+def _record(stage, arch):
+    record = MODULES[stage]
+    if arch not in record["arches"]:
+        raise NotImplementedError(f"{stage}: not exported for {arch} (exported: {record['arches']})")
+    return record
 
 
 def device_arch(device=None):
@@ -65,9 +69,9 @@ def load(stage, arch):
     """Build (once per extension cache) and import the native module for ``stage`` on ``arch``."""
     from torch.utils.cpp_extension import load as load_extension
 
-    record = MODULES[stage][arch]
+    record = _record(stage, arch)
     return load_extension(
-        name=record["cache_name"],
+        name=f"{record['name']}_{arch}",
         sources=[str(_CSRC / relative) for relative in record["sources"]],
         extra_include_paths=[str(_CSRC)],
         extra_cuda_cflags=[_ARCH_FLAGS[arch], "-O3", *_CONVERSION_FLAGS, *record["compile_flags"]],
@@ -88,7 +92,7 @@ def prebuild(arch, max_workers=None):
     import time
     from concurrent.futures import ThreadPoolExecutor
 
-    stages = [stage for stage, per_arch in MODULES.items() if arch in per_arch]
+    stages = [stage for stage, record in MODULES.items() if arch in record["arches"]]
     t0 = time.perf_counter()
     workers = max_workers or min(len(stages), max(1, (os.cpu_count() or 8) // 2))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -106,7 +110,7 @@ class NativeKernel:
     def __init__(self, stage, arch=None, device=None):
         self.stage = stage
         self.arch = arch or device_arch(device)
-        record = MODULES[stage][self.arch]
+        record = _record(stage, self.arch)
         self.record = record
         native = load(stage, self.arch)
         self._call = getattr(native, record["ffi_entry"])

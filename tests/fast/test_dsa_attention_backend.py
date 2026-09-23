@@ -39,9 +39,9 @@ def test_bridge_path_rejects_loom():
 
 
 def test_generated_package_registry_covers_both_architectures():
-    """Every exported stage has a record for SM100a and SM103a, with the same argument plan."""
+    """Every exported stage is exported for SM100a and SM103a from one source set that exists on disk."""
     jit = _load("test_dsa_train_jit_module", "miles_plugins/models/dsa_train/_jit.py")
-    assert set(jit.MODULES), "registry_<arch>.json files missing"
+    assert set(jit.MODULES), "registry.json missing"
     expected = {
         *(f"dsa_attention_{kind}_h{h}_d512t{t}" for kind in ("fwd", "bwd") for h in (16, 32) for t in (64, 0)),
         *(f"dsa_indexer_logits_h{h}" for h in (8, 16, 32, 64)),
@@ -50,10 +50,8 @@ def test_generated_package_registry_covers_both_architectures():
         "dsa_segmented_reduce",
     }
     assert set(jit.MODULES) == expected
-    for stage, per_arch in jit.MODULES.items():
-        assert set(per_arch) == {"sm_100a", "sm_103a"}, stage
-        plans = {tuple(map(tuple, record["arg_plan"])) for record in per_arch.values()}
-        assert len(plans) == 1, stage
-        for record in per_arch.values():
-            for relative in record["sources"]:
-                assert (REPO / "miles_plugins/models/dsa_train/csrc" / relative).is_file(), (stage, relative)
+    for stage, record in jit.MODULES.items():
+        assert set(record["arches"]) == {"sm_100a", "sm_103a"}, stage
+        assert record["kernel_symbol"] == f"kernel_{record['name']}", stage
+        for relative in record["sources"]:
+            assert (REPO / "miles_plugins/models/dsa_train/csrc" / relative).is_file(), (stage, relative)
