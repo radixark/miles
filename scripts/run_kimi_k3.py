@@ -35,7 +35,6 @@ _NUM_ATTENTION_HEADS = 96
 _VALIDATED_FULL_MODEL_GPUS = 64
 
 
-
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
