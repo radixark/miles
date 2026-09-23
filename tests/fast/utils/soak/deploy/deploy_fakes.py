@@ -1,6 +1,8 @@
+import asyncio
 import json
 import subprocess
 import threading
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -14,15 +16,32 @@ from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     pod_fact,
     workload_fact,
 )
+from tests.fast.utils.soak.soak_fakes import _at
 from tests.utils.deploy.hot_restart.cluster_observer import LEADER_WORKER_SET_KIND, STATEFUL_SET_KIND, ClusterSnapshot
 from tests.utils.deploy.hot_restart.evidence import RunProgress
+from tests.utils.soak.core.event_log import EventLog
+from tests.utils.soak.core.events import (
+    LaunchOutcome,
+    SoakActionAppliedEvent,
+    SoakActionRequestedEvent,
+    SoakLaunchFinishedEvent,
+    SoakObservationEvent,
+)
+from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest
 from tests.utils.soak.deploy import observers as observers_module
-from tests.utils.soak.deploy.types import DeploymentTarget
+from tests.utils.soak.deploy.actions import hot_restart as hot_restart_module
+from tests.utils.soak.deploy.actions.hot_restart import HotRestartForm
+from tests.utils.soak.deploy.session import LauncherChain
+from tests.utils.soak.deploy.types import DeploymentTarget, HotRestartDetails, HotRestartTakeOverEvidence
+from tests.utils.soak.recipes.gsm8k import Gsm8kLaunchSpec
 
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, LaunchGuard
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION
+from miles.utils.workers.types import ClusterBackend
 
 _WORKLOADS: tuple[str, ...] = (ORCHESTRATOR, ROLLOUT_EXECUTOR, TRAINER)
 _STATE_FILE = Path("/state/generation-a.json")
+_RUN_ID = "demo"
 _PROGRESS = RunProgress(last_saved_iteration=3, last_finished_rollout_id=5)
 _UNINSTALL_JOB_STDOUT = json.dumps({"metadata": {"uid": "uid-uninstall"}})
 
@@ -54,6 +73,41 @@ def _deployment_target(
             **overrides,
         }
     )
+
+
+def _restamped(
+    target: DeploymentTarget,
+    stamp: str,
+    *,
+    names: tuple[str, ...] = (ORCHESTRATOR, ROLLOUT_EXECUTOR),
+    **overrides: object,
+) -> DeploymentTarget:
+    stamps = target.workload_stamps | dict.fromkeys(names, stamp)
+    return target.model_copy(
+        update={"workload_stamps": stamps, "incarnation": json.dumps(stamps, sort_keys=True), **overrides}
+    )
+
+
+def _hot_restart_request(target: DeploymentTarget, *, request_id: str = "req-1") -> SoakActionRequest:
+    return SoakActionRequest(
+        request_id=request_id, target=target, form_name="hot_restart", details=HotRestartDetails()
+    )
+
+
+def _requested_take_over(request: SoakActionRequest, *, at: datetime) -> SoakActionRequestedEvent:
+    return SoakActionRequestedEvent(timestamp=at, request=request)
+
+
+def _landed_take_over(request: SoakActionRequest, *, after: DeploymentTarget, at: datetime) -> SoakActionAppliedEvent:
+    return SoakActionAppliedEvent(
+        timestamp=at, request_id=request.request_id, evidence=HotRestartTakeOverEvidence(after=after)
+    )
+
+
+def _deployment_observation(
+    targets: list[DeploymentTarget] | None, *, at: datetime, errors: dict[str, str] | None = None
+) -> SoakObservationEvent:
+    return SoakObservationEvent(timestamp=at, targets=targets, errors=errors or {})
 
 
 # ============================== kubectl reads ===============================
@@ -171,3 +225,65 @@ class _FakeDeploymentReads:
         if isinstance(self._job_stdout, BaseException):
             raise self._job_stdout
         return subprocess.CompletedProcess(argv, 0, stdout=self._job_stdout, stderr="")
+
+
+# ================================ launchers =================================
+
+
+def _launch_spec(**config_overrides: object) -> Gsm8kLaunchSpec:
+    config = ExecuteTrainConfig(
+        **{"cluster_backend": ClusterBackend.KUBERNETES, "namespace": NAMESPACE, "run_id": _RUN_ID, **config_overrides}
+    )
+    return Gsm8kLaunchSpec(config=config, train_args="--save /ckpt ", fully_async=True)
+
+
+class _FakeLauncher:
+    def __init__(self, *, error: BaseException | None = None) -> None:
+        self.error = error
+        self.finish = asyncio.Event()
+        self.calls: list[tuple[Gsm8kLaunchSpec, LaunchGuard | None]] = []
+        self.cancelled = False
+
+    async def __call__(self, spec: Gsm8kLaunchSpec, *, guard: LaunchGuard | None = None) -> None:
+        self.calls.append((spec, guard))
+        try:
+            await self.finish.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        if self.error is not None:
+            raise self.error
+
+
+class _HotRestartHarness:
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, launcher: _FakeLauncher) -> None:
+        self.launcher = launcher
+        self.checked: list[DeploymentTarget] = []
+        self.stale: BaseException | None = None
+        self.event_log = EventLog(tmp_path / "events.jsonl")
+        self.chain = LauncherChain()
+        self.reported: list[SoakActionEvidence] = []
+        monkeypatch.setattr(hot_restart_module, "launch", launcher)
+        monkeypatch.setattr(hot_restart_module, "assert_workloads_unchanged", self._check)
+        monkeypatch.setattr(hot_restart_module, "TAKE_OVER_POLL_INTERVAL_SECONDS", 0)
+
+    def form(self, **spec_overrides: object) -> HotRestartForm:
+        return HotRestartForm(launch_spec=_launch_spec(**spec_overrides), event_log=self.event_log, chain=self.chain)
+
+    def start(self, request: SoakActionRequest, **spec_overrides: object) -> asyncio.Task[None]:
+        return asyncio.create_task(self.form(**spec_overrides).execute(request, report_applied=self.reported.append))
+
+    def observe(self, *targets: DeploymentTarget, seconds: float = 1) -> None:
+        self.event_log.append(_deployment_observation(list(targets), at=_at(seconds)))
+
+    def launch_outcomes(self) -> list[tuple[str | None, LaunchOutcome]]:
+        return [
+            (event.request_id, event.outcome)
+            for event in self.event_log.events
+            if isinstance(event, SoakLaunchFinishedEvent)
+        ]
+
+    def _check(self, target: DeploymentTarget) -> None:
+        self.checked.append(target)
+        if self.stale is not None:
+            raise self.stale
