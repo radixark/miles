@@ -20,6 +20,8 @@
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
 | `scenario_precise_all_gather` | `kill_train__dp2_tp2` |
 | `scenario_precise_all_gather_mixed` | `kill_train__dp2_tp2` |
+| `scenario_precise_p2p` | `kill_train__dp2_tp2`, `kill_rollout__dp2_tp2` |
+| `scenario_precise_p2p_mixed` | `kill_rollout__dp2_tp2` |
 | `scenario_realistic_gsm8k_fully_async` | `test_realistic_gsm8k_fully_async__kill_train_rollout.py`, no modes |
 
 - **Forced absences**, one reason each:
@@ -46,6 +48,8 @@
 | `scenario_realistic_gsm8k_fully_async` | soak | same, through `train_async.py --fully-async` |
 | `scenario_precise_all_gather` | soak | `scenario_random_crash` with every trainer fault set at the weight-update all-gather hook |
 | `scenario_precise_all_gather_mixed` | soak | `scenario_random_crash` with trainer faults set at the weight-update all-gather hook, mixed with wall-clock faults |
+| `scenario_precise_p2p` | soak | `scenario_random_crash` with every fault set at the trainer's P2P send hook: on the sender, or on a receiver engine |
+| `scenario_precise_p2p_mixed` | soak | `scenario_random_crash` with receiver faults triggered by the trainer's P2P send hook, mixed with wall-clock faults |
 
 ### Modes
 
@@ -66,11 +70,12 @@
 | `kill_train__dp2_cp2` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | `scenario_trainer_with_failure` under real generation; needs the dense model (see below) |
 | `kill_rollout__dp4` | 1 | 4 + 4 | 4 | — | 4 engines × 1 GPU, disaggregated | dense Qwen3-0.6B | `("rollout",)` | the only rollout-only mode: crashes engines, not trainer cells |
 | `kill_train_rollout__dp2_cp2` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train", "rollout")` | both kinds crash in the same run, sync and fully-async |
+| `kill_rollout__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("rollout",)` | receiver faults triggered by trainer P2P hooks |
 | `kill_train__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | real weight-update tensor all-gather and P2P send fault hooks |
 | `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` | 4 train + 2 rollout | 32 + 16 | 4 | CP2 TP2 PP2 EP2 ETP2 | 2 engines × 8 GPU | full MoE | `("train",)` | full model, all parallelism; multi-node, so no CI entry |
 
 - **Batch shape**: `--rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 256` everywhere — 256 samples per rollout, divisible by both 2 and 4 cells. `scenario_trainer_with_failure` x `kill_train__dp4_cp2__fake_rollout__moe_5layer` trains the fault rollout on the 3 surviving cells, so the uneven 256-over-3 split is exercised there.
-- **Model**: 1-node modes use the 5-layer MoE `Qwen3-30B-A3B-5layer`, except the four dense modes.
+- **Model**: 1-node modes use the 5-layer MoE `Qwen3-30B-A3B-5layer`, except the five dense modes.
 
 ## Running the code
 
@@ -426,6 +431,9 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **Precise all-gather entries**: `test_precise_all_gather__kill_train__dp2_tp2.py` runs the random-crash soak with `--precise all_gather` alone, so every trainer fault lands at the all-gather hook; `test_precise_all_gather_mixed__kill_train__dp2_tp2.py` adds `--mix`.
 - **Precise faults**: `HookFaultForm` sets `sigkill`, `sigstop` or a training-thread deadlock at a trainer hook (`trainer_before_all_gather`, `trainer_before_weight_send`) through the api server's `fault-hook` route, bound to the observed fault target, and reads the cell's effect like `inject_fault`.
 - **Receiver triggers**: `RemoteHookFaultForm` sets an observation-only hook on another trainer cell and, once the runner's training-event feed reports that worker's `FaultHookEvent` hit, applies its rollout form (`inject_fault`, `exec_sigkill`, `exec_sigstop`, `delete_pod`) through the selected backend. The feed's poll interval and network latency separate hook arrival from receiver failure.
+- **Precise P2P entries**: `scenario_precise_p2p` runs `kill_train__dp2_tp2` for sender faults and `kill_rollout__dp2_tp2` for receiver faults, and `scenario_precise_p2p_mixed` runs the receiver side with `--mix`; all have explicit CI entries and reuse the shared soak runner.
+- **Receiver recovery**: the single-target receiver entry enables only rollout FT.
+- **Late receiver faults**: an independently observed effect still has to recover even when the transfer finished before the fault; each remote form must additionally fail at least one receiver in its exact triggered update, so late misses cannot satisfy precise-hit coverage.
 - **Mixed injection**: `--mix` draws the hook forms and the wall-clock forms through the same scheduler, and each hook request draws its delay uniformly from 0 to 1000 ms (the deadlock stays immediate). Every enabled form must produce an effect.
 - **Hook witnesses**: every applied hook form needs exactly one worker-side dispatch at its recorded delay, and every remote P2P form needs a receiver failure in its exact triggered update (`tests/utils/soak/ft/checkers/hooks.py`); every trainer fault needs an original peer to finish a normal step afterwards (`tests/utils/soak/ft/checkers/survivors.py`). The normal healing and tail witnesses remain mandatory.
 - **Calibration**: the hook deadlines and the 4800-second CI estimate have not been calibrated by a run.
