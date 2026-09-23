@@ -169,16 +169,9 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
     def _resolve_ple_batch(self):
         """The published batch, made safe under activation recompute.
 
-        With --recompute-granularity full, Megatron replays this layer's forward
-        during BACKWARD, long after the model-level post-hook cleared the side
-        channel -- and under 1F1B the channel would by then hold a LATER
-        microbatch's ids, which is silent corruption, not a crash. So: on the
-        checkpointed original pass (is_checkpointing() and grads disabled) the
-        batch is also enqueued; the recompute pass (is_checkpointing() and grads
-        enabled) pops from the queue instead of reading the channel. Plain
-        no-checkpoint forwards just read the channel. FIFO matches non-interleaved
-        1F1B's backward order; interleaved VPP would need a smarter key, and this
-        model rejects VPP in the spec anyway.
+        The recompute pass runs in backward, after the side channel was cleared or
+        overwritten by a later microbatch, so the checkpointed pass enqueues its batch
+        and the recompute pass pops it. FIFO matches non-interleaved 1F1B.
         """
 
         if not hasattr(self, "_ple_recompute_fifo"):

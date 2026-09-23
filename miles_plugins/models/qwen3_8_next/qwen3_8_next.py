@@ -1,7 +1,7 @@
-"""Qwen3.8-Next block spec: uniform GPT decoder (like qwen3_5, NOT models.hybrid),
-HC ModuleSpec slots -> Qwen38NextHyperConnection, hc_head_contraction filled.
-Trap: every block layernorm is dropped -- the checkpoint has none (each HC's
-hc_norm is the pre-block norm); a leftover TE fused norm silently corrupts.
+"""Qwen3.8-Next block spec: the GPT decoder with Qwen3.8-Next hyper-connections.
+
+Every block layernorm is dropped: the checkpoint has none (each HC's ``hc_norm`` is the
+pre-block norm), and a leftover norm would load at init values.
 """
 
 import copy
@@ -26,13 +26,7 @@ from miles_plugins.models.qwen3_8_next.ops.attention import Qwen38NextAttention
 
 
 def _layer_types(text_config):
-    """Per-layer ``linear_attention`` / ``full_attention`` labels.
-
-    Mirrors Qwen3.5's fallback: some config classes do not expose ``layer_types``,
-    in which case every ``full_attention_interval``-th layer is full attention.
-    For Qwen3.8-Flash-Next the released config does expose it, and it agrees --
-    48 layers, 36 linear + 12 full.
-    """
+    """Per-layer ``linear_attention`` / ``full_attention`` labels, with Qwen3.5's fallback."""
     if hasattr(text_config, "layer_types") and text_config.layer_types:
         return list(text_config.layer_types)
     interval = getattr(text_config, "full_attention_interval", 4)
@@ -43,21 +37,14 @@ def _layer_types(text_config):
 def _hc_spec(config, *, with_ple: bool = False):
     """The attention-site HC on the PLE layer also owns the PLE module.
 
-    PLE's increment has to land on the widened residual before the read gate sees
-    it, and the HC's own state is PLE's query, so the attention HC slot is exactly
-    the right place -- and it is already pluggable, so this needs no further
-    extension point in Megatron.
+    PLE's increment lands on the widened residual before the read gate, and the HC
+    state is PLE's query.
     """
     return ModuleSpec(module=Qwen38NextPLEHyperConnection if with_ple else Qwen38NextHyperConnection)
 
 
 def _strip_block_layernorms(layer_spec, config):
-    """Replace the fused-layernorm qkv with a plain linear, and drop pre_mlp_layernorm.
-
-    ``backend.column_parallel_layer_norm_linear()`` is what Qwen3.5 puts in
-    ``linear_qkv``; swapping it for ``TEColumnParallelLinear`` removes the
-    ``layer_norm_weight`` parameter without giving up Transformer Engine.
-    """
+    """Replace the fused-layernorm qkv with a plain TE linear, and drop pre_mlp_layernorm."""
     submodules = layer_spec.submodules
     attn = submodules.self_attention
     if getattr(attn, "submodules", None) is not None and hasattr(attn.submodules, "linear_qkv"):
@@ -69,20 +56,8 @@ def _strip_block_layernorms(layer_spec, config):
 class Qwen38NextLinearAttention(Qwen35LinearAttention):
     """Qwen3.5's gated-delta-net wrapper with its input layernorm removed.
 
-    Qwen3.5's wrapper normalises before the GDN:
-
-        hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.linear_attn(...)
-
-    and that norm maps to ``layers.{n}.input_layernorm.weight``. Qwen3.8-Next has
-    no such tensor -- the attention hyper-connection's ``hc_norm`` is the pre-block
-    norm, and what reaches the GDN is already normed. Keeping Qwen3.5's norm would
-    both normalise twice and leave a parameter with no source in the checkpoint,
-    which is how this surfaced: the bridge raised on
-    ``decoder.layers.0.self_attention.input_layernorm.weight``.
-
-    Replaced with Identity rather than dropped so ``hf_forward`` needs no override
-    and stays in step with any future change to Qwen3.5's.
+    The attention HC's ``hc_norm`` already normalises the GDN input. Identity rather
+    than deletion keeps ``hf_forward`` inherited unchanged.
     """
 
     def __init__(self, *args, **kwargs):
@@ -93,11 +68,7 @@ class Qwen38NextLinearAttention(Qwen35LinearAttention):
 def _apply_qwen3_8_next_config(config, text_config) -> None:
     """Put the Qwen3.8-Next fields on a TransformerConfig built from argparse.
 
-    Megatron exposes no CLI flags for these, and ``convert_hf_to_torch_dist`` builds
-    its config from ``parse_args``, so without this the spec would see
-    ``enable_hyper_connections=False`` and quietly emit a plain ``TransformerLayer``
-    stack with no hyper-connections at all -- a model that loads and runs and is
-    simply wrong. Mirrors ``Qwen38NextBridge._build_config`` so the two paths agree.
+    Megatron has no CLI flags for them; mirrors ``Qwen38NextBridge._build_config``.
     """
     config.enable_hyper_connections = True
     config.num_residual_streams = getattr(text_config, "hc_count", 4)

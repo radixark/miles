@@ -1,9 +1,7 @@
 """Qwen3.8-Next full-attention layer: QSA indexer + sparse attention.
 
-12 of the 48 layers are full attention. Each projects its own indexer queries and
-compressed keys, scores them, and keeps a budget of ``indexer_budget`` key tokens
-per query; attention then reads only those.
-
+Each full-attention layer keeps ``indexer_budget`` key tokens per query and attends
+only those.
 """
 
 import torch
@@ -136,10 +134,8 @@ class Qwen38NextAttention(SelfAttention):
     def _publish_block_form(self, selection: Tensor, positions: Tensor, seq_start: Tensor, seq: int):
         """Selection rows -> the block form the tensor-core kernel consumes.
 
-        Block ids come from the indexer's own per-sequence grid (``PackedBlockLayout``), not
-        from a formula over ``seq_start``: a ceil(seq_start / ratio) base looks right but
-        collides for some length combinations (lens [301, 211] puts one sequence's last
-        block on the next sequence's first), which would silently mix selections.
+        Block ids come from the indexer's per-sequence grid (``PackedBlockLayout``); a
+        ceil(seq_start / ratio) base collides across sequences for some lengths.
         """
         ratio = self.compress_ratio
         cu = self._qsa_cu_seqlens

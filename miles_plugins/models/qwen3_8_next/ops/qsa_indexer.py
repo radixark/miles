@@ -1,9 +1,7 @@
 """Qwen3.8-Next QSA (Qwen Sparse Attention) indexer.
 
-Runs on the full-attention layers (12 of 48) and picks, per query token, which
-``indexer_budget`` key tokens the sparse attention will actually look at.
-
-Reimplemented from sglang's ``QSAIndexer`` rather than imported -- miles takes no
+Runs on the full-attention layers and picks, per query token, which
+``indexer_budget`` key tokens the sparse attention will look at.
 """
 
 import math
@@ -54,10 +52,8 @@ def block_causal_mask(query_positions: Tensor, num_blocks: int, compress_ratio: 
 class PackedBlockLayout:
     """Per-sequence compressed-block grid for a packed (thd) batch.
 
-    Every quantity the indexer needs is global-index-free: sglang scores one request
-    at a time, so its block grid always starts at that request's token 0. A packed
-    batch has to reproduce that per sequence, otherwise a sequence at pack offset
-    ``s`` scores blocks that belong to whatever sits at the front of the buffer.
+    The rollout engine scores one request at a time, so each sequence's block grid
+    must start at its own first token.
     """
 
     def __init__(self, cu_seqlens: Tensor, positions: Tensor, compress_ratio: int):
@@ -86,12 +82,7 @@ class PackedBlockLayout:
 
 
 def compress_keys_by_mean_packed(token_k: Tensor, layout: PackedBlockLayout) -> Tensor:
-    """``[T, head_dim] -> [layout.num_blocks, head_dim]``, averaging inside each sequence.
-
-    Same result as ``compress_keys_by_mean`` per sequence, so no block ever mixes
-    tokens from two sequences (which a global grid does whenever a sequence length
-    is not a multiple of ``compress_ratio``).
-    """
+    """``[T, head_dim] -> [layout.num_blocks, head_dim]``, averaging inside each sequence."""
     acc = _indexer_acc_dtype(token_k)
     dim = token_k.shape[-1]
     summed = torch.zeros(layout.num_blocks, dim, dtype=acc, device=token_k.device)
@@ -196,10 +187,7 @@ class Qwen38NextQSAIndexer(MegatronModule):
         """``[T, hidden] -> [T, token_topk]`` int32 token indices, ``-1`` where unused.
 
         ``positions`` restart at 0 per sequence; the returned indices are absolute in
-        the packed buffer. With a single sequence both coordinate systems coincide,
-        which is why the packed path has to be explicit: without ``cu_seqlens`` every
-        sequence but the first scores the blocks sitting at the front of the buffer
-        and then has them all clamped away, leaving it with no keys at all.
+        the packed buffer, so a packed batch must pass ``cu_seqlens``.
         """
         layout = None
         if cu_seqlens is not None and cu_seqlens.numel() > 2:
