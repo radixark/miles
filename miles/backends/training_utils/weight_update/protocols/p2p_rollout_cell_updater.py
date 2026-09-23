@@ -5,6 +5,8 @@ from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 from .p2p_transfer_utils import RemoteWeightInfo
 
@@ -112,6 +114,7 @@ def _do_p2p_write_one_session(
         f"source: {len(source_ptrs)}, target: {len(target_ptrs)}"
     )
 
+    reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
     ret = transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
     if ret < 0:
         raise RuntimeError(f"[P2P-Shared] Transfer failed for session {session_id}, error: {ret}")
