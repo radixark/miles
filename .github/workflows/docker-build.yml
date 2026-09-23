@@ -259,6 +259,10 @@ jobs:
         if: github.event_name == 'schedule'
         run: |
           KEEP=20
+          # A pinned dev-<ts> tag (see docs/developer/versions.md) must outlive this many
+          # days however often builds run, so the count limit alone never deletes it.
+          MIN_AGE_DAYS=14
+          CUTOFF=$(date -u -d "${MIN_AGE_DAYS} days ago" +%Y%m%d%H%M)
           IMAGE=radixark/miles
 
           # Authenticate with Docker Hub API
@@ -267,7 +271,8 @@ jobs:
             -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
             | jq -r .token)
 
-          # Keep the newest $KEEP timestamped tags matching $1, delete the rest.
+          # Keep the newest $KEEP timestamped tags matching $1 plus any younger than
+          # $MIN_AGE_DAYS days, delete the rest.
           # cu13 (dev-<ts>) and cu12-x86 (dev-cu12-<ts>) are pruned as independent series.
           prune_series() {
             PATTERN="$1"
@@ -289,9 +294,13 @@ jobs:
             fi
 
             DELETE_COUNT=$((COUNT - KEEP))
-            echo "Pruning ${DELETE_COUNT} old tags matching ${PATTERN}..."
+            echo "Pruning up to ${DELETE_COUNT} old tags matching ${PATTERN}..."
             echo "$SORTED" | head -n "$DELETE_COUNT" | while read -r TAG; do
               [ -z "$TAG" ] && continue
+              if [ "${TAG##*-}" -ge "$CUTOFF" ]; then
+                echo "  Keeping ${TAG} (younger than ${MIN_AGE_DAYS} days)"
+                continue
+              fi
               HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
                 -H "Authorization: JWT ${TOKEN}" \
                 "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")

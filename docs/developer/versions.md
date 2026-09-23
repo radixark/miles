@@ -165,7 +165,7 @@ and starts a rebuild within about 30 minutes of any of them moving. It deliberat
 poll Miles, which would rebuild constantly, and instead forces a build once the last one is
 12 hours old. So `dev` follows its dependencies closely and trails Miles `main` by at most
 half a day. When you need that to stop moving underneath you, pin `ci-image-tag:` to a
-timestamped tag.
+timestamped tag; the scheduled prune keeps every timestamped tag for at least 14 days.
 
 **The ROCm images move daily too.** The sgl-project/sglang nightlies rebuild the undated
 `rocm/sgl-dev:miles-rocm*-mi35x` tags from Miles `main` every day and publish a dated
