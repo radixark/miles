@@ -1,6 +1,9 @@
+import subprocess
+
 import httpx
 import pytest
-from tests.fast.utils.soak.soak_fakes import _cell, _FakeCellApi, _patch_http
+from tests.fast.utils.soak.soak_fakes import _cell, _FakeCellApi, _FakeKubectl, _patch_http, _pod_json
+from tests.utils.soak.ft import observers as observers_module
 from tests.utils.soak.ft.observers import CellObserver
 from tests.utils.soak.ft.types import CellTarget
 
@@ -9,6 +12,7 @@ from miles.utils.workers.naming import compute_cell_id
 
 _BASE_URL = "http://api:18080"
 _ACTOR_0 = compute_cell_id(pool_id="actor", cell_index=0)
+_ACTOR_1 = compute_cell_id(pool_id="actor", cell_index=1)
 _ROLLOUT_0 = compute_cell_id(pool_id="rollout", cell_index=0)
 
 
@@ -67,6 +71,75 @@ class TestCellObserverCells:
 
         assert observation.targets == []
         assert observation.errors == {}
+
+
+class TestCellObserverPods:
+    async def test_a_ray_observation_never_reads_pods(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without a release there is no pod to attach and kubectl is never called."""
+        _patch_http(monkeypatch, _FakeCellApi([_cell(_ACTOR_0, cell_type="actor")]))
+        kubectl = _FakeKubectl(pods=[])
+        monkeypatch.setattr(observers_module, "run_process", kubectl)
+
+        observation = await CellObserver(base_url=_BASE_URL, cell_types={"actor"}).observe()
+
+        assert kubectl.calls == []
+        assert observation.targets[0].pods == []
+
+    async def test_release_pods_are_attached_to_their_cells_and_unowned_pods_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pods are read by release selector and matched to cells through their pool and index labels."""
+        _patch_http(
+            monkeypatch, _FakeCellApi([_cell(_ACTOR_0, cell_type="actor"), _cell(_ACTOR_1, cell_type="actor")])
+        )
+        kubectl = _FakeKubectl(
+            pods=[
+                _pod_json("p-a0", pool_id="actor", cell_index=0),
+                _pod_json("p-a1", pool_id="actor", cell_index=1),
+                _pod_json("p-a9", pool_id="actor", cell_index=9),
+                _pod_json("p-unlabelled", pool_id="actor", cell_index=None),
+            ]
+        )
+        monkeypatch.setattr(observers_module, "run_process", kubectl)
+
+        observation = await CellObserver(
+            base_url=_BASE_URL, cell_types={"actor"}, namespace="rl", release="miles-run-all"
+        ).observe()
+
+        [get] = kubectl.calls
+        assert get[:3] == ["kubectl", "get", "pods"]
+        assert get[get.index("--namespace") + 1] == "rl"
+        assert "miles-run-all" in get[get.index("--selector") + 1]
+        targets = _targets_by_identity(observation.targets)
+        [pod] = targets[_ACTOR_0].pods
+        assert (pod.namespace, pod.release, pod.name, pod.uid) == ("rl", "miles-run-all", "p-a0", "uid-p-a0")
+        assert [one.name for one in targets[_ACTOR_1].pods] == ["p-a1"]
+        assert observation.errors == {}
+
+    async def test_a_failed_pod_read_is_an_error_not_an_observation_without_pods(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A kubectl failure keeps the cell targets but marks the observation incomplete."""
+        _patch_http(monkeypatch, _FakeCellApi([_cell(_ACTOR_0, cell_type="actor")]))
+        monkeypatch.setattr(
+            observers_module,
+            "run_process",
+            _FakeKubectl(pods=[], get_error=subprocess.CalledProcessError(1, ["kubectl"])),
+        )
+
+        observation = await CellObserver(
+            base_url=_BASE_URL, cell_types={"actor"}, namespace="rl", release="miles-run-all"
+        ).observe()
+
+        assert set(observation.errors) == {"pods"}
+        assert observation.targets[0].pods == []
+
+    async def test_a_release_without_a_namespace_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reading pods across all namespaces could attach another run's pods."""
+        _patch_http(monkeypatch, _FakeCellApi([_cell(_ACTOR_0, cell_type="actor")]))
+
+        with pytest.raises(AssertionError, match="namespace"):
+            await CellObserver(base_url=_BASE_URL, cell_types={"actor"}, release="miles-run-all").observe()
 
 
 class TestObserverHttpBoundary:

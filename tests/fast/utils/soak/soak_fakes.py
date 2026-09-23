@@ -1,5 +1,6 @@
 import asyncio
 import builtins
+import json
 import random
 import subprocess
 import threading
@@ -34,6 +35,7 @@ from tests.utils.soak.core.types import (
 from tests.utils.soak.core.views import SoakActionRecord
 from tests.utils.soak.ft.types import CellTarget, PodDetails
 from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence, SoakPodTarget
+from tests.utils.soak.k8s_utils.pod_processes import ProcessTarget
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
@@ -52,6 +54,7 @@ from miles.utils.ft_utils.api_server.models import (
 )
 from miles.utils.workers.cell_operations.base import FaultTarget
 from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
 _BASE = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
 
@@ -454,3 +457,42 @@ def _patch_http(monkeypatch: pytest.MonkeyPatch, api: _FakeCellApi) -> None:
         "AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(api.handle), **kwargs),
     )
+
+
+# ============================== kubectl boundary ==============================
+
+
+def _pod_json(name: str, *, pool_id: str, cell_index: int | None) -> dict:
+    labels = {DEFAULT_LABEL_KEYS.pool_id: pool_id}
+    if cell_index is not None:
+        labels[DEFAULT_LABEL_KEYS.cell_index] = str(cell_index)
+    return {"metadata": {"name": name, "uid": f"uid-{name}", "labels": labels}}
+
+
+class _FakeKubectl:
+    def __init__(
+        self,
+        *,
+        pods: list[dict],
+        get_error: BaseException | None = None,
+        process_targets: dict[tuple[str, str], ProcessTarget | BaseException] | None = None,
+    ) -> None:
+        self._pods = pods
+        self._get_error = get_error
+        self._process_targets = process_targets or {}
+        self.calls: list[list[str]] = []
+
+    def __call__(
+        self, argv: list[str], *, capture_output: bool, check: bool, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(argv)
+        assert argv[0] == "kubectl" and capture_output and check and timeout is not None
+        if argv[1] == "get":
+            if self._get_error is not None:
+                raise self._get_error
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"items": self._pods}), stderr="")
+        pod_name, container = argv[4], argv[6]
+        reply = self._process_targets[(pod_name, container)]
+        if isinstance(reply, BaseException):
+            raise reply
+        return subprocess.CompletedProcess(argv, 0, stdout=reply.model_dump_json(), stderr="")
