@@ -497,6 +497,7 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **Calibration**: the hook deadlines and the 4800-second CI estimate have not been calibrated by a run.
 - **Checksum observation**: real-rollout modes pass `--save-inference-engine-weight-checksum`, so each published weight version records per-tensor engine checksums bound to its version, update and engine incarnation, collected under a five-second timeout; a missed observation loses evidence and fails the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
 - **Checksum witness**: the analyzer rule `inference_engine_weight_checksum_coverage` requires every settled published weight update to carry exactly one checksum record covering the engine incarnations it updated, and `inference_engine_weight_checksum_consistency` requires same-version engines to agree; both run before every training step, so a run's last publication is the one publication no rule sees.
+- **Movement**: the analyzer rule `inference_engine_weight_movement` requires each tensor to change between adjacent settled versions within one trainer load state of a model, with an unchanged tensor set.
 
 ### `scenario_realistic_gsm8k`
 
