@@ -8,11 +8,13 @@ from tests.utils.soak.core.events import (
     SoakActionResultEvent,
     SoakAdmissionClosedEvent,
     SoakEvent,
+    SoakEvidenceArchivedEvent,
     SoakObservationEvent,
 )
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import Event, TrainGroupStepEndEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
@@ -104,12 +106,29 @@ def compute_num_injections(events: list[SoakEvent], *, kind: str | None = None) 
     return len(_applied_actions(events, kind=kind))
 
 
+def compute_injection_times(events: list[SoakEvent], *, kind: str | None = None) -> list[datetime]:
+    return [action.applied.timestamp for action in _applied_actions(events, kind=kind)]
+
+
 def compute_successful_form_names(events: list[SoakEvent], *, kind: str) -> set[str]:
     return {action.requested.request.form_name for action in _applied_actions(events, kind=kind)}
 
 
 def event_source(events: list[SoakEvent], *, name: str, fallback: Path) -> Path:
-    raise NotImplementedError
+    for event in reversed(events):
+        if isinstance(event, SoakEvidenceArchivedEvent):
+            assert name not in event.missing_sources, f"Missing archived soak evidence: {name}"
+            if name in event.sources:
+                return event.sources[name]
+    return fallback
+
+
+def training_events_dir(events: list[SoakEvent], *, dump_dir: str | Path) -> Path:
+    return event_source(events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME)
+
+
+def read_training_events(events: list[SoakEvent], *, dump_dir: str | Path) -> list[Event]:
+    return read_events(training_events_dir(events, dump_dir=dump_dir))
 
 
 def _applied_actions(events: list[SoakEvent], *, kind: str | None) -> list[SoakActionRecord]:

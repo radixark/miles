@@ -14,8 +14,10 @@ from tests.fast.utils.soak.soak_fakes import (
 )
 from tests.utils.soak.core.events import SoakAdmissionClosedEvent, SoakEvent, SoakEvidenceArchivedEvent
 from tests.utils.soak.core.views import (
+    compute_injection_times,
     compute_num_injections,
     compute_successful_form_names,
+    event_source,
     is_normal_step,
     latest_observation,
     project_actions,
@@ -77,6 +79,7 @@ class TestInjectionCounts:
 
         assert compute_num_injections(events, kind="actor") == 1
         assert compute_num_injections(events) == 2
+        assert compute_injection_times(events, kind="actor") == [_at(1)]
 
     def test_only_applied_forms_have_worked(self) -> None:
         """A form proves itself only through an applied effect of its own kind."""
@@ -169,3 +172,31 @@ class TestTailStartedAt:
         """Asking for the tail of an open run is an error."""
         with pytest.raises(AssertionError, match="never closed"):
             tail_started_at([])
+
+
+class TestEventSource:
+    def test_an_archived_source_replaces_the_live_fallback(self, tmp_path: Path) -> None:
+        """Checkers read the archived copy once one exists."""
+        events = [_archived({"training_events": tmp_path / "archived"}, missing=[], at=0)]
+
+        assert event_source(events, name="training_events", fallback=tmp_path / "live") == tmp_path / "archived"
+
+    def test_the_latest_archive_wins(self, tmp_path: Path) -> None:
+        """A later archive supersedes an earlier one."""
+        events = [
+            _archived({"training_events": tmp_path / "old"}, missing=[], at=0),
+            _archived({"training_events": tmp_path / "new"}, missing=[], at=1),
+        ]
+
+        assert event_source(events, name="training_events", fallback=tmp_path) == tmp_path / "new"
+
+    def test_a_source_archived_as_missing_is_refused(self, tmp_path: Path) -> None:
+        """Checkers must not silently fall back to live data the archive says was missing."""
+        events = [_archived({}, missing=["training_events"], at=0)]
+
+        with pytest.raises(AssertionError, match="Missing archived soak evidence"):
+            event_source(events, name="training_events", fallback=tmp_path)
+
+    def test_without_an_archive_the_fallback_is_used(self, tmp_path: Path) -> None:
+        """Before archiving checkers read the live source."""
+        assert event_source([], name="training_events", fallback=tmp_path) == tmp_path
