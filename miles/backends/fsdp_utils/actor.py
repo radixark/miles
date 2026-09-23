@@ -40,6 +40,7 @@ from .adaptations.class_patches import apply_class_patches, apply_model_instance
 from .adaptations.packing import apply_packing
 from .adaptations.post_load_fixups import apply_post_load_fixups
 from .adaptations.precision import apply_fp32_master, precision_forward_context, resolve_precision_policy
+from .loss_scaling import get_per_token_loss_scales
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
@@ -502,6 +503,14 @@ class FSDPTrainRayActor(TrainRayActor):
             data_iterator.reset()
             num_steps_per_rollout = len(num_microbatches)
 
+            # per-token mode accumulates token sums, not means; pre-scan the schedule so every
+            # backward lands on the optimizer-step-wide token mean (see loss_scaling.py)
+            per_token_loss_scales = (
+                get_per_token_loss_scales(data_iterator, num_microbatches)
+                if self.args.calculate_per_token_loss
+                else None
+            )
+
             for step_id in range(num_steps_per_rollout):
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -533,6 +542,7 @@ class FSDPTrainRayActor(TrainRayActor):
                         batch=batch,
                         step_id=step_id,
                         num_microbatches=num_microbatches[step_id],
+                        per_token_loss_scale=None if per_token_loss_scales is None else per_token_loss_scales[step_id],
                     )
                     losses_reduced.append(log_dict)
 
@@ -587,19 +597,24 @@ class FSDPTrainRayActor(TrainRayActor):
             self.ref_model.load_state_dict(actor_state)
             self.ref_model.cpu()
 
-    def _train_step(self, batch, step_id, num_microbatches):
+    def _train_step(self, batch, step_id, num_microbatches, per_token_loss_scale: torch.Tensor | None = None):
         model_args = self._get_model_inputs_args(batch)
         # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
         with routing_replay.stage(routing_replay.REPLAY_FORWARD), precision_forward_context(self.precision_policy):
             logits = self.model(**model_args).logits
 
-        loss, normalizer, log_dict = loss_function(
+        loss, _normalizer, log_dict = loss_function(
             args=self.args,
             batch=batch,
             num_microbatches=num_microbatches,
             logits=logits,
             apply_megatron_loss_scaling=False,
         )
+
+        # the wrapper's normalizer is consumed by Megatron's grad reduction; here the pre-scanned
+        # scale folds the global token count into the backward pass instead
+        if per_token_loss_scale is not None:
+            loss = loss * per_token_loss_scale.to(dtype=loss.dtype)
 
         loss.backward()
 
