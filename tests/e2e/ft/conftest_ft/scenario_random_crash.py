@@ -124,6 +124,8 @@ def _build_train_args(
         + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
+    if ft_mode.has_real_rollout:
+        train_args += "--update-weight-transfer-mode p2p "
     assert_fresh_dump_dir(Path(dump_dir))
     return train_args
 
