@@ -89,15 +89,7 @@ def _kimi_targets(config):
 
 
 def _kimi_k3_targets(config):
-    attention = []
-    linear = config["linear_attn_config"]
-    if linear["kda_layers"]:
-        gates = ("g_proj",) if linear.get("use_full_rank_gate", False) else ("g_a_proj", "g_b_proj")
-        attention.extend(_QKVO_ATTENTION + _prefix_paths("self_attn", "f_a_proj", "f_b_proj", "b_proj", *gates))
-    if len(linear["kda_layers"]) < config["num_hidden_layers"]:
-        attention.extend(_mla_attention_targets(config))
-        if config.get("mla_use_output_gate", False):
-            attention.append("self_attn.g_proj")
+    attention = _prefix_paths("self_attn", "o_proj", "q_a_proj", "kv_a_proj_with_mqa")
     num_moe_layers = sum(
         config["num_experts"] is not None
         and layer >= config["first_k_dense_replace"]
@@ -109,9 +101,7 @@ def _kimi_k3_targets(config):
         mlp.extend(_prefix_paths("block_sparse_moe.experts.*", "w1", "w2", "w3"))
         if config["num_shared_experts"] is not None:
             mlp.extend(_prefix_paths("block_sparse_moe.shared_experts", "gate_proj", "up_proj", "down_proj"))
-        if config.get("routed_expert_hidden_size") is not None:
-            mlp.extend(_prefix_paths("block_sparse_moe", "routed_expert_down_proj", "routed_expert_up_proj"))
-    return tuple(dict.fromkeys(attention)), tuple(mlp)
+    return attention, tuple(mlp)
 
 
 def _glm4_moe_targets(config):

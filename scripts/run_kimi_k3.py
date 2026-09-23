@@ -34,24 +34,6 @@ _NUM_EXPERTS = {"Kimi-K3": 896, "Kimi-K3-4layer": 896, "Kimi-K3-4layer-64experts
 _NUM_ATTENTION_HEADS = 96
 _VALIDATED_FULL_MODEL_GPUS = 64
 
-_LAYERS = "language_model.model.layers.*"
-_DEFAULT_TARGET_MODULES = ",".join(
-    f"{_LAYERS}.{module}"
-    for module in (
-        "self_attn.o_proj",
-        "self_attn.q_a_proj",
-        "self_attn.kv_a_proj_with_mqa",
-        "mlp.gate_proj",
-        "mlp.up_proj",
-        "mlp.down_proj",
-        "block_sparse_moe.shared_experts.gate_proj",
-        "block_sparse_moe.shared_experts.up_proj",
-        "block_sparse_moe.shared_experts.down_proj",
-        "block_sparse_moe.experts.*.w1",
-        "block_sparse_moe.experts.*.w2",
-        "block_sparse_moe.experts.*.w3",
-    )
-)
 
 
 @dataclass
@@ -88,7 +70,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
-    target_modules: str = _DEFAULT_TARGET_MODULES
+    target_modules: str = "all-linear"
     experts_shared_outer_loras: bool = True
 
     reward_model: Literal["deterministic_random", "deepscaler", "math"] | None = None
