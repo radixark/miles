@@ -8,7 +8,7 @@ except ImportError:
 from typing import Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.cell_operations.base import FaultTarget
 
 CELL_TYPE_LABEL: str = "miles.io/cell-type"

@@ -9,7 +9,7 @@ from typing import Any
 import uvicorn
 
 from miles.utils.misc import NodeProbeMixin
-from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
+from miles.utils.test_utils.fault_injector.actions.process import inject_fault as _inject_fault
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.serving.utils import create_server_socket
 
