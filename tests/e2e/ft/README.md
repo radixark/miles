@@ -16,6 +16,7 @@
 | `scenario_trainer_with_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2` |
 | `scenario_rollout_deterministic` | `kill_rollout__dp4` |
 | `scenario_trainer_all_gather_fault` | `kill_train__dp2_tp2` |
+| `scenario_p2p_send_receiver_fault` | `kill_rollout__dp2_tp2` |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_train_rollout__dp2_cp2`, `kill_rollout__dp4` |
 | `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train_rollout.py`, no modes |
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
@@ -40,6 +41,7 @@
 | `scenario_trainer_deterministic` | comparison, multi-phase | healing state transfer is bitwise-correct, on cold start and on resume from a post-healing ckpt |
 | `scenario_rollout_deterministic` | comparison | engine crashes change training bits not at all |
 | `scenario_trainer_all_gather_fault` | comparison | a trainer rank killed, stopped or deadlocked in the weight-update all-gather changes training bits not at all |
+| `scenario_p2p_send_receiver_fault` | comparison | an engine killed while the trainer is sending it weights over P2P changes training bits not at all |
 | `scenario_random_crash` | soak | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | soak | model still reaches gsm8k accuracy under random crashes |
 | `scenario_random_crash_fully_async` | soak | same, through `train_async.py --fully-async` |
@@ -65,10 +67,11 @@
 | `kill_rollout__dp4` | 1 | 4 + 4 | 4 | — | 4 engines × 1 GPU, disaggregated | dense Qwen3-0.6B | `("rollout",)` | the only rollout-only mode: crashes engines, not trainer cells |
 | `kill_train_rollout__dp2_cp2` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train", "rollout")` | both kinds crash in the same run, sync and fully-async |
 | `kill_train__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | trainer faults inside the weight-update tensor all-gather |
+| `kill_rollout__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("rollout",)` | a receiving engine killed during the trainer's P2P send |
 | `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` | 4 train + 2 rollout | 32 + 16 | 4 | CP2 TP2 PP2 EP2 ETP2 | 2 engines × 8 GPU | full MoE | `("train",)` | full model, all parallelism; multi-node, so no CI entry |
 
 - **Batch shape**: `--rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 256` everywhere — 256 samples per rollout, divisible by both 2 and 4 cells. `scenario_trainer_with_failure` x `kill_train__dp4_cp2__fake_rollout__moe_5layer` trains the fault rollout on the 3 surviving cells, so the uneven 256-over-3 split is exercised there.
-- **Model**: 1-node modes use the 5-layer MoE `Qwen3-30B-A3B-5layer`, except the four dense modes.
+- **Model**: 1-node modes use the 5-layer MoE `Qwen3-30B-A3B-5layer`, except the five dense modes.
 
 ## Running the code
 
@@ -389,6 +392,37 @@ Assertions:
 - **Why three actions in one run**: kill, stop and deadlock reach the controller through three different paths (actor death, the update-weights timeout on a frozen rank, the same timeout on a hung thread), and each heal has to leave the trainer bit-identical before the next fault lands.
 - **Why the heal witness**: without it the comparison passes on two fault-free runs.
 - **Calibration**: the 120-second update-weights timeout and the CI estimate have not been calibrated by a run.
+
+### `scenario_p2p_send_receiver_fault`
+
+```
+Type: comparison; both sides run the deterministic P2P recipe of scenario_rollout_deterministic,
+      the target side with --ci-fault-hooks
+Entry: test_p2p_send_receiver_fault__kill_rollout__dp2_tp2.py, ft-short
+Steps: 8 rollouts (NUM_ROLLOUTS)
+Requires: mode.has_real_rollout, ft_components == ("rollout",) exactly, and the ray backend
+Compare: dumps rel <= 0 (bitwise); metrics rtol=0 / atol=0 over train/* and rollout/*
+
+Fault (target side only), declared at launch on trainer cell 0 rank 0 at
+trainer_weight_update_before_send, rollout 3, 50 ms after the hook is reached:
+  api_server_fault: the sending rank asks the api server for engine cell 0's observed fault
+  target and sets an immediate kill_process on it, so the receiver dies while its weights are
+  still in flight
+
+Assertions:
+  1. Reconfigure events: zero on BOTH sides - crashing an engine must not reconfigure trainer cells
+  2. Metrics, dumps, engine checksums, weights moved, gradients nonzero: as
+     scenario_rollout_deterministic
+  3. The declared hook request ends FIRED (FaultHookEvent in the target's event log)
+  4. WeightUpdateResultEvent: rollout 3 fails exactly the killed engine's cell, every other
+     rollout fails none
+```
+
+- **Why it exists**: `scenario_rollout_deterministic` kills engines at random wall-clock moments, so a run can pass without ever losing a receiver in the middle of a transfer; this pins the fault to that moment.
+- **Why the sender pulls the trigger**: only the sending rank knows when the transfer is about to start; going through the api server keeps the kill on the same route the soaks use, bound to the receiver's observed incarnation, so a stale target fails loudly instead of killing a replacement.
+- **Why 50 ms**: long enough for the first writes to be in flight, far shorter than the transfer, so the kill lands inside it on every run; the delay is fixed, not drawn, so both sides stay deterministic.
+- **Why the failed-cell witness**: the update has to record the receiver as failed in exactly that rollout, so a kill that landed after the transfer finished cannot pass as the fault under test.
+- **Calibration**: the 50 ms delay and the CI estimate have not been calibrated by a run.
 
 ### `scenario_random_crash`
 

@@ -7,6 +7,9 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
+
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 
 class _RecordingTransferEngine:
@@ -118,6 +121,73 @@ class TestDoP2PWriteOneSession:
             p2p_rollout_cell_updater._do_p2p_write_one_session(
                 _RecordingTransferEngine(return_code=-1), session, ["w0"], {"w0": (0x1000, 4, 2)}
             )
+
+
+class TestBeforeSendFaultHook:
+    def test_the_hook_fires_once_before_the_batch_write(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An armed BEFORE_SEND fault must strike this sender right before its weights leave for the receiver."""
+        log: list[object] = []
+        _arm_marker_hook(monkeypatch, log=log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
+        transfer_engine = _RecordingTransferEngine()
+        session = _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-a", {"w0": (0x2000, 4, 2)})
+
+        for _ in range(2):
+            p2p_rollout_cell_updater._do_p2p_write_one_session(
+                transfer_engine, session, ["w0"], {"w0": (0x1000, 4, 2)}
+            )
+
+        assert log == [("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND.value)]
+        assert len(transfer_engine.calls) == 2
+
+    def test_a_failing_hook_writes_nothing(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The hook must run before the write, so its failure leaves the receiver untouched."""
+        log: list[object] = []
+        _arm_marker_hook(monkeypatch, log=log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND, fail=True)
+        transfer_engine = _RecordingTransferEngine()
+        session = _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-a", {"w0": (0x2000, 4, 2)})
+
+        with pytest.raises(RuntimeError, match="failed"):
+            p2p_rollout_cell_updater._do_p2p_write_one_session(
+                transfer_engine, session, ["w0"], {"w0": (0x1000, 4, 2)}
+            )
+
+        assert transfer_engine.calls == []
+
+    @pytest.mark.parametrize(
+        "names,registry,error",
+        [
+            ([], {"w0": (0x1000, 4, 2)}, None),
+            (["w0", "w1"], {"w0": (0x1000, 4, 2), "w1": (0x1100, 4, 2)}, "Pointer count mismatch"),
+            (["w0"], {"w0": (0x1000, 4, 1)}, "run past the target buffer"),
+        ],
+    )
+    def test_a_bucket_that_sends_nothing_leaves_the_hook_armed(
+        self,
+        p2p_rollout_cell_updater: ModuleType,
+        p2p_transfer_utils: ModuleType,
+        monkeypatch: pytest.MonkeyPatch,
+        names: list[str],
+        registry: dict[str, tuple[int, int, int]],
+        error: str | None,
+    ) -> None:
+        """An empty or rejected bucket must not consume the one-shot fault meant for a real send."""
+        log: list[object] = []
+        _arm_marker_hook(monkeypatch, log=log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
+        session = _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-a", {"w0": (0x2000, 4, 2)})
+
+        if error is None:
+            p2p_rollout_cell_updater._do_p2p_write_one_session(_RecordingTransferEngine(), session, names, registry)
+        else:
+            with pytest.raises(AssertionError, match=error):
+                p2p_rollout_cell_updater._do_p2p_write_one_session(
+                    _RecordingTransferEngine(), session, names, registry
+                )
+
+        assert log == []
 
 
 def _cell_updater(p2p_rollout_cell_updater: ModuleType, cell_id: str = "cell-a") -> Any:
