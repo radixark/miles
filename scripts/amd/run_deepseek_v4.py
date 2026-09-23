@@ -517,15 +517,22 @@ def _train(args: ScriptArgs, fp8_recipe: str | None = None):
         case "dapo_aime":
             rollout_args += (
                 # DAPO prompts ask for "Answer: ...", not \boxed{}; the math grader extracts only
-                # boxed answers and scores correct completions 0. eval stays an accuracy.
+                # boxed answers and scores correct completions 0.
                 "--rm-type dapo --reward-key score --eval-reward-key acc "
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
                 f"--rollout-max-response-len 8192 "
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
+            # AIME prompts carry no "Answer:" instruction, so responses box their answer; the
+            # DAPO grader would score every one -1. dapo_boxed keeps DAPO's {score, acc} on the
+            # last \boxed{}, so --eval-reward-key acc stays an accuracy.
+            eval_config = (
+                "eval:\n  datasets:\n    - name: aime\n"
+                f"      path: {args.data_dir}/aime-2024/aime-2024.jsonl\n      rm_type: dapo_boxed\n"
+            )
             eval_args += (
-                f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
+                f"--eval-config {command_utils.encode_pseudo_file(eval_config)} "
                 "--n-samples-per-eval-prompt 8 "
                 "--eval-max-response-len 4096 "
             )

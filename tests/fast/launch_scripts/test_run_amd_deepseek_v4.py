@@ -124,6 +124,16 @@ def test_the_dapo_task_is_graded_by_the_answer_format_it_asks_for(launcher, monk
     assert int(_flag(command, "--rollout-max-response-len")) < 16384
 
 
+def test_aime_eval_is_graded_on_the_boxed_answer(launcher, monkeypatch, tmp_path):
+    """AIME prompts do not ask for "Answer:", so the DAPO grader would score every sample -1."""
+    command = _train_argv(launcher, monkeypatch, tmp_path, MI300X, **TWO_MI300X_NODES)
+
+    assert _flag(command, "--eval-prompt-data") is None
+    assert _flag(command, "--eval-config").startswith("base64:")
+    (config,) = [text for text in launcher.recording.pseudo_files if "aime-2024.jsonl" in text]
+    assert "rm_type: dapo_boxed" in config
+
+
 def test_gfx950_keeps_its_verified_four_node_recipe(launcher, monkeypatch, tmp_path):
     command = _train_argv(launcher, monkeypatch, tmp_path, MI355X, num_nodes=4, num_gpus_per_node=8, mode="normal")
 

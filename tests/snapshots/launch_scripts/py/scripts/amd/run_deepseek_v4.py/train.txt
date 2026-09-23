@@ -127,7 +127,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --max-tokens-per-gpu 2048 
   --eval-interval 20
   --eval-top-p 0.7
-  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
+  --eval-config base64:<frozen-pseudo-file-1>
   --n-samples-per-eval-prompt 8
   --eval-max-response-len 4096 
   --rollout-num-gpus-per-engine 4
@@ -166,3 +166,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --fp8-recipe blockwise
   --train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}'
   --no-gradient-accumulation-fusion   
+  --deploy-component all
+
+### pseudo file 1
+eval:
+  datasets:
+    - name: aime
+      path: /root/datasets/aime-2024/aime-2024.jsonl
+      rm_type: dapo_boxed
+
