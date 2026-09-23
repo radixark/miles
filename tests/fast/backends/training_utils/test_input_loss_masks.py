@@ -52,10 +52,12 @@ def test_mask_alignment_survives_packing_and_cp(
     # mask[i] == 1 iff tokens[i] is a supervised response token. Neither the
     # collator's padding helper nor its CP slicing builds it.
     input_weights = {0: 0}
+    output_weights = {0: 0}
     for token_ids, mask in zip(tokens, masks, strict=True):
         weights = [0] * (len(token_ids) - len(mask)) + mask.tolist()
         for position, token_id in enumerate(token_ids.tolist()):
             input_weights[token_id] = weights[position]
+            output_weights[token_id] = weights[position + 1] if position + 1 < len(weights) else 0
 
     monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
     monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self)
@@ -71,13 +73,17 @@ def test_mask_alignment_survives_packing_and_cp(
             pad_multiplier=7,
             qkv_format=qkv_format,
             allgather_cp=allgather_cp,
+            prepare_output_loss_masks=True,
         )
         assert "full_loss_masks" not in batch
         flat_tokens = batch["tokens"].flatten().tolist()
         seen_tokens.extend(token_id for token_id in flat_tokens if token_id != 0)
         expected = torch.tensor([input_weights[token_id] for token_id in flat_tokens], dtype=torch.int)
+        expected_output = torch.tensor([output_weights[token_id] for token_id in flat_tokens], dtype=torch.int)
         torch.testing.assert_close(batch["input_loss_masks"].flatten(), expected)
+        torch.testing.assert_close(batch["output_loss_masks"].flatten(), expected_output)
         assert batch["input_loss_masks"].shape == batch["tokens"].shape
+        assert batch["output_loss_masks"].shape == batch["tokens"].shape
         total += batch["input_loss_masks"].sum().item()
 
     assert sorted(seen_tokens) == sorted(torch.cat(tokens).tolist())

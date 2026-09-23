@@ -140,16 +140,21 @@ def _prepare_loss_masks(
     alignment is fixed before CP slicing because a local roll in Miles would
     have no halo exchange across shard or packed-sequence boundaries.
     """
-    parallel_state = get_parallel_state()
-    cp_size = parallel_state.cp.size
-    cp_rank = parallel_state.cp.rank
     aligned_masks = []
     for loss_mask, total_length, response_length in zip(loss_masks, total_lengths, response_lengths, strict=True):
         prompt_length = total_length - response_length
         loss_mask = F.pad(loss_mask, (prompt_length, 0), value=0)
-        if not allgather_cp:
-            loss_mask = slice_with_cp(loss_mask, 0, qkv_format, max_seqlen)
         aligned_masks.append(loss_mask)
+
+    return _pack_loss_masks(aligned_masks, qkv_format, max_seqlen, pad, allgather_cp)
+
+
+def _pack_loss_masks(aligned_masks, qkv_format, max_seqlen, pad, allgather_cp):
+    parallel_state = get_parallel_state()
+    cp_size = parallel_state.cp.size
+    cp_rank = parallel_state.cp.rank
+    if not allgather_cp:
+        aligned_masks = [slice_with_cp(mask, 0, qkv_format, max_seqlen) for mask in aligned_masks]
 
     if qkv_format == "bshd":
         if allgather_cp:
@@ -167,6 +172,28 @@ def _prepare_loss_masks(
     return loss_mask.unsqueeze(0)
 
 
+def _prepare_output_loss_masks(
+    loss_masks: Sequence[torch.Tensor],
+    total_lengths: Sequence[int],
+    response_lengths: Sequence[int],
+    **kwargs,
+) -> torch.Tensor:
+    """Align supervised target masks with their causal predictor rows."""
+    aligned_masks = []
+    for loss_mask, total_length, response_length in zip(loss_masks, total_lengths, response_lengths, strict=True):
+        token_mask = F.pad(loss_mask, (total_length - response_length, 0), value=0)
+        output_mask = torch.zeros_like(token_mask)
+        output_mask[:-1] = token_mask[1:]
+        aligned_masks.append(output_mask)
+    return _pack_loss_masks(
+        aligned_masks,
+        kwargs["qkv_format"],
+        kwargs["max_seqlen"],
+        kwargs["pad"],
+        kwargs["allgather_cp"],
+    )
+
+
 def get_batch(
     data_iterator: "DataIterator",
     keys: Sequence[str],
@@ -174,6 +201,7 @@ def get_batch(
     qkv_format: str = "thd",
     get_position_ids: bool = False,
     allgather_cp: bool = False,
+    prepare_output_loss_masks: bool = False,
 ) -> dict[str, torch.Tensor | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
@@ -353,6 +381,16 @@ def get_batch(
         input_loss_masks.shape == tokens.shape
     ), f"input_loss_masks.shape: {input_loss_masks.shape}, tokens.shape: {tokens.shape}"
     batch["input_loss_masks"] = input_loss_masks
+    if prepare_output_loss_masks:
+        batch["output_loss_masks"] = _prepare_output_loss_masks(
+            batch["loss_masks"],
+            batch["total_lengths"],
+            batch["response_lengths"],
+            qkv_format=qkv_format,
+            max_seqlen=max_seqlen,
+            pad=pad,
+            allgather_cp=allgather_cp,
+        )
 
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)

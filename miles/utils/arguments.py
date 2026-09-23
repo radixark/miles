@@ -1551,6 +1551,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--compact-actor-logits",
+                action="store_true",
+                default=False,
+                help="Project actor/reference logits only for tokens selected by the loss mask.",
+            )
+            parser.add_argument(
                 "--observe-training-entropy",
                 action="store_true",
                 default=False,

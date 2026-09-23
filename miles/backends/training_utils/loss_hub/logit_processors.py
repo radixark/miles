@@ -193,6 +193,7 @@ def get_log_probs_and_entropy(
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
     rollout_sampling_mask: Sequence[RolloutSamplingMask] | None = None,
+    output_loss_masks: torch.Tensor | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
@@ -230,6 +231,83 @@ def get_log_probs_and_entropy(
                     f"{response_length} for sample {sample_index}"
                 )
     parallel_state = get_parallel_state()
+
+    if output_loss_masks is not None and logits.numel() // logits.size(-1) != output_loss_masks.numel():
+        mask_chunks = list(
+            _iter_response_chunks(
+                output_loss_masks.unsqueeze(-1).float(),
+                args=args,
+                unconcat_tokens=unconcat_tokens,
+                total_lengths=total_lengths,
+                response_lengths=response_lengths,
+                max_seq_lens=max_seq_lens,
+                include_response_indices=rollout_sampling_mask is not None,
+            )
+        )
+        compact_logits = logits.reshape(-1, logits.size(-1))
+        if args.true_on_policy_mode:
+            if compact_logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+                compact_logits = compact_logits.div(args.rollout_temperature)
+            if getattr(args, "bf16", False):
+                compact_logits = compact_logits.to(torch.bfloat16)
+            elif getattr(args, "fp16", False):
+                compact_logits = compact_logits.to(torch.float16)
+
+        log_probs_list = []
+        entropy_list = []
+        row_offset = 0
+        graph_anchor = compact_logits.float().sum() * 0
+        for sample_index, (mask_chunk, tokens_chunk, response_indices) in enumerate(mask_chunks):
+            selected = mask_chunk.squeeze(-1).bool()
+            row_count = int(selected.sum().item())
+            logits_chunk = compact_logits[row_offset : row_offset + row_count]
+            row_offset += row_count
+            sampling_mask = None
+            if rollout_sampling_mask is not None:
+                selected_indices = [
+                    index for index, keep in zip(response_indices, selected.tolist(), strict=True) if keep
+                ]
+                sampling_mask = build_local_sampling_mask(
+                    logits_chunk,
+                    rollout_sampling_mask[sample_index],
+                    selected_indices,
+                    tp_rank=parallel_state.tp.rank,
+                )
+            log_prob, entropy = calculate_log_probs_and_entropy(
+                logits_chunk,
+                tokens_chunk[selected],
+                parallel_state.tp.group,
+                with_entropy=with_entropy,
+                entropy_requires_grad=entropy_requires_grad,
+                chunk_size=args.log_probs_chunk_size,
+                true_on_policy=args.true_on_policy_mode,
+                vocab_size=getattr(args, "vocab_size", None),
+                sampling_mask=sampling_mask,
+                temperature=1.0 if args.true_on_policy_mode else args.rollout_temperature,
+            )
+            log_probs_list.append(
+                log_prob.new_zeros(selected.numel()).masked_scatter(selected, log_prob) + graph_anchor
+            )
+            if with_entropy:
+                entropy_chunk = entropy.new_zeros(selected.numel()).masked_scatter(selected, entropy)
+                entropy_list.append(entropy_chunk + graph_anchor if entropy_requires_grad else entropy_chunk)
+
+        if row_offset != compact_logits.size(0):
+            raise ValueError(f"selected {row_offset} logits rows, got {compact_logits.size(0)}")
+        res = {"log_probs": log_probs_list}
+        if with_entropy:
+            res["entropy"] = entropy_list
+        if args.allgather_cp:
+            allgather_cp_redistribute(
+                res,
+                logits=output_loss_masks.unsqueeze(-1),
+                args=args,
+                total_lengths=total_lengths,
+                response_lengths=response_lengths,
+                max_seq_lens=max_seq_lens,
+            )
+        return res
+
     log_probs_list = []
     entropy_list = []
     response_chunks = _iter_response_chunks(
