@@ -3730,6 +3730,12 @@ def hf_validate_args(args, hf_config):
                     hf_config.rope_theta = _entry["rope_theta"]
                     break
 
+    if hf_config.model_type == "qwen3_moe" and args.moe_router_dtype is not None:
+        # Keep inference routing in the trainer's precision before top-k.
+        model_overrides = json.loads(args.sglang_json_model_override_args)
+        model_overrides.setdefault("router_dtype", args.moe_router_dtype)
+        args.sglang_json_model_override_args = json.dumps(model_overrides)
+
     model_name = (args.model_name or "").lower().replace("-", "").replace("_", "")
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
         assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
