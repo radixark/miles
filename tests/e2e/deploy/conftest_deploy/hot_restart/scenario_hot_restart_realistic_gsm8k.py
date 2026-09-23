@@ -6,7 +6,7 @@ from tests.e2e.ft.conftest_ft.cli_options import NumRolloutOption, SeedOption
 from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.utils import compute_release_of_config
-from tests.utils.soak.core.views import event_source
+from tests.utils.soak.core.views import training_events_dir
 from tests.utils.soak.deploy.checkers.checkpoint_progress import (
     MIN_HOT_RESTARTS,
     SAVE_INTERVAL,
@@ -14,6 +14,7 @@ from tests.utils.soak.deploy.checkers.checkpoint_progress import (
     assert_take_over_loss_within_save_interval,
     assert_take_overs_resumed_within_save_interval,
 )
+from tests.utils.soak.deploy.checkers.engine_checksums import assert_engine_checksums_after_take_overs
 from tests.utils.soak.deploy.checkers.evidence import project_hot_restart_evidence
 from tests.utils.soak.deploy.checkers.launches import assert_hot_restart_launches_finished
 from tests.utils.soak.deploy.checkers.takeover_scope import assert_take_overs_replaced_only_script
@@ -90,7 +91,8 @@ def _assert_hot_restarts_healthy(
         minimum_restarts=MIN_HOT_RESTARTS,
     )
     assert_take_over_loss_within_save_interval(evidence.records)
-    source = event_source(events, name="training_events", fallback=run.events_dir)
+    source = training_events_dir(events, dump_dir=run.dump_dir)
+    assert_engine_checksums_after_take_overs(events, source=source)
     assert_take_overs_resumed_within_save_interval(str(source.parent), records=evidence.records)
 
 

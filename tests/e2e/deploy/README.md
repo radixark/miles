@@ -113,5 +113,6 @@ over at rollout 0 with the run.
 - **Launches**: every launch runs in a worker thread of the test process and records its `LaunchOutcome`; no launch may end `FAILED`, and one superseded by a take-over needs that next take-over applied and requested before it ended.
 - **Tail**: admission closes before the final 20 percent of rollouts; after it closes every take-over must have returned and recovered.
 - **Assertions**: only the orchestration workloads roll, the trainer never reboots, and each take-over redoes at most `SAVE_INTERVAL + 1` steps, measured at the draw and again from the discarded event logs.
+- **Weight checks**: every publication after admission closes and the last take-over applies (at least two) carries one version- and incarnation-bound engine checksum record, and same-version engines agree across the active and discarded event logs. Checks run in the soak package, never as production publication gates.
 - **Artifacts**: `<dump_dir>-soak/<session_id>/{events.jsonl, hot_restart/evidence.json, sources/}`; `sources/` holds the active and discarded training-event logs with SHA-256 digests.
 - **CI**: suite `stage-c-8-gpu-h200`, labels `deploy` and `ft-long`, registered `disabled`: it needs a Kubernetes backend, which the CI lane does not provide.
