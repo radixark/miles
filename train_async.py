@@ -77,21 +77,23 @@ async def train(args):
         await inference_controller.prepare_rollout(rollout_id)
         return await rollout_executor.get.remote(rollout_id)
 
+    async def prefetch_next_rollout(rollout_id, current_future):
+        if rollout_id + 1 < args.num_rollout:
+            return await eager_create_task(prepare_and_generate(rollout_id + 1))
+        return current_future
+
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
-        if rollout_data_next_future is not None:
-            rollout_data_curr_ref = await rollout_data_next_future
+        rollout_data_curr_ref = await rollout_data_next_future
 
-        has_next_rollout = rollout_id + 1 < args.num_rollout
         weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
 
         # A fully-async producer keeps generating without a pending get(). When
         # weights will change, defer the next drain so it uses the new version.
-        defer_next_drain = args.fully_async and has_next_rollout and weight_update_due
-        if has_next_rollout and not defer_next_drain:
-            rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
+        if not args.fully_async or not weight_update_due:
+            rollout_data_next_future = await prefetch_next_rollout(rollout_id, rollout_data_next_future)
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)
@@ -120,11 +122,10 @@ async def train(args):
         if weight_update_due:
             if not args.fully_async:
                 # sync generate before update weights to prevent update weight in the middle of generation
-                rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
-                rollout_data_next_future = None
+                await rollout_data_next_future
             await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
-            if defer_next_drain:
-                rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
+            if args.fully_async:
+                rollout_data_next_future = await prefetch_next_rollout(rollout_id, rollout_data_next_future)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await inference_controller.prepare_eval()
