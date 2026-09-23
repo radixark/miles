@@ -11,9 +11,9 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.utils.audit_utils.event_logger.models import FaultHookName
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.test_utils.fault_hooks import reach_fault_hook
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.types import ParamInfo
 
 from ..megatron_to_hf import convert_to_hf

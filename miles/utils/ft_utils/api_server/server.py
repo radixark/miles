@@ -13,20 +13,18 @@ from starlette.responses import JSONResponse
 
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
-from miles.utils.audit_utils.event_logger.models import FaultHookRecord
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import (
     Cell,
     CellList,
     CellPatch,
-    FaultHookControl,
-    FaultInjection,
     K8sStatus,
     _OkResponse,
 )
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.test_utils.fault_hooks import FaultHookConflictError
-from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookConflictError
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
+from miles.utils.workers.cell_operations.base import BaseCellOperations, StaleFaultTargetError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -139,30 +137,21 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
         return await handler.get_cell(name)
 
     @app.get("/api/v1/cells/{name}/fault-target")
-    async def get_fault_target(name: str, sub_index: int = 0) -> FaultTarget:
+    async def get_fault_target(name: str, rank: int = 0) -> ObservedFaultHookTarget:
         handler = await _resolve(name)
         with _translate_fault_errors(name, action="Fault target observation"):
-            return await handler.observe_fault_target(name, sub_index=sub_index)
+            return await handler.observe_fault_target(name, rank=rank)
 
     @app.post("/api/v1/cells/{name}/fault-hook")
-    async def control_fault_hook(name: str, body: FaultHookControl) -> FaultHookRecord:
-        if body.target.cell_id != name:
+    async def control_fault_hook(name: str, body: FaultHookCommand) -> FaultHookRecord:
+        target = body.request.target
+        if not isinstance(target, ObservedFaultHookTarget):
+            raise _K8sError(status_code=400, reason="BadRequest", message="Fault hook must name an observed target")
+        if target.cell_id != name:
             raise _K8sError(status_code=400, reason="BadRequest", message="Fault target does not match route")
         handler = await _resolve(name)
         with _translate_fault_errors(name, action="Fault hook"):
-            return await handler.control_fault_hook(target=body.target, command=body.command)
-
-    @app.post("/api/v1/cells/{name}/inject-fault")
-    async def inject_fault(name: str, body: FaultInjection) -> _OkResponse:
-        handler = await _resolve(name)
-        with _translate_fault_errors(name, action="Fault injection"):
-            await handler.inject_fault(
-                name,
-                mode=body.mode,
-                sub_index=body.sub_index,
-                expected_target=body.expected_target,
-            )
-            return _OkResponse()
+            return await handler.control_fault_hook(body)
 
     # -------------------------- utils ------------------------------
 

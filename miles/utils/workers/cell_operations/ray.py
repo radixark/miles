@@ -4,10 +4,9 @@ import asyncio
 
 import ray.actor
 
-from miles.utils.audit_utils.event_logger.models import FaultHookRecord
-from miles.utils.test_utils.fault_hooks import FaultHookCommand
-from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
+from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
 
 CONTROL_FAULT_HOOK_TIMEOUT_SECONDS = 10.0
@@ -26,23 +25,11 @@ class RayCellOperations(BaseCellOperations):
     async def resume(self, *, cell_id: str) -> None:
         await self._worker_manager_handle.start_cells.remote([cell_id])
 
-    async def observe_fault_target(self, *, cell_id: str, sub_index: int) -> FaultTarget:
-        return await self._worker_manager_handle.observe_fault_target.remote(cell_id, sub_index=sub_index)
+    async def observe_fault_target(self, *, cell_id: str, rank: int) -> ObservedFaultHookTarget:
+        return await self._worker_manager_handle.observe_fault_target.remote(cell_id, rank=rank)
 
-    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> FaultHookRecord:
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
         return await asyncio.wait_for(
-            self._worker_manager_handle.control_fault_hook.remote(target=target, command=command),
+            self._worker_manager_handle.control_fault_hook.remote(command=command),
             timeout=CONTROL_FAULT_HOOK_TIMEOUT_SECONDS,
-        )
-
-    async def inject_fault(
-        self,
-        *,
-        cell_id: str,
-        mode: FailureMode,
-        sub_index: int,
-        expected_target: FaultTarget | None = None,
-    ) -> None:
-        await self._worker_manager_handle.inject_fault.remote(
-            cell_id, mode=mode.value, worker_in_cell_index=sub_index, expected_target=expected_target
         )

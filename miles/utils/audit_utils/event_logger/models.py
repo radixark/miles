@@ -1,13 +1,12 @@
 from datetime import datetime
-from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator, Field, field_validator, model_validator
+from pydantic import Discriminator, Field
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord
 
 
 class EnvReportEditablePackageInfo(FrozenStrictBaseModel):
@@ -186,66 +185,6 @@ class TrainerModelCompanionInfoEvent(EventBase):
     attempt: int
     sample_counts: list[OutputConsumption]
     skipped_nonfinite_sample_counts: list[OutputConsumption]
-
-
-class FaultHookName(StrEnum):
-    TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER = "trainer_weight_update_before_all_gather"
-    TRAINER_WEIGHT_UPDATE_BEFORE_SEND = "trainer_weight_update_before_send"
-
-
-class FaultHookAction(StrEnum):
-    INJECT = "inject"
-    OBSERVE = "observe"
-
-
-class FaultHookStatus(StrEnum):
-    PENDING = "pending"
-    SCHEDULED = "scheduled"
-    CLEARED = "cleared"
-    EXPIRED = "expired"
-    FIRED = "fired"
-    FAILED = "failed"
-
-
-_HOOKABLE_FAILURE_MODES: frozenset[FailureMode] = frozenset(
-    {FailureMode.SIGKILL, FailureMode.SIGSTOP, FailureMode.THREAD_DEADLOCK}
-)
-
-
-class FaultHookRequest(FrozenStrictBaseModel):
-    request_id: str = Field(min_length=1)
-    hook_name: FaultHookName
-    mode: FailureMode
-    action: FaultHookAction = FaultHookAction.INJECT
-    lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
-    delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)
-
-    @field_validator("mode")
-    @classmethod
-    def _validate_mode(cls, mode: FailureMode) -> FailureMode:
-        if mode not in _HOOKABLE_FAILURE_MODES:
-            raise ValueError(f"A fault hook cannot carry {mode.value}")
-        return mode
-
-    @model_validator(mode="after")
-    def _validate_delay(self) -> "FaultHookRequest":
-        if self.mode == FailureMode.THREAD_DEADLOCK and self.delay_ms > 0:
-            raise ValueError("Training-thread deadlock requires immediate hook execution")
-        return self
-
-
-class FaultHookContext(FrozenStrictBaseModel):
-    weight_version: int
-
-
-class FaultHookRecord(FrozenStrictBaseModel):
-    request: FaultHookRequest
-    status: FaultHookStatus
-    set_at: float
-    changed_at: float
-    reached_at: float | None = None
-    due_at: float | None = None
-    context: FaultHookContext | None = None
 
 
 class FaultHookEvent(EventBase):

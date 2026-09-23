@@ -38,7 +38,8 @@ from miles.utils.hot_restart import (
     wait_trainers_idle,
     wait_until_worker_not_initialized,
 )
-from miles.utils.test_utils.ft_test_actions import FTTestActionOrchestrationExecutor
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook_async
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
@@ -303,9 +304,10 @@ async def update_weights(
     rollout_id: int | None = None,
     trainer_model_id: str | None = None,
 ) -> None:
-    orchestration_executor = FTTestActionOrchestrationExecutor.from_args(args, trainer_model_id=trainer_model_id)
     if rollout_id is not None:
-        await orchestration_executor.run_after_step(rollout_id=rollout_id)
+        await reach_fault_hook_async(
+            FaultHookName.ORCHESTRATOR_STEP_END, rollout_id=rollout_id, trainer_model_id=trainer_model_id
+        )
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
     try:

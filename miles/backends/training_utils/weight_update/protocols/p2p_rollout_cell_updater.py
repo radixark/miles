@@ -5,8 +5,8 @@ from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
-from miles.utils.audit_utils.event_logger.models import FaultHookName
-from miles.utils.test_utils.fault_hooks import reach_fault_hook
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 from .p2p_transfer_utils import RemoteWeightInfo
 

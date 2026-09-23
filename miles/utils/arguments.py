@@ -2397,25 +2397,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of unique witness IDs before recycling.",
             )
             parser.add_argument(
-                "--ci-ft-test-actions",
+                "--ci-fault-hooks",
                 type=str,
                 default=None,
-                help="JSON array of fault injection actions. Each action: "
-                '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end"|"crash_before_allreduce", '
-                '"cell_id": "trainer-engine-actor-00002", "rank": 0, "attempt": 0}. '
-                "cell_id is the full cell id (spec name plus zero-padded cell index) of the target cell. "
-                'The action "sleep_forever_at_end" names no cell: it puts the orchestration script itself to sleep '
-                "once the step it names is trained and saved, so the run never starts the step after it.",
+                help="JSON array of fault hook requests set when each process starts. Each request names the hook "
+                "it waits at, the action to run there, the cell_id / rank it applies to, and the rollout_id / "
+                "attempt / weight_version it fires on.",
             )
-            # TODO ad hoc hack: revert after the args refactor
             parser.add_argument(
-                "--ci-ft-test-actions-path",
+                "--ci-fault-hooks-path",
                 type=str,
                 default=None,
-                help="Path of a file holding the same JSON array as --ci-ft-test-actions, read afresh every time "
-                "the actions are consulted. A run relaunched in place keeps the arguments its pods were rendered "
-                "from, so a plan that has to change from one launch to the next is delivered through this file "
-                "instead of through the argument. Mutually exclusive with --ci-ft-test-actions.",
+                help="Path of a file holding the same JSON array as --ci-fault-hooks, read when a process starts. "
+                "A run relaunched in place keeps the arguments its pods were rendered from, so a plan that has to "
+                "change from one launch to the next is delivered through this file. Mutually exclusive with "
+                "--ci-fault-hooks.",
             )
             parser.add_argument(
                 "--ci-inject-rollout-data-path",

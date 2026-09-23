@@ -11,9 +11,10 @@ from tests.utils.soak.ft.actions.base import BaseCellFaultForm
 from tests.utils.soak.ft.cells import cell_is_alive
 from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, ObservedCellFaultKind
 
-from miles.utils.ft_utils.api_server.models import Cell, FaultInjection
-from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import FaultTarget
+from miles.utils.ft_utils.api_server.models import Cell
+from miles.utils.test_utils.fault_injector.actions.union import FaultAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,11 @@ EFFECT_TIMEOUT_SECONDS: float = 30.0
 @dataclass(frozen=True, kw_only=True)
 class InjectFaultForm(BaseCellFaultForm):
     base_url: str
-    failure_mode: FailureMode
+    action: FaultAction
 
     @property
     def name(self) -> str:
-        return f"inject_fault:{self.failure_mode.value}"
+        return f"inject_fault:{self.action.kind}"
 
     @property
     def needs_fault_target(self) -> bool:
@@ -53,13 +54,15 @@ class InjectFaultForm(BaseCellFaultForm):
         fault_target = request.details.fault_target
         assert fault_target.cell_id == request.target.identity
         assert fault_target.workers_hash == request.target.incarnation
+        command = FaultHookCommand(
+            operation=FaultHookOperation.SET,
+            request=FaultHookRequest(request_id=request.request_id, action=self.action, target=fault_target),
+        )
         async with httpx.AsyncClient(timeout=5.0) as client:
             try:
                 response = await client.post(
-                    f"{self.base_url}/api/v1/cells/{request.target.identity}/inject-fault",
-                    content=FaultInjection(
-                        mode=self.failure_mode, sub_index=fault_target.sub_index, expected_target=fault_target
-                    ).model_dump_json(),
+                    f"{self.base_url}/api/v1/cells/{request.target.identity}/fault-hook",
+                    content=command.model_dump_json(),
                     headers={"Content-Type": "application/json"},
                 )
                 if response.is_server_error:
@@ -80,7 +83,7 @@ class InjectFaultForm(BaseCellFaultForm):
         *,
         client: httpx.AsyncClient,
         request: SoakActionRequest,
-        fault_target: FaultTarget,
+        fault_target: ObservedFaultHookTarget,
     ) -> ObservedCellFault:
         async with asyncio.timeout(EFFECT_TIMEOUT_SECONDS):
             while (effect := await self._observe_effect_once(client=client, fault_target=fault_target)) is None:
@@ -90,13 +93,13 @@ class InjectFaultForm(BaseCellFaultForm):
         return ObservedCellFault(
             request_id=request.request_id,
             target=fault_target,
-            mode=self.failure_mode,
+            action=self.action,
             observed=observed,
             observed_workers_hash=observed_workers_hash,
         )
 
     async def _observe_effect_once(
-        self, *, client: httpx.AsyncClient, fault_target: FaultTarget
+        self, *, client: httpx.AsyncClient, fault_target: ObservedFaultHookTarget
     ) -> tuple[ObservedCellFaultKind, str | None] | None:
         try:
             response = await client.get(f"{self.base_url}/api/v1/cells/{fault_target.cell_id}")

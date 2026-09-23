@@ -27,7 +27,6 @@ from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
-from miles.utils.audit_utils.event_logger.models import FaultHookContext
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
@@ -41,8 +40,9 @@ from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
-from miles.utils.test_utils.fault_hooks import fault_hook_controller
-from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext, FaultHookResources
+from miles.utils.test_utils.fault_injector.controller import fault_hook_controller
+from miles.utils.test_utils.fault_injector.models import FaultHookOwner
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -136,8 +136,9 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
         trainer_pool_id = compute_trainer_pool_id(args.trainer_id)
-        self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
-            args,
+        fault_hook_controller.configure(
+            resources=FaultHookResources(args=args),
+            owner=FaultHookOwner.TRAINER_ACTOR,
             cell_id=compute_cell_id(pool_id=trainer_pool_id, cell_index=indep_dp_info.cell_index),
             rank=self._rank,
         )
@@ -750,7 +751,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     num_rollouts,
                     witness_info=witness_info,
                     attempt=attempt,
-                    ft_test_action_executor=self._ft_test_action_executor,
                 )
 
             self.prof.step(rollout_id=rollout_id)
