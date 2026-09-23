@@ -1,3 +1,5 @@
+import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -150,3 +152,36 @@ def _run_context(sources: dict[str, Path], *, at: datetime) -> SoakRunContextEve
         ),
         sources=sources,
     )
+
+
+# ============================= teardown boundary =============================
+
+
+class _RecordingProcesses:
+    def __init__(self, *, stdout: str = "stopped\n", error: BaseException | None = None) -> None:
+        self._stdout = stdout
+        self._error = error
+        self.calls: list[list[str]] = []
+
+    def __call__(
+        self, argv: list[str], *, capture_output: bool, check: bool, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(argv)
+        assert capture_output and check and timeout is not None
+        if self._error is not None:
+            raise self._error
+        return subprocess.CompletedProcess(argv, 0, stdout=self._stdout, stderr="")
+
+
+class _RecordingReleaseRemoval:
+    def __init__(self, *, block: threading.Event | None = None, error: BaseException | None = None) -> None:
+        self._block = block
+        self._error = error
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, *, release: str, namespace: str) -> None:
+        self.calls.append((release, namespace))
+        if self._block is not None:
+            self._block.wait(timeout=10)
+        if self._error is not None:
+            raise self._error

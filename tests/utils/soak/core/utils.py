@@ -2,13 +2,17 @@ import logging
 import signal
 from collections.abc import Awaitable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import LaunchOutcome
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
+from miles.utils.workers.types import ClusterBackend
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +34,17 @@ def compute_base_url(config: command_utils.ExecuteTrainConfig) -> str:
 
 
 def compute_release_of_config(config: command_utils.ExecuteTrainConfig) -> str:
-    raise NotImplementedError
+    return ReleaseName(
+        run_id=config.run_id,
+        deploy_component=config.deploy_component,
+        deploy_instance_id=config.deploy_instance_id,
+    ).serialize()
 
 
 def create_soak_config(config: command_utils.ExecuteTrainConfig) -> command_utils.ExecuteTrainConfig:
-    raise NotImplementedError
+    if config.cluster_backend is not ClusterBackend.RAY:
+        return config
+    return replace(config, ray_submission_id=f"miles-soak-{uuid4().hex}")
 
 
 _DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
