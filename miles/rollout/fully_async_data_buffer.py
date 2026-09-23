@@ -136,6 +136,7 @@ class DefaultDataBuffer(DataBuffer):
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1
+            self._metric_gatherer.on_aborted_group_drop(input.group)
             self._unused_handler_fn(input.prompt_group)
             return False
 
