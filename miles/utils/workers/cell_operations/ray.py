@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+
 import ray.actor
 
+from miles.utils.audit_utils.event_logger.models import FaultHookRecord
+from miles.utils.test_utils.fault_hooks import FaultHookCommand
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget
 from miles.utils.workers.worker_provider.base import CellInfo
+
+CONTROL_FAULT_HOOK_TIMEOUT_SECONDS = 10.0
 
 
 class RayCellOperations(BaseCellOperations):
@@ -22,6 +28,12 @@ class RayCellOperations(BaseCellOperations):
 
     async def observe_fault_target(self, *, cell_id: str, sub_index: int) -> FaultTarget:
         return await self._worker_manager_handle.observe_fault_target.remote(cell_id, sub_index=sub_index)
+
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> FaultHookRecord:
+        return await asyncio.wait_for(
+            self._worker_manager_handle.control_fault_hook.remote(target=target, command=command),
+            timeout=CONTROL_FAULT_HOOK_TIMEOUT_SECONDS,
+        )
 
     async def inject_fault(
         self,
