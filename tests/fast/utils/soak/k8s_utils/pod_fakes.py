@@ -253,7 +253,7 @@ class _FakeKubectlExec:
         sys.stdin = io.StringIO(input)
         try:
             with contextlib.redirect_stdout(stdout):
-                {"kill": pod_processes_cli.kill}[operation](request_id)
+                {"kill": pod_processes_cli.kill, "stop": pod_processes_cli.stop}[operation](request_id)
         except (AssertionError, OSError) as error:
             return subprocess.CompletedProcess(argv, 1, stdout=stdout.getvalue(), stderr=repr(error))
         finally:
