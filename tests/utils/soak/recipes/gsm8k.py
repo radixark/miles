@@ -1,23 +1,10 @@
 import os
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
-from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
-from tests.e2e.ft.conftest_ft.execution import (
-    DATA_DIR,
-    MODEL_DIR,
-)
-from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
-    API_SERVER_PORT,
-    FaultInjectorHandle,
-    spawn_fault_injector,
-)
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
-from tests.utils.cluster_backends import create_backend_for_run
-from tests.utils.ft.launch import get_fully_async_args, get_train_script
+from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
+from tests.utils.ft.launch import get_fully_async_args
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import LaunchOutcome
 from tests.utils.soak.core.utils import API_SERVER_ARGS
@@ -84,107 +71,6 @@ async def execute_gsm8k_session(run: Gsm8kRun) -> LaunchOutcome:
 
 async def launch(spec: Gsm8kLaunchSpec, *, guard: LaunchGuard | None = None) -> None:
     raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class _LegacyGsm8kRun:
-    base_url: str
-    config: command_utils.ExecuteTrainConfig
-    dump_dir: str
-    train_args: str
-    launch: Callable[[command_utils.ExecuteTrainConfig], None]
-
-    @property
-    def events_dir(self) -> Path:
-        return Path(self.dump_dir) / EVENTS_DIRNAME
-
-
-@dataclass(frozen=True)
-class Gsm8kOutcome:
-    run: _LegacyGsm8kRun
-    injector: FaultInjectorHandle
-
-
-CreateCellFaultFormsFn = Callable[[_LegacyGsm8kRun], CellFaultForms]
-
-
-def run_realistic_gsm8k(
-    *,
-    config: command_utils.ExecuteTrainConfig,
-    test_name: str,
-    seed: int,
-    num_rollout: int,
-    metric_threshold: float,
-    fully_async: bool,
-    mean_interval_seconds_of_cell_type: dict[str, float],
-    create_forms: CreateCellFaultFormsFn,
-    build_extra_train_args: Callable[[str], str],
-    get_virtual_cells: Callable[[], list[dict]] | None = None,
-    enable_fault_tolerance: bool = True,
-) -> Gsm8kOutcome:
-    U = create_backend_for_run(config)
-    print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
-    print(f"Test: {test_name}, train script: {get_train_script(fully_async=fully_async)}")
-
-    prepare_gsm8k(U)
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-
-    dump_dir: str = resolve_dump_dir(test_name, run_id=config.run_id)
-    # Start from a clean dump dir so the event analyzer never reads a previous run's
-    # stale events (run_training does this for the other scenarios; gsm8k bypasses it).
-    if os.path.exists(dump_dir):
-        shutil.rmtree(dump_dir)
-    os.makedirs(dump_dir, exist_ok=True)
-
-    train_args = get_gsm8k_train_args(
-        seed=seed,
-        num_rollout=num_rollout,
-        metric_threshold=metric_threshold,
-        fully_async=fully_async,
-        test_name=test_name,
-        enable_fault_tolerance=enable_fault_tolerance,
-    )
-    train_args += f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} "
-    train_args += build_extra_train_args(dump_dir)
-
-    run = _LegacyGsm8kRun(
-        base_url=f"http://{U.api_server_host(config)}:{API_SERVER_PORT}",
-        config=config,
-        dump_dir=dump_dir,
-        train_args=train_args,
-        launch=partial(_launch_gsm8k, train_args=train_args, fully_async=fully_async),
-    )
-    injector = spawn_fault_injector(
-        base_url=run.base_url,
-        seed=seed,
-        mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
-        cell_fault_forms=create_forms(run),
-        get_virtual_cells=get_virtual_cells,
-    )
-
-    try:
-        run.launch(config)
-    finally:
-        injector.stop_and_join()
-
-    return Gsm8kOutcome(run=run, injector=injector)
-
-
-def _launch_gsm8k(config: command_utils.ExecuteTrainConfig, *, train_args: str, fully_async: bool) -> None:
-    create_backend_for_run(config).execute_train(
-        train_args=train_args,
-        num_gpus_per_node=TRAIN_GPUS + ROLLOUT_GPUS,
-        megatron_model_type=MODEL_TYPE,
-        extra_env_vars={
-            # Same as run_training: a cell respawned after a crash cold-recompiles
-            # its first forward, which is slow and memory-heavy enough to OOM.
-            "TORCHDYNAMO_DISABLE": "1",
-            "RAY_DEDUP_LOGS": "0",
-            "SGLANG_LOG_MS": "1",
-        },
-        train_script=get_train_script(fully_async=fully_async),
-    )
 
 
 def prepare_gsm8k(U: BaseCommandBackend) -> None:

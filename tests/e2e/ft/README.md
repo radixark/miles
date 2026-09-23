@@ -77,7 +77,6 @@
 - **Hardware**: every entry declares `hardware=["hopper", "blackwell"]`.
 - **ft-long is disabled**: `tests/ci/run_suite.py` drops every test with a non-`None` `disabled`, and every ft-long entry passes one, so `run-ci-ft-long` executes nothing. Unblocked by an ft-long capable lane; the tests themselves have no open failure.
 - **Disabled reasons**: entries here start theirs with `FT soak tests pending CI infra support`; `tests/e2e/deploy/test_hot_restart_realistic_gsm8k.py` starts with `needs a Kubernetes cluster backend`.
-- **Fast-layer stand-in**: `tests/fast/e2e/ft/test_rollout_gated_recovery.py` covers suspend → gated relaunch → recovery on CPU meanwhile.
 - **Add a `(scenario, mode)`**: copy an entry file, change `_MODE`.
 - **Add a label**: an entry in `tests/ci/labels.py` plus the matching `run-ci-<key>` GitHub label; the workflow needs no edit.
 
