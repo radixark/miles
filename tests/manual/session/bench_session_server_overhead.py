@@ -348,6 +348,7 @@ def _build_server_config(
     from miles.rollout.session.config import SessionServerConfig
 
     return SessionServerConfig(
+        rollout_max_context_len=None,
         hf_checkpoint=bench_args.hf_checkpoint,
         chat_template_path=chat_template_path,
         apply_chat_template_kwargs=chat_template_kwargs,

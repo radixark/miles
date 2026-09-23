@@ -135,6 +135,22 @@ def _records(state):
     return [node.record for node in _path(state)]
 
 
+def test_v2_context_budget_uses_rendered_tokens_without_mutating_tree() -> None:
+    registry = _make_registry(["user", "tool"])
+    state = SessionStateV2()
+    registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1] * 16696)
+    prepared, parent = prepare_token_ids_and_request_args(
+        state,
+        {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 49152},
+        config=make_session_server_config(rollout_max_context_len=65536),
+        tito_tokenizer=registry.tito_tokenizer,
+    )
+    assert len(prepared.body["input_ids"]) == 16696
+    assert prepared.body["max_tokens"] == 48840
+    assert parent is None
+    assert not state.tree.nodes
+
+
 @pytest.fixture
 def registry():
     """Tool-only registry (explicit: the ctor default is tool+user)."""
