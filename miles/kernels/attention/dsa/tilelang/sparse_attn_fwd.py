@@ -3,6 +3,7 @@
 import os
 
 import tilelang
+import torch
 from tilelang import language as T
 
 
@@ -13,24 +14,22 @@ from tilelang import language as T
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
     },
 )
-def sparse_mla_fwd(
+def sparse_attn_fwd(
     heads,
     dim,
     tail_dim,
     topk,
     kv_group=1,
     sm_scale=None,
-    is_causal=True,
-    CP0=True,
+    has_sink=False,
     block_I=64,
     num_stages=2,
     threads=256,
 ):
     assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
-    assert tail_dim == tilelang.math.next_power_of_2(
+    assert tail_dim == 0 or tail_dim == tilelang.math.next_power_of_2(
         tail_dim
     ), f"haven't check padding correctness yet, dim={tail_dim}"
-    assert is_causal == True, "non-casual is not supported"
     assert topk % block_I == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
     if sm_scale is None:
         sm_scale = (1.0 / (dim + tail_dim)) ** 0.5 * 1.44269504  # log2(e)
@@ -47,6 +46,7 @@ def sparse_mla_fwd(
     o_shape = [batch, seq_len, heads, dim]
     indices_shape = [batch, seq_len, kv_group, topk]
     lse_shape = [batch, seq_len, heads]
+    sink_shape = [heads]
     indices_dtype = T.int32
     dtype = T.bfloat16
     accum_dtype = T.float32
@@ -77,6 +77,7 @@ def sparse_mla_fwd(
         Q: T.Tensor(q_shape, dtype),  # type: ignore
         KV: T.Tensor(kv_shape, dtype),  # type: ignore
         Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
+        Sink: T.Tensor(sink_shape, accum_dtype),  # type: ignore
         Output: T.Tensor(o_shape, dtype),  # type: ignore
         Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
     ):
@@ -86,9 +87,10 @@ def sparse_mla_fwd(
             bz,
         ):
             Q_shared = T.alloc_shared([H_per_block, D], dtype)
-            Q_tail_shared = T.alloc_shared([H_per_block, D_tail], dtype)
             KV_shared = T.alloc_shared([BI, D], dtype)
-            K_tail_shared = T.alloc_shared([BI, D_tail], dtype)
+            if D_tail > 0:
+                Q_tail_shared = T.alloc_shared([H_per_block, D_tail], dtype)
+                K_tail_shared = T.alloc_shared([BI, D_tail], dtype)
             O_shared = T.alloc_shared([H_per_block, D], dtype)
             Lse_shared = T.alloc_shared([H_per_block], accum_dtype)
             mask = T.alloc_fragment([BI], "bool")
@@ -109,14 +111,12 @@ def sparse_mla_fwd(
 
             b_i, g_i = by, bz
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
-            q_i = s_i
-            max_kv_i = q_i
-
             H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
             H1 = H0 + H_per_block
 
             T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
-            T.copy(Q[b_i, s_i, H0:H1, D:], Q_tail_shared)
+            if D_tail > 0:
+                T.copy(Q[b_i, s_i, H0:H1, D:], Q_tail_shared)
 
             for i_i in T.Pipelined(NI, num_stages=kernel_num_stages):
                 for bi_i in T.Parallel(BI):
@@ -131,8 +131,9 @@ def sparse_mla_fwd(
 
                 for bi_i, d_i in T.Parallel(BI, D):
                     KV_shared[bi_i, d_i] = T.if_then_else(mask[bi_i], KV[b_i, kv_i[bi_i], g_i, d_i], 0)
-                for bi_i, d_i in T.Parallel(BI, D_tail):
-                    K_tail_shared[bi_i, d_i] = T.if_then_else(mask[bi_i], KV[b_i, kv_i[bi_i], g_i, D + d_i], 0)
+                if D_tail > 0:
+                    for bi_i, d_i in T.Parallel(BI, D_tail):
+                        K_tail_shared[bi_i, d_i] = T.if_then_else(mask[bi_i], KV[b_i, kv_i[bi_i], g_i, D + d_i], 0)
 
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
                     acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))
@@ -143,13 +144,14 @@ def sparse_mla_fwd(
                     transpose_B=True,
                     policy=T.GemmWarpPolicy.FullRow,
                 )
-                T.gemm(
-                    Q_tail_shared,
-                    K_tail_shared,
-                    acc_s,
-                    transpose_B=True,
-                    policy=T.GemmWarpPolicy.FullRow,
-                )
+                if D_tail > 0:
+                    T.gemm(
+                        Q_tail_shared,
+                        K_tail_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
                 T.copy(m_i, m_i_prev)
                 T.reduce_max(acc_s, m_i, dim=1, clear=False)
                 for h_i in T.Parallel(H_per_block):
@@ -172,6 +174,9 @@ def sparse_mla_fwd(
             # -inf, which the backward then turns into exp2(-inf - -inf) = NaN. Any row with at
             # least one valid key has sumexp >= 1 (the running-max term is exp2(0)), so flooring
             # here is a no-op for real rows and makes an empty row contribute an exact zero.
+            if has_sink:
+                for h_i in T.Parallel(H_per_block):
+                    sumexp[h_i] += T.exp2(Sink[H0 + h_i] * 1.44269504 - m_i[h_i] * sm_scale)
             for h_i in T.Parallel(H_per_block):
                 sumexp[h_i] = T.max(sumexp[h_i], 1e-30)
             for h_i, d_i in T.Parallel(H_per_block, D):
@@ -185,41 +190,30 @@ def sparse_mla_fwd(
     return main
 
 
-def sparse_mla_fwd_interface(
-    q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512, block_I=64, num_stages=2, threads=256
-):
-    q = q.unsqueeze(0)
-    kv = kv.unsqueeze(0)
-    indices = indices.unsqueeze(0)
-
-    is_casual = True
-    assert return_p_sum == False, "This kernel file is for fwd only"
+def sparse_attn_fwd_interface(q, kv, indices, sink, d_v, sm_scale=None, block_I=64, num_stages=2, threads=256):
+    """q [B, S, H, d_v + d_tail], kv [B, S_kv, G, d_v + d_tail], indices [B, S, G, topk] (-1 = padding),
+    sink [H] fp32 or None. Returns out [B, S, H, d_v] and lse [B, S, H] in log2 space."""
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
     _, seq_len_kv, kv_group, _ = kv.shape
-
-    assert dim_plus_tail_dim == 576, "you should assign dim otherwise"
-    dim = d_v
-
     assert kv.shape[-1] == dim_plus_tail_dim
-    tail_dim = dim_plus_tail_dim - dim
     assert kv.shape[0] == batch
-    _, _, _, topk = indices.shape
+    topk = indices.shape[-1]
     assert indices.shape == (batch, seq_len, kv_group, topk)
+    tail_dim = dim_plus_tail_dim - d_v
 
-    kernel = sparse_mla_fwd(
+    kernel = sparse_attn_fwd(
         heads,
-        dim,
+        d_v,
         tail_dim,
         topk,
         kv_group,
         sm_scale,
-        is_casual,
+        has_sink=sink is not None,
         block_I=block_I,
         num_stages=num_stages,
         threads=threads,
     )
-    out, lse = kernel(q, kv, indices)
-    out = out.squeeze(0)
-    lse = lse.squeeze(0)
-    return out, lse
+    if sink is None:
+        sink = torch.zeros(heads, device=q.device, dtype=torch.float32)
+    return kernel(q, kv, indices, sink)
