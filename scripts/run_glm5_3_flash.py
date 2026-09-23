@@ -52,9 +52,7 @@ def _train(args: ScriptArgs):
 
     megatron_model_type = _MODEL_REGISTRY[args.model_name]
 
-    ckpt_args = (
-        f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.ckpt_dir}/{megatron_model_type}_torch_dist "
-    )
+    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --ref-load {args.ckpt_dir}/{megatron_model_type}_torch_dist "
     if not args.skip_saving:
         load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
         ckpt_args += (
@@ -89,7 +87,7 @@ def _train(args: ScriptArgs):
             "--expert-model-parallel-size 16 "
             "--expert-tensor-parallel-size 1 "
         )
-        engine_args = "--rollout-num-gpus-per-engine 8 " "--sglang-tp-size 8 " "--sglang-ep-size 8 "
+        engine_args = "--rollout-num-gpus-per-engine 8 --sglang-tp-size 8 --sglang-ep-size 8 "
     elif shape == (6, 4):
         parallel_args = (
             "--tensor-model-parallel-size 8 "
@@ -99,7 +97,7 @@ def _train(args: ScriptArgs):
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
-        engine_args = "--rollout-num-gpus-per-engine 8 " "--sglang-tp-size 8 " "--sglang-ep-size 8 "
+        engine_args = "--rollout-num-gpus-per-engine 8 --sglang-tp-size 8 --sglang-ep-size 8 "
     elif shape == (8, 4):
         parallel_args = (
             "--tensor-model-parallel-size 8 "
@@ -111,7 +109,7 @@ def _train(args: ScriptArgs):
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
-        engine_args = "--rollout-num-gpus-per-engine 8 " "--sglang-tp-size 8 " "--sglang-ep-size 8 "
+        engine_args = "--rollout-num-gpus-per-engine 8 --sglang-tp-size 8 --sglang-ep-size 8 "
     else:
         parallel_args = (
             "--tensor-model-parallel-size 2 "
@@ -121,7 +119,7 @@ def _train(args: ScriptArgs):
             "--expert-model-parallel-size 2 "
             "--expert-tensor-parallel-size 1 "
         )
-        engine_args = "--rollout-num-gpus-per-engine 4 " "--sglang-tp-size 4 " "--sglang-ep-size 4 "
+        engine_args = "--rollout-num-gpus-per-engine 4 --sglang-tp-size 4 --sglang-ep-size 4 "
 
     perf_args = (
         f"{parallel_args}"
@@ -184,7 +182,7 @@ def _train(args: ScriptArgs):
         "--rollout-health-check-timeout 300 "
     )
     if args.check_weight_update:
-        misc_args += "--check-weight-update-equal " "--check-weight-update-skip-list visual. "
+        misc_args += "--check-weight-update-equal --check-weight-update-skip-list visual. "
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
     if args.enable_indexer_replay:

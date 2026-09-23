@@ -35,9 +35,7 @@ def _args() -> ScriptArgs:
         rollout_max_response_len=512,
         enable_r3=True,
         skip_saving=True,
-        extra_args=(
-            "--ci-test " "--ci-disable-kl-checker " "--ci-disable-logprobs-checker " "--offload-train-target cpu "
-        ),
+        extra_args="--ci-test --ci-disable-kl-checker --ci-disable-logprobs-checker --offload-train-target cpu ",
     )
 
 
