@@ -1404,6 +1404,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--save-hf-writers",
+                type=int,
+                default=1,
+                help=(
+                    "Number of trainer ranks that write distinct direct-Megatron HuggingFace checkpoint shards. "
+                    "Values greater than one require --save-hf to name a common multi-writer "
+                    "checkpoint namespace visible from every selected rank and do not support bridge or LoRA export."
+                ),
+            )
+            parser.add_argument(
                 "--save-trigger-sentinel",
                 type=str,
                 default=None,
@@ -2895,6 +2905,15 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     validate_dashboard_args(args)
+
+    assert args.save_hf_writers > 0, "--save-hf-writers must be positive"
+    assert args.save_hf is not None or args.save_hf_writers == 1, (
+        "--save-hf-writers only applies when --save-hf is set"
+    )
+    if args.save_hf_writers > 1:
+        assert args.train_backend == "megatron", "--save-hf-writers only supports --train-backend megatron"
+        assert args.megatron_to_hf_mode == "raw", "--save-hf-writers only supports --megatron-to-hf-mode raw"
+        assert args.lora_rank <= 0, "--save-hf-writers does not support LoRA export"
 
     args.ft_components = _resolve_ft_components(args)
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (

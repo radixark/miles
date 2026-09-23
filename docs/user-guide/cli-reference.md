@@ -158,6 +158,8 @@ Sections mirror the launch-script argument groups.
 | `--load` | path | – | Actor checkpoint to resume from. |
 | `--save` | path | – | Actor checkpoint write directory. |
 | `--save-interval` | int | – | Rollouts between saves. |
+| `--save-hf` | path template | – | Save serving-ready HF checkpoints; `{rollout_id}` is replaced with the saved rollout version. |
+| `--save-hf-writers` | int | `1` | Direct-Megatron HF shard writers. Values above one require a common multi-writer checkpoint namespace and do not support bridge or LoRA export. |
 | `--save-trigger-sentinel` | path | – | If this file exists at a save point, save a checkpoint now (regardless of `--save-interval`) and remove the file. |
 | `--custom-megatron-post-save-hook-path` | `<module>.<fn>` | – | Rank-0 callback after each checkpoint save. |
 | `--model-name` | str | – | Set in multi-node to avoid `transformers` file-system race. |

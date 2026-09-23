@@ -463,6 +463,49 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         miles_validate_args(args)
 
 
+def test_save_hf_writers_defaults_to_one():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(REQUIRED_ARGS)
+
+    assert args.save_hf_writers == 1
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "message"),
+    [
+        (["--save-hf-writers", "0"], "must be positive"),
+        (["--save-hf-writers", "2"], "only applies when --save-hf is set"),
+    ],
+)
+def test_save_hf_writers_validation(extra_args, message):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra_args + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match=message):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("train_backend", "fsdp", "only supports --train-backend megatron"),
+        ("megatron_to_hf_mode", "bridge", "only supports --megatron-to-hf-mode raw"),
+        ("lora_rank", 8, "does not support LoRA export"),
+    ],
+)
+def test_multiple_hf_writers_require_direct_megatron_export(name, value, message):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--save-hf", "/tmp/hf-{rollout_id}", "--save-hf-writers", "2"] + REQUIRED_ARGS)
+    setattr(args, name, value)
+
+    with pytest.raises(AssertionError, match=message):
+        miles_validate_args(args)
+
+
 def test_dynamic_global_batch_size_requires_dynamic_batch_size():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
