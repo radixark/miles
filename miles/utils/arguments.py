@@ -36,10 +36,9 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
     else:
         standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-    rollout_path = args.rollout_function_path or standard_path
-    if args.fully_async:
-        rollout_path = FULLY_ASYNC_ROLLOUT_PATH
-    # Resolved after the override: shared-engine eval must reach the producer it pauses.
+    default_path = FULLY_ASYNC_ROLLOUT_PATH if args.fully_async else standard_path
+    rollout_path = args.rollout_function_path or default_path
+    # Resolved after the rollout path: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
@@ -62,9 +61,6 @@ def _resolve_rollout_functions(args) -> None:
         ), "--fully-async needs the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         # Runs after validate_multi_lora_args, which selects a rollout function of its own.
         assert not args.multi_lora, "--fully-async and multi-LoRA select different rollout functions"
-        assert (
-            args.rollout_function_path is None
-        ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
         assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
         assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
         assert args.pause_generation_mode != "abort", (

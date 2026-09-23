@@ -28,6 +28,12 @@ rollout API, and pass `--fully-async`:
 +   --fully-async
 ```
 
+A custom producer can subclass `FullyAsyncRolloutFn` and pass both
+`--fully-async --rollout-function-path my_package.MyFullyAsyncRolloutFn`.
+The explicit path takes precedence; the rollout worker checks that the instance is
+compatible with the fully async schedule. Eval uses the same instance unless an
+explicit `--eval-function-path` is supplied.
+
 ### Examples
 
 Four launch scripts show the mode end to end, from a single-node smoke test to a

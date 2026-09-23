@@ -82,6 +82,27 @@ class TestProcessSetup:
 
 @pytest.mark.asyncio
 class TestRolloutFunctionConstruction:
+    @pytest.mark.parametrize("subclass", [False, True])
+    async def test_fully_async_accepts_base_and_subclass_instances(self, patch_low_level, monkeypatch, subclass):
+        import miles.ray.rollout.rollout_executor as rexec
+        from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
+
+        class CustomFullyAsyncRolloutFn(FullyAsyncRolloutFn):
+            pass
+
+        cls = CustomFullyAsyncRolloutFn if subclass else FullyAsyncRolloutFn
+        instance = object.__new__(cls)
+        monkeypatch.setattr(rexec, "load_rollout_function", lambda input, path: instance)
+        args = _make_test_args(fully_async=True, rollout_function_path="pkg.CustomFullyAsyncRolloutFn")
+        args.eval_function_path = args.rollout_function_path
+        executor = _make_executor(args)
+        assert executor.generate_rollout is instance
+        assert executor.eval_generate_rollout is instance
+
+    async def test_fully_async_rejects_an_incompatible_instance(self, patch_low_level):
+        with pytest.raises(TypeError, match="requires FullyAsyncRolloutFn or a subclass"):
+            _make_executor(_make_test_args(fully_async=True))
+
     async def test_debug_rollout_replay_skips_class_based_rollout_construction(
         self,
         ray_local_mode,

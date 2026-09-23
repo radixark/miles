@@ -72,6 +72,12 @@ class RolloutExecutor:
             else:
                 input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
                 self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
+                if args.fully_async:
+                    # Import generation dependencies only in the worker, after loading the plugin.
+                    from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
+
+                    if not isinstance(self.generate_rollout, FullyAsyncRolloutFn):
+                        raise TypeError("--fully-async requires FullyAsyncRolloutFn or a subclass")
                 if self.args.eval_function_path == self.args.rollout_function_path:
                     # Reuse the instance so train and eval share one state (and stateful
                     # rollout fns like FullyAsyncRolloutFn are not constructed twice).
