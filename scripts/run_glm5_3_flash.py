@@ -108,7 +108,7 @@ def _train(args: ScriptArgs):
             "--decoder-first-pipeline-num-layers 11 "
             "--decoder-last-pipeline-num-layers 12 "
             "--context-parallel-size 1 "
-            "--expert-model-parallel-size 16 "
+            "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
         engine_args = "--rollout-num-gpus-per-engine 8 " "--sglang-tp-size 8 " "--sglang-ep-size 8 "
