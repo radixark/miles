@@ -11,6 +11,7 @@ from miles.utils.audit_utils.event_analyzer.rules import (
     inference_engine_weight_checksum_consistency,
     inference_engine_weight_checksum_coverage,
     inference_engine_weight_movement,
+    weight_update_checksum_match,
 )
 from miles.utils.audit_utils.event_analyzer.rules import witness as witness_rule
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership import check as sample_ownership_check
@@ -72,6 +73,7 @@ def _check_one_model_id(events: list[Any]) -> list[Any]:
         *inference_engine_weight_checksum_consistency.check(events),
         *inference_engine_weight_checksum_coverage.check(events),
         *inference_engine_weight_movement.check(events),
+        *weight_update_checksum_match.check(events),
         *witness_rule.check(events),
     ]
 
