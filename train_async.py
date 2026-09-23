@@ -73,28 +73,7 @@ async def train(args):
         if args.use_critic and args.offload_train:
             await model.offload()
 
-    async def prepare_and_generate(rollout_id):
-        await inference_controller.prepare_rollout(rollout_id)
-        return await rollout_executor.get.remote(rollout_id)
-
-    async def prefetch_next_rollout(rollout_id, current_future):
-        if rollout_id + 1 < args.num_rollout:
-            return await eager_create_task(prepare_and_generate(rollout_id + 1))
-        return current_future
-
-    # async train loop.
-    rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
-    for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        # Sync the last generation
-        rollout_data_curr_ref = await rollout_data_next_future
-
-        weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
-
-        # A fully-async producer keeps generating without a pending get(). When
-        # weights will change, defer the next drain so it uses the new version.
-        if not args.fully_async or not weight_update_due:
-            rollout_data_next_future = await prefetch_next_rollout(rollout_id, rollout_data_next_future)
-
+    async def train_and_save(rollout_id, rollout_data_curr_ref):
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)
             if args.offload_train:
@@ -118,6 +97,30 @@ async def train(args):
             await rollout_executor.save.remote(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
+
+    async def prepare_and_generate(rollout_id):
+        await inference_controller.prepare_rollout(rollout_id)
+        return await rollout_executor.get.remote(rollout_id)
+
+    async def prefetch_next_rollout(rollout_id, current_future):
+        if rollout_id + 1 < args.num_rollout:
+            return await eager_create_task(prepare_and_generate(rollout_id + 1))
+        return current_future
+
+    # async train loop.
+    rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
+    for rollout_id in range(args.start_rollout_id, args.num_rollout):
+        # Sync the last generation
+        rollout_data_curr_ref = await rollout_data_next_future
+
+        weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
+
+        # A fully-async producer keeps generating without a pending get(). When
+        # weights will change, defer the next drain so it uses the new version.
+        if not args.fully_async or not weight_update_due:
+            rollout_data_next_future = await prefetch_next_rollout(rollout_id, rollout_data_next_future)
+
+        await train_and_save(rollout_id, rollout_data_curr_ref)
 
         if weight_update_due:
             if not args.fully_async:
