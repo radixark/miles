@@ -1,18 +1,11 @@
-"""Tests for the prefix-matching ignore rule added to quantize_params_compressed_tensors.
-
-The change adds `name.startswith(r)` to the ignore matching logic, so rules like
-"model.layers.0.self_attn" now ignore all weights under that prefix.
-"""
+"""`quantize_params_compressed_tensors` re-quantizes exactly the weights the checkpoint stores packed."""
 
 from tests.ci.ci_register import register_cuda_ci
 
-# The quantizer hardcodes `device="cuda"` throughout; this test drives it with
-# real CUDA tensors to exercise the ignore-rule name-matching path. Fast enough
-# for the GPU fast suite; only needs 1 GPU.
+# The quantizer hardcodes `device="cuda"` throughout, so it runs on a GPU worker.
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
 
 
-import pytest
 import torch
 
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_compressed_tensors import (
@@ -23,60 +16,24 @@ from miles.utils.mxfp4 import dequantize_mxfp4, quantize_mxfp4
 CONFIG = {
     "format": "int-quantized",
     "config_groups": {"group_0": {"weights": {"group_size": 128, "symmetric": True}}},
-    "ignore": [],  # overridden per test
 }
 
 
-def _quantize_names(name, ignore_rules):
-    """Run quantization on a single 2D weight and return output names."""
-    config = {**CONFIG, "ignore": ignore_rules}
-    results = quantize_params_compressed_tensors([(name, torch.randn(256, 256, device="cuda"))], config)
-    return [r[0] for r in results]
+def test_only_the_packed_basenames_are_quantized():
+    """A 2-D BF16 weight the checkpoint keeps unpacked (router, residual projection) must pass through."""
+    params = [
+        ("model.layers.0.experts.0.w1.weight", torch.randn(256, 256, device="cuda")),
+        ("model.layers.0.gate.weight", torch.randn(256, 256, device="cuda")),
+        ("model.layers.0.self_attn.q_proj.weight", torch.randn(256, 256, device="cuda")),
+    ]
+    result_names = [
+        name for name, _ in quantize_params_compressed_tensors(params, CONFIG, {"model.layers.0.experts.0.w1"})
+    ]
 
-
-def _is_ignored(name, ignore_rules):
-    """Check if a weight name is ignored (returned as-is, not quantized)."""
-    names = _quantize_names(name, ignore_rules)
-    return name in names and f"{name}_packed" not in names
-
-
-class TestIgnoreRulePrefixMatching:
-    """Tests for the new prefix-matching ignore rule (name.startswith(r))."""
-
-    @pytest.mark.parametrize(
-        "rule,name,expected_ignored",
-        [
-            # exact match (pre-existing)
-            ("model.layer.weight", "model.layer.weight", True),
-            # regex match (pre-existing)
-            ("re:.*embed.*", "model.embed_tokens.weight", True),
-            # prefix match (NEW)
-            ("model.layers.0.self_attn", "model.layers.0.self_attn.q_proj.weight", True),
-            ("model.layers.", "model.layers.5.attn.weight", True),
-            ("model.embed", "model.embed_tokens.weight", True),
-            # non-matching
-            ("model.layers.1", "model.layers.0.attn.weight", False),
-            ("other.prefix", "model.layers.0.attn.weight", False),
-        ],
-    )
-    def test_ignore_rule_matching(self, rule, name, expected_ignored):
-        assert _is_ignored(name, [rule]) == expected_ignored
-
-    def test_prefix_selectively_ignores(self):
-        """Prefix rule ignores matching params while others get quantized."""
-        config = {**CONFIG, "ignore": ["model.layers.0.self_attn"]}
-        params = [
-            ("model.layers.0.self_attn.q_proj.weight", torch.randn(256, 256, device="cuda")),
-            ("model.layers.0.self_attn.k_proj.weight", torch.randn(256, 256, device="cuda")),
-            ("model.layers.0.mlp.gate_proj.weight", torch.randn(256, 256, device="cuda")),
-        ]
-        result_names = [r[0] for r in quantize_params_compressed_tensors(params, config)]
-
-        # self_attn params ignored (passed through)
-        assert "model.layers.0.self_attn.q_proj.weight" in result_names
-        assert "model.layers.0.self_attn.k_proj.weight" in result_names
-        # mlp param quantized
-        assert "model.layers.0.mlp.gate_proj.weight_packed" in result_names
+    assert "model.layers.0.experts.0.w1.weight_packed" in result_names
+    assert "model.layers.0.experts.0.w1.weight" not in result_names
+    assert "model.layers.0.gate.weight" in result_names
+    assert "model.layers.0.self_attn.q_proj.weight" in result_names
 
 
 def test_mxfp4_quantize_inverts_the_checkpoint_dequantizer():
@@ -113,11 +70,11 @@ def test_mxfp4_quantize_inverts_the_checkpoint_dequantizer():
                 }
             }
         },
-        "ignore": [],
     }
     results = quantize_params_compressed_tensors(
         [("model.layers.0.experts.0.w1.weight", torch.randn(64, 64, device="cuda"))],
         config,
+        {"model.layers.0.experts.0.w1"},
     )
 
     assert [(name, tensor.dtype, tuple(tensor.shape)) for name, tensor in results] == [

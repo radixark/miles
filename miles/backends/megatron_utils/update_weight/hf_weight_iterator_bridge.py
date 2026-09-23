@@ -112,7 +112,11 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 # A tensor with no Megatron source (HF-only passthrough) is not a trainable weight: pass it through.
                 qmegatron_name = f"module.module.{megatron_param_name}"
                 for q_hf_name, q_weight in quantize_params(
-                    self.args, qmegatron_name, [(hf_name, weight)], self.quantization_config
+                    self.args,
+                    qmegatron_name,
+                    [(hf_name, weight)],
+                    self.quantization_config,
+                    self.packed_weight_basenames,
                 ):
                     yield q_hf_name, q_weight, megatron_param_names
             else:

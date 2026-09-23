@@ -75,7 +75,11 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:
-            yield list(convert_to_hf(self.args, self.model_name, name, param, self.quantization_config))
+            yield list(
+                convert_to_hf(
+                    self.args, self.model_name, name, param, self.quantization_config, self.packed_weight_basenames
+                )
+            )
 
 
 def _load_or_allocate_params(param_infos: Sequence[ParamInfo], megatron_local_weights) -> list[torch.Tensor]:
