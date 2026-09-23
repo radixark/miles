@@ -3,6 +3,7 @@
 
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -157,6 +158,18 @@ def run_ci(
     )
 
     print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
+
+
+def create_precise_app(precise: PreciseHook, *, mix: bool) -> tuple[typer.Typer, Callable[..., None]]:
+    precise_app = typer.Typer()
+
+    @precise_app.command(name="run")
+    def run_precise(
+        mode: ModeOption, seed: SeedOption = DEFAULT_SEED, num_steps: NumStepsOption = DEFAULT_NUM_STEPS
+    ) -> None:
+        run_ci(mode, seed=seed, num_steps=num_steps, precise=precise, mix=mix)
+
+    return precise_app, run_precise
 
 
 def _build_train_args(
