@@ -1,9 +1,7 @@
 """Triton QSA sparse attention for training: forward + backward.
 
-Semantics match sglang's ``_sparse_gqa_prefill`` (qsa/sparse_attn.py): each query
-attends exactly the token indices in its selection row (``-1`` = unused). The
-selection rows are produced torch-side (indexer top-k expansion + the query's own
-partial-block tail), so the kernel itself needs no causal or segment logic -- the
+Each query attends exactly the token indices in its selection row (``-1`` = unused).
+The rows already carry the causal and segment limits, so the kernel applies none.
 """
 
 import torch

@@ -1,9 +1,7 @@
 """Gather PLE rows straight out of pinned host memory.
 
-Mirrors sglang's ``_gather_ple_embedding_from_pinned_kernel``: one program per
-(token, hash-head) row, reading through a raw host pointer so the GPU pulls the
-row over the coherent link instead of staging the table into HBM. The table is
-51.2 B parameters / 102.4 GB, so it never goes to device -- and on GB300 the
+One program per (token, hash-head) row, reading through a raw host pointer so the GPU
+pulls the row over the host link instead of staging the 102 GB table into HBM.
 """
 
 import torch

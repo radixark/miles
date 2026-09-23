@@ -1,9 +1,7 @@
 """Triton hyper-connection kernels for Qwen3.8-Next (Qwen4Exp).
 
-Numerical contract: bit-for-bit the same *policy* as the torch reference in
-``ops/hc.py`` -- every reduction and elementwise step in fp32, one cast onto
-the output dtype at the end. The torch path is the parity-verified reference;
-this module exists because in real training the torch path is slow twice over:
+Every reduction and elementwise step runs in fp32, with one cast onto the output dtype
+at the end.
 """
 
 import torch
@@ -308,7 +306,7 @@ def hc_mix_inject_triton(x, weight, w_down, w_up, w_inject, n: int, eps: float):
 
 
 def hc_combine_triton(residual, block_output, h_post, n: int):
-    """``X'_c = X_c + a_c * y`` -- fused elementwise. Shapes as ops.hc.hc_combine."""
+    """``X'_c = X_c + a_c * y`` -- fused elementwise."""
     lead = residual.shape[:-1]
     r2d = residual.reshape(-1, residual.shape[-1]).contiguous()
     y2d = block_output.reshape(-1, block_output.shape[-1]).contiguous()

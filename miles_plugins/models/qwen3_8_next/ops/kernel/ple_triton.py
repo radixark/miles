@@ -1,9 +1,6 @@
 """Triton PLE kernels: fused gate chain and segment-aware causal depthwise conv.
 
-Same numerical policy as the torch reference in ops/ple.py (which the sglang
-parity runs verified): fp32 for every reduction and elementwise step, one cast
-onto the output dtype. The kernels fuse
-
+fp32 for every reduction and elementwise step, one cast onto the output dtype.
 """
 
 import math

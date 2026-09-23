@@ -1,30 +1,10 @@
 """Tensor-core QSA sparse attention for training: forward + backward.
 
 Same semantics as ``qsa_sparse_attn.py`` -- each query attends exactly the tokens in
-its selection row -- but reached a different way, because the gather-per-query form
-cannot use ``tl.dot``: with a distinct key set per query it has to materialise a
-``[BQ, BK, D]`` tile and reduce it with ALU math. Measured at the production shape
-(T=25k, 12 q-heads, D=256, budget 2048) that costs 2.5 s forward and 13.9 s
-forward+backward per layer, which is ~330x slower than a DENSE causal flash kernel over
-the same tensors (9.4 ms / 39.2 ms) even though dense does 6x more FLOPs. QSA at 25k
-tokens only removes ~6x of the work, so paying 300x for the privilege is a large loss:
-on the 16-node agentic run those three QSA layers per pipeline stage were ~49 s of a
-~52 s micro-batch.
-
-So this kernel walks key tiles with ``tl.dot`` and masks each (query, key) pair to the
-query's own selection. Tiles nobody in the query tile selected are skipped entirely via
-a CSR-style per-query-tile list, so it beats a dense sweep by the coverage ratio rather
-than merely matching it. The result is exact, not an approximation:
-
-- selection membership is tested at BLOCK granularity (the indexer picks blocks of
-  ``BLK`` consecutive tokens), which is a superset of the row's token list, because
-  expanding a block drops only the tokens past the query's own position;
-- the dropped ones come back out via ``lo``/``hi``, the inclusive key range the caller
-  already computes (sequence start .. query position).
-
-bf16 inputs feed the dots with fp32 accumulation, the flash-attention convention, which
-is also what the sglang kernel this mirrors does -- the old kernel's fp32 ALU path was
-the odd one out.
+its selection row -- but it walks key tiles with ``tl.dot`` and masks each (query, key)
+pair to the query's selection, skipping tiles no query in the tile selected. The result
+is exact: block-granular membership is a superset of the row, and ``lo``/``hi`` (the
+inclusive key range, sequence start .. query position) removes the extra tokens.
 """
 
 import torch
@@ -88,20 +68,15 @@ def _qsa_bs_fwd_kernel(
     l_i = tl.zeros((BQ,), tl.float32)
     acc = tl.zeros((BQ, D), tl.float32)
 
-    # Only the key tiles this query tile actually selected, so the kernel beats a dense
-    # sweep by the coverage ratio instead of merely matching it. The list is the union
-    # over the tile's queries; per-query exactness comes from the mask below.
+    # the tile list is the union over the tile's queries; per-query exactness comes from the mask
     n_tiles = tl.load(KCNT + pid_t)
     for i in range(0, n_tiles):
         kt = tl.load(KLIST + pid_t * stride_kl + i)
         offs_k = kt * BK + tl.arange(0, BK)
         k_in = offs_k < T
 
-        # per-sequence block grid: after the packed-indexer fix a sequence's blocks start
-        # at its own first token, which is not a multiple of BLK in a packed batch.
-        # Looked up per TOKEN, not per 4-token group: a sequence whose start is not a
-        # multiple of BLK has its per-sequence blocks straddling the global groups, so a
-        # group-granular lookup would assign some tokens to the wrong block.
+        # per-token block lookup: a packed sequence's blocks start at its own first token,
+        # which need not be a multiple of BLK
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
         sel = tl.load(
             SEL + offs_q[:, None] * stride_st + blk,
@@ -210,11 +185,7 @@ def _qsa_bs_dq_kernel(
         offs_k = kt * BK + tl.arange(0, BK)
         k_in = offs_k < T
 
-        # per-sequence block grid: after the packed-indexer fix a sequence's blocks start
-        # at its own first token, which is not a multiple of BLK in a packed batch.
-        # Looked up per TOKEN, not per 4-token group: a sequence whose start is not a
-        # multiple of BLK has its per-sequence blocks straddling the global groups, so a
-        # group-granular lookup would assign some tokens to the wrong block.
+        # per-token block lookup, as in the forward kernel
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
         sel = tl.load(
             SEL + offs_q[:, None] * stride_st + blk,
@@ -284,12 +255,10 @@ def _qsa_bs_dkdv_kernel(
     BK: tl.constexpr,
     BLK: tl.constexpr,
 ):
-    """dK/dV keyed on the KEY tile, so nothing needs atomics.
+    """dK/dV keyed on the key tile, so nothing needs atomics.
 
-    Launched per KV head, not per query head: with GQA the ``GROUP`` query heads sharing a
-    KV head all contribute to the same dK/dV, so they have to be summed here. Writing them
-    from separate programs would have them overwrite each other (the gather kernel got away
-    with it only because it used atomic_add).
+    Launched per KV head: the ``GROUP`` query heads sharing a KV head are summed here,
+    since separate programs would overwrite each other's dK/dV.
     """
     pid_k = tl.program_id(0)
     kv_head = tl.program_id(1)
